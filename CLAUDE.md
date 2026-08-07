@@ -27,6 +27,10 @@ Instructions for Claude-based agents working in this repository.
 - Use `docs/prompts/` for reusable or generated implementation prompts.
 - Verify with available commands after implementation. If no product stack exists yet, do not invent build or test commands.
 
+## Output Formats
+
+- **ELI5 is the default output format for all LLM-produced output**, per `docs/prompts/shared/eli5.prompt.md` — every conversation message (answers, status updates, plans, findings, errors, questions) and the prose in every produced artifact (plans, ADRs, specs, commit messages, PR descriptions), regardless of model. Conversation answers use the full shape: plain-word explanation first, short numbered steps, then a brief "In technical terms" recap; artifacts keep their template structure with plain language inside. The user switches with plain words — `normal`/`technical`/`no eli5` for one request, "switch to technical for this session" for the rest of the session, `eli5` to switch back (see that file's "How to Switch" table). Code, configs, commands, facts, repository rules, and the Work Accounting footer stay unchanged.
+
 ## Claude-Specific Notes
 
 - Keep edits scoped, minimal, and consistent with the existing scaffold.

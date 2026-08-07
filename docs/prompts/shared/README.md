@@ -8,5 +8,6 @@ Shared prompt templates used by the `docs/` control plane.
 - `bootstrap-control-plane-in-new-repo.prompt.md`
 - `bootstrap-orchestrator-in-new-repo.prompt.md`
 - `code-style.prompt.md`
+- `eli5.prompt.md`
 - `review.prompt.md`
 - `template-sync.prompt.md`

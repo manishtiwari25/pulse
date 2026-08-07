@@ -75,6 +75,12 @@ Append this block at the very end of the final response:
 
 Collector details: **Copilot CLI** (`usage-copilot.sh`) reads the local event log — for a **closed** session it reports the canonical `session.shutdown.modelMetrics` totals (real input/output/cache tokens per model, AI units `totalNanoAiu` ÷ 1e9, premium requests, subagents included); for a **still-running** session it sums main-agent output plus every subagent total as an interim snapshot, and AIC must be pasted from the live status line; it tracks mid-session model switches (`session.model_change`). **Claude Code** (`usage-claude.sh`) sums deduped `message.usage` tokens from `~/.claude/projects` (or `~/.config/claude/projects`); subscription-plan logs carry no per-message USD, so cost reads `n/a (plan)` — never estimate it from a price table. **OpenCode** (`usage-opencode.sh`) reports OpenCode's own real per-message USD plus tokens from `~/.local/share/opencode/storage`. **Codex** (`usage-codex.sh`) reads the session-cumulative `total_token_usage` from `~/.codex/sessions` rollout logs (no USD exposed; prints the plan type).
 
+## Output Formats
+
+Output formats are shared across all runners (Claude Code, Copilot CLI, OpenCode, Codex, Cursor, and any other agent reading this file) and defined in `docs/prompts/shared/`:
+
+- **ELI5 (default)** — `docs/prompts/shared/eli5.prompt.md`. **All LLM-produced output** — every conversation message (answers, status updates, plans, findings, errors, questions) and the prose in every produced artifact (plans, ADRs, specs, commit messages, PR descriptions) — is written in plain, jargon-free language by default, regardless of model. Conversation answers use the full shape: plain-word explanation first, short numbered steps, then a brief "In technical terms" recap; artifacts keep their template structure with plain language inside. The user switches with plain words — `normal`/`technical`/`no eli5` for one request, "switch to technical for this session" for the rest of the session, `eli5` to switch back (see that file's "How to Switch" table). Code, configs, commands, facts, repository rules, and the Work Accounting footer stay unchanged.
+
 ## Template Map
 
 - `docs/decisions/_template.md` for architectural decisions.
