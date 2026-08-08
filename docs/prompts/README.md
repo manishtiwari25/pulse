@@ -12,3 +12,8 @@ Reusable prompt templates and future generated implementation prompts live here.
 ## Folders
 
 - `shared/` - shared prompt templates and reusable workflows
+
+## Setup
+
+- [`integration-prompts.md`](integration-prompts.md) - one copy-and-paste
+  launcher for a new, empty, or established repository

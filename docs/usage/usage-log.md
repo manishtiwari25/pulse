@@ -15,5 +15,7 @@ Per-session work-accounting ledger. Each row records the **real usage reported b
 | 2026-07-11 | 15d5dbb1 | claude-fable-5 (Claude Code)   | n/a (plan) @ 14:20 †  | 8,032         | 7     | Add template-sync workflow + /template-sync Claude skill; wire into AGENTS.md routing. |
 | 2026-07-17 | 27d05029 | claude-fable-5 (Claude Code)   | n/a (plan) @ 06:44 †  | 9,074         | 15    | Move template-sync skill from .claude/skills/ into docs/prompts/shared/; add no-artifacts-outside-docs rule to AGENTS.md/CLAUDE.md; ignore tool dirs in .gitignore. |
 | 2026-08-07 | c3c19417 | claude-fable-5 (Claude Code)   | n/a (plan) @ 06:45 †  | 18,228        | 25    | Add shared ELI5 output format as the default for all LLM output (messages + artifact prose, any model) with a "How to Switch" guide (docs/prompts/shared/eli5.prompt.md); wire into AGENTS.md, CLAUDE.md, copilot-instructions.md. |
+| 2026-08-08 | 92360e0a | claude-fable-5, gpt-5.6-sol (GitHub Copilot) | n/a (live AIC unavailable) @ 09:41 † | 14,902,301 | 16 | Polish setup docs into one-copy universal bootstrap; update the canonical prompt/workflow and retire the duplicate orchestrator flow. |
+| 2026-08-08 | 40882170 | gpt-5.6-sol, gpt-5-mini (GitHub Copilot) | 7.24 AIC used @ 09:52 † | 14,154 | n/a | Coordinate and verify the public one-prompt bootstrap guides for new and existing repositories. |
 
 † Interim, timestamped snapshot — counters were still climbing at the recorded time; finalize at session close.
