@@ -5,9 +5,6 @@
 - [`pulse-rebrand-and-public-docs.md`](pulse-rebrand-and-public-docs.md) -
   establishes the PULSE identity, public documentation site, and token-only
   usage reporting.
-
-## In Progress
-
 - [`agent-driven-rollbacks.md`](agent-driven-rollbacks.md) - makes safe,
   scoped rollback planning and execution a required PULSE behavior.
 

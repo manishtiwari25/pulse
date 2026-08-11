@@ -74,4 +74,4 @@ Every rollback must run recovery checks and record the result.
 - [x] Add rollback sections to plan and implementation-prompt templates.
 - [x] Create the model-agnostic rollback workflow and shared prompt.
 - [x] Update change-producing workflows and review guidance.
-- [ ] Publish the feature on the PULSE documentation site.
+- [x] Publish the feature on the PULSE documentation site.

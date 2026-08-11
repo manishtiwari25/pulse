@@ -1,7 +1,7 @@
 ---
 id: FEAT-001
 title: Agent-Driven Rollbacks
-status: In Progress
+status: Done
 date: 2026-08-11
 priority: High
 areas: [agents, plans, prompts, workflows, recovery]
@@ -104,7 +104,7 @@ audit surface.
 - [x] The agent can distinguish safe automatic recovery from approval-required recovery.
 - [x] Rollback steps are scoped to the current task and preserve user work.
 - [x] Recovery checks and audit recording are mandatory.
-- [ ] The feature is visible in public PULSE documentation.
+- [x] The feature is visible in public PULSE documentation.
 
 ## Verification Plan
 

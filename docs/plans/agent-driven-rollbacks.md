@@ -1,7 +1,7 @@
 ---
 id: PLAN-002
 title: Add Agent-Driven Rollbacks to PULSE
-status: In Progress
+status: Done
 date: 2026-08-11
 tags: [plan, rollback, recovery, agents]
 ---
@@ -26,7 +26,7 @@ model-agnostic workflow that agents can execute without harming unrelated work.
 - [x] Add the mandatory rule to agent instructions.
 - [x] Add rollback sections to plans, prompts, reviews, and workflows.
 - [x] Publish the feature in the README and GitHub Pages site.
-- [ ] Validate, publish, and verify the live documentation.
+- [x] Validate, publish, and verify the live documentation.
 
 ## Rollback Plan
 
@@ -43,9 +43,9 @@ model-agnostic workflow that agents can execute without harming unrelated work.
 
 ## Acceptance Criteria
 
-- [ ] The requested outcome is complete.
+- [x] The requested outcome is complete.
 - [x] Relevant control-plane files are updated.
-- [ ] Verification is complete or clearly documented.
+- [x] Verification is complete or clearly documented.
 - [x] The rollback plan is scoped, safe, and executable.
 
 ## Verification
