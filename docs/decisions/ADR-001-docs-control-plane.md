@@ -1,21 +1,24 @@
 ---
 id: ADR-001
-title: Use Docs-Based Control Plane
+title: Use a Docs-Based PULSE Control Plane
 status: Accepted
 date: 2026-05-23
 areas: [template, documentation, agents]
 tags: [adr, scaffold, control-plane]
 ---
 
-# ADR-001: Use Docs-Based Control Plane
+# ADR-001: Use a Docs-Based PULSE Control Plane
 
 ## Context
 
-The original template kept control-plane folders at the repository root. The public template should keep the root cleaner while preserving the same agent-friendly project brain.
+PULSE needs one predictable, agent-friendly place for product context,
+architecture, decisions, plans, behavior, workflows, and learning. Keeping
+those areas at the repository root would make the public framework harder to
+scan and easier to fragment.
 
 ## Decision
 
-Use `docs/` as the canonical location for the control plane:
+Use `docs/` as the canonical location for the PULSE control plane:
 
 - `docs/architecture/`
 - `docs/context/`
@@ -32,8 +35,8 @@ Keep root-level agent entrypoints, including `AGENTS.md`, `CLAUDE.md`, and `.git
 
 ### Positive
 
-- The template root is easier to scan for users browsing the public repository.
-- Project-brain files are grouped under a familiar documentation namespace.
+- The framework root is easier to scan for users browsing the public repository.
+- PULSE files are grouped under a familiar documentation namespace.
 - Agent entrypoints remain discoverable at the root and in `.github/`.
 
 ### Negative

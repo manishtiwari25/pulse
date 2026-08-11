@@ -1,4 +1,4 @@
-# Shared Prompts
+# Shared PULSE Prompts
 
 Shared prompt templates used by the `docs/` control plane.
 
@@ -6,7 +6,7 @@ Shared prompt templates used by the `docs/` control plane.
 
 - `_feature-prompt-template.md`
 - [`bootstrap-control-plane-in-new-repo.prompt.md`](bootstrap-control-plane-in-new-repo.prompt.md)
-  - canonical project-brain bootstrap prompt for both new and established
+  - canonical PULSE bootstrap prompt for both new and established
     repositories; the stable filename is retained for existing links
 - [`bootstrap-orchestrator-in-new-repo.prompt.md`](bootstrap-orchestrator-in-new-repo.prompt.md)
   - legacy alias that points to the canonical bootstrap prompt

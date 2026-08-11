@@ -1,18 +1,18 @@
-# One-Prompt Project-Brain Setup
+# One-Prompt PULSE Setup
 
 Use the same prompt for a blank repository, a new repository with an initial
 README, or an established codebase.
 
 ## Copy This Prompt
 
-**Open your target repo in an AI coding agent, paste this prompt, and approve
-its proposed file changes.**
+**Open the target repository in an AI coding agent, paste this prompt, and
+approve its proposed file changes.**
 
 <!-- UNIVERSAL_BOOTSTRAP_LAUNCHER_START -->
 ```text
-Bootstrap the repository currently open in this AI coding agent with the
-docs-based project-brain system from
-https://github.com/manishtiwari25/my-coding-setup.
+Bootstrap the repository currently open in this AI coding agent with PULSE -
+Planning & Unified Lifecycle for Software Engineering - from
+https://github.com/manishtiwari25/pulse.
 
 Use your available GitHub, web, or git tools to discover that source
 repository's default branch; do not assume a branch name. From that branch,
@@ -30,12 +30,12 @@ infer facts from the repository, mark genuinely unknown facts as open
 questions, and continue.
 
 Preserve product/source code, uncommitted work, and existing project-specific
-instructions. Merge instead of blindly overwriting. Keep new control-plane
-content under docs/; do not add hidden tool-specific control folders. Do not
-copy stale template context, source-repository usage rows, generated history,
-or unrelated repository state. Adapt names, paths, stack details, and commands
-to this repository. Create project-specific ADRs, specs, or plans only when
-the evidence makes them useful. Do not commit.
+instructions. Merge instead of blindly overwriting. Keep new PULSE
+control-plane content under docs/; do not add hidden tool-specific control
+folders. Do not copy stale PULSE source context, source-repository usage rows,
+generated history, or unrelated repository state. Adapt names, paths, stack
+details, and commands to this repository. Create project-specific ADRs, specs,
+or plans only when the evidence makes them useful. Do not commit.
 
 Validate changed Markdown links, inspect the final diff, run git diff --check
 and any existing targeted documentation checks, then report files changed,
@@ -43,20 +43,18 @@ preserved files, assumptions, validation results, and blockers.
 ```
 <!-- UNIVERSAL_BOOTSTRAP_LAUNCHER_END -->
 
-No placeholders need replacing. The agent discovers the source repository's
-current default branch and learns about the target from the files already
-there.
+No placeholders need replacing. The agent discovers PULSE's current default
+branch and learns about the target from the files already there.
 
 ## What the Agent Does
 
-1. Loads the [canonical bootstrap prompt](shared/bootstrap-control-plane-in-new-repo.prompt.md)
-   and [bootstrap workflow](../workflows/bootstrap-control-plane.md) from the
-   public source.
+1. Loads the [canonical PULSE bootstrap prompt](shared/bootstrap-control-plane-in-new-repo.prompt.md)
+   and [bootstrap workflow](../workflows/bootstrap-control-plane.md).
 2. Inspects the target and chooses the safe new-repository or
    established-repository merge path.
-3. Builds or merges the `docs/` control plane without changing product code.
+3. Builds or merges the PULSE `docs/` control plane without changing product code.
 4. Validates links and diffs, then reports changes and blockers.
 
-If the agent cannot access the public source or its required canonical files,
-it stops instead of guessing. Enable source access, then paste the same prompt
+If the agent cannot access the public source or required canonical files, it
+stops instead of guessing. Enable source access, then paste the same prompt
 again.

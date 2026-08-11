@@ -1,8 +1,10 @@
-# Agents - Project Brain Template
+# PULSE - Agent Operating Guide
 
-## Repository Scope
+## Framework Scope
 
-This repository is a reusable template for a clean `docs/`-based control-plane scaffold. It is designed for a future product, app, service, or workflow that needs a durable project brain before product code exists.
+PULSE is a reusable, docs-first framework for **Planning & Unified Lifecycle
+for Software Engineering**. It gives future products, apps, services, and
+workflows a durable engineering control plane before or alongside product code.
 
 The `docs/` control-plane folders are the source of truth:
 
@@ -17,49 +19,81 @@ docs/prompts/        Generated and reusable implementation prompts
 docs/workflows/      Repeatable agent procedures
 ```
 
-Future product code may live in `src/`, `apps/`, `packages/`, `services/`, or another structure after the product direction is decided in the repo created from this template.
+Future product code may live in `src/`, `apps/`, `packages/`, `services/`, or
+another structure after the product direction is decided in a repository that
+adopts PULSE.
+
+## PULSE Lifecycle
+
+1. **Understand** the repository through context, architecture, decisions, and memory.
+2. **Decide** important product and technical choices explicitly.
+3. **Plan** non-trivial work with outcomes and verification.
+4. **Specify** user and system behavior before implementation.
+5. **Build and verify** only against the real repository boundaries and commands.
+6. **Learn** by recording durable patterns, rules, and mistakes.
 
 ## Operating Modes
 
-- **Planning mode (default):** read `docs/` control-plane files, clarify the desired outcome, then create or update plans, feature specs, ADRs, prompts, workflows, and memory as needed.
-- **Implementation mode (explicit):** modify product/source code only after the user explicitly asks for implementation and the target product structure exists.
-- **Template mode:** keep this source template generic, reusable, and product-code-free. Improve enduring onboarding, templates, workflows, and agent instructions instead of adding one-off project artifacts.
-- **Bootstrap mode:** adapt this scaffold into another repository while preserving that repository's existing source code and instructions.
+- **Planning mode (default):** read the PULSE control plane, clarify the
+  desired outcome, then create or update plans, feature specs, ADRs, prompts,
+  workflows, and memory only when useful.
+- **Implementation mode (explicit):** modify product/source code only after
+  the user explicitly asks for implementation and the target product structure
+  exists.
+- **Framework mode:** keep this source repository generic, reusable, and
+  product-code-free. Improve enduring onboarding, templates, workflows, and
+  agent instructions instead of adding one-off product artifacts.
+- **Bootstrap mode:** adapt PULSE into another repository while preserving
+  that repository's existing source code and instructions.
 
 ## Critical Rules
 
-- The `docs/` control plane is canonical. Do not create parallel root-level control-plane folders unless a new ADR changes this decision.
-- Do not add agent-authored artifacts (skills, prompts, workflows, scripts, rules, memory) anywhere outside `docs/`. Tool-specific directories such as `.claude/`, `.cursor/`, `.codex/`, or `.opencode/` must not be committed to this repository; runner entry points live in `docs/prompts/shared/` and reference `docs/workflows/`. The only root-level exceptions are the existing instruction files (`AGENTS.md`, `CLAUDE.md`, `README.md`, `.github/copilot-instructions.md`), standard config dotfiles already in the scaffold, and the `.template-sync` state file.
-- Do not assume any previous product architecture still exists.
-- Do not create or require a repo-local hidden control folder.
+- The `docs/` control plane is canonical. Do not create parallel root-level
+  control-plane folders unless a new ADR changes this decision.
+- Do not add agent-authored artifacts outside `docs/`. Tool-specific
+  directories such as `.claude/`, `.cursor/`, `.codex/`, or `.opencode/` must
+  not be committed. Runner entry points live in `docs/prompts/shared/` and
+  reference `docs/workflows/`.
+- The only root-level exceptions are the existing instruction files
+  (`AGENTS.md`, `CLAUDE.md`, `README.md`,
+  `.github/copilot-instructions.md`), standard config dotfiles already in the
+  framework, and the optional `.template-sync` state file.
+- Do not assume previous product architecture still exists.
+- Do not create or require a repository-local hidden control folder.
 - Do not add product code before the new direction is defined or explicitly requested.
 - Keep plans, prompts, and templates model-agnostic.
-- When creating a new repo from this template, update stale template assumptions in `README.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `docs/context/`, and `docs/architecture/` before implementation.
+- When adopting PULSE in another repository, replace stale framework names,
+  assumptions, product context, and architecture notes before implementation.
 - If context is missing, inspect files or ask before inventing requirements.
 
-## Work Accounting & Cost Reporting (required)
+## Work Accounting & Token Reporting (required)
 
-End **every** completed task or work response with a Work Accounting footer reporting model, tokens, and cost. Use the real usage the active runner already reports — never guess or estimate from a static price table.
+End every completed task or work response with a Work Accounting footer that
+reports the actual model and token usage exposed by the active runner. Never
+estimate missing token counts and never use non-token metrics as a substitute.
 
-Figures are interim, timestamped snapshots: token counts and credit/AIC/USD counters are cumulative and keep climbing while the session runs, so any committed value is point-in-time and only finalized at session close. If the runtime does not expose an exact figure, report the model plus whatever the runner's usage view shows, and label anything unreadable as `≈ estimate`. Never fabricate. Never omit the footer.
+Token counters can keep changing while a session is open. Label live values as
+an interim, timestamped snapshot and finalize them at session close when the
+runner exposes canonical totals.
 
-In addition to the footer, append one entry per session to `docs/usage/usage-log.md` (see that file's header for the recording rules). The ledger is agent-driven: there is no automatic git or CLI hook. Each runner writes real usage to its own local log; the helper scripts below read those logs directly.
+Append one entry per session to `docs/usage/usage-log.md`. The ledger is
+agent-driven; `docs/scripts/usage.sh` reads the local logs already written by
+supported runners.
 
 ### Per-runner source map
 
-`docs/scripts/usage.sh [all|claude|copilot|opencode|codex|vscode|cursor] [session-id]` is the single entry point: it auto-detects which harness logs exist on the machine and runs the matching collectors. CLI and IDE entry points of the same product share the same local logs, so one collector covers both (e.g. Claude Code CLI, VS Code/JetBrains extension, and desktop app all write `~/.claude/projects`).
+| Runner                          | Model source  | Token source                     | Helper                           |
+| ------------------------------- | ------------- | -------------------------------- | -------------------------------- |
+| Claude Code (CLI/IDE/desktop)   | session log   | `message.usage` JSONL            | `docs/scripts/usage-claude.sh`   |
+| GitHub Copilot CLI              | event log     | live messages / shutdown metrics | `docs/scripts/usage-copilot.sh`  |
+| OpenCode (TUI/IDE)              | message store | per-message token fields         | `docs/scripts/usage-opencode.sh` |
+| OpenAI Codex (CLI/IDE)          | session log   | `token_count` events             | `docs/scripts/usage-codex.sh`    |
+| VS Code Copilot Chat            | chat session  | not stored locally               | `docs/scripts/usage-vscode.sh`   |
+| Cursor                          | session store | not stored locally               | `docs/scripts/usage-cursor.sh`   |
+| Other API runner                | response      | provider response usage          | -                                |
 
-| Runner                          | Model source  | Token usage source      | Cost / spend unit                      | Helper                            |
-| ------------------------------- | ------------- | ----------------------- | -------------------------------------- | --------------------------------- |
-| Claude Code (CLI/IDE/desktop)   | session log   | `message.usage` JSONL   | `costUSD` if API-key; `n/a (plan)`     | `docs/scripts/usage-claude.sh`    |
-| GitHub Copilot CLI              | `/model`      | `/context`, `/usage`    | AIC used (status line / `/usage`)      | `docs/scripts/usage-copilot.sh`   |
-| OpenCode (TUI/IDE)              | runner banner | runner usage output     | direct money (USD)                     | `docs/scripts/usage-opencode.sh`  |
-| OpenAI Codex (CLI/IDE)          | session log   | `token_count` events    | `n/a (<plan type>)`                    | `docs/scripts/usage-codex.sh`     |
-| VS Code Copilot Chat (built-in) | chat session  | not stored locally      | premium req → github.com/settings/billing | `docs/scripts/usage-vscode.sh` |
-| Cursor (agent/composer)         | session store | not stored locally      | server-side → cursor.com/dashboard     | `docs/scripts/usage-cursor.sh`    |
-| Other API runner                | request/model | provider response usage | tokens, or USD if the runner prints it | —                                 |
-
-IDEs whose AI feature keeps no local usage data (VS Code Copilot Chat, Cursor, JetBrains AI Assistant, Windsurf, …) can only be reported honestly as session/model/turn data plus a pointer to the product's own usage dashboard — record that in the ledger as `n/a (dashboard)` rather than inventing token counts.
+When a runner does not expose token counts locally, record `n/a (not exposed)`
+instead of guessing.
 
 ### Footer template
 
@@ -69,17 +103,28 @@ Append this block at the very end of the final response:
 ---
 ### 🧮 Work Accounting
 - Model(s): <actual model id(s)> (+ sub-agent models, if any)
-- Tokens: <input> in / <output> out / <total> total   — source: <Copilot /usage + /context · OpenCode usage · Claude Code session log · Codex session log · API response>
-- Cost: <runner-native figure as of HH:MM>   — "$0.0123 USD" (OpenCode/API) · "~N AIC used @ HH:MM, interim" (Copilot) · "n/a (plan)" (Claude Code/Codex subscription) · "≈ estimate" only if nothing is exposed
+- Tokens: <input> in / <output> out / <total> total   — source: <runner usage view or local session log>
 ```
 
-Collector details: **Copilot CLI** (`usage-copilot.sh`) reads the local event log — for a **closed** session it reports the canonical `session.shutdown.modelMetrics` totals (real input/output/cache tokens per model, AI units `totalNanoAiu` ÷ 1e9, premium requests, subagents included); for a **still-running** session it sums main-agent output plus every subagent total as an interim snapshot, and AIC must be pasted from the live status line; it tracks mid-session model switches (`session.model_change`). **Claude Code** (`usage-claude.sh`) sums deduped `message.usage` tokens from `~/.claude/projects` (or `~/.config/claude/projects`); subscription-plan logs carry no per-message USD, so cost reads `n/a (plan)` — never estimate it from a price table. **OpenCode** (`usage-opencode.sh`) reports OpenCode's own real per-message USD plus tokens from `~/.local/share/opencode/storage`. **Codex** (`usage-codex.sh`) reads the session-cumulative `total_token_usage` from `~/.codex/sessions` rollout logs (no USD exposed; prints the plan type).
+Collector details: **Copilot CLI** reads canonical shutdown totals when a
+session is closed and reports the live output visible in message/subagent
+events while it is open. **Claude Code** sums deduplicated `message.usage`
+tokens. **OpenCode** sums its stored token fields. **Codex** reads the latest
+session-cumulative `total_token_usage`. **VS Code Copilot Chat** and
+**Cursor** report `n/a` because their local stores do not contain token counts.
 
 ## Output Formats
 
-Output formats are shared across all runners (Claude Code, Copilot CLI, OpenCode, Codex, Cursor, and any other agent reading this file) and defined in `docs/prompts/shared/`:
+Output formats are shared across all runners and defined in
+`docs/prompts/shared/`:
 
-- **ELI5 (default)** — `docs/prompts/shared/eli5.prompt.md`. **All LLM-produced output** — every conversation message (answers, status updates, plans, findings, errors, questions) and the prose in every produced artifact (plans, ADRs, specs, commit messages, PR descriptions) — is written in plain, jargon-free language by default, regardless of model. Conversation answers use the full shape: plain-word explanation first, short numbered steps, then a brief "In technical terms" recap; artifacts keep their template structure with plain language inside. The user switches with plain words — `normal`/`technical`/`no eli5` for one request, "switch to technical for this session" for the rest of the session, `eli5` to switch back (see that file's "How to Switch" table). Code, configs, commands, facts, repository rules, and the Work Accounting footer stay unchanged.
+- **ELI5 (default)** - follow `docs/prompts/shared/eli5.prompt.md` for every
+  conversation message and the prose in generated artifacts. Conversation
+  answers start with a plain-word explanation, use short numbered steps, and
+  end with a brief "In technical terms" recap. The user can switch with
+  `normal`, `technical`, or `no eli5`, and switch back with `eli5`. Code,
+  configs, commands, facts, repository rules, and the Work Accounting footer
+  stay unchanged.
 
 ## Template Map
 
@@ -91,29 +136,35 @@ Output formats are shared across all runners (Claude Code, Copilot CLI, OpenCode
 
 ## Workflow
 
-1. Understand the user's desired new product, template update, or scaffold change.
-2. Read `docs/memory/`, `docs/decisions/`, `docs/architecture/`, and `docs/context/` before planning.
-3. If the product direction is not documented, ask or infer only the first required intake facts: project name, users, problem, first outcome, existing code boundaries, stack constraints, integrations, verification commands, and the first decision/spec/plan to draft.
-4. Create or update a plan using `docs/plans/_template.md` when the work is non-trivial.
-5. Create ADRs only for real architectural choices.
+1. Understand the user's desired product, framework update, or adoption change.
+2. Read `docs/memory/`, `docs/decisions/`, `docs/architecture/`, and
+   `docs/context/` before planning.
+3. If product direction is not documented, collect only the first required
+   facts: project name, users, problem, first outcome, code boundaries, stack
+   constraints, integrations, verification commands, and the first artifact.
+4. Create or update a plan from `docs/plans/_template.md` for non-trivial work.
+5. Create ADRs only for real choices.
 6. Create feature specs only for real product behavior.
-7. Generate implementation prompts before implementation when useful.
+7. Generate implementation prompts when they make handoff safer.
 8. Implement only after the user explicitly asks for code changes.
-9. Verify with the commands available in the new product structure.
-10. Update memory when a durable pattern, lesson, or mistake is discovered.
+9. Verify with commands that already exist in the target repository.
+10. Update memory only when a durable pattern, lesson, or rule appears.
 
 ## Routing
 
-| Request Type              | Read First                                                                                                       | Write To                                                            |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| New product idea          | `docs/context/`, `docs/memory/`, `docs/decisions/`, `docs/architecture/`                                         | `docs/plans/`, `docs/features/`, `docs/decisions/`, `docs/prompts/` |
-| Architecture decision     | `docs/decisions/`, `docs/architecture/`, `docs/context/`                                                         | `docs/decisions/`, `docs/architecture/`, `docs/memory/`             |
-| Feature prompt generation | `docs/features/`, `docs/context/`, `docs/memory/`                                                                | `docs/prompts/`                                                     |
-| Learning or mistake       | `docs/memory/`                                                                                                   | `docs/memory/`                                                      |
-| Template maintenance      | `AGENTS.md`, `README.md`, `.github/copilot-instructions.md`, `docs/*/README.md`                                  | durable template docs/config                                        |
-| Bootstrap another repo    | `docs/workflows/bootstrap-control-plane.md`, `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md` | `docs/prompts/shared/`, `docs/workflows/`                           |
-| Sync repo with template   | `docs/workflows/template-sync.md`, `docs/prompts/shared/template-sync.prompt.md`, `.template-sync`               | sync-safe template files, `.template-sync`                          |
+| Request Type              | Read First                                                                                      | Write To                                                            |
+| ------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| New product idea          | `docs/context/`, `docs/memory/`, `docs/decisions/`, `docs/architecture/`                         | `docs/plans/`, `docs/features/`, `docs/decisions/`, `docs/prompts/` |
+| Architecture decision     | `docs/decisions/`, `docs/architecture/`, `docs/context/`                                        | `docs/decisions/`, `docs/architecture/`, `docs/memory/`             |
+| Feature prompt generation | `docs/features/`, `docs/context/`, `docs/memory/`                                               | `docs/prompts/`                                                     |
+| Learning or mistake       | `docs/memory/`                                                                                  | `docs/memory/`                                                      |
+| PULSE maintenance         | `AGENTS.md`, `README.md`, `.github/copilot-instructions.md`, `docs/*/README.md`                  | durable framework docs/config                                       |
+| Adopt PULSE elsewhere     | `docs/workflows/bootstrap-control-plane.md`, `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md` | target repository control plane                          |
+| Sync from PULSE           | `docs/workflows/template-sync.md`, `docs/prompts/shared/template-sync.prompt.md`, `.template-sync` | sync-safe framework files, `.template-sync`                       |
 
-## Product Direction Notes
+## Product Direction
 
-This template does not assume a product domain, UI, runtime, or deployment model. In a repo created from this template, the first durable step is to define the actual product through `docs/context/`, `docs/plans/`, `docs/features/`, and `docs/decisions/`; implementation code should follow only after those documents exist.
+This repository is the PULSE framework itself. It does not assume a product
+domain, UI, runtime, or deployment model for repositories that adopt it.
+Those repositories define their real direction in `docs/context/`,
+`docs/features/`, `docs/plans/`, and `docs/decisions/` before implementation.

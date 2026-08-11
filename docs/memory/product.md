@@ -1,6 +1,9 @@
 # Memory - Product
 
-No product memory recorded yet.
+- `2026-08-11` - The framework is named **PULSE**, meaning **Planning &
+  Unified Lifecycle for Software Engineering**. Use PULSE as the public name
+  and "PULSE control plane" for its canonical `docs/` structure. Source:
+  `docs/context/product.md`.
 
 ## Populate When
 

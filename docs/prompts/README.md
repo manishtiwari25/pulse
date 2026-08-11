@@ -1,4 +1,4 @@
-# Prompts
+# PULSE Prompts
 
 Reusable prompt templates and future generated implementation prompts live here.
 
@@ -16,4 +16,4 @@ Reusable prompt templates and future generated implementation prompts live here.
 ## Setup
 
 - [`integration-prompts.md`](integration-prompts.md) - one copy-and-paste
-  launcher for a new, empty, or established repository
+  PULSE launcher for a new, empty, or established repository

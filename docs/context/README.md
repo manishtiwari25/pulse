@@ -1,12 +1,12 @@
 # Context
 
-Project and implementation context lives here. Agents should read these files before planning product or implementation work.
+PULSE product and implementation context lives here. Agents read these files
+before planning framework or adoption work.
 
 ## Current Files
 
-- `product.md` - product direction and scope notes
-- `stack.md` - technology and runtime decisions once known
+- `product.md` - PULSE users, problem, boundaries, and first outcome.
+- `stack.md` - the small static stack used by this framework repository.
 
-## Current State
-
-The repository is a clean template scaffold. Add concrete context as product and architecture decisions are made.
+Repositories that adopt PULSE replace these framework facts with their own
+product and stack context.

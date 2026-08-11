@@ -1,55 +1,43 @@
-# Workflow - Bootstrap the Project Brain in Another Repository
+# Workflow - Bootstrap PULSE in Another Repository
 
 Use this workflow with the
-[canonical bootstrap prompt](../prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md).
+[canonical PULSE bootstrap prompt](../prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md).
 It supports both new and established repositories.
 
 ## 1. Read the Public Source
 
-- Source repository:
-  <https://github.com/manishtiwari25/my-coding-setup>
-- Discover the source repository's default branch from GitHub or git metadata.
-  Do not hard-code a branch name.
+- Source repository: <https://github.com/manishtiwari25/pulse>
+- Discover the default branch from GitHub or git metadata.
 - Read the canonical prompt, this workflow, `AGENTS.md`, `docs/README.md`, and
-  the relevant control-plane README and template files from that branch.
-- Stop before editing if the public source or either canonical bootstrap file
-  is unavailable. State the access problem clearly instead of guessing.
+  relevant PULSE README/template files.
+- Stop before editing if the source or either canonical file is unavailable.
 
 ## 2. Take a Target Snapshot
 
-Before changing files:
-
 1. Read every local instruction file and the root README.
 2. Inspect the current documentation layout.
-3. Locate product/source code, build files, tests, CI, deployment files, and
-   real verification commands.
+3. Locate product/source code, build files, tests, CI, deployment, and real checks.
 4. Record `git status --short` and inspect the current diff.
-5. Note existing user changes so the bootstrap does not claim or overwrite
-   them.
+5. Note existing user changes.
 
 ## 3. Choose the Safer Merge Path
 
-Treat the target as:
-
-- **New/empty** when it has little or no product code or project context.
-- **Established** when it has working code, project rules, or meaningful
-  documentation.
-- **Established** when the classification is uncertain.
-
-This choice changes how content is merged, not the safety rules.
+- Use **new/empty** when there is little or no product code or context.
+- Use **established** when working code, rules, or meaningful docs exist.
+- Use **established** when uncertain.
 
 | Area | New/empty target | Established target |
 | --- | --- | --- |
-| Instructions | Create concise entry points adapted to the repository. | Merge links and workflow guidance into existing rules. |
-| Root README | Explain the real project when facts exist; otherwise keep open questions visible. | Preserve it and add only a small project-brain link when useful. |
-| Context and architecture | Record known facts and clearly labeled open questions. | Derive facts from the current code and docs without inventing claims. |
-| Templates | Add reusable templates that make future work easier. | Merge with equivalent templates and naming already in use. |
+| Instructions | Create concise entry points adapted to the repository. | Merge PULSE routing into existing rules. |
+| Root README | Explain the real project or show open questions. | Preserve it and add only a small PULSE link. |
+| Context and architecture | Record facts and labeled open questions. | Derive facts from code and docs without guessing. |
+| Templates | Add only templates that make future work easier. | Merge with equivalent existing templates. |
 | Product code and setup | Leave unchanged. | Leave unchanged. |
-| Usage or generated state | Start clean only if the target adopts that rule. | Never import source-repository rows or history. |
+| Usage state | Start clean only if token accounting is adopted. | Never import PULSE rows or history. |
 
 ## 4. Apply the Control Plane
 
-Create or merge the useful equivalents of:
+Create or merge useful equivalents of:
 
 ```text
 AGENTS.md
@@ -65,22 +53,18 @@ docs/prompts/
 docs/workflows/
 ```
 
-- Keep new control-plane content under `docs/`.
-- Keep existing project-specific instructions and documented conventions.
+- Keep new PULSE control-plane content under `docs/`.
+- Keep existing project-specific instructions and conventions.
 - Add root tool entry points only when the target uses them.
 - Do not create hidden tool-specific control folders.
-- Adapt names, paths, stack facts, links, and commands to the target.
+- Adapt names, paths, stack facts, links, and commands.
 - Use open questions for facts the repository does not reveal.
-- Add reusable templates where helpful, but create project-specific ADRs,
-  specs, and plans only when there is enough evidence.
-- Do not copy stale template context, source usage rows, generated history,
-  publishing notes, secrets, local paths, or unrelated state.
+- Do not copy stale PULSE context, usage rows, history, publishing notes,
+  secrets, local paths, or unrelated state.
 - Do not modify product code, add dependencies, create CI, or invent commands.
 - Leave changes uncommitted.
 
-## 5. Validate the Result
-
-Run:
+## 5. Validate
 
 ```bash
 git status --short
@@ -89,19 +73,12 @@ git diff --stat
 git diff --name-only
 ```
 
-Then check:
+Check changed links, existing targeted docs checks, preserved product files
+and user work, real target names, no hidden control folder, and no PULSE
+source usage history.
 
-- Changed relative Markdown links resolve.
-- Existing targeted documentation checks pass, when available.
-- Product/source files and unrelated user changes remain untouched.
-- Existing instructions still contain their original project-specific rules.
-- New files use the target repository's names and paths.
-- No hidden tool folder or parallel root-level control plane was added.
-- No source-template usage history or unrelated repository state was copied.
-
-## 6. Hand Off Clearly
+## 6. Hand Off
 
 Report the target classification, files changed, important files preserved,
-facts inferred, open questions, validation results, and blockers. Recommend a
-next ADR, feature spec, or plan only when the current repository makes that
-recommendation useful.
+facts inferred, open questions, validation, and blockers. Recommend a next
+artifact only when the current repository supports it.

@@ -1,21 +1,31 @@
-# Usage Log
+# Token Usage Log
 
-Per-session work-accounting ledger. Each row records the **real usage reported by the runner** for a session — never a guess from a static price table.
+Per-session PULSE work-accounting ledger. Each row records the real token data
+the active runner exposes. Never guess a missing token field.
 
-- **Cost is the runner's native unit:** AIC (GitHub Copilot CLI), USD (OpenCode / paid APIs), or token cost. Record the value shown by that runner's own usage view.
-- **Figures are cumulative, live counters.** Token counts and credit/AIC/USD totals keep climbing while a session runs. Record the value at **session close**; any row added mid-session is an **interim, timestamped snapshot** (mark it with `†` and the time).
-- **Never fabricate.** If the runtime does not expose an exact figure, record what the runner's usage view shows and label unreadable values `≈ estimate`.
-- Run [`docs/scripts/usage.sh`](../scripts/usage.sh) to read real usage from every harness's local logs (Claude Code, Copilot CLI, OpenCode, Codex — CLI and IDE entry points of the same product share the same logs). Subscription runners that expose no USD are recorded as `n/a (plan)`.
-- When a Copilot CLI session **closes**, its event log records the canonical totals: real input/output/cache tokens, AI units (`totalNanoAiu` ÷ 1e9 ≈ AIC), and premium-request count. For a **live** session those aren't finalized yet — sum main + subagent output and paste the AIC from the status line (`Session: N AIC used`). See [`docs/scripts/usage-copilot.sh`](../scripts/usage-copilot.sh).
+- Record input, output, cache, and total tokens when available.
+- If a runner exposes only one token field during a live session, record that
+  field and label the snapshot `live`.
+- Use `n/a (not exposed)` when the runner does not store tokens locally.
+- Token counters can keep changing while a session is open. Mark an interim
+  row with `†` and the capture time, then finalize it after session shutdown
+  when canonical totals are available.
+- Run [`docs/scripts/usage.sh`](../scripts/usage.sh) to read supported local
+  runner logs.
 
-| Date       | Session  | Model(s)                       | Cost (unit)           | Output tokens | Turns | Summary                                                  |
-| ---------- | -------- | ------------------------------ | --------------------- | ------------- | ----- | -------------------------------------------------------- |
-| 2026-06-27 | a1b2c3d4 | claude-opus-4 (GitHub Copilot) | ~5 AIC used @ 14:32 † | 12,480        | 7     | Example row — add Work Accounting rule, ledger & script. |
-| 2026-07-11 | 0a4a45c8 | claude-fable-5 (Claude Code)   | n/a (plan) @ 14:02 †  | 37,576        | 44    | Fix usage scripts, add codex/vscode/cursor collectors + unified usage.sh, move scripts/ & usage/ under docs/. |
-| 2026-07-11 | 15d5dbb1 | claude-fable-5 (Claude Code)   | n/a (plan) @ 14:20 †  | 8,032         | 7     | Add template-sync workflow + /template-sync Claude skill; wire into AGENTS.md routing. |
-| 2026-07-17 | 27d05029 | claude-fable-5 (Claude Code)   | n/a (plan) @ 06:44 †  | 9,074         | 15    | Move template-sync skill from .claude/skills/ into docs/prompts/shared/; add no-artifacts-outside-docs rule to AGENTS.md/CLAUDE.md; ignore tool dirs in .gitignore. |
-| 2026-08-07 | c3c19417 | claude-fable-5 (Claude Code)   | n/a (plan) @ 06:45 †  | 18,228        | 25    | Add shared ELI5 output format as the default for all LLM output (messages + artifact prose, any model) with a "How to Switch" guide (docs/prompts/shared/eli5.prompt.md); wire into AGENTS.md, CLAUDE.md, copilot-instructions.md. |
-| 2026-08-08 | 92360e0a | claude-fable-5, gpt-5.6-sol (GitHub Copilot) | n/a (live AIC unavailable) @ 09:41 † | 14,902,301 | 16 | Polish setup docs into one-copy universal bootstrap; update the canonical prompt/workflow and retire the duplicate orchestrator flow. |
-| 2026-08-08 | 40882170 | gpt-5.6-sol, gpt-5-mini (GitHub Copilot) | 7.24 AIC used @ 09:52 † | 14,154 | n/a | Coordinate and verify the public one-prompt bootstrap guides for new and existing repositories. |
+| Date | Session | Model(s) | Tokens used | Turns | Summary |
+| --- | --- | --- | --- | --- | --- |
+| 2026-06-27 | a1b2c3d4 | claude-opus-4 (GitHub Copilot) | 12,480 out | 7 | Add the original work-accounting rule, ledger, and script. |
+| 2026-07-11 | 0a4a45c8 | claude-fable-5 (Claude Code) | 37,576 out | 44 | Fix usage scripts, add runner collectors, and move operational docs under `docs/`. |
+| 2026-07-11 | 15d5dbb1 | claude-fable-5 (Claude Code) | 8,032 out | 7 | Add the template-sync workflow and route it through the agent guide. |
+| 2026-07-17 | 27d05029 | claude-fable-5 (Claude Code) | 9,074 out | 15 | Move runner entry points under `docs/` and forbid hidden tool artifacts. |
+| 2026-08-07 | c3c19417 | claude-fable-5 (Claude Code) | 18,228 out | 25 | Add the shared ELI5 output format and wire it into agent instructions. |
+| 2026-08-08 | 92360e0a | claude-fable-5, gpt-5.6-sol (GitHub Copilot) | 14,902,301 out | 16 | Polish the universal bootstrap guides and retire the duplicate orchestrator flow. |
+| 2026-08-08 | 40882170 | gpt-5.6-sol, gpt-5-mini (GitHub Copilot) | 14,154 out | n/a | Coordinate and verify the one-prompt bootstrap guides. |
+| 2026-08-11 | 39c58803 | gpt-5-mini, gpt-5.6-sol (GitHub Copilot) | n/a in / 53,250 out / n/a total @ 08:06 CEST † | n/a | Rebrand the framework as PULSE, add its SVG and public docs portal, and switch usage reporting to tokens only. |
 
-† Interim, timestamped snapshot — counters were still climbing at the recorded time; finalize at session close.
+Older rows contain the output count that was preserved from the original
+ledger. New rows should use the fuller token breakdown when the runner exposes it.
+
+† Interim, timestamped snapshot; finalize after the session closes when
+canonical totals become available.

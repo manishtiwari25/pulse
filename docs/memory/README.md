@@ -2,7 +2,9 @@
 
 Memory files store durable patterns, mistakes, product rules, and lessons learned for future agents.
 
-This template keeps memory intentionally empty. Repositories created from this template should populate memory only after real product work creates a durable lesson or convention.
+PULSE keeps framework memory intentionally small. Repositories that adopt
+PULSE should populate memory only after real product work creates a durable
+lesson or convention.
 
 ## Current State
 

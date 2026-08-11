@@ -1,37 +1,66 @@
 #!/usr/bin/env bash
-# Cursor (IDE agent/composer) sessions, from its local state.vscdb SQLite store. Local data
-# records session titles, dates, and message counts — Cursor does NOT store token counts or
-# USD locally; real spend/usage lives at cursor.com/dashboard (Settings -> Usage). Only real
-# local fields are printed; tokens/cost are reported as not exposed — never guessed from a
-# price table. Usage: docs/scripts/usage-cursor.sh [session-id]
+# Cursor session metadata from its local state.vscdb store. Cursor records
+# session titles, dates, and messages locally, but not token counts.
+# Usage: docs/scripts/usage-cursor.sh [session-id]
 set -eu
-DB=""
+
+DATABASE=""
 for base in "$HOME/Library/Application Support/Cursor" "$HOME/.config/Cursor"; do
-    [ -f "$base/User/globalStorage/state.vscdb" ] && DB="$base/User/globalStorage/state.vscdb" && break
+    if [ -f "$base/User/globalStorage/state.vscdb" ]; then
+        DATABASE="$base/User/globalStorage/state.vscdb"
+        break
+    fi
 done
-[ -n "$DB" ] || { echo "No Cursor data (state.vscdb not found)." >&2; exit 1; }
-command -v sqlite3 >/dev/null || { echo "sqlite3 not available to read $DB" >&2; exit 1; }
-PY=$(cat <<'EOF'
-import json, sys, datetime
-want = sys.argv[1]; rows=[]
+
+[ -n "$DATABASE" ] || {
+    echo "No Cursor state database found." >&2
+    exit 1
+}
+command -v sqlite3 >/dev/null || {
+    echo "sqlite3 is required to read $DATABASE" >&2
+    exit 1
+}
+
+PYTHON=$(cat <<'PY'
+import datetime
+import json
+import sys
+
+wanted = sys.argv[1]
+rows = []
+
 for line in sys.stdin:
-    line=line.strip()
-    if not line: continue
-    try: d=json.loads(line)
-    except Exception: continue
-    sid=d.get("composerId") or "?"
-    if want and want not in sid: continue
-    ts=(d.get("lastUpdatedAt") or d.get("createdAt") or 0)/1000
-    n=len(d.get("conversation") or d.get("fullConversationHeadersOnly") or [])
-    name=(d.get("name") or "").strip()[:28]
-    rows.append((ts, sid, n, name))
-if not rows: print("No matching Cursor sessions"); raise SystemExit
-for ts,sid,n,name in sorted(rows, reverse=True)[:10]:
-    day=datetime.date.fromtimestamp(ts).isoformat() if ts else "?"
-    print(f"{day} {sid[:14]} {n:>4} msg  tokens/cost: not stored locally  {name}")
-print("Spend: usage is server-side -> cursor.com/dashboard (Settings -> Usage)")
-EOF
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        data = json.loads(line)
+    except Exception:
+        continue
+
+    session_id = data.get("composerId") or "?"
+    if wanted and wanted not in session_id:
+        continue
+    timestamp = (data.get("lastUpdatedAt") or data.get("createdAt") or 0) / 1000
+    messages = len(
+        data.get("conversation") or data.get("fullConversationHeadersOnly") or []
+    )
+    name = (data.get("name") or "").strip()[:28]
+    rows.append((timestamp, session_id, messages, name))
+
+if not rows:
+    print("No matching Cursor sessions")
+    raise SystemExit
+
+for timestamp, session_id, messages, name in sorted(rows, reverse=True)[:10]:
+    day = datetime.date.fromtimestamp(timestamp).isoformat() if timestamp else "?"
+    print(
+        f"{day} {session_id[:14]} {messages:>4} msg "
+        f"tokens: n/a (not stored locally) {name}"
+    )
+PY
 )
-sqlite3 -readonly "$DB" \
-  "SELECT value FROM cursorDiskKV WHERE key LIKE 'composerData:%'" 2>/dev/null \
-  | python3 -c "$PY" "${1:-}"
+
+sqlite3 -readonly "$DATABASE" \
+    "SELECT value FROM cursorDiskKV WHERE key LIKE 'composerData:%'" 2>/dev/null \
+    | python3 -c "$PYTHON" "${1:-}"

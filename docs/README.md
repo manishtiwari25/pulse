@@ -1,9 +1,12 @@
-# Docs Control Plane
+# PULSE Documentation
 
-This folder is the canonical project brain for repositories created from this template.
+This folder is the canonical control plane for **PULSE - Planning & Unified
+Lifecycle for Software Engineering** and the source for its
+[public documentation site](https://manishtiwari25.github.io/pulse/).
 
 ```text
 architecture/   System architecture and high-level design
+assets/         Public-site CSS and PULSE SVG brand assets
 context/        Product, stack, and implementation context
 decisions/      ADRs and architectural/product decisions
 features/       Feature and product behavior specs
@@ -11,34 +14,46 @@ guides/         Setup and integration guides
 memory/         Patterns, lessons, mistakes, and conventions
 plans/          Work plans for non-trivial tasks
 prompts/        Generated and reusable implementation prompts
-workflows/      Repeatable agent procedures
+scripts/        Token-usage collectors
+usage/          Per-session token ledger
+workflows/      Repeatable engineering procedures
 ```
 
-Root-level files such as `AGENTS.md`, `CLAUDE.md`, and `.github/copilot-instructions.md` are entrypoints. They should point agents back here before planning or implementation.
+Root files such as `AGENTS.md`, `CLAUDE.md`, and
+`.github/copilot-instructions.md` are entry points. They route agents back to
+this control plane before planning or implementation.
 
-## Fastest Setup
+## PULSE Lifecycle
+
+1. Understand the current context and architecture.
+2. Decide important product and technical choices.
+3. Plan non-trivial work and its verification.
+4. Specify the behavior to deliver.
+5. Build and verify against real repository commands.
+6. Learn by recording durable rules, patterns, and mistakes.
+
+## Fastest Adoption
 
 Open the target repository in an AI coding agent, paste the
-[one-prompt project-brain setup](prompts/integration-prompts.md), and approve
-the proposed file changes. The same prompt works for new and established
+[one-prompt PULSE setup](prompts/integration-prompts.md), and approve the
+proposed file changes. The same prompt works for new and established
 repositories.
 
-## Manual Setup Guides
+## Manual Guides
 
-- [Start a new repository from this template](guides/new-repo.md)
-- [Add the project brain to an existing repository](guides/integration-existing.md)
+- [Start a new repository with PULSE](guides/new-repo.md)
+- [Add PULSE to an existing repository](guides/integration-existing.md)
 
-## Initial Intake
+## First Intake for an Adopting Repository
 
-Before creating product-specific plans or source code, collect these details
-from the repository and supplied context. Mark unknown details as open
-questions instead of guessing or blocking the setup:
+Infer these details from the target repository and supplied context. Mark
+unknown details as open questions instead of guessing:
 
 - Project name, purpose, and target users.
 - Problem to solve and first valuable outcome.
 - New product, existing codebase, or control-plane retrofit.
 - Preferred stack, deployment target, and hard constraints.
-- Required integrations, data sources, auth, billing, storage, or compliance needs.
-- Existing files, workflows, or behaviors that should stay unchanged.
-- Verification commands to use once implementation exists.
+- Required integrations, data sources, authentication, billing, storage, or compliance needs.
+- Existing files, workflows, and behaviors that must stay unchanged.
+- Real verification commands.
 - The first decision, feature spec, or plan to draft.

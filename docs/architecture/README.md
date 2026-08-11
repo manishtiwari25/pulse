@@ -1,13 +1,18 @@
 # Architecture
 
-System architecture and product design notes live here.
+PULSE architecture and system-boundary notes live here.
 
 ## Current State
 
-No final product architecture has been accepted yet. Use `docs/architecture/overview.md` to record the first system shape after the product direction is decided.
+`overview.md` describes the accepted framework shape: agent entry points,
+the `docs/` control plane, safe adoption, token helpers, and a static public
+documentation portal.
+
+Repositories that adopt PULSE replace framework-specific assumptions with
+their own product architecture.
 
 ## Rules
 
 - Link major architectural choices to ADRs in `docs/decisions/`.
-- Keep architecture grounded in the actual product direction and implementation stack.
-- Do not preserve old product assumptions unless a new ADR explicitly adopts them.
+- Keep architecture grounded in the real product direction and stack.
+- Do not preserve stale assumptions unless a new ADR explicitly adopts them.

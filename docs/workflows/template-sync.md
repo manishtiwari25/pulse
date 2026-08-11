@@ -1,6 +1,8 @@
-# Workflow - Template Sync
+# Workflow - PULSE Sync
 
-Periodically check the upstream template repository for changes and pull the latest rules, workflows, scripts, and scaffold into a repo created from it. Model-agnostic: any agent or human can follow this by hand; `docs/prompts/shared/template-sync.prompt.md` is the reusable entry prompt that points any runner at this workflow.
+Periodically check the upstream PULSE repository for changes and pull the
+latest rules, workflows, scripts, and scaffold into a repository that adopted
+it. Any agent or human can follow this workflow.
 
 ## When to run
 
@@ -14,7 +16,7 @@ Sync state lives in `.template-sync` at the repo root (JSON):
 
 ```json
 {
-  "templateUrl": "https://github.com/manishtiwari25/my-coding-setup.git",
+  "templateUrl": "https://github.com/manishtiwari25/pulse.git",
   "templateBranch": "main",
   "lastSyncedCommit": "<sha>",
   "lastSyncedAt": "<YYYY-MM-DD>"
@@ -34,8 +36,8 @@ If the file does not exist yet, create it during the first sync. Repos created v
 ## Procedure
 
 1. **Resolve the template remote.**
-   - Read `templateUrl` from `.template-sync`; fall back to the `template` git remote; fall back to the default template URL above.
-   - If `git remote get-url origin` equals the template URL, this repo **is** the template — report that and stop.
+   - Read `templateUrl` from `.template-sync`; fall back to the `template` git remote; fall back to the default PULSE URL above.
+   - If `git remote get-url origin` equals the PULSE URL, this repository **is** PULSE - report that and stop.
    - Ensure the remote exists: `git remote add template <url>` (skip if already present), then `git fetch template --quiet`.
 2. **Detect the template branch.** Use `templateBranch` from state, else the remote HEAD: `git remote show template | sed -n 's/.*HEAD branch: //p'`.
 3. **Check for changes.**

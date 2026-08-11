@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#07111f">
+    <meta name="description" content="PULSE is a docs-first, agent-ready framework for planning and the unified software engineering lifecycle.">
+    <meta property="og:title" content="PULSE - Planning &amp; Unified Lifecycle for Software Engineering">
+    <meta property="og:description" content="Keep context, decisions, plans, delivery, verification, and learning connected in every repository.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://manishtiwari25.github.io/pulse/">
+    <meta property="og:image" content="https://manishtiwari25.github.io/pulse/assets/pulse-logo.svg">
+    <title>PULSE - Planning &amp; Unified Lifecycle for Software Engineering</title>
+    <link rel="icon" href="assets/pulse-logo.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/pulse.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav container" aria-label="Main navigation">
+        <a class="brand" href="#top" aria-label="PULSE home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32">
+              <path d="M2 17h7l3-8 5 16 4-12 3 4h6" fill="none" stroke="#06111d" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          PULSE
+        </a>
+        <div class="nav-links">
+          <a href="#lifecycle">Lifecycle</a>
+          <a href="#control-plane">Control plane</a>
+          <a href="#docs">Docs</a>
+          <a class="button" href="https://github.com/manishtiwari25/pulse">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-grid container">
+          <div>
+            <p class="eyebrow">Planning &amp; Unified Lifecycle for Software Engineering</p>
+            <h1>Keep software work <span>alive.</span></h1>
+            <p class="hero-copy">
+              PULSE connects context, decisions, plans, behavior, delivery,
+              verification, and learning so people and coding agents can move
+              forward without guessing what came before.
+            </p>
+            <div class="actions">
+              <a class="button primary" href="https://github.com/manishtiwari25/pulse/blob/main/docs/prompts/integration-prompts.md">Adopt PULSE</a>
+              <a class="button" href="#lifecycle">Explore the lifecycle</a>
+            </div>
+          </div>
+
+          <div class="hero-panel">
+            <img src="assets/pulse-logo.svg" alt="PULSE framework logo">
+            <div class="signal-row" aria-label="PULSE qualities">
+              <div class="signal"><strong>Docs-first</strong>Versioned context</div>
+              <div class="signal"><strong>Agent-ready</strong>Shared instructions</div>
+              <div class="signal"><strong>Portable</strong>No runtime lock-in</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="lifecycle">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">The lifecycle</p>
+            <h2>One continuous rhythm from idea to learning.</h2>
+            <p>
+              Each PULSE stage produces durable information that the next stage
+              can use. The cycle repeats as the repository and product evolve.
+            </p>
+          </div>
+
+          <div class="lifecycle-grid">
+            <article class="card">
+              <span class="step">01</span>
+              <h3>Understand</h3>
+              <p>Read product context, stack constraints, architecture, prior choices, and durable memory.</p>
+            </article>
+            <article class="card">
+              <span class="step">02</span>
+              <h3>Decide</h3>
+              <p>Record important product and technical choices with their reasons and tradeoffs.</p>
+            </article>
+            <article class="card">
+              <span class="step">03</span>
+              <h3>Plan</h3>
+              <p>Turn the desired outcome into ordered steps, acceptance criteria, and verification.</p>
+            </article>
+            <article class="card">
+              <span class="step">04</span>
+              <h3>Specify</h3>
+              <p>Describe the behavior users and systems should receive before implementation begins.</p>
+            </article>
+            <article class="card">
+              <span class="step">05</span>
+              <h3>Build &amp; verify</h3>
+              <p>Use focused workflows and prompts, then prove the result with real repository checks.</p>
+            </article>
+            <article class="card">
+              <span class="step">06</span>
+              <h3>Learn</h3>
+              <p>Keep reusable patterns, product rules, and mistakes so the next cycle starts smarter.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="control-plane">
+        <div class="control-plane container">
+          <div class="section-heading">
+            <p class="eyebrow">The control plane</p>
+            <h2>A home for every kind of engineering knowledge.</h2>
+            <p>
+              PULSE uses a predictable `docs/` map. Agents and people always
+              know where to read before acting and where to save what matters.
+            </p>
+          </div>
+
+          <div class="folder-list" aria-label="PULSE folders">
+            <div class="folder"><code>context/</code><span>Product, users, stack, constraints, and current state.</span></div>
+            <div class="folder"><code>architecture/</code><span>System shape, boundaries, data, and deployment.</span></div>
+            <div class="folder"><code>decisions/</code><span>ADRs for choices that need durable reasons.</span></div>
+            <div class="folder"><code>features/</code><span>Behavior and outcomes before implementation.</span></div>
+            <div class="folder"><code>plans/</code><span>Ordered work, acceptance criteria, and checks.</span></div>
+            <div class="folder"><code>prompts/</code><span>Reusable, model-agnostic execution instructions.</span></div>
+            <div class="folder"><code>workflows/</code><span>Repeatable procedures for common engineering work.</span></div>
+            <div class="folder"><code>memory/</code><span>Durable rules, patterns, lessons, and mistakes.</span></div>
+            <div class="folder"><code>usage/</code><span>Real, token-only session accounting.</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="adopt">
+        <div class="container">
+          <div class="quick-start">
+            <p class="eyebrow">Start in one prompt</p>
+            <h2>Bring PULSE into any repository.</h2>
+            <p>
+              Open the target repository in a coding agent and paste the
+              canonical launcher. It detects whether the repository is new or
+              established, preserves existing work, and adapts PULSE to the
+              real project.
+            </p>
+            <pre><code>Bootstrap the repository currently open in this AI coding agent
+with PULSE from https://github.com/manishtiwari25/pulse.
+
+Discover the default branch, then read and follow:
+- docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md
+- docs/workflows/bootstrap-control-plane.md</code></pre>
+            <a class="button primary" href="https://github.com/manishtiwari25/pulse/blob/main/docs/prompts/integration-prompts.md">Copy the full launcher</a>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">Core principles</p>
+            <h2>Clear enough for people. Structured enough for agents.</h2>
+          </div>
+          <div class="principles">
+            <div class="principle"><strong>Context before code</strong><span>Understand the real problem and boundaries before changing implementation.</span></div>
+            <div class="principle"><strong>Decisions stay visible</strong><span>Important choices keep their reasons, not just their final answer.</span></div>
+            <div class="principle"><strong>Verification is part of the plan</strong><span>Work is not complete until the expected outcome is checked.</span></div>
+            <div class="principle"><strong>Learning compounds</strong><span>Useful rules and lessons survive beyond one person or chat session.</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="docs">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">Documentation</p>
+            <h2>Go from overview to source of truth.</h2>
+            <p>Every page below points to versioned framework documentation in the public repository.</p>
+          </div>
+          <div class="docs-grid">
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/context/product.md"><strong>Product context</strong><span>Who PULSE serves, the problem, boundaries, and outcome.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/architecture/overview.md"><strong>Architecture</strong><span>Framework surfaces, state, boundaries, and verification.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/tree/main/docs/decisions"><strong>Decisions</strong><span>Why the control plane, token accounting, brand, and Pages choices exist.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/guides/new-repo.md"><strong>New repository</strong><span>Start fresh with PULSE using one prompt or the template flow.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/guides/integration-existing.md"><strong>Existing repository</strong><span>Merge PULSE safely without replacing code or rules.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/tree/main/docs/workflows"><strong>Workflows</strong><span>Repeatable paths for features, fixes, decisions, prompts, and sync.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/tree/main/docs/prompts"><strong>Prompts</strong><span>Model-agnostic launchers and reusable implementation guidance.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/usage/usage-log.md"><strong>Token accounting</strong><span>Real per-session tokens without price or billing data.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse"><strong>Repository</strong><span>Browse every PULSE file, template, and contribution surface.</span></a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-row container">
+        <p><strong>PULSE</strong> - Planning &amp; Unified Lifecycle for Software Engineering.</p>
+        <a href="https://github.com/manishtiwari25/pulse">View on GitHub</a>
+      </div>
+    </footer>
+  </body>
+</html>
