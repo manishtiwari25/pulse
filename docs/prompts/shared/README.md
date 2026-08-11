@@ -13,4 +13,5 @@ Shared prompt templates used by the `docs/` control plane.
 - `code-style.prompt.md`
 - `eli5.prompt.md`
 - `review.prompt.md`
+- `rollback.prompt.md`
 - `template-sync.prompt.md`

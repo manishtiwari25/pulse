@@ -57,8 +57,31 @@ engineering truth beside the code.
 2. **Decide** - record important choices and their tradeoffs as ADRs.
 3. **Plan** - turn outcomes into ordered, verifiable work.
 4. **Specify** - describe the behavior users and systems should get.
-5. **Build and verify** - use repeatable workflows and prompts, then run real checks.
+5. **Build, verify, and recover** - run real checks and use the prepared
+   rollback plan when a change cannot be made safe.
 6. **Learn** - keep durable patterns, rules, and mistakes for the next cycle.
+
+## Agent-Driven Rollbacks
+
+Every PULSE task that changes files or system state prepares a safe way back
+before the first edit.
+
+1. **Capture the baseline** - record the starting Git, dependency, deployment,
+   and data state that matters.
+2. **Name the trigger** - define the failed check, regression, or unsafe
+   condition that requires recovery.
+3. **Reverse narrowly** - undo only the current task's changes while preserving
+   all pre-existing user work.
+4. **Verify recovery** - prove the known-good behavior is restored and record
+   the result.
+
+Agents can drive routine local rollbacks when their changes are isolated.
+Shared history uses an authorized revert commit. Production, migrations, and
+data recovery follow tested runbooks and approval boundaries. PULSE never
+treats broad resets, force-pushes, or unplanned deletion as a valid rollback.
+
+See the [agent-driven rollback feature](docs/features/001-agent-driven-rollbacks.md)
+and [canonical rollback workflow](docs/workflows/rollback.md).
 
 ## Fastest Setup
 
@@ -77,6 +100,7 @@ service, hidden state folder, or model-specific runtime is required.
 - Agent entry points that route work through the same lifecycle.
 - Reusable templates for decisions, feature specs, plans, memory, and prompts.
 - A safe bootstrap path for both new and established repositories.
+- Mandatory rollback plans and scoped agent-driven recovery.
 - Token-only work accounting based on the real usage a runner exposes.
 - A public documentation site served directly from `docs/`.
 

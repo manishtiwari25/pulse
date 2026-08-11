@@ -54,11 +54,21 @@ You are working in `[repo-name]`.
 - [ ]
 - [ ]
 
+## Rollback Plan
+
+- **Baseline:** [Starting Git/system state]
+- **Trigger:** [Exact condition that requires rollback]
+- **Reversal:** [Narrow steps that undo only this feature]
+- **State safety:** [Dependencies, migrations, generated files, deployments, data]
+- **Recovery verification:** [Checks that prove the baseline is restored]
+
 ## Verification
 
 [List test, lint, build, or manual verification steps.]
 
 ## Do NOT
 
--
+- Remove or overwrite unrelated user work.
+- Use broad destructive reset, cleanup, history-rewrite, force-push, or
+  unplanned data-deletion commands as rollback shortcuts.
 -

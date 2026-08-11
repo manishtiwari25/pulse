@@ -14,6 +14,11 @@ plans, prompts, usage, and workflows.
 - Modify product/source code only when the user explicitly asks for implementation.
 - Do not create or require a repository-local hidden control folder.
 - Inspect files or ask rather than guessing missing context.
+- Before any change-producing task, define a rollback plan with the baseline,
+  trigger, narrow reversal steps, state-safety notes, and recovery checks.
+- Follow `docs/workflows/rollback.md`. Roll back automatically only when the
+  current task's changes are isolated and user work is preserved; production
+  or data recovery requires an approved runbook or explicit approval.
 
 ## Framework Behavior
 
@@ -21,6 +26,8 @@ plans, prompts, usage, and workflows.
 - Prefer durable PULSE improvements over one-off artifacts.
 - In a repository adopting PULSE, replace stale names, assumptions, product
   context, and architecture notes before implementation.
+- Never use broad destructive reset, cleanup, history-rewrite, force-push, or
+  data-deletion shortcuts as a rollback.
 
 ## Output Formats
 

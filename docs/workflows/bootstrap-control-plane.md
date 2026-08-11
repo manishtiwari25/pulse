@@ -19,6 +19,8 @@ It supports both new and established repositories.
 3. Locate product/source code, build files, tests, CI, deployment, and real checks.
 4. Record `git status --short` and inspect the current diff.
 5. Note existing user changes.
+6. Define a rollback plan that lists the exact PULSE files to remove or
+   restore if integration fails, while preserving all pre-existing target work.
 
 ## 3. Choose the Safer Merge Path
 
@@ -62,6 +64,9 @@ docs/workflows/
 - Do not copy stale PULSE context, usage rows, history, publishing notes,
   secrets, local paths, or unrelated state.
 - Do not modify product code, add dependencies, create CI, or invent commands.
+- Include the mandatory rollback rule, plan template section, canonical
+  rollback workflow, and shared rollback prompt when the target adopts those
+  PULSE surfaces.
 - Leave changes uncommitted.
 
 ## 5. Validate
@@ -76,6 +81,9 @@ git diff --name-only
 Check changed links, existing targeted docs checks, preserved product files
 and user work, real target names, no hidden control folder, and no PULSE
 source usage history.
+
+If validation cannot be restored safely, follow
+[`rollback.md`](rollback.md) using the target snapshot as the baseline.
 
 ## 6. Hand Off
 

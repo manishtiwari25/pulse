@@ -44,6 +44,9 @@ If the file does not exist yet, create it during the first sync. Repos created v
    - With a baseline: `git diff --name-status <lastSyncedCommit> template/<branch>`.
    - First sync (no baseline): `git diff --name-status HEAD template/<branch>` restricted to the classified paths.
    - If nothing changed in sync-safe or review-first paths, update `lastSyncedAt`, report "already up to date", and stop.
+   - Before applying anything, record a rollback plan using the current local
+     tree and `.template-sync` state as the baseline. The reversal must restore
+     only files changed by this sync.
 4. **Apply sync-safe updates.** For each changed sync-safe file:
    - If the local copy is unmodified since the last sync (or absent), take the template version: `git checkout template/<branch> -- <path>`.
    - If the local copy was also modified, do not overwrite — move it to the review list.
@@ -51,6 +54,10 @@ If the file does not exist yet, create it during the first sync. Repos created v
 5. **Review rule changes.** For each changed review-first file, show a summary of the upstream diff (`git diff <lastSyncedCommit> template/<branch> -- <path>`) and merge relevant rule updates into the local file by hand, keeping project-specific names, context, and decisions intact. Get user approval before changing operating rules.
 6. **Record state.** Write the new template head commit and today's date into `.template-sync`.
 7. **Report and hand off.** Summarize what was synced, what needs manual review, and what was skipped. Leave changes staged/uncommitted (or on a branch) for the user to review and commit — do not push on the user's behalf.
+
+If validation fails and cannot be corrected within the sync scope, follow
+[`rollback.md`](rollback.md), restore the prior `.template-sync` state, and
+verify that project-owned files remain untouched.
 
 ## Periodic scheduling
 

@@ -53,6 +53,14 @@ Link ADRs or notable implementation decisions.
 
 List likely failure scenarios and expected behavior.
 
+## Rollback Strategy
+
+- **Baseline:** What known-good state should be captured before implementation?
+- **Trigger:** Which failed checks or regressions require rollback?
+- **Reversal:** How can only this feature's changes be disabled or reversed?
+- **State safety:** How are dependencies, migrations, deployments, and data protected?
+- **Recovery verification:** Which checks prove the previous behavior is restored?
+
 ## Generated Prompts
 
 - Shared: `docs/prompts/shared/S-XXX-example.md`

@@ -42,7 +42,7 @@ to stop using its existing tools.
 2. Decide important product and technical choices.
 3. Plan non-trivial work and its verification.
 4. Specify the behavior to deliver.
-5. Build and verify against real repository commands.
+5. Build, verify, and use the prepared rollback plan when recovery is needed.
 6. Learn by recording durable rules, patterns, and mistakes.
 
 ## Fastest Adoption

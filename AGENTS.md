@@ -29,7 +29,8 @@ adopts PULSE.
 2. **Decide** important product and technical choices explicitly.
 3. **Plan** non-trivial work with outcomes and verification.
 4. **Specify** user and system behavior before implementation.
-5. **Build and verify** only against the real repository boundaries and commands.
+5. **Build, verify, and recover** against the real repository boundaries,
+   commands, and rollback plan.
 6. **Learn** by recording durable patterns, rules, and mistakes.
 
 ## Operating Modes
@@ -65,6 +66,51 @@ adopts PULSE.
 - When adopting PULSE in another repository, replace stale framework names,
   assumptions, product context, and architecture notes before implementation.
 - If context is missing, inspect files or ask before inventing requirements.
+
+## Rollback Planning & Agent-Driven Recovery (required)
+
+Every task that changes tracked files, dependencies, configuration, schemas,
+deployments, or external state must have a rollback plan **before the first
+change is made**. Read-only analysis and explanation tasks are excluded.
+
+- For non-trivial work, record the rollback plan in the active file under
+  `docs/plans/`.
+- For a small change that does not need a committed plan, keep a concise
+  in-session rollback checklist.
+- A rollback plan must identify:
+  - **Baseline:** the starting Git state, affected files/systems, and any
+    relevant deployed or persisted version.
+  - **Trigger:** the exact failed check, regression, or unsafe condition that
+    requires recovery.
+  - **Reversal:** the narrow steps that undo only the current task.
+  - **State safety:** how dependencies, migrations, generated files, deployed
+    services, and external state are protected.
+  - **Recovery verification:** the checks that prove the baseline behavior is
+    restored.
+
+### Agent execution rules
+
+1. Diagnose a failed change first. If it cannot be made safe and correct
+   without expanding scope or risk, use the prepared rollback plan.
+2. An agent may execute a rollback automatically only when it can isolate the
+   current task's changes and preserve all pre-existing user work.
+3. Reverse file changes with a precise inverse patch. Do not use broad
+   destructive commands such as `git reset --hard`, bulk checkout, repository
+   cleaning, history rewriting, or force-pushing.
+4. For a published commit, prefer a new `git revert` commit when the user or
+   repository workflow authorizes it. Do not rewrite shared history.
+5. Production, database, migration, or destructive external-state recovery
+   must use an existing tested runbook and requires explicit approval unless
+   that runbook already grants automated rollback authority.
+6. If the rollback scope is uncertain, would touch unrelated work, or the
+   rollback itself fails, stop immediately and report the exact current state.
+   Do not keep applying speculative recovery steps.
+7. A rollback is complete only after recovery checks pass and the outcome is
+   recorded in the plan, incident note, or other repository-standard audit
+   surface.
+
+Use [`docs/workflows/rollback.md`](docs/workflows/rollback.md) for the full
+model-agnostic procedure.
 
 ## Work Accounting & Token Reporting (required)
 
@@ -142,13 +188,16 @@ Output formats are shared across all runners and defined in
 3. If product direction is not documented, collect only the first required
    facts: project name, users, problem, first outcome, code boundaries, stack
    constraints, integrations, verification commands, and the first artifact.
-4. Create or update a plan from `docs/plans/_template.md` for non-trivial work.
+4. Create or update a plan from `docs/plans/_template.md` for non-trivial work,
+   including its rollback plan.
 5. Create ADRs only for real choices.
 6. Create feature specs only for real product behavior.
 7. Generate implementation prompts when they make handoff safer.
 8. Implement only after the user explicitly asks for code changes.
 9. Verify with commands that already exist in the target repository.
-10. Update memory only when a durable pattern, lesson, or rule appears.
+10. If verification cannot be restored safely, follow the rollback plan and
+    verify recovery.
+11. Update memory only when a durable pattern, lesson, or rule appears.
 
 ## Routing
 

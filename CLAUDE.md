@@ -32,6 +32,19 @@ Instructions for Claude-based agents working with PULSE.
 - Use `docs/prompts/` for reusable or generated implementation prompts.
 - Verify with commands that already exist. Do not invent a product stack or checks.
 
+## Rollback Planning (required)
+
+- Before any change-producing task, define a rollback plan with the baseline,
+  trigger, narrow reversal steps, state-safety notes, and recovery checks.
+- Put the plan in `docs/plans/` for non-trivial work; a small change may use a
+  concise in-session checklist.
+- Automatically roll back only the current task's isolated changes. Preserve
+  user work and shared history.
+- Never use broad destructive reset, cleanup, force-push, or data-deletion
+  shortcuts. Production and data recovery require an approved runbook or
+  explicit approval.
+- Follow `docs/workflows/rollback.md` and verify the recovered state.
+
 ## Output Formats
 
 - **ELI5 is the default** per `docs/prompts/shared/eli5.prompt.md`. Apply it to

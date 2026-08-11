@@ -1,7 +1,10 @@
 # Features
 
-No active product feature specs exist yet. The public PULSE documentation is
-tracked as framework work in `docs/plans/` and `docs/decisions/`.
+## Framework Features
+
+- [`001-agent-driven-rollbacks.md`](001-agent-driven-rollbacks.md) -
+  mandatory rollback planning with safe, scoped agent execution and recovery
+  verification.
 
 Copy `_template.md` when the new product direction needs a feature or product behavior spec.
 

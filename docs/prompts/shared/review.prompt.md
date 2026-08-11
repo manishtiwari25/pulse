@@ -32,3 +32,10 @@ tags: [review]
 - [ ] Tests updated where relevant
 - [ ] Manual verification steps documented
 - [ ] Control-plane files updated when relevant
+
+## Rollback Readiness
+
+- [ ] A rollback plan existed before the change
+- [ ] Trigger and reversal steps are specific
+- [ ] User work, shared history, deployments, and data are protected
+- [ ] Recovery verification is documented

@@ -28,7 +28,7 @@
         <div class="nav-links">
           <a href="#why">Why</a>
           <a href="#lifecycle">Lifecycle</a>
-          <a href="#control-plane">Control plane</a>
+          <a href="#rollbacks">Rollbacks</a>
           <a href="#docs">Docs</a>
           <a class="button" href="https://github.com/manishtiwari25/pulse">GitHub</a>
         </div>
@@ -181,6 +181,72 @@
         </div>
       </section>
 
+      <section id="rollbacks">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">Agent-driven rollbacks</p>
+            <h2>Every change starts with a safe way back.</h2>
+            <p>
+              PULSE makes recovery part of the plan, not an improvised command
+              after something breaks. Agents can reverse their own isolated
+              work, preserve everyone else's changes, and prove the known-good
+              state has returned.
+            </p>
+          </div>
+
+          <div class="rollback-shell">
+            <div class="rollback-flow" aria-label="PULSE change and rollback flow">
+              <div class="flow-line">
+                <span class="flow-node">Baseline</span>
+                <span class="flow-arrow" aria-hidden="true">-&gt;</span>
+                <span class="flow-node">Change</span>
+                <span class="flow-arrow" aria-hidden="true">-&gt;</span>
+                <span class="flow-node">Verify</span>
+              </div>
+              <div class="flow-line recovery">
+                <span class="flow-condition">If unsafe or failing</span>
+                <span class="flow-arrow" aria-hidden="true">-&gt;</span>
+                <span class="flow-node active">Scoped rollback</span>
+                <span class="flow-arrow" aria-hidden="true">-&gt;</span>
+                <span class="flow-node success">Recovery verified</span>
+              </div>
+            </div>
+
+            <div class="rollback-grid">
+              <article class="rollback-card">
+                <span class="step">01</span>
+                <h3>Plan before changing</h3>
+                <p>Record the baseline, trigger, reversal steps, state-safety limits, and recovery checks.</p>
+              </article>
+              <article class="rollback-card">
+                <span class="step">02</span>
+                <h3>Reverse only this task</h3>
+                <p>Use precise inverse changes. Preserve user work, shared history, deployments, and data.</p>
+              </article>
+              <article class="rollback-card">
+                <span class="step">03</span>
+                <h3>Prove recovery</h3>
+                <p>Rerun the baseline checks and keep an audit record of the trigger, actions, and final state.</p>
+              </article>
+            </div>
+
+            <div class="rollback-guardrail">
+              <strong>Safety boundary</strong>
+              <span>
+                Agents stop for an approved runbook or explicit permission
+                when production, migrations, data, shared history, or unrelated
+                work could be affected.
+              </span>
+            </div>
+
+            <div class="actions rollback-actions">
+              <a class="button primary" href="https://github.com/manishtiwari25/pulse/blob/main/docs/features/001-agent-driven-rollbacks.md">Read the feature</a>
+              <a class="button" href="https://github.com/manishtiwari25/pulse/blob/main/docs/workflows/rollback.md">Open the workflow</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section id="control-plane">
         <div class="control-plane container">
           <div class="section-heading">
@@ -257,6 +323,7 @@ Discover the default branch, then read and follow:
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/guides/new-repo.md"><strong>New repository</strong><span>Start fresh with PULSE using one prompt or the template flow.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/guides/integration-existing.md"><strong>Existing repository</strong><span>Merge PULSE safely without replacing code or rules.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/tree/main/docs/workflows"><strong>Workflows</strong><span>Repeatable paths for features, fixes, decisions, prompts, and sync.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/features/001-agent-driven-rollbacks.md"><strong>Agent-driven rollbacks</strong><span>Plan recovery before change, reverse narrowly, and verify the known-good state.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/tree/main/docs/prompts"><strong>Prompts</strong><span>Model-agnostic launchers and reusable implementation guidance.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/usage/usage-log.md"><strong>Token accounting</strong><span>Real per-session tokens without price or billing data.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse"><strong>Repository</strong><span>Browse every PULSE file, template, and contribution surface.</span></a>

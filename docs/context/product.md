@@ -47,7 +47,7 @@ plane without replacing existing code or rules.
 ## Product Boundaries
 
 - PULSE provides documentation structure, templates, prompts, workflows,
-  agent instructions, and token-usage helpers.
+  agent instructions, scoped rollback procedures, and token-usage helpers.
 - PULSE does not choose the adopting repository's product stack.
 - PULSE does not require a hosted service, hidden state directory, or
   model-specific runtime.
@@ -60,5 +60,7 @@ plane without replacing existing code or rules.
 - Different coding agents follow the same lifecycle and control plane.
 - A reviewer can trace a feature from the original need through the accepted
   decision, implementation plan, and verification evidence.
+- Every change-producing task has a safe recovery path before implementation,
+  and an agent can execute it without removing unrelated work.
 - Important decisions and durable lessons survive beyond one chat session.
 - Token usage is recorded from real runner data without billing information.

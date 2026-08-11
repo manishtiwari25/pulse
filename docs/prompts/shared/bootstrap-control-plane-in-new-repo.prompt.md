@@ -88,6 +88,8 @@ Rules:
 
 - Preserve product/source code, package files, configs, tests, CI, deployment,
   existing documentation, and uncommitted user work.
+- Before editing, define a rollback plan that identifies the target baseline,
+  failure trigger, exact PULSE files to reverse, and recovery checks.
 - Preserve project-specific instructions. Merge useful PULSE routing instead
   of replacing them with framework text.
 - Put new control-plane content under `docs/`. Do not create parallel root
@@ -101,6 +103,9 @@ Rules:
   secrets, or unrelated framework state.
 - If the target adopts token accounting, create a clean local ledger with no
   rows copied from PULSE.
+- If the target adopts PULSE agent workflows, include the mandatory rollback
+  rule, `docs/workflows/rollback.md`, rollback sections in plan/prompt
+  templates, and `docs/prompts/shared/rollback.prompt.md`.
 - Do not add dependencies, services, sample CI, invented commands, or product
   implementation.
 - Leave changes uncommitted.
@@ -120,6 +125,9 @@ Also resolve changed relative Markdown links, run existing targeted docs
 checks, confirm product files and user work were preserved, search for stale
 framework assumptions and local paths, and confirm no hidden control folder
 was added.
+
+If validation cannot be restored safely, follow the adopted rollback workflow
+and verify the original target baseline.
 
 ## 5. Report
 
