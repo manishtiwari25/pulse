@@ -24,6 +24,33 @@ It gives people and coding agents one durable place to understand a repository,
 record decisions, plan work, describe behavior, guide implementation, verify
 results, and keep useful lessons.
 
+## Why Teams Need PULSE
+
+Large teams rarely use one person or one tool. A feature may begin in a ticket,
+be discussed in chat, planned in a document, changed by an IDE agent, and
+finished by a different developer. Without a shared system, each person and
+tool builds its own private history.
+
+The code usually shows **what** was built, but not:
+
+- Why the feature was implemented that way.
+- Which other options were considered and rejected.
+- Which constraint, incident, or user need shaped the decision.
+- Whether the implementation still matches the original plan.
+- Who verified the result and what was learned afterward.
+
+PULSE keeps a repository-native audit trail and decision tree:
+
+```text
+Context -> Options -> Decision -> Plan -> Feature -> Code -> Verification -> Learning
+```
+
+This gives every developer and tool the same source of truth. New team members
+can trace a feature back to its reasons, reviewers can audit the path, and
+future agents can continue the work without rebuilding the story from memory.
+PULSE does not replace tickets, chat, or planning tools; it keeps the durable
+engineering truth beside the code.
+
 ## The PULSE Lifecycle
 
 1. **Understand** - read the product, stack, architecture, and current state.

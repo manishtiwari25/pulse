@@ -23,6 +23,19 @@ Root files such as `AGENTS.md`, `CLAUDE.md`, and
 `.github/copilot-instructions.md` are entry points. They route agents back to
 this control plane before planning or implementation.
 
+## Why PULSE
+
+In a large team, decisions and plans are easily split across tickets, chats,
+documents, developers, IDEs, and coding agents. PULSE keeps the durable path
+beside the code so anyone can answer not only **what changed**, but **why**:
+
+```text
+Context -> Options -> Decision -> Plan -> Feature -> Code -> Verification -> Learning
+```
+
+This creates a shared audit trail and decision tree without forcing the team
+to stop using its existing tools.
+
 ## PULSE Lifecycle
 
 1. Understand the current context and architecture.

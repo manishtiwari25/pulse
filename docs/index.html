@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#07111f">
-    <meta name="description" content="PULSE is a docs-first, agent-ready framework for planning and the unified software engineering lifecycle.">
+    <meta name="description" content="PULSE gives software teams and coding agents one versioned audit trail for context, decisions, plans, delivery, verification, and learning.">
     <meta property="og:title" content="PULSE - Planning &amp; Unified Lifecycle for Software Engineering">
-    <meta property="og:description" content="Keep context, decisions, plans, delivery, verification, and learning connected in every repository.">
+    <meta property="og:description" content="Keep one shared decision tree across developers, tools, plans, implementation, and verification.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://manishtiwari25.github.io/pulse/">
     <meta property="og:image" content="https://manishtiwari25.github.io/pulse/assets/pulse-logo.svg">
@@ -26,6 +26,7 @@
           PULSE
         </a>
         <div class="nav-links">
+          <a href="#why">Why</a>
           <a href="#lifecycle">Lifecycle</a>
           <a href="#control-plane">Control plane</a>
           <a href="#docs">Docs</a>
@@ -59,6 +60,78 @@
               <div class="signal"><strong>Portable</strong>No runtime lock-in</div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section id="why">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">Why teams need PULSE</p>
+            <h2>Many people and tools should not mean many versions of the truth.</h2>
+            <p>
+              A feature can move through tickets, chat, planning documents,
+              coding agents, pull requests, and several developers. Without a
+              shared record, each person and tool keeps only part of the story.
+            </p>
+          </div>
+
+          <div class="why-grid">
+            <article class="why-panel problem">
+              <p class="panel-label">Without PULSE</p>
+              <h3>The reasoning becomes fragmented.</h3>
+              <div class="tool-list" aria-label="Example disconnected people and tools">
+                <span class="tool-pill">Developer A</span>
+                <span class="tool-pill">Tickets</span>
+                <span class="tool-pill">Team chat</span>
+                <span class="tool-pill">IDE agent</span>
+                <span class="tool-pill">Developer B</span>
+                <span class="tool-pill">Planning docs</span>
+              </div>
+              <ul class="why-list">
+                <li>Plans conflict because they live in separate systems.</li>
+                <li>Code explains what changed, but not why it changed.</li>
+                <li>Rejected options and important constraints disappear.</li>
+                <li>Handoffs depend on the memory of the original developer.</li>
+              </ul>
+            </article>
+
+            <article class="why-panel solution">
+              <p class="panel-label">With PULSE</p>
+              <h3>The team gets one shared engineering history.</h3>
+              <ul class="why-list">
+                <li>Every tool reads and writes through the same control plane.</li>
+                <li>Each feature points back to its context, decision, and plan.</li>
+                <li>Reviews have a clear audit trail and verification evidence.</li>
+                <li>New developers and agents can continue without guessing.</li>
+              </ul>
+              <p class="panel-note">
+                PULSE does not replace tickets, chat, or planning tools. It
+                keeps the durable engineering truth beside the code.
+              </p>
+            </article>
+          </div>
+
+          <div class="decision-tree" aria-label="PULSE decision trail">
+            <span class="decision-node">Context</span>
+            <span class="decision-arrow" aria-hidden="true">-&gt;</span>
+            <span class="decision-node">Options</span>
+            <span class="decision-arrow" aria-hidden="true">-&gt;</span>
+            <span class="decision-node active">Decision</span>
+            <span class="decision-arrow" aria-hidden="true">-&gt;</span>
+            <span class="decision-node">Plan</span>
+            <span class="decision-arrow" aria-hidden="true">-&gt;</span>
+            <span class="decision-node">Feature</span>
+            <span class="decision-arrow" aria-hidden="true">-&gt;</span>
+            <span class="decision-node">Code</span>
+            <span class="decision-arrow" aria-hidden="true">-&gt;</span>
+            <span class="decision-node">Verification</span>
+            <span class="decision-arrow" aria-hidden="true">-&gt;</span>
+            <span class="decision-node">Learning</span>
+          </div>
+          <p class="decision-caption">
+            A visible decision tree lets anyone trace why a feature exists and
+            how the team proved it works.
+          </p>
         </div>
       </section>
 

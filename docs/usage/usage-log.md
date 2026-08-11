@@ -22,7 +22,7 @@ the active runner exposes. Never guess a missing token field.
 | 2026-08-07 | c3c19417 | claude-fable-5 (Claude Code) | 18,228 out | 25 | Add the shared ELI5 output format and wire it into agent instructions. |
 | 2026-08-08 | 92360e0a | claude-fable-5, gpt-5.6-sol (GitHub Copilot) | 14,902,301 out | 16 | Polish the universal bootstrap guides and retire the duplicate orchestrator flow. |
 | 2026-08-08 | 40882170 | gpt-5.6-sol, gpt-5-mini (GitHub Copilot) | 14,154 out | n/a | Coordinate and verify the one-prompt bootstrap guides. |
-| 2026-08-11 | 39c58803 | gpt-5-mini, gpt-5.6-sol (GitHub Copilot) | n/a in / 57,108 out / n/a total @ 08:08 CEST † | n/a | Rebrand the framework as PULSE, add its SVG and public docs portal, and switch usage reporting to tokens only. |
+| 2026-08-11 | 39c58803 | gpt-5-mini, gpt-5.6-sol (GitHub Copilot) | n/a in / 66,130 out / n/a total @ 08:27 CEST † | n/a | Rebrand PULSE, publish its SVG/docs portal, switch usage to tokens only, and explain the shared audit trail teams need across people and tools. |
 
 Older rows contain the output count that was preserved from the original
 ledger. New rows should use the fuller token breakdown when the runner exposes it.

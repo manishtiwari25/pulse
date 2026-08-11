@@ -15,9 +15,28 @@ idea through delivery and future learning.
 
 ## Problem
 
-Software work is often split across chat history, tickets, code, and memory.
-That makes important context easy to lose, causes agents to guess, and makes
-future changes repeat old discussions.
+Large software teams use many people and many tools. One developer may plan in
+a ticket, another may record a choice in chat, and an AI agent may keep its
+reasoning only in a temporary session. Each place contains part of the story,
+but no one can reliably see the whole path.
+
+The code shows what exists, but it often does not explain why a feature was
+implemented that way, which alternatives were rejected, or whether later work
+still matches the original plan. This makes reviews, handoffs, onboarding,
+incident analysis, and future changes slower and riskier.
+
+## Why PULSE Is Needed
+
+PULSE gives the team one versioned, repository-native audit trail:
+
+```text
+Context -> Options -> Decision -> Plan -> Feature -> Code -> Verification -> Learning
+```
+
+That shared decision tree lets any developer or tool trace an outcome back to
+its reasons. It also lets the team keep using tickets, chat, documents, IDEs,
+and agents without making any one of those private systems the only place
+where engineering history survives.
 
 ## First Valuable Outcome
 
@@ -39,5 +58,7 @@ plane without replacing existing code or rules.
 - A new contributor can find the repository's context, decisions, plan, and
   verification path without guessing.
 - Different coding agents follow the same lifecycle and control plane.
+- A reviewer can trace a feature from the original need through the accepted
+  decision, implementation plan, and verification evidence.
 - Important decisions and durable lessons survive beyond one chat session.
 - Token usage is recorded from real runner data without billing information.
