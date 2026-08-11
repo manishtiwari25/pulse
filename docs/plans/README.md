@@ -1,6 +1,6 @@
 # Plans
 
-## Active
+## Completed
 
 - [`pulse-rebrand-and-public-docs.md`](pulse-rebrand-and-public-docs.md) -
   establishes the PULSE identity, public documentation site, and token-only

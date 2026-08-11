@@ -1,6 +1,9 @@
 # Memory - Patterns
 
-No reusable patterns recorded yet.
+- `2026-08-11` - A Copilot CLI event log can contain `session.resume` after
+  `session.shutdown`. A token collector must ignore the earlier shutdown
+  snapshot when later activity exists. Apply when parsing append-only runner
+  session logs.
 
 ## Populate When
 

@@ -45,5 +45,5 @@ public page that leads to the versioned source of truth.
 
 - [x] Update framework instructions and context for PULSE.
 - [x] Create the SVG and static public portal.
-- [ ] Rename the repository and enable GitHub Pages.
-- [ ] Verify the live page and set it as the repository homepage.
+- [x] Rename the repository and enable GitHub Pages.
+- [x] Verify the live page and set it as the repository homepage.

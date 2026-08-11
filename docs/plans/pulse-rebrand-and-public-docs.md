@@ -1,7 +1,7 @@
 ---
 id: PLAN-001
 title: Rebrand the Framework as PULSE and Publish Its Documentation
-status: In Progress
+status: Done
 date: 2026-08-11
 tags: [plan, pulse, branding, github-pages, usage]
 ---
@@ -25,20 +25,20 @@ GitHub Pages portal, and token-only work accounting.
 ## Steps
 
 - [x] Define the PULSE product, lifecycle, architecture, and brand language.
-- [ ] Update all public instructions, guides, prompts, and source links.
-- [ ] Create the PULSE SVG and static GitHub Pages site.
-- [ ] Change every usage collector and ledger rule to tokens only.
-- [ ] Validate the site, links, SVG, scripts, and repository diff.
-- [ ] Rename and publish the repository, then enable GitHub Pages.
+- [x] Update all public instructions, guides, prompts, and source links.
+- [x] Create the PULSE SVG and static GitHub Pages site.
+- [x] Change every usage collector and ledger rule to tokens only.
+- [x] Validate the site, links, SVG, scripts, and repository diff.
+- [x] Rename and publish the repository, then enable GitHub Pages.
 
 ## Acceptance Criteria
 
-- [ ] PULSE is the visible framework identity across canonical surfaces.
-- [ ] The public page loads from `https://manishtiwari25.github.io/pulse/`.
-- [ ] The SVG is valid, original, accessible, and used by the site and README.
-- [ ] No active usage instruction or helper reports billing information.
-- [ ] Bootstrap links point to the renamed public repository.
-- [ ] Verification is complete and the session token snapshot is recorded.
+- [x] PULSE is the visible framework identity across canonical surfaces.
+- [x] The public page loads from `https://manishtiwari25.github.io/pulse/`.
+- [x] The SVG is valid, original, accessible, and used by the site and README.
+- [x] No active usage instruction or helper reports non-token account information.
+- [x] Bootstrap links point to the renamed public repository.
+- [x] Verification is complete and the session token snapshot is recorded.
 
 ## Verification
 
