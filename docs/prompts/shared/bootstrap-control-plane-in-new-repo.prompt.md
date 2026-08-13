@@ -81,6 +81,7 @@ docs/features/
 docs/memory/
 docs/plans/
 docs/prompts/
+docs/skills/
 docs/workflows/
 ```
 
@@ -106,6 +107,9 @@ Rules:
 - If the target adopts PULSE agent workflows, include the mandatory rollback
   rule, `docs/workflows/rollback.md`, rollback sections in plan/prompt
   templates, and `docs/prompts/shared/rollback.prompt.md`.
+- If the target adopts portable skills, copy the canonical `docs/skills/`
+  bundles and installation guidance. Do not copy generated project/user skill
+  installation folders from the source environment.
 - Do not add dependencies, services, sample CI, invented commands, or product
   implementation.
 - Leave changes uncommitted.

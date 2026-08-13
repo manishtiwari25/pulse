@@ -7,7 +7,7 @@ define their own application architecture separately.
 
 ## System Shape
 
-PULSE has five durable surfaces:
+PULSE has six durable surfaces:
 
 1. **Agent entry points** - `AGENTS.md`, `CLAUDE.md`, and
    `.github/copilot-instructions.md` route agents into the same lifecycle.
@@ -18,7 +18,9 @@ PULSE has five durable surfaces:
    merge PULSE into another repository.
 4. **Observability helpers** - local scripts read real token counts from
    supported coding-agent session stores and record them in `docs/usage/`.
-5. **Recovery workflow** - mandatory rollback plans and
+5. **Portable skill layer** - `docs/skills/` packages task-specific PULSE
+   procedures and helpers in the Agent Skills format.
+6. **Recovery workflow** - mandatory rollback plans and
    `docs/workflows/rollback.md` give agents a scoped, auditable way to restore
    a known-good state.
 
@@ -35,6 +37,8 @@ to the canonical Markdown source in the repository.
 - Token usage remains local until an agent appends a session snapshot to the
   committed usage ledger.
 - Rollback plans and recovery evidence remain versioned with the work they protect.
+- Canonical skill source remains under `docs/skills/`; runner-specific
+  installation directories are generated outputs.
 - PULSE does not create a hidden database or remote application service.
 
 ## Boundaries

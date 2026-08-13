@@ -8,4 +8,9 @@
 - [`agent-driven-rollbacks.md`](agent-driven-rollbacks.md) - makes safe,
   scoped rollback planning and execution a required PULSE behavior.
 
+## In Progress
+
+- [`pulse-skills-and-delegation-advisor.md`](pulse-skills-and-delegation-advisor.md) -
+  publishes portable skills and token-aware delegation advice.
+
 Copy `_template.md` when another non-trivial task needs an explicit plan.

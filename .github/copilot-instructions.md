@@ -3,7 +3,7 @@
 Use `AGENTS.md` as the primary operating guide. PULSE is the **Planning &
 Unified Lifecycle for Software Engineering** framework, with a canonical
 `docs/` control plane for architecture, context, decisions, features, memory,
-plans, prompts, usage, and workflows.
+plans, prompts, skills, usage, and workflows.
 
 ## Default Behavior
 
@@ -14,6 +14,8 @@ plans, prompts, usage, and workflows.
 - Modify product/source code only when the user explicitly asks for implementation.
 - Do not create or require a repository-local hidden control folder.
 - Inspect files or ask rather than guessing missing context.
+- Treat `docs/skills/` as the canonical portable skill source; generated
+  project or user installation folders are not source artifacts.
 - Before any change-producing task, define a rollback plan with the baseline,
   trigger, narrow reversal steps, state-safety notes, and recovery checks.
 - Follow `docs/workflows/rollback.md`. Roll back automatically only when the

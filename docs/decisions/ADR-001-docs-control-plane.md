@@ -1,7 +1,7 @@
 ---
 id: ADR-001
 title: Use a Docs-Based PULSE Control Plane
-status: Accepted
+status: Accepted (amended 2026-08-13)
 date: 2026-05-23
 areas: [template, documentation, agents]
 tags: [adr, scaffold, control-plane]
@@ -27,6 +27,7 @@ Use `docs/` as the canonical location for the PULSE control plane:
 - `docs/memory/`
 - `docs/plans/`
 - `docs/prompts/`
+- `docs/skills/`
 - `docs/workflows/`
 
 Keep root-level agent entrypoints, including `AGENTS.md`, `CLAUDE.md`, and `.github/copilot-instructions.md`, and have them direct agents to the `docs/` control plane.
@@ -37,6 +38,7 @@ Keep root-level agent entrypoints, including `AGENTS.md`, `CLAUDE.md`, and `.git
 
 - The framework root is easier to scan for users browsing the public repository.
 - PULSE files are grouped under a familiar documentation namespace.
+- Portable Agent Skills remain inside the same canonical namespace.
 - Agent entrypoints remain discoverable at the root and in `.github/`.
 
 ### Negative
@@ -49,3 +51,4 @@ Keep root-level agent entrypoints, including `AGENTS.md`, `CLAUDE.md`, and `.git
 - [x] Move control-plane folders under `docs/`.
 - [x] Update root agent entrypoints to point to `docs/`.
 - [x] Update templates, prompts, workflows, and README references.
+- [x] Add `docs/skills/` as the canonical portable skill source.

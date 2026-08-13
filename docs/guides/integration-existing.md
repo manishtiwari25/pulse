@@ -64,12 +64,17 @@ docs/features/
 docs/memory/
 docs/plans/
 docs/prompts/
+docs/skills/
 docs/workflows/
 ```
 
 Not every target needs every file on the first pass. Add enough structure to
 make the next decision or piece of work clear. Add tool-specific root entry
 files only when the target uses that tool.
+
+Portable sources under `docs/skills/` may be kept without installing them.
+When native skills are wanted, use `gh skill install` at project or user scope
+and treat the generated runner-specific directory as installation output.
 
 ### Merge Instead of Overwriting
 

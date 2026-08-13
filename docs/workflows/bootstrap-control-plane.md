@@ -52,6 +52,7 @@ docs/features/
 docs/memory/
 docs/plans/
 docs/prompts/
+docs/skills/
 docs/workflows/
 ```
 
@@ -67,6 +68,8 @@ docs/workflows/
 - Include the mandatory rollback rule, plan template section, canonical
   rollback workflow, and shared rollback prompt when the target adopts those
   PULSE surfaces.
+- Include `docs/skills/` when the target wants portable on-demand workflows.
+  Do not commit generated runner-specific installation directories.
 - Leave changes uncommitted.
 
 ## 5. Validate

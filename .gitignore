@@ -68,6 +68,8 @@ htmlcov/
 .cursor/
 .codex/
 .opencode/
+.agents/
+/.github/skills/
 
 # Local caches and temp files
 .cache/

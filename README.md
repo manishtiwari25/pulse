@@ -99,10 +99,48 @@ service, hidden state folder, or model-specific runtime is required.
   features, plans, prompts, workflows, memory, and token usage.
 - Agent entry points that route work through the same lifecycle.
 - Reusable templates for decisions, feature specs, plans, memory, and prompts.
+- Portable Agent Skills for bootstrap, planning, decisions, features,
+  rollback, review, memory, and delegation advice.
 - A safe bootstrap path for both new and established repositories.
 - Mandatory rollback plans and scoped agent-driven recovery.
 - Token-only work accounting based on the real usage a runner exposes.
 - A public documentation site served directly from `docs/`.
+
+## Portable Agent Skills
+
+Install every PULSE skill for GitHub Copilot:
+
+```bash
+gh skill install manishtiwari25/pulse --all \
+  --agent github-copilot \
+  --scope user
+```
+
+Install one skill:
+
+```bash
+gh skill install manishtiwari25/pulse pulse-rollback \
+  --agent github-copilot \
+  --scope user
+```
+
+The skill pack includes planning, decisions, feature delivery, rollback,
+review, memory, bootstrap, and a token-aware delegation advisor.
+
+### Token-Aware Delegation Advisor
+
+`pulse-delegation-advisor` reads the repository's real token ledger, predicts
+a lower/central/upper range, reports confidence, and recommends:
+
+- **Agent-led** for clear, reversible, low/medium-risk work.
+- **Hybrid** for broad, novel, ambiguous, or weakly predicted work.
+- **Human-led** for critical or hard-to-reverse production/data work.
+
+It only says which option is cheaper in money when the user supplies human
+time/rate and agent token rate. It never guesses provider pricing or stores
+financial values in the usage ledger.
+
+See [`docs/skills/`](docs/skills/README.md) for installation and usage.
 
 ## Repository Map
 
@@ -120,6 +158,7 @@ docs/memory/                      Durable patterns, rules, and lessons
 docs/plans/                       Verifiable work plans
 docs/prompts/                     Reusable execution prompts
 docs/scripts/                     Token-usage collectors
+docs/skills/                      Portable Agent Skills and helpers
 docs/usage/                       Per-session token ledger
 docs/workflows/                   Repeatable engineering procedures
 ```

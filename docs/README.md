@@ -15,6 +15,7 @@ memory/         Patterns, lessons, mistakes, and conventions
 plans/          Work plans for non-trivial tasks
 prompts/        Generated and reusable implementation prompts
 scripts/        Token-usage collectors
+skills/         Portable Agent Skills and bundled helpers
 usage/          Per-session token ledger
 workflows/      Repeatable engineering procedures
 ```
@@ -51,6 +52,17 @@ Open the target repository in an AI coding agent, paste the
 [one-prompt PULSE setup](prompts/integration-prompts.md), and approve the
 proposed file changes. The same prompt works for new and established
 repositories.
+
+## Install PULSE Skills
+
+```bash
+gh skill install manishtiwari25/pulse --all \
+  --agent github-copilot \
+  --scope user
+```
+
+See [`skills/README.md`](skills/README.md) for individual skills, local
+installation, other supported agents, and the token-aware delegation advisor.
 
 ## Manual Guides
 

@@ -7,7 +7,7 @@ Instructions for Claude-based agents working with PULSE.
 - Read `AGENTS.md` first and treat it as the primary operating guide.
 - Use the PULSE control plane under `docs/` as the source of truth:
   `architecture/`, `context/`, `decisions/`, `features/`, `memory/`, `plans/`,
-  `prompts/`, and `workflows/`.
+  `prompts/`, `skills/`, and `workflows/`.
 - Keep this source repository generic, reusable, and product-code-free.
 - Do not create parallel root-level control-plane folders or a hidden control folder.
 - Do not commit tool-specific directories such as `.claude/`, `.cursor/`,
@@ -30,6 +30,8 @@ Instructions for Claude-based agents working with PULSE.
 - Use `docs/features/` for product behavior.
 - Use `docs/memory/` only for durable lessons, mistakes, rules, or conventions.
 - Use `docs/prompts/` for reusable or generated implementation prompts.
+- Use `docs/skills/` for portable on-demand Agent Skills. Do not commit
+  generated runner-specific skill installation folders.
 - Verify with commands that already exist. Do not invent a product stack or checks.
 
 ## Rollback Planning (required)

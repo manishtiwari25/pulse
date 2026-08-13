@@ -29,7 +29,7 @@ If the file does not exist yet, create it during the first sync. Repos created v
 
 | Class | Paths | Action |
 | --- | --- | --- |
-| **Sync-safe** (template-owned) | `docs/workflows/`, `docs/scripts/`, `docs/prompts/shared/`, `docs/*/_template.md`, `.editorconfig`, `.gitattributes` | Copy from template when changed upstream and unmodified locally; if modified both sides, escalate to review. |
+| **Sync-safe** (template-owned) | `docs/workflows/`, `docs/scripts/`, `docs/skills/`, `docs/prompts/shared/`, `docs/*/_template.md`, `.editorconfig`, `.gitattributes` | Copy from template when changed upstream and unmodified locally; if modified both sides, escalate to review. |
 | **Review-first** (rules, customized per repo) | `AGENTS.md`, `CLAUDE.md`, `README.md`, `.github/copilot-instructions.md`, `docs/README.md`, `docs/*/README.md` | Never overwrite. Show the upstream diff and merge rule changes into the local version manually, preserving project-specific content. |
 | **Never sync** (project-owned content) | `docs/context/`, `docs/architecture/`, non-template files in `docs/decisions/`, `docs/features/`, `docs/memory/`, `docs/plans/`, `docs/prompts/` (outside `shared/`), `docs/usage/usage-log.md` rows, all product code | Leave untouched. |
 

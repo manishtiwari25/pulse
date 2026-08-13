@@ -16,6 +16,7 @@ docs/features/       Feature and product behavior specs
 docs/memory/         Patterns, lessons, mistakes, and conventions
 docs/plans/          Work plans for non-trivial tasks
 docs/prompts/        Generated and reusable implementation prompts
+docs/skills/         Portable Agent Skills and bundled helpers
 docs/workflows/      Repeatable agent procedures
 ```
 
@@ -51,10 +52,12 @@ adopts PULSE.
 
 - The `docs/` control plane is canonical. Do not create parallel root-level
   control-plane folders unless a new ADR changes this decision.
-- Do not add agent-authored artifacts outside `docs/`. Tool-specific
+- Do not add canonical agent-authored artifacts outside `docs/`. Tool-specific
   directories such as `.claude/`, `.cursor/`, `.codex/`, or `.opencode/` must
-  not be committed. Runner entry points live in `docs/prompts/shared/` and
-  reference `docs/workflows/`.
+  not be committed. Prompts live in `docs/prompts/shared/`, portable skill
+  bundles live in `docs/skills/`, and both reference `docs/workflows/`.
+- Runner-specific skill folders created by `gh skill install` or another
+  installer are generated outputs. Do not commit them to the PULSE source repository.
 - The only root-level exceptions are the existing instruction files
   (`AGENTS.md`, `CLAUDE.md`, `README.md`,
   `.github/copilot-instructions.md`), standard config dotfiles already in the
@@ -179,6 +182,7 @@ Output formats are shared across all runners and defined in
 - `docs/plans/_template.md` for execution plans.
 - `docs/memory/_template.md` for future lessons and conventions.
 - `docs/prompts/shared/` for reusable prompt templates.
+- `docs/skills/` for portable, on-demand Agent Skills.
 
 ## Workflow
 
@@ -193,11 +197,13 @@ Output formats are shared across all runners and defined in
 5. Create ADRs only for real choices.
 6. Create feature specs only for real product behavior.
 7. Generate implementation prompts when they make handoff safer.
-8. Implement only after the user explicitly asks for code changes.
-9. Verify with commands that already exist in the target repository.
-10. If verification cannot be restored safely, follow the rollback plan and
+8. Use a relevant PULSE skill when one is installed, while keeping this file's
+   mandatory policies in force.
+9. Implement only after the user explicitly asks for code changes.
+10. Verify with commands that already exist in the target repository.
+11. If verification cannot be restored safely, follow the rollback plan and
     verify recovery.
-11. Update memory only when a durable pattern, lesson, or rule appears.
+12. Update memory only when a durable pattern, lesson, or rule appears.
 
 ## Routing
 
@@ -207,6 +213,7 @@ Output formats are shared across all runners and defined in
 | Architecture decision     | `docs/decisions/`, `docs/architecture/`, `docs/context/`                                        | `docs/decisions/`, `docs/architecture/`, `docs/memory/`             |
 | Feature prompt generation | `docs/features/`, `docs/context/`, `docs/memory/`                                               | `docs/prompts/`                                                     |
 | Learning or mistake       | `docs/memory/`                                                                                  | `docs/memory/`                                                      |
+| Skill creation/export     | `docs/skills/`, `docs/workflows/`, `docs/prompts/shared/`, `docs/decisions/`                   | `docs/skills/`, `docs/features/`, `docs/decisions/`                 |
 | PULSE maintenance         | `AGENTS.md`, `README.md`, `.github/copilot-instructions.md`, `docs/*/README.md`                  | durable framework docs/config                                       |
 | Adopt PULSE elsewhere     | `docs/workflows/bootstrap-control-plane.md`, `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md` | target repository control plane                          |
 | Sync from PULSE           | `docs/workflows/template-sync.md`, `docs/prompts/shared/template-sync.prompt.md`, `.template-sync` | sync-safe framework files, `.template-sync`                       |
