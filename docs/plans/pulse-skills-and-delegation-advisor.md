@@ -1,7 +1,7 @@
 ---
 id: PLAN-003
 title: Publish PULSE Skills and Token-Aware Delegation Advice
-status: In Progress
+status: Done
 date: 2026-08-13
 tags: [plan, skills, tokens, delegation]
 ---
@@ -24,11 +24,11 @@ real token history to recommend agent-led, hybrid, or human-led work.
 ## Steps
 
 - [x] Record the skill-distribution and delegation-estimation decisions.
-- [ ] Build and document the core PULSE skill bundles.
-- [ ] Implement and test the token estimator.
-- [ ] Add `docs/skills/` to bootstrap, sync, architecture, and repository maps.
-- [ ] Publish the skills and advisor on GitHub Pages.
-- [ ] Validate remote/local discovery and the live site.
+- [x] Build and document the core PULSE skill bundles.
+- [x] Implement and test the token estimator.
+- [x] Add `docs/skills/` to bootstrap, sync, architecture, and repository maps.
+- [x] Publish the skills and advisor on GitHub Pages.
+- [x] Validate remote/local discovery and the live site.
 
 ## Rollback Plan
 
@@ -45,9 +45,9 @@ real token history to recommend agent-led, hybrid, or human-led work.
 
 ## Acceptance Criteria
 
-- [ ] The requested outcome is complete.
-- [ ] Relevant control-plane files are updated.
-- [ ] Verification is complete or clearly documented.
+- [x] The requested outcome is complete.
+- [x] Relevant control-plane files are updated.
+- [x] Verification is complete or clearly documented.
 - [x] The rollback plan is scoped, safe, and executable.
 
 ## Verification
@@ -57,3 +57,6 @@ real token history to recommend agent-led, hybrid, or human-led work.
 - Install the local bundles into a temporary skill destination.
 - Confirm `gh skill install` discovers `docs/skills/`.
 - Verify the live Pages skills section.
+
+Completed with seven passing estimator tests, eight local and remote skill
+discoveries, and a successful GitHub Pages build for commit `4e720fa`.

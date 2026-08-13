@@ -72,8 +72,8 @@ Choose **Option 2**.
 
 ## Follow-Up
 
-- [ ] Add the PULSE skill bundles under `docs/skills/`.
-- [ ] Document remote and local installation.
-- [ ] Add skills to bootstrap and template-sync guidance.
-- [ ] Validate every `SKILL.md` against the required metadata shape.
-- [ ] Publish the skill pack on the public PULSE site.
+- [x] Add the PULSE skill bundles under `docs/skills/`.
+- [x] Document remote and local installation.
+- [x] Add skills to bootstrap and template-sync guidance.
+- [x] Validate every `SKILL.md` against the required metadata shape.
+- [x] Publish the skill pack on the public PULSE site.

@@ -73,7 +73,7 @@ The delegation advisor:
 
 ## Follow-Up
 
-- [ ] Create the `pulse-delegation-advisor` skill and estimator.
-- [ ] Add standard-library tests for parsing, outliers, recommendations, and economics.
-- [ ] Explain how to improve confidence by keeping accurate usage summaries.
-- [ ] Publish the advisor on the PULSE site.
+- [x] Create the `pulse-delegation-advisor` skill and estimator.
+- [x] Add standard-library tests for parsing, outliers, recommendations, and economics.
+- [x] Explain how to improve confidence by keeping accurate usage summaries.
+- [x] Publish the advisor on the PULSE site.

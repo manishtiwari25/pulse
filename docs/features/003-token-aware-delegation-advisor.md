@@ -1,7 +1,7 @@
 ---
 id: FEAT-003
 title: Token-Aware Delegation Advisor
-status: In Progress
+status: Done
 date: 2026-08-13
 priority: High
 areas: [agents, usage, estimation, delegation]
@@ -27,28 +27,28 @@ token usage or pretending tokens alone equal money.
 
 ### Functional
 
-- [ ] Parse real token values and task summaries from `docs/usage/usage-log.md`.
-- [ ] Prefer total tokens when available and clearly label output-only estimates.
-- [ ] Use robust outlier handling.
-- [ ] Accept task description, file count, risk, novelty, ambiguity,
+- [x] Parse real token values and task summaries from `docs/usage/usage-log.md`.
+- [x] Prefer total tokens when available and clearly label output-only estimates.
+- [x] Use robust outlier handling.
+- [x] Accept task description, file count, risk, novelty, ambiguity,
   reversibility, and external-state inputs.
-- [ ] Return lower, central, and upper token estimates.
-- [ ] Report confidence based on usable and similar historical records.
-- [ ] Recommend `agent-led`, `hybrid`, or `human-led`.
-- [ ] Force human-led guidance for critical or unsafe recovery boundaries.
-- [ ] Accept an optional token budget.
-- [ ] Compare monetary economics only when all required rates and human time
+- [x] Return lower, central, and upper token estimates.
+- [x] Report confidence based on usable and similar historical records.
+- [x] Recommend `agent-led`, `hybrid`, or `human-led`.
+- [x] Force human-led guidance for critical or unsafe recovery boundaries.
+- [x] Accept an optional token budget.
+- [x] Compare monetary economics only when all required rates and human time
   are explicitly supplied.
-- [ ] Support human-readable and JSON output.
-- [ ] Explain the evidence and limitations behind the recommendation.
+- [x] Support human-readable and JSON output.
+- [x] Explain the evidence and limitations behind the recommendation.
 
 ### Non-Functional
 
-- [ ] **Honesty:** never invent missing token fields or provider pricing.
-- [ ] **Robustness:** one extreme session cannot dominate the forecast.
-- [ ] **Portability:** use only Python's standard library.
-- [ ] **Privacy:** do not transmit usage history or economics.
-- [ ] **Safety:** recommendations never override rollback or approval rules.
+- [x] **Honesty:** never invent missing token fields or provider pricing.
+- [x] **Robustness:** one extreme session cannot dominate the forecast.
+- [x] **Portability:** use only Python's standard library.
+- [x] **Privacy:** do not transmit usage history or economics.
+- [x] **Safety:** recommendations never override rollback or approval rules.
 
 ## Scope
 
@@ -105,12 +105,12 @@ rates. No financial values are added to `docs/usage/usage-log.md`.
 
 ## Acceptance Criteria
 
-- [ ] Tests cover parsing, outlier resistance, risk routing, budget routing,
+- [x] Tests cover parsing, outlier resistance, risk routing, budget routing,
   and optional economics.
-- [ ] The script produces stable text and JSON output.
-- [ ] Monetary comparison appears only with user-supplied values.
-- [ ] The skill explains confidence and limitations.
-- [ ] The public PULSE site describes the advisor accurately.
+- [x] The script produces stable text and JSON output.
+- [x] Monetary comparison appears only with user-supplied values.
+- [x] The skill explains confidence and limitations.
+- [x] The public PULSE site describes the advisor accurately.
 
 ## Verification Plan
 

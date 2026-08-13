@@ -1,7 +1,7 @@
 ---
 id: FEAT-002
 title: Portable PULSE Skills
-status: In Progress
+status: Done
 date: 2026-08-13
 priority: High
 areas: [agents, skills, distribution]
@@ -26,25 +26,25 @@ through the same engineering lifecycle.
 
 ### Functional
 
-- [ ] Publish skill bundles under `docs/skills/`.
-- [ ] Include `pulse-bootstrap`, `pulse-plan`, `pulse-decision`,
+- [x] Publish skill bundles under `docs/skills/`.
+- [x] Include `pulse-bootstrap`, `pulse-plan`, `pulse-decision`,
   `pulse-feature`, `pulse-rollback`, `pulse-review`, `pulse-memory`, and
   `pulse-delegation-advisor`.
-- [ ] Give every skill valid `name` and `description` frontmatter.
-- [ ] Keep each skill model-agnostic and usable without hidden PULSE state.
-- [ ] Include scripts or resources inside the skill folder when required.
-- [ ] Support remote installation with GitHub CLI and local installation from
+- [x] Give every skill valid `name` and `description` frontmatter.
+- [x] Keep each skill model-agnostic and usable without hidden PULSE state.
+- [x] Include scripts or resources inside the skill folder when required.
+- [x] Support remote installation with GitHub CLI and local installation from
   a cloned PULSE repository.
-- [ ] Keep generated runner-specific skill folders out of the source repository.
-- [ ] Document listing, reloading, invoking, updating, and removing skills.
+- [x] Keep generated runner-specific skill folders out of the source repository.
+- [x] Document listing, reloading, invoking, updating, and removing skills.
 
 ### Non-Functional
 
-- [ ] **Portability:** follow the Agent Skills `SKILL.md` format.
-- [ ] **Safety:** skills cannot weaken always-on PULSE rules.
-- [ ] **Maintainability:** skills point to canonical workflows rather than
+- [x] **Portability:** follow the Agent Skills `SKILL.md` format.
+- [x] **Safety:** skills cannot weaken always-on PULSE rules.
+- [x] **Maintainability:** skills point to canonical workflows rather than
   creating competing policy.
-- [ ] **Discoverability:** descriptions clearly state when each skill applies.
+- [x] **Discoverability:** descriptions clearly state when each skill applies.
 
 ## Scope
 
@@ -100,10 +100,10 @@ No product data changes.
 
 ## Acceptance Criteria
 
-- [ ] Every skill passes metadata and link validation.
-- [ ] GitHub CLI discovers the nested `docs/skills/` bundles.
-- [ ] Installation guidance works without committing generated tool folders.
-- [ ] Public PULSE documentation lists every skill.
+- [x] Every skill passes metadata and link validation.
+- [x] GitHub CLI discovers the nested `docs/skills/` bundles.
+- [x] Installation guidance works without committing generated tool folders.
+- [x] Public PULSE documentation lists every skill.
 
 ## Verification Plan
 
