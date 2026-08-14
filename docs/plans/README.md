@@ -9,9 +9,6 @@
   scoped rollback planning and execution a required PULSE behavior.
 - [`pulse-skills-and-delegation-advisor.md`](pulse-skills-and-delegation-advisor.md) -
   publishes portable skills and token-aware delegation advice.
-
-## In Progress
-
 - [`pulse-skills-catalog-and-default-install.md`](pulse-skills-catalog-and-default-install.md) -
   publishes the dedicated skills catalog and includes all eight skills in every
   PULSE installation.

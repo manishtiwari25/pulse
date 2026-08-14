@@ -1,7 +1,7 @@
 ---
 id: PLAN-004
 title: Publish the PULSE Skills Catalog and Include Every Skill by Default
-status: In Progress
+status: Done
 date: 2026-08-14
 tags: [plan, skills, website, bootstrap, distribution]
 ---
@@ -32,7 +32,7 @@ language and make all eight canonical skills part of every PULSE installation.
 - [x] Update bootstrap guidance so every PULSE install includes `docs/skills/`.
 - [x] Update the homepage and Markdown entry points to the new catalog.
 - [x] Validate installers, links, HTML, and responsive layout locally.
-- [ ] Publish to `main` and verify the live catalog.
+- [x] Publish to `main` and verify the live catalog.
 
 ## Rollback Plan
 
@@ -52,9 +52,9 @@ language and make all eight canonical skills part of every PULSE installation.
 
 ## Acceptance Criteria
 
-- [ ] The requested outcome is complete.
-- [ ] Relevant control-plane files are updated.
-- [ ] Verification is complete or clearly documented.
+- [x] The requested outcome is complete.
+- [x] Relevant control-plane files are updated.
+- [x] Verification is complete or clearly documented.
 - [x] The rollback plan is scoped, safe, and executable.
 
 ## Verification
@@ -65,3 +65,7 @@ language and make all eight canonical skills part of every PULSE installation.
 - Serve `docs/` locally and request `/skills/`.
 - Run `git diff --check`.
 - Confirm the final GitHub Pages build and live catalog.
+
+Completed with seven passing advisor tests, eight skills discovered and
+installed through both supported installer paths, and the live catalog at
+<https://manishtiwari25.github.io/pulse/skills/> from commit `acb6560`.
