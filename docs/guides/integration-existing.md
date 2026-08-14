@@ -68,13 +68,13 @@ docs/skills/
 docs/workflows/
 ```
 
-Not every target needs every file on the first pass. Add enough structure to
-make the next decision or piece of work clear. Add tool-specific root entry
-files only when the target uses that tool.
+Not every target needs every optional control-plane file on the first pass,
+but every PULSE installation includes the complete `docs/skills/` pack. Add
+tool-specific root entry files only when the target uses that tool.
 
-Portable sources under `docs/skills/` may be kept without installing them.
-When native skills are wanted, use `gh skill install` at project or user scope
-and treat the generated runner-specific directory as installation output.
+Activate all eight skills for the current runner when native project skills
+are supported. Treat the generated runner-specific directory as local
+installation output, while `docs/skills/` remains canonical.
 
 ### Merge Instead of Overwriting
 

@@ -68,8 +68,31 @@ docs/workflows/
 - Include the mandatory rollback rule, plan template section, canonical
   rollback workflow, and shared rollback prompt when the target adopts those
   PULSE surfaces.
-- Include `docs/skills/` when the target wants portable on-demand workflows.
-  Do not commit generated runner-specific installation directories.
+- Always include the complete canonical `docs/skills/` pack. Individual PULSE
+  skills are not optional during initial framework installation.
+- When native installation is supported for the current runner, activate all
+  eight skills at project scope from the local source. Prefer one of these
+  paths with the current runner's supported agent name:
+
+  ```bash
+  gh skill install . --all --from-local \
+    --agent CURRENT_AGENT \
+    --scope project
+
+  npx skills@latest add . \
+    --skill '*' \
+    --agent CURRENT_AGENT \
+    --copy \
+    --yes
+  ```
+
+  Use an installer that is already available; do not install for unrelated
+  runners or add a package dependency.
+- Treat generated runner-specific installation directories as local outputs
+  and do not commit them. If the universal installer creates
+  `skills-lock.json`, leave it uncommitted unless the target already tracks
+  installer locks as project policy. If no installer is available, keep all
+  canonical sources and report the activation command in the handoff.
 - Leave changes uncommitted.
 
 ## 5. Validate

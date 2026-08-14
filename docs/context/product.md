@@ -63,7 +63,8 @@ plane without replacing existing code or rules.
   decision, implementation plan, and verification evidence.
 - Every change-producing task has a safe recovery path before implementation,
   and an agent can execute it without removing unrelated work.
-- Teams can install the same PULSE workflow skills across supported coding agents.
+- Every PULSE installation includes the same eight canonical workflow skills,
+  with native activation across supported coding agents.
 - Delegation advice reports a token range and confidence before recommending
   agent-led, hybrid, or human-led work.
 - Important decisions and durable lessons survive beyond one chat session.

@@ -37,6 +37,9 @@ through the same engineering lifecycle.
   a cloned PULSE repository.
 - [x] Keep generated runner-specific skill folders out of the source repository.
 - [x] Document listing, reloading, invoking, updating, and removing skills.
+- [x] Include the complete canonical pack in every PULSE bootstrap.
+- [x] Support full-pack activation with the universal `skills` CLI.
+- [x] Publish a dedicated PULSE-formatted public catalog.
 
 ### Non-Functional
 
@@ -65,6 +68,8 @@ through the same engineering lifecycle.
 
 - New `docs/skills/` control-plane surface.
 - New `gh skill install manishtiwari25/pulse` installation path.
+- New `npx skills@latest add manishtiwari25/pulse` installation path.
+- New public catalog at `/pulse/skills/`.
 - New slash-invokable PULSE skill names.
 
 ## Data Changes
@@ -104,6 +109,8 @@ No product data changes.
 - [x] GitHub CLI discovers the nested `docs/skills/` bundles.
 - [x] Installation guidance works without committing generated tool folders.
 - [x] Public PULSE documentation lists every skill.
+- [x] A PULSE installation carries all eight canonical bundles by default.
+- [x] The dedicated public catalog explains installation, flow, and safety.
 
 ## Verification Plan
 

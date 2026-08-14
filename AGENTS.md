@@ -58,6 +58,8 @@ adopts PULSE.
   bundles live in `docs/skills/`, and both reference `docs/workflows/`.
 - Runner-specific skill folders created by `gh skill install` or another
   installer are generated outputs. Do not commit them to the PULSE source repository.
+- Every PULSE bootstrap includes the complete canonical `docs/skills/` pack.
+  Do not make individual skills optional during initial installation.
 - The only root-level exceptions are the existing instruction files
   (`AGENTS.md`, `CLAUDE.md`, `README.md`,
   `.github/copilot-instructions.md`), standard config dotfiles already in the

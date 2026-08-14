@@ -6,6 +6,11 @@ skill source and follow the `skills/<name>/SKILL.md` convention.
 Mandatory repository and safety policies remain in `AGENTS.md`. Skills add
 detailed, on-demand procedures; they do not replace always-on instructions.
 
+Every PULSE installation includes the complete canonical pack. The commands
+below activate those skills in a runner's native project or user location.
+
+Public catalog: <https://manishtiwari25.github.io/pulse/skills/>
+
 ## Available Skills
 
 | Skill | Use it for |
@@ -19,17 +24,47 @@ detailed, on-demand procedures; they do not replace always-on instructions.
 | `pulse-memory` | Recording durable lessons without storing temporary notes |
 | `pulse-delegation-advisor` | Estimating tokens and recommending agent, human, or hybrid work |
 
-## Install with GitHub CLI
+## Recommended: Activate the Complete Pack
 
-Install all skills for GitHub Copilot at user scope:
+The universal skills installer discovers all eight bundles:
+
+```bash
+npx skills@latest add manishtiwari25/pulse \
+  --skill '*' \
+  --agent github-copilot \
+  --copy \
+  --yes
+```
+
+Replace `github-copilot` with another supported agent. Use Node.js 22.20 or
+newer. To inspect the pack without installing:
+
+```bash
+npx skills@latest add manishtiwari25/pulse --list
+```
+
+Update universal-installer copies with:
+
+```bash
+npx skills update
+```
+
+The universal installer may create `skills-lock.json`. In a full PULSE
+repository, `docs/skills/` remains canonical; review any lock-driven update
+before it replaces project-customized skill content.
+
+## Alternative: GitHub CLI
+
+Install all skills for GitHub Copilot at project scope:
 
 ```bash
 gh skill install manishtiwari25/pulse --all \
   --agent github-copilot \
-  --scope user
+  --scope project
 ```
 
-Install one skill:
+Use `--scope user` to activate the same complete pack across repositories.
+Installing one skill remains available for advanced customization:
 
 ```bash
 gh skill install manishtiwari25/pulse pulse-rollback \
@@ -45,16 +80,15 @@ gh skill install manishtiwari25/pulse --all \
   --scope user
 ```
 
-Use `--scope project` to install into the current repository's agent skill
-location. Generated project or user installation folders are outputs; do not
-commit them to the PULSE source repository.
+Generated project or user installation folders are outputs; do not commit them
+to the PULSE source repository.
 
 ## Install from a Local Clone
 
 ```bash
 gh skill install . --all --from-local \
   --agent github-copilot \
-  --scope user
+  --scope project
 ```
 
 Copilot CLI can also use the canonical directory directly:

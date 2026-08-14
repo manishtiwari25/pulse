@@ -55,14 +55,18 @@ repositories.
 
 ## Install PULSE Skills
 
+Every PULSE installation includes all eight canonical skill bundles. Activate
+the full pack for GitHub Copilot:
+
 ```bash
-gh skill install manishtiwari25/pulse --all \
+gh skill install . --all --from-local \
   --agent github-copilot \
-  --scope user
+  --scope project
 ```
 
-See [`skills/README.md`](skills/README.md) for individual skills, local
-installation, other supported agents, and the token-aware delegation advisor.
+Explore the [public skills catalog](https://manishtiwari25.github.io/pulse/skills/)
+or see [`skills/README.md`](skills/README.md) for GitHub CLI, local
+activation, updates, and the token-aware delegation advisor.
 
 ## Manual Guides
 

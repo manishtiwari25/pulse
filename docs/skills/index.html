@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#07111f">
+    <meta name="description" content="Install all eight portable PULSE Agent Skills for planning, decisions, feature delivery, rollback, review, memory, bootstrap, and token-aware delegation.">
+    <meta property="og:title" content="PULSE Skills - One Engineering Lifecycle, Eight Portable Skills">
+    <meta property="og:description" content="Every PULSE installation includes the complete skill pack. Activate it for your coding agent with one command.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://manishtiwari25.github.io/pulse/skills/">
+    <meta property="og:image" content="https://manishtiwari25.github.io/pulse/assets/pulse-logo.svg">
+    <title>PULSE Skills - Portable Agent Workflows</title>
+    <link rel="icon" href="../assets/pulse-logo.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="../assets/pulse.css">
+  </head>
+  <body class="catalog-page">
+    <header class="site-header">
+      <nav class="nav container" aria-label="Main navigation">
+        <a class="brand" href="../" aria-label="PULSE home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32">
+              <path d="M2 17h7l3-8 5 16 4-12 3 4h6" fill="none" stroke="#06111d" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          PULSE
+        </a>
+        <div class="nav-links">
+          <a href="../#why">Why</a>
+          <a href="../#lifecycle">Lifecycle</a>
+          <a href="../#rollbacks">Rollbacks</a>
+          <a href="./" aria-current="page">Skills</a>
+          <a href="../#docs">Docs</a>
+          <a class="button" href="https://github.com/manishtiwari25/pulse">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="catalog-hero">
+        <div class="catalog-hero-grid container">
+          <div>
+            <p class="eyebrow">Portable PULSE Agent Skills</p>
+            <h1>One lifecycle. Eight skills. <span>Already included.</span></h1>
+            <p class="hero-copy">
+              Every PULSE installation ships the complete skill source under
+              <code>docs/skills/</code>. Activate all eight for your coding
+              agent and keep planning, delivery, recovery, and learning inside
+              one shared engineering system.
+            </p>
+            <div class="actions">
+              <a class="button primary" href="#install">Install all skills</a>
+              <a class="button" href="#catalog">Browse the catalog</a>
+            </div>
+          </div>
+
+          <aside class="catalog-summary" aria-label="PULSE skills summary">
+            <p class="panel-label">Included with PULSE</p>
+            <div class="catalog-stat-grid">
+              <div class="catalog-stat"><strong>8</strong><span>portable skills</span></div>
+              <div class="catalog-stat"><strong>1</strong><span>shared lifecycle</span></div>
+              <div class="catalog-stat"><strong>0</strong><span>provider lock-in</span></div>
+            </div>
+            <ul class="catalog-included-list">
+              <li>Canonical source is versioned beside the project.</li>
+              <li>Mandatory safety rules remain always active.</li>
+              <li>Runner-specific copies stay local and replaceable.</li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+
+      <section id="install">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">Complete pack installation</p>
+            <h2>The complete pack comes with PULSE. Activate it or install it by itself.</h2>
+            <p>
+              A PULSE bootstrap already carries <code>docs/skills/</code>. Use
+              the local-source path after bootstrap, or use a remote path when
+              you want only the skill pack.
+            </p>
+          </div>
+
+          <div class="install-grid">
+            <article class="install-card primary-install">
+              <div class="install-card-header">
+                <div>
+                  <p class="panel-label">Full PULSE repository</p>
+                  <h3>Activate all eight from the bundled local source</h3>
+                </div>
+                <span class="install-badge">Included path</span>
+              </div>
+              <pre><code>gh skill install . --all --from-local \
+  --agent github-copilot \
+  --scope project</code></pre>
+              <p>
+                Bootstrap attempts this activation automatically when the
+                current runner supports native project skills. The installed
+                copies stay local; <code>docs/skills/</code> remains canonical.
+              </p>
+              <div class="install-meta">
+                <span>Canonical source: docs/skills/</span>
+                <code>gh skill update --all</code>
+              </div>
+            </article>
+
+            <article class="install-card">
+              <p class="panel-label">Universal skills-only installer</p>
+              <h3>Install all eight without the full framework</h3>
+              <pre><code>npx skills@latest add manishtiwari25/pulse \
+  --skill '*' \
+  --agent github-copilot \
+  --copy \
+  --yes</code></pre>
+              <p>
+                Replace <code>github-copilot</code> with another supported
+                agent. Requires Node.js 22.20 or newer.
+              </p>
+            </article>
+
+            <article class="install-card">
+              <p class="panel-label">GitHub CLI skills-only installer</p>
+              <h3>Install the remote pack at project scope</h3>
+              <pre><code>gh skill install manishtiwari25/pulse --all \
+  --agent github-copilot \
+  --scope project</code></pre>
+              <p>
+                Use <code>--scope user</code> when the same PULSE skills should
+                be available across repositories.
+              </p>
+            </article>
+          </div>
+
+          <p class="install-safety-note">
+            Review skill source before use. Skills run with the permissions
+            granted to the coding agent, while PULSE repository and rollback
+            rules remain in force.
+          </p>
+        </div>
+      </section>
+
+      <section id="flow">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">The skill flow</p>
+            <h2>Small skills, one connected engineering history.</h2>
+            <p>
+              Use the skill that matches the current job. Each one reads and
+              writes through the same PULSE control plane.
+            </p>
+          </div>
+
+          <div class="skill-flow-shell">
+            <div class="flow-rail preflight">
+              <strong>Before delegation</strong>
+              <code>/pulse-delegation-advisor</code>
+              <span>Estimate tokens, uncertainty, and the safest owner.</span>
+            </div>
+
+            <div class="flow-grid" aria-label="PULSE skill lifecycle">
+              <div class="flow-step"><span>01</span><code>/pulse-bootstrap</code><small>Adopt</small></div>
+              <div class="flow-step"><span>02</span><code>/pulse-plan</code><small>Plan</small></div>
+              <div class="flow-step"><span>03</span><code>/pulse-decision</code><small>Decide</small></div>
+              <div class="flow-step"><span>04</span><code>/pulse-feature</code><small>Deliver</small></div>
+              <div class="flow-step"><span>05</span><code>/pulse-review</code><small>Verify</small></div>
+              <div class="flow-step"><span>06</span><code>/pulse-memory</code><small>Learn</small></div>
+            </div>
+
+            <div class="flow-rail guardrail">
+              <strong>Across every change</strong>
+              <code>/pulse-rollback</code>
+              <span>Prepare recovery before work and reverse only the task's own changes.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="featured">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">Featured safeguards</p>
+            <h2>Decide who should do the work, then make sure there is a safe way back.</h2>
+          </div>
+
+          <div class="featured-skill-grid">
+            <article class="featured-skill advisor">
+              <p class="featured-label">Delegation intelligence</p>
+              <h3><code>/pulse-delegation-advisor</code></h3>
+              <p>
+                Reads real repository token history and combines it with risk,
+                novelty, ambiguity, reversibility, file count, and external
+                state.
+              </p>
+              <ul>
+                <li>Lower, central, and upper token range</li>
+                <li>Low, medium, or high confidence</li>
+                <li>Agent-led, hybrid, or human-led recommendation</li>
+                <li>No guessed provider pricing</li>
+              </ul>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-delegation-advisor/SKILL.md">Open skill source &rarr;</a>
+            </article>
+
+            <article class="featured-skill rollback">
+              <p class="featured-label">Recovery guardrail</p>
+              <h3><code>/pulse-rollback</code></h3>
+              <p>
+                Restores a known-good state without deleting unrelated work,
+                rewriting shared history, or guessing at production and data
+                recovery.
+              </p>
+              <ul>
+                <li>Confirms the rollback trigger</li>
+                <li>Isolates only the current task</li>
+                <li>Stops at approval-required boundaries</li>
+                <li>Verifies and records recovery</li>
+              </ul>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-rollback/SKILL.md">Open skill source &rarr;</a>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="catalog">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">The complete catalog</p>
+            <h2>Eight skills cover the PULSE lifecycle.</h2>
+            <p>
+              Each bundle is model-agnostic, readable Markdown with any helper
+              code stored beside it.
+            </p>
+          </div>
+
+          <div class="full-skill-grid">
+            <article class="catalog-skill-card">
+              <div class="catalog-skill-meta"><span class="skill-number">01</span><span class="skill-type">Start</span></div>
+              <h3><code>/pulse-bootstrap</code></h3>
+              <p>Add or repair the full PULSE control plane without replacing existing code, rules, or uncommitted work.</p>
+              <p class="skill-use"><strong>Use for:</strong> adoption, onboarding, and incomplete setup repair.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-bootstrap/SKILL.md">View source &rarr;</a>
+            </article>
+
+            <article class="catalog-skill-card">
+              <div class="catalog-skill-meta"><span class="skill-number">02</span><span class="skill-type">Shape</span></div>
+              <h3><code>/pulse-plan</code></h3>
+              <p>Create ordered work with context, measurable acceptance criteria, verification, and a scoped rollback path.</p>
+              <p class="skill-use"><strong>Use for:</strong> non-trivial implementation, migration, or integration work.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-plan/SKILL.md">View source &rarr;</a>
+            </article>
+
+            <article class="catalog-skill-card">
+              <div class="catalog-skill-meta"><span class="skill-number">03</span><span class="skill-type">Govern</span></div>
+              <h3><code>/pulse-decision</code></h3>
+              <p>Record realistic options, tradeoffs, the chosen direction, consequences, and follow-up in an ADR.</p>
+              <p class="skill-use"><strong>Use for:</strong> durable architecture, product, workflow, and safety choices.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-decision/SKILL.md">View source &rarr;</a>
+            </article>
+
+            <article class="catalog-skill-card">
+              <div class="catalog-skill-meta"><span class="skill-number">04</span><span class="skill-type">Deliver</span></div>
+              <h3><code>/pulse-feature</code></h3>
+              <p>Carry a feature from desired behavior through decisions, planning, implementation, verification, and learning.</p>
+              <p class="skill-use"><strong>Use for:</strong> new user-facing or system behavior.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-feature/SKILL.md">View source &rarr;</a>
+            </article>
+
+            <article class="catalog-skill-card">
+              <div class="catalog-skill-meta"><span class="skill-number">05</span><span class="skill-type">Protect</span></div>
+              <h3><code>/pulse-rollback</code></h3>
+              <p>Execute a narrow, verified recovery when a task reaches its rollback trigger or cannot be repaired safely.</p>
+              <p class="skill-use"><strong>Use for:</strong> regressions, failed checks, and known recovery triggers.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-rollback/SKILL.md">View source &rarr;</a>
+            </article>
+
+            <article class="catalog-skill-card">
+              <div class="catalog-skill-meta"><span class="skill-number">06</span><span class="skill-type">Verify</span></div>
+              <h3><code>/pulse-review</code></h3>
+              <p>Review requested behavior, implementation evidence, accepted decisions, test coverage, and rollback readiness.</p>
+              <p class="skill-use"><strong>Use for:</strong> code, documentation, pull request, and implementation reviews.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-review/SKILL.md">View source &rarr;</a>
+            </article>
+
+            <article class="catalog-skill-card">
+              <div class="catalog-skill-meta"><span class="skill-number">07</span><span class="skill-type">Learn</span></div>
+              <h3><code>/pulse-memory</code></h3>
+              <p>Keep verified lessons, product rules, patterns, conventions, and mistakes that should change future work.</p>
+              <p class="skill-use"><strong>Use for:</strong> durable knowledge, not temporary task notes.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-memory/SKILL.md">View source &rarr;</a>
+            </article>
+
+            <article class="catalog-skill-card highlighted">
+              <div class="catalog-skill-meta"><span class="skill-number">08</span><span class="skill-type">Route</span></div>
+              <h3><code>/pulse-delegation-advisor</code></h3>
+              <p>Forecast token effort from local history and recommend agent-led, hybrid, or human-led execution.</p>
+              <p class="skill-use"><strong>Use for:</strong> delegation, budget, risk, and ownership decisions.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-delegation-advisor/SKILL.md">View source &rarr;</a>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="policy">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">How the pieces fit</p>
+            <h2>Skills add focus. They do not replace the PULSE system.</h2>
+          </div>
+
+          <div class="skill-policy-grid">
+            <article class="policy-card">
+              <span>Always active</span>
+              <h3>Repository policy</h3>
+              <p>
+                <code>AGENTS.md</code> keeps mandatory safety, control-plane,
+                verification, and rollback rules active for every task.
+              </p>
+            </article>
+            <article class="policy-card">
+              <span>Loaded when useful</span>
+              <h3>Portable skills</h3>
+              <p>
+                A skill supplies the detailed procedure for the current job
+                without filling every agent conversation with every workflow.
+              </p>
+            </article>
+            <article class="policy-card">
+              <span>Included by default</span>
+              <h3>Canonical source</h3>
+              <p>
+                Every PULSE bootstrap carries the complete
+                <code>docs/skills/</code> pack. Native runner directories are
+                generated activation output, not a second source of truth.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="container">
+          <div class="catalog-cta">
+            <p class="eyebrow">Ready to use PULSE</p>
+            <h2>Install the complete lifecycle, not isolated prompts.</h2>
+            <p>
+              Start with all eight skills and let the task decide which one is
+              active. The shared docs control plane keeps their outputs connected.
+            </p>
+            <div class="actions">
+              <a class="button primary" href="#install">Install all eight skills</a>
+              <a class="button" href="https://github.com/manishtiwari25/pulse/tree/main/docs/skills">Browse on GitHub</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-row container">
+        <p><strong>PULSE Skills</strong> - one portable engineering lifecycle.</p>
+        <div class="footer-links">
+          <a href="../">PULSE home</a>
+          <a href="https://github.com/manishtiwari25/pulse">GitHub</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

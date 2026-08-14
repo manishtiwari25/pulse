@@ -108,20 +108,24 @@ service, hidden state folder, or model-specific runtime is required.
 
 ## Portable Agent Skills
 
-Install every PULSE skill for GitHub Copilot:
+Every PULSE bootstrap includes all eight canonical bundles under
+`docs/skills/` and activates them for the current runner when supported.
+From an installed PULSE repository, activate the local pack for GitHub Copilot:
 
 ```bash
-gh skill install manishtiwari25/pulse --all \
+gh skill install . --all --from-local \
   --agent github-copilot \
-  --scope user
+  --scope project
 ```
 
-Install one skill:
+To install only the PULSE skills without the full framework:
 
 ```bash
-gh skill install manishtiwari25/pulse pulse-rollback \
+npx skills@latest add manishtiwari25/pulse \
+  --skill '*' \
   --agent github-copilot \
-  --scope user
+  --copy \
+  --yes
 ```
 
 The skill pack includes planning, decisions, feature delivery, rollback,
@@ -140,7 +144,8 @@ It only says which option is cheaper in money when the user supplies human
 time/rate and agent token rate. It never guesses provider pricing or stores
 financial values in the usage ledger.
 
-See [`docs/skills/`](docs/skills/README.md) for installation and usage.
+Explore the [public PULSE skills catalog](https://manishtiwari25.github.io/pulse/skills/)
+or read [`docs/skills/`](docs/skills/README.md) for installation and usage.
 
 ## Repository Map
 

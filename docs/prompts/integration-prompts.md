@@ -34,8 +34,10 @@ instructions. Merge instead of blindly overwriting. Keep new PULSE
 control-plane content under docs/; do not add hidden tool-specific control
 folders. Do not copy stale PULSE source context, source-repository usage rows,
 generated history, or unrelated repository state. Adapt names, paths, stack
-details, and commands to this repository. Create project-specific ADRs, specs,
-or plans only when the evidence makes them useful. Do not commit.
+details, and commands to this repository. Include the complete canonical
+PULSE skill pack under docs/skills/ and activate all eight for the current
+runner when native project skills are supported. Create project-specific ADRs,
+specs, or plans only when the evidence makes them useful. Do not commit.
 
 Validate changed Markdown links, inspect the final diff, run git diff --check
 and any existing targeted documentation checks, then report files changed,
@@ -52,8 +54,10 @@ branch and learns about the target from the files already there.
    and [bootstrap workflow](../workflows/bootstrap-control-plane.md).
 2. Inspects the target and chooses the safe new-repository or
    established-repository merge path.
-3. Builds or merges the PULSE `docs/` control plane without changing product code.
-4. Validates links and diffs, then reports changes and blockers.
+3. Builds or merges the PULSE `docs/` control plane, including all eight
+   canonical skills, without changing product code.
+4. Activates the complete pack for the current runner when supported.
+5. Validates links and diffs, then reports changes and blockers.
 
 If the agent cannot access the public source or required canonical files, it
 stops instead of guessing. Enable source access, then paste the same prompt

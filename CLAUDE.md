@@ -32,6 +32,8 @@ Instructions for Claude-based agents working with PULSE.
 - Use `docs/prompts/` for reusable or generated implementation prompts.
 - Use `docs/skills/` for portable on-demand Agent Skills. Do not commit
   generated runner-specific skill installation folders.
+- Every PULSE installation includes the complete canonical skill pack; do not
+  omit individual bundles during bootstrap.
 - Verify with commands that already exist. Do not invent a product stack or checks.
 
 ## Rollback Planning (required)

@@ -13,19 +13,20 @@ The agent reads the public PULSE source, detects the repository as new, adapts
 the control plane, and records unknown product details as open questions. You
 do not need to copy files or replace placeholders first.
 
-## Optional: Install PULSE Skills
+## PULSE Skills Are Included
 
-Install every portable workflow skill for GitHub Copilot:
+The one-prompt and template paths include all eight canonical bundles under
+`docs/skills/`. Activate the complete pack for GitHub Copilot:
 
 ```bash
-gh skill install manishtiwari25/pulse --all \
+gh skill install . --all --from-local \
   --agent github-copilot \
   --scope project
 ```
 
-Use `--scope user` to make the skills available across repositories. Generated
-runner-specific skill folders are installation output; the canonical source
-remains under `docs/skills/`.
+The bootstrap agent performs project activation when the current runner and an
+existing installer support it. Generated runner-specific folders remain local
+output; `docs/skills/` is the source of truth.
 
 ## Manual Template Options
 
@@ -77,7 +78,7 @@ update these areas before implementation:
 | `docs/context/stack.md` | Real stack choices and open decisions. |
 | `docs/architecture/overview.md` | Intended product shape and current boundaries. |
 | `docs/README.md` | Navigation or intake details that differ for the product. |
-| `docs/skills/` | Keep useful portable skills and remove ones the product will not use. |
+| `docs/skills/` | Keep the complete canonical PULSE skill pack during initial setup. |
 | `docs/usage/usage-log.md` | Keep the token rules; remove rows that belong only to PULSE. |
 
 Remove publishing notes that only apply to the PULSE source repository. Keep

@@ -16,6 +16,8 @@ plans, prompts, skills, usage, and workflows.
 - Inspect files or ask rather than guessing missing context.
 - Treat `docs/skills/` as the canonical portable skill source; generated
   project or user installation folders are not source artifacts.
+- Include all canonical PULSE skills whenever bootstrapping the framework;
+  activate the complete pack for the current runner when supported.
 - Before any change-producing task, define a rollback plan with the baseline,
   trigger, narrow reversal steps, state-safety notes, and recovery checks.
 - Follow `docs/workflows/rollback.md`. Roll back automatically only when the

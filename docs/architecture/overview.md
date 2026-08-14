@@ -18,8 +18,9 @@ PULSE has six durable surfaces:
    merge PULSE into another repository.
 4. **Observability helpers** - local scripts read real token counts from
    supported coding-agent session stores and record them in `docs/usage/`.
-5. **Portable skill layer** - `docs/skills/` packages task-specific PULSE
-   procedures and helpers in the Agent Skills format.
+5. **Portable skill layer** - every PULSE installation includes the complete
+   `docs/skills/` pack of task-specific procedures and helpers in the Agent
+   Skills format.
 6. **Recovery workflow** - mandatory rollback plans and
    `docs/workflows/rollback.md` give agents a scoped, auditable way to restore
    a known-good state.
@@ -27,8 +28,9 @@ PULSE has six durable surfaces:
 ## Public Documentation
 
 The GitHub Pages site is a dependency-free static portal served from `docs/`
-on the default branch. It introduces PULSE, explains the lifecycle, and links
-to the canonical Markdown source in the repository.
+on the default branch. Its homepage introduces PULSE and the dedicated
+`docs/skills/index.html` catalog explains the complete portable skill pack.
+Both link back to canonical source in the repository.
 
 ## Data and State
 
@@ -39,6 +41,8 @@ to the canonical Markdown source in the repository.
 - Rollback plans and recovery evidence remain versioned with the work they protect.
 - Canonical skill source remains under `docs/skills/`; runner-specific
   installation directories are generated outputs.
+- Bootstrap carries all eight canonical skills and activates them for the
+  current runner when native project skills are supported.
 - PULSE does not create a hidden database or remote application service.
 
 ## Boundaries

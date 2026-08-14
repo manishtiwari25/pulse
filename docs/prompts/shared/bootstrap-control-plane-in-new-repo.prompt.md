@@ -107,9 +107,19 @@ Rules:
 - If the target adopts PULSE agent workflows, include the mandatory rollback
   rule, `docs/workflows/rollback.md`, rollback sections in plan/prompt
   templates, and `docs/prompts/shared/rollback.prompt.md`.
-- If the target adopts portable skills, copy the canonical `docs/skills/`
-  bundles and installation guidance. Do not copy generated project/user skill
-  installation folders from the source environment.
+- Always copy the complete canonical `docs/skills/` pack and installation
+  guidance. Do not omit individual PULSE skills during bootstrap.
+- If the current runner supports native project skills and an installer is
+  already available, activate all eight from the target's local source using
+  `gh skill install . --all --from-local --agent CURRENT_AGENT --scope
+  project` or `npx skills@latest add . --skill '*' --agent CURRENT_AGENT
+  --copy --yes`. Replace `CURRENT_AGENT` with the real supported agent name.
+  Do not install for unrelated runners, add a package dependency, or commit
+  generated project/user skill directories. Leave a generated
+  `skills-lock.json` uncommitted unless the target already tracks installer
+  locks as project policy.
+- If native activation is unavailable, leave all canonical sources in place
+  and report the exact activation command in the handoff.
 - Do not add dependencies, services, sample CI, invented commands, or product
   implementation.
 - Leave changes uncommitted.

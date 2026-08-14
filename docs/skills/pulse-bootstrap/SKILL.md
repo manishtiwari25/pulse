@@ -21,18 +21,26 @@ uncommitted work.
 4. Read the canonical PULSE bootstrap sources:
    - `docs/workflows/bootstrap-control-plane.md`
    - `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md`
-5. Merge useful PULSE instructions and `docs/` surfaces. Preserve target-specific rules.
-6. Do not copy source usage rows, local paths, framework history, stale product
+5. Merge useful PULSE instructions and `docs/` surfaces. Always include the
+   complete canonical `docs/skills/` pack and preserve target-specific rules.
+6. When native project skills are supported, activate all eight from the
+   target's local `docs/skills/` source for the current runner. Prefer an
+   already available GitHub CLI or universal skills installer. Do not install
+   for unrelated runners, add a package dependency, or commit generated skill
+   directories.
+7. Do not copy source usage rows, local paths, framework history, stale product
    context, secrets, or unrelated state.
-7. Do not add product code, dependencies, CI, or invented commands.
-8. Validate links, diff safety, preserved user work, and existing targeted docs checks.
-9. If validation cannot be repaired safely, execute the scoped rollback plan.
-10. Leave changes uncommitted unless the user explicitly requests publication.
+8. Do not add product code, dependencies, CI, or invented commands.
+9. Validate links, diff safety, all eight canonical bundles, preserved user
+   work, and existing targeted docs checks.
+10. If validation cannot be repaired safely, execute the scoped rollback plan.
+11. Leave changes uncommitted unless the user explicitly requests publication.
 
 Canonical source:
 <https://github.com/manishtiwari25/pulse/blob/main/docs/workflows/bootstrap-control-plane.md>
 
 ## Report
 
-Return the target classification, files changed, files preserved, facts
-inferred, open questions, validation, rollback readiness, and blockers.
+Return the target classification, files changed, files preserved, skill
+activation state, facts inferred, open questions, validation, rollback
+readiness, and blockers.

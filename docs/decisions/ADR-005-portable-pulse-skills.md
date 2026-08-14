@@ -1,7 +1,7 @@
 ---
 id: ADR-005
 title: Publish Portable PULSE Skills from the Docs Control Plane
-status: Accepted
+status: Accepted (amended 2026-08-14)
 date: 2026-08-13
 areas: [agents, skills, distribution, documentation]
 tags: [adr, skills, copilot, portability]
@@ -18,7 +18,8 @@ or other runner-specific folders would create a second control plane and break
 the framework's existing repository rules.
 
 GitHub CLI discovers the Agent Skills `skills/*/SKILL.md` convention even when
-the `skills/` directory is nested under another prefix.
+the `skills/` directory is nested under another prefix. The universal
+`skills` CLI also discovers all eight bundles under `docs/skills/`.
 
 ## Options Considered
 
@@ -51,6 +52,9 @@ Choose **Option 2**.
 - Skills contain task-specific procedures and link back to canonical PULSE
   features, decisions, prompts, and workflows.
 - `docs/skills/` is template-owned and sync-safe.
+- Every PULSE installation includes the complete canonical skill pack.
+- Bootstrap activates all eight for the current runner when native project
+  skills and an existing installer are available.
 - Generated runner-specific installation folders are local outputs and are not
   committed to this source repository.
 
@@ -62,7 +66,7 @@ Choose **Option 2**.
   OpenCode, and other compatible agents.
 - PULSE keeps one canonical `docs/` control plane.
 - Skills can include executable helpers without adding a framework runtime.
-- Teams can install all skills or only the workflows they need.
+- Teams receive the full lifecycle by default and may customize it later.
 
 ### Negative
 
@@ -77,3 +81,5 @@ Choose **Option 2**.
 - [x] Add skills to bootstrap and template-sync guidance.
 - [x] Validate every `SKILL.md` against the required metadata shape.
 - [x] Publish the skill pack on the public PULSE site.
+- [x] Publish a dedicated PULSE-formatted catalog.
+- [x] Make the full canonical pack part of every PULSE bootstrap.
