@@ -7,7 +7,7 @@ define their own application architecture separately.
 
 ## System Shape
 
-PULSE has six durable surfaces:
+PULSE has eight durable surfaces:
 
 1. **Agent entry points** - `AGENTS.md`, `CLAUDE.md`, and
    `.github/copilot-instructions.md` route agents into the same lifecycle.
@@ -24,6 +24,12 @@ PULSE has six durable surfaces:
 6. **Recovery workflow** - mandatory rollback plans and
    `docs/workflows/rollback.md` give agents a scoped, auditable way to restore
    a known-good state.
+7. **Optional context retrieval** - `pulse-code-context` builds a
+   standard-library Go BM25 index and lightweight file relationship graph so
+   agents can narrow discovery before reading exact source.
+8. **Sandbox-first execution** - `AGENTS.md` and
+   `docs/workflows/sandboxed-agent-execution.md` require verified, fail-closed
+   isolation before agent-controlled commands or subprocesses run.
 
 ## Public Documentation
 
@@ -41,9 +47,14 @@ Both link back to canonical source in the repository.
 - Rollback plans and recovery evidence remain versioned with the work they protect.
 - Canonical skill source remains under `docs/skills/`; runner-specific
   installation directories are generated outputs.
-- Bootstrap carries all eight canonical skills and activates them for the
+- Bootstrap carries the complete canonical skill pack and activates it for the
   current runner when native project skills are supported.
-- PULSE does not create a hidden database or remote application service.
+- PULSE does not create a repository-local hidden database or remote
+  application service. Optional code-context indexes are generated in the
+  user's external cache.
+- Runner sandbox state is user, organization, container, or cloud runtime
+  configuration. PULSE versions the policy and workflow, not generated
+  `.claude/`, `.opencode/`, or other runner-specific state.
 
 ## Boundaries
 
@@ -52,6 +63,10 @@ Both link back to canonical source in the repository.
   and verification commands.
 - PULSE can guide implementation but cannot replace repository-specific tests
   or human ownership.
+- Context retrieval can reduce broad source reads but cannot replace exact
+  source inspection, language-aware analysis, or verification.
+- Permission prompts and tool allowlists cannot replace an OS, container, VM,
+  or cloud sandbox. If isolation cannot be verified, execution stops.
 - Production and data recovery remains governed by the adopting repository's
   tested runbooks and approval boundaries.
 

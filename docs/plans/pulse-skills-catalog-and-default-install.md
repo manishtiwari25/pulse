@@ -11,12 +11,13 @@ tags: [plan, skills, website, bootstrap, distribution]
 ## Goal
 
 Give PULSE skills a dedicated public catalog in the existing PULSE visual
-language and make all eight canonical skills part of every PULSE installation.
+language and make the complete canonical skill set at that time part of every
+PULSE installation.
 
 ## Context
 
 - The canonical bundles already live under `docs/skills/`.
-- GitHub CLI and the universal `skills` CLI both discover all eight bundles.
+- GitHub CLI and the universal `skills` CLI both discover the complete bundle set.
 - `npx skills@latest add manishtiwari25/pulse --skill '*' --agent
   github-copilot --copy --yes` was verified in an isolated project.
 - A PULSE bootstrap currently treats portable skills as optional; this must
@@ -26,7 +27,7 @@ language and make all eight canonical skills part of every PULSE installation.
 
 ## Steps
 
-- [x] Verify universal and GitHub CLI discovery of all eight skills.
+- [x] Verify universal and GitHub CLI discovery of the complete skill set.
 - [x] Create a dedicated PULSE-styled catalog at `/pulse/skills/`.
 - [x] Show one-command full-pack installation plus supported alternatives.
 - [x] Update bootstrap guidance so every PULSE install includes `docs/skills/`.
@@ -37,7 +38,7 @@ language and make all eight canonical skills part of every PULSE installation.
 ## Rollback Plan
 
 - **Baseline:** clean `main` at commit `1cca8e4`, with the existing homepage
-  skills section and all eight source bundles already published.
+  skills section and the complete source bundle set already published.
 - **Trigger:** broken skill discovery, incorrect install guidance, invalid
   markup, missing source links, bootstrap guidance that can omit skills, or a
   failed GitHub Pages build.
@@ -46,7 +47,7 @@ language and make all eight canonical skills part of every PULSE installation.
   use a revert commit.
 - **State safety:** do not remove canonical skill bundles, user-installed
   skills, unrelated docs, Git history, or runner configuration.
-- **Recovery verification:** confirm all eight skills remain discoverable,
+- **Recovery verification:** confirm the complete skill set remains discoverable,
   the previous homepage loads, repository links resolve, and Pages returns to
   the baseline commit.
 
@@ -59,8 +60,8 @@ language and make all eight canonical skills part of every PULSE installation.
 
 ## Verification
 
-- List all eight skills with GitHub CLI and `npx skills`.
-- Install all eight into an isolated project.
+- List the complete skill set with GitHub CLI and `npx skills`.
+- Install the complete skill set into an isolated project.
 - Validate local Markdown links, HTML anchors/assets, and SVG parsing.
 - Serve `docs/` locally and request `/skills/`.
 - Run `git diff --check`.

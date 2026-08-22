@@ -52,6 +52,8 @@ plane without replacing existing code or rules.
 - PULSE does not choose the adopting repository's product stack.
 - PULSE does not require a hosted service, hidden state directory, or
   model-specific runtime.
+- Optional local code-context indexing stores disposable generated data in the
+  user's cache, outside the repository.
 - The source framework stays product-code-free.
 
 ## Success Signals
@@ -63,8 +65,13 @@ plane without replacing existing code or rules.
   decision, implementation plan, and verification evidence.
 - Every change-producing task has a safe recovery path before implementation,
   and an agent can execute it without removing unrelated work.
-- Every PULSE installation includes the same eight canonical workflow skills,
-  with native activation across supported coding agents.
+- Every PULSE installation includes the same complete canonical workflow
+  skill pack, with native activation across supported coding agents.
+- Every tool-backed task displays the sandbox warning with a link to the
+  active harness's sandbox documentation and runs only after that isolation
+  boundary is verified.
+- Agents can reuse a local keyword and relationship map to narrow
+  repository exploration while still verifying exact source before changes.
 - Delegation advice reports a token range and confidence before recommending
   agent-led, hybrid, or human-led work.
 - Important decisions and durable lessons survive beyond one chat session.

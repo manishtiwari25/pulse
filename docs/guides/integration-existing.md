@@ -72,9 +72,16 @@ Not every target needs every optional control-plane file on the first pass,
 but every PULSE installation includes the complete `docs/skills/` pack. Add
 tool-specific root entry files only when the target uses that tool.
 
-Activate all eight skills for the current runner when native project skills
+Activate the complete skill pack for the current runner when native project skills
 are supported. Treat the generated runner-specific directory as local
 installation output, while `docs/skills/` remains canonical.
+
+Invoke `pulse-sandbox` first for tool-backed work. Preserve its exact warning
+and fail-closed rule when merging target-specific instructions.
+
+Do not build a code-context index or fetch a release binary during bootstrap.
+The `pulse-code-context` Go source is included and can be activated later as
+an explicit repository-specific choice.
 
 ### Merge Instead of Overwriting
 

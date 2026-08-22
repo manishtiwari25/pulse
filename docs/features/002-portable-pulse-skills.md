@@ -30,6 +30,8 @@ through the same engineering lifecycle.
 - [x] Include `pulse-bootstrap`, `pulse-plan`, `pulse-decision`,
   `pulse-feature`, `pulse-rollback`, `pulse-review`, `pulse-memory`, and
   `pulse-delegation-advisor`.
+- [x] Include `pulse-code-context` for optional local repository retrieval.
+- [x] Include `pulse-sandbox` for mandatory execution preflight and warnings.
 - [x] Give every skill valid `name` and `description` frontmatter.
 - [x] Keep each skill model-agnostic and usable without hidden PULSE state.
 - [x] Include scripts or resources inside the skill folder when required.
@@ -45,6 +47,8 @@ through the same engineering lifecycle.
 
 - [x] **Portability:** follow the Agent Skills `SKILL.md` format.
 - [x] **Safety:** skills cannot weaken always-on PULSE rules.
+- [x] **Execution safety:** `pulse-sandbox` reinforces the always-on sandbox
+  rule but its warning never substitutes for verified isolation.
 - [x] **Maintainability:** skills point to canonical workflows rather than
   creating competing policy.
 - [x] **Discoverability:** descriptions clearly state when each skill applies.
@@ -109,7 +113,7 @@ No product data changes.
 - [x] GitHub CLI discovers the nested `docs/skills/` bundles.
 - [x] Installation guidance works without committing generated tool folders.
 - [x] Public PULSE documentation lists every skill.
-- [x] A PULSE installation carries all eight canonical bundles by default.
+- [x] A PULSE installation carries the complete canonical bundle set by default.
 - [x] The dedicated public catalog explains installation, flow, and safety.
 
 ## Verification Plan

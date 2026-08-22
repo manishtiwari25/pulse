@@ -72,6 +72,71 @@ adopts PULSE.
   assumptions, product context, and architecture notes before implementation.
 - If context is missing, inspect files or ask before inventing requirements.
 
+## Sandbox-First Execution (required)
+
+- Before any non-conversational task that may use tools or execute code, invoke
+  the `pulse-sandbox` skill first when it is available.
+- Begin every tool-backed work response, including progress updates and final
+  handoffs, with the matching visible warning in this exact format:
+  `⚠️ SANDBOX REQUIRED — verify the <harness> sandbox before execution; do not bypass it. Docs: <sandbox documentation URL>`
+- Replace only the harness name and documentation URL:
+  - **GitHub Copilot CLI:** `GitHub Copilot CLI` and
+    `https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox`
+  - **Claude Code:** `Claude Code` and
+    `https://code.claude.com/docs/en/sandboxing`
+  - **OpenCode:** `OpenCode external` and
+    `https://docs.docker.com/ai/sandboxes/agents/opencode/`
+  - **Other harnesses:** use the real harness name and its official sandbox
+    documentation. If no official page exists, use `active harness` and
+    `docs/workflows/sandboxed-agent-execution.md`.
+- The warning is a reminder, not proof of isolation. Verify the effective
+  sandbox before the first execution step.
+- Run every agent-controlled shell command, subprocess, MCP server, language
+  server, build, test, script, and generated executable inside the strongest
+  sandbox the active harness supports.
+- Do not treat a permission prompt, tool allowlist, container-shaped UI,
+  warning message, skill invocation, or instruction file as proof of isolation.
+- Use fail-closed settings: if the sandbox is unavailable, unsupported,
+  misconfigured, or cannot perform the task within its policy, stop and report
+  the blocker. Never silently retry outside the sandbox or ask for a sandbox
+  bypass.
+- Keep filesystem access scoped to the working repository and isolated
+  temporary/cache paths. Deny secrets and unrelated user or system paths.
+  Disable network, credential, keychain, local-network, MCP, and LSP access
+  unless the task needs the narrow capability and the sandbox policy grants it.
+- Harness mapping:
+  - **GitHub Copilot CLI:** enable local sandboxing with `/sandbox enable` or
+    launch one session with `copilot --sandbox`; verify with `/sandbox status`
+    and `/sandbox policy`; turn **Allow sandbox bypass** off. Use
+    `copilot --cloud --experimental` when full remote isolation is required and
+    the interactive cloud sandbox is available.
+  - **Claude Code:** enable the native sandbox and strict failure behavior:
+    `sandbox.enabled: true`, `sandbox.failIfUnavailable: true`, and
+    `sandbox.allowUnsandboxedCommands: false`; verify through `/sandbox`.
+  - **OpenCode:** its permission rules are not an OS sandbox. Launch it through
+    an external sandbox such as Docker Sandboxes with `sbx run opencode`, then
+    use OpenCode `permission` rules as defense in depth. If the wrapper is not
+    installed and verified, do not execute agent-controlled commands.
+  - **Other harnesses:** use a documented OS/container/cloud sandbox and verify
+    its effective policy. If none exists, remain read-only or stop.
+- Follow [`docs/workflows/sandboxed-agent-execution.md`](docs/workflows/sandboxed-agent-execution.md)
+  for setup, verification, and failure handling.
+
+## Repository Context Retrieval
+
+- Prefer repository code intelligence and an available language server for
+  symbols and references.
+- When the `pulse-code-context` skill is available and its local index is
+  fresh, use it to narrow discovery before opening broad folders or many full
+  files.
+- Treat indexed chunks, BM25 ranks, and relationship edges as hints. Read the
+  exact source ranges before editing and verify behavior with the repository's
+  real checks.
+- Rebuild or clearly flag the index after relevant source changes.
+- Keep generated context data outside the repository and keep retrieval local
+  by default. Do not send repository text to a hosted indexing service
+  without an explicit repository decision and approval.
+
 ## Rollback Planning & Agent-Driven Recovery (required)
 
 Every task that changes tracked files, dependencies, configuration, schemas,
@@ -169,6 +234,8 @@ session-cumulative `total_token_usage`. **VS Code Copilot Chat** and
 Output formats are shared across all runners and defined in
 `docs/prompts/shared/`:
 
+- The mandatory sandbox warning precedes ELI5, normal, technical, or any other
+  selected format on every tool-backed work response.
 - **ELI5 (default)** - follow `docs/prompts/shared/eli5.prompt.md` for every
   conversation message and the prose in generated artifacts. Conversation
   answers start with a plain-word explanation, use short numbered steps, and

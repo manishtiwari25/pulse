@@ -55,8 +55,8 @@ repositories.
 
 ## Install PULSE Skills
 
-Every PULSE installation includes all eight canonical skill bundles. Activate
-the full pack for GitHub Copilot:
+Every PULSE installation includes the complete canonical skill pack. Activate
+it for GitHub Copilot:
 
 ```bash
 gh skill install . --all --from-local \
@@ -66,7 +66,8 @@ gh skill install . --all --from-local \
 
 Explore the [public skills catalog](https://manishtiwari25.github.io/pulse/skills/)
 or see [`skills/README.md`](skills/README.md) for GitHub CLI, local
-activation, updates, and the token-aware delegation advisor.
+activation, updates, the token-aware delegation advisor, and local code-context
+retrieval, plus the mandatory sandbox preflight.
 
 ## Manual Guides
 

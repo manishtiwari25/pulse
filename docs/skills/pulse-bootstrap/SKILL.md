@@ -18,23 +18,28 @@ uncommitted work.
    - exact PULSE files to reverse
    - failure trigger
    - recovery checks
-4. Read the canonical PULSE bootstrap sources:
+4. Invoke `pulse-sandbox` when supported, print its exact harness-specific
+   warning with the matching sandbox documentation URL, and verify the active
+   harness's real isolation boundary before any command or tool. Stop instead
+   of retrying unsandboxed.
+5. Read the canonical PULSE bootstrap sources:
    - `docs/workflows/bootstrap-control-plane.md`
    - `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md`
-5. Merge useful PULSE instructions and `docs/` surfaces. Always include the
+6. Merge useful PULSE instructions and `docs/` surfaces. Always include the
    complete canonical `docs/skills/` pack and preserve target-specific rules.
-6. When native project skills are supported, activate all eight from the
-   target's local `docs/skills/` source for the current runner. Prefer an
+7. When native project skills are supported, activate the complete pack from
+   the target's local `docs/skills/` source for the current runner. Prefer an
    already available GitHub CLI or universal skills installer. Do not install
    for unrelated runners, add a package dependency, or commit generated skill
    directories.
-7. Do not copy source usage rows, local paths, framework history, stale product
+8. Do not copy source usage rows, local paths, framework history, stale product
    context, secrets, or unrelated state.
-8. Do not add product code, dependencies, CI, or invented commands.
-9. Validate links, diff safety, all eight canonical bundles, preserved user
-   work, and existing targeted docs checks.
-10. If validation cannot be repaired safely, execute the scoped rollback plan.
-11. Leave changes uncommitted unless the user explicitly requests publication.
+9. Do not add product code, dependencies, CI, or invented commands.
+10. Validate links, diff safety, all canonical bundles, preserved user work,
+    existing targeted docs checks, the harness-specific warning and
+    documentation mapping, and fail-closed sandbox guidance.
+11. If validation cannot be repaired safely, execute the scoped rollback plan.
+12. Leave changes uncommitted unless the user explicitly requests publication.
 
 Canonical source:
 <https://github.com/manishtiwari25/pulse/blob/main/docs/workflows/bootstrap-control-plane.md>

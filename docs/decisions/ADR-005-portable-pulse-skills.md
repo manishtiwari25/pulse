@@ -1,7 +1,7 @@
 ---
 id: ADR-005
 title: Publish Portable PULSE Skills from the Docs Control Plane
-status: Accepted (amended 2026-08-14)
+status: Accepted (amended 2026-08-20)
 date: 2026-08-13
 areas: [agents, skills, distribution, documentation]
 tags: [adr, skills, copilot, portability]
@@ -19,7 +19,7 @@ the framework's existing repository rules.
 
 GitHub CLI discovers the Agent Skills `skills/*/SKILL.md` convention even when
 the `skills/` directory is nested under another prefix. The universal
-`skills` CLI also discovers all eight bundles under `docs/skills/`.
+`skills` CLI also discovers the complete bundle set under `docs/skills/`.
 
 ## Options Considered
 
@@ -53,7 +53,7 @@ Choose **Option 2**.
   features, decisions, prompts, and workflows.
 - `docs/skills/` is template-owned and sync-safe.
 - Every PULSE installation includes the complete canonical skill pack.
-- Bootstrap activates all eight for the current runner when native project
+- Bootstrap activates the complete pack for the current runner when native project
   skills and an existing installer are available.
 - Generated runner-specific installation folders are local outputs and are not
   committed to this source repository.
@@ -83,3 +83,5 @@ Choose **Option 2**.
 - [x] Publish the skill pack on the public PULSE site.
 - [x] Publish a dedicated PULSE-formatted catalog.
 - [x] Make the full canonical pack part of every PULSE bootstrap.
+- [x] Add local code-context retrieval as an optional portable skill.
+- [x] Add sandbox-first execution as a mandatory portable preflight skill.

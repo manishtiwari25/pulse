@@ -23,10 +23,12 @@ Public catalog: <https://manishtiwari25.github.io/pulse/skills/>
 | `pulse-review` | Reviewing behavior, evidence, decisions, and rollback readiness |
 | `pulse-memory` | Recording durable lessons without storing temporary notes |
 | `pulse-delegation-advisor` | Estimating tokens and recommending agent, human, or hybrid work |
+| `pulse-code-context` | Building a standard-library Go code index and relationship graph |
+| `pulse-sandbox` | Warning about, verifying, and enforcing fail-closed execution isolation |
 
 ## Recommended: Activate the Complete Pack
 
-The universal skills installer discovers all eight bundles:
+The universal skills installer discovers the complete bundle set:
 
 ```bash
 npx skills@latest add manishtiwari25/pulse \
@@ -111,6 +113,48 @@ Invoke a skill explicitly by name, for example:
 ```text
 Use the /pulse-plan skill to plan this migration.
 ```
+
+## Required Sandbox Preflight
+
+Use `pulse-sandbox` first for any non-conversational task that may run tools,
+commands, builds, tests, scripts, MCP servers, LSP servers, or executables.
+Every tool-backed response begins with the matching harness warning:
+
+```text
+⚠️ SANDBOX REQUIRED — verify the <harness> sandbox before execution; do not bypass it. Docs: <matching official sandbox documentation URL>
+```
+
+The skill selects the official
+[Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox),
+[Claude Code](https://code.claude.com/docs/en/sandboxing), or
+[OpenCode Docker Sandbox](https://docs.docker.com/ai/sandboxes/agents/opencode/)
+page. The warning is not proof of isolation. Copilot CLI and Claude Code use
+their native sandboxes; OpenCode requires an external sandbox because
+permissions alone are not an OS boundary. See
+[`sandboxed-agent-execution.md`](../workflows/sandboxed-agent-execution.md).
+
+## Optional Local Code Context
+
+The `pulse-code-context` bundle includes a standard-library Go helper that
+stores its generated index outside the repository.
+
+```bash
+go run docs/skills/pulse-code-context/code_context.go index \
+  --repo .
+go run docs/skills/pulse-code-context/code_context.go search \
+  "where session tokens are refreshed" \
+  --repo . \
+  --json
+```
+
+The helper uses no third-party packages, model download, or hosted service.
+Use a checksummed release binary when one is available and a Go toolchain is
+not. The index narrows exploration; exact source reads and repository
+verification remain required.
+
+The documented release process builds binaries for macOS, Linux, and Windows
+on AMD64 and ARM64. Verify a downloaded file against the release's
+`SHA256SUMS` before running it.
 
 ## Update or Remove
 

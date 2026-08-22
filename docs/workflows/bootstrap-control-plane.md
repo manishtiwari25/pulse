@@ -21,6 +21,10 @@ It supports both new and established repositories.
 5. Note existing user changes.
 6. Define a rollback plan that lists the exact PULSE files to remove or
    restore if integration fails, while preserving all pre-existing target work.
+7. Invoke `pulse-sandbox` when supported, print its exact harness-specific
+   warning with the matching sandbox documentation URL, and verify the active
+   harness's real isolation boundary before any tool-backed work. If isolation
+   is unavailable, remain read-only or stop; never retry unsandboxed.
 
 ## 3. Choose the Safer Merge Path
 
@@ -67,11 +71,12 @@ docs/workflows/
 - Do not modify product code, add dependencies, create CI, or invent commands.
 - Include the mandatory rollback rule, plan template section, canonical
   rollback workflow, and shared rollback prompt when the target adopts those
-  PULSE surfaces.
+  PULSE surfaces. Also include the sandbox-first rule,
+  `docs/workflows/sandboxed-agent-execution.md`, and `pulse-sandbox`.
 - Always include the complete canonical `docs/skills/` pack. Individual PULSE
   skills are not optional during initial framework installation.
-- When native installation is supported for the current runner, activate all
-  eight skills at project scope from the local source. Prefer one of these
+- When native installation is supported for the current runner, activate the
+  complete skill pack at project scope from the local source. Prefer one of these
   paths with the current runner's supported agent name:
 
   ```bash
@@ -88,6 +93,9 @@ docs/workflows/
 
   Use an installer that is already available; do not install for unrelated
   runners or add a package dependency.
+- Include the `pulse-code-context` Go source, but do not build an index or
+  fetch a release binary during bootstrap. Those are explicit, optional
+  actions in the target repository.
 - Treat generated runner-specific installation directories as local outputs
   and do not commit them. If the universal installer creates
   `skills-lock.json`, leave it uncommitted unless the target already tracks
@@ -106,7 +114,9 @@ git diff --name-only
 
 Check changed links, existing targeted docs checks, preserved product files
 and user work, real target names, no hidden control folder, and no PULSE
-source usage history.
+source usage history. Confirm the copied instructions require the exact
+harness-specific sandbox warning with matching documentation, verified
+fail-closed isolation, and no unsandboxed fallback.
 
 If validation cannot be restored safely, follow
 [`rollback.md`](rollback.md) using the target snapshot as the baseline.

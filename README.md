@@ -100,16 +100,18 @@ service, hidden state folder, or model-specific runtime is required.
 - Agent entry points that route work through the same lifecycle.
 - Reusable templates for decisions, feature specs, plans, memory, and prompts.
 - Portable Agent Skills for bootstrap, planning, decisions, features,
-  rollback, review, memory, and delegation advice.
+  rollback, review, memory, delegation advice, local code-context retrieval,
+  and sandbox-first execution.
 - A safe bootstrap path for both new and established repositories.
 - Mandatory rollback plans and scoped agent-driven recovery.
+- Mandatory sandbox warnings and fail-closed execution isolation.
 - Token-only work accounting based on the real usage a runner exposes.
 - A public documentation site served directly from `docs/`.
 
 ## Portable Agent Skills
 
-Every PULSE bootstrap includes all eight canonical bundles under
-`docs/skills/` and activates them for the current runner when supported.
+Every PULSE bootstrap includes the complete canonical bundle set under
+`docs/skills/` and activates it for the current runner when supported.
 From an installed PULSE repository, activate the local pack for GitHub Copilot:
 
 ```bash
@@ -129,7 +131,25 @@ npx skills@latest add manishtiwari25/pulse \
 ```
 
 The skill pack includes planning, decisions, feature delivery, rollback,
-review, memory, bootstrap, and a token-aware delegation advisor.
+review, memory, bootstrap, token-aware delegation advice, and local
+repository context retrieval, plus the mandatory `pulse-sandbox` preflight.
+
+### Sandbox-First Execution
+
+For every tool-backed task, PULSE invokes `pulse-sandbox` first when supported
+and shows the matching harness warning:
+
+```text
+⚠️ SANDBOX REQUIRED — verify the <harness> sandbox before execution; do not bypass it. Docs: <matching official sandbox documentation URL>
+```
+
+The skill links to the official
+[Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox),
+[Claude Code](https://code.claude.com/docs/en/sandboxing), or
+[OpenCode Docker Sandbox](https://docs.docker.com/ai/sandboxes/agents/opencode/)
+instructions. Copilot CLI and Claude Code use native sandboxes. OpenCode must
+run inside an external sandbox; its permission prompts are not an isolation
+boundary. PULSE stops instead of silently retrying unsandboxed.
 
 ### Token-Aware Delegation Advisor
 
@@ -146,6 +166,18 @@ financial values in the usage ledger.
 
 Explore the [public PULSE skills catalog](https://manishtiwari25.github.io/pulse/skills/)
 or read [`docs/skills/`](docs/skills/README.md) for installation and usage.
+
+### Local Code Context
+
+`pulse-code-context` builds a reusable repository map with a standard-library
+Go BM25 index and a lightweight graph of imports and documentation links. It
+has no Python, native package, model, or hosted-service dependency.
+
+The generated index stays in the user's cache, outside the repository. Agents
+use it to find likely files and line ranges, then read the exact source before
+editing. Run it from source with Go or use a checksummed release binary when
+available. The capability is optional, so PULSE itself still has no required
+runtime dependency.
 
 ## Repository Map
 

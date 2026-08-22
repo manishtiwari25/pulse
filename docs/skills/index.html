@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#07111f">
-    <meta name="description" content="Install all eight portable PULSE Agent Skills for planning, decisions, feature delivery, rollback, review, memory, bootstrap, and token-aware delegation.">
-    <meta property="og:title" content="PULSE Skills - One Engineering Lifecycle, Eight Portable Skills">
+    <meta name="description" content="Install all ten portable PULSE Agent Skills for sandboxing, planning, decisions, feature delivery, rollback, review, memory, bootstrap, delegation, and local code context.">
+    <meta property="og:title" content="PULSE Skills - One Engineering Lifecycle, Ten Portable Skills">
     <meta property="og:description" content="Every PULSE installation includes the complete skill pack. Activate it for your coding agent with one command.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://manishtiwari25.github.io/pulse/skills/">
@@ -41,10 +41,10 @@
         <div class="catalog-hero-grid container">
           <div>
             <p class="eyebrow">Portable PULSE Agent Skills</p>
-            <h1>One lifecycle. Eight skills. <span>Already included.</span></h1>
+            <h1>One lifecycle. Ten skills. <span>Already included.</span></h1>
             <p class="hero-copy">
               Every PULSE installation ships the complete skill source under
-              <code>docs/skills/</code>. Activate all eight for your coding
+              <code>docs/skills/</code>. Activate all ten for your coding
               agent and keep planning, delivery, recovery, and learning inside
               one shared engineering system.
             </p>
@@ -57,7 +57,7 @@
           <aside class="catalog-summary" aria-label="PULSE skills summary">
             <p class="panel-label">Included with PULSE</p>
             <div class="catalog-stat-grid">
-              <div class="catalog-stat"><strong>8</strong><span>portable skills</span></div>
+              <div class="catalog-stat"><strong>10</strong><span>portable skills</span></div>
               <div class="catalog-stat"><strong>1</strong><span>shared lifecycle</span></div>
               <div class="catalog-stat"><strong>0</strong><span>provider lock-in</span></div>
             </div>
@@ -87,7 +87,7 @@
               <div class="install-card-header">
                 <div>
                   <p class="panel-label">Full PULSE repository</p>
-                  <h3>Activate all eight from the bundled local source</h3>
+                  <h3>Activate all ten from the bundled local source</h3>
                 </div>
                 <span class="install-badge">Included path</span>
               </div>
@@ -107,7 +107,7 @@
 
             <article class="install-card">
               <p class="panel-label">Universal skills-only installer</p>
-              <h3>Install all eight without the full framework</h3>
+              <h3>Install all ten without the full framework</h3>
               <pre><code>npx skills@latest add manishtiwari25/pulse \
   --skill '*' \
   --agent github-copilot \
@@ -133,9 +133,13 @@
           </div>
 
           <p class="install-safety-note">
-            Review skill source before use. Skills run with the permissions
-            granted to the coding agent, while PULSE repository and rollback
-            rules remain in force.
+            <strong>⚠️ SANDBOX REQUIRED — verify the &lt;harness&gt; sandbox before execution; do not bypass it. Docs: &lt;matching official sandbox URL&gt;</strong>
+            Invoke <code>/pulse-sandbox</code> first. It selects the official
+            <a href="https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox">Copilot CLI</a>,
+            <a href="https://code.claude.com/docs/en/sandboxing">Claude Code</a>,
+            or <a href="https://docs.docker.com/ai/sandboxes/agents/opencode/">OpenCode sandbox</a>
+            page. The warning is not proof of isolation, and permissions alone
+            are not a sandbox.
           </p>
         </div>
       </section>
@@ -152,10 +156,22 @@
           </div>
 
           <div class="skill-flow-shell">
+            <div class="flow-rail sandbox">
+              <strong>Before any execution</strong>
+              <code>/pulse-sandbox</code>
+              <span>Warn, verify the harness sandbox, and fail closed.</span>
+            </div>
+
             <div class="flow-rail preflight">
               <strong>Before delegation</strong>
               <code>/pulse-delegation-advisor</code>
               <span>Estimate tokens, uncertainty, and the safest owner.</span>
+            </div>
+
+            <div class="flow-rail context">
+              <strong>Before broad source reads</strong>
+              <code>/pulse-code-context</code>
+              <span>Search local ranked chunks and likely related files.</span>
             </div>
 
             <div class="flow-grid" aria-label="PULSE skill lifecycle">
@@ -180,10 +196,26 @@
         <div class="container">
           <div class="section-heading">
             <p class="eyebrow">Featured safeguards</p>
-            <h2>Decide who should do the work, then make sure there is a safe way back.</h2>
+            <h2>Verify isolation, choose the owner, find the code, and keep a safe way back.</h2>
           </div>
 
           <div class="featured-skill-grid">
+            <article class="featured-skill sandbox">
+              <p class="featured-label">Execution boundary</p>
+              <h3><code>/pulse-sandbox</code></h3>
+              <p>
+                Shows the required warning, verifies real harness isolation,
+                and stops rather than retrying unsandboxed.
+              </p>
+              <ul>
+                <li>Copilot and Claude native sandboxes</li>
+                <li>External sandbox required for OpenCode</li>
+                <li>No bypass or silent fallback</li>
+                <li>Permissions remain defense in depth</li>
+              </ul>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-sandbox/SKILL.md">Open skill source &rarr;</a>
+            </article>
+
             <article class="featured-skill advisor">
               <p class="featured-label">Delegation intelligence</p>
               <h3><code>/pulse-delegation-advisor</code></h3>
@@ -217,6 +249,22 @@
               </ul>
               <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-rollback/SKILL.md">Open skill source &rarr;</a>
             </article>
+
+            <article class="featured-skill context">
+              <p class="featured-label">Local repository map</p>
+              <h3><code>/pulse-code-context</code></h3>
+              <p>
+                Builds a standard-library Go BM25 index plus a lightweight
+                relationship graph.
+              </p>
+              <ul>
+                <li>Ranked paths and exact line ranges</li>
+                <li>Incoming and outgoing related files</li>
+                <li>External user-cache storage</li>
+                <li>Source verification remains mandatory</li>
+              </ul>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-code-context/SKILL.md">Open skill source &rarr;</a>
+            </article>
           </div>
         </div>
       </section>
@@ -225,7 +273,7 @@
         <div class="container">
           <div class="section-heading">
             <p class="eyebrow">The complete catalog</p>
-            <h2>Eight skills cover the PULSE lifecycle.</h2>
+            <h2>Ten skills cover the PULSE lifecycle.</h2>
             <p>
               Each bundle is model-agnostic, readable Markdown with any helper
               code stored beside it.
@@ -296,6 +344,22 @@
               <p class="skill-use"><strong>Use for:</strong> delegation, budget, risk, and ownership decisions.</p>
               <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-delegation-advisor/SKILL.md">View source &rarr;</a>
             </article>
+
+            <article class="catalog-skill-card highlighted">
+              <div class="catalog-skill-meta"><span class="skill-number">09</span><span class="skill-type">Find</span></div>
+              <h3><code>/pulse-code-context</code></h3>
+              <p>Build and query a standard-library Go context index and relationship graph.</p>
+              <p class="skill-use"><strong>Use for:</strong> repository exploration, impact tracing, and targeted source reads.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-code-context/SKILL.md">View source &rarr;</a>
+            </article>
+
+            <article class="catalog-skill-card highlighted">
+              <div class="catalog-skill-meta"><span class="skill-number">10</span><span class="skill-type">Isolate</span></div>
+              <h3><code>/pulse-sandbox</code></h3>
+              <p>Warn before execution, verify the real harness sandbox, and fail closed.</p>
+              <p class="skill-use"><strong>Use for:</strong> every tool-backed task before commands, builds, tests, or subprocesses.</p>
+              <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-sandbox/SKILL.md">View source &rarr;</a>
+            </article>
           </div>
         </div>
       </section>
@@ -317,11 +381,11 @@
               </p>
             </article>
             <article class="policy-card">
-              <span>Loaded when useful</span>
+              <span>Loaded for the task</span>
               <h3>Portable skills</h3>
               <p>
-                A skill supplies the detailed procedure for the current job
-                without filling every agent conversation with every workflow.
+                <code>pulse-sandbox</code> runs first for tool-backed work.
+                Other skills supply the detailed procedure for the current job.
               </p>
             </article>
             <article class="policy-card">
@@ -343,11 +407,11 @@
             <p class="eyebrow">Ready to use PULSE</p>
             <h2>Install the complete lifecycle, not isolated prompts.</h2>
             <p>
-              Start with all eight skills and let the task decide which one is
+              Start with all ten skills and let the task decide which one is
               active. The shared docs control plane keeps their outputs connected.
             </p>
             <div class="actions">
-              <a class="button primary" href="#install">Install all eight skills</a>
+              <a class="button primary" href="#install">Install all ten skills</a>
               <a class="button" href="https://github.com/manishtiwari25/pulse/tree/main/docs/skills">Browse on GitHub</a>
             </div>
           </div>

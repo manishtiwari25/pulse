@@ -15,7 +15,7 @@ do not need to copy files or replace placeholders first.
 
 ## PULSE Skills Are Included
 
-The one-prompt and template paths include all eight canonical bundles under
+The one-prompt and template paths include the complete canonical bundle set under
 `docs/skills/`. Activate the complete pack for GitHub Copilot:
 
 ```bash
@@ -27,6 +27,12 @@ gh skill install . --all --from-local \
 The bootstrap agent performs project activation when the current runner and an
 existing installer support it. Generated runner-specific folders remain local
 output; `docs/skills/` is the source of truth.
+
+The `pulse-sandbox` skill runs first for tool-backed work and requires the
+visible warning plus verified, fail-closed isolation.
+
+The included `pulse-code-context` skill remains inactive until a user chooses
+to run its Go source or a trusted release binary and build a repository index.
 
 ## Manual Template Options
 

@@ -91,6 +91,12 @@ Rules:
   existing documentation, and uncommitted user work.
 - Before editing, define a rollback plan that identifies the target baseline,
   failure trigger, exact PULSE files to reverse, and recovery checks.
+- Before any tool-backed work, invoke `pulse-sandbox` when supported and print
+  its exact harness-specific warning:
+  `⚠️ SANDBOX REQUIRED — verify the <harness> sandbox before execution; do not bypass it. Docs: <matching sandbox documentation URL>`.
+  Use the official sandbox page for the active harness, then verify its real
+  isolation boundary. If isolation is unavailable, remain read-only or stop;
+  never retry unsandboxed.
 - Preserve project-specific instructions. Merge useful PULSE routing instead
   of replacing them with framework text.
 - Put new control-plane content under `docs/`. Do not create parallel root
@@ -106,11 +112,12 @@ Rules:
   rows copied from PULSE.
 - If the target adopts PULSE agent workflows, include the mandatory rollback
   rule, `docs/workflows/rollback.md`, rollback sections in plan/prompt
-  templates, and `docs/prompts/shared/rollback.prompt.md`.
+  templates, `docs/prompts/shared/rollback.prompt.md`, the sandbox-first rule,
+  `docs/workflows/sandboxed-agent-execution.md`, and `pulse-sandbox`.
 - Always copy the complete canonical `docs/skills/` pack and installation
   guidance. Do not omit individual PULSE skills during bootstrap.
 - If the current runner supports native project skills and an installer is
-  already available, activate all eight from the target's local source using
+  already available, activate the complete pack from the target's local source using
   `gh skill install . --all --from-local --agent CURRENT_AGENT --scope
   project` or `npx skills@latest add . --skill '*' --agent CURRENT_AGENT
   --copy --yes`. Replace `CURRENT_AGENT` with the real supported agent name.
@@ -118,6 +125,9 @@ Rules:
   generated project/user skill directories. Leave a generated
   `skills-lock.json` uncommitted unless the target already tracks installer
   locks as project policy.
+- Include the `pulse-code-context` Go source, but do not build an index or
+  fetch a release binary during bootstrap. Leave those optional actions to a
+  later repository-specific task.
 - If native activation is unavailable, leave all canonical sources in place
   and report the exact activation command in the handoff.
 - Do not add dependencies, services, sample CI, invented commands, or product
@@ -138,7 +148,8 @@ git diff --name-only
 Also resolve changed relative Markdown links, run existing targeted docs
 checks, confirm product files and user work were preserved, search for stale
 framework assumptions and local paths, and confirm no hidden control folder
-was added.
+was added. Confirm the copied instructions require the exact sandbox warning,
+verified fail-closed isolation, and no unsandboxed fallback.
 
 If validation cannot be restored safely, follow the adopted rollback workflow
 and verify the original target baseline.
