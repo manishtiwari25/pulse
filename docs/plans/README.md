@@ -19,5 +19,11 @@
   [`sandbox-recommended-execution.md`](sandbox-recommended-execution.md).
 - [`sandbox-recommended-execution.md`](sandbox-recommended-execution.md) -
   keeps sandboxing visible and preferred without blocking unsandboxed work.
+- [`pulse-template-sync-skill.md`](pulse-template-sync-skill.md) - packages
+  safe PULSE drift checks and approved template updates as a portable skill.
+
+## In Progress
+
+No active plans.
 
 Copy `_template.md` when another non-trivial task needs an explicit plan.

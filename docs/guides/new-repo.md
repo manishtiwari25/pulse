@@ -35,6 +35,9 @@ unsandboxed.
 The included `pulse-code-context` skill remains inactive until a user chooses
 to run its Go source or a trusted release binary and build a repository index.
 
+After onboarding, `/pulse-template-sync check` can report upstream PULSE drift
+without changing tracked files or `.template-sync`.
+
 ## Manual Template Options
 
 Use these only when you want a full copy of the tracked PULSE framework.

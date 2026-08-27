@@ -7,7 +7,7 @@ define their own application architecture separately.
 
 ## System Shape
 
-PULSE has eight durable surfaces:
+PULSE has nine durable surfaces:
 
 1. **Agent entry points** - `AGENTS.md`, `CLAUDE.md`, and
    `.github/copilot-instructions.md` route agents into the same lifecycle.
@@ -30,6 +30,9 @@ PULSE has eight durable surfaces:
 8. **Sandbox-aware execution** - `AGENTS.md` and
    `docs/workflows/sandboxed-agent-execution.md` recommend isolation and require
    agents to report whether commands or subprocesses are sandboxed.
+9. **Template maintenance** - `pulse-template-sync` checks upstream drift by
+   default and applies only explicitly approved PULSE updates while preserving
+   project-owned files.
 
 ## Public Documentation
 

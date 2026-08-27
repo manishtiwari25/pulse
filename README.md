@@ -101,7 +101,7 @@ service, hidden state folder, or model-specific runtime is required.
 - Reusable templates for decisions, feature specs, plans, memory, and prompts.
 - Portable Agent Skills for bootstrap, planning, decisions, features,
   rollback, review, memory, delegation advice, local code-context retrieval,
-  and sandbox-aware execution.
+  sandbox-aware execution, and template synchronization.
 - A safe bootstrap path for both new and established repositories.
 - Mandatory rollback plans and scoped agent-driven recovery.
 - Visible sandbox recommendations and honest unsandboxed-execution disclosure.
@@ -131,8 +131,24 @@ npx skills@latest add manishtiwari25/pulse \
 ```
 
 The skill pack includes planning, decisions, feature delivery, rollback,
-review, memory, bootstrap, token-aware delegation advice, and local
-repository context retrieval, plus the advisory `pulse-sandbox` preflight.
+review, memory, bootstrap, template sync, token-aware delegation advice, and
+local repository context retrieval, plus the advisory `pulse-sandbox`
+preflight.
+
+### Template Sync
+
+Adopted repositories can check for upstream PULSE changes without modifying
+tracked files:
+
+```text
+Use /pulse-template-sync in check mode.
+```
+
+Use apply mode only when the reported update should be merged:
+
+```text
+Use /pulse-template-sync in apply mode.
+```
 
 ### Sandbox Recommendation
 

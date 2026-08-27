@@ -84,6 +84,10 @@ Do not build a code-context index or fetch a release binary during bootstrap.
 The `pulse-code-context` Go source is included and can be activated later as
 an explicit repository-specific choice.
 
+Use `/pulse-template-sync check` after adoption for a read-only upstream drift
+report. Use apply mode only when the repository should merge reviewed PULSE
+updates.
+
 ### Merge Instead of Overwriting
 
 | Target already has | Safe action |

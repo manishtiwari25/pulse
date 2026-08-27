@@ -23,7 +23,7 @@ the active runner exposes. Never guess a missing token field.
 | 2026-08-08 | 92360e0a | claude-fable-5, gpt-5.6-sol (GitHub Copilot) | 14,902,301 out | 16 | Polish the universal bootstrap guides and retire the duplicate orchestrator flow. |
 | 2026-08-08 | 40882170 | gpt-5.6-sol, gpt-5-mini (GitHub Copilot) | 14,154 out | n/a | Coordinate and verify the one-prompt bootstrap guides. |
 | 2026-08-11 | 39c58803 | gpt-5-mini, gpt-5.6-sol (GitHub Copilot) | n/a in / 202,794 out / n/a total @ 2026-08-14 06:41 CEST † | n/a | Rebrand and publish PULSE; add the shared audit trail, token-only accounting, rollbacks, portable skills, delegation advice, and the default full-pack skills catalog. |
-| 2026-08-20 | c3a5138e | gpt-5.6-sol, gpt-5.4 (GitHub Copilot) | n/a in / 360,389 main out + 1,634,756 subagent total @ 2026-08-27 12:08 CEST † | 310 msg + 1 subagent | Add standard-library Go code-context search and a relationship graph, then evolve sandboxing from a strict gate into a visible recommendation with harness docs, honest unsandboxed disclosure, and migration for older PULSE copies. |
+| 2026-08-20 | c3a5138e | gpt-5.6-sol, gpt-5.4 (GitHub Copilot) | 45,404,035 in / 411,055 out / 45,815,090 total @ 2026-08-27 12:22 CEST † | 329 main + 34 subagent requests | Add standard-library Go code-context search and a relationship graph, evolve sandboxing into a visible recommendation with migration guidance, and package safe template synchronization as the eleventh canonical skill. |
 
 Older rows contain the output count that was preserved from the original
 ledger. New rows should use the fuller token breakdown when the runner exposes it.

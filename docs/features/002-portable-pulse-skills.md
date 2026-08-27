@@ -32,6 +32,8 @@ through the same engineering lifecycle.
   `pulse-delegation-advisor`.
 - [x] Include `pulse-code-context` for optional local repository retrieval.
 - [x] Include `pulse-sandbox` for execution-boundary advice and warnings.
+- [x] Include `pulse-template-sync` for safe upstream drift checks and
+  explicitly applied framework updates.
 - [x] Give every skill valid `name` and `description` frontmatter.
 - [x] Keep each skill model-agnostic and usable without hidden PULSE state.
 - [x] Include scripts or resources inside the skill folder when required.
@@ -49,6 +51,8 @@ through the same engineering lifecycle.
 - [x] **Safety:** skills cannot weaken always-on PULSE rules.
 - [x] **Execution safety:** `pulse-sandbox` recommends isolation and reports
   whether execution is sandboxed or unsandboxed.
+- [x] **Sync safety:** `pulse-template-sync` defaults to check mode, preserves
+  project-owned files, and requires explicit apply intent.
 - [x] **Maintainability:** skills point to canonical workflows rather than
   creating competing policy.
 - [x] **Discoverability:** descriptions clearly state when each skill applies.
@@ -75,6 +79,7 @@ through the same engineering lifecycle.
 - New `npx skills@latest add manishtiwari25/pulse` installation path.
 - New public catalog at `/pulse/skills/`.
 - New slash-invokable PULSE skill names.
+- New `/pulse-template-sync check|apply` maintenance interface.
 
 ## Data Changes
 

@@ -16,6 +16,7 @@ Public catalog: <https://manishtiwari25.github.io/pulse/skills/>
 | Skill | Use it for |
 | --- | --- |
 | `pulse-bootstrap` | Adding PULSE safely to a new or established repository |
+| `pulse-template-sync` | Checking upstream PULSE drift and applying approved framework updates |
 | `pulse-plan` | Creating a verifiable work plan with rollback |
 | `pulse-decision` | Recording an ADR and decision trail |
 | `pulse-feature` | Defining and delivering a feature through the PULSE lifecycle |
@@ -113,6 +114,24 @@ Invoke a skill explicitly by name, for example:
 ```text
 Use the /pulse-plan skill to plan this migration.
 ```
+
+## Template Sync
+
+Check an adopted repository without changing tracked files or sync state:
+
+```text
+Use /pulse-template-sync in check mode.
+```
+
+Apply reviewed upstream changes and leave them uncommitted:
+
+```text
+Use /pulse-template-sync in apply mode.
+```
+
+The skill follows [`template-sync.md`](../workflows/template-sync.md), keeps
+project-owned files untouched, and requires approval before merging
+review-first instruction changes.
 
 ## Sandbox Recommendation Preflight
 

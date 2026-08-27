@@ -35,7 +35,8 @@ uncommitted work.
    the target's local `docs/skills/` source for the current runner. Prefer an
    already available GitHub CLI or universal skills installer. Do not install
    for unrelated runners, add a package dependency, or commit generated skill
-   directories.
+   directories. Include `pulse-template-sync` for later maintenance, but do
+   not run it during initial onboarding.
 8. Do not copy source usage rows, local paths, framework history, stale product
    context, secrets, or unrelated state.
 9. Do not add product code, dependencies, CI, or invented commands.

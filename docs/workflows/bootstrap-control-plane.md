@@ -81,6 +81,8 @@ docs/workflows/
   divergence.
 - Always include the complete canonical `docs/skills/` pack. Individual PULSE
   skills are not optional during initial framework installation.
+- Include `pulse-template-sync` for future maintenance, but do not run a
+  template sync during initial onboarding.
 - When native installation is supported for the current runner, activate the
   complete skill pack at project scope from the local source. Prefer one of these
   paths with the current runner's supported agent name:

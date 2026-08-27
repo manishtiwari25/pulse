@@ -16,6 +16,9 @@
   Apply when: prefer sandboxing, disclose unsandboxed execution clearly, and
   let stronger organization or task policies decide when isolation is
   mandatory.
+- `2026-08-27` - Template maintenance should inspect before it mutates. Apply
+  when: make sync checks read-only for tracked files and state, and require an
+  explicit apply request before changing an adopted repository.
 
 ## Populate When
 

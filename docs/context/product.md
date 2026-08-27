@@ -72,6 +72,8 @@ plane without replacing existing code or rules.
   sandboxed or unsandboxed.
 - Agents can reuse a local keyword and relationship map to narrow
   repository exploration while still verifying exact source before changes.
+- Adopted repositories can check upstream PULSE drift without changing tracked
+  files, then apply reviewed framework updates explicitly.
 - Delegation advice reports a token range and confidence before recommending
   agent-led, hybrid, or human-led work.
 - Important decisions and durable lessons survive beyond one chat session.

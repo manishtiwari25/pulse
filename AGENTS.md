@@ -291,7 +291,7 @@ Output formats are shared across all runners and defined in
 | Skill creation/export     | `docs/skills/`, `docs/workflows/`, `docs/prompts/shared/`, `docs/decisions/`                   | `docs/skills/`, `docs/features/`, `docs/decisions/`                 |
 | PULSE maintenance         | `AGENTS.md`, `README.md`, `.github/copilot-instructions.md`, `docs/*/README.md`                  | durable framework docs/config                                       |
 | Adopt PULSE elsewhere     | `docs/workflows/bootstrap-control-plane.md`, `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md` | target repository control plane                          |
-| Sync from PULSE           | `docs/workflows/template-sync.md`, `docs/prompts/shared/template-sync.prompt.md`, `.template-sync` | sync-safe framework files, `.template-sync`                       |
+| Sync from PULSE           | `docs/skills/pulse-template-sync/SKILL.md`, `docs/workflows/template-sync.md`, `docs/prompts/shared/template-sync.prompt.md`, `.template-sync` | sync-safe framework files, `.template-sync` |
 
 ## Product Direction
 

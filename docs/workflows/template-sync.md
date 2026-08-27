@@ -4,6 +4,20 @@ Periodically check the upstream PULSE repository for changes and pull the
 latest rules, workflows, scripts, and scaffold into a repository that adopted
 it. Any agent or human can follow this workflow.
 
+When installed, `/pulse-template-sync` is the portable entry point for this
+canonical workflow.
+
+## Modes
+
+- **Check (default):** fetch and report drift without changing tracked files,
+  `.template-sync`, instructions, or installed skills.
+- **Apply:** update sync-safe files, present review-first changes for explicit
+  approval, and update `.template-sync` after successful validation.
+
+Use apply mode only when the user explicitly requests apply mode or clearly
+asks for repository files to be updated. Invoking the skill without that intent
+remains a check.
+
 ## When to run
 
 - Periodically (e.g. weekly or at the start of a work cycle).
@@ -23,7 +37,11 @@ Sync state lives in `.template-sync` at the repo root (JSON):
 }
 ```
 
-If the file does not exist yet, create it during the first sync. Repos created via GitHub's "Use this template" have unrelated git history, so always compare trees against the recorded `lastSyncedCommit` (or the full tree on first sync) — never rely on `git merge-base`.
+If the file does not exist yet, create it only after the first successful
+apply. Check mode keeps the first-sync baseline in memory. Repos created via
+GitHub's "Use this template" have unrelated git history, so always compare
+trees against the recorded `lastSyncedCommit` (or the full tree on first sync)
+- never rely on `git merge-base`.
 
 ## Path classification
 
@@ -36,31 +54,51 @@ If the file does not exist yet, create it during the first sync. Repos created v
 ## Procedure
 
 1. **Resolve the template remote.**
-   - Read `templateUrl` from `.template-sync`; fall back to the `template` git remote; fall back to the default PULSE URL above.
-   - If `git remote get-url origin` equals the PULSE URL, this repository **is** PULSE - report that and stop.
-   - Ensure the remote exists: `git remote add template <url>` (skip if already present), then `git fetch template --quiet`.
-2. **Detect the template branch.** Use `templateBranch` from state, else the remote HEAD: `git remote show template | sed -n 's/.*HEAD branch: //p'`.
-3. **Check for changes.**
-   - With a baseline: `git diff --name-status <lastSyncedCommit> template/<branch>`.
-   - First sync (no baseline): `git diff --name-status HEAD template/<branch>` restricted to the classified paths.
-   - If nothing changed in sync-safe or review-first paths, update `lastSyncedAt`, report "already up to date", and stop.
-   - Before applying anything, record a rollback plan using the current local
-     tree and `.template-sync` state as the baseline. The reversal must restore
-     only files changed by this sync.
-4. **Apply sync-safe updates.** For each changed sync-safe file:
-   - If the local copy is unmodified since the last sync (or absent), take the template version: `git checkout template/<branch> -- <path>`.
+   - Read `templateUrl` from `.template-sync`; fall back to the `template` git
+     remote; fall back to the default PULSE URL above.
+   - Compare normalized repository identities. If `origin` is the same PULSE
+     repository, this repository **is** PULSE - report that and stop.
+2. **Detect the template branch.** Use `templateBranch` from state, else the
+   existing remote HEAD, `git ls-remote --symref <url> HEAD`, or the hosting
+   provider's default-branch metadata.
+3. **Fetch the template head.**
+   - In apply mode, record the rollback plan before this step.
+   - When a `template` remote already exists, fetch the selected branch and use
+     `template/<branch>` as `<template-head>`.
+   - Otherwise run `git fetch --quiet <url> <branch>` and use `FETCH_HEAD` as
+     `<template-head>`.
+   - Do not add or alter a persistent remote unless the user explicitly
+     approves it. Include any approved remote change in the rollback scope.
+4. **Check for changes.**
+   - With a baseline:
+     `git diff --name-status <lastSyncedCommit> <template-head>`.
+   - First sync (no baseline): `git diff --name-status HEAD <template-head>`
+     restricted to the classified paths.
+   - If nothing changed in sync-safe or review-first paths, report "already up
+     to date" and stop. Update `lastSyncedAt` only in apply mode.
+   - In check mode, report the classified drift and stop without modifying
+     tracked files or `.template-sync`.
+   - The apply-mode rollback baseline includes the current worktree,
+     `.template-sync`, and any approved remote configuration change. The
+     reversal must restore only state changed by this sync.
+5. **Apply sync-safe updates in apply mode.** For each changed sync-safe file:
+   - If the local copy is unmodified since the last sync (or absent), take the
+     template version: `git checkout <template-head> -- <path>`.
    - If the local copy was also modified, do not overwrite — move it to the review list.
    - Apply upstream deletions/renames of template-owned files too, unless the repo deliberately kept the file (then note it in the review list).
-5. **Review rule changes.** For each changed review-first file, show a summary
-   of the upstream diff (`git diff <lastSyncedCommit> template/<branch> --
+6. **Review rule changes.** For each changed review-first file, show a summary
+   of the upstream diff (`git diff <lastSyncedCommit> <template-head> --
    <path>`) and merge relevant rule updates into the local file by hand,
    keeping project-specific names, context, and decisions intact. Treat copied
    PULSE `SANDBOX REQUIRED`, fail-closed fallback, and ADR-008 instruction text
    as superseded template policy; replace it with ADR-009 unless an explicit
    target-owned decision requires strict isolation. Get user approval before
    changing operating rules.
-6. **Record state.** Write the new template head commit and today's date into `.template-sync`.
-7. **Report and hand off.** Summarize what was synced, what needs manual review, and what was skipped. Leave changes staged/uncommitted (or on a branch) for the user to review and commit — do not push on the user's behalf.
+7. **Record state in apply mode.** Write the new template head commit and
+   today's date into `.template-sync` after validation succeeds.
+8. **Report and hand off.** Summarize what was synced, what needs manual
+   review, and what was skipped. Leave changes uncommitted for the user to
+   review and commit - do not push on the user's behalf.
 
 If validation fails and cannot be corrected within the sync scope, follow
 [`rollback.md`](rollback.md), restore the prior `.template-sync` state, and
@@ -69,7 +107,9 @@ verify that project-owned files remain untouched.
 ## Periodic scheduling
 
 - **Any runner / human:** add a recurring reminder or CI job that runs steps 1–3 (check only) and opens an issue when the template has moved.
-- **Any agent runner:** feed `docs/prompts/shared/template-sync.prompt.md` (optionally with `check`) to the agent manually, or schedule it (e.g. a weekly scheduled agent/cron) in check-only mode and apply on demand.
+- **Any agent runner:** invoke `/pulse-template-sync` or feed
+  `docs/prompts/shared/template-sync.prompt.md` to the agent manually. Both use
+  check mode by default; schedule check-only mode and apply on demand.
 - Keep applies interactive: rule changes (review-first files) should always pass through a human or an explicitly approved agent run.
 
 ## Notes

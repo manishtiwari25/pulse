@@ -86,3 +86,5 @@ Choose **Option 2**.
 - [x] Add local code-context retrieval as an optional portable skill.
 - [x] Add sandbox recommendations and boundary disclosure as a portable
   preflight skill.
+- [x] Add template drift checks and approved updates as the portable
+  `pulse-template-sync` skill.
