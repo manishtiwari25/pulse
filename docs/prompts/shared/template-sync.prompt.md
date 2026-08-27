@@ -26,7 +26,13 @@ and scaffold. The full model-agnostic procedure lives in
 3. Resolve and fetch the `template` remote. If this repository's `origin` is
    the PULSE URL, report that this is the framework source and stop.
 4. Diff the recorded `lastSyncedCommit` (or `HEAD` on first sync) against the template head, restricted to the paths classified in the workflow.
-5. Apply sync-safe files with `git checkout template/<branch> -- <path>`; never overwrite review-first files (`AGENTS.md`, `CLAUDE.md`, `README.md`, `.github/copilot-instructions.md`, `docs/**/README.md`) — show their upstream diffs and ask the user before merging rule changes into the local versions by hand.
+5. Apply sync-safe files with `git checkout template/<branch> -- <path>`;
+   never overwrite review-first files (`AGENTS.md`, `CLAUDE.md`, `README.md`,
+   `.github/copilot-instructions.md`, `docs/**/README.md`) - show their upstream
+   diffs and ask the user before merging rule changes into the local versions
+   by hand. Treat copied PULSE `SANDBOX REQUIRED`, fail-closed fallback, and
+   ADR-008 instruction text as superseded upstream policy; replace it with
+   ADR-009 unless an explicit local decision requires strict isolation.
 6. Treat `docs/skills/` as sync-safe canonical source, but never modify
    generated runner-specific skill installation directories.
 7. Never touch project-owned content: `docs/context/`, `docs/architecture/`, non-template files in `docs/decisions|features|memory|plans/`, `docs/usage/usage-log.md` rows, or any product code.

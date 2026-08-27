@@ -32,8 +32,8 @@ PULSE intentionally uses a small, portable stack:
 - The code-context helper adds no third-party package or model dependency.
 - Running from source requires Go; a published release binary does not.
 - The public site must work as static files served from `docs/`.
-- Agent-controlled execution fails closed when the active sandbox is
-  unavailable; PULSE does not authorize unsandboxed fallback.
+- Agent-controlled execution prefers a sandbox but may continue under normal
+  harness permissions when the boundary is reported as unsandboxed.
 - Prompts and workflows remain model-agnostic.
 - Adopting repositories keep their own language, framework, build, test, and
   deployment choices.

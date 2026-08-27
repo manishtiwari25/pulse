@@ -31,7 +31,7 @@ through the same engineering lifecycle.
   `pulse-feature`, `pulse-rollback`, `pulse-review`, `pulse-memory`, and
   `pulse-delegation-advisor`.
 - [x] Include `pulse-code-context` for optional local repository retrieval.
-- [x] Include `pulse-sandbox` for mandatory execution preflight and warnings.
+- [x] Include `pulse-sandbox` for execution-boundary advice and warnings.
 - [x] Give every skill valid `name` and `description` frontmatter.
 - [x] Keep each skill model-agnostic and usable without hidden PULSE state.
 - [x] Include scripts or resources inside the skill folder when required.
@@ -47,8 +47,8 @@ through the same engineering lifecycle.
 
 - [x] **Portability:** follow the Agent Skills `SKILL.md` format.
 - [x] **Safety:** skills cannot weaken always-on PULSE rules.
-- [x] **Execution safety:** `pulse-sandbox` reinforces the always-on sandbox
-  rule but its warning never substitutes for verified isolation.
+- [x] **Execution safety:** `pulse-sandbox` recommends isolation and reports
+  whether execution is sandboxed or unsandboxed.
 - [x] **Maintainability:** skills point to canonical workflows rather than
   creating competing policy.
 - [x] **Discoverability:** descriptions clearly state when each skill applies.

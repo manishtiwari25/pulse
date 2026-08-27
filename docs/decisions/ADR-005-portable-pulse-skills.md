@@ -84,4 +84,5 @@ Choose **Option 2**.
 - [x] Publish a dedicated PULSE-formatted catalog.
 - [x] Make the full canonical pack part of every PULSE bootstrap.
 - [x] Add local code-context retrieval as an optional portable skill.
-- [x] Add sandbox-first execution as a mandatory portable preflight skill.
+- [x] Add sandbox recommendations and boundary disclosure as a portable
+  preflight skill.

@@ -23,13 +23,15 @@ plans, prompts, skills, usage, and workflows.
   activate the complete pack for the current runner when supported.
 - Keep generated code-context indexes outside the repository and keep
   retrieval local unless a separate decision approves a hosted service.
-- Before executing tools or commands, enable and verify Copilot CLI local
-  sandboxing with `/sandbox enable`, `/sandbox status`, and `/sandbox policy`,
-  or start the session with `copilot --sandbox`. Turn **Allow sandbox bypass**
-  off and never request an unsandboxed retry. Follow the canonical sandbox
-  rule in `AGENTS.md`, invoke `pulse-sandbox` first when available, and show
-  this exact line on every tool-backed work response:
-  `⚠️ SANDBOX REQUIRED — verify the GitHub Copilot CLI sandbox before execution; do not bypass it. Docs: https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox`
+- Before executing tools or commands, prefer Copilot CLI local sandboxing with
+  `/sandbox enable`, `/sandbox status`, and `/sandbox policy`, or start the
+  session with `copilot --sandbox`. When no sandbox is active, state clearly
+  that execution is unsandboxed and continue under normal Copilot permissions
+  unless a higher-level policy requires isolation. Do not automatically
+  disable or bypass an active sandbox. Follow the canonical guidance in
+  `AGENTS.md`, invoke `pulse-sandbox` first when available, and show this exact
+  line on every tool-backed work response:
+  `⚠️ SANDBOX RECOMMENDED — use the GitHub Copilot CLI sandbox when available; state clearly if execution is unsandboxed. Docs: https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox`
 - Before any change-producing task, define a rollback plan with the baseline,
   trigger, narrow reversal steps, state-safety notes, and recovery checks.
 - Follow `docs/workflows/rollback.md`. Roll back automatically only when the
@@ -47,8 +49,8 @@ plans, prompts, skills, usage, and workflows.
 
 ## Output Formats
 
-- The mandatory sandbox warning comes before the selected output format on
-  every tool-backed work response.
+- The mandatory sandbox recommendation warning comes before the selected
+  output format on every tool-backed work response.
 - **ELI5 is the default** per `docs/prompts/shared/eli5.prompt.md`. Apply it to
   every conversation message and artifact prose unless the user switches with
   `normal`, `technical`, or `no eli5`. Code, configs, commands, facts,

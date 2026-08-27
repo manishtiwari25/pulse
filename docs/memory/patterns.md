@@ -7,12 +7,15 @@
 - `2026-08-20` - A repository context index is a discovery map, not the source
   of truth. Apply when: use cached chunks and graph edges to narrow reads, then
   verify the exact source before planning or editing.
-- `2026-08-22` - Permission controls are not a sandbox. Apply when: require a
-  verified OS, container, VM, or cloud isolation boundary for agent execution,
-  and fail closed instead of retrying outside it.
+- `2026-08-22` - Permission controls are not a sandbox. Apply when: distinguish
+  approval controls from an OS, container, VM, or cloud isolation boundary.
 - `2026-08-22` - Safety warnings should lead to the next safe action. Apply
   when: include the active harness's official sandbox documentation directly
   in the warning, with the local PULSE workflow as the fallback.
+- `2026-08-27` - A safety recommendation should not pretend to be a hard gate.
+  Apply when: prefer sandboxing, disclose unsandboxed execution clearly, and
+  let stronger organization or task policies decide when isolation is
+  mandatory.
 
 ## Populate When
 

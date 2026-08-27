@@ -51,7 +51,14 @@ If the file does not exist yet, create it during the first sync. Repos created v
    - If the local copy is unmodified since the last sync (or absent), take the template version: `git checkout template/<branch> -- <path>`.
    - If the local copy was also modified, do not overwrite — move it to the review list.
    - Apply upstream deletions/renames of template-owned files too, unless the repo deliberately kept the file (then note it in the review list).
-5. **Review rule changes.** For each changed review-first file, show a summary of the upstream diff (`git diff <lastSyncedCommit> template/<branch> -- <path>`) and merge relevant rule updates into the local file by hand, keeping project-specific names, context, and decisions intact. Get user approval before changing operating rules.
+5. **Review rule changes.** For each changed review-first file, show a summary
+   of the upstream diff (`git diff <lastSyncedCommit> template/<branch> --
+   <path>`) and merge relevant rule updates into the local file by hand,
+   keeping project-specific names, context, and decisions intact. Treat copied
+   PULSE `SANDBOX REQUIRED`, fail-closed fallback, and ADR-008 instruction text
+   as superseded template policy; replace it with ADR-009 unless an explicit
+   target-owned decision requires strict isolation. Get user approval before
+   changing operating rules.
 6. **Record state.** Write the new template head commit and today's date into `.template-sync`.
 7. **Report and hand off.** Summarize what was synced, what needs manual review, and what was skipped. Leave changes staged/uncommitted (or on a branch) for the user to review and commit — do not push on the user's behalf.
 

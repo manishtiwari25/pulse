@@ -77,7 +77,8 @@ are supported. Treat the generated runner-specific directory as local
 installation output, while `docs/skills/` remains canonical.
 
 Invoke `pulse-sandbox` first for tool-backed work. Preserve its exact warning
-and fail-closed rule when merging target-specific instructions.
+and sandboxed-versus-unsandboxed disclosure when merging target-specific
+instructions.
 
 Do not build a code-context index or fetch a release binary during bootstrap.
 The `pulse-code-context` Go source is included and can be activated later as

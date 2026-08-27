@@ -68,8 +68,8 @@ plane without replacing existing code or rules.
 - Every PULSE installation includes the same complete canonical workflow
   skill pack, with native activation across supported coding agents.
 - Every tool-backed task displays the sandbox warning with a link to the
-  active harness's sandbox documentation and runs only after that isolation
-  boundary is verified.
+  active harness's sandbox documentation and states whether execution is
+  sandboxed or unsandboxed.
 - Agents can reuse a local keyword and relationship map to narrow
   repository exploration while still verifying exact source before changes.
 - Delegation advice reports a token range and confidence before recommending

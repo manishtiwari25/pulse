@@ -27,9 +27,9 @@ PULSE has eight durable surfaces:
 7. **Optional context retrieval** - `pulse-code-context` builds a
    standard-library Go BM25 index and lightweight file relationship graph so
    agents can narrow discovery before reading exact source.
-8. **Sandbox-first execution** - `AGENTS.md` and
-   `docs/workflows/sandboxed-agent-execution.md` require verified, fail-closed
-   isolation before agent-controlled commands or subprocesses run.
+8. **Sandbox-aware execution** - `AGENTS.md` and
+   `docs/workflows/sandboxed-agent-execution.md` recommend isolation and require
+   agents to report whether commands or subprocesses are sandboxed.
 
 ## Public Documentation
 
@@ -66,7 +66,9 @@ Both link back to canonical source in the repository.
 - Context retrieval can reduce broad source reads but cannot replace exact
   source inspection, language-aware analysis, or verification.
 - Permission prompts and tool allowlists cannot replace an OS, container, VM,
-  or cloud sandbox. If isolation cannot be verified, execution stops.
+  or cloud sandbox. If isolation is unavailable, execution is reported as
+  unsandboxed and continues under normal permissions unless a stronger policy
+  requires isolation.
 - Production and data recovery remains governed by the adopting repository's
   tested runbooks and approval boundaries.
 

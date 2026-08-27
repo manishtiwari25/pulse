@@ -11,7 +11,8 @@
 | [ADR-005](ADR-005-portable-pulse-skills.md) | Publish Portable PULSE Skills from the Docs Control Plane | Accepted | 2026-08-13 |
 | [ADR-006](ADR-006-token-aware-delegation-advice.md) | Use Token History for Honest Delegation Advice | Accepted | 2026-08-13 |
 | [ADR-007](ADR-007-local-code-context-index.md) | Use a Local Retrieval Index and Relationship Graph for Code Context | Accepted | 2026-08-20 |
-| [ADR-008](ADR-008-sandbox-first-agent-execution.md) | Require Fail-Closed Sandboxes for Agent Execution | Accepted | 2026-08-22 |
+| [ADR-008](ADR-008-sandbox-first-agent-execution.md) | Require Fail-Closed Sandboxes for Agent Execution | Superseded | 2026-08-22 |
+| [ADR-009](ADR-009-recommend-sandboxes-and-disclose-unsandboxed-execution.md) | Recommend Sandboxes and Disclose Unsandboxed Execution | Accepted | 2026-08-27 |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable
 architectural or product decision.

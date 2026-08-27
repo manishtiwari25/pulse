@@ -8,6 +8,9 @@ tags: [plan, agents, security, sandbox, copilot, claude, opencode]
 
 # Plan: Require Sandbox-First Agent Execution
 
+> Historical plan: its strict policy was superseded on 2026-08-27 by
+> [`sandbox-recommended-execution.md`](sandbox-recommended-execution.md).
+
 ## Goal
 
 Make sandboxed execution mandatory for agent-controlled commands and tools

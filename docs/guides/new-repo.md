@@ -28,8 +28,9 @@ The bootstrap agent performs project activation when the current runner and an
 existing installer support it. Generated runner-specific folders remain local
 output; `docs/skills/` is the source of truth.
 
-The `pulse-sandbox` skill runs first for tool-backed work and requires the
-visible warning plus verified, fail-closed isolation.
+The `pulse-sandbox` skill runs first for tool-backed work, recommends the
+available sandbox, and requires clear disclosure when execution is
+unsandboxed.
 
 The included `pulse-code-context` skill remains inactive until a user chooses
 to run its Go source or a trusted release binary and build a repository index.

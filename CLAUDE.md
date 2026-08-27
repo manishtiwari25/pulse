@@ -17,13 +17,16 @@ Instructions for Claude-based agents working with PULSE.
 - When the optional `pulse-code-context` index is available and fresh, use it
   after code intelligence to narrow broad exploration. Read exact source
   ranges before editing; cached context is not the source of truth.
-- Before running Bash, enable and verify Claude Code's native sandbox. Require
-  `sandbox.enabled: true`, `sandbox.failIfUnavailable: true`, and
-  `sandbox.allowUnsandboxedCommands: false`. Never use
-  `dangerouslyDisableSandbox` or an unsandboxed retry. Follow the canonical
-  sandbox rule in `AGENTS.md`, invoke `pulse-sandbox` first when available,
-  and begin every tool-backed work response with:
-  `⚠️ SANDBOX REQUIRED — verify the Claude Code sandbox before execution; do not bypass it. Docs: https://code.claude.com/docs/en/sandboxing`
+- Before running Bash, prefer and inspect Claude Code's native sandbox with
+  `/sandbox`. `sandbox.enabled: true` is recommended;
+  `sandbox.failIfUnavailable: true` and
+  `sandbox.allowUnsandboxedCommands: false` are optional strict settings.
+  When no sandbox is active, state clearly that execution is unsandboxed and
+  continue under normal Claude Code permissions unless a higher-level policy
+  requires isolation. Follow the canonical guidance in `AGENTS.md`, invoke
+  `pulse-sandbox` first when available, and begin every tool-backed work
+  response with:
+  `⚠️ SANDBOX RECOMMENDED — use the Claude Code sandbox when available; state clearly if execution is unsandboxed. Docs: https://code.claude.com/docs/en/sandboxing`
 
 ## Operating Mode
 
@@ -63,8 +66,8 @@ Instructions for Claude-based agents working with PULSE.
 
 ## Output Formats
 
-- The mandatory sandbox warning comes before the selected output format on
-  every tool-backed work response.
+- The mandatory sandbox recommendation warning comes before the selected
+  output format on every tool-backed work response.
 - **ELI5 is the default** per `docs/prompts/shared/eli5.prompt.md`. Apply it to
   conversation messages and artifact prose. The user can switch with
   `normal`, `technical`, or `no eli5`, and switch back with `eli5`.

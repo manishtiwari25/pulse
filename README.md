@@ -101,10 +101,10 @@ service, hidden state folder, or model-specific runtime is required.
 - Reusable templates for decisions, feature specs, plans, memory, and prompts.
 - Portable Agent Skills for bootstrap, planning, decisions, features,
   rollback, review, memory, delegation advice, local code-context retrieval,
-  and sandbox-first execution.
+  and sandbox-aware execution.
 - A safe bootstrap path for both new and established repositories.
 - Mandatory rollback plans and scoped agent-driven recovery.
-- Mandatory sandbox warnings and fail-closed execution isolation.
+- Visible sandbox recommendations and honest unsandboxed-execution disclosure.
 - Token-only work accounting based on the real usage a runner exposes.
 - A public documentation site served directly from `docs/`.
 
@@ -132,24 +132,25 @@ npx skills@latest add manishtiwari25/pulse \
 
 The skill pack includes planning, decisions, feature delivery, rollback,
 review, memory, bootstrap, token-aware delegation advice, and local
-repository context retrieval, plus the mandatory `pulse-sandbox` preflight.
+repository context retrieval, plus the advisory `pulse-sandbox` preflight.
 
-### Sandbox-First Execution
+### Sandbox Recommendation
 
 For every tool-backed task, PULSE invokes `pulse-sandbox` first when supported
 and shows the matching harness warning:
 
 ```text
-⚠️ SANDBOX REQUIRED — verify the <harness> sandbox before execution; do not bypass it. Docs: <matching official sandbox documentation URL>
+⚠️ SANDBOX RECOMMENDED — use <recommended sandbox> when available; state clearly if execution is unsandboxed. Docs: <matching official sandbox documentation URL>
 ```
 
 The skill links to the official
 [Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox),
 [Claude Code](https://code.claude.com/docs/en/sandboxing), or
 [OpenCode Docker Sandbox](https://docs.docker.com/ai/sandboxes/agents/opencode/)
-instructions. Copilot CLI and Claude Code use native sandboxes. OpenCode must
+instructions. Copilot CLI and Claude Code offer native sandboxes. OpenCode can
 run inside an external sandbox; its permission prompts are not an isolation
-boundary. PULSE stops instead of silently retrying unsandboxed.
+boundary. When no sandbox is active, PULSE reports unsandboxed execution and
+continues under normal harness permissions unless a stronger policy applies.
 
 ### Token-Aware Delegation Advisor
 

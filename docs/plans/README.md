@@ -15,6 +15,9 @@
 - [`local-code-context-index.md`](local-code-context-index.md) - adds optional
   Go BM25 retrieval with a lightweight relationship graph.
 - [`sandbox-first-agent-execution.md`](sandbox-first-agent-execution.md) -
-  requires verified, fail-closed isolation across supported agent harnesses.
+  introduced the original strict isolation policy, now superseded by
+  [`sandbox-recommended-execution.md`](sandbox-recommended-execution.md).
+- [`sandbox-recommended-execution.md`](sandbox-recommended-execution.md) -
+  keeps sandboxing visible and preferred without blocking unsandboxed work.
 
 Copy `_template.md` when another non-trivial task needs an explicit plan.

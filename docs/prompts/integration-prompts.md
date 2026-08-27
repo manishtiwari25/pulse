@@ -37,9 +37,11 @@ generated history, or unrelated repository state. Adapt names, paths, stack
 details, and commands to this repository. Include the complete canonical
 PULSE skill pack under docs/skills/ and activate the complete pack for the
 current runner when native project skills are supported. Invoke
-`pulse-sandbox` first, display its exact warning, verify real isolation, and
-stop rather than retrying unsandboxed. Create project-specific ADRs, specs, or
-plans only when the evidence makes them useful. Do not commit.
+`pulse-sandbox` first, display its exact recommendation warning, prefer real
+isolation, and clearly disclose unsandboxed execution when no sandbox is
+active. Continue under normal permissions unless a stronger policy applies.
+Create project-specific ADRs, specs, or plans only when the evidence makes
+them useful. Do not commit.
 
 Validate changed Markdown links, inspect the final diff, run git diff --check
 and any existing targeted documentation checks, then report files changed,

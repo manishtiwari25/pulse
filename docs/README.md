@@ -67,7 +67,7 @@ gh skill install . --all --from-local \
 Explore the [public skills catalog](https://manishtiwari25.github.io/pulse/skills/)
 or see [`skills/README.md`](skills/README.md) for GitHub CLI, local
 activation, updates, the token-aware delegation advisor, and local code-context
-retrieval, plus the mandatory sandbox preflight.
+retrieval, plus the sandbox recommendation preflight.
 
 ## Manual Guides
 

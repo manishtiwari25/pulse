@@ -133,13 +133,13 @@
           </div>
 
           <p class="install-safety-note">
-            <strong>⚠️ SANDBOX REQUIRED — verify the &lt;harness&gt; sandbox before execution; do not bypass it. Docs: &lt;matching official sandbox URL&gt;</strong>
+            <strong>⚠️ SANDBOX RECOMMENDED — use &lt;recommended sandbox&gt; when available; state clearly if execution is unsandboxed. Docs: &lt;matching official sandbox URL&gt;</strong>
             Invoke <code>/pulse-sandbox</code> first. It selects the official
             <a href="https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox">Copilot CLI</a>,
             <a href="https://code.claude.com/docs/en/sandboxing">Claude Code</a>,
             or <a href="https://docs.docker.com/ai/sandboxes/agents/opencode/">OpenCode sandbox</a>
-            page. The warning is not proof of isolation, and permissions alone
-            are not a sandbox.
+            page. The warning recommends isolation without blocking ordinary
+            work, and permissions alone are not a sandbox.
           </p>
         </div>
       </section>
@@ -159,7 +159,7 @@
             <div class="flow-rail sandbox">
               <strong>Before any execution</strong>
               <code>/pulse-sandbox</code>
-              <span>Warn, verify the harness sandbox, and fail closed.</span>
+              <span>Recommend a sandbox and report the actual boundary.</span>
             </div>
 
             <div class="flow-rail preflight">
@@ -196,7 +196,7 @@
         <div class="container">
           <div class="section-heading">
             <p class="eyebrow">Featured safeguards</p>
-            <h2>Verify isolation, choose the owner, find the code, and keep a safe way back.</h2>
+            <h2>Know the boundary, choose the owner, find the code, and keep a safe way back.</h2>
           </div>
 
           <div class="featured-skill-grid">
@@ -204,14 +204,14 @@
               <p class="featured-label">Execution boundary</p>
               <h3><code>/pulse-sandbox</code></h3>
               <p>
-                Shows the required warning, verifies real harness isolation,
-                and stops rather than retrying unsandboxed.
+                Shows the recommendation warning and reports whether the real
+                execution boundary is sandboxed or unsandboxed.
               </p>
               <ul>
                 <li>Copilot and Claude native sandboxes</li>
-                <li>External sandbox required for OpenCode</li>
-                <li>No bypass or silent fallback</li>
-                <li>Permissions remain defense in depth</li>
+                <li>External sandbox recommended for OpenCode</li>
+                <li>Unsandboxed execution is disclosed</li>
+                <li>Stronger policies still take priority</li>
               </ul>
               <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-sandbox/SKILL.md">Open skill source &rarr;</a>
             </article>
@@ -354,9 +354,9 @@
             </article>
 
             <article class="catalog-skill-card highlighted">
-              <div class="catalog-skill-meta"><span class="skill-number">10</span><span class="skill-type">Isolate</span></div>
+              <div class="catalog-skill-meta"><span class="skill-number">10</span><span class="skill-type">Advise</span></div>
               <h3><code>/pulse-sandbox</code></h3>
-              <p>Warn before execution, verify the real harness sandbox, and fail closed.</p>
+              <p>Recommend isolation and report whether execution is sandboxed or unsandboxed.</p>
               <p class="skill-use"><strong>Use for:</strong> every tool-backed task before commands, builds, tests, or subprocesses.</p>
               <a class="text-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/skills/pulse-sandbox/SKILL.md">View source &rarr;</a>
             </article>

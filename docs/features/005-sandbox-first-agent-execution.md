@@ -1,26 +1,28 @@
 ---
 id: FEAT-005
-title: Sandbox-First Agent Execution
+title: Sandbox-Recommended Agent Execution
 status: Done
 date: 2026-08-22
+updated: 2026-08-27
 priority: Critical
 areas: [agents, security, execution]
 tags: [feature, sandbox, skills, copilot, claude, opencode]
 ---
 
-# Feature: Sandbox-First Agent Execution
+# Feature: Sandbox-Recommended Agent Execution
 
 ## Summary
 
-The `pulse-sandbox` skill verifies the active harness's real isolation
+The `pulse-sandbox` skill recommends the active harness's real isolation
 boundary before agent-controlled execution. Always-on instructions require a
-visible warning and fail closed when sandboxing is unavailable.
+visible warning and honest disclosure when execution is unsandboxed, but
+missing sandbox support does not block ordinary work.
 
 ## User Story
 
-As a developer using coding agents, I want every tool-backed task to warn me
-about sandboxing and run only inside verified isolation so that an approval
-prompt cannot accidentally grant unrestricted host access.
+As a developer using coding agents, I want every tool-backed task to recommend
+sandboxing and tell me whether execution is actually isolated so that I can
+balance safety with environments where a sandbox is unavailable.
 
 ## Requirements
 
@@ -31,15 +33,19 @@ prompt cannot accidentally grant unrestricted host access.
 - [x] Show the exact harness-specific sandbox warning and documentation URL in
   every tool-backed work response.
 - [x] Map Copilot CLI, Claude Code, and OpenCode to accurate isolation paths.
-- [x] Verify the effective sandbox before execution.
-- [x] Stop when isolation is unavailable instead of retrying unsandboxed.
+- [x] Report whether the effective boundary is sandboxed or unsandboxed.
+- [x] Prefer sandboxed execution when it is available and practical.
+- [x] Continue under normal harness permissions when no sandbox is active.
+- [x] Do not automatically disable or bypass an active sandbox.
 - [x] Keep permission rules as defense in depth, not as proof of isolation.
+- [x] Preserve stronger organization, runner, production, data, and
+  task-specific requirements.
 
 ### Non-Functional
 
 - [x] **Visibility:** the warning is stable, always visible, and links directly
   to the active harness's sandbox instructions.
-- [x] **Safety:** bypass and silent unsandboxed fallback are forbidden.
+- [x] **Safety:** unsandboxed execution is explicit rather than hidden.
 - [x] **Portability:** the skill names required properties rather than
   pretending every harness uses the same mechanism.
 - [x] **Maintainability:** detailed commands live in the canonical workflow.
@@ -48,23 +54,25 @@ prompt cannot accidentally grant unrestricted host access.
 
 ### Included
 
-- Always-on warning and sandbox rule.
+- Always-on recommendation warning and boundary-reporting rule.
 - Portable `pulse-sandbox` skill.
 - Harness mapping for Copilot CLI, Claude Code, OpenCode, and unknown runners.
+- Sandboxed and unsandboxed execution paths.
 - Bootstrap and public skill-catalog integration.
 
 ### Excluded
 
 - Committing user-level or runner-generated sandbox configuration.
 - Automatically installing Docker, `bubblewrap`, `socat`, or another runtime.
-- Treating a sandbox as approval for destructive, production, or data work.
+- Weakening separate approval or isolation requirements for destructive,
+  production, credential, migration, security-review, or data work.
 
 ## Interface Changes
 
 Every tool-backed work response begins with:
 
 ```text
-⚠️ SANDBOX REQUIRED — verify the <harness> sandbox before execution; do not bypass it. Docs: <matching sandbox documentation URL>
+⚠️ SANDBOX RECOMMENDED — use <recommended sandbox> when available; state clearly if execution is unsandboxed. Docs: <matching sandbox documentation URL>
 ```
 
 Copilot CLI uses its
@@ -82,30 +90,41 @@ container, or cloud environment rather than the PULSE repository.
 
 ## Decisions
 
+- [ADR-009: Recommend Sandboxes and Disclose Unsandboxed Execution](../decisions/ADR-009-recommend-sandboxes-and-disclose-unsandboxed-execution.md)
 - [ADR-008: Require Fail-Closed Sandboxes for Agent Execution](../decisions/ADR-008-sandbox-first-agent-execution.md)
+  is the superseded strict policy.
 
 ## Edge Cases
 
-- **Warning shown but sandbox inactive:** stop; the warning is not proof.
+- **Warning shown but sandbox inactive:** state that execution is unsandboxed
+  and continue under normal permissions.
 - **Harness has no official sandbox page:** link to the canonical PULSE
-  sandbox workflow and remain fail closed.
-- **OpenCode permission prompt:** require the external sandbox wrapper.
-- **Sandbox blocks a build cache:** grant only a dedicated cache path or stop.
-- **Task needs network or credentials:** grant the narrow capability and
-  re-check policy before use.
+  sandbox workflow.
+- **OpenCode permission prompt:** state that permissions are not isolation;
+  recommend the external wrapper without blocking ordinary work.
+- **Sandbox blocks a build cache:** prefer a dedicated cache path or narrow
+  grant; disclose unsandboxed execution if the task continues outside it.
+- **Task needs network or credentials:** use the narrowest normal permission
+  or sandbox grant and report the boundary.
+- **Higher-level policy requires isolation:** stop when the required sandbox is
+  unavailable.
+- **Adopted repository copied ADR-008:** bootstrap or template sync replaces
+  the old hard gate unless a target-owned decision intentionally keeps it.
 - **Read-only conversation:** no execution occurs; the skill is not required.
 
 ## Rollback Strategy
 
-- **Baseline:** PULSE has no sandbox skill or mandatory warning.
-- **Trigger:** warning text diverges, a harness path is inaccurate, bypass is
-  permitted, skill discovery fails, or bootstrap omits the rule.
-- **Reversal:** remove only `pulse-sandbox` and its current-task references,
-  then restore the prior instruction and catalog text.
+- **Baseline:** ADR-008 provides strict fail-closed sandbox guidance.
+- **Trigger:** the recommendation hides unsandboxed execution, overrides a
+  stronger policy, uses inaccurate harness guidance, breaks skill discovery,
+  or creates inconsistent warning text.
+- **Reversal:** restore the strict ADR-008 instruction, skill, workflow, and
+  warning lines changed by PLAN-007.
 - **State safety:** no user-level sandbox settings or external runtime state is
   modified by source rollback.
-- **Recovery verification:** confirm the previous skill pack and docs remain
-  valid and no runner-specific configuration was committed.
+- **Recovery verification:** confirm the strict warning and stop behavior are
+  restored, the skill pack and links remain valid, and no runner-specific
+  configuration was committed.
 
 ## Acceptance Criteria
 
@@ -113,12 +132,16 @@ container, or cloud environment rather than the PULSE repository.
 - [x] Always-on instructions require the exact harness-specific warning and
   matching documentation URL.
 - [x] Copilot CLI, Claude Code, and OpenCode guidance is accurate.
-- [x] Unsandboxed fallback is explicitly forbidden.
+- [x] Missing sandbox support does not block ordinary work.
+- [x] Unsandboxed execution is disclosed clearly.
+- [x] Stronger isolation and approval policies still override the
+  recommendation.
 - [x] Bootstrap preserves the rule and skill.
 
 ## Verification Plan
 
 - Discover the complete skill pack.
 - Validate changed Markdown and HTML links.
-- Search for contradictory bypass or permission-as-sandbox guidance.
+- Search active guidance for stale hard-gate language and hidden unsandboxed
+  execution.
 - Run `git diff --check` with the sandbox-compatible Git binary.
