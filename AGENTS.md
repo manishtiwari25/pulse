@@ -188,52 +188,16 @@ change is made**. Read-only analysis and explanation tasks are excluded.
 Use [`docs/workflows/rollback.md`](docs/workflows/rollback.md) for the full
 model-agnostic procedure.
 
-## Work Accounting & Token Reporting (required)
+## Optional Usage Diagnostics
 
-End every completed task or work response with a Work Accounting footer that
-reports the actual model and token usage exposed by the active runner. Never
-estimate missing token counts and never use non-token metrics as a substitute.
+Token reporting is not a task-completion requirement. Do not append a token
+footer or update `docs/usage/usage-log.md` during normal work.
 
-Token counters can keep changing while a session is open. Label live values as
-an interim, timestamped snapshot and finalize them at session close when the
-runner exposes canonical totals.
-
-Append one entry per session to `docs/usage/usage-log.md`. The ledger is
-agent-driven; `docs/scripts/usage.sh` reads the local logs already written by
-supported runners.
-
-### Per-runner source map
-
-| Runner                          | Model source  | Token source                     | Helper                           |
-| ------------------------------- | ------------- | -------------------------------- | -------------------------------- |
-| Claude Code (CLI/IDE/desktop)   | session log   | `message.usage` JSONL            | `docs/scripts/usage-claude.sh`   |
-| GitHub Copilot CLI              | event log     | live messages / shutdown metrics | `docs/scripts/usage-copilot.sh`  |
-| OpenCode (TUI/IDE)              | message store | per-message token fields         | `docs/scripts/usage-opencode.sh` |
-| OpenAI Codex (CLI/IDE)          | session log   | `token_count` events             | `docs/scripts/usage-codex.sh`    |
-| VS Code Copilot Chat            | chat session  | not stored locally               | `docs/scripts/usage-vscode.sh`   |
-| Cursor                          | session store | not stored locally               | `docs/scripts/usage-cursor.sh`   |
-| Other API runner                | response      | provider response usage          | -                                |
-
-When a runner does not expose token counts locally, record `n/a (not exposed)`
-instead of guessing.
-
-### Footer template
-
-Append this block at the very end of the final response:
-
-```text
----
-### 🧮 Work Accounting
-- Model(s): <actual model id(s)> (+ sub-agent models, if any)
-- Tokens: <input> in / <output> out / <total> total   — source: <runner usage view or local session log>
-```
-
-Collector details: **Copilot CLI** reads canonical shutdown totals when a
-session is closed and reports the live output visible in message/subagent
-events while it is open. **Claude Code** sums deduplicated `message.usage`
-tokens. **OpenCode** sums its stored token fields. **Codex** reads the latest
-session-cumulative `total_token_usage`. **VS Code Copilot Chat** and
-**Cursor** report `n/a` because their local stores do not contain token counts.
+Run `docs/scripts/usage.sh` only when the user explicitly requests local usage
+diagnostics. The collectors are best effort because runner storage formats and
+sandbox access can change. Report only token fields the runner actually
+exposes; do not create `n/a` placeholders. Use provider-supported APIs outside
+the repository workflow for formal organization usage or cost reporting.
 
 ## Output Formats
 
@@ -247,8 +211,7 @@ Output formats are shared across all runners and defined in
   answers start with a plain-word explanation, use short numbered steps, and
   end with a brief "In technical terms" recap. The user can switch with
   `normal`, `technical`, or `no eli5`, and switch back with `eli5`. Code,
-  configs, commands, facts, repository rules, and the Work Accounting footer
-  stay unchanged.
+  configs, commands, facts, and repository rules stay unchanged.
 
 ## Template Map
 

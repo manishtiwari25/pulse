@@ -1,17 +1,13 @@
-# Token Usage Log
+# Archived Token Usage Log
 
-Per-session PULSE work-accounting ledger. Each row records the real token data
-the active runner exposes. Never guess a missing token field.
+> Frozen on 2026-08-27 by
+> [ADR-010](../decisions/ADR-010-optional-usage-telemetry.md). Do not append or
+> update rows during normal work.
 
-- Record input, output, cache, and total tokens when available.
-- If a runner exposes only one token field during a live session, record that
-  field and label the snapshot `live`.
-- Use `n/a (not exposed)` when the runner does not store tokens locally.
-- Token counters can keep changing while a session is open. Mark an interim
-  row with `†` and the capture time, then finalize it after session shutdown
-  when canonical totals are available.
-- Run [`docs/scripts/usage.sh`](../scripts/usage.sh) to read supported local
-  runner logs.
+These rows preserve the history of the retired Work Accounting experiment.
+They are incomplete, use different token bases, and are not authoritative
+telemetry or billing data. Optional local diagnostics remain under
+[`docs/scripts/`](../scripts/).
 
 | Date | Session | Model(s) | Tokens used | Turns | Summary |
 | --- | --- | --- | --- | --- | --- |
@@ -23,10 +19,7 @@ the active runner exposes. Never guess a missing token field.
 | 2026-08-08 | 92360e0a | claude-fable-5, gpt-5.6-sol (GitHub Copilot) | 14,902,301 out | 16 | Polish the universal bootstrap guides and retire the duplicate orchestrator flow. |
 | 2026-08-08 | 40882170 | gpt-5.6-sol, gpt-5-mini (GitHub Copilot) | 14,154 out | n/a | Coordinate and verify the one-prompt bootstrap guides. |
 | 2026-08-11 | 39c58803 | gpt-5-mini, gpt-5.6-sol (GitHub Copilot) | n/a in / 202,794 out / n/a total @ 2026-08-14 06:41 CEST † | n/a | Rebrand and publish PULSE; add the shared audit trail, token-only accounting, rollbacks, portable skills, delegation advice, and the default full-pack skills catalog. |
-| 2026-08-20 | c3a5138e | gpt-5.6-sol, gpt-5.4 (GitHub Copilot) | 45,404,035 in / 411,055 out / 45,815,090 total @ 2026-08-27 12:22 CEST † | 329 main + 34 subagent requests | Add standard-library Go code-context search and a relationship graph, evolve sandboxing into a visible recommendation with migration guidance, and package safe template synchronization as the eleventh canonical skill. |
+| 2026-08-20 | c3a5138e | gpt-5.6-sol, gpt-5.4 (GitHub Copilot) | 52,995,109 in / 449,036 out / 53,444,145 total @ 2026-08-27 10:44 UTC † | 387 main + 34 subagent requests | Add standard-library Go code-context search and a relationship graph, evolve sandboxing into a visible recommendation, package safe template synchronization, and retire mandatory usage snapshots. |
 
-Older rows contain the output count that was preserved from the original
-ledger. New rows should use the fuller token breakdown when the runner exposes it.
-
-† Interim, timestamped snapshot; finalize after the session closes when
-canonical totals become available.
+Rows marked `†` were interim snapshots that may differ from final provider
+totals. Git history preserves the original operating rules.

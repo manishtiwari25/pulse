@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Real token usage for OpenCode sessions from its local message store.
+# Best-effort token diagnostics for OpenCode's current local message-store
+# format. Local paths and fields may change.
 # Usage: docs/scripts/usage-opencode.sh [session-id]
 set -eu
 

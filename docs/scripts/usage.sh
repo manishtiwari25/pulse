@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
-# Unified token report across AI coding runners. Each collector reads the
-# runner's own local logs and reports real token fields only.
+# Optional, best-effort token diagnostics across AI coding runners. Each
+# collector reads a local runner store and reports only token fields it finds.
+# Local formats can change, so this is not a task-completion check, ledger
+# writer, billing source, or authoritative telemetry system.
 #
 #   claude    Claude Code (CLI, IDE extensions, desktop)   ~/.claude/projects
 #   copilot   GitHub Copilot CLI                           ~/.copilot/session-state
 #   opencode  OpenCode (TUI and IDE)                       ~/.local/share/opencode
 #   codex     OpenAI Codex (CLI and IDE extension)         ~/.codex/sessions
-#   vscode    VS Code Copilot Chat                         VS Code chatSessions
-#   cursor    Cursor IDE                                   Cursor state.vscdb
 #
-# VS Code Copilot Chat and Cursor do not keep token counts in their local
-# stores. Their collectors report n/a instead of guessing.
-#
-# Usage: docs/scripts/usage.sh [all|claude|copilot|opencode|codex|vscode|cursor] [session-id]
+# Usage: docs/scripts/usage.sh [all|claude|copilot|opencode|codex] [session-id]
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -20,7 +17,16 @@ PICK="${1:-all}"
 SID="${2:-}"
 
 case "$PICK" in
-    all|claude|copilot|opencode|codex|vscode|cursor) ;;
+    -h|--help)
+        echo "Usage: docs/scripts/usage.sh [all|claude|copilot|opencode|codex] [session-id]"
+        echo "Optional diagnostics only; local runner formats may change."
+        exit 0
+        ;;
+    vscode|cursor)
+        echo "$PICK does not expose token counts to this diagnostic; no collector is provided." >&2
+        exit 2
+        ;;
+    all|claude|copilot|opencode|codex) ;;
     *)
         SID="$PICK"
         PICK="all"
@@ -53,13 +59,5 @@ run claude   "$CLAUDE_ROOT"                                                     
 run copilot  "${COPILOT_STATE_DIR:-$HOME/.copilot/session-state}"             usage-copilot.sh
 run opencode "${OPENCODE_STORE:-$HOME/.local/share/opencode/storage/message}" usage-opencode.sh
 run codex    "${CODEX_HOME:-$HOME/.codex}/sessions"                           usage-codex.sh
-
-VSCODE_USER="$HOME/Library/Application Support/Code/User"
-[ -d "$VSCODE_USER" ] || VSCODE_USER="$HOME/.config/Code/User"
-run vscode "$VSCODE_USER" usage-vscode.sh
-
-CURSOR_DB="$HOME/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
-[ -f "$CURSOR_DB" ] || CURSOR_DB="$HOME/.config/Cursor/User/globalStorage/state.vscdb"
-run cursor "$CURSOR_DB" usage-cursor.sh
 
 [ "$ran" = 1 ] || echo "No supported AI-runner logs detected on this machine."

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Real token usage for OpenAI Codex sessions. CLI and IDE share the same
-# rollout logs. The last token_count event contains session-cumulative usage.
+# Best-effort token diagnostics for OpenAI Codex's current rollout-log format.
+# The last token_count event currently contains session-cumulative usage.
 # Usage: docs/scripts/usage-codex.sh [session-id]
 set -eu
 

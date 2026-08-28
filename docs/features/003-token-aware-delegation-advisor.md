@@ -13,9 +13,9 @@ tags: [feature, tokens, estimation, delegation]
 ## Summary
 
 The `pulse-delegation-advisor` skill estimates the likely token range for a
-task from real PULSE usage history, then recommends agent-led, hybrid, or
-human-led execution based on effort, risk, ambiguity, reversibility, and
-external-state impact.
+task from task signals and optional user-supplied history, then recommends
+agent-led, hybrid, or human-led execution based on effort, risk, ambiguity,
+reversibility, and external-state impact.
 
 ## User Story
 
@@ -27,7 +27,9 @@ token usage or pretending tokens alone equal money.
 
 ### Functional
 
-- [x] Parse real token values and task summaries from `docs/usage/usage-log.md`.
+- [x] Parse real token values and task summaries from an explicitly supplied
+  compatible Markdown history file.
+- [x] Run without a history file by using a labeled low-confidence heuristic.
 - [x] Prefer total tokens when available and clearly label output-only estimates.
 - [x] Use robust outlier handling.
 - [x] Accept task description, file count, risk, novelty, ambiguity,
@@ -54,7 +56,7 @@ token usage or pretending tokens alone equal money.
 
 ### Included
 
-- Local Markdown usage history.
+- Optional local Markdown token history.
 - Heuristic token forecasting and confidence.
 - Delegation and optional economics advice.
 - Unit tests and skill instructions.
@@ -72,8 +74,8 @@ The skill includes `estimate_tokens.py` with a command-line and JSON interface.
 
 ## Data Changes
 
-The estimator reads the existing token-only ledger and does not store supplied
-rates. No financial values are added to `docs/usage/usage-log.md`.
+The estimator stores no history or supplied rates. PULSE does not require a
+repository usage ledger.
 
 ## Decisions
 
@@ -90,14 +92,15 @@ rates. No financial values are added to `docs/usage/usage-log.md`.
 
 ## Rollback Strategy
 
-- **Baseline:** token usage remains a human-readable ledger with no estimator.
+- **Baseline:** delegation stays a manual judgment with no estimator.
 - **Trigger:** incorrect parsing, unstable ranges, unsafe recommendation, test
   failure, or accidental persistence of financial inputs.
 - **Reversal:** remove the advisor bundle and public references; use a revert
   commit if already published.
-- **State safety:** the estimator is read-only and must not modify the usage log.
-- **Recovery verification:** confirm the existing token collectors and ledger
-  still work unchanged.
+- **State safety:** the estimator is read-only and must not persist history or
+  financial inputs.
+- **Recovery verification:** confirm manual delegation guidance remains
+  available and no supplied input was stored.
 
 ## Generated Prompts
 
@@ -110,6 +113,7 @@ rates. No financial values are added to `docs/usage/usage-log.md`.
 - [x] The script produces stable text and JSON output.
 - [x] Monetary comparison appears only with user-supplied values.
 - [x] The skill explains confidence and limitations.
+- [x] The default command works without repository usage history.
 - [x] The public PULSE site describes the advisor accurately.
 
 ## Verification Plan

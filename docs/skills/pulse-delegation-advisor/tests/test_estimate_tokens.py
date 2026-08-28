@@ -30,6 +30,23 @@ def write_usage_log(path: Path, token_cells):
 
 
 class EstimateTokensTests(unittest.TestCase):
+    def test_history_is_optional(self):
+        args = ESTIMATOR.build_parser().parse_args(["--task", "Update guidance"])
+        self.assertIsNone(args.history)
+
+        profile = ESTIMATOR.TaskProfile(
+            files=1,
+            risk="low",
+            novelty="low",
+            ambiguity="low",
+            reversibility="easy",
+            external_state=False,
+        )
+        result = ESTIMATOR.analyze("Update guidance", profile)
+        self.assertIsNone(result["history_path"])
+        self.assertEqual(result["estimate"]["confidence"], "low")
+        self.assertIn("No compatible history", result["limitations"][0])
+
     def test_parser_prefers_total_tokens(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "usage.md"

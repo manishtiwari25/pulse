@@ -298,9 +298,9 @@
               <p class="eyebrow">Token-aware delegation</p>
               <h3>Know the likely effort before handing over the task.</h3>
               <p>
-                The advisor reads the repository's real token history, limits
-                outlier influence, and adjusts for scope, risk, novelty,
-                ambiguity, reversibility, and external state.
+                The advisor starts from task signals and can use an explicitly
+                supplied history file to limit outlier influence and improve
+                confidence.
               </p>
               <p>
                 It never invents provider pricing. A monetary comparison appears
@@ -349,7 +349,7 @@
             <div class="folder"><code>skills/</code><span>Portable Agent Skills and bundled helpers.</span></div>
             <div class="folder"><code>workflows/</code><span>Repeatable procedures for common engineering work.</span></div>
             <div class="folder"><code>memory/</code><span>Durable rules, patterns, lessons, and mistakes.</span></div>
-            <div class="folder"><code>usage/</code><span>Real, token-only session accounting.</span></div>
+            <div class="folder"><code>usage/</code><span>Frozen history from the retired accounting experiment.</span></div>
           </div>
         </div>
       </section>
@@ -401,7 +401,7 @@ Discover the default branch, then read and follow:
           <div class="docs-grid">
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/context/product.md"><strong>Product context</strong><span>Who PULSE serves, the problem, boundaries, and outcome.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/architecture/overview.md"><strong>Architecture</strong><span>Framework surfaces, state, boundaries, and verification.</span></a>
-            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/tree/main/docs/decisions"><strong>Decisions</strong><span>Why the control plane, token accounting, brand, and Pages choices exist.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/tree/main/docs/decisions"><strong>Decisions</strong><span>Why the control plane, optional telemetry, brand, and Pages choices exist.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/guides/new-repo.md"><strong>New repository</strong><span>Start fresh with PULSE using one prompt or the template flow.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/guides/integration-existing.md"><strong>Existing repository</strong><span>Merge PULSE safely without replacing code or rules.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/tree/main/docs/workflows"><strong>Workflows</strong><span>Repeatable paths for features, fixes, decisions, prompts, and sync.</span></a>
@@ -411,7 +411,7 @@ Discover the default branch, then read and follow:
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/features/004-local-code-context-index.md"><strong>Local code context</strong><span>Search local ranked chunks and related files before opening broad source.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/features/005-sandbox-first-agent-execution.md"><strong>Sandbox recommendation</strong><span>Prefer isolation and clearly disclose unsandboxed execution.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse/tree/main/docs/prompts"><strong>Prompts</strong><span>Model-agnostic launchers and reusable implementation guidance.</span></a>
-            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/usage/usage-log.md"><strong>Token accounting</strong><span>Real per-session tokens without price or billing data.</span></a>
+            <a class="doc-link" href="https://github.com/manishtiwari25/pulse/blob/main/docs/scripts/usage.sh"><strong>Optional usage diagnostics</strong><span>Best-effort local inspection that never blocks task completion.</span></a>
             <a class="doc-link" href="https://github.com/manishtiwari25/pulse"><strong>Repository</strong><span>Browse every PULSE file, template, and contribution surface.</span></a>
           </div>
         </div>

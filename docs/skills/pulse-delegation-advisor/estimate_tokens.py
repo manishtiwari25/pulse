@@ -75,8 +75,8 @@ def parse_number(value: str) -> int:
     return int(value.replace(",", ""))
 
 
-def parse_usage_log(path: Path) -> List[HistoryRecord]:
-    if not path.exists():
+def parse_usage_log(path: Optional[Path]) -> List[HistoryRecord]:
+    if path is None or not path.exists():
         return []
 
     records: List[HistoryRecord] = []
@@ -327,7 +327,7 @@ def delegation_recommendation(
 def analyze(
     task: str,
     profile: TaskProfile,
-    history_path: Path,
+    history_path: Optional[Path] = None,
     token_budget: Optional[int] = None,
     human_minutes: Optional[int] = None,
     human_hourly_rate: Optional[Decimal] = None,
@@ -348,7 +348,9 @@ def analyze(
 
     limitations = []
     if not records:
-        limitations.append("No usable history was found; the range uses a generic heuristic.")
+        limitations.append(
+            "No compatible history was supplied or found; the range uses a generic heuristic."
+        )
     elif estimate["basis"] == "output-equivalent":
         limitations.append(
             "Most historical rows expose output tokens only, so this is not a full-token forecast."
@@ -370,7 +372,7 @@ def analyze(
         "reasons": reasons,
         "economics": economics,
         "limitations": limitations,
-        "history_path": str(history_path),
+        "history_path": str(history_path) if history_path is not None else None,
     }
 
 
@@ -381,8 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task", required=True, help="Plain-language task description.")
     parser.add_argument(
         "--history",
-        default="docs/usage/usage-log.md",
-        help="Path to the PULSE token usage log.",
+        help="Optional path to a compatible local Markdown token-history file.",
     )
     parser.add_argument("--files", type=int, default=3, help="Likely files changed.")
     parser.add_argument("--risk", choices=RISK_MULTIPLIERS, default="medium")
@@ -479,7 +480,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         result = analyze(
             task=args.task,
             profile=profile,
-            history_path=Path(args.history),
+            history_path=Path(args.history) if args.history else None,
             token_budget=args.agent_token_budget,
             human_minutes=args.human_minutes,
             human_hourly_rate=parse_positive_decimal(

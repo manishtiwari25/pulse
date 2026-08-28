@@ -52,7 +52,8 @@ To change the **repository default** itself (make technical the default again), 
 
 - Facts, numbers, file paths, and commands stay exact — simplify the language, never the truth.
 - Code blocks stay real, runnable code; the plain-word explanation goes around them, not inside them.
-- Repository rules still apply: control-plane routing, verification, and the Work Accounting footer are unchanged and are not rewritten in ELI5 style.
+- Repository rules still apply: control-plane routing and verification are
+  unchanged and are not rewritten in ELI5 style.
 
 ## Example
 

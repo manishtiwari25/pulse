@@ -3,7 +3,7 @@
 Use `AGENTS.md` as the primary operating guide. PULSE is the **Planning &
 Unified Lifecycle for Software Engineering** framework, with a canonical
 `docs/` control plane for architecture, context, decisions, features, memory,
-plans, prompts, skills, usage, and workflows.
+plans, prompts, skills, and workflows.
 
 ## Default Behavior
 
@@ -53,21 +53,11 @@ plans, prompts, skills, usage, and workflows.
   output format on every tool-backed work response.
 - **ELI5 is the default** per `docs/prompts/shared/eli5.prompt.md`. Apply it to
   every conversation message and artifact prose unless the user switches with
-  `normal`, `technical`, or `no eli5`. Code, configs, commands, facts,
-  repository rules, and the Work Accounting footer stay unchanged.
+  `normal`, `technical`, or `no eli5`. Code, configs, commands, facts, and
+  repository rules stay unchanged.
 
-## Work Accounting & Token Reporting (required)
+## Optional Usage Diagnostics
 
-End every completed task or work response with model and token usage only, and
-append one entry per session to `docs/usage/usage-log.md`. Use the real values
-exposed by the active runner or `docs/scripts/usage.sh`. Never estimate missing
-tokens or substitute billing units.
-
-Append this block at the very end of the final response:
-
-```text
----
-### 🧮 Work Accounting
-- Model(s): <actual model id(s)> (+ sub-agent models, if any)
-- Tokens: <input> in / <output> out / <total> total   — source: <runner usage view or local session log>
-```
+Do not add a token footer or update the archived usage ledger during normal
+work. Run `docs/scripts/usage.sh` only when the user explicitly asks for local,
+best-effort diagnostics, and report only fields the runner actually exposes.

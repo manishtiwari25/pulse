@@ -43,7 +43,9 @@ The installed portable entry point is `/pulse-template-sync`.
    ADR-009 unless an explicit local decision requires strict isolation.
 6. Treat `docs/skills/` as sync-safe canonical source, but never modify
    generated runner-specific skill installation directories.
-7. Never touch project-owned content: `docs/context/`, `docs/architecture/`, non-template files in `docs/decisions|features|memory|plans/`, `docs/usage/usage-log.md` rows, or any product code.
+7. Never touch project-owned content: `docs/context/`, `docs/architecture/`,
+   non-template files in `docs/decisions|features|memory|plans/`, archived
+   `docs/usage/usage-log.md` rows, or any product code.
 8. In apply mode, update `.template-sync` with the new commit and date after
    validation. Leave everything uncommitted for the user to review; do not
    commit or push unless asked.

@@ -42,7 +42,7 @@ updated.
    - **Review-first:** repository instructions and README files that may contain
      project-specific rules.
    - **Never-sync:** product code and project-owned context, architecture,
-     decisions, features, memory, plans, prompts, and usage rows.
+     decisions, features, memory, plans, prompts, and archived usage rows.
 7. In **check** mode:
    - make no tracked-file or `.template-sync` changes
    - report the template baseline and head
@@ -71,8 +71,8 @@ updated.
 
 - Never use merge-base to compare unrelated template-created histories.
 - Never overwrite review-first or locally modified files automatically.
-- Never copy PULSE source usage rows, local paths, framework history, secrets,
-  or generated runner-specific skill directories.
+- Never copy PULSE archived usage rows, local paths, framework history,
+  secrets, or generated runner-specific skill directories.
 - Never use broad reset, cleanup, history rewriting, or force-push.
 - Check mode may fetch remote data but must not change tracked files or sync
   state.

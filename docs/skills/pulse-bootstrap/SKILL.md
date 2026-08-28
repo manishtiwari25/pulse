@@ -37,8 +37,9 @@ uncommitted work.
    for unrelated runners, add a package dependency, or commit generated skill
    directories. Include `pulse-template-sync` for later maintenance, but do
    not run it during initial onboarding.
-8. Do not copy source usage rows, local paths, framework history, stale product
-   context, secrets, or unrelated state.
+8. Do not copy archived source usage rows, local paths, framework history,
+   stale product context, secrets, or unrelated state. Do not add a mandatory
+   token footer or repository usage ledger.
 9. Do not add product code, dependencies, CI, or invented commands.
 10. Validate links, diff safety, all canonical bundles, preserved user work,
     existing targeted docs checks, the harness-specific warning and

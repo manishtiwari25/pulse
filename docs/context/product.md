@@ -48,7 +48,7 @@ plane without replacing existing code or rules.
 
 - PULSE provides documentation structure, templates, prompts, workflows,
   portable skills, agent instructions, scoped rollback procedures, and
-  token-usage helpers.
+  optional usage diagnostics.
 - PULSE does not choose the adopting repository's product stack.
 - PULSE does not require a hosted service, hidden state directory, or
   model-specific runtime.
@@ -77,4 +77,5 @@ plane without replacing existing code or rules.
 - Delegation advice reports a token range and confidence before recommending
   agent-led, hybrid, or human-led work.
 - Important decisions and durable lessons survive beyond one chat session.
-- Token usage is recorded from real runner data without billing information.
+- Token snapshots are not required for task completion or written to the
+  repository during normal work.

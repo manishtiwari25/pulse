@@ -89,7 +89,7 @@ update these areas before implementation:
 | `docs/architecture/overview.md` | Intended product shape and current boundaries. |
 | `docs/README.md` | Navigation or intake details that differ for the product. |
 | `docs/skills/` | Keep the complete canonical PULSE skill pack during initial setup. |
-| `docs/usage/usage-log.md` | Keep the token rules; remove rows that belong only to PULSE. |
+| `docs/usage/usage-log.md` | Do not copy the archived PULSE rows; no usage ledger is required. |
 
 Remove publishing notes that only apply to the PULSE source repository. Keep
 the reusable templates and workflows that help the new product.

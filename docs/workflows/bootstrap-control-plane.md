@@ -40,7 +40,7 @@ It supports both new and established repositories.
 | Context and architecture | Record facts and labeled open questions. | Derive facts from code and docs without guessing. |
 | Templates | Add only templates that make future work easier. | Merge with equivalent existing templates. |
 | Product code and setup | Leave unchanged. | Leave unchanged. |
-| Usage state | Start clean only if token accounting is adopted. | Never import PULSE rows or history. |
+| Usage telemetry | No footer or ledger; keep diagnostics optional. | Preserve explicit local policy; never import the PULSE archive. |
 
 ## 4. Apply the Control Plane
 
@@ -67,8 +67,10 @@ docs/workflows/
 - Do not create hidden tool-specific control folders.
 - Adapt names, paths, stack facts, links, and commands.
 - Use open questions for facts the repository does not reveal.
-- Do not copy stale PULSE context, usage rows, history, publishing notes,
-  secrets, local paths, or unrelated state.
+- Do not copy stale PULSE context, archived usage rows, history, publishing
+  notes, secrets, local paths, or unrelated state.
+- Do not add a mandatory token footer or repository usage ledger. Retained
+  usage scripts are optional diagnostics only.
 - Do not modify product code, add dependencies, create CI, or invent commands.
 - Include the mandatory rollback rule, plan template section, canonical
   rollback workflow, and shared rollback prompt when the target adopts those

@@ -14,9 +14,9 @@ guides/         Setup and integration guides
 memory/         Patterns, lessons, mistakes, and conventions
 plans/          Work plans for non-trivial tasks
 prompts/        Generated and reusable implementation prompts
-scripts/        Token-usage collectors
+scripts/        Optional diagnostics and framework helpers
 skills/         Portable Agent Skills and bundled helpers
-usage/          Per-session token ledger
+usage/          Frozen historical usage archive
 workflows/      Repeatable engineering procedures
 ```
 
@@ -68,6 +68,9 @@ Explore the [public skills catalog](https://manishtiwari25.github.io/pulse/skill
 or see [`skills/README.md`](skills/README.md) for GitHub CLI, local
 activation, updates, the token-aware delegation advisor, and local code-context
 retrieval, template synchronization, and the sandbox recommendation preflight.
+
+Token snapshots are not part of task completion. The scripts under
+`docs/scripts/usage*.sh` are manual, best-effort diagnostics only.
 
 ## Manual Guides
 

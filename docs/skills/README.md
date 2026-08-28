@@ -23,7 +23,7 @@ Public catalog: <https://manishtiwari25.github.io/pulse/skills/>
 | `pulse-rollback` | Executing a scoped, verified rollback |
 | `pulse-review` | Reviewing behavior, evidence, decisions, and rollback readiness |
 | `pulse-memory` | Recording durable lessons without storing temporary notes |
-| `pulse-delegation-advisor` | Estimating tokens and recommending agent, human, or hybrid work |
+| `pulse-delegation-advisor` | Estimating tokens with optional history and recommending agent, human, or hybrid work |
 | `pulse-code-context` | Building a standard-library Go code index and relationship graph |
 | `pulse-sandbox` | Recommending isolation and reporting sandboxed or unsandboxed execution |
 

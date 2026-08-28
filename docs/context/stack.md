@@ -7,7 +7,7 @@ PULSE intentionally uses a small, portable stack:
 - Markdown for the engineering control plane.
 - Plain HTML and CSS for the public GitHub Pages site.
 - SVG for the PULSE brand mark.
-- Bash plus Python's standard library for local token collectors.
+- Bash plus Python's standard library for optional local usage diagnostics.
 - Git and GitHub for distribution, template adoption, and public documentation.
 
 ## Agent Execution Isolation

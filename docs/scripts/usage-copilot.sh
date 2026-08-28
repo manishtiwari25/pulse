@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Real token usage for a GitHub Copilot CLI session from its local event log.
-# Closed session: canonical session.shutdown.modelMetrics totals.
-# Live session: visible main-agent output plus subagent totals.
+# Best-effort token diagnostics for a GitHub Copilot CLI session from its
+# current local event-log format. Local paths and fields may change.
+# Closed sessions can expose final totals; live sessions can be partial.
 # Usage: docs/scripts/usage-copilot.sh [session-id]
 set -eu
 
@@ -135,10 +135,10 @@ else:
         print(f"  main   {model:16s} {tokens:>10,} out ({main_messages[model]} messages)")
     for model, tokens in subagent_total.most_common():
         print(f"  subagt {model:16s} {tokens:>10,} total ({subagent_runs[model]} runs)")
-    print(
-        f"Tokens  : n/a in / {main_total:,} main out + {sub_total:,} "
-        f"subagent total [interim, live]"
-    )
+    visible = [f"{main_total:,} main output tokens"]
+    if sub_total:
+        visible.append(f"{sub_total:,} subagent aggregate tokens")
+    print(f"Tokens  : {'; '.join(visible)} [partial, live; input unavailable]")
 
 if context:
     visible_context = context.get("currentTokens", sum(context.values()))

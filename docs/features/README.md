@@ -8,7 +8,8 @@
 - [`002-portable-pulse-skills.md`](002-portable-pulse-skills.md) - portable
   Agent Skills sourced from the PULSE control plane.
 - [`003-token-aware-delegation-advisor.md`](003-token-aware-delegation-advisor.md) -
-  token-range forecasting and honest agent/human/hybrid recommendations.
+  token-range forecasting with optional history and honest
+  agent/human/hybrid recommendations.
 - [`004-local-code-context-index.md`](004-local-code-context-index.md) -
   standard-library Go BM25 retrieval and a lightweight relationship graph for
   targeted source discovery.

@@ -21,6 +21,9 @@
   keeps sandboxing visible and preferred without blocking unsandboxed work.
 - [`pulse-template-sync-skill.md`](pulse-template-sync-skill.md) - packages
   safe PULSE drift checks and approved template updates as a portable skill.
+- [`optional-usage-telemetry.md`](optional-usage-telemetry.md) - removes
+  mandatory token snapshots while retaining opt-in diagnostics and an
+  optional-history delegation advisor.
 
 ## In Progress
 

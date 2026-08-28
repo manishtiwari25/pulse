@@ -96,7 +96,7 @@ service, hidden state folder, or model-specific runtime is required.
 ## What PULSE Provides
 
 - A canonical `docs/` control plane for context, architecture, decisions,
-  features, plans, prompts, workflows, memory, and token usage.
+  features, plans, prompts, workflows, and memory.
 - Agent entry points that route work through the same lifecycle.
 - Reusable templates for decisions, feature specs, plans, memory, and prompts.
 - Portable Agent Skills for bootstrap, planning, decisions, features,
@@ -105,7 +105,8 @@ service, hidden state folder, or model-specific runtime is required.
 - A safe bootstrap path for both new and established repositories.
 - Mandatory rollback plans and scoped agent-driven recovery.
 - Visible sandbox recommendations and honest unsandboxed-execution disclosure.
-- Token-only work accounting based on the real usage a runner exposes.
+- Optional, best-effort local usage diagnostics that never block task
+  completion.
 - A public documentation site served directly from `docs/`.
 
 ## Portable Agent Skills
@@ -170,8 +171,8 @@ continues under normal harness permissions unless a stronger policy applies.
 
 ### Token-Aware Delegation Advisor
 
-`pulse-delegation-advisor` reads the repository's real token ledger, predicts
-a lower/central/upper range, reports confidence, and recommends:
+`pulse-delegation-advisor` predicts a lower/central/upper range from task
+signals and optional user-supplied history, reports confidence, and recommends:
 
 - **Agent-led** for clear, reversible, low/medium-risk work.
 - **Hybrid** for broad, novel, ambiguous, or weakly predicted work.
@@ -179,7 +180,16 @@ a lower/central/upper range, reports confidence, and recommends:
 
 It only says which option is cheaper in money when the user supplies human
 time/rate and agent token rate. It never guesses provider pricing or stores
-financial values in the usage ledger.
+history or financial values in the repository. Without compatible history, it
+labels the generic estimate low confidence.
+
+### Optional Usage Diagnostics
+
+Token snapshots are not part of task completion, response formatting, or
+repository state. Run `docs/scripts/usage.sh` only when you explicitly want a
+best-effort look at token fields in a supported local runner store. Local
+formats can change; use provider-supported APIs for formal organization usage
+or cost reporting.
 
 Explore the [public PULSE skills catalog](https://manishtiwari25.github.io/pulse/skills/)
 or read [`docs/skills/`](docs/skills/README.md) for installation and usage.
@@ -211,9 +221,9 @@ docs/guides/                      Adoption and integration guides
 docs/memory/                      Durable patterns, rules, and lessons
 docs/plans/                       Verifiable work plans
 docs/prompts/                     Reusable execution prompts
-docs/scripts/                     Token-usage collectors
+docs/scripts/                     Optional diagnostics and framework helpers
 docs/skills/                      Portable Agent Skills and helpers
-docs/usage/                       Per-session token ledger
+docs/usage/                       Frozen historical usage archive
 docs/workflows/                   Repeatable engineering procedures
 ```
 

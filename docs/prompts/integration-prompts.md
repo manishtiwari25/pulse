@@ -32,9 +32,10 @@ questions, and continue.
 Preserve product/source code, uncommitted work, and existing project-specific
 instructions. Merge instead of blindly overwriting. Keep new PULSE
 control-plane content under docs/; do not add hidden tool-specific control
-folders. Do not copy stale PULSE source context, source-repository usage rows,
-generated history, or unrelated repository state. Adapt names, paths, stack
-details, and commands to this repository. Include the complete canonical
+folders. Do not copy stale PULSE source context, archived source usage rows,
+generated history, or unrelated repository state. Do not add a mandatory token
+footer or repository usage ledger. Adapt names, paths, stack details, and
+commands to this repository. Include the complete canonical
 PULSE skill pack under docs/skills/ and activate the complete pack for the
 current runner when native project skills are supported. Invoke
 `pulse-sandbox` first, display its exact recommendation warning, prefer real

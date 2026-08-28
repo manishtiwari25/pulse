@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Real token usage for Claude Code sessions. CLI, IDE extensions, and desktop
-# use the same project JSONL logs. Usage is deduplicated by message and request.
+# Best-effort token diagnostics for Claude Code sessions. CLI, IDE extensions,
+# and desktop currently use project JSONL logs. Local formats may change.
 # Usage: docs/scripts/usage-claude.sh [session-id]
 set -eu
 

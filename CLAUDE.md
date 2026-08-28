@@ -71,8 +71,7 @@ Instructions for Claude-based agents working with PULSE.
 - **ELI5 is the default** per `docs/prompts/shared/eli5.prompt.md`. Apply it to
   conversation messages and artifact prose. The user can switch with
   `normal`, `technical`, or `no eli5`, and switch back with `eli5`.
-- Code, configs, commands, facts, repository rules, and the Work Accounting
-  footer stay unchanged.
+- Code, configs, commands, facts, and repository rules stay unchanged.
 
 ## Claude-Specific Notes
 
@@ -82,18 +81,8 @@ Instructions for Claude-based agents working with PULSE.
   before implementation.
 - If `AGENTS.md` and this file diverge, follow `AGENTS.md` and update this file.
 
-## Work Accounting & Token Reporting (required)
+## Optional Usage Diagnostics
 
-End every completed task or work response with a Work Accounting footer that
-reports model and tokens only. Append one entry per session to
-`docs/usage/usage-log.md`. Use `docs/scripts/usage.sh` to read real local
-runner logs. Never estimate missing tokens or replace them with billing units.
-
-Append this block at the very end of the final response:
-
-```text
----
-### 🧮 Work Accounting
-- Model(s): <actual model id(s)> (+ sub-agent models, if any)
-- Tokens: <input> in / <output> out / <total> total   — source: <runner usage view or local session log>
-```
+Do not add a token footer or update the archived usage ledger during normal
+work. Run `docs/scripts/usage.sh` only when the user explicitly asks for local,
+best-effort diagnostics, and report only fields the runner actually exposes.

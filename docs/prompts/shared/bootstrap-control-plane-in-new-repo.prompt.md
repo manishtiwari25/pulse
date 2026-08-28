@@ -106,10 +106,10 @@ Rules:
 - Use open questions for unsupported facts.
 - Keep reusable prompts model-agnostic.
 - Do not copy PULSE framework context, publishing notes, completed decisions,
-  usage rows, session history, local paths, `.git` state, `.template-sync`,
-  secrets, or unrelated framework state.
-- If the target adopts token accounting, create a clean local ledger with no
-  rows copied from PULSE.
+  archived usage rows, session history, local paths, `.git` state,
+  `.template-sync`, secrets, or unrelated framework state.
+- Do not add a mandatory token footer or repository usage ledger. Treat any
+  retained usage collectors as manual, best-effort diagnostics only.
 - If the target adopts PULSE agent workflows, include the mandatory rollback
   rule, `docs/workflows/rollback.md`, rollback sections in plan/prompt
   templates, `docs/prompts/shared/rollback.prompt.md`, the sandbox

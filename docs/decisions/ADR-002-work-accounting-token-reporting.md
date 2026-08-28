@@ -1,13 +1,17 @@
 ---
 id: ADR-002
 title: Work Accounting with Model and Token Reporting
-status: Accepted (amended 2026-08-11)
+status: Superseded by ADR-010
 date: 2026-06-27
 areas: [agents, operations, documentation]
 tags: [adr, work-accounting, tokens, observability]
 ---
 
 # ADR-002: Work Accounting with Model and Token Reporting
+
+> Superseded by
+> [ADR-010: Make Usage Telemetry Optional](ADR-010-optional-usage-telemetry.md).
+> This file preserves the historical decision.
 
 ## Context
 

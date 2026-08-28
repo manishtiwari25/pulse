@@ -16,8 +16,8 @@ PULSE has nine durable surfaces:
    `memory/` preserve the reasoning around software work.
 3. **Adoption path** - public guides and a canonical prompt safely build or
    merge PULSE into another repository.
-4. **Observability helpers** - local scripts read real token counts from
-   supported coding-agent session stores and record them in `docs/usage/`.
+4. **Optional diagnostics** - local scripts can inspect token fields exposed by
+   supported coding-agent stores without changing task-completion behavior.
 5. **Portable skill layer** - every PULSE installation includes the complete
    `docs/skills/` pack of task-specific procedures and helpers in the Agent
    Skills format.
@@ -45,8 +45,8 @@ Both link back to canonical source in the repository.
 
 - Framework knowledge is stored as versioned Markdown.
 - Public presentation is stored as HTML, CSS, and SVG.
-- Token usage remains local until an agent appends a session snapshot to the
-  committed usage ledger.
+- Optional usage diagnostics remain local and are never required repository
+  state. The old usage ledger is a frozen historical archive.
 - Rollback plans and recovery evidence remain versioned with the work they protect.
 - Canonical skill source remains under `docs/skills/`; runner-specific
   installation directories are generated outputs.
@@ -79,5 +79,5 @@ Both link back to canonical source in the repository.
 
 - Check Markdown links and static-site references.
 - Validate SVG/XML and shell syntax.
-- Run token collectors against available local runner logs.
+- Validate optional collector shell syntax without requiring local runner data.
 - Use `git diff --check` before publishing framework changes.
