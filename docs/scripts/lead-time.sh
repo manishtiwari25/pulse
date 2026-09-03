@@ -133,7 +133,7 @@ collect | sort -t "$(printf '\t')" -k1,1 -k2,2 | awk -F '\t' -v today="$TODAY" -
     BEGIN {
         today_n = day_number(today)
         if (!tsv) {
-            printf "%-5s %-9s %-4s %-11s %-19s %-10s %-10s %5s  %s\n",
+            printf "%-5s %-9s %-4s %-22s %-19s %-10s %-10s %5s  %s\n",
                 "KIND", "ID", "TIER", "STATUS", "DELIVERY", "PROPOSED", "DELIVERED", "DAYS", "TARGET"
         }
     }
@@ -175,8 +175,8 @@ collect | sort -t "$(printf '\t')" -k1,1 -k2,2 | awk -F '\t' -v today="$TODAY" -
             printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
                 kind, id, tier, status, delivery, proposed, delivered, days, target, path
         } else {
-            printf "%-5s %-9s %-4s %-11s %-19s %-10s %-10s %5s  %s\n",
-                kind, id, (tier == "" ? "-" : tier), short(show_status, 11), short(delivery == "" ? "-" : delivery, 19),
+            printf "%-5s %-9s %-4s %-22s %-19s %-10s %-10s %5s  %s\n",
+                kind, id, (tier == "" ? "-" : tier), short(show_status, 22), short(delivery == "" ? "-" : delivery, 19),
                 (proposed == "" ? "-" : proposed), (delivered == "" ? "-" : delivered), days, target
         }
     }
