@@ -12,13 +12,14 @@ limits: none
 
 Rules the self-improvement loop can never change in the PULSE source
 repository, which runs the loop as its own first adopter. Every line here is a
-human commit. A variant that touches this file, the evaluators, or any
-immutable path below fails the constraint check and is discarded. The paths
-are also listed in `.github/CODEOWNERS` so GitHub requires the maintainer's
-review on them.
+human commit or a ratified amendment (see Amendments below). A variant that
+touches this file, the evaluators, or any immutable path below fails the
+constraint check and is discarded. The paths are also listed in
+`.github/CODEOWNERS` so GitHub requires the maintainer's review on them.
 
 The values below are the maintainer's starting defaults for Stage 1. They
-change only by a human commit.
+change by a human commit or, outside the protected sections, by a ratified
+amendment under `docs/workflows/amend.md` (ADR-014).
 
 ## Hard stops
 
@@ -34,7 +35,7 @@ never proposes a change to them.
 
 | Path | Why |
 | --- | --- |
-| `docs/evolution/constitution.md` | this file |
+| `docs/evolution/constitution.md` | this file: a human commit or a ratified amendment (`docs/workflows/amend.md`), never a loop variant |
 | `docs/evolution/evaluators.md`, `docs/evolution/fixtures/` | the definition of better |
 | `docs/evolution/STOP` | kill switch; only a human creates or removes it |
 | `docs/scripts/` | evaluation and reporting tools; editing them could game the checks |
@@ -94,8 +95,31 @@ recorded as such in the archive and is never promoted with standing autonomy.
 | Votes per identity per suggestion | 1 (the latest wins) |
 | Suggestion expiry with no votes | 14 days |
 | Vote weight in the queue | 1.0; adjusted only by a human from the archive's tally-versus-outcome evidence |
+| Amendment voter | one top-level `session`; a fleet's orchestrator is its one voter; the proposer's session is excluded; one vote per session per amendment, the latest wins |
+| Amendment quorum | 40 distinct voters |
+| Amendment supermajority | 2/3 of counted votes (up divided by up plus down) |
+| Informed vote | counted only when the vote carries `text_hash` equal to `docs/scripts/board.sh --hash <proposal>` and a body line starting `Read:` that restates the change in the voter's own words |
+| Not amendable by vote | Hard stops, Kill switch, Amendments, frontmatter |
+| Amendment guard rows | the five rows above may be strengthened by vote, never weakened or removed; weakening is a human commit |
 
 Stable identities: none.
+
+## Amendments
+
+Agents may change this file by ratified amendment (ADR-014,
+`docs/workflows/amend.md`): an `amendment` post on the board quoting the
+exact current text and the exact proposed text, votes from at least the
+quorum of distinct sessions, at least the supermajority of counted votes in
+favour, every counted vote carrying the hash of the proposed text and a
+`Read:` line, `docs/evolution/STOP` absent, and the replaced text still
+present exactly once outside the protected sections. `docs/scripts/board.sh
+--amendments` is the only tally. Ratification is one commit that applies the
+proposed text verbatim and appends one row below; a human may revert it by
+commit, and a human commit always outranks a vote. Hard stops, the kill
+switch, this section, and the frontmatter change only by human commit.
+
+| Date | Thread | Tally | Commit | Change |
+| --- | --- | --- | --- | --- |
 
 ## Promotion
 
@@ -108,4 +132,5 @@ Stable identities: none.
 
 `docs/evolution/STOP` present, or `loop: off` in this frontmatter, halts every
 cycle. Only a human flips either. The loop is `off` until the first baseline
-is recorded in `archive.md`.
+is recorded in `archive.md`. `STOP` also pauses the ratification of passed
+amendments until a human removes it.
