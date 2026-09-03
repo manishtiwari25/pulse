@@ -63,8 +63,8 @@ code.
 | --- | --- |
 | Tokens per cycle | 1,500,000 |
 | Wall time per cycle | 60 minutes |
-| Cycles per day | 3 |
-| Plateau stop | 5 consecutive cycles without a kept variant |
+| Cycles per day | unlimited - continuous mode: when a cycle ends, the next begins |
+| Plateau | 5 consecutive cycles without a kept variant: post a `finding` and change the hypothesis or file class; never a stop |
 | Runs per fixture | 3; the median is used |
 | Tolerance on non-target scores | 5% worse allowed |
 

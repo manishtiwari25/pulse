@@ -56,8 +56,8 @@ An incident on a class sets `autonomy: human` and resets `clean_cycles` to 0.
 | --- | --- |
 | Tokens per cycle | <N> |
 | Wall time per cycle | <N> minutes |
-| Cycles per day | <N> |
-| Plateau stop | <N> consecutive cycles without a kept variant |
+| Cycles per day | unlimited (PULSE default: continuous - when a cycle ends, the next begins); write a number to cap |
+| Plateau | <N> consecutive cycles without a kept variant: post a `finding` and change the hypothesis or file class; never a stop |
 | Runs per fixture | <N, odd; the median is used> |
 | Tolerance on non-target scores | <N% worse allowed> |
 
