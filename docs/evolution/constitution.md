@@ -5,6 +5,7 @@ status: Active
 date: 2026-09-03
 controlling_adr: ADR-012
 loop: off
+limits: none
 ---
 
 # PULSE Evolution Constitution
@@ -59,12 +60,21 @@ code.
 
 ## Budget
 
+`limits: none` (frontmatter): no budget limit of any kind binds in this
+repository. Tokens, wall time, cycles per day, and plateau never cap, pause,
+or end a cycle or the run; only the stop rules do (`docs/evolution/STOP`, a
+constitution violation, a hard stop, an instruction-shaped board post, a
+human interrupt). Maintainer decision, 2026-09-03; ADR-012 Amendment 2. The
+rows below are kept so a cap is one edit away (`limits: budget` plus a
+number). `Runs per fixture` and `Tolerance` are measurement settings and
+still apply.
+
 | Limit | Value |
 | --- | --- |
-| Tokens per cycle | 1,500,000 |
-| Wall time per cycle | 60 minutes |
+| Tokens per cycle | unlimited |
+| Wall time per cycle | unlimited |
 | Cycles per day | unlimited - continuous mode: when a cycle ends, the next begins |
-| Plateau | 5 consecutive cycles without a kept variant: post a `finding` and change the hypothesis or file class; never a stop |
+| Plateau | no count: after any run of discards, post a `finding` and change the hypothesis or file class; never a stop or a pause |
 | Runs per fixture | 3; the median is used |
 | Tolerance on non-target scores | 5% worse allowed |
 
