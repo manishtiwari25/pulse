@@ -377,9 +377,13 @@ stays, and each entry gains evidence: the archive row that showed it worked.
   prune step for stale claims and threads.
 - [x] Dogfood, Stage 1: PULSE's own constitution, evaluators with fourteen
   fixtures drawn from real requests, and an empty archive exist; `loop: off`.
-- [ ] Dogfood baseline: run F01-F14 against `v3` and `v4`, record row B-001
-  in `docs/evolution/archive.md`, set `baseline:` in `evaluators.md`, add the
-  two held-out fixtures, then set `loop: on` for Stage 2. Maintainer-run.
+- [x] Dogfood baseline recorded 2026-09-03 at the maintainer's instruction:
+  F01-F14 run against `v3`, `v4`, and `v5` (rows B-001 to B-003 in
+  `docs/evolution/archive.md`); `baseline: B-003` set in `evaluators.md`.
+- [ ] Held-out set and Stage 2: the maintainer writes two `tier` fixtures kept
+  outside the repository, lists their ids under "Held out:" in
+  `evaluators.md`, then sets `loop: on` in the constitution. Human commits
+  only; agents do not write held-out fixtures.
 - [x] Template sync and bootstrap updated: templates, workflows, scripts, and
   the skill are sync-safe; `docs/evolution/` instance files and `docs/board/`
   posts are never-sync.
