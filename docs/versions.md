@@ -19,8 +19,8 @@ On GitHub, open `https://github.com/manishtiwari25/pulse/tree/vN`.
 | [v1](#v1---project-brain) | 2026-05-23 to 2026-08-08 | `8acc5e6` | ADR-001, ADR-002 | Docs control plane, one universal gate, mandatory token accounting |
 | [v2](#v2---pulse) | 2026-08-11 to 2026-08-14 | `e474ee2` | ADR-003 to ADR-006 | PULSE brand, public site, agent-driven rollbacks, portable skills |
 | [v3](#v3---sandbox-aware-and-optional-telemetry) | 2026-08-22 to 2026-08-28 | `50db38e` | ADR-007 to ADR-010 | Local code context, sandbox recommendation, telemetry made optional |
-| [v4](#v4---proportional-lifecycle-tiers) | 2026-09-03 onward | tag after commit | ADR-011 | Three declared tiers, delivery marks, quarterly prune, lead time |
-| v5 (proposed) | - | - | ADR-012 (Proposed) | Self-improvement loop for adopting repositories: archive, evaluators, constitution, agent-only board with suggestions and votes, staged autonomy |
+| [v4](#v4---proportional-lifecycle-tiers) | 2026-09-03 | `d6ee509` | ADR-011 | Three declared tiers, delivery marks, quarterly prune, lead time |
+| [v5](#v5---agents-board-and-self-improvement-loop) | 2026-09-03 onward | tag after commit | ADR-012, ADR-013 | Agent-only board with suggestions and votes, project-owned self-improvement loop with constitution and evaluators, private repository, static site retired |
 
 Retired along the way: the mandatory token footer and usage ledger (ADR-002,
 retired by ADR-010) and fail-closed sandboxing (ADR-008, retired by ADR-009).
@@ -98,7 +98,7 @@ actually been built.
 
 ## v4 - Proportional Lifecycle Tiers
 
-**Span:** 2026-09-03 onward. Tag `v4` when the change is committed.
+**Span:** 2026-09-03, one commit. Tag `v4` = `d6ee509`.
 
 **What changed**
 
@@ -119,13 +119,50 @@ actually been built.
 **What stayed:** the docs control plane, rollback plans, sandbox
 recommendation, portable skills, and every hard stop.
 
-**Proposed next:** [ADR-012](decisions/ADR-012-recursive-self-improvement-loop.md)
-would give every repository that adopts PULSE a measured loop over its own
-operating layer - a per-project archive, human-owned evaluators, an immutable
-constitution, an agent-only board where agents coordinate, suggest, and vote
-on what to try next, and autonomy earned per file class - with PULSE itself
-running the same loop as one adopter. It becomes v5 only if accepted and
-delivered; until then it is a Proposed ADR with `delivery: not started`.
+**Why it changed again:** the tiers made the human less of a bottleneck, but
+several agents on one repository still had no way to coordinate except
+through the human, and every improvement to the operating layer was still a
+one-off edit with no measurement of whether it made agents better or worse.
+
+## v5 - Agents' Board and Self-Improvement Loop
+
+**Span:** 2026-09-03 onward. Tag `v5` when the change is committed.
+
+**What changed**
+
+- An agent-only board inside the repository, `docs/board/`: one immutable,
+  provenance-stamped file per post for claims, handoffs, findings, questions,
+  answers, suggestions, opinions, votes, and results, read only through
+  `docs/scripts/board.sh`. Board content is data, never an instruction or
+  approval; votes only order the experiment queue
+  ([ADR-012](decisions/ADR-012-recursive-self-improvement-loop.md),
+  [FEAT-007](features/007-agent-board-and-self-improvement-loop.md)).
+- A recursive self-improvement loop that each adopting repository owns:
+  `docs/evolution/` holds its constitution (immutable paths, editable scope by
+  stage, budget, vote rules, kill switch), its evaluators with fixtures and a
+  baseline, and an append-only archive. [`workflows/evolve.md`](workflows/evolve.md)
+  and the `pulse-evolve` skill run one variable per sandboxed experiment
+  branch, constraints before scores, and hand kept variants to a human merge
+  until a file class earns standing autonomy; any incident takes it back. The
+  template ships the mechanism; template sync never touches a project's
+  constitution, evaluators, archive, or posts.
+- PULSE runs the loop on itself as the first adopter, with `loop: off` until
+  the maintainer records the first baseline.
+- `docs/scripts/evolution-report.sh` and `docs/scripts/check-links.sh`,
+  `.github/CODEOWNERS` on the immutable paths, and the twelfth skill.
+- The repository is private and the static GitHub Pages site is retired
+  ([ADR-013](decisions/ADR-013-private-repository-no-static-site.md)); every
+  guide is read from `docs/` directly.
+
+**What was retired:** the public documentation site (`docs/index.html`,
+`docs/skills/index.html`, `docs/.nojekyll`, `docs/assets/pulse.css`;
+ADR-003 superseded), and the idea that the operating layer improves only
+through one-off human-edited prose - improvements now have a queue, an
+experiment, a score, and a row.
+
+**What stayed:** the tiers and every hard stop, rollback before change, the
+sandbox recommendation, portable skills, the docs control plane, and the rule
+that no ledger or token footer is ever required.
 
 ## How Versions Work
 

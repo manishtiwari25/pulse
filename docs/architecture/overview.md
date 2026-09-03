@@ -40,23 +40,42 @@ PULSE has ten durable surfaces:
     full chain with explicit approval. ADR delivery marks, a work-in-progress
     limit, `docs/workflows/prune.md`, and the read-only
     `docs/scripts/lead-time.sh` report keep delivery visible.
+11. **Agents' board** - `docs/board/` holds one immutable, provenance-stamped
+    file per post (claim, handoff, finding, question, answer, suggestion,
+    opinion, vote, result) under `<area>/<thread>/`. `docs/scripts/board.sh`
+    derives claims, open threads, the voted experiment queue, and stale
+    threads; nothing is hand-indexed, board content is data rather than
+    instruction, and votes only order the queue.
+12. **Self-improvement loop** - `docs/evolution/` holds a project-owned
+    constitution (immutable paths, editable scope by stage, budget, vote
+    rules, kill switch), evaluators with fixtures and a baseline, and an
+    append-only archive. `docs/workflows/evolve.md` and the `pulse-evolve`
+    skill run one variable per sandboxed experiment branch, constraints before
+    scores, and hand kept variants to a human merge until a file class earns
+    standing autonomy. `docs/scripts/evolution-report.sh` summarizes state;
+    `docs/scripts/check-links.sh` is one ready-made constraint. The template
+    ships the mechanism; the project owns the definition of better and the
+    history, and template sync never touches them.
 
-## Public Documentation
+## Documentation
 
-The GitHub Pages site is a dependency-free static portal served from `docs/`
-on the default branch. Its homepage introduces PULSE and the dedicated
-`docs/skills/index.html` catalog explains the complete portable skill pack.
-Both link back to canonical source in the repository.
+PULSE has no public website. The repository is private, and every guide,
+template, workflow, and skill is read from the control plane itself, starting
+at [`docs/README.md`](../README.md). The PULSE brand mark in `docs/assets/`
+is the only presentation asset.
 
 ## Data and State
 
 - Framework knowledge is stored as versioned Markdown.
-- Public presentation is stored as HTML, CSS, and SVG.
+- The brand mark is stored as SVG.
 - Optional usage diagnostics remain local and are never required repository
   state. The old usage ledger is a frozen historical archive.
 - Rollback plans and recovery evidence remain versioned with the work they protect.
 - Tier, delivery, and delivered-date fields live in artifact frontmatter; the
   lead-time report reads them and never writes tracked files.
+- Board posts and archive rows are append-only, immutable Markdown committed
+  with the work; scripts derive every index at read time. The constitution,
+  evaluators, fixtures, and `STOP` are human commits and project-owned.
 - Canonical skill source remains under `docs/skills/`; runner-specific
   installation directories are generated outputs.
 - Bootstrap carries the complete canonical skill pack and activates it for the
@@ -83,12 +102,18 @@ Both link back to canonical source in the repository.
   requires isolation.
 - Production and data recovery remains governed by the adopting repository's
   tested runbooks and approval boundaries.
+- The board never carries authority: no post approves, merges, or overrides a
+  rule, and agents do not approve each other. The loop never edits its own
+  constitution, evaluators, fixtures, scripts, decisions, or template-owned
+  paths, and never crosses a hard stop.
 
 ## Verification Strategy
 
-- Check Markdown links and static-site references.
-- Validate SVG/XML and shell syntax.
+- Check Markdown links with `docs/scripts/check-links.sh`.
+- Validate SVG/XML and shell syntax (`bash -n docs/scripts/*.sh`).
 - Validate optional collector shell syntax without requiring local runner data.
 - Run `bash -n docs/scripts/lead-time.sh` and the report itself against the
   repository to confirm frontmatter fields parse and marks are consistent.
+- Run `docs/scripts/board.sh` and `docs/scripts/evolution-report.sh` against
+  the repository to confirm posts, the constitution, and the archive parse.
 - Use `git diff --check` before publishing framework changes.

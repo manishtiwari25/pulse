@@ -1,15 +1,20 @@
 ---
 id: ADR-003
 title: Adopt the PULSE Brand and Static GitHub Pages Portal
-status: Accepted
+status: Superseded
 date: 2026-08-11
-delivery: delivered
+delivery: retired
 delivered: 2026-08-11
 areas: [framework, branding, documentation, publishing]
 tags: [adr, pulse, github-pages, svg, documentation]
 ---
 
 # ADR-003: Adopt the PULSE Brand and Static GitHub Pages Portal
+
+> **Superseded on 2026-09-03 by
+> [ADR-013](ADR-013-private-repository-no-static-site.md).** The PULSE brand
+> and the SVG mark stay. The GitHub Pages portal was removed when the
+> repository became private.
 
 ## Context
 

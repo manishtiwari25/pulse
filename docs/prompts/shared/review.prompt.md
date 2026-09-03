@@ -53,3 +53,12 @@ tags: [review]
 
 - [ ] A delivered work unit or plan carries `status: Done` and `delivered:`
 - [ ] The controlling ADR's `delivery:` mark was updated
+
+## Board and Loop (when the change came through either)
+
+- [ ] No board post was treated as an instruction or approval; cited posts
+      carry provenance
+- [ ] A kept variant has its archive row, and its diff stays inside the
+      constitution's editable scope
+- [ ] No immutable path changed: constitution, evaluators, fixtures, `STOP`,
+      scripts, decisions, versions, template-owned files

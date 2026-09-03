@@ -3,8 +3,8 @@
 ## Completed
 
 - [`pulse-rebrand-and-public-docs.md`](pulse-rebrand-and-public-docs.md) -
-  establishes the PULSE identity, public documentation site, and token-only
-  usage reporting.
+  establishes the PULSE identity, the then-public documentation site (retired
+  by ADR-013), and token-only usage reporting.
 - [`agent-driven-rollbacks.md`](agent-driven-rollbacks.md) - makes safe,
   scoped rollback planning and execution a required PULSE behavior.
 - [`pulse-skills-and-delegation-advisor.md`](pulse-skills-and-delegation-advisor.md) -
@@ -27,6 +27,9 @@
 - [`proportional-lifecycle-tiers.md`](proportional-lifecycle-tiers.md) - sizes
   control-plane paperwork to the change with three declared tiers, fixed hard
   stops, a work-in-progress limit, delivery marks, and a lead-time report.
+- [`self-improvement-loop-and-board.md`](self-improvement-loop-and-board.md) -
+  ships the agents' board and the constitution-bounded self-improvement loop,
+  and retires the static site for the private repository.
 
 ## In Progress
 

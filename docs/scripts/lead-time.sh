@@ -183,7 +183,10 @@ collect | sort -t "$(printf '\t')" -k1,1 -k2,2 | awk -F '\t' -v today="$TODAY" -
     END {
         if (tsv) exit
         print ""
-        if (total == 0) { print "No artifacts with frontmatter found."; exit }
+        if (total == 0) {
+            print (only_open ? "No open artifacts: everything proposed is delivered or retired." : "No artifacts with frontmatter found.")
+            exit
+        }
         print "Summary (proposed -> delivered days from frontmatter; read-only)"
         for (t = 0; t <= 2; t++) {
             tier = t ""

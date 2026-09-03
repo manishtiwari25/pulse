@@ -8,8 +8,8 @@ detailed, on-demand procedures; they do not replace always-on instructions.
 
 Every PULSE installation includes the complete canonical pack. The commands
 below activate those skills in a runner's native project or user location.
-
-Public catalog: <https://manishtiwari25.github.io/pulse/skills/>
+The repository is private, so `gh skill install` needs a GitHub CLI login
+with access to it.
 
 ## Available Skills
 
@@ -26,6 +26,7 @@ Public catalog: <https://manishtiwari25.github.io/pulse/skills/>
 | `pulse-delegation-advisor` | Estimating tokens with optional history and recommending agent, human, or hybrid work |
 | `pulse-code-context` | Building a standard-library Go code index and relationship graph |
 | `pulse-sandbox` | Recommending isolation and reporting sandboxed or unsandboxed execution |
+| `pulse-evolve` | Running one measured, constitution-bounded self-improvement cycle from the board's voted queue |
 
 ## Recommended: Activate the Complete Pack
 
@@ -152,6 +153,25 @@ native sandboxes; OpenCode can use an external sandbox because permissions
 alone are not an OS boundary. Without a sandbox, the skill reports
 unsandboxed execution and continues under normal harness permissions. See
 [`sandboxed-agent-execution.md`](../workflows/sandboxed-agent-execution.md).
+
+## Self-Improvement Cycle
+
+`pulse-evolve` runs one experiment for the loop decided in
+[ADR-012](../decisions/ADR-012-recursive-self-improvement-loop.md). It refuses
+to start unless `docs/evolution/constitution.md` has `loop: on`,
+`evaluators.md` names a recorded baseline, `docs/evolution/STOP` is absent,
+and the day's budget is left. Read the queue and loop state first:
+
+```bash
+docs/scripts/board.sh --queue
+docs/scripts/evolution-report.sh
+```
+
+The cycle tests one variable on a sandboxed experiment branch, runs
+constraints before scores, appends one archive row, posts one board `result`,
+and hands a kept variant to a human merge. Board rules are in
+[`board.md`](../workflows/board.md); the cycle is in
+[`evolve.md`](../workflows/evolve.md).
 
 ## Optional Local Code Context
 

@@ -1,0 +1,94 @@
+---
+id: CONSTITUTION
+title: <Project> Evolution Constitution
+status: Active
+date: YYYY-MM-DD
+controlling_adr: ADR-NNN
+loop: off
+---
+
+# <Project> Evolution Constitution
+
+Rules the self-improvement loop can never change. Every line here is a human
+commit. A variant that touches this file, the evaluators, or any immutable
+path below fails the constraint check and is discarded. Protect these paths
+with branch protection and code owners where the host supports it.
+
+## Hard stops
+
+Identical to the hard stops in `AGENTS.md`. The loop never crosses them and
+never proposes a change to them.
+
+- destructive or irreversible actions, production, deploy, publish, merge
+- credentials, hosted-data deletion, broad auth, billing, or data migration
+- infrastructure, major dependency upgrades, policy-sensitive security
+- purchases, ambiguous evidence
+
+## Immutable paths
+
+| Path | Why |
+| --- | --- |
+| `docs/evolution/constitution.md` | this file |
+| `docs/evolution/evaluators.md`, `docs/evolution/fixtures/` | the definition of better |
+| `docs/evolution/STOP` | kill switch; only a human creates or removes it |
+| template-owned paths (`docs/workflows/`, `docs/scripts/`, `docs/skills/`, `docs/prompts/shared/`, `docs/*/_template*.md`, `docs/versions.md`) | change only through template sync |
+| `AGENTS.md` hard-stop, tier, board-and-loop, sandbox, and rollback sections, `CLAUDE.md`, `.github/copilot-instructions.md` | rules humans own |
+| <product hard-stop surfaces: auth, billing, data, migrations, deploy config> | Tier 2 surfaces |
+
+## Editable scope by stage
+
+One row per file class. `stage` is the highest stage this class has reached;
+`autonomy` is `human` (a human merges) or `standing` (the loop merges).
+An incident on a class sets `autonomy: human` and resets `clean_cycles` to 0.
+
+| File class | Paths | Stage | Autonomy | Clean cycles required | Clean cycles so far | Incidents |
+| --- | --- | --- | --- | --- | --- | --- |
+| memory | `docs/memory/` | 2 | human | 5 | 0 | 0 |
+| local rules | project-owned sections of `AGENTS.md` | 2 | human | 8 | 0 | 0 |
+| project prompts | `docs/prompts/` outside `shared/` | 2 | human | 5 | 0 | 0 |
+| project skills and workflows | project-owned `docs/skills/`, `docs/workflows/` files | 2 | human | 5 | 0 | 0 |
+| product polish | <paths>, Tier 0 with a reproducing test | 4 | human | 10 | 0 | 0 |
+| product behavior | <paths>, Tier 1 inside an Accepted ADR | 4 | human | 10 | 0 | 0 |
+
+## Budget
+
+| Limit | Value |
+| --- | --- |
+| Tokens per cycle | <N> |
+| Wall time per cycle | <N> minutes |
+| Cycles per day | <N> |
+| Plateau stop | <N> consecutive cycles without a kept variant |
+| Runs per fixture | <N, odd; the median is used> |
+| Tolerance on non-target scores | <N% worse allowed> |
+
+## Sandbox
+
+Every cycle runs on an experiment branch inside the strongest sandbox the
+runner supports and reports the actual boundary. An unsandboxed cycle is
+recorded as such in the archive and is never promoted with standing autonomy.
+
+## Vote rules
+
+| Rule | Value |
+| --- | --- |
+| Agent identity | `<runner>/<model>` unless a stable identity is listed below |
+| Quorum to enter the queue | 2 distinct agent identities |
+| Self-votes | not counted |
+| Votes per identity per suggestion | 1 (the latest wins) |
+| Suggestion expiry with no votes | <N> days |
+| Vote weight in the queue | 1.0; adjusted only by a human from the archive's tally-versus-outcome evidence |
+
+Stable identities: <none | list of configured agent identities>
+
+## Promotion
+
+- Stages 1-2: every kept variant is a pull request a human merges or closes.
+- Stage 3+: a class with `autonomy: standing` may merge kept variants inside
+  its paths only; anything touching another class stays a human merge.
+- Product classes (Stage 4) additionally need the project's tests and
+  benchmarks to pass and a human-rated sample at the cadence in the evaluators.
+
+## Kill switch
+
+`docs/evolution/STOP` present, or `loop: off` in this frontmatter, halts every
+cycle. Only a human flips either.

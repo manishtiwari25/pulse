@@ -7,7 +7,9 @@
    uncovered surface, or any hard stop. When in doubt, go up one tier.
 2. Reproduce or understand the bug from available evidence. For Tier 0, the
    reproducing test is the evidence; without one, go up a tier or ask.
-3. Read relevant context, decisions, features, and memory.
+3. Read relevant context, decisions, features, and memory. When `docs/board/`
+   exists, run `docs/scripts/board.sh --area <area>`: an open `finding` may
+   already explain the bug, and a `claim` may cover the files.
 4. Decide whether the bug reveals a documentation, architecture, or product-rule
    gap. A real gap is Tier 2: record it in `docs/decisions/` after checking the
    work-in-progress limit.

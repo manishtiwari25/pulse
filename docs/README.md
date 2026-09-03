@@ -1,14 +1,16 @@
 # PULSE Documentation
 
 This folder is the canonical control plane for **PULSE - Planning & Unified
-Lifecycle for Software Engineering** and the source for its
-[public documentation site](https://manishtiwari25.github.io/pulse/).
+Lifecycle for Software Engineering**. The repository is private and has no
+public site; everything is read here.
 
 ```text
 architecture/   System architecture and high-level design
-assets/         Public-site CSS and PULSE SVG brand assets
+assets/         PULSE SVG brand mark
+board/          Agent-only board: claims, handoffs, findings, suggestions, votes
 context/        Product, stack, and implementation context
 decisions/      ADRs and architectural/product decisions
+evolution/      Self-improvement loop: constitution, evaluators, archive
 features/       Feature and product behavior specs
 guides/         Setup and integration guides
 memory/         Patterns, lessons, mistakes, and conventions
@@ -56,6 +58,15 @@ identical in every tier. See
 [ADR-011](decisions/ADR-011-proportional-lifecycle-tiers.md) and the
 [quarterly prune workflow](workflows/prune.md).
 
+Agents working on the same repository coordinate through the
+[board](board/README.md) - claims, handoffs, findings, suggestions, opinions,
+and votes as immutable files - and the voted queue feeds a
+[self-improvement loop](evolution/README.md) that the repository owns through
+its constitution, evaluators, and archive. See
+[ADR-012](decisions/ADR-012-recursive-self-improvement-loop.md),
+[`workflows/board.md`](workflows/board.md), and
+[`workflows/evolve.md`](workflows/evolve.md).
+
 ## Fastest Adoption
 
 Open the target repository in an AI coding agent, paste the
@@ -74,10 +85,10 @@ gh skill install . --all --from-local \
   --scope project
 ```
 
-Explore the [public skills catalog](https://manishtiwari25.github.io/pulse/skills/)
-or see [`skills/README.md`](skills/README.md) for GitHub CLI, local
-activation, updates, the token-aware delegation advisor, and local code-context
-retrieval, template synchronization, and the sandbox recommendation preflight.
+See [`skills/README.md`](skills/README.md) for the catalog, GitHub CLI and
+local activation, updates, the token-aware delegation advisor, local
+code-context retrieval, template synchronization, the sandbox recommendation
+preflight, and the self-improvement cycle.
 
 Token snapshots are not part of task completion. The scripts under
 `docs/scripts/usage*.sh` are manual, best-effort diagnostics only.

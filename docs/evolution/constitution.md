@@ -1,0 +1,101 @@
+---
+id: CONSTITUTION
+title: PULSE Evolution Constitution
+status: Active
+date: 2026-09-03
+controlling_adr: ADR-012
+loop: off
+---
+
+# PULSE Evolution Constitution
+
+Rules the self-improvement loop can never change in the PULSE source
+repository, which runs the loop as its own first adopter. Every line here is a
+human commit. A variant that touches this file, the evaluators, or any
+immutable path below fails the constraint check and is discarded. The paths
+are also listed in `.github/CODEOWNERS` so GitHub requires the maintainer's
+review on them.
+
+The values below are the maintainer's starting defaults for Stage 1. They
+change only by a human commit.
+
+## Hard stops
+
+Identical to the hard stops in `AGENTS.md`. The loop never crosses them and
+never proposes a change to them.
+
+- destructive or irreversible actions, production, deploy, publish, merge
+- credentials, hosted-data deletion, broad auth, billing, or data migration
+- infrastructure, major dependency upgrades, policy-sensitive security
+- purchases, ambiguous evidence
+
+## Immutable paths
+
+| Path | Why |
+| --- | --- |
+| `docs/evolution/constitution.md` | this file |
+| `docs/evolution/evaluators.md`, `docs/evolution/fixtures/` | the definition of better |
+| `docs/evolution/STOP` | kill switch; only a human creates or removes it |
+| `docs/scripts/` | evaluation and reporting tools; editing them could game the checks |
+| `docs/decisions/`, `docs/versions.md` | decisions and versions are human records |
+| `AGENTS.md` sections "Critical Rules", "Proportional Lifecycle Tiers", "Agents' Board and Self-Improvement Loop", "Sandbox Recommendation", "Rollback Planning"; `CLAUDE.md`; `.github/` | rules and hosting humans own |
+| `LICENSE` | legal, if one is ever added |
+
+## Editable scope by stage
+
+PULSE is the template, so its loop may edit the framework prose that adopters
+receive through sync - skills, workflows, shared prompts, guides, and memory -
+inside the limits above. Product classes do not apply: PULSE has no product
+code.
+
+| File class | Paths | Stage | Autonomy | Clean cycles required | Clean cycles so far | Incidents |
+| --- | --- | --- | --- | --- | --- | --- |
+| memory | `docs/memory/` | 1 | human | 5 | 0 | 0 |
+| skill prose | `docs/skills/*/SKILL.md`, `docs/skills/README.md` | 1 | human | 8 | 0 | 0 |
+| workflows | `docs/workflows/` except `rollback.md` and `sandboxed-agent-execution.md` | 1 | human | 8 | 0 | 0 |
+| shared prompts | `docs/prompts/shared/` | 1 | human | 8 | 0 | 0 |
+| guides and context | `docs/guides/`, `docs/context/`, `docs/architecture/` | 1 | human | 5 | 0 | 0 |
+| operating guide prose | `AGENTS.md` outside the immutable sections, `README.md`, `docs/README.md` | 1 | human | 10 | 0 | 0 |
+
+## Budget
+
+| Limit | Value |
+| --- | --- |
+| Tokens per cycle | 1,500,000 |
+| Wall time per cycle | 60 minutes |
+| Cycles per day | 3 |
+| Plateau stop | 5 consecutive cycles without a kept variant |
+| Runs per fixture | 3; the median is used |
+| Tolerance on non-target scores | 5% worse allowed |
+
+## Sandbox
+
+Every cycle runs on an experiment branch inside the strongest sandbox the
+runner supports and reports the actual boundary. An unsandboxed cycle is
+recorded as such in the archive and is never promoted with standing autonomy.
+
+## Vote rules
+
+| Rule | Value |
+| --- | --- |
+| Agent identity | `<runner>/<model>` |
+| Quorum to enter the queue | 2 distinct agent identities |
+| Self-votes | not counted |
+| Votes per identity per suggestion | 1 (the latest wins) |
+| Suggestion expiry with no votes | 14 days |
+| Vote weight in the queue | 1.0; adjusted only by a human from the archive's tally-versus-outcome evidence |
+
+Stable identities: none.
+
+## Promotion
+
+- Stages 1-2: every kept variant is a pull request the maintainer merges or
+  closes.
+- Stage 3+: a class with `autonomy: standing` may merge kept variants inside
+  its paths only; anything touching another class stays a human merge.
+
+## Kill switch
+
+`docs/evolution/STOP` present, or `loop: off` in this frontmatter, halts every
+cycle. Only a human flips either. The loop is `off` until the first baseline
+is recorded in `archive.md`.

@@ -11,6 +11,9 @@
    - **Tier 2 (real decision or uncovered surface):** continue with the full
      chain below and wait for explicit approval before implementing.
 2. Read relevant files in `docs/memory/`, `docs/decisions/`, `docs/architecture/`, and `docs/context/`.
+   When `docs/board/` exists, run `docs/scripts/board.sh --area <area>` for
+   active claims and open threads, and post a `claim` if the work spans
+   several files or sessions ([`board.md`](board.md)).
 3. Create or update a feature spec in `docs/features/` from `_template.md`.
 4. Record non-obvious decisions in `docs/decisions/` after checking the
    work-in-progress limit for the affected areas.

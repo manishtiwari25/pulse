@@ -1,0 +1,14 @@
+# Human review required on the paths the self-improvement loop may never
+# change (ADR-012) and on the rules humans own. Adopting repositories replace
+# the owner with their own maintainers.
+
+/docs/evolution/constitution.md      @manishtiwari25
+/docs/evolution/evaluators.md        @manishtiwari25
+/docs/evolution/fixtures/            @manishtiwari25
+/docs/evolution/STOP                 @manishtiwari25
+/docs/scripts/                       @manishtiwari25
+/docs/decisions/                     @manishtiwari25
+/docs/versions.md                    @manishtiwari25
+/AGENTS.md                           @manishtiwari25
+/CLAUDE.md                           @manishtiwari25
+/.github/                            @manishtiwari25

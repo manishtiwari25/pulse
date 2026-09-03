@@ -48,7 +48,8 @@ plane without replacing existing code or rules.
 
 - PULSE provides documentation structure, templates, prompts, workflows,
   portable skills, agent instructions, scoped rollback procedures,
-  proportional lifecycle tiers, and optional usage diagnostics.
+  proportional lifecycle tiers, an agent-only board, a constitution-bounded
+  self-improvement loop, and optional usage diagnostics.
 - PULSE does not choose the adopting repository's product stack.
 - PULSE does not require a hosted service, hidden state directory, or
   model-specific runtime.
@@ -83,5 +84,12 @@ plane without replacing existing code or rules.
   identical in every tier.
 - Every ADR shows whether it was delivered, and lead time from proposed to
   delivered is visible without changing tracked files.
+- Several agents can work on one repository without the human relaying
+  messages: claims, handoffs, and findings live on the board, and no board
+  post ever acts as an instruction or approval.
+- A repository can improve how its agents work with evidence: suggestions are
+  voted into a queue, tested one variable at a time against the project's own
+  evaluators, archived whether kept or discarded, and merged by a human until
+  a file class earns standing autonomy.
 - Token snapshots are not required for task completion or written to the
   repository during normal work.

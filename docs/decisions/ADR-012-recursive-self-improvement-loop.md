@@ -1,10 +1,10 @@
 ---
 id: ADR-012
 title: Give Adopting Repositories a Measured, Constitution-Bounded Self-Improvement Loop
-status: Proposed
+status: Accepted
 date: 2026-09-03
-delivery: not started
-delivered:
+delivery: delivered
+delivered: 2026-09-03
 areas: [agents, workflows, governance, evolution]
 tags: [adr, recursive-self-improvement, evolution, evaluators, constitution, autonomy, adopters]
 ---
@@ -362,26 +362,33 @@ stays, and each entry gains evidence: the archive row that showed it worked.
 
 ## Follow-Up
 
-- [ ] Maintainer decision: accept, defer, or reject; if accepted, name the
-  default per-cycle budget and the default clean-cycle count for Stage 3.
-- [ ] Stage 1 plan: `docs/evolution/` templates (constitution, evaluators,
-  archive), `docs/workflows/evolve.md`, and the read-only evolution report.
-- [ ] Board, deliverable first because it needs no evaluators: `docs/board/`
-  layout and `_template-post.md`, `board.sh` (index, queue, tallies, stale
-  report), the board read in the Understand step of the workflows, the vote
-  rules in the constitution template, `docs/board/` in never-sync, and a
+- [x] Maintainer decision: accepted 2026-09-03 ("go ahead, implement").
+  Default budget and clean-cycle counts are the starting values in
+  `docs/evolution/_template-constitution.md` and PULSE's own
+  `docs/evolution/constitution.md`; humans adjust them there.
+- [x] Templates: `docs/evolution/_template-constitution.md`,
+  `_template-evaluators.md`, `_template-archive.md`, and
+  `docs/board/_template-post.md`; `docs/workflows/evolve.md`; read-only
+  `docs/scripts/evolution-report.sh` - delivered by
+  [PLAN-011](../plans/self-improvement-loop-and-board.md).
+- [x] Board: `docs/board/` layout, `board.sh` (index, queue, tallies, stale
+  report), the board read in the Understand step of the workflows, vote rules
+  in the constitution template, `docs/board/` posts in never-sync, and the
   prune step for stale claims and threads.
-- [ ] Dogfood: PULSE fills its own constitution and evaluators as the first
-  adopter and runs a baseline against `v3` and `v4`; record the result in its
-  archive and in `docs/versions.md`.
-- [ ] Template sync and bootstrap: confirm the templates, workflows, scripts,
-  and skill land in the sync-safe set; add the project's `docs/evolution/`
-  instance files and `docs/board/` posts to never-sync.
-- [ ] `pulse-evolve` skill for the supervised cycle (Stage 2) only after the
-  dogfood baseline exists.
-- [ ] Update `docs/architecture/overview.md`, `docs/context/product.md`, and
-  memory when accepted.
-- [ ] Update `delivery:` and `delivered:` when the plan or work unit closes.
+- [x] Dogfood, Stage 1: PULSE's own constitution, evaluators with fourteen
+  fixtures drawn from real requests, and an empty archive exist; `loop: off`.
+- [ ] Dogfood baseline: run F01-F14 against `v3` and `v4`, record row B-001
+  in `docs/evolution/archive.md`, set `baseline:` in `evaluators.md`, add the
+  two held-out fixtures, then set `loop: on` for Stage 2. Maintainer-run.
+- [x] Template sync and bootstrap updated: templates, workflows, scripts, and
+  the skill are sync-safe; `docs/evolution/` instance files and `docs/board/`
+  posts are never-sync.
+- [x] `pulse-evolve` skill ships with hard preconditions: it refuses to run a
+  cycle without a filled constitution, evaluators, a recorded baseline,
+  `loop: on`, and no `STOP` file.
+- [x] `docs/architecture/overview.md`, `docs/context/product.md`, and memory
+  updated.
+- [x] `delivery: delivered` set when PLAN-011 closed.
 
 ## Delivery
 
@@ -393,5 +400,8 @@ decision has been built:
 - `delivered` - the plan or last work unit closed; set `delivered: YYYY-MM-DD`.
 - `retired` - the decision is superseded, deprecated, or abandoned.
 
-Built by: no plan yet; awaiting the maintainer's decision. No other Proposed
-ADR is open in these areas, so the work-in-progress limit is satisfied.
+Built by: [PLAN-011](../plans/self-improvement-loop-and-board.md) and
+[FEAT-007](../features/007-agent-board-and-self-improvement-loop.md),
+delivered 2026-09-03. The mechanism is delivered; each repository's loop turns
+on only after its own Stage 1 baseline, which for PULSE is the open
+maintainer-run item above.

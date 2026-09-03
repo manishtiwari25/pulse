@@ -5,10 +5,10 @@
 PULSE intentionally uses a small, portable stack:
 
 - Markdown for the engineering control plane.
-- Plain HTML and CSS for the public GitHub Pages site.
 - SVG for the PULSE brand mark.
-- Bash plus Python's standard library for optional local usage diagnostics.
-- Git and GitHub for distribution, template adoption, and public documentation.
+- Bash plus Python's standard library for optional local usage diagnostics,
+  and Bash for the read-only lead-time, board, and evolution reports.
+- Git and GitHub (private repository) for distribution and template adoption.
 
 ## Agent Execution Isolation
 
@@ -31,7 +31,7 @@ PULSE intentionally uses a small, portable stack:
 - No package manager or build dependency is required for the PULSE framework.
 - The code-context helper adds no third-party package or model dependency.
 - Running from source requires Go; a published release binary does not.
-- The public site must work as static files served from `docs/`.
+- No static site: the repository is private and documentation is read in place.
 - Agent-controlled execution prefers a sandbox but may continue under normal
   harness permissions when the boundary is reported as unsandboxed.
 - Prompts and workflows remain model-agnostic.

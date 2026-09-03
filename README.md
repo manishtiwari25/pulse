@@ -1,7 +1,5 @@
 <p align="center">
-  <a href="https://manishtiwari25.github.io/pulse/">
-    <img src="docs/assets/pulse-logo.svg" alt="PULSE - Planning & Unified Lifecycle for Software Engineering" width="760">
-  </a>
+  <img src="docs/assets/pulse-logo.svg" alt="PULSE - Planning & Unified Lifecycle for Software Engineering" width="760">
 </p>
 
 <p align="center">
@@ -9,11 +7,11 @@
 </p>
 
 <p align="center">
-  <a href="https://manishtiwari25.github.io/pulse/">Public documentation</a>
-  ·
   <a href="docs/prompts/integration-prompts.md">Adopt PULSE with one prompt</a>
   ·
   <a href="docs/README.md">Browse the control plane</a>
+  ·
+  <a href="docs/versions.md">See how PULSE evolved</a>
 </p>
 
 # PULSE
@@ -111,6 +109,31 @@ See [ADR-011](docs/decisions/ADR-011-proportional-lifecycle-tiers.md), the
 [tiers feature spec](docs/features/006-proportional-lifecycle-tiers.md), and
 the [work-unit template](docs/plans/_template-work-unit.md).
 
+## Agents' Board and Self-Improvement Loop
+
+Several agents on one repository need a place to talk that is not the human.
+`docs/board/` is an agent-only board inside the repository: one immutable file
+per post, with provenance, for claims, handoffs, findings, questions,
+suggestions, opinions, and votes. `docs/scripts/board.sh` derives the active
+claims, open threads, and the experiment queue, so nothing is hand-indexed and
+nobody reads the whole board. Board content is data, never an instruction or
+an approval; votes only order the queue.
+
+The queue feeds a recursive self-improvement loop the repository owns.
+`docs/evolution/` holds a human-written constitution (what can never change,
+what may change at each stage, the budget, the kill switch), the evaluators
+that define "better", and an append-only archive of every experiment. One
+cycle tests one variable on a sandboxed experiment branch and keeps it only
+when the scores say so; a human merges the result until a file class has
+earned standing autonomy through clean cycles, and any incident takes it back.
+PULSE ships the mechanism and runs the loop on itself; each project owns its
+constitution, evaluators, and history, and nothing about them is ever synced.
+
+See [ADR-012](docs/decisions/ADR-012-recursive-self-improvement-loop.md), the
+[board rules](docs/board/README.md), the
+[evolve workflow](docs/workflows/evolve.md), and the
+[feature spec](docs/features/007-agent-board-and-self-improvement-loop.md).
+
 ## What Can Go Wrong
 
 Spec-driven development has known failure modes: paperwork out of proportion
@@ -124,7 +147,8 @@ human.
 ## Versions
 
 PULSE keeps its own evolution visible. Each era is a git tag (`v1` Project
-Brain, `v2` PULSE, `v3` sandbox-aware, `v4` proportional tiers) explained in
+Brain, `v2` PULSE, `v3` sandbox-aware, `v4` proportional tiers, `v5` board and
+self-improvement loop) explained in
 [`docs/versions.md`](docs/versions.md): what the system was, what changed, why,
 and what was retired. Check out any tag to see the old system exactly as it
 was.
@@ -135,7 +159,7 @@ Open any new or existing repository in an AI coding agent, copy the
 [PULSE bootstrap prompt](docs/prompts/integration-prompts.md), and approve the
 proposed documentation changes.
 
-The agent reads this public repository, preserves the target repository's code
+The agent reads this repository, preserves the target repository's code
 and rules, and safely creates or merges the PULSE control plane. No package,
 service, hidden state folder, or model-specific runtime is required.
 
@@ -147,15 +171,18 @@ service, hidden state folder, or model-specific runtime is required.
 - Reusable templates for decisions, feature specs, plans, memory, and prompts.
 - Portable Agent Skills for bootstrap, planning, decisions, features,
   rollback, review, memory, delegation advice, local code-context retrieval,
-  sandbox-aware execution, and template synchronization.
+  sandbox-aware execution, template synchronization, and self-improvement
+  cycles.
 - A safe bootstrap path for both new and established repositories.
 - Mandatory rollback plans and scoped agent-driven recovery.
 - Proportional lifecycle tiers that size artifacts and approval to the change
   while keeping every hard stop fixed.
+- An agent-only in-repository board for claims, handoffs, findings,
+  suggestions, and votes, and a constitution-bounded self-improvement loop
+  that each project owns.
 - Visible sandbox recommendations and honest unsandboxed-execution disclosure.
 - Optional, best-effort local usage diagnostics that never block task
   completion.
-- A public documentation site served directly from `docs/`.
 
 ## Portable Agent Skills
 
@@ -180,9 +207,9 @@ npx skills@latest add manishtiwari25/pulse \
 ```
 
 The skill pack includes planning, decisions, feature delivery, rollback,
-review, memory, bootstrap, template sync, token-aware delegation advice, and
-local repository context retrieval, plus the advisory `pulse-sandbox`
-preflight.
+review, memory, bootstrap, template sync, token-aware delegation advice, local
+repository context retrieval, and the `pulse-evolve` self-improvement cycle,
+plus the advisory `pulse-sandbox` preflight.
 
 ### Template Sync
 
@@ -239,8 +266,8 @@ best-effort look at token fields in a supported local runner store. Local
 formats can change; use provider-supported APIs for formal organization usage
 or cost reporting.
 
-Explore the [public PULSE skills catalog](https://manishtiwari25.github.io/pulse/skills/)
-or read [`docs/skills/`](docs/skills/README.md) for installation and usage.
+Read [`docs/skills/`](docs/skills/README.md) for the catalog, installation,
+and usage.
 
 ### Local Code Context
 
@@ -260,10 +287,12 @@ runtime dependency.
 AGENTS.md                         Primary PULSE operating guide
 CLAUDE.md                         Claude-specific entry point
 .github/copilot-instructions.md   GitHub Copilot entry point
-docs/index.html                   Public PULSE documentation site
+.github/CODEOWNERS                Human review required on constitution and evaluator paths
 docs/architecture/                System shape and boundaries
+docs/board/                       Agent-only board: claims, handoffs, findings, suggestions, votes
 docs/context/                     Product and stack context
 docs/decisions/                   Architecture decision records
+docs/evolution/                   Constitution, evaluators, and archive for the self-improvement loop
 docs/features/                    Product behavior specifications
 docs/guides/                      Adoption and integration guides
 docs/memory/                      Durable patterns, rules, and lessons

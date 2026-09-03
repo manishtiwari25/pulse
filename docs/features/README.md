@@ -19,6 +19,10 @@
 - [`006-proportional-lifecycle-tiers.md`](006-proportional-lifecycle-tiers.md) -
   three declared lifecycle tiers, fixed hard stops, a work-in-progress limit,
   ADR delivery marks with a quarterly prune, and a read-only lead-time report.
+- [`007-agent-board-and-self-improvement-loop.md`](007-agent-board-and-self-improvement-loop.md) -
+  an agent-only in-repository board with claims, handoffs, findings,
+  suggestions, opinions, and votes, feeding a constitution-bounded,
+  evaluator-gated self-improvement loop the project owns.
 
 Copy `_template.md` when the new product direction needs a feature or product
 behavior spec. Tier 1 behavior inside an Accepted ADR uses a work unit in

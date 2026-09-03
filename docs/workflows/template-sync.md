@@ -47,9 +47,9 @@ trees against the recorded `lastSyncedCommit` (or the full tree on first sync)
 
 | Class | Paths | Action |
 | --- | --- | --- |
-| **Sync-safe** (template-owned) | `docs/workflows/`, `docs/scripts/`, `docs/skills/`, `docs/prompts/shared/`, `docs/*/_template*.md`, `docs/versions.md`, `.editorconfig`, `.gitattributes` | Copy from template when changed upstream and unmodified locally; if modified both sides, escalate to review. |
-| **Review-first** (rules, customized per repo) | `AGENTS.md`, `CLAUDE.md`, `README.md`, `.github/copilot-instructions.md`, `docs/README.md`, `docs/*/README.md` | Never overwrite. Show the upstream diff and merge rule changes into the local version manually, preserving project-specific content. |
-| **Never sync** (project-owned content) | `docs/context/`, `docs/architecture/`, non-template files in `docs/decisions/`, `docs/features/`, `docs/memory/`, `docs/plans/` (including `WU-*` work units), `docs/prompts/` (outside `shared/`), archived `docs/usage/usage-log.md` rows, all product code | Leave untouched. |
+| **Sync-safe** (template-owned) | `docs/workflows/`, `docs/scripts/`, `docs/skills/`, `docs/prompts/shared/`, `docs/*/_template*.md`, `docs/board/README.md`, `docs/evolution/README.md`, `docs/versions.md`, `.editorconfig`, `.gitattributes` | Copy from template when changed upstream and unmodified locally; if modified both sides, escalate to review. |
+| **Review-first** (rules, customized per repo) | `AGENTS.md`, `CLAUDE.md`, `README.md`, `.github/copilot-instructions.md`, `.github/CODEOWNERS`, `docs/README.md`, `docs/*/README.md` other than the two above | Never overwrite. Show the upstream diff and merge rule changes into the local version manually, preserving project-specific content. |
+| **Never sync** (project-owned content) | `docs/context/`, `docs/architecture/`, non-template files in `docs/decisions/`, `docs/features/`, `docs/memory/`, `docs/plans/` (including `WU-*` work units), `docs/prompts/` (outside `shared/`), `docs/evolution/constitution.md`, `docs/evolution/evaluators.md`, `docs/evolution/archive.md`, `docs/evolution/fixtures/`, `docs/evolution/STOP`, every post under `docs/board/`, archived `docs/usage/usage-log.md` rows, all product code | Leave untouched. |
 
 ## Procedure
 
@@ -115,5 +115,10 @@ verify that project-owned files remain untouched.
 ## Notes
 
 - A sync never touches project-owned content; the template only ships rules, workflows, scripts, prompts, and file templates.
+- The self-improvement loop ([`evolve.md`](evolve.md)) uses this same split
+  as its write boundary: it may edit project-owned prose classes named in the
+  repository's constitution and never template-owned or immutable paths.
+  Board posts and `docs/evolution/` instances are project history; a sync
+  never copies or removes them.
 - If the template introduces a new control-plane folder or convention, treat that as a review-first change and record the adoption as an ADR if it alters repo structure.
 - Downstream repos that intentionally diverge from a template rule should note the divergence in `docs/memory/` so future syncs don't keep re-flagging it.

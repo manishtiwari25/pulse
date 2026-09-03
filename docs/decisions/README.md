@@ -6,7 +6,7 @@
 | --- | --- | --- | --- | --- |
 | [ADR-001](ADR-001-docs-control-plane.md) | Use a Docs-Based PULSE Control Plane | Accepted | 2026-05-23 | delivered 2026-05-23 |
 | [ADR-002](ADR-002-work-accounting-token-reporting.md) | Work Accounting with Model and Token Reporting | Superseded | 2026-06-27 | retired |
-| [ADR-003](ADR-003-pulse-brand-and-public-pages.md) | Adopt the PULSE Brand and Static GitHub Pages Portal | Accepted | 2026-08-11 | delivered 2026-08-11 |
+| [ADR-003](ADR-003-pulse-brand-and-public-pages.md) | Adopt the PULSE Brand and Static GitHub Pages Portal | Superseded | 2026-08-11 | retired |
 | [ADR-004](ADR-004-agent-driven-rollbacks.md) | Require Scoped Agent-Driven Rollbacks | Accepted | 2026-08-11 | delivered 2026-08-11 |
 | [ADR-005](ADR-005-portable-pulse-skills.md) | Publish Portable PULSE Skills from the Docs Control Plane | Accepted | 2026-08-13 | delivered 2026-08-14 |
 | [ADR-006](ADR-006-token-aware-delegation-advice.md) | Use Optional Token History for Honest Delegation Advice | Accepted | 2026-08-13 | delivered 2026-08-13 |
@@ -15,7 +15,8 @@
 | [ADR-009](ADR-009-recommend-sandboxes-and-disclose-unsandboxed-execution.md) | Recommend Sandboxes and Disclose Unsandboxed Execution | Accepted | 2026-08-27 | delivered 2026-08-27 |
 | [ADR-010](ADR-010-optional-usage-telemetry.md) | Make Usage Telemetry Optional | Accepted | 2026-08-27 | delivered 2026-08-28 |
 | [ADR-011](ADR-011-proportional-lifecycle-tiers.md) | Size the Lifecycle Paperwork to the Change with Proportional Tiers | Accepted | 2026-09-03 | delivered 2026-09-03 |
-| [ADR-012](ADR-012-recursive-self-improvement-loop.md) | Give Adopting Repositories a Measured, Constitution-Bounded Self-Improvement Loop | Proposed | 2026-09-03 | not started |
+| [ADR-012](ADR-012-recursive-self-improvement-loop.md) | Give Adopting Repositories a Measured, Constitution-Bounded Self-Improvement Loop | Accepted | 2026-09-03 | delivered 2026-09-03 |
+| [ADR-013](ADR-013-private-repository-no-static-site.md) | Keep the Repository Private and Retire the Static Site | Accepted | 2026-09-03 | delivered 2026-09-03 |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable
 architectural or product decision.

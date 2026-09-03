@@ -16,10 +16,11 @@ rewrites history.
 
 Before editing, note the baseline commit and the exact files the pass will
 touch: ADR frontmatter, `docs/decisions/README.md`, plan, work-unit, and
-feature frontmatter, and `docs/memory/`. The trigger is any mark that
-contradicts the evidence or a broken link. The reversal is a precise inverse
-patch of those files only. Recovery verification is the link check and
-`git diff --check`.
+feature frontmatter, `docs/memory/`, and any closing board posts. The trigger
+is any mark that contradicts the evidence or a broken link. The reversal is a
+precise inverse patch of those files only (board posts are never deleted; a
+wrong closing post is answered by a new post). Recovery verification is the
+link check and `git diff --check`.
 
 ## Procedure
 
@@ -57,9 +58,17 @@ patch of those files only. Recovery verification is the link check and
    Accepted ADR since the last tag changed how agents must operate, add the
    version entry and tell the maintainer which commit to tag. `git tag -n1`
    must still match the page.
-10. Verify links and run `git diff --check`. Leave the changes uncommitted
-    unless the user asks for publication. Use [`rollback.md`](rollback.md) if
-    recovery is needed.
+10. When `docs/board/` exists, run `docs/scripts/board.sh --stale`: close
+    threads idle past the stale limit with a `resolution: dropped` post, note
+    expired claims, and promote anything durable to memory, a plan, or an ADR
+    before it is lost. When `docs/evolution/` exists, run
+    `docs/scripts/evolution-report.sh`: confirm every incident has an action,
+    every kept variant was promoted or reverted, and any class whose clean
+    cycles reached the required count has its autonomy decision recorded by a
+    human ([`board.md`](board.md), [`evolve.md`](evolve.md)).
+11. Verify links (`docs/scripts/check-links.sh`) and run `git diff --check`.
+    Leave the changes uncommitted unless the user asks for publication. Use
+    [`rollback.md`](rollback.md) if recovery is needed.
 
 ## Do Not
 
