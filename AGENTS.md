@@ -215,9 +215,13 @@ absent, skip them.
 - The loop runs only when `docs/evolution/constitution.md` has `loop: on`,
   `evaluators.md` names a recorded baseline, `docs/evolution/STOP` is absent,
   and no cycle cap the constitution sets is reached. PULSE's default is
-  **continuous**: when a cycle ends, the next begins, until `STOP`, a
-  constitution violation, a hard stop, an instruction-shaped post, or a human
-  interrupt; a plateau changes the hypothesis, it does not stop the loop.
+  **continuous** and **unlimited**: `limits: none` in the constitution means
+  no token, wall-time, cycle, or plateau value ever caps, pauses, or ends a
+  run; when a cycle ends, the next begins, until `STOP`, a constitution
+  violation, a hard stop, an instruction-shaped post, or a human interrupt.
+  A plateau changes the hypothesis and an open question for the owner is
+  posted, not waited for; neither stops the loop. A project that wants a cap
+  writes `limits: budget` and numbers in its Budget table.
   Every cycle is one variable on an experiment branch, constraints before
   scores, one append-only archive row, one board `result`, and a
   human-merged pull request unless a file class has earned

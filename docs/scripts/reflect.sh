@@ -8,7 +8,7 @@
 #   B record    docs/board/ exists
 #   C rehearse  docs/evolution/ filled, baseline recorded, no STOP
 #   D evolve    C plus loop: on, held-out set listed, and no cycle cap reached
-#               (PULSE's default is unlimited: continuous mode)
+#               (none exists with limits: none, PULSE's default)
 # It never writes to the repository and always exits 0; failed checks are
 # printed, not raised, because the digest is input for an agent, not a gate.
 #
@@ -95,11 +95,14 @@ fi
 
 # --- Loop gates --------------------------------------------------------------
 echo "LOOP GATES"
-HAS_EVO=0; STOP=0; LOOP=""; BASELINE=""; BASELINE_ROW=0; HELD_OUT=""; BUDGET=""; USED_TODAY=0; FILLED=0
+HAS_EVO=0; STOP=0; LOOP=""; LIMITS=""; BASELINE=""; BASELINE_ROW=0; HELD_OUT=""; BUDGET=""; USED_TODAY=0; FILLED=0
 if [ -d "$EVO" ]; then
     HAS_EVO=1
     [ -e "$EVO/STOP" ] && STOP=1
     LOOP="$(frontmatter_value "$EVO/constitution.md" loop)"
+    LIMITS="$(frontmatter_value "$EVO/constitution.md" limits | tr '[:upper:]' '[:lower:]')"
+    # absent means the Budget table binds; "none" means nothing in it does
+    [ -z "$LIMITS" ] && [ -f "$EVO/constitution.md" ] && LIMITS="budget"
     BASELINE="$(frontmatter_value "$EVO/evaluators.md" baseline)"
     if [ -f "$EVO/evaluators.md" ]; then
         HELD_OUT="$(awk '/^Held out:/ { sub(/^Held out:[ \t]*/, ""); print; exit }' "$EVO/evaluators.md")"
@@ -108,7 +111,7 @@ if [ -d "$EVO" ]; then
         && grep -q "^| $BASELINE " "$EVO/archive.md"; then
         BASELINE_ROW=1
     fi
-    if [ -f "$EVO/constitution.md" ]; then
+    if [ -f "$EVO/constitution.md" ] && [ "$LIMITS" != "none" ]; then
         BUDGET="$(awk -F'|' 'tolower($2) ~ /cycles per day/ { gsub(/[ \t]/, "", $3); print $3; exit }' "$EVO/constitution.md")"
         # anything that is not a plain number (unlimited, continuous, blank) means no cap
         case "$BUDGET" in ''|*[!0-9]*) BUDGET="" ;; esac
@@ -123,9 +126,14 @@ if [ -d "$EVO" ]; then
     echo "  constitution: $([ -f "$EVO/constitution.md" ] && echo "present, loop: ${LOOP:-unset}" || echo missing)"
     echo "  evaluators:   $([ -f "$EVO/evaluators.md" ] && echo "present, baseline: ${BASELINE:-unset}$([ "$BASELINE_ROW" -eq 1 ] && echo ' (row found)' || echo ' (no archive row)'), held out: ${HELD_OUT:-unset}" || echo missing)"
     echo "  archive:      $([ -f "$EVO/archive.md" ] && echo present || echo missing)"
-    if [ -n "$BUDGET" ]; then
+    if [ "$LIMITS" = "none" ]; then
+        echo "  limits:       none - no budget limit binds (tokens, wall time, cycles, plateau); only stop rules end the run"
+        echo "  cycle cap:    none ($USED_TODAY cycle(s) today)"
+    elif [ -n "$BUDGET" ]; then
+        echo "  limits:       budget - the Budget table binds"
         echo "  cycle cap:    $USED_TODAY of $BUDGET cycle(s) used today"
     else
+        echo "  limits:       ${LIMITS:-budget} - the Budget table binds; Cycles per day is not a number, so no cap"
         echo "  cycle cap:    none - continuous mode ($USED_TODAY cycle(s) today)"
     fi
 else
@@ -211,6 +219,7 @@ elif [ -n "$BUDGET" ] && [ "$USED_TODAY" -ge "$BUDGET" ]; then
     echo "  none today; the cap this constitution wrote resets tomorrow"
 else
     echo "  none; the loop may run - continuous mode, cycle after cycle, until a stop rule fires"
+    [ "$LIMITS" = "none" ] && echo "  (limits: none - no token, wall-time, cycle, or plateau limit binds; never pause to ask, post a question and continue)"
 fi
 echo ""
 echo "SIGNALS TO LIST FROM THIS SESSION (Level A output)"

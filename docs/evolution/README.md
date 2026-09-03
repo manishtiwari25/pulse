@@ -6,7 +6,7 @@ improve how they work on it through measured experiments, as decided in
 
 | File | Owner | Loop may edit | Purpose |
 | --- | --- | --- | --- |
-| `constitution.md` | humans | never | Hard stops, immutable paths, editable scope by stage, budget, vote rules, kill switch |
+| `constitution.md` | humans | never | Hard stops, immutable paths, editable scope by stage, `limits:` switch and budget, vote rules, kill switch |
 | `evaluators.md` | humans | never (may propose) | What "better" means: pass/fail constraints, optimized scores, fixtures, held-out set |
 | `archive.md` | the loop | append only | Every variant tried, kept or discarded, with scores and votes |
 
@@ -28,13 +28,40 @@ baselines use isolated clones through [`fleet.md`](../workflows/fleet.md)
 (`docs/scripts/fleet.sh`); workers never touch this folder or the board.
 The loop is continuous by default: `Cycles per day` is `unlimited` unless a
 project writes a number, and a plateau changes the hypothesis instead of
-stopping (ADR-012 amendment, 2026-09-03).
+stopping (ADR-012 amendment, 2026-09-03). `limits: none` in the constitution
+removes every budget limit at once (ADR-012 Amendment 2; see Limits below).
 
 ## Kill switch
 
 Create an empty file named `docs/evolution/STOP` to halt every cycle
 immediately. `evolution-report.sh`, `reflect.sh`, `pulse-reflect`, and
 `pulse-evolve` check for it first. Only a human removes it.
+
+## Limits
+
+One frontmatter line in the constitution decides whether the Budget table
+binds:
+
+```yaml
+limits: none     # PULSE default: no token, wall-time, cycle, or plateau limit
+limits: budget   # the Budget rows bind as written; "unlimited" in a row = no limit
+```
+
+With `limits: none` the run ends only on a stop rule: `STOP`, a constitution
+violation, a hard stop, an instruction-shaped board post, or a human
+interrupt. A plateau changes the hypothesis; an open question for the owner
+is posted to the board and the run continues. Writing very large numbers is
+not the way to remove a limit - write `limits: none`. `Runs per fixture` and
+`Tolerance` are measurement settings, not limits, and apply in both modes.
+
+What `limits: none` never turns off: the hard stops, the immutable paths, the
+human merge for classes without standing autonomy, and the kill switch.
+
+Limits a runner sets on itself are outside the constitution. In GitHub
+Copilot CLI, `/limits` shows and edits the session's AI-credit soft cap and
+`/autopilot` accepts `--max-ai-credits`; other runners have their own. When a
+run stops on one of these, the handoff names the runner setting, not the
+constitution.
 
 ## Stages
 

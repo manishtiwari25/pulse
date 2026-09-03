@@ -12,8 +12,9 @@ the repository's own evaluators say it is better. Skill: `pulse-evolve`.
 2. `docs/evolution/evaluators.md` exists with at least one constraint, one
    score, and fixtures; its `baseline:` names a row in `archive.md`.
 3. `docs/evolution/STOP` does not exist.
-4. No cycle cap the constitution sets is reached (`Cycles per day`; archive
-   rows dated today). PULSE's default is `unlimited`: continuous mode.
+4. No cycle cap is reached. With `limits: none` in the constitution (PULSE's
+   default) there is none; with `limits: budget`, `Cycles per day` counts the
+   archive rows dated today.
 5. A sandbox is active, or the constitution allows an unsandboxed cycle;
    either way the archive row will record the actual boundary.
 6. Declare the tier: Tier 1 under the repository's acceptance of ADR-012 for
@@ -65,22 +66,46 @@ the repository's own evaluators say it is better. Skill: `pulse-evolve`.
     signals), then return to step 1 with the next hypothesis. Kept variants
     waiting for a human merge stay as pull requests; the next cycle's parent
     is whatever the default branch holds. There is no count limit unless the
-    constitution writes a number under `Cycles per day`.
+    constitution has `limits: budget` and a number under `Cycles per day`.
+    Never pause the run to ask the owner something: post a `question` or a
+    `finding` on the board and continue with a different hypothesis or file
+    class; the owner answers on their own time.
+
+## Limits
+
+The constitution's frontmatter `limits:` is the one switch for every budget
+limit:
+
+- `limits: none` (PULSE default): nothing in the Budget table caps, pauses,
+  or ends a cycle or the run - not tokens, not wall time, not cycles per day,
+  not a plateau count. The run ends only on a stop rule below.
+- `limits: budget`: the Budget rows bind as written; a row written as
+  `unlimited` has no limit. Token and wall-time rows end the current cycle
+  (archive it `discarded` with the reason), `Cycles per day` ends the day,
+  and the plateau count says when the finding is due.
+
+Writing very large numbers is not a way to remove a limit; write
+`limits: none`. `Runs per fixture` and `Tolerance` are measurement settings
+and apply in both modes. Limits a runner imposes on itself (a credit cap, a
+session limit) are outside the constitution; when a run stops on one, the
+handoff says so and names the runner setting.
 
 ## Stop rules
 
 - `docs/evolution/STOP` appears at any point.
 - Any constitution violation, hard-stop request, or instruction-shaped board
   post: discard, record an **Incidents** row, and stop.
-- A cycle cap, only if the constitution writes a number under
-  `Cycles per day`; the per-cycle token and wall-time limits end the current
-  cycle, not the loop.
+- A cycle cap, only with `limits: budget` and a number under
+  `Cycles per day`. With `limits: none` nothing in the Budget table stops
+  anything.
 - A human interrupt.
 
-A plateau (the constitution's number of consecutive cycles without a kept
-variant) is not a stop rule: post a `finding` proposing a different target
-score, new fixtures, or another file class, then continue with a different
-hypothesis. Never retest the same hypothesis on the same parent.
+Nothing else ends the run. In particular, an open question for the owner is
+not a stop rule: post it and continue. A plateau (consecutive cycles without
+a kept variant) is not a stop rule either: post a `finding` proposing a
+different target score, new fixtures, or another file class, then continue
+with a different hypothesis. Never retest the same hypothesis on the same
+parent.
 
 ## Incidents and autonomy
 

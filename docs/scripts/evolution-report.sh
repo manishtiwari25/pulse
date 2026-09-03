@@ -71,8 +71,14 @@ for f in constitution evaluators archive; do
 done
 
 LOOP="$(frontmatter_value "$CONST" loop)"
+LIMITS="$(frontmatter_value "$CONST" limits | tr '[:upper:]' '[:lower:]')"
 BASELINE="$(frontmatter_value "$EVAL" baseline)"
 echo "Loop flag (constitution): ${LOOP:-unset}"
+case "$LIMITS" in
+    none) echo "Limits (constitution):    none - no budget limit binds (tokens, wall time, cycles, plateau); only stop rules end the run" ;;
+    "")   [ -f "$CONST" ] && echo "Limits (constitution):    budget (limits: unset) - the Budget table binds; write limits: none to remove every limit" ;;
+    *)    echo "Limits (constitution):    $LIMITS - the Budget table binds; a row written as unlimited has no limit" ;;
+esac
 echo "Baseline (evaluators):    ${BASELINE:-unset}"
 echo ""
 

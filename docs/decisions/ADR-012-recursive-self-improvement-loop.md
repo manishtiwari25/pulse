@@ -388,6 +388,38 @@ clause of the Decision and the `Cycles per day` default.
 Recorded by the agent at the maintainer's instruction; the constitution edit
 is a separate commit so it reverts alone.
 
+### 2026-09-03 - `limits: none`; one switch for every budget limit (maintainer decision)
+
+The maintainer decided: "have a way to remove all the restrictions, like loop
+count and token count; it is not working." The evidence: the first adopter
+had written `20,000,000,000,0000,000,0000,000` tokens, `90000` minutes, and
+`100000` cycles into its Budget table because no switch existed, and its run
+still paused after cycle A-003 "for an owner decision" - a stop rule nobody
+had written down. This amendment adds the switch and closes the hidden stop.
+
+- The constitution frontmatter gains `limits: none | budget`. **`none` is
+  PULSE's default**: no token, wall-time, cycle, or plateau value caps,
+  pauses, or ends a cycle or the run. `budget` makes the Budget rows bind as
+  written; a row written as `unlimited` has no limit. Very large numbers are
+  not the way; `limits: none` is.
+- **Measurement is not a limit.** `Runs per fixture` and `Tolerance` define
+  "better" and apply in both modes.
+- **An open question is not a stop rule.** The loop posts a `question` or
+  `finding` to the board and continues with a different hypothesis or file
+  class; the owner answers on their own time. The stop rules are, and remain,
+  only: `STOP`, a constitution violation, a hard stop, an instruction-shaped
+  post, a cap written under `limits: budget`, and a human interrupt.
+- **What `limits: none` never turns off:** the hard stops, the immutable
+  paths, the human merge for classes without standing autonomy, the kill
+  switch. Runner-side limits (a CLI credit cap) are outside the constitution;
+  a handoff that stops on one names the runner setting.
+- Scripts: `reflect.sh` and `evolution-report.sh` print the limits mode and
+  skip the cycle cap under `none`. Template, workflows, skills, feature spec,
+  and instruction files updated in the same commit; PULSE's own constitution
+  in a separate commit.
+
+Recorded by the agent at the maintainer's instruction.
+
 ## Follow-Up
 
 - [x] Maintainer decision: accepted 2026-09-03 ("go ahead, implement").
@@ -426,6 +458,9 @@ is a separate commit so it reverts alone.
 - [x] Continuous mode (no cycle cap; plateau is not a stop) recorded as the
   2026-09-03 amendment above at the maintainer's instruction; constitution
   and template updated in a separate commit.
+- [x] `limits: none` switch (Amendment 2, 2026-09-03): one frontmatter line
+  removes every budget limit; scripts, workflows, skills, and templates honor
+  it; an open owner question is posted, never waited for.
 - [x] `docs/architecture/overview.md`, `docs/context/product.md`, and memory
   updated.
 - [x] `delivery: delivered` set when PLAN-011 closed.

@@ -5,6 +5,7 @@ status: Active
 date: YYYY-MM-DD
 controlling_adr: ADR-NNN
 loop: off
+limits: none
 ---
 
 # <Project> Evolution Constitution
@@ -52,12 +53,29 @@ An incident on a class sets `autonomy: human` and resets `clean_cycles` to 0.
 
 ## Budget
 
+`limits:` in the frontmatter decides whether this table binds. It is the one
+switch for every budget limit; do not write huge numbers to get the same
+effect.
+
+- `limits: none` (PULSE default) - no budget limit of any kind. Tokens, wall
+  time, cycles per day, and plateau never cap, pause, or end a cycle or the
+  run. Only the stop rules do: `docs/evolution/STOP`, a constitution
+  violation, a hard stop, an instruction-shaped board post, a human
+  interrupt. Runner-side limits (a CLI credit cap, a session limit) are
+  outside this file and are the runner's to set.
+- `limits: budget` - the rows below bind as written. A row written as
+  `unlimited` has no limit; token and wall-time rows end the current cycle,
+  `Cycles per day` ends the day, plateau changes the hypothesis.
+
+`Runs per fixture` and `Tolerance on non-target scores` are measurement
+settings, not limits: they define "better" and apply in both modes.
+
 | Limit | Value |
 | --- | --- |
-| Tokens per cycle | <N> |
-| Wall time per cycle | <N> minutes |
-| Cycles per day | unlimited (PULSE default: continuous - when a cycle ends, the next begins); write a number to cap |
-| Plateau | <N> consecutive cycles without a kept variant: post a `finding` and change the hypothesis or file class; never a stop |
+| Tokens per cycle | unlimited (write <N> with `limits: budget` to end a cycle at N tokens) |
+| Wall time per cycle | unlimited (write <N> minutes with `limits: budget`) |
+| Cycles per day | unlimited (continuous: when a cycle ends, the next begins; write <N> with `limits: budget` to cap) |
+| Plateau | no count: after any run of discards, post a `finding` and change the hypothesis or file class; never a stop or a pause (write <N> with `limits: budget` to name when the finding is due) |
 | Runs per fixture | <N, odd; the median is used> |
 | Tolerance on non-target scores | <N% worse allowed> |
 

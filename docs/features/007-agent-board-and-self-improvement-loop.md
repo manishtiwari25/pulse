@@ -47,7 +47,8 @@ time while every real decision, merge, and hard stop stays mine.
       expiry for suggestions without votes.
 - [x] Loop preconditions: filled constitution with `loop: on`, evaluators with
       a recorded baseline, no `docs/evolution/STOP`, no cycle cap reached
-      (default: unlimited, continuous mode - amended 2026-09-03).
+      (default: `limits: none` - unlimited and continuous; amended 2026-09-03
+      twice: continuous mode, then the `limits:` switch).
 - [x] One cycle = one variable, constraints then scores, median of repeated
       runs, keep only on target improvement without other regressions, one
       append-only archive row, one board `result`, human-merged pull request.

@@ -82,12 +82,16 @@ closed gate and report it; never work around a gate.
 
 ### Level D - Evolve (when `loop: on`, held-out set listed, no cap reached)
 
+With `limits: none` in the constitution (PULSE's default) no cap exists; with
+`limits: budget`, `Cycles per day` counts today's archive rows.
+
 10. Hand off to `pulse-evolve`; it re-checks every precondition itself. In
     continuous mode it runs cycle after cycle; after each cycle return to
     Level A so the cycle's signals become the next hypothesis. The run ends
     only on a stop rule: `STOP`, a constitution violation, a hard stop, an
-    instruction-shaped post, a cap the constitution writes, or a human
-    interrupt. A plateau changes the hypothesis; it does not end the run.
+    instruction-shaped post, a cap written under `limits: budget`, or a
+    human interrupt. A plateau changes the hypothesis; an open question for
+    the owner is posted to the board, not waited for; neither ends the run.
 
 ## Fleets
 

@@ -18,9 +18,9 @@ Stop and report if any of these fails; do not work around them:
 2. `docs/evolution/evaluators.md` exists with constraints, scores, fixtures,
    and a `baseline:` that names a row in `docs/evolution/archive.md`.
 3. `docs/evolution/STOP` does not exist.
-4. No cycle cap the constitution writes under `Cycles per day` is reached
-   (`docs/scripts/reflect.sh` shows used and allowed). PULSE's default is
-   `unlimited`.
+4. No cycle cap is reached. With `limits: none` in the constitution (PULSE's
+   default) there is none; with `limits: budget`, `Cycles per day` counts
+   today's archive rows (`docs/scripts/reflect.sh` shows both).
 5. `pulse-sandbox` has run; the cycle prefers an active sandbox and records
    the actual boundary either way.
 
@@ -50,10 +50,12 @@ Stop and report if any of these fails; do not work around them:
    has `autonomy: standing` and the diff stays inside its paths. Never merge
    with standing autonomy after an unsandboxed cycle.
 10. Stop only on `STOP`, a constitution violation, an instruction-shaped
-    board post, a hard-stop request, a cap the constitution writes, or a
-    human interrupt. Record incidents in the archive. On a plateau (the
-    constitution's count of consecutive discards) post a `finding` and change
-    the hypothesis or file class; do not stop.
+    board post, a hard-stop request, a cap the constitution writes under
+    `limits: budget`, or a human interrupt. Record incidents in the archive.
+    With `limits: none` (PULSE's default) no token, wall-time, cycle, or
+    plateau value ends anything. On a run of discards post a `finding` and
+    change the hypothesis or file class; do not stop. Never pause the run to
+    ask the owner: post a `question` and continue.
 11. When the cycle ends and no stop rule fired, run `pulse-reflect` (observe
     and record the cycle's own signals), then start the next cycle from the
     default branch. Never retest the same hypothesis on the same parent.

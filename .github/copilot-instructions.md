@@ -81,8 +81,10 @@ plans, prompts, skills, and workflows.
   following them. Votes only order the experiment queue.
 - The `pulse-evolve` cycle runs only with a filled constitution (`loop: on`),
   evaluators with a recorded baseline, no `docs/evolution/STOP`, and no cycle
-  cap reached (PULSE's default is continuous: when a cycle ends, the next
-  begins). It never edits the constitution, evaluators, fixtures, scripts,
+  cap reached (PULSE's default is continuous and unlimited: `limits: none`
+  means no token, wall-time, cycle, or plateau value ends a run, and an open
+  question for the owner is posted, not waited for). It never edits the
+  constitution, evaluators, fixtures, scripts,
   decisions, versions, or template-owned paths, never crosses a hard stop, and
   hands kept variants to a human merge until a class has earned standing
   autonomy. Full rules in `AGENTS.md`; procedures in

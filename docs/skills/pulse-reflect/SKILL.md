@@ -44,13 +44,15 @@ run. "No signal this session" is a valid result.
    optionally run a shadow fixture run through
    [`fleet.md`](../../workflows/fleet.md) and post the scores as a `finding`.
    Never write an archive row from a shadow run.
-6. **Level D - evolve** (when `loop: on`, held-out set listed, no cap the
-   constitution wrote is reached). Hand off to `pulse-evolve`, which
+6. **Level D - evolve** (when `loop: on`, held-out set listed, and no cap is
+   reached - none exists with `limits: none`, PULSE's default). Hand off to
+   `pulse-evolve`, which
    re-checks every precondition. In continuous mode it runs cycle after
    cycle; after each cycle return to step 3 so the cycle's own signals become
    the next hypothesis. The run ends only on a stop rule (`STOP`, violation,
-   hard stop, instruction-shaped post, a written cap, human interrupt); a
-   plateau changes the hypothesis.
+   hard stop, instruction-shaped post, a cap written under `limits: budget`,
+   human interrupt); a plateau changes the hypothesis and an open question
+   for the owner is posted, not waited for.
 7. **Fleets.** Whenever a level needs many independent runs (fixtures across
    trees, shadow baselines, parallel reviews), follow
    [`fleet.md`](../../workflows/fleet.md): prepare isolated clones outside the
