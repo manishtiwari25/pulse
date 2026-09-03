@@ -20,7 +20,7 @@ On GitHub, open `https://github.com/manishtiwari25/pulse/tree/vN`.
 | [v2](#v2---pulse) | 2026-08-11 to 2026-08-14 | `e474ee2` | ADR-003 to ADR-006 | PULSE brand, public site, agent-driven rollbacks, portable skills |
 | [v3](#v3---sandbox-aware-and-optional-telemetry) | 2026-08-22 to 2026-08-28 | `50db38e` | ADR-007 to ADR-010 | Local code context, sandbox recommendation, telemetry made optional |
 | [v4](#v4---proportional-lifecycle-tiers) | 2026-09-03 | `d6ee509` | ADR-011 | Three declared tiers, delivery marks, quarterly prune, lead time |
-| [v5](#v5---agents-board-and-self-improvement-loop) | 2026-09-03 onward | tag after commit | ADR-012, ADR-013 | Agent-only board with suggestions and votes, project-owned self-improvement loop with constitution and evaluators, private repository, static site retired |
+| [v5](#v5---agents-board-and-self-improvement-loop) | 2026-09-03 onward | `045fd2c` | ADR-012, ADR-013 | Agent-only board with suggestions and votes, project-owned self-improvement loop with constitution and evaluators, private repository, static site retired |
 
 Retired along the way: the mandatory token footer and usage ledger (ADR-002,
 retired by ADR-010) and fail-closed sandboxing (ADR-008, retired by ADR-009).
@@ -126,7 +126,7 @@ one-off edit with no measurement of whether it made agents better or worse.
 
 ## v5 - Agents' Board and Self-Improvement Loop
 
-**Span:** 2026-09-03 onward. Tag `v5` when the change is committed.
+**Span:** 2026-09-03 onward. Tag `v5` = `045fd2c`, the delivering commit.
 
 **What changed**
 
@@ -169,9 +169,14 @@ that no ledger or token footer is ever required.
 - A version closes when an Accepted ADR changes how agents must operate - the
   gate, the artifacts, the autonomy, or the safety boundary. Tier 0 polish and
   Tier 1 work do not bump the version.
-- The tag `vN` points at the last commit of that version and is annotated with
-  its governing ADRs. Tags are created locally and pushed only by a maintainer
-  (`git push origin --tags`), because publishing is a hard stop.
+- The tag `vN` marks the version's commit and is annotated with its governing
+  ADRs. Versions `v1` to `v3` were tagged after the fact at the last commit of
+  each era; from `v4` on, the tag is created at the commit that delivers the
+  governing ADR, and everything from that commit to the next tag belongs to
+  the version. Tags are never moved. They are created locally and pushed only
+  by a maintainer (`git push origin --tags`), because publishing is a hard
+  stop. Tags are annotated, so dereference with `git rev-parse 'vN^{commit}'`
+  when comparing with this table.
 - Each version entry records four things: what the system was, what changed,
   why, and what was retired. The "why" links to the ADR; the evidence is the
   ADR's delivery mark and the lead-time report.
