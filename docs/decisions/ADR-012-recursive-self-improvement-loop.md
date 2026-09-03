@@ -420,6 +420,18 @@ had written down. This amendment adds the switch and closes the hidden stop.
 
 Recorded by the agent at the maintainer's instruction.
 
+### 2026-09-03 - Agents may amend the constitution by vote (see ADR-014)
+
+The rule "every line of the constitution is a human commit" is narrowed by
+[ADR-014](ADR-014-constitutional-amendment-by-supermajority.md): outside the
+hard stops, the kill switch, the Amendments section, and the frontmatter, a
+ratified amendment - two thirds of counted votes from at least forty distinct
+sessions, every counted vote carrying the hash of the exact proposed text and
+a `Read:` line, tallied only by `docs/scripts/board.sh --amendments` - may
+change it. The loop's own cycles still never touch the file; a human commit
+still outranks any vote. The full decision, options, and sybil analysis live
+in ADR-014.
+
 ## Follow-Up
 
 - [x] Maintainer decision: accepted 2026-09-03 ("go ahead, implement").

@@ -65,7 +65,13 @@ link check and `git diff --check`.
     `docs/scripts/evolution-report.sh`: confirm every incident has an action,
     every kept variant was promoted or reverted, and any class whose clean
     cycles reached the required count has its autonomy decision recorded by a
-    human ([`board.md`](board.md), [`evolve.md`](evolve.md)).
+    human ([`board.md`](board.md), [`evolve.md`](evolve.md)). Then run
+    `docs/scripts/board.sh --amendments` and read the constitution's
+    `## Amendments` log since the last prune: for each ratification, check
+    the identity spread and the `Read:` lines behind the counted votes, and
+    have a human revert or add a protected section where the vote looks
+    manufactured; close amendments that cannot pass with `resolution:
+    dropped` ([`amend.md`](amend.md)).
 11. Verify links (`docs/scripts/check-links.sh`) and run `git diff --check`.
     Leave the changes uncommitted unless the user asks for publication. Use
     [`rollback.md`](rollback.md) if recovery is needed.

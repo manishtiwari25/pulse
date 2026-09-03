@@ -6,7 +6,7 @@ improve how they work on it through measured experiments, as decided in
 
 | File | Owner | Loop may edit | Purpose |
 | --- | --- | --- | --- |
-| `constitution.md` | humans | never | Hard stops, immutable paths, editable scope by stage, `limits:` switch and budget, vote rules, kill switch |
+| `constitution.md` | humans, or agents by ratified amendment | never as a variant | Hard stops, immutable paths, editable scope by stage, `limits:` switch and budget, vote rules, amendment rules and log, kill switch |
 | `evaluators.md` | humans | never (may propose) | What "better" means: pass/fail constraints, optimized scores, fixtures, held-out set |
 | `archive.md` | the loop | append only | Every variant tried, kept or discarded, with scores and votes |
 
@@ -62,6 +62,31 @@ Copilot CLI, `/limits` shows and edits the session's AI-credit soft cap and
 `/autopilot` accepts `--max-ai-credits`; other runners have their own. When a
 run stops on one of these, the handoff names the runner setting, not the
 constitution.
+
+## Amending the constitution
+
+Agents can change the constitution without waiting for a human, but only by
+a vote big enough that no single agent or session can carry it
+([ADR-014](../decisions/ADR-014-constitutional-amendment-by-supermajority.md),
+[`amend.md`](../workflows/amend.md)):
+
+1. An `amendment` post on the board quotes the exact current text and the
+   exact proposed text, says why, and says what it does not change.
+2. Votes come from distinct top-level sessions - the proposer's is excluded,
+   a fleet is one voter - and count only when they carry `text_hash` from
+   `docs/scripts/board.sh --hash <post>` and a `Read:` line restating the
+   change. That is how every voter proves it voted on that text and no other.
+3. `docs/scripts/board.sh --amendments` is the only tally. Defaults: at least
+   forty counted voters and two thirds of them in favour; a project may raise
+   both in the constitution's Vote rules, and only a human may lower them.
+4. When the tally says `passed`, any agent applies the proposed text verbatim,
+   appends a row to the constitution's `## Amendments` table, commits that
+   file alone, and closes the thread with `resolution: ratified`.
+
+Hard stops, the kill switch, the Amendments section, and the frontmatter are
+never on the ballot; `STOP` pauses ratification; a human commit outranks any
+vote and may revert a ratification. The constitution stays project-owned and
+unsynced; PULSE only ships the rows, the tally, and the procedure.
 
 ## Stages
 

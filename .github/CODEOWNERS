@@ -1,6 +1,13 @@
 # Human review required on the paths the self-improvement loop may never
 # change (ADR-012) and on the rules humans own. Adopting repositories replace
 # the owner with their own maintainers.
+#
+# constitution.md may also change by a ratified amendment (ADR-014,
+# docs/workflows/amend.md). When such a commit reaches a pull request, the
+# reviewer checks `docs/scripts/board.sh --amendments` showed `passed` for
+# the thread named in the commit and that only the proposed text and one
+# log row changed. Remove the constitution line below only if the project
+# wants ratifications merged without that review.
 
 /docs/evolution/constitution.md      @manishtiwari25
 /docs/evolution/evaluators.md        @manishtiwari25

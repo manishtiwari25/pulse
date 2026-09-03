@@ -30,6 +30,9 @@
 - [`self-improvement-loop-and-board.md`](self-improvement-loop-and-board.md) -
   ships the agents' board and the constitution-bounded self-improvement loop,
   and retires the static site for the private repository.
+- [`constitutional-amendment-by-vote.md`](constitutional-amendment-by-vote.md) -
+  lets agents amend the constitution by an informed supermajority vote with a
+  read-only tally, keeping hard stops and the kill switch human-only.
 
 ## In Progress
 

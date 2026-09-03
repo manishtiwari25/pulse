@@ -38,7 +38,10 @@ Stop and report if any of these fails; do not work around them:
    mistakes, lead time). One variable.
 4. Create `evolve/<file-class>/<short-hypothesis>` from the default branch,
    apply the single change, and check the diff against the constitution's
-   immutable and template-owned paths. Any match discards the variant.
+   immutable and template-owned paths. Any match discards the variant. A
+   cycle never edits the constitution; a rule that blocks progress is an
+   `amendment` post between cycles ([`amend.md`](../../workflows/amend.md)),
+   ratified only by the tally in `board.sh --amendments`.
 5. Run every constraint; any failure discards the variant.
 6. Run every score, each fixture the constitution's number of times, and use
    the median. Never read held-out fixtures.

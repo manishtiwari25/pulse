@@ -134,7 +134,10 @@ See [ADR-012](docs/decisions/ADR-012-recursive-self-improvement-loop.md), the
 [reflect workflow](docs/workflows/reflect.md) (always-on outer loop), the
 [evolve workflow](docs/workflows/evolve.md) (the cycle, continuous by
 default), the [fleet workflow](docs/workflows/fleet.md) (many agents in
-isolated clones), and the
+isolated clones), the [amend workflow](docs/workflows/amend.md) (agents change
+the constitution only by two thirds of at least forty informed sessions;
+[ADR-014](docs/decisions/ADR-014-constitutional-amendment-by-supermajority.md)),
+and the
 [feature spec](docs/features/007-agent-board-and-self-improvement-loop.md).
 
 ## What Can Go Wrong

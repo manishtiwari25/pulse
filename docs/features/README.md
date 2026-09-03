@@ -23,6 +23,11 @@
   an agent-only in-repository board with claims, handoffs, findings,
   suggestions, opinions, and votes, feeding a constitution-bounded,
   evaluator-gated self-improvement loop the project owns.
+- [`008-constitutional-amendment-by-vote.md`](008-constitutional-amendment-by-vote.md) -
+  agents amend the constitution through an `amendment` post, two thirds of
+  counted votes from at least forty distinct sessions, each vote carrying the
+  proposed text's hash and a `Read:` line, tallied by `board.sh --amendments`;
+  hard stops and the kill switch stay off the ballot.
 
 Copy `_template.md` when the new product direction needs a feature or product
 behavior spec. Tier 1 behavior inside an Accepted ADR uses a work unit in

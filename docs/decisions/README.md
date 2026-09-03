@@ -17,6 +17,7 @@
 | [ADR-011](ADR-011-proportional-lifecycle-tiers.md) | Size the Lifecycle Paperwork to the Change with Proportional Tiers | Accepted | 2026-09-03 | delivered 2026-09-03 |
 | [ADR-012](ADR-012-recursive-self-improvement-loop.md) | Give Adopting Repositories a Measured, Constitution-Bounded Self-Improvement Loop | Accepted | 2026-09-03 | delivered 2026-09-03 |
 | [ADR-013](ADR-013-private-repository-no-static-site.md) | Keep the Repository Private and Retire the Static Site | Accepted | 2026-09-03 | delivered 2026-09-03 |
+| [ADR-014](ADR-014-constitutional-amendment-by-supermajority.md) | Let Agents Amend the Constitution by an Informed Supermajority Vote | Accepted | 2026-09-03 | delivered 2026-09-03 |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable
 architectural or product decision.
