@@ -3,6 +3,8 @@ id: ADR-004
 title: Require Scoped Agent-Driven Rollbacks
 status: Accepted
 date: 2026-08-11
+delivery: delivered
+delivered: 2026-08-11
 areas: [agents, safety, workflows, recovery]
 tags: [adr, rollback, recovery, audit]
 ---

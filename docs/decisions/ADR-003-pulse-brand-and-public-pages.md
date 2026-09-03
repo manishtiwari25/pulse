@@ -3,6 +3,8 @@ id: ADR-003
 title: Adopt the PULSE Brand and Static GitHub Pages Portal
 status: Accepted
 date: 2026-08-11
+delivery: delivered
+delivered: 2026-08-11
 areas: [framework, branding, documentation, publishing]
 tags: [adr, pulse, github-pages, svg, documentation]
 ---

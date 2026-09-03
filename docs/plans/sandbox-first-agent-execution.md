@@ -2,7 +2,9 @@
 id: PLAN-006
 title: Require Sandbox-First Agent Execution
 status: Done
+tier: 2
 date: 2026-08-22
+delivered: 2026-08-22
 tags: [plan, agents, security, sandbox, copilot, claude, opencode]
 ---
 

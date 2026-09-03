@@ -2,7 +2,9 @@
 id: FEAT-003
 title: Token-Aware Delegation Advisor
 status: Done
+tier: 2
 date: 2026-08-13
+delivered: 2026-08-13
 priority: High
 areas: [agents, usage, estimation, delegation]
 tags: [feature, tokens, estimation, delegation]

@@ -2,7 +2,9 @@
 id: FEAT-002
 title: Portable PULSE Skills
 status: Done
+tier: 2
 date: 2026-08-13
+delivered: 2026-08-13
 priority: High
 areas: [agents, skills, distribution]
 tags: [feature, skills, copilot, portability]

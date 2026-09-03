@@ -2,7 +2,9 @@
 id: FEAT-000
 title: Feature Title
 status: Draft
+tier: 2
 date: YYYY-MM-DD
+delivered:
 priority: Medium
 areas: [all]
 tags: [feature]
@@ -12,7 +14,8 @@ tags: [feature]
 
 ## Summary
 
-One-paragraph description of the feature and intended outcome.
+One-paragraph description of the feature and intended outcome. A feature spec
+is part of the Tier 2 chain; Tier 1 behavior lives in a work unit instead.
 
 ## User Story
 

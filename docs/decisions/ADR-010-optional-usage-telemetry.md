@@ -3,6 +3,8 @@ id: ADR-010
 title: Make Usage Telemetry Optional
 status: Accepted
 date: 2026-08-27
+delivery: delivered
+delivered: 2026-08-28
 areas: [agents, operations, documentation, usage]
 tags: [adr, telemetry, tokens, portability]
 ---

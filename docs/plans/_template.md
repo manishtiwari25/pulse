@@ -2,11 +2,18 @@
 id: PLAN-000
 title: Plan Title
 status: Draft
+tier: 2
 date: YYYY-MM-DD
+delivered:
 tags: [plan]
 ---
 
 # Plan: [Plan Title]
+
+## Tier
+
+Tier 2 - [one-line reason]. Decision: [ADR-NNN](../decisions/ADR-NNN-short-title.md).
+Tier 1 work uses `_template-work-unit.md` instead of this plan.
 
 ## Goal
 
@@ -40,6 +47,8 @@ List the relevant files, constraints, and assumptions.
 - [ ] Relevant control-plane files are updated.
 - [ ] Verification is complete or clearly documented.
 - [ ] The rollback plan is scoped, safe, and executable.
+- [ ] On closure, `delivered:` is set here and the decision's `delivery:` mark
+  is updated.
 
 ## Verification
 

@@ -2,7 +2,9 @@
 id: PLAN-001
 title: Rebrand the Framework as PULSE and Publish Its Documentation
 status: Done
+tier: 2
 date: 2026-08-11
+delivered: 2026-08-11
 tags: [plan, pulse, branding, github-pages, usage]
 ---
 

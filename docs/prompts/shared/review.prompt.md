@@ -9,6 +9,15 @@ tags: [review]
 
 # Shared Prompt - Review Checklist
 
+## Tier Honesty
+
+- [ ] A lifecycle tier and one-line reason were declared before the change
+- [ ] The surfaces touched match the declared tier (hard-stop surfaces and
+  uncovered surfaces are Tier 2)
+- [ ] A Tier 1 change names its controlling Accepted ADR and stays inside it
+- [ ] Artifacts match the tier: none, one work unit, or the full chain plus approval
+- [ ] No hard stop was crossed without explicit approval
+
 ## Functionality
 
 - [ ] Meets requested behavior
@@ -35,7 +44,12 @@ tags: [review]
 
 ## Rollback Readiness
 
-- [ ] A rollback plan existed before the change
+- [ ] A rollback plan or in-session checklist existed before the change
 - [ ] Trigger and reversal steps are specific
 - [ ] User work, shared history, deployments, and data are protected
 - [ ] Recovery verification is documented
+
+## Closure
+
+- [ ] A delivered work unit or plan carries `status: Done` and `delivered:`
+- [ ] The controlling ADR's `delivery:` mark was updated

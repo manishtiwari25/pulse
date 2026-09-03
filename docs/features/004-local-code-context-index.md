@@ -2,7 +2,9 @@
 id: FEAT-004
 title: Local Code Context Index
 status: Done
+tier: 2
 date: 2026-08-20
+delivered: 2026-08-22
 priority: High
 areas: [agents, context, search]
 tags: [feature, go, bm25, graph]

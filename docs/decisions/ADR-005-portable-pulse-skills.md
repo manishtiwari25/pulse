@@ -3,6 +3,8 @@ id: ADR-005
 title: Publish Portable PULSE Skills from the Docs Control Plane
 status: Accepted (amended 2026-08-20)
 date: 2026-08-13
+delivery: delivered
+delivered: 2026-08-14
 areas: [agents, skills, distribution, documentation]
 tags: [adr, skills, copilot, portability]
 ---

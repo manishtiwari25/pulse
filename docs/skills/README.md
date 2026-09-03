@@ -17,11 +17,11 @@ Public catalog: <https://manishtiwari25.github.io/pulse/skills/>
 | --- | --- |
 | `pulse-bootstrap` | Adding PULSE safely to a new or established repository |
 | `pulse-template-sync` | Checking upstream PULSE drift and applying approved framework updates |
-| `pulse-plan` | Creating a verifiable work plan with rollback |
-| `pulse-decision` | Recording an ADR and decision trail |
-| `pulse-feature` | Defining and delivering a feature through the PULSE lifecycle |
+| `pulse-plan` | Declaring the lifecycle tier, then a Tier 2 plan or a Tier 1 work unit with rollback |
+| `pulse-decision` | Recording an ADR with a delivery mark and respecting the work-in-progress limit |
+| `pulse-feature` | Defining and delivering behavior at the right tier through the PULSE lifecycle |
 | `pulse-rollback` | Executing a scoped, verified rollback |
-| `pulse-review` | Reviewing behavior, evidence, decisions, and rollback readiness |
+| `pulse-review` | Reviewing behavior, evidence, decisions, tier honesty, and rollback readiness |
 | `pulse-memory` | Recording durable lessons without storing temporary notes |
 | `pulse-delegation-advisor` | Estimating tokens with optional history and recommending agent, human, or hybrid work |
 | `pulse-code-context` | Building a standard-library Go code index and relationship graph |

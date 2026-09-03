@@ -22,6 +22,16 @@
 - `2026-08-27` - Private runner telemetry should not become a completion gate.
   Apply when: keep usage diagnostics opt-in, avoid repository writes, and use
   provider-supported systems for formal reporting.
+- `2026-09-03` - One universal gate makes the human the bottleneck on small
+  work. Apply when: declare a lifecycle tier before any artifact or edit, size
+  the paperwork to the tier, and keep every hard stop identical across tiers.
+- `2026-09-03` - Delivery is only visible when it is written where the
+  decision lives. Apply when: set `delivery:` and `delivered:` on the ADR as
+  the plan or work unit closes, and reconcile the marks in the quarterly prune
+  instead of trusting memory.
+- `2026-09-03` - Measure lead time from frontmatter, not from feelings. Apply
+  when: run the read-only lead-time report before deciding a workflow is slow
+  or fast, and flag artifacts missing a `delivered:` date rather than guessing.
 
 ## Populate When
 

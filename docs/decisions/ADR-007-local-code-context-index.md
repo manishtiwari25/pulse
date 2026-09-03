@@ -3,6 +3,8 @@ id: ADR-007
 title: Use a Local Retrieval Index and Relationship Graph for Code Context
 status: Accepted
 date: 2026-08-20
+delivery: delivered
+delivered: 2026-08-22
 areas: [agents, context, search, code-intelligence]
 tags: [adr, go, bm25, graph, retrieval]
 ---

@@ -3,6 +3,8 @@ id: ADR-006
 title: Use Optional Token History for Honest Delegation Advice
 status: Accepted (amended 2026-08-27)
 date: 2026-08-13
+delivery: delivered
+delivered: 2026-08-13
 areas: [agents, usage, estimation, delegation]
 tags: [adr, tokens, estimation, delegation, economics]
 ---

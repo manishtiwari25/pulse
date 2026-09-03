@@ -2,7 +2,9 @@
 id: PLAN-008
 title: Add the PULSE Template Sync Skill
 status: Done
+tier: 2
 date: 2026-08-27
+delivered: 2026-08-27
 tags: [plan, skills, template-sync, maintenance]
 ---
 

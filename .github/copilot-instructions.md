@@ -11,7 +11,9 @@ plans, prompts, skills, and workflows.
 - Use `docs/` as the engineering control plane; do not create a parallel root tree.
 - Do not assume previous product architecture still exists.
 - Create ADRs, specs, plans, prompts, workflows, or memory only when useful.
-- Modify product/source code only when the user explicitly asks for implementation.
+- Modify product/source code only when the user asks for implementation. The
+  declared lifecycle tier decides how much control-plane work precedes the
+  change and whether a separate approval round is needed.
 - Do not create or require a repository-local hidden control folder.
 - Inspect files or ask rather than guessing missing context.
 - When the optional `pulse-code-context` index is available and fresh, use it
@@ -37,6 +39,35 @@ plans, prompts, skills, and workflows.
 - Follow `docs/workflows/rollback.md`. Roll back automatically only when the
   current task's changes are isolated and user work is preserved; production
   or data recovery requires an approved runbook or explicit approval.
+
+## Proportional Lifecycle Tiers
+
+- Declare a tier with a one-line reason at the start of every
+  change-producing request, right after the sandbox warning, for example
+  `Tier 1 - new export page inside the surface that ADR-014 already allows.`
+  When in doubt, go up one tier; never classify down to skip an artifact or
+  approval.
+- **Tier 0 - polish and repair** (copy, spacing, colors, icons, focus order,
+  a bug with a reproducing test, a doc fix): no control-plane artifact; keep
+  an in-session rollback checklist and run the relevant tests. Standing
+  autonomy.
+- **Tier 1 - behavior inside an Accepted ADR**: one work unit from
+  `docs/plans/_template-work-unit.md` naming its controlling ADR. Standing
+  autonomy while the work stays inside that ADR's boundary.
+- **Tier 2 - real decisions** (money, auth, identity, data, privacy,
+  migrations, dependencies, deploy, publish, security posture, or any surface
+  no ADR covers): full ADR, plan, spec, and prompt chain plus explicit human
+  approval.
+- Hard stops are identical in every tier: destructive or irreversible
+  actions, production, deploy, publish, merge, credentials, hosted-data
+  deletion, broad auth, billing, or data migrations, infrastructure, major
+  dependency upgrades, policy-sensitive security, purchases, and ambiguous
+  evidence always need explicit approval.
+- Do not open a new Proposed ADR in an area while another Proposed ADR there
+  is unbuilt. Keep ADR `delivery:` marks current, run
+  `docs/workflows/prune.md` quarterly, and use the read-only
+  `docs/scripts/lead-time.sh` report for proposed-to-delivered days. The full
+  rules live in `AGENTS.md`.
 
 ## Framework Behavior
 

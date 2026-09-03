@@ -16,8 +16,13 @@
 - [`005-sandbox-first-agent-execution.md`](005-sandbox-first-agent-execution.md) -
   visible sandbox recommendations, honest boundary reporting, and the
   portable `pulse-sandbox` preflight.
+- [`006-proportional-lifecycle-tiers.md`](006-proportional-lifecycle-tiers.md) -
+  three declared lifecycle tiers, fixed hard stops, a work-in-progress limit,
+  ADR delivery marks with a quarterly prune, and a read-only lead-time report.
 
-Copy `_template.md` when the new product direction needs a feature or product behavior spec.
+Copy `_template.md` when the new product direction needs a feature or product
+behavior spec. Tier 1 behavior inside an Accepted ADR uses a work unit in
+`docs/plans/` instead of a separate feature spec.
 
 ## Naming
 

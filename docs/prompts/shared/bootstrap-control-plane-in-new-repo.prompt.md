@@ -32,7 +32,8 @@ implement, reorganize, or refactor product code as part of this bootstrap.
    - `docs/README.md`
    - `docs/workflows/bootstrap-control-plane.md`
    - `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md`
-   - relevant control-plane README and reusable `_template.md` files
+   - relevant control-plane README and reusable `_template.md` files,
+     including `docs/plans/_template-work-unit.md`
 4. Read `CLAUDE.md` or `.github/copilot-instructions.md` from PULSE only when
    the target uses those entry points.
 5. Treat PULSE as a reference to adapt, not a directory to copy wholesale.
@@ -115,6 +116,11 @@ Rules:
   templates, `docs/prompts/shared/rollback.prompt.md`, the sandbox
   recommendation rule, `docs/workflows/sandboxed-agent-execution.md`, and
   `pulse-sandbox`.
+- Include the proportional lifecycle tier rule (tier declaration, Tier 0/1/2
+  artifacts and authorization, fixed hard stops, work-in-progress limit, ADR
+  delivery marks), `docs/plans/_template-work-unit.md`,
+  `docs/workflows/prune.md`, and the read-only `docs/scripts/lead-time.sh`
+  report. Give every new ADR `delivery: not started`.
 - Replace copied PULSE `SANDBOX REQUIRED`, fail-closed fallback, and ADR-008
   instruction text with the ADR-009 recommendation. Preserve stricter text
   only when the target has an explicit local decision requiring isolation, and

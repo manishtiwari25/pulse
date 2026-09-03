@@ -2,18 +2,20 @@
 
 ## Index
 
-| ADR | Title | Status | Date |
-| --- | --- | --- | --- |
-| [ADR-001](ADR-001-docs-control-plane.md) | Use a Docs-Based PULSE Control Plane | Accepted | 2026-05-23 |
-| [ADR-002](ADR-002-work-accounting-token-reporting.md) | Work Accounting with Model and Token Reporting | Superseded | 2026-06-27 |
-| [ADR-003](ADR-003-pulse-brand-and-public-pages.md) | Adopt the PULSE Brand and Static GitHub Pages Portal | Accepted | 2026-08-11 |
-| [ADR-004](ADR-004-agent-driven-rollbacks.md) | Require Scoped Agent-Driven Rollbacks | Accepted | 2026-08-11 |
-| [ADR-005](ADR-005-portable-pulse-skills.md) | Publish Portable PULSE Skills from the Docs Control Plane | Accepted | 2026-08-13 |
-| [ADR-006](ADR-006-token-aware-delegation-advice.md) | Use Optional Token History for Honest Delegation Advice | Accepted | 2026-08-13 |
-| [ADR-007](ADR-007-local-code-context-index.md) | Use a Local Retrieval Index and Relationship Graph for Code Context | Accepted | 2026-08-20 |
-| [ADR-008](ADR-008-sandbox-first-agent-execution.md) | Require Fail-Closed Sandboxes for Agent Execution | Superseded | 2026-08-22 |
-| [ADR-009](ADR-009-recommend-sandboxes-and-disclose-unsandboxed-execution.md) | Recommend Sandboxes and Disclose Unsandboxed Execution | Accepted | 2026-08-27 |
-| [ADR-010](ADR-010-optional-usage-telemetry.md) | Make Usage Telemetry Optional | Accepted | 2026-08-27 |
+| ADR | Title | Status | Date | Delivery |
+| --- | --- | --- | --- | --- |
+| [ADR-001](ADR-001-docs-control-plane.md) | Use a Docs-Based PULSE Control Plane | Accepted | 2026-05-23 | delivered 2026-05-23 |
+| [ADR-002](ADR-002-work-accounting-token-reporting.md) | Work Accounting with Model and Token Reporting | Superseded | 2026-06-27 | retired |
+| [ADR-003](ADR-003-pulse-brand-and-public-pages.md) | Adopt the PULSE Brand and Static GitHub Pages Portal | Accepted | 2026-08-11 | delivered 2026-08-11 |
+| [ADR-004](ADR-004-agent-driven-rollbacks.md) | Require Scoped Agent-Driven Rollbacks | Accepted | 2026-08-11 | delivered 2026-08-11 |
+| [ADR-005](ADR-005-portable-pulse-skills.md) | Publish Portable PULSE Skills from the Docs Control Plane | Accepted | 2026-08-13 | delivered 2026-08-14 |
+| [ADR-006](ADR-006-token-aware-delegation-advice.md) | Use Optional Token History for Honest Delegation Advice | Accepted | 2026-08-13 | delivered 2026-08-13 |
+| [ADR-007](ADR-007-local-code-context-index.md) | Use a Local Retrieval Index and Relationship Graph for Code Context | Accepted | 2026-08-20 | delivered 2026-08-22 |
+| [ADR-008](ADR-008-sandbox-first-agent-execution.md) | Require Fail-Closed Sandboxes for Agent Execution | Superseded | 2026-08-22 | retired |
+| [ADR-009](ADR-009-recommend-sandboxes-and-disclose-unsandboxed-execution.md) | Recommend Sandboxes and Disclose Unsandboxed Execution | Accepted | 2026-08-27 | delivered 2026-08-27 |
+| [ADR-010](ADR-010-optional-usage-telemetry.md) | Make Usage Telemetry Optional | Accepted | 2026-08-27 | delivered 2026-08-28 |
+| [ADR-011](ADR-011-proportional-lifecycle-tiers.md) | Size the Lifecycle Paperwork to the Change with Proportional Tiers | Accepted | 2026-09-03 | delivered 2026-09-03 |
+| [ADR-012](ADR-012-recursive-self-improvement-loop.md) | Give Adopting Repositories a Measured, Constitution-Bounded Self-Improvement Loop | Proposed | 2026-09-03 | not started |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable
 architectural or product decision.
@@ -30,5 +32,23 @@ ADR-004-new-capability.md
 
 - Proposed
 - Accepted
+- Deferred - explicitly parked with a reason so it does not block the
+  work-in-progress limit
 - Deprecated
 - Superseded
+
+## Delivery Marks
+
+Every ADR also carries a `delivery:` field so delivery is visible where the
+decision lives, plus a `delivered:` date once the work closes:
+
+- `not started` - accepted or proposed, nothing built yet
+- `partially delivered` - some follow-ups shipped, others still open
+- `delivered` - the plan or work unit that implements it is Done
+- `retired` - superseded, deprecated, or abandoned without delivery
+
+The quarterly [prune workflow](../workflows/prune.md) refreshes these marks
+from evidence, and `docs/scripts/lead-time.sh` reports proposed-to-delivered
+days. Do not open a new Proposed ADR in an area while another Proposed ADR in
+that area is `not started` or `partially delivered`; finish, defer, or retire
+it first.

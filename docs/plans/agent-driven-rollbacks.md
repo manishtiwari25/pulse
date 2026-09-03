@@ -2,7 +2,9 @@
 id: PLAN-002
 title: Add Agent-Driven Rollbacks to PULSE
 status: Done
+tier: 2
 date: 2026-08-11
+delivered: 2026-08-11
 tags: [plan, rollback, recovery, agents]
 ---
 

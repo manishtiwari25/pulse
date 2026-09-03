@@ -24,6 +24,10 @@ Future product code may live in `src/`, `apps/`, `packages/`, `services/`, or
 another structure after the product direction is decided in a repository that
 adopts PULSE.
 
+The framework itself is versioned: each era is a git tag explained in
+[`docs/versions.md`](docs/versions.md), so the current rules can always be
+compared with the system they replaced.
+
 ## PULSE Lifecycle
 
 1. **Understand** the repository through context, architecture, decisions, and memory.
@@ -34,14 +38,20 @@ adopts PULSE.
    commands, and rollback plan.
 6. **Learn** by recording durable patterns, rules, and mistakes.
 
+The declared lifecycle tier decides how much of steps 2-4 is written into the
+control plane. Small work skips the paperwork; real decisions keep the full
+chain. See [Proportional Lifecycle Tiers](#proportional-lifecycle-tiers-required).
+
 ## Operating Modes
 
 - **Planning mode (default):** read the PULSE control plane, clarify the
   desired outcome, then create or update plans, feature specs, ADRs, prompts,
   workflows, and memory only when useful.
-- **Implementation mode (explicit):** modify product/source code only after
-  the user explicitly asks for implementation and the target product structure
-  exists.
+- **Implementation mode (explicit):** modify product/source code only when the
+  user asks for implementation and the target product structure exists. The
+  declared tier decides how much control-plane work precedes the change and
+  whether a separate approval round is required; see Proportional Lifecycle
+  Tiers.
 - **Framework mode:** keep this source repository generic, reusable, and
   product-code-free. Improve enduring onboarding, templates, workflows, and
   agent instructions instead of adding one-off product artifacts.
@@ -71,6 +81,96 @@ adopts PULSE.
 - When adopting PULSE in another repository, replace stale framework names,
   assumptions, product context, and architecture notes before implementation.
 - If context is missing, inspect files or ask before inventing requirements.
+
+## Proportional Lifecycle Tiers (required)
+
+The amount of control-plane paperwork must match the size of the change.
+Every change-producing request is classified into one of three tiers before
+any artifact or edit is made. Read-only analysis and explanation requests do
+not need a tier.
+
+### Declare the tier first
+
+- Start the first tool-backed response for a request with the tier and a
+  one-line reason, right after the sandbox warning, for example:
+  `Tier 1 - new export page inside the reporting surface that ADR-014 already allows.`
+- When in doubt, go up one tier. Never classify down to avoid an artifact or
+  an approval.
+- Record the tier in the artifact when one exists (`tier:` in a work unit,
+  plan, or feature spec).
+- If the work grows past the declared tier's boundary while it is in progress,
+  stop, redeclare the higher tier, and create the artifacts that tier needs
+  before continuing.
+
+### The three tiers
+
+- **Tier 0 - polish and repair.** Copy, spacing, colors, icons, focus order,
+  a bug with a reproducing test, or a doc or guide fix.
+  - Artifacts: none in the control plane. Keep an in-session rollback
+    checklist (baseline commit, files, trigger, reversal) and run the relevant
+    tests or checks.
+  - Authorization: standing autonomy; the request itself is the authorization.
+  - Lead-time target: same day.
+- **Tier 1 - behavior inside an accepted decision.** A new page, state, or
+  flow that an existing Accepted ADR already allows.
+  - Artifacts: one work unit in `docs/plans/` from
+    `docs/plans/_template-work-unit.md` - plan, behavior spec, and
+    implementation prompt in a single document that names its controlling ADR.
+  - Authorization: standing autonomy while the work stays inside the
+    controlling ADR's boundary; crossing that boundary makes the work Tier 2.
+  - Lead-time target: within two days.
+- **Tier 2 - real decisions.** Money, auth, identity, data, privacy,
+  migrations, dependencies, deployment, publication, security posture, or any
+  surface no ADR covers.
+  - Artifacts: the full chain - ADR, plan, feature spec, and implementation
+    prompt (the prompt when it makes handoff safer) - exactly as before.
+  - Authorization: explicit human approval of the ADR before implementation.
+  - Lead-time target: none fixed; measured and reviewed at each prune.
+
+Standing autonomy never grants more than the user's request and the tier's
+boundary. It does not replace the rollback plan, verification, or any hard
+stop.
+
+### Hard stops in every tier
+
+These never move, whatever the tier. Stop and obtain explicit human approval,
+plus the existing tested runbook where one applies, before:
+
+- destructive or irreversible actions, including hosted-data deletion
+- production changes, deployment, publication, or merging
+- credentials, secrets, keys, or tokens
+- broad auth, billing, identity, or data migrations
+- infrastructure changes
+- major dependency upgrades
+- policy-sensitive security changes
+- purchases or anything that spends money
+- proceeding on ambiguous evidence, including an unclear tier classification
+
+Organization, runner, production, data, and security-review rules that
+require isolation or approval still override every tier.
+
+### Work-in-progress limit
+
+Do not create a new Proposed ADR in an area while another Proposed ADR in that
+area is unbuilt (`delivery: not started` or `delivery: partially delivered`).
+Finish it, explicitly defer it (`status: Deferred` with a reason), or retire it
+(`delivery: retired`) first. Areas are the `areas:` values in ADR frontmatter.
+
+### Delivery marks
+
+Every ADR carries a `delivery:` mark so delivery is visible where the decision
+lives: `not started`, `partially delivered`, `delivered`, or `retired`. Set
+`not started` when the ADR is created, update it when the plan or work unit
+closes, and record the `delivered:` date at the same time. A light quarterly
+pass, [`docs/workflows/prune.md`](docs/workflows/prune.md), gives every ADR a
+current status and delivery line.
+
+### Lead time
+
+`docs/scripts/lead-time.sh` is a read-only report of proposed -> delivered
+days per artifact, computed from frontmatter dates. Tier 0 targets the same
+day and Tier 1 within two days. The report never changes tracked files; run it
+during the prune pass or whenever the queue feels slow.
 
 ## Sandbox Recommendation (warning required)
 
@@ -149,9 +249,10 @@ Every task that changes tracked files, dependencies, configuration, schemas,
 deployments, or external state must have a rollback plan **before the first
 change is made**. Read-only analysis and explanation tasks are excluded.
 
-- For non-trivial work, record the rollback plan in the active file under
-  `docs/plans/`.
-- For a small change that does not need a committed plan, keep a concise
+- For Tier 2 work, record the rollback plan in the active plan under
+  `docs/plans/`; for Tier 1 work, record it in the work unit's rollback
+  section.
+- For Tier 0 work, which does not need a committed plan, keep a concise
   in-session rollback checklist.
 - A rollback plan must identify:
   - **Baseline:** the starting Git state, affected files/systems, and any
@@ -217,7 +318,9 @@ Output formats are shared across all runners and defined in
 
 - `docs/decisions/_template.md` for architectural decisions.
 - `docs/features/_template.md` for feature specs.
-- `docs/plans/_template.md` for execution plans.
+- `docs/plans/_template.md` for Tier 2 execution plans.
+- `docs/plans/_template-work-unit.md` for Tier 1 work units (plan, behavior
+  spec, and implementation prompt in one file).
 - `docs/memory/_template.md` for future lessons and conventions.
 - `docs/prompts/shared/` for reusable prompt templates.
 - `docs/skills/` for portable, on-demand Agent Skills.
@@ -230,18 +333,27 @@ Output formats are shared across all runners and defined in
 3. If product direction is not documented, collect only the first required
    facts: project name, users, problem, first outcome, code boundaries, stack
    constraints, integrations, verification commands, and the first artifact.
-4. Create or update a plan from `docs/plans/_template.md` for non-trivial work,
-   including its rollback plan.
-5. Create ADRs only for real choices.
-6. Create feature specs only for real product behavior.
-7. Generate implementation prompts when they make handoff safer.
+4. Declare the lifecycle tier with a one-line reason. When in doubt, go up one
+   tier.
+5. Tier 0: keep an in-session rollback checklist and run the relevant checks.
+   Create no control-plane artifact.
+6. Tier 1: create one work unit from `docs/plans/_template-work-unit.md` that
+   names its controlling ADR and includes its rollback plan.
+7. Tier 2: check the work-in-progress limit, create the ADR for the real
+   choice, then a plan from `docs/plans/_template.md` with its rollback plan,
+   a feature spec for real product behavior, and an implementation prompt when
+   it makes handoff safer. Wait for explicit approval before implementing.
 8. Use a relevant PULSE skill when one is installed, while keeping this file's
    mandatory policies in force.
-9. Implement only after the user explicitly asks for code changes.
+9. Implement only when the tier authorizes it: standing autonomy for Tier 0
+   and Tier 1 inside their boundaries, explicit approval for Tier 2, and never
+   past a hard stop.
 10. Verify with commands that already exist in the target repository.
 11. If verification cannot be restored safely, follow the rollback plan and
     verify recovery.
-12. Update memory only when a durable pattern, lesson, or rule appears.
+12. When a plan or work unit closes, set its `delivered:` date and update the
+    controlling ADR's `delivery:` mark.
+13. Update memory only when a durable pattern, lesson, or rule appears.
 
 ## Routing
 
@@ -249,6 +361,8 @@ Output formats are shared across all runners and defined in
 | ------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | New product idea          | `docs/context/`, `docs/memory/`, `docs/decisions/`, `docs/architecture/`                         | `docs/plans/`, `docs/features/`, `docs/decisions/`, `docs/prompts/` |
 | Architecture decision     | `docs/decisions/`, `docs/architecture/`, `docs/context/`                                        | `docs/decisions/`, `docs/architecture/`, `docs/memory/`             |
+| Tier 1 work unit          | controlling ADR in `docs/decisions/`, `docs/context/`, `docs/memory/`                           | `docs/plans/WU-NNN-*.md`                                            |
+| Quarterly prune           | `docs/decisions/`, `docs/plans/`, `docs/features/`, `docs/workflows/prune.md`                   | ADR `delivery:` marks, `docs/decisions/README.md`, `docs/memory/`   |
 | Feature prompt generation | `docs/features/`, `docs/context/`, `docs/memory/`                                               | `docs/prompts/`                                                     |
 | Learning or mistake       | `docs/memory/`                                                                                  | `docs/memory/`                                                      |
 | Skill creation/export     | `docs/skills/`, `docs/workflows/`, `docs/prompts/shared/`, `docs/decisions/`                   | `docs/skills/`, `docs/features/`, `docs/decisions/`                 |

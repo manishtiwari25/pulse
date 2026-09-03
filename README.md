@@ -83,6 +83,52 @@ treats broad resets, force-pushes, or unplanned deletion as a valid rollback.
 See the [agent-driven rollback feature](docs/features/001-agent-driven-rollbacks.md)
 and [canonical rollback workflow](docs/workflows/rollback.md).
 
+## Proportional Lifecycle Tiers
+
+Paperwork matches the size of the change. Every request that changes files
+starts with the agent declaring a tier and a one-line reason; when in doubt,
+it goes up one tier.
+
+| Tier | Typical work | Artifacts | Approval |
+| --- | --- | --- | --- |
+| **0 - polish and repair** | Copy, spacing, colors, icons, focus order, a bug with a reproducing test, a doc or guide fix | None; in-session rollback checklist plus tests | Standing autonomy |
+| **1 - behavior inside an accepted decision** | A page, state, or flow an Accepted ADR already allows | One work unit (plan + spec + prompt) naming its controlling ADR | Standing autonomy inside the ADR's boundary |
+| **2 - real decisions** | Money, auth, identity, data, privacy, migrations, dependencies, deploy, publish, security posture, or any surface no ADR covers | ADR, plan, feature spec, and prompt | Explicit human approval |
+
+Hard stops never move in any tier: destructive or irreversible actions,
+production, deploy, publish, merge, credentials, hosted-data deletion, broad
+auth, billing, or data migrations, infrastructure, major dependency upgrades,
+policy-sensitive security, purchases, and ambiguous evidence always need
+explicit approval.
+
+Delivery stays visible: no new Proposed ADR opens in an area while another is
+unbuilt there, every ADR carries a delivery mark (`not started`,
+`partially delivered`, `delivered`, `retired`), a quarterly
+[prune workflow](docs/workflows/prune.md) refreshes those marks, and the
+read-only `docs/scripts/lead-time.sh` report shows proposed-to-delivered days.
+
+See [ADR-011](docs/decisions/ADR-011-proportional-lifecycle-tiers.md), the
+[tiers feature spec](docs/features/006-proportional-lifecycle-tiers.md), and
+the [work-unit template](docs/plans/_template-work-unit.md).
+
+## What Can Go Wrong
+
+Spec-driven development has known failure modes: paperwork out of proportion
+to the change, agents that get worse as context grows, review load that
+shifts from code to Markdown, specs that are written but never built, tests
+that get gamed, and specs that drift from the code. The
+[spec-driven pitfalls guide](docs/guides/spec-driven-pitfalls.md) lists each
+one with published evidence, what PULSE does about it, and what still needs a
+human.
+
+## Versions
+
+PULSE keeps its own evolution visible. Each era is a git tag (`v1` Project
+Brain, `v2` PULSE, `v3` sandbox-aware, `v4` proportional tiers) explained in
+[`docs/versions.md`](docs/versions.md): what the system was, what changed, why,
+and what was retired. Check out any tag to see the old system exactly as it
+was.
+
 ## Fastest Setup
 
 Open any new or existing repository in an AI coding agent, copy the
@@ -104,6 +150,8 @@ service, hidden state folder, or model-specific runtime is required.
   sandbox-aware execution, and template synchronization.
 - A safe bootstrap path for both new and established repositories.
 - Mandatory rollback plans and scoped agent-driven recovery.
+- Proportional lifecycle tiers that size artifacts and approval to the change
+  while keeping every hard stop fixed.
 - Visible sandbox recommendations and honest unsandboxed-execution disclosure.
 - Optional, best-effort local usage diagnostics that never block task
   completion.
@@ -224,6 +272,7 @@ docs/prompts/                     Reusable execution prompts
 docs/scripts/                     Optional diagnostics and framework helpers
 docs/skills/                      Portable Agent Skills and helpers
 docs/usage/                       Frozen historical usage archive
+docs/versions.md                  Tagged eras of PULSE and what changed in each
 docs/workflows/                   Repeatable engineering procedures
 ```
 

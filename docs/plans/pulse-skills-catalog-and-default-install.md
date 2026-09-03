@@ -2,7 +2,9 @@
 id: PLAN-004
 title: Publish the PULSE Skills Catalog and Include Every Skill by Default
 status: Done
+tier: 2
 date: 2026-08-14
+delivered: 2026-08-14
 tags: [plan, skills, website, bootstrap, distribution]
 ---
 

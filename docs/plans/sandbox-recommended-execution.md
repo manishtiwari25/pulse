@@ -2,7 +2,9 @@
 id: PLAN-007
 title: Recommend Sandboxes Without Blocking Execution
 status: Done
+tier: 2
 date: 2026-08-27
+delivered: 2026-08-27
 tags: [plan, agents, security, sandbox, copilot, claude, opencode]
 ---
 

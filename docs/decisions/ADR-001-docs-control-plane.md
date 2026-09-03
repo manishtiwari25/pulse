@@ -3,6 +3,8 @@ id: ADR-001
 title: Use a Docs-Based PULSE Control Plane
 status: Accepted (amended 2026-08-13)
 date: 2026-05-23
+delivery: delivered
+delivered: 2026-05-23
 areas: [template, documentation, agents]
 tags: [adr, scaffold, control-plane]
 ---

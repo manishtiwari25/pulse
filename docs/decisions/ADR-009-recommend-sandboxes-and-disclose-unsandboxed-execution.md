@@ -3,6 +3,8 @@ id: ADR-009
 title: Recommend Sandboxes and Disclose Unsandboxed Execution
 status: Accepted
 date: 2026-08-27
+delivery: delivered
+delivered: 2026-08-27
 areas: [agents, security, execution, harnesses]
 tags: [adr, sandbox, copilot, claude, opencode, permissions]
 supersedes: ADR-008

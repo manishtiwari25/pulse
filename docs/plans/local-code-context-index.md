@@ -2,7 +2,9 @@
 id: PLAN-005
 title: Add a Local Code Context Index
 status: Done
+tier: 2
 date: 2026-08-20
+delivered: 2026-08-22
 tags: [plan, agents, context, search, go, graph]
 ---
 

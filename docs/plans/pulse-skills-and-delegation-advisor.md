@@ -2,7 +2,9 @@
 id: PLAN-003
 title: Publish PULSE Skills and Token-Aware Delegation Advice
 status: Done
+tier: 2
 date: 2026-08-13
+delivered: 2026-08-13
 tags: [plan, skills, tokens, delegation]
 ---
 

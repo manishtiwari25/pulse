@@ -2,7 +2,9 @@
 id: PLAN-009
 title: Make Usage Telemetry Optional
 status: Done
+tier: 2
 date: 2026-08-27
+delivered: 2026-08-28
 tags: [plan, usage, telemetry, agents, delegation]
 ---
 

@@ -24,9 +24,30 @@
 - [`optional-usage-telemetry.md`](optional-usage-telemetry.md) - removes
   mandatory token snapshots while retaining opt-in diagnostics and an
   optional-history delegation advisor.
+- [`proportional-lifecycle-tiers.md`](proportional-lifecycle-tiers.md) - sizes
+  control-plane paperwork to the change with three declared tiers, fixed hard
+  stops, a work-in-progress limit, delivery marks, and a lead-time report.
 
 ## In Progress
 
 No active plans.
 
-Copy `_template.md` when another non-trivial task needs an explicit plan.
+Copy `_template.md` when a Tier 2 task needs an explicit plan.
+
+## Work Units
+
+- [`WU-001-pulse-versions.md`](WU-001-pulse-versions.md) - names each PULSE
+  era with a git tag and a versions page; the first Tier 1 work unit.
+
+A Tier 1 change - behavior an Accepted ADR already allows - uses one work
+unit instead of a separate plan, feature spec, and prompt. Copy
+`_template-work-unit.md`, name the controlling ADR, and keep the file in this
+folder:
+
+```text
+WU-001-short-title.md
+```
+
+A work unit closes when its acceptance criteria and verification pass; record
+the `delivered:` date and update the controlling ADR's `delivery:` mark at the
+same time.

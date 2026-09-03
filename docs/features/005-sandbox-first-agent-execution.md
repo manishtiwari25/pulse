@@ -2,7 +2,9 @@
 id: FEAT-005
 title: Sandbox-Recommended Agent Execution
 status: Done
+tier: 2
 date: 2026-08-22
+delivered: 2026-08-22
 updated: 2026-08-27
 priority: Critical
 areas: [agents, security, execution]

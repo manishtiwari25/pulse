@@ -32,13 +32,41 @@ Instructions for Claude-based agents working with PULSE.
 
 - Default to planning/framework mode: read the relevant PULSE context, then
   update plans, prompts, ADRs, feature specs, workflows, or memory only when useful.
-- Enter implementation mode only when the user explicitly asks for source changes.
+- Enter implementation mode only when the user asks for source changes. The
+  declared lifecycle tier decides how much control-plane work precedes the
+  change and whether a separate approval round is needed.
 - Prefer durable PULSE improvements over one-off product artifacts in this repository.
 - Keep prompts, workflows, and guidance model-agnostic.
 
+## Proportional Lifecycle Tiers (required)
+
+- Declare a tier with a one-line reason at the start of every
+  change-producing request, right after the sandbox warning. When in doubt,
+  go up one tier; never classify down to skip an artifact or approval.
+- **Tier 0 - polish and repair** (copy, spacing, colors, icons, focus order,
+  a bug with a reproducing test, a doc fix): no control-plane artifact; keep
+  an in-session rollback checklist and run the relevant tests. Standing
+  autonomy.
+- **Tier 1 - behavior inside an Accepted ADR**: one work unit from
+  `docs/plans/_template-work-unit.md` naming its controlling ADR. Standing
+  autonomy while the work stays inside that ADR's boundary.
+- **Tier 2 - real decisions** (money, auth, identity, data, privacy,
+  migrations, dependencies, deploy, publish, security posture, or any surface
+  no ADR covers): full ADR, plan, spec, and prompt chain plus explicit human
+  approval.
+- Hard stops are identical in every tier: destructive or irreversible
+  actions, production, deploy, publish, merge, credentials, hosted-data
+  deletion, broad auth, billing, or data migrations, infrastructure, major
+  dependency upgrades, policy-sensitive security, purchases, and ambiguous
+  evidence always need explicit approval.
+- Do not open a new Proposed ADR in an area while another Proposed ADR there
+  is unbuilt. Keep `delivery:` marks current and follow
+  `docs/workflows/prune.md` quarterly. `docs/scripts/lead-time.sh` is the
+  read-only lead-time report. See `AGENTS.md` for the full rules.
+
 ## Repository Conventions
 
-- Use `docs/plans/` for non-trivial work plans.
+- Use `docs/plans/` for non-trivial work plans and Tier 1 work units.
 - Use `docs/decisions/` for accepted or proposed choices.
 - Use `docs/features/` for product behavior.
 - Use `docs/memory/` only for durable lessons, mistakes, rules, or conventions.
@@ -55,8 +83,8 @@ Instructions for Claude-based agents working with PULSE.
 
 - Before any change-producing task, define a rollback plan with the baseline,
   trigger, narrow reversal steps, state-safety notes, and recovery checks.
-- Put the plan in `docs/plans/` for non-trivial work; a small change may use a
-  concise in-session checklist.
+- Put the plan in `docs/plans/` for Tier 2 work and inside the work unit for
+  Tier 1; a Tier 0 change uses a concise in-session checklist.
 - Automatically roll back only the current task's isolated changes. Preserve
   user work and shared history.
 - Never use broad destructive reset, cleanup, force-push, or data-deletion

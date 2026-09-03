@@ -2,7 +2,9 @@
 id: FEAT-001
 title: Agent-Driven Rollbacks
 status: Done
+tier: 2
 date: 2026-08-11
+delivered: 2026-08-11
 priority: High
 areas: [agents, plans, prompts, workflows, recovery]
 tags: [feature, rollback, recovery, safety, audit]

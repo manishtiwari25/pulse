@@ -3,6 +3,7 @@ id: ADR-008
 title: Require Fail-Closed Sandboxes for Agent Execution
 status: Superseded
 date: 2026-08-22
+delivery: retired
 superseded_by: ADR-009
 areas: [agents, security, execution, harnesses]
 tags: [adr, sandbox, copilot, claude, opencode, isolation]

@@ -47,8 +47,8 @@ plane without replacing existing code or rules.
 ## Product Boundaries
 
 - PULSE provides documentation structure, templates, prompts, workflows,
-  portable skills, agent instructions, scoped rollback procedures, and
-  optional usage diagnostics.
+  portable skills, agent instructions, scoped rollback procedures,
+  proportional lifecycle tiers, and optional usage diagnostics.
 - PULSE does not choose the adopting repository's product stack.
 - PULSE does not require a hosted service, hidden state directory, or
   model-specific runtime.
@@ -77,5 +77,11 @@ plane without replacing existing code or rules.
 - Delegation advice reports a token range and confidence before recommending
   agent-led, hybrid, or human-led work.
 - Important decisions and durable lessons survive beyond one chat session.
+- Paperwork matches the size of the change: a Tier 0 fix needs no
+  control-plane artifact, a Tier 1 change needs one work unit, and only Tier 2
+  decisions need the full chain and explicit approval, while hard stops stay
+  identical in every tier.
+- Every ADR shows whether it was delivered, and lead time from proposed to
+  delivered is visible without changing tracked files.
 - Token snapshots are not required for task completion or written to the
   repository during normal work.

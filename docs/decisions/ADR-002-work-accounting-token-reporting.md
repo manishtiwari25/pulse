@@ -3,6 +3,7 @@ id: ADR-002
 title: Work Accounting with Model and Token Reporting
 status: Superseded by ADR-010
 date: 2026-06-27
+delivery: retired
 areas: [agents, operations, documentation]
 tags: [adr, work-accounting, tokens, observability]
 ---

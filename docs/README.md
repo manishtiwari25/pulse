@@ -17,6 +17,7 @@ prompts/        Generated and reusable implementation prompts
 scripts/        Optional diagnostics and framework helpers
 skills/         Portable Agent Skills and bundled helpers
 usage/          Frozen historical usage archive
+versions.md     Tagged eras of PULSE and what changed in each
 workflows/      Repeatable engineering procedures
 ```
 
@@ -45,6 +46,15 @@ to stop using its existing tools.
 4. Specify the behavior to deliver.
 5. Build, verify, and use the prepared rollback plan when recovery is needed.
 6. Learn by recording durable rules, patterns, and mistakes.
+
+Paperwork matches the size of the change. Every change-producing request
+declares a lifecycle tier first: Tier 0 polish and repair needs no
+control-plane artifact, Tier 1 behavior inside an Accepted ADR needs one
+[work unit](plans/_template-work-unit.md), and Tier 2 real decisions keep the
+full ADR, plan, spec, and prompt chain with explicit approval. Hard stops are
+identical in every tier. See
+[ADR-011](decisions/ADR-011-proportional-lifecycle-tiers.md) and the
+[quarterly prune workflow](workflows/prune.md).
 
 ## Fastest Adoption
 
@@ -76,6 +86,8 @@ Token snapshots are not part of task completion. The scripts under
 
 - [Start a new repository with PULSE](guides/new-repo.md)
 - [Add PULSE to an existing repository](guides/integration-existing.md)
+- [What can go wrong with spec-driven development](guides/spec-driven-pitfalls.md)
+- [PULSE versions and how the framework evolved](versions.md)
 
 ## First Intake for an Adopting Repository
 

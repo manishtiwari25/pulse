@@ -76,6 +76,11 @@ docs/workflows/
   rollback workflow, and shared rollback prompt when the target adopts those
   PULSE surfaces. Also include the sandbox recommendation rule,
   `docs/workflows/sandboxed-agent-execution.md`, and `pulse-sandbox`.
+- Include the proportional lifecycle tier rule from `AGENTS.md` (tier
+  declaration, the three tiers, fixed hard stops, the work-in-progress limit,
+  and ADR delivery marks), `docs/plans/_template-work-unit.md`,
+  `docs/workflows/prune.md`, and the read-only `docs/scripts/lead-time.sh`
+  report. New ADRs in the target start with `delivery: not started`.
 - Treat copied PULSE `SANDBOX REQUIRED`, fail-closed fallback, and ADR-008
   instruction text as superseded framework content. Replace it with the
   ADR-009 recommendation unless the target has an explicit local decision that
