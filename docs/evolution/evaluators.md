@@ -4,7 +4,7 @@ title: PULSE Evaluators
 status: Active
 date: 2026-09-03
 controlling_adr: ADR-012
-baseline: pending
+baseline: B-003
 ---
 
 # PULSE Evaluators
@@ -79,4 +79,7 @@ disagree, fix the scores before the next cycle.
 The first baseline compares `v3` (last universal-gate version) with `v4`
 (first tiers version) on S1 and S2 across F01-F14. Record it in
 `archive.md` under **Baselines** and set `baseline:` above to its row id.
-Until then the loop stays off.
+Recorded 2026-09-03 as B-001 (`v3`), B-002 (`v4`), and B-003 (`v5`, the
+loop's parent) at the maintainer's instruction; method and caveats are in
+board thread `evolution/dogfood-baseline`. The loop stays off until the
+held-out set exists and a human sets `loop: on`.
