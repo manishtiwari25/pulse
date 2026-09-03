@@ -103,6 +103,14 @@ copilot skill add docs/skills
 copilot skill list
 ```
 
+A runner sees only the directories it has registered. A skill added upstream
+(for example `pulse-reflect` in v5) does not appear in an adopted repository
+until template sync brings it into that repository's `docs/skills/`, or until
+you bridge it by hand with `copilot skill add <path>/SKILL.md`, which copies
+that one skill to `~/.copilot/skills/<name>/`. Remove the bridge copy with
+`copilot skill remove <name>` once the sync lands, or the name appears twice.
+A running session lists skills from its start; reload after any change.
+
 Inside an interactive Copilot CLI session, use:
 
 ```text
