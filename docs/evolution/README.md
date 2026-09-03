@@ -1,13 +1,14 @@
 # Evolution: The Self-Improvement Loop
 
 This folder holds the three parts a repository needs before agents may
-improve how they work on it through measured experiments, as decided in
+improve **the product it ships** - and, second, how they work on it - through
+measured experiments, as decided in
 [ADR-012](../decisions/ADR-012-recursive-self-improvement-loop.md):
 
 | File | Owner | Loop may edit | Purpose |
 | --- | --- | --- | --- |
-| `constitution.md` | humans, or agents by ratified amendment | never as a variant | Hard stops, immutable paths, editable scope by stage, `limits:` switch and budget, vote rules, amendment rules and log, kill switch |
-| `evaluators.md` | humans | never (may propose) | What "better" means: pass/fail constraints, optimized scores, fixtures, held-out set |
+| `constitution.md` | humans, or agents by ratified amendment | never as a variant | Subject, hard stops, immutable paths, editable scope by stage, `limits:` switch and budget, branches-and-worktrees rule, vote rules, amendment rules and log, kill switch |
+| `evaluators.md` | humans | never (may propose) | What "better" means: product constraints and scores first, then operating-layer constraints and scores, fixtures, held-out set |
 | `archive.md` | the loop | append only | Every variant tried, kept or discarded, with scores and votes |
 
 The templates `_template-constitution.md`, `_template-evaluators.md`, and
@@ -30,6 +31,54 @@ The loop is continuous by default: `Cycles per day` is `unlimited` unless a
 project writes a number, and a plateau changes the hypothesis instead of
 stopping (ADR-012 amendment, 2026-09-03). `limits: none` in the constitution
 removes every budget limit at once (ADR-012 Amendment 2; see Limits below).
+
+## The product first
+
+In a repository that adopts PULSE the loop's subject is the product that
+repository ships: its code, tests, and behavior, under Tier 0 (a repair with
+a reproducing test, polish with its check) and Tier 1 (behavior inside an
+Accepted ADR, the work unit in the same variant), measured by the project's
+own checks. The operating layer - memory, project prompts, local rules,
+project skills and workflows - is the secondary subject, tried only when no
+product hypothesis is eligible or a product signal's cause lives there. Only
+in the PULSE source repository is the framework prose the product (ADR-012
+Amendment 4, 2026-09-03).
+
+A product class is editable from the first cycle after the owner lists it;
+nothing has to be earned first except autonomy. `evolution-report.sh` and
+`reflect.sh` print a **PRODUCT SCOPE** verdict; when it says the loop is
+confined to the operating layer, the owner's three edits are:
+
+1. **Editable scope:** list the product's paths as `product polish` (Tier 0)
+   and `product behavior` (Tier 1) rows at **Stage 4**, `autonomy: human`.
+2. **Immutable paths:** keep only the product's hard-stop surfaces there -
+   auth and identity, billing, data stores and migrations, deploy and
+   infrastructure configuration, secrets, dependency manifests and lockfiles.
+   A row such as `src/` parks the loop on the docs; remove it.
+3. **Evaluators:** fill the `## Product evaluators` section from
+   `_template-evaluators.md` - the repository's existing verification command
+   as a constraint, the reproducing-test and work-unit rules, at least one
+   product score the project already measures - and record a baseline row.
+
+What the loop then does: picks a product hypothesis before an operating-layer
+one, from failing or flaky tests, type and lint findings, coverage gaps,
+accessibility and performance reports, `TODO`/`FIXME` markers, unmet
+acceptance criteria inside an Accepted ADR, and bug reports or error logs the
+project collects; carries the tier's artifact in the variant; keeps the change
+only when the product scores say so; and hands every kept product variant to
+a human merge until the class earns standing autonomy. Tier 2 surfaces never
+enter the loop, in any repository.
+
+## Branches and worktrees
+
+Every experiment branch, worktree, or fleet clone the loop creates is removed
+when its cycle ends - the Clean step of
+[`evolve.md`](../workflows/evolve.md): a discarded variant's branch and
+worktree in the same cycle, a kept variant's branch when its pull request
+merges or closes, fleet clones with `fleet.sh clean`. A run never ends with a
+stray `evolve/*` branch or worktree; `evolution-report.sh` and `reflect.sh`
+list any that exist under **HYGIENE**. The loop removes only what it created,
+never by reset, checkout, clean, or force-push.
 
 ## Kill switch
 
@@ -90,13 +139,17 @@ unsynced; PULSE only ships the rows, the tally, and the procedure.
 
 ## Stages
 
+Stages say what a file class has open and who merges its kept variants. They
+are not an order to climb: a product class the owner lists at Stage 4 is
+editable at once; what every class earns through clean cycles is autonomy.
+
 | Stage | Meaning |
 | --- | --- |
 | 0 | Manual learning; no constitution or evaluators yet |
-| 1 | Constitution filled, evaluators written, baseline recorded; board open; loop changes nothing |
-| 2 | Supervised cycles over the operating layer; a human merges or discards every variant |
-| 3 | Standing autonomy for operating-layer file classes that earned it |
-| 4 | Product code under Tier 0 and Tier 1, class by class; Tier 2 never |
+| 1 | Constitution filled, evaluators written, baseline recorded; board open; a class at Stage 1 is listed but not yet editable |
+| 2 | Operating-layer class editable while `loop: on`; a human merges or discards every variant |
+| 3 | Standing autonomy for a class that earned it through clean cycles; any incident takes it back |
+| 4 | Product class editable while `loop: on` and the product evaluators have a baseline - Tier 0 and Tier 1, the primary subject; Tier 2 never |
 
-The current stage per file class lives in the constitution's editable-scope
-table and is reported by `evolution-report.sh`.
+The stage per file class lives in the constitution's editable-scope table and
+is reported by `evolution-report.sh`, with a PRODUCT SCOPE verdict.

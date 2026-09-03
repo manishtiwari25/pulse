@@ -2,8 +2,10 @@
 # Read-only digest for the pulse-reflect skill.
 #
 # Reports the repository's working state, the board summary, the loop's gates,
-# cheap health checks, and the highest level of the reflection ladder the
-# gates allow right now:
+# the product scope (whether the loop may improve the product the repository
+# ships, or is confined to the operating layer), hygiene (stray evolve/*
+# branches and worktrees the loop must remove), cheap health checks, and the
+# highest level of the reflection ladder the gates allow right now:
 #   A observe   always
 #   B record    docs/board/ exists
 #   C rehearse  docs/evolution/ filled, baseline recorded, no STOP
@@ -20,7 +22,8 @@ usage() {
 Usage: docs/scripts/reflect.sh [--repo PATH] [--area AREA] [--no-board]
 
 Read-only digest for pulse-reflect: git state, board summary, loop gates,
-health checks, the level the gates allow, and the next human step.
+product scope, hygiene, health checks, the level the gates allow, and the
+next human step.
 
   --repo PATH   Repository root (default: the repository containing this script)
   --area AREA   Limit the board summary to one channel
@@ -57,6 +60,86 @@ frontmatter_value() {
         /^---/ { c++; if (c == 2) exit; next }
         c == 1 && index($0, key ":") == 1 { v = substr($0, length(key) + 2); gsub(/^[ \t]+|[ \t]+$/, "", v); print v; exit }
     ' "$1"
+}
+
+product_scope() {
+    # product_scope CONSTITUTION EVALUATORS -> prints the PRODUCT SCOPE section;
+    # returns 0 when the loop may improve the product, 1 when it is confined to
+    # the operating layer. Read-only.
+    local const="$1" evalf="$2" classes_ok=1 evals_ok=1
+    echo "PRODUCT SCOPE (the loop's subject is the product the repository ships)"
+    if [ ! -f "$const" ]; then
+        echo "  no constitution"
+        echo ""
+        return 1
+    fi
+    if awk -F'|' '
+        function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+        /^## / { scope = ($0 ~ /^## Editable scope/); immut = ($0 ~ /^## Immutable paths/); next }
+        scope && /^\|/ {
+            c = trim($2); if (c == "File class" || c ~ /^-+$/) next
+            st = trim($4)
+            if (st == "4") { ed = ed sep c; sep = ", "; n4++ }
+            else if (tolower(c) ~ /product/) { low = low sep2 c " (stage " st ")"; sep2 = ", "; nlow++ }
+        }
+        immut && /^\|/ {
+            p = $2
+            if (match(p, /`[^`]+`/)) {
+                tok = substr(p, RSTART + 1, RLENGTH - 2)
+                if (tok ~ /^(src|apps?|packages|services|lib|web|api|server|client|backend|frontend)\/?$/) { trees = trees sep3 "`" tok "`"; sep3 = ", "; ntrees++ }
+            }
+        }
+        END {
+            if (n4 > 0) printf "  product classes editable (stage 4): %s\n", ed
+            else if (nlow == 0) print "  no product class listed - in a repository that ships a product, list its paths at stage 4 (docs/evolution/README.md, The product first)"
+            if (nlow > 0) printf "  product classes listed below stage 4: %s - raise them to 4 in the constitution to let the loop improve the product\n", low
+            if (ntrees > 0) printf "  immutable paths cover a whole product tree: %s - keep only hard-stop surfaces immutable; as written the loop cannot touch the product\n", trees
+            exit (n4 > 0 && ntrees == 0) ? 0 : 1
+        }' "$const"; then classes_ok=0; fi
+    if [ -f "$evalf" ] && grep -qiE '^##+[ \t]+Product evaluators' "$evalf"; then
+        echo "  product evaluators: present"
+        evals_ok=0
+    else
+        echo "  product evaluators: absent - add a '## Product evaluators' section to evaluators.md (the project's verification as a constraint, at least one product score) and a baseline row"
+    fi
+    if [ "$classes_ok" -eq 0 ] && [ "$evals_ok" -eq 0 ]; then
+        echo "  verdict: the loop can improve the product"
+        echo ""
+        return 0
+    fi
+    echo "  verdict: the loop is confined to the operating layer (docs) until the lines above are fixed"
+    echo ""
+    return 1
+}
+
+hygiene() {
+    # hygiene REPO -> prints stray worktrees and evolve/* branches. Read-only.
+    local repo="$1" extra br rbr
+    echo "HYGIENE (branches, worktrees, and clones the loop must remove - docs/workflows/evolve.md, Clean)"
+    if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        extra="$(git -C "$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree / { n++; if (n > 1) print "    " substr($0, 10) }')"
+        if [ -n "$extra" ]; then
+            echo "  worktrees: extra beyond the main tree - remove each when its cycle has ended:"
+            printf '%s\n' "$extra"
+        else
+            echo "  worktrees: main tree only"
+        fi
+        br="$(git -C "$repo" branch --list 'evolve/*' --format='%(refname:short)' 2>/dev/null)"
+        if [ -n "$br" ]; then
+            echo "  evolve/* branches: $(printf '%s\n' "$br" | wc -l | tr -d ' ') - delete each when its cycle ended or its pull request closed:"
+            printf '%s\n' "$br" | sed 's/^/    /'
+        else
+            echo "  evolve/* branches: none"
+        fi
+        rbr="$(git -C "$repo" branch -r --list '*/evolve/*' --format='%(refname:short)' 2>/dev/null)"
+        if [ -n "$rbr" ]; then
+            echo "  remote evolve/* branches: $(printf '%s\n' "$rbr" | wc -l | tr -d ' ') - delete on the remote once the pull request merged or closed:"
+            printf '%s\n' "$rbr" | sed 's/^/    /'
+        fi
+    else
+        echo "  not a git repository"
+    fi
+    echo ""
 }
 
 echo "REFLECT - $REPO - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -141,6 +224,13 @@ else
 fi
 echo ""
 
+# --- Product scope and hygiene ----------------------------------------------
+PRODUCT_OK=1
+if [ "$HAS_EVO" -eq 1 ]; then
+    if product_scope "$EVO/constitution.md" "$EVO/evaluators.md"; then PRODUCT_OK=0; fi
+fi
+hygiene "$REPO"
+
 # --- Health checks -----------------------------------------------------------
 echo "HEALTH CHECKS"
 if [ -x "$SCRIPTS/check-links.sh" ]; then
@@ -221,9 +311,14 @@ else
     echo "  none; the loop may run - continuous mode, cycle after cycle, until a stop rule fires"
     [ "$LIMITS" = "none" ] && echo "  (limits: none - no token, wall-time, cycle, or plateau limit binds; never pause to ask, post a question and continue)"
 fi
+if [ "$HAS_EVO" -eq 1 ] && [ "$FILLED" -eq 1 ] && [ "$PRODUCT_OK" -ne 0 ]; then
+    echo "  product: the loop is confined to the operating layer - list the product's paths at stage 4, keep only hard-stop surfaces immutable, and add product evaluators (see PRODUCT SCOPE above); skip only if this repository's product is its docs"
+fi
 echo ""
 echo "SIGNALS TO LIST FROM THIS SESSION (Level A output)"
-echo "  verification failures, rollbacks, review findings, tier redeclarations,"
+echo "  product first: failing or flaky tests, type and lint findings, coverage gaps, accessibility"
+echo "  or performance reports, TODO/FIXME touched, unmet acceptance criteria, bug reports;"
+echo "  then verification failures, rollbacks, review findings, tier redeclarations,"
 echo "  requests whose premise was already satisfied, questions answered from scratch,"
-echo "  rules that read two ways, artifacts written then discarded, stale fixtures."
+echo "  rules that read two ways, artifacts written then discarded, stale fixtures, strays above."
 echo "Rules: docs/workflows/reflect.md. Fleets: docs/workflows/fleet.md."

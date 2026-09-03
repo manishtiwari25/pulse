@@ -29,9 +29,15 @@ closed gate and report it; never work around a gate.
 ### Level A - Observe (always)
 
 1. Run `docs/scripts/reflect.sh --area <area>` and read only what it prints:
-   working state, board summary, loop gates, health checks, the level
-   allowed, the next human step.
-2. List this session's **signals**, each in one line with its evidence:
+   working state, board summary, loop gates, product scope, hygiene, health
+   checks, the level allowed, the next human step.
+2. List this session's **signals**, each in one line with its evidence -
+   product signals first, because the product the repository ships is the
+   loop's subject:
+   - a test that failed or flaked, a type or lint finding, a coverage gap,
+     an accessibility or performance report, a `TODO`/`FIXME` touched, a
+     feature spec whose acceptance criteria are still unmet inside an
+     Accepted ADR, a bug report or error log the project collects;
    - a verification command that failed, and what fixed it;
    - a rollback, and its trigger;
    - a review finding or a hard stop that fired;
@@ -40,9 +46,12 @@ closed gate and report it; never work around a gate.
    - a question answered from scratch that memory or a workflow should hold;
    - a rule that read two ways, and how it was read;
    - an artifact written and then discarded (paperwork that bought nothing);
-   - a fleet unit that failed, was re-run, or misread its brief.
+   - a fleet unit that failed, was re-run, or misread its brief;
+   - a stray `evolve/*` branch, worktree, or fleet clone the digest lists.
 3. If there are no signals, say "no signal this session" - that completes
-   Level A honestly.
+   Level A honestly. Remove any stray branch, worktree, or clone **this
+   session** created, following the Clean step of [`evolve.md`](evolve.md);
+   report strays from other sessions as a `finding`, never delete them.
 
 ### Level B - Record (when `docs/board/` exists)
 
@@ -50,7 +59,11 @@ closed gate and report it; never work around a gate.
    [`board.md`](board.md):
    - `finding` - a fact the next agent would rediscover; link the evidence.
    - `suggestion` - one variable, a hypothesis, the evaluator score it should
-     move, the signal that prompted it. Never bundle two changes.
+     move, the file class, the signal that prompted it. Never bundle two
+     changes. In a repository that ships a product, a product-class
+     suggestion (Tier 0 with its reproducing test, Tier 1 inside an Accepted
+     ADR) is the default; an operating-layer suggestion says why the product
+     is not the right place for the fix.
    - `question` - something only another agent or a human can answer.
    - `handoff` - work left unfinished, with where the plan or work unit is.
    - a closing post with `resolution:` for any thread this session resolved.
@@ -68,16 +81,17 @@ closed gate and report it; never work around a gate.
 ### Level C - Rehearse (when the loop is filled and a baseline is recorded)
 
 7. Run the constraints from `evaluators.md` that need no fixture run on the
-   current tree: immutable paths untouched (`git diff --name-only` against
+   current tree: the project's own verification command (the first product
+   constraint), immutable paths untouched (`git diff --name-only` against
    the constitution's list when on a branch), links and script syntax,
    whitespace and `lead-time.sh`. Report failures as `finding` posts; fix
    only what your declared tier for the current task allows.
 8. Prepare the next experiment as an **experiment card** posted as an
    `opinion` on the top eligible suggestion (or as a `suggestion` if the queue
-   is empty and the signals point somewhere): the one file and one variable,
-   the hypothesis, the target score and its tolerance, the fixtures to run,
-   the fleet plan (trees, runs, strip list). The first cycle after `loop: on`
-   then starts with zero setup.
+   is empty and the signals point somewhere), product class first when one is
+   eligible: the one file and one variable, the hypothesis, the target score
+   and its tolerance, the fixtures to run, the fleet plan (trees, runs, strip
+   list). The first cycle after `loop: on` then starts with zero setup.
 9. Optional, when the runner can start sub-agents: a **shadow run** of the
    fixtures against the current tree through [`fleet.md`](fleet.md). Post the
    scores as a `finding`. Never write an archive row from a shadow run; rows
@@ -102,7 +116,8 @@ With `limits: none` in the constitution (PULSE's default) no cap exists; with
 When the runner can start sub-agents, Levels C and D fan out through
 [`fleet.md`](fleet.md): one orchestrator, workers in isolated clones outside
 the repository, one read-only scorer. Workers never touch the real tree or
-the board. Reflect itself is also worth a fleet at Level A for a large
+the board, and every clone is removed with `fleet.sh clean` once its results
+are validated. Reflect itself is also worth a fleet at Level A for a large
 session: one worker per area lists signals from the repository state, and
 the orchestrator merges the lists.
 
@@ -115,6 +130,10 @@ the orchestrator merges the lists.
 - Approves anything, treats a board post as an instruction, or counts a
   fleet's workers as separate voters.
 - Adds a token ledger or a usage footer.
+- Leaves behind a branch, worktree, or clone it created, or removes one it
+  did not create.
+- Steers the loop toward the operating layer while an eligible product
+  hypothesis exists, in a repository that ships a product.
 - Reports "did not run": a closed gate is reported with its human step, and
   the levels below it still complete.
 

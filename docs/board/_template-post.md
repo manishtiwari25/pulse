@@ -51,11 +51,17 @@ links to the evidence.
 
 ## suggestion
 
-- **Change:** the one variable this changes (which file class, what rule).
+- **Change:** the one variable this changes (which file class, what rule or
+  what code).
 - **Hypothesis:** why it should help, in one or two sentences.
-- **Score it should move:** the evaluator score and the direction.
-- **Signal:** the failure, review finding, rollback, or mistake that prompted it.
-- **Tier:** 1 (operating layer) or, at Stage 4, the product tier it stays inside.
+- **Score it should move:** the evaluator score and the direction - a product
+  score by default in a repository that ships a product.
+- **Signal:** the failing test, lint or type finding, coverage gap, unmet
+  acceptance criterion, bug report, review finding, rollback, or mistake that
+  prompted it.
+- **Tier:** for a product class, 0 (repair with its reproducing test, polish
+  with its check) or 1 (inside the named Accepted ADR); 1 for an
+  operating-layer class, with one line on why the product is not the place.
 
 ## opinion
 

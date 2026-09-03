@@ -298,6 +298,12 @@ Propose **Option 2**, staged so each stage must earn the next.
   the evaluators, template-owned files, credentials, production, and anything
   the project's `AGENTS.md` lists as a hard stop.
 
+*Amended 2026-09-03 (fourth amendment below): the stages name what is open
+and who merges, not an order to climb. In a repository that ships a product,
+its product classes are the loop's primary subject and are editable from the
+first cycle the owner lists them at Stage 4 with product evaluators; the
+operating layer is secondary. Autonomy is still earned class by class.*
+
 ### Recursion, and how the template learns
 
 Inside a project, the loop improves the operating layer, which improves the
@@ -432,6 +438,65 @@ change it. The loop's own cycles still never touch the file; a human commit
 still outranks any vote. The full decision, options, and sybil analysis live
 in ADR-014.
 
+### 2026-09-03 - The product first; the ladder earns autonomy, not eligibility; clean up every branch and worktree (maintainer decision)
+
+The maintainer decided: "always focus on where PULSE is applied, not the PULSE
+docs" and "when a new worktree and branch is created it is mandatory to clean
+those things as well." The evidence: the first adopter's loop ran only over
+`docs/` - its constitution listed the whole `src/` tree as immutable and its
+product classes at Stage 1 "until the operating layer earns Stage 3", because
+the "Editable scope, by stage" section above reads as a ladder. The owner's
+question was "it should self-improve the app, right?" - and the answer is yes.
+This amendment replaces the operating-layer-first reading of the Decision.
+
+- **The subject is the product.** In a repository that adopts PULSE, the loop
+  improves the product that repository ships - its code, tests, and behavior
+  - under Tier 0 (a repair with a reproducing test, polish with its check)
+  and Tier 1 (behavior inside an Accepted ADR, with the work unit in the same
+  variant), measured by the project's own checks. The operating layer
+  (memory, project prompts, local rules, project skills and workflows) is the
+  **secondary** subject: a cycle turns to it only when no eligible product
+  hypothesis exists or when a product signal's cause is in the operating
+  layer. Only in the PULSE source repository is the framework prose the
+  product, which is why dogfooding cycles touch `docs/`.
+- **Eligibility is the owner's list, not a ladder.** A product class is
+  editable from the first cycle after the owner lists it in the constitution's
+  editable scope at Stage 4 and `evaluators.md` carries product evaluators
+  with a baseline. Stage 3 for the operating layer is not a prerequisite;
+  stages say what is open and who merges, never an order to climb. What is
+  earned, class by class through clean cycles, is autonomy - unchanged.
+- **Template defaults follow.** The constitution template lists the product
+  classes first, at Stage 4 with `autonomy: human`; its immutable-path table
+  names only the product's hard-stop surfaces (auth, identity, billing, data
+  stores, migrations, deploy and infrastructure configuration, secrets,
+  dependency manifests), never the whole product tree. The evaluators
+  template gains a **Product evaluators** section - the project's verify
+  command as a constraint, the reproducing-test rule, and product scores -
+  and names a product score as the default target.
+- **Hypotheses come from product signals first:** failing or flaky tests,
+  type and lint warnings, coverage gaps, accessibility and performance
+  reports, `TODO`/`FIXME` markers, feature specs whose acceptance criteria are
+  unmet inside an Accepted ADR, and bug reports or error logs the project
+  already collects. Operating-layer signals (verification failures, review
+  findings, rollbacks, memory mistakes, lead time) come after.
+- **Clean-up is mandatory.** Every experiment branch, worktree, or fleet
+  clone the loop creates is removed when its cycle ends: a discarded variant's
+  branch and worktree go in the same cycle; a kept variant's branch lives
+  exactly as long as its pull request and goes when that request merges or
+  closes; fleet clones go through `fleet.sh clean` once the results are
+  validated. A run never ends with a stray `evolve/*` branch or worktree, and
+  `reflect.sh` and `evolution-report.sh` list any that exist. Only the loop's
+  own branches and worktrees are ever removed, never another branch, never a
+  tree with uncommitted user work, never by reset or force-push.
+- **What does not move:** hard stops, Tier 2 surfaces (never in the loop),
+  the immutable paths, the human merge until a class earns standing
+  autonomy, the product-class rule that the project's tests and benchmarks
+  pass and a human rates a sample, the kill switch.
+
+Recorded by the agent at the maintainer's instruction. PULSE's own
+constitution needs no edit: as the framework repository its product is the
+framework prose already listed.
+
 ## Follow-Up
 
 - [x] Maintainer decision: accepted 2026-09-03 ("go ahead, implement").
@@ -473,6 +538,11 @@ in ADR-014.
 - [x] `limits: none` switch (Amendment 2, 2026-09-03): one frontmatter line
   removes every budget limit; scripts, workflows, skills, and templates honor
   it; an open owner question is posted, never waited for.
+- [x] The product first (Amendment 4, 2026-09-03): product classes are the
+  loop's primary subject and editable from the first cycle the owner lists
+  them at Stage 4; product evaluators in the template; mandatory clean-up of
+  experiment branches, worktrees, and fleet clones; `reflect.sh` and
+  `evolution-report.sh` report product scope and strays.
 - [x] `docs/architecture/overview.md`, `docs/context/product.md`, and memory
   updated.
 - [x] `delivery: delivered` set when PLAN-011 closed.

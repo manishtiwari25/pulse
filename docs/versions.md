@@ -161,7 +161,12 @@ one-off edit with no measurement of whether it made agents better or worse.
   vote carrying the proposed text's hash and a `Read:` line, tallied by
   `board.sh --amendments`, hard stops and the kill switch never on the ballot
   ([ADR-014](decisions/ADR-014-constitutional-amendment-by-supermajority.md),
-  [FEAT-008](features/008-constitutional-amendment-by-vote.md)).
+  [FEAT-008](features/008-constitutional-amendment-by-vote.md)); and the
+  product first (ADR-012 Amendment 4): in a repository that ships a product
+  the loop improves that product under Tier 0 and Tier 1 before the
+  operating layer, product classes are editable from the first cycle the
+  owner lists them at Stage 4 with product evaluators, and every experiment
+  branch, worktree, and fleet clone is removed when its cycle ends.
 
 **What was retired:** the public documentation site (`docs/index.html`,
 `docs/skills/index.html`, `docs/.nojekyll`, `docs/assets/pulse.css`;

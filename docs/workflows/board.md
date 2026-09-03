@@ -34,10 +34,14 @@ read it and steer through `AGENTS.md`, decisions, reviews, and requests. If
 
 ## Improving the repository
 
-7. Post a `suggestion` when a verification failure, review finding, rollback,
-   or repeated mistake points at a change to the operating layer (or, at
-   Stage 4, a Tier 0 or Tier 1 product change). One variable, a hypothesis,
-   the evaluator score it should move, the signal that prompted it.
+7. Post a `suggestion` when a signal points at a change - product first: a
+   failing or flaky test, a type or lint finding, a coverage gap, an
+   accessibility or performance report, an unmet acceptance criterion inside
+   an Accepted ADR, or a bug report points at a Tier 0 or Tier 1 change to
+   the product the repository ships; a verification failure, review finding,
+   rollback, or repeated mistake may instead point at the operating layer.
+   One variable, a hypothesis, the file class, the evaluator score it should
+   move, the signal that prompted it.
 8. Read other agents' suggestions in your area and post an `opinion` when you
    have evidence or a concrete concern; then a `vote` (up or down, one line of
    reason). Never vote on your own suggestion; one vote per agent identity

@@ -4,8 +4,10 @@
 # Reads docs/evolution/constitution.md, evaluators.md, and archive.md and
 # reports the kill switch, the loop flag, the baseline, counts of kept and
 # discarded variants, whether voted suggestions do better than signal-derived
-# hypotheses, incidents, the autonomy stage per file class, and the last few
-# archive rows. It never writes to the repository.
+# hypotheses, incidents, the autonomy stage per file class, the product scope
+# (whether the loop may improve the product the repository ships), hygiene
+# (stray evolve/* branches and worktrees the loop must remove), and the last
+# few archive rows. It never writes to the repository.
 #
 # Usage: docs/scripts/evolution-report.sh [--repo PATH] [--last N]
 set -eu
@@ -16,7 +18,7 @@ Usage: docs/scripts/evolution-report.sh [--repo PATH] [--last N]
 
 Read-only summary of docs/evolution/: kill switch, loop flag, baseline,
 variant counts by decision, votes versus outcomes, incidents, autonomy stage
-per file class, and the most recent archive rows.
+per file class, product scope, hygiene, and the most recent archive rows.
 
   --repo PATH   Repository root (default: the repository containing this script)
   --last N      Number of recent variant rows to show (default: 5)
@@ -134,5 +136,75 @@ if [ -f "$CONST" ]; then
     ' "$CONST"
     echo ""
 fi
+
+# --- Product scope -----------------------------------------------------------
+echo "PRODUCT SCOPE (the loop's subject is the product the repository ships)"
+CLASSES_OK=1; EVALS_OK=1
+if [ -f "$CONST" ]; then
+    if awk -F'|' '
+        function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+        /^## / { scope = ($0 ~ /^## Editable scope/); immut = ($0 ~ /^## Immutable paths/); next }
+        scope && /^\|/ {
+            c = trim($2); if (c == "File class" || c ~ /^-+$/) next
+            st = trim($4)
+            if (st == "4") { ed = ed sep c; sep = ", "; n4++ }
+            else if (tolower(c) ~ /product/) { low = low sep2 c " (stage " st ")"; sep2 = ", "; nlow++ }
+        }
+        immut && /^\|/ {
+            p = $2
+            if (match(p, /`[^`]+`/)) {
+                tok = substr(p, RSTART + 1, RLENGTH - 2)
+                if (tok ~ /^(src|apps?|packages|services|lib|web|api|server|client|backend|frontend)\/?$/) { trees = trees sep3 "`" tok "`"; sep3 = ", "; ntrees++ }
+            }
+        }
+        END {
+            if (n4 > 0) printf "  product classes editable (stage 4): %s\n", ed
+            else if (nlow == 0) print "  no product class listed - in a repository that ships a product, list its paths at stage 4 (docs/evolution/README.md, The product first)"
+            if (nlow > 0) printf "  product classes listed below stage 4: %s - raise them to 4 in the constitution to let the loop improve the product\n", low
+            if (ntrees > 0) printf "  immutable paths cover a whole product tree: %s - keep only hard-stop surfaces immutable; as written the loop cannot touch the product\n", trees
+            exit (n4 > 0 && ntrees == 0) ? 0 : 1
+        }' "$CONST"; then CLASSES_OK=0; fi
+else
+    echo "  no constitution"
+fi
+if [ -f "$EVAL" ] && grep -qiE '^##+[ \t]+Product evaluators' "$EVAL"; then
+    echo "  product evaluators: present"
+    EVALS_OK=0
+else
+    echo "  product evaluators: absent - add a '## Product evaluators' section to evaluators.md (the project's verification as a constraint, at least one product score) and a baseline row"
+fi
+if [ "$CLASSES_OK" -eq 0 ] && [ "$EVALS_OK" -eq 0 ]; then
+    echo "  verdict: the loop can improve the product; a product hypothesis goes before an operating-layer one"
+else
+    echo "  verdict: the loop is confined to the operating layer (docs) until the lines above are fixed"
+fi
+echo ""
+
+# --- Hygiene -----------------------------------------------------------------
+echo "HYGIENE (branches, worktrees, and clones the loop must remove - docs/workflows/evolve.md, Clean)"
+if git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    EXTRA="$(git -C "$REPO" worktree list --porcelain 2>/dev/null | awk '/^worktree / { n++; if (n > 1) print "    " substr($0, 10) }')"
+    if [ -n "$EXTRA" ]; then
+        echo "  worktrees: extra beyond the main tree - remove each when its cycle has ended:"
+        printf '%s\n' "$EXTRA"
+    else
+        echo "  worktrees: main tree only"
+    fi
+    BR="$(git -C "$REPO" branch --list 'evolve/*' --format='%(refname:short)' 2>/dev/null)"
+    if [ -n "$BR" ]; then
+        echo "  evolve/* branches: $(printf '%s\n' "$BR" | wc -l | tr -d ' ') - delete each when its cycle ended or its pull request closed:"
+        printf '%s\n' "$BR" | sed 's/^/    /'
+    else
+        echo "  evolve/* branches: none"
+    fi
+    RBR="$(git -C "$REPO" branch -r --list '*/evolve/*' --format='%(refname:short)' 2>/dev/null)"
+    if [ -n "$RBR" ]; then
+        echo "  remote evolve/* branches: $(printf '%s\n' "$RBR" | wc -l | tr -d ' ') - delete on the remote once the pull request merged or closed:"
+        printf '%s\n' "$RBR" | sed 's/^/    /'
+    fi
+else
+    echo "  not a git repository"
+fi
+echo ""
 
 echo "Rules: docs/workflows/evolve.md. Board queue: docs/scripts/board.sh --queue."

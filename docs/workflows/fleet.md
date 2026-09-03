@@ -66,9 +66,11 @@ Helper: `docs/scripts/fleet.sh`.
    posts. Archive rows are written only by the loop (variants) or at the
    maintainer's explicit instruction (baselines). Never let a fleet vote more
    than once: all workers share the orchestrator's identity.
-9. **Clean.** `fleet.sh clean --dest <dir>` removes only the clones its
-   manifest lists. Keep result files in the session's own storage if the
-   scores need re-checking.
+9. **Clean - mandatory.** `fleet.sh clean --dest <dir>` removes only the
+   clones its manifest lists; run it as soon as every result file is
+   validated, before the fleet is reported done. A fleet never ends with a
+   clone left behind, and never removes a directory outside `--dest`. Keep
+   result files in the session's own storage if the scores need re-checking.
 
 ## Result file schema
 

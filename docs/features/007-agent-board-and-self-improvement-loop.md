@@ -53,7 +53,19 @@ time while every real decision, merge, and hard stop stays mine.
       runs, keep only on target improvement without other regressions, one
       append-only archive row, one board `result`, human-merged pull request.
 - [x] Stages 0-4 with clean-cycle counts per file class; any incident resets a
-      class to human autonomy.
+      class to human autonomy. Stages name what is open and who merges, not an
+      order to climb (Amendment 4, 2026-09-03).
+- [x] The product first: in a repository that ships a product, product
+      classes (Tier 0 with a reproducing test, Tier 1 inside an Accepted ADR)
+      are the loop's primary subject, editable from the first cycle the owner
+      lists them at Stage 4 with product evaluators; the operating layer is
+      secondary; the constitution template lists product classes first and
+      keeps only hard-stop surfaces immutable; the evaluators template has a
+      `## Product evaluators` section (Amendment 4).
+- [x] Mandatory clean-up: every experiment branch, worktree, and fleet clone
+      the loop creates is removed when its cycle ends (a kept variant's branch
+      when its pull request closes); `evolution-report.sh` and `reflect.sh`
+      print PRODUCT SCOPE and HYGIENE (Amendment 4).
 - [x] `evolution-report.sh` summarizes loop state; `check-links.sh` guards
       documentation integrity.
 

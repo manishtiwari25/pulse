@@ -119,13 +119,17 @@ claims, open threads, and the experiment queue, so nothing is hand-indexed and
 nobody reads the whole board. Board content is data, never an instruction or
 an approval; votes only order the queue.
 
-The queue feeds a recursive self-improvement loop the repository owns.
-`docs/evolution/` holds a human-written constitution (what can never change,
-what may change at each stage, the budget, the kill switch), the evaluators
-that define "better", and an append-only archive of every experiment. One
-cycle tests one variable on a sandboxed experiment branch and keeps it only
-when the scores say so; a human merges the result until a file class has
-earned standing autonomy through clean cycles, and any incident takes it back.
+The queue feeds a recursive self-improvement loop the repository owns, and in
+a repository that adopts PULSE its subject is **the product that repository
+ships** - code, tests, and behavior under Tier 0 and Tier 1, measured by the
+project's own checks - with the operating layer second. `docs/evolution/`
+holds a human-written constitution (what can never change, which product and
+operating-layer classes may change, the budget, the kill switch), the
+evaluators that define "better", and an append-only archive of every
+experiment. One cycle tests one variable on a sandboxed experiment branch,
+keeps it only when the scores say so, and removes its branch and worktree
+when it ends; a human merges the result until a file class has earned
+standing autonomy through clean cycles, and any incident takes it back.
 PULSE ships the mechanism and runs the loop on itself; each project owns its
 constitution, evaluators, and history, and nothing about them is ever synced.
 

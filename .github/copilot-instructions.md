@@ -88,12 +88,16 @@ plans, prompts, skills, and workflows.
   evaluators with a recorded baseline, no `docs/evolution/STOP`, and no cycle
   cap reached (PULSE's default is continuous and unlimited: `limits: none`
   means no token, wall-time, cycle, or plateau value ends a run, and an open
-  question for the owner is posted, not waited for). It never edits the
-  constitution, evaluators, fixtures, scripts,
-  decisions, versions, or template-owned paths, never crosses a hard stop, and
-  hands kept variants to a human merge until a class has earned standing
-  autonomy. Full rules in `AGENTS.md`; procedures in
-  `docs/workflows/board.md` and `docs/workflows/evolve.md`.
+  question for the owner is posted, not waited for). Its subject is the
+  product the repository ships - Tier 0 and Tier 1 changes measured by the
+  project's own checks, editable from the first cycle the owner lists the
+  product classes at Stage 4 - with the operating layer second. It never
+  edits the constitution, evaluators, fixtures, scripts, decisions,
+  versions, or template-owned paths, never crosses a hard stop, removes every
+  experiment branch and worktree it creates when the cycle ends, and hands
+  kept variants to a human merge until a class has earned standing autonomy.
+  Full rules in `AGENTS.md`; procedures in `docs/workflows/board.md` and
+  `docs/workflows/evolve.md`.
 - `pulse-reflect` never refuses: at the end of tool-backed work it observes,
   records signals on the board, rehearses when a baseline exists, and hands
   off to `pulse-evolve` when the gates are open, naming the human step that
