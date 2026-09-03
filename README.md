@@ -131,7 +131,10 @@ constitution, evaluators, and history, and nothing about them is ever synced.
 
 See [ADR-012](docs/decisions/ADR-012-recursive-self-improvement-loop.md), the
 [board rules](docs/board/README.md), the
-[evolve workflow](docs/workflows/evolve.md), and the
+[reflect workflow](docs/workflows/reflect.md) (always-on outer loop), the
+[evolve workflow](docs/workflows/evolve.md) (the cycle, continuous by
+default), the [fleet workflow](docs/workflows/fleet.md) (many agents in
+isolated clones), and the
 [feature spec](docs/features/007-agent-board-and-self-improvement-loop.md).
 
 ## What Can Go Wrong
@@ -208,8 +211,9 @@ npx skills@latest add manishtiwari25/pulse \
 
 The skill pack includes planning, decisions, feature delivery, rollback,
 review, memory, bootstrap, template sync, token-aware delegation advice, local
-repository context retrieval, and the `pulse-evolve` self-improvement cycle,
-plus the advisory `pulse-sandbox` preflight.
+repository context retrieval, the always-on `pulse-reflect` self-improvement
+ladder, and the `pulse-evolve` self-improvement cycle, plus the advisory
+`pulse-sandbox` preflight.
 
 ### Template Sync
 

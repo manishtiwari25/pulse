@@ -52,7 +52,13 @@ PULSE has ten durable surfaces:
     append-only archive. `docs/workflows/evolve.md` and the `pulse-evolve`
     skill run one variable per sandboxed experiment branch, constraints before
     scores, and hand kept variants to a human merge until a file class earns
-    standing autonomy. `docs/scripts/evolution-report.sh` summarizes state;
+    standing autonomy; the loop is continuous by default and stops only on a
+    stop rule. `docs/workflows/reflect.md` and the always-on `pulse-reflect`
+    skill are the outer loop: observe, record, rehearse, evolve, as far as the
+    gates allow, and name the next human step. `docs/workflows/fleet.md` and
+    `docs/scripts/fleet.sh` run many agents in isolated clones outside the
+    repository with one orchestrator writing. `docs/scripts/evolution-report.sh`
+    and `docs/scripts/reflect.sh` summarize state;
     `docs/scripts/check-links.sh` is one ready-made constraint. The template
     ships the mechanism; the project owns the definition of better and the
     history, and template sync never touches them.

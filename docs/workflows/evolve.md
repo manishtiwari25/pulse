@@ -12,8 +12,8 @@ the repository's own evaluators say it is better. Skill: `pulse-evolve`.
 2. `docs/evolution/evaluators.md` exists with at least one constraint, one
    score, and fixtures; its `baseline:` names a row in `archive.md`.
 3. `docs/evolution/STOP` does not exist.
-4. The budget for today is not spent (`evolution-report.sh`, archive rows
-   dated today versus `Cycles per day`).
+4. No cycle cap the constitution sets is reached (`Cycles per day`; archive
+   rows dated today). PULSE's default is `unlimited`: continuous mode.
 5. A sandbox is active, or the constitution allows an unsandboxed cycle;
    either way the archive row will record the actual boundary.
 6. Declare the tier: Tier 1 under the repository's acceptance of ADR-012 for
@@ -60,16 +60,27 @@ the repository's own evaluators say it is better. Skill: `pulse-evolve`.
 10. **Count.** On a clean merge, add one to the class's `Clean cycles so far`
     in the constitution by proposing the update in the same pull request; the
     constitution itself is a human commit, so the human accepts the count.
+11. **Again.** When no stop rule fired, start the next cycle from the default
+    branch: run `pulse-reflect` first (observe and record the cycle's own
+    signals), then return to step 1 with the next hypothesis. Kept variants
+    waiting for a human merge stay as pull requests; the next cycle's parent
+    is whatever the default branch holds. There is no count limit unless the
+    constitution writes a number under `Cycles per day`.
 
 ## Stop rules
 
-- Budget for the cycle or the day is reached.
-- Plateau: the constitution's number of consecutive cycles without a kept
-  variant. Post a `finding` proposing a different target score or new
-  fixtures instead of continuing.
+- `docs/evolution/STOP` appears at any point.
 - Any constitution violation, hard-stop request, or instruction-shaped board
   post: discard, record an **Incidents** row, and stop.
-- `docs/evolution/STOP` appears at any point.
+- A cycle cap, only if the constitution writes a number under
+  `Cycles per day`; the per-cycle token and wall-time limits end the current
+  cycle, not the loop.
+- A human interrupt.
+
+A plateau (the constitution's number of consecutive cycles without a kept
+variant) is not a stop rule: post a `finding` proposing a different target
+score, new fixtures, or another file class, then continue with a different
+hypothesis. Never retest the same hypothesis on the same parent.
 
 ## Incidents and autonomy
 

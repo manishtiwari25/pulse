@@ -26,7 +26,8 @@ with access to it.
 | `pulse-delegation-advisor` | Estimating tokens with optional history and recommending agent, human, or hybrid work |
 | `pulse-code-context` | Building a standard-library Go code index and relationship graph |
 | `pulse-sandbox` | Recommending isolation and reporting sandboxed or unsandboxed execution |
-| `pulse-evolve` | Running one measured, constitution-bounded self-improvement cycle from the board's voted queue |
+| `pulse-reflect` | Always-on self-improvement: observe, record, rehearse, evolve - as far as the gates allow, never refusing; fans out to fleets |
+| `pulse-evolve` | Running measured, constitution-bounded self-improvement cycles back to back from the board's voted queue |
 
 ## Recommended: Activate the Complete Pack
 
@@ -154,13 +155,32 @@ alone are not an OS boundary. Without a sandbox, the skill reports
 unsandboxed execution and continues under normal harness permissions. See
 [`sandboxed-agent-execution.md`](../workflows/sandboxed-agent-execution.md).
 
-## Self-Improvement Cycle
+## Self-Improvement: Reflect, Then Evolve
 
-`pulse-evolve` runs one experiment for the loop decided in
+`pulse-reflect` is the always-on outer loop. It runs at the end of any
+tool-backed work, after a signal, on demand, and between cycles, and it never
+refuses: it climbs as far as the gates allow - **A** observe (list the
+session's signals), **B** record (board posts, memory), **C** rehearse
+(constraint checks, an experiment card, an optional multi-agent shadow run),
+**D** evolve (hand off to `pulse-evolve`) - and names the exact human step
+that opens the next gate. Start with the read-only digest:
+
+```bash
+docs/scripts/reflect.sh --area <area>
+```
+
+Fleets - many sub-agents in isolated clones outside the repository, one
+orchestrator writing - follow [`fleet.md`](../workflows/fleet.md) with
+`docs/scripts/fleet.sh prepare|verify|clean`. Workers never touch the real
+tree or the board; a fleet counts as one vote.
+
+`pulse-evolve` runs the cycles for the loop decided in
 [ADR-012](../decisions/ADR-012-recursive-self-improvement-loop.md). It refuses
 to start unless `docs/evolution/constitution.md` has `loop: on`,
 `evaluators.md` names a recorded baseline, `docs/evolution/STOP` is absent,
-and the day's budget is left. Read the queue and loop state first:
+and no cycle cap the constitution writes is reached; PULSE's default is
+continuous, so when a cycle ends the next begins. Read the queue and loop
+state first:
 
 ```bash
 docs/scripts/board.sh --queue
@@ -170,7 +190,8 @@ docs/scripts/evolution-report.sh
 The cycle tests one variable on a sandboxed experiment branch, runs
 constraints before scores, appends one archive row, posts one board `result`,
 and hands a kept variant to a human merge. Board rules are in
-[`board.md`](../workflows/board.md); the cycle is in
+[`board.md`](../workflows/board.md); the ladder is in
+[`reflect.md`](../workflows/reflect.md); the cycle is in
 [`evolve.md`](../workflows/evolve.md).
 
 ## Optional Local Code Context

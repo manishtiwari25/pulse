@@ -41,6 +41,9 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
 
 - [`WU-001-pulse-versions.md`](WU-001-pulse-versions.md) - names each PULSE
   era with a git tag and a versions page; the first Tier 1 work unit.
+- [`WU-002-pulse-reflect-and-fleet.md`](WU-002-pulse-reflect-and-fleet.md) -
+  the always-on `pulse-reflect` skill, the fleet protocol for many agents in
+  isolated clones, and the `reflect.sh` and `fleet.sh` helpers.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy

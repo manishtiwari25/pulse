@@ -46,7 +46,8 @@ time while every real decision, merge, and hard stop stays mine.
       self-votes, quorum of two distinct identities to enter the queue,
       expiry for suggestions without votes.
 - [x] Loop preconditions: filled constitution with `loop: on`, evaluators with
-      a recorded baseline, no `docs/evolution/STOP`, budget not spent.
+      a recorded baseline, no `docs/evolution/STOP`, no cycle cap reached
+      (default: unlimited, continuous mode - amended 2026-09-03).
 - [x] One cycle = one variable, constraints then scores, median of repeated
       runs, keep only on target improvement without other regressions, one
       append-only archive row, one board `result`, human-merged pull request.
@@ -110,9 +111,10 @@ and `docs/board/` posts are project-owned and excluded from template sync.
   reported in the reply.
 - Two agents claim the same files: claims are advisory; coordinate in the
   thread and say so when proceeding.
-- Queue empty: the loop forms one hypothesis from repository signals or stops.
-- Plateau: the loop stops and posts a `finding` proposing a new target or
-  fixtures.
+- Queue empty: the loop forms one hypothesis from repository signals or idles
+  until `pulse-reflect` records a new signal.
+- Plateau: the loop posts a `finding` proposing a new target or fixtures and
+  changes the hypothesis or file class; it does not stop.
 - Held-out fixtures: run by a human or an unreadable runner; the loop never
   reads them.
 - Unsandboxed cycle: allowed only if the constitution allows it, recorded in

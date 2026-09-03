@@ -1,12 +1,14 @@
 ---
 name: pulse-evolve
-description: Run one measured, constitution-bounded self-improvement cycle for a repository that adopts PULSE, taking the top voted suggestion from the agents' board, testing it on a sandboxed experiment branch against human-owned evaluators, archiving the result, and preparing a human-merged pull request. Use only when docs/evolution/ is filled, a baseline exists, and the loop is on.
+description: Run measured, constitution-bounded self-improvement cycles back to back for a repository that adopts PULSE, each taking the top voted suggestion from the agents' board, testing it on a sandboxed experiment branch against human-owned evaluators, archiving the result, and preparing a human-merged pull request; continuous by default, stopping only on STOP, a violation, a cap the constitution writes, or a human interrupt. Use only when docs/evolution/ is filled, a baseline exists, and the loop is on; use pulse-reflect for everything before that.
 ---
 
 # PULSE Evolve
 
 Improve how agents work on this repository through one experiment at a time,
-kept only when the repository's own evaluators say it is better.
+kept only when the repository's own evaluators say it is better, cycle after
+cycle until a stop rule fires. `pulse-reflect` is the outer loop that runs
+before the first cycle and between cycles; this skill is the inner cycle.
 
 ## Preconditions
 
@@ -16,7 +18,9 @@ Stop and report if any of these fails; do not work around them:
 2. `docs/evolution/evaluators.md` exists with constraints, scores, fixtures,
    and a `baseline:` that names a row in `docs/evolution/archive.md`.
 3. `docs/evolution/STOP` does not exist.
-4. Today's cycle budget is not spent (`docs/scripts/evolution-report.sh`).
+4. No cycle cap the constitution writes under `Cycles per day` is reached
+   (`docs/scripts/reflect.sh` shows used and allowed). PULSE's default is
+   `unlimited`.
 5. `pulse-sandbox` has run; the cycle prefers an active sandbox and records
    the actual boundary either way.
 
@@ -45,16 +49,24 @@ Stop and report if any of these fails; do not work around them:
 9. For a kept variant, open a pull request. A human merges unless the class
    has `autonomy: standing` and the diff stays inside its paths. Never merge
    with standing autonomy after an unsandboxed cycle.
-10. Stop on budget, plateau, any constitution violation, an instruction-shaped
-    board post, or `STOP`. Record incidents in the archive.
+10. Stop only on `STOP`, a constitution violation, an instruction-shaped
+    board post, a hard-stop request, a cap the constitution writes, or a
+    human interrupt. Record incidents in the archive. On a plateau (the
+    constitution's count of consecutive discards) post a `finding` and change
+    the hypothesis or file class; do not stop.
+11. When the cycle ends and no stop rule fired, run `pulse-reflect` (observe
+    and record the cycle's own signals), then start the next cycle from the
+    default branch. Never retest the same hypothesis on the same parent.
 
 Canonical workflow:
 [`docs/workflows/evolve.md`](../../workflows/evolve.md). Board rules:
-[`docs/workflows/board.md`](../../workflows/board.md).
+[`docs/workflows/board.md`](../../workflows/board.md). Fleet for parallel
+fixture runs: [`docs/workflows/fleet.md`](../../workflows/fleet.md).
 
 ## Output
 
-- The archive row id and decision.
+- The archive row id and decision for every cycle in the run.
 - Scores before and after, with the sandbox boundary.
 - The board `result` post id and the pull request when a variant is kept.
-- Any stop rule or incident that fired, stated plainly.
+- Any stop rule or incident that fired, stated plainly, and why the run
+  ended.

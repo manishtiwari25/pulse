@@ -123,8 +123,10 @@ Rules:
   report. Give every new ADR `delivery: not started`.
 - Include the board and loop mechanism (`docs/board/README.md` and its post
   template, `docs/evolution/README.md` and its three templates,
-  `docs/workflows/board.md`, `docs/workflows/evolve.md`, `board.sh`,
-  `evolution-report.sh`, `check-links.sh`, and `pulse-evolve`). Do not write
+  `docs/workflows/board.md`, `docs/workflows/reflect.md`,
+  `docs/workflows/evolve.md`, `docs/workflows/fleet.md`, `board.sh`,
+  `evolution-report.sh`, `reflect.sh`, `fleet.sh`, `check-links.sh`,
+  `pulse-reflect`, and `pulse-evolve`). Do not write
   the target's constitution, evaluators, archive, fixtures, or any board post;
   those are the target's own human commits and the loop stays off until a
   baseline exists.

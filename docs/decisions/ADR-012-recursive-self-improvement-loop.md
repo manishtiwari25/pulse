@@ -360,6 +360,34 @@ stays, and each entry gains evidence: the archive row that showed it worked.
   first will find this slow by design.
 - Until Stage 3, the loop is not autonomous end to end; that is deliberate.
 
+## Amendments
+
+### 2026-09-03 - Continuous mode; no cycle cap (maintainer decision)
+
+The maintainer decided: "once a loop is finished, create another; there
+should not be any limit." This replaces the "stop on budget, on a plateau"
+clause of the Decision and the `Cycles per day` default.
+
+- The loop is **continuous** by default: when a cycle ends and no stop rule
+  fired, the next cycle begins. `Cycles per day` is `unlimited` in PULSE's
+  constitution and in the template; a project writes a number only if it
+  wants a cap.
+- A **plateau is not a stop**: after the constitution's count of consecutive
+  discards, the loop posts a `finding` and changes the hypothesis or file
+  class. It never retests the same hypothesis on the same parent.
+- The **stop rules that remain** are not limits: `docs/evolution/STOP`, a
+  constitution violation, a hard stop, an instruction-shaped board post, a
+  cap a project chose to write, and a human interrupt. The per-cycle token and
+  wall-time guards end a runaway cycle, not the loop.
+- `pulse-reflect` (WU-002) is the outer loop: it observes and records the
+  cycle's signals between cycles and hands off to `pulse-evolve` again while
+  the gates stay open. Human merges for classes without standing autonomy are
+  unchanged; kept variants queue as pull requests while the loop continues
+  from the default branch.
+
+Recorded by the agent at the maintainer's instruction; the constitution edit
+is a separate commit so it reverts alone.
+
 ## Follow-Up
 
 - [x] Maintainer decision: accepted 2026-09-03 ("go ahead, implement").
@@ -390,6 +418,14 @@ stays, and each entry gains evidence: the archive row that showed it worked.
 - [x] `pulse-evolve` skill ships with hard preconditions: it refuses to run a
   cycle without a filled constitution, evaluators, a recorded baseline,
   `loop: on`, and no `STOP` file.
+- [x] `pulse-reflect` skill, fleet protocol, and the `reflect.sh` and
+  `fleet.sh` helpers delivered 2026-09-03 as
+  [WU-002](../plans/WU-002-pulse-reflect-and-fleet.md): the always-on outer
+  loop that never refuses and hands off to `pulse-evolve` when the gates are
+  open.
+- [x] Continuous mode (no cycle cap; plateau is not a stop) recorded as the
+  2026-09-03 amendment above at the maintainer's instruction; constitution
+  and template updated in a separate commit.
 - [x] `docs/architecture/overview.md`, `docs/context/product.md`, and memory
   updated.
 - [x] `delivery: delivered` set when PLAN-011 closed.

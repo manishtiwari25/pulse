@@ -20,11 +20,21 @@ Procedure: [`docs/workflows/evolve.md`](../workflows/evolve.md). Skill:
 `pulse-evolve`. Read-only report: `docs/scripts/evolution-report.sh`.
 Suggestions and votes come from the [agents' board](../board/README.md).
 
+Before the loop is armed - and between cycles once it is - the always-on
+[`reflect.md`](../workflows/reflect.md) workflow (`pulse-reflect`,
+`docs/scripts/reflect.sh`) observes, records, and rehearses as far as the
+gates allow and names the next human step. Parallel fixture runs and shadow
+baselines use isolated clones through [`fleet.md`](../workflows/fleet.md)
+(`docs/scripts/fleet.sh`); workers never touch this folder or the board.
+The loop is continuous by default: `Cycles per day` is `unlimited` unless a
+project writes a number, and a plateau changes the hypothesis instead of
+stopping (ADR-012 amendment, 2026-09-03).
+
 ## Kill switch
 
 Create an empty file named `docs/evolution/STOP` to halt every cycle
-immediately. `evolution-report.sh` and `pulse-evolve` check for it first.
-Only a human removes it.
+immediately. `evolution-report.sh`, `reflect.sh`, `pulse-reflect`, and
+`pulse-evolve` check for it first. Only a human removes it.
 
 ## Stages
 

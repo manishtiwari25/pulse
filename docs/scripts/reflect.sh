@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# Read-only digest for the pulse-reflect skill.
+#
+# Reports the repository's working state, the board summary, the loop's gates,
+# cheap health checks, and the highest level of the reflection ladder the
+# gates allow right now:
+#   A observe   always
+#   B record    docs/board/ exists
+#   C rehearse  docs/evolution/ filled, baseline recorded, no STOP
+#   D evolve    C plus loop: on, held-out set listed, and no cycle cap reached
+#               (PULSE's default is unlimited: continuous mode)
+# It never writes to the repository and always exits 0; failed checks are
+# printed, not raised, because the digest is input for an agent, not a gate.
+#
+# Usage: docs/scripts/reflect.sh [--repo PATH] [--area AREA] [--no-board]
+set -eu
+
+usage() {
+    cat <<'EOF'
+Usage: docs/scripts/reflect.sh [--repo PATH] [--area AREA] [--no-board]
+
+Read-only digest for pulse-reflect: git state, board summary, loop gates,
+health checks, the level the gates allow, and the next human step.
+
+  --repo PATH   Repository root (default: the repository containing this script)
+  --area AREA   Limit the board summary to one channel
+  --no-board    Skip the board summary (it is already on screen)
+  -h, --help    Show this help
+EOF
+}
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+AREA=""
+SHOW_BOARD=1
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --repo) [ $# -ge 2 ] || { usage >&2; exit 2; }; REPO="$(cd "$2" && pwd)"; shift 2 ;;
+        --area) [ $# -ge 2 ] || { usage >&2; exit 2; }; AREA="$2"; shift 2 ;;
+        --no-board) SHOW_BOARD=0; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+
+SCRIPTS="$REPO/docs/scripts"
+EVO="$REPO/docs/evolution"
+BOARD="$REPO/docs/board"
+TODAY="$(date -u +%Y-%m-%d)"
+
+frontmatter_value() {
+    # frontmatter_value FILE KEY -> value or empty
+    [ -f "$1" ] || return 0
+    awk -v key="$2" '
+        NR == 1 && !/^---/ { exit }
+        /^---/ { c++; if (c == 2) exit; next }
+        c == 1 && index($0, key ":") == 1 { v = substr($0, length(key) + 2); gsub(/^[ \t]+|[ \t]+$/, "", v); print v; exit }
+    ' "$1"
+}
+
+echo "REFLECT - $REPO - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo ""
+
+# --- Working state -----------------------------------------------------------
+echo "WORKING STATE"
+if git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    branch="$(git -C "$REPO" symbolic-ref --short -q HEAD || echo detached)"
+    head="$(git -C "$REPO" rev-parse --short HEAD)"
+    dirty="$(git -C "$REPO" status --porcelain | wc -l | tr -d ' ')"
+    subject="$(git -C "$REPO" log -1 --format=%s)"
+    echo "  branch $branch at $head, $dirty uncommitted path(s)"
+    echo "  last commit: $subject"
+else
+    echo "  not a git repository"
+fi
+echo ""
+
+# --- Board -------------------------------------------------------------------
+HAS_BOARD=0
+[ -d "$BOARD" ] && HAS_BOARD=1
+if [ "$HAS_BOARD" -eq 1 ] && [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/board.sh" ]; then
+    echo "BOARD"
+    if [ -n "$AREA" ]; then
+        "$SCRIPTS/board.sh" --repo "$REPO" --area "$AREA" | sed 's/^/  /'
+    else
+        "$SCRIPTS/board.sh" --repo "$REPO" | sed 's/^/  /'
+    fi
+    echo ""
+elif [ "$HAS_BOARD" -eq 0 ]; then
+    echo "BOARD"
+    echo "  none (docs/board/ absent; Level B is not available)"
+    echo ""
+fi
+
+# --- Loop gates --------------------------------------------------------------
+echo "LOOP GATES"
+HAS_EVO=0; STOP=0; LOOP=""; BASELINE=""; BASELINE_ROW=0; HELD_OUT=""; BUDGET=""; USED_TODAY=0; FILLED=0
+if [ -d "$EVO" ]; then
+    HAS_EVO=1
+    [ -e "$EVO/STOP" ] && STOP=1
+    LOOP="$(frontmatter_value "$EVO/constitution.md" loop)"
+    BASELINE="$(frontmatter_value "$EVO/evaluators.md" baseline)"
+    if [ -f "$EVO/evaluators.md" ]; then
+        HELD_OUT="$(awk '/^Held out:/ { sub(/^Held out:[ \t]*/, ""); print; exit }' "$EVO/evaluators.md")"
+    fi
+    if [ -n "$BASELINE" ] && [ "$BASELINE" != "pending" ] && [ -f "$EVO/archive.md" ] \
+        && grep -q "^| $BASELINE " "$EVO/archive.md"; then
+        BASELINE_ROW=1
+    fi
+    if [ -f "$EVO/constitution.md" ]; then
+        BUDGET="$(awk -F'|' 'tolower($2) ~ /cycles per day/ { gsub(/[ \t]/, "", $3); print $3; exit }' "$EVO/constitution.md")"
+        # anything that is not a plain number (unlimited, continuous, blank) means no cap
+        case "$BUDGET" in ''|*[!0-9]*) BUDGET="" ;; esac
+    fi
+    if [ -f "$EVO/archive.md" ]; then
+        USED_TODAY="$(awk -F'|' -v today="$TODAY" '$2 ~ /^ *A-[0-9]+ *$/ { gsub(/[ \t]/, "", $3); if ($3 == today) n++ } END { print n + 0 }' "$EVO/archive.md")"
+    fi
+    if [ -f "$EVO/constitution.md" ] && [ -f "$EVO/evaluators.md" ] && [ -f "$EVO/archive.md" ] && [ -n "$LOOP" ]; then
+        FILLED=1
+    fi
+    [ "$STOP" -eq 1 ] && echo "  KILL SWITCH: docs/evolution/STOP present" || echo "  kill switch: not engaged"
+    echo "  constitution: $([ -f "$EVO/constitution.md" ] && echo "present, loop: ${LOOP:-unset}" || echo missing)"
+    echo "  evaluators:   $([ -f "$EVO/evaluators.md" ] && echo "present, baseline: ${BASELINE:-unset}$([ "$BASELINE_ROW" -eq 1 ] && echo ' (row found)' || echo ' (no archive row)'), held out: ${HELD_OUT:-unset}" || echo missing)"
+    echo "  archive:      $([ -f "$EVO/archive.md" ] && echo present || echo missing)"
+    if [ -n "$BUDGET" ]; then
+        echo "  cycle cap:    $USED_TODAY of $BUDGET cycle(s) used today"
+    else
+        echo "  cycle cap:    none - continuous mode ($USED_TODAY cycle(s) today)"
+    fi
+else
+    echo "  none (docs/evolution/ absent; Levels C and D are not available)"
+fi
+echo ""
+
+# --- Health checks -----------------------------------------------------------
+echo "HEALTH CHECKS"
+if [ -x "$SCRIPTS/check-links.sh" ]; then
+    if out="$("$SCRIPTS/check-links.sh" --repo "$REPO" --quiet 2>&1)"; then
+        echo "  links:      ok"
+    else
+        echo "  links:      FAILED - $(printf '%s\n' "$out" | tail -1)"
+    fi
+fi
+bad=0
+for s in "$SCRIPTS"/*.sh; do
+    [ -f "$s" ] || continue
+    bash -n "$s" 2>/dev/null || { bad=$((bad + 1)); echo "  bash -n:    FAILED - $s"; }
+done
+[ "$bad" -eq 0 ] && echo "  bash -n:    ok"
+if git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git -C "$REPO" diff --check >/dev/null 2>&1 && git -C "$REPO" diff --cached --check >/dev/null 2>&1; then
+        echo "  whitespace: ok"
+    else
+        echo "  whitespace: FAILED - git diff --check"
+    fi
+fi
+if [ -x "$SCRIPTS/lead-time.sh" ]; then
+    if lt="$("$SCRIPTS/lead-time.sh" --repo "$REPO" 2>&1)"; then
+        echo "  lead time:  ok"
+        printf '%s\n' "$lt" | awk '/^  Tier |^  Retired|^  Closed without|^  Missing/ { print "   " $0 }'
+    else
+        echo "  lead time:  FAILED - $(printf '%s\n' "$lt" | tail -1)"
+    fi
+fi
+echo ""
+
+# --- Level -------------------------------------------------------------------
+LEVEL="A"
+REASON_B=""; REASON_C=""; REASON_D=""
+if [ "$HAS_BOARD" -eq 1 ]; then LEVEL="B"; else REASON_B="docs/board/ absent"; fi
+if [ "$LEVEL" = "B" ]; then
+    if [ "$HAS_EVO" -eq 0 ]; then REASON_C="docs/evolution/ absent"
+    elif [ "$STOP" -eq 1 ]; then REASON_C="STOP present"
+    elif [ "$FILLED" -eq 0 ]; then REASON_C="constitution, evaluators, or archive missing or unfilled"
+    elif [ "$BASELINE_ROW" -eq 0 ]; then REASON_C="no recorded baseline row (baseline: ${BASELINE:-unset})"
+    else LEVEL="C"; fi
+fi
+if [ "$LEVEL" = "C" ]; then
+    if [ "$LOOP" != "on" ]; then REASON_D="loop: ${LOOP:-unset}"
+    elif [ -z "$HELD_OUT" ] || [ "$HELD_OUT" = "pending" ]; then REASON_D="held-out set pending"
+    elif [ -n "$BUDGET" ] && [ "$USED_TODAY" -ge "$BUDGET" ]; then REASON_D="cycle cap reached today ($USED_TODAY of $BUDGET)"
+    else LEVEL="D"; fi
+fi
+
+echo "LEVEL ALLOWED: $LEVEL"
+echo "  A observe   yes - always"
+if [ "$HAS_BOARD" -eq 1 ]; then echo "  B record    yes - post signals to the board"; else echo "  B record    no  - $REASON_B"; fi
+case "$LEVEL" in
+    C|D) echo "  C rehearse  yes - constraint checks, experiment card, optional fleet shadow run" ;;
+    *)   echo "  C rehearse  no  - ${REASON_C:-$REASON_B}" ;;
+esac
+if [ "$LEVEL" = "D" ]; then echo "  D evolve    yes - hand off to pulse-evolve (it re-checks every precondition)"; else echo "  D evolve    no  - ${REASON_D:-${REASON_C:-$REASON_B}}"; fi
+echo ""
+
+# --- Next human step ---------------------------------------------------------
+echo "NEXT HUMAN STEP"
+if [ "$HAS_EVO" -eq 0 ]; then
+    echo "  copy docs/evolution/_template-*.md into place and fill the constitution (Stage 1)"
+elif [ "$STOP" -eq 1 ]; then
+    echo "  the kill switch is engaged; only a human removes docs/evolution/STOP"
+elif [ "$FILLED" -eq 0 ]; then
+    echo "  fill constitution.md (loop:), evaluators.md, and archive.md from the templates"
+elif [ "$BASELINE_ROW" -eq 0 ]; then
+    echo "  record the first baseline row in archive.md and set baseline: in evaluators.md"
+elif [ -z "$HELD_OUT" ] || [ "$HELD_OUT" = "pending" ]; then
+    echo "  write two held-out tier fixtures outside the repository and list their ids under 'Held out:'"
+elif [ "$LOOP" != "on" ]; then
+    echo "  set loop: on in docs/evolution/constitution.md to enter Stage 2"
+elif [ -n "$BUDGET" ] && [ "$USED_TODAY" -ge "$BUDGET" ]; then
+    echo "  none today; the cap this constitution wrote resets tomorrow"
+else
+    echo "  none; the loop may run - continuous mode, cycle after cycle, until a stop rule fires"
+fi
+echo ""
+echo "SIGNALS TO LIST FROM THIS SESSION (Level A output)"
+echo "  verification failures, rollbacks, review findings, tier redeclarations,"
+echo "  requests whose premise was already satisfied, questions answered from scratch,"
+echo "  rules that read two ways, artifacts written then discarded, stale fixtures."
+echo "Rules: docs/workflows/reflect.md. Fleets: docs/workflows/fleet.md."

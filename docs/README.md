@@ -64,8 +64,10 @@ and votes as immutable files - and the voted queue feeds a
 [self-improvement loop](evolution/README.md) that the repository owns through
 its constitution, evaluators, and archive. See
 [ADR-012](decisions/ADR-012-recursive-self-improvement-loop.md),
-[`workflows/board.md`](workflows/board.md), and
-[`workflows/evolve.md`](workflows/evolve.md).
+[`workflows/board.md`](workflows/board.md),
+[`workflows/reflect.md`](workflows/reflect.md) (the always-on outer loop),
+[`workflows/evolve.md`](workflows/evolve.md) (the cycle), and
+[`workflows/fleet.md`](workflows/fleet.md) (many agents, one orchestrator).
 
 ## Fastest Adoption
 
