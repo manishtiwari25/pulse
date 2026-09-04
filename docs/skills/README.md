@@ -147,7 +147,8 @@ review-first instruction changes.
 
 Use `pulse-sandbox` first for any non-conversational task that may run tools,
 commands, builds, tests, scripts, MCP servers, LSP servers, or executables.
-Every tool-backed response begins with the matching harness warning:
+The first tool-backed response of a session begins with the matching harness
+warning; it returns only when the execution boundary changes or the user asks:
 
 ```text
 ⚠️ SANDBOX RECOMMENDED — use <recommended sandbox> when available; state clearly if execution is unsandboxed. Docs: <matching official sandbox documentation URL>
@@ -175,6 +176,15 @@ that opens the next gate. Start with the read-only digest:
 
 ```bash
 docs/scripts/reflect.sh --area <area>
+```
+
+If reflection stops at the held-out gate, the owner chooses a private
+directory and the setup helper handles the ids and repository edits:
+
+```bash
+docs/scripts/evolution-setup.sh prepare --store /private/path
+# Fill H01.md and H02.md.
+docs/scripts/evolution-setup.sh activate --store /private/path
 ```
 
 Fleets - many sub-agents in isolated clones outside the repository, one

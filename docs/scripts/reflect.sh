@@ -302,7 +302,8 @@ elif [ "$FILLED" -eq 0 ]; then
 elif [ "$BASELINE_ROW" -eq 0 ]; then
     echo "  record the first baseline row in archive.md and set baseline: in evaluators.md"
 elif [ -z "$HELD_OUT" ] || [ "$HELD_OUT" = "pending" ]; then
-    echo "  write two held-out tier fixtures outside the repository and list their ids under 'Held out:'"
+    echo "  run docs/scripts/evolution-setup.sh prepare --store /private/path"
+    echo "  fill private H01.md and H02.md, then run the helper's activate command"
 elif [ "$LOOP" != "on" ]; then
     echo "  set loop: on in docs/evolution/constitution.md to enter Stage 2"
 elif [ -n "$BUDGET" ] && [ "$USED_TODAY" -ge "$BUDGET" ]; then

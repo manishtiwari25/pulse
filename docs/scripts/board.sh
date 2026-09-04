@@ -13,7 +13,7 @@
 #                              [--quorum N] [--expiry-days N] [--stale-days N]
 #                              [--amend-quorum N] [--amend-majority P/Q]
 #                              [--claims|--threads|--queue|--amendments|--stale]
-#                              [--tsv]
+#                              [--tsv|--records|--json]
 #        docs/scripts/board.sh --hash POST
 set -eu
 
@@ -23,7 +23,7 @@ Usage: docs/scripts/board.sh [--repo PATH] [--area NAME] [--now ISO-UTC]
                              [--quorum N] [--expiry-days N] [--stale-days N]
                              [--amend-quorum N] [--amend-majority P/Q]
                              [--claims|--threads|--queue|--amendments|--stale]
-                             [--tsv]
+                             [--tsv|--records|--json]
        docs/scripts/board.sh --hash POST
 
 Read-only index of docs/board/: active claims, open threads with their latest
@@ -46,6 +46,12 @@ with their tallies, and stale items.
   --amendments         Show only constitutional amendments and their tallies
   --stale              Show only expired claims, expired suggestions, and stale threads
   --tsv                Emit one tab-separated row per post and exit
+  --records            Emit typed tab-separated records (param, post, claim, thread,
+                       suggestion, svote, amendment, avote, nokind) computed by the
+                       same tally as the text report; for local tools such as the
+                       dashboard. Cannot be combined with a section flag or --tsv
+  --json               Emit a versioned JSON snapshot for local tools
+                       (requires Python 3; cannot be combined with a section or --tsv)
   --hash POST          Print the sha256 of an amendment post's "## Proposed text" block
                        (the text_hash a vote must carry) and exit
   -h, --help           Show this help
@@ -63,7 +69,10 @@ AMEND_QUORUM=""
 AMEND_MAJORITY=""
 HASH_POST=""
 SECTION=all
+SECTION_EXPLICIT=0
 TSV=0
+RECORDS=0
+JSON=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -76,12 +85,42 @@ while [ $# -gt 0 ]; do
         --amend-quorum) [ $# -ge 2 ] || { usage >&2; exit 2; }; AMEND_QUORUM="$2"; shift 2 ;;
         --amend-majority) [ $# -ge 2 ] || { usage >&2; exit 2; }; AMEND_MAJORITY="$2"; shift 2 ;;
         --hash) [ $# -ge 2 ] || { usage >&2; exit 2; }; HASH_POST="$2"; shift 2 ;;
-        --claims|--threads|--queue|--amendments|--stale) SECTION="${1#--}"; shift ;;
+        --claims|--threads|--queue|--amendments|--stale) SECTION="${1#--}"; SECTION_EXPLICIT=1; shift ;;
         --tsv) TSV=1; shift ;;
+        --records) RECORDS=1; shift ;;
+        --json) JSON=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
 done
+
+if [ "$RECORDS" -eq 1 ]; then
+    [ "$TSV" -eq 0 ] || { echo "--records cannot be combined with --tsv" >&2; exit 2; }
+    [ "$JSON" -eq 0 ] || { echo "--records cannot be combined with --json" >&2; exit 2; }
+    [ "$SECTION_EXPLICIT" -eq 0 ] || { echo "--records emits every section and cannot be combined with a section flag" >&2; exit 2; }
+    [ -z "$HASH_POST" ] || { echo "--records cannot be combined with --hash" >&2; exit 2; }
+fi
+
+if [ "$JSON" -eq 1 ]; then
+    [ "$TSV" -eq 0 ] || { echo "--json cannot be combined with --tsv" >&2; exit 2; }
+    [ "$SECTION_EXPLICIT" -eq 0 ] || { echo "--json emits the complete snapshot and cannot be combined with a section flag" >&2; exit 2; }
+    [ -z "$HASH_POST" ] || { echo "--json cannot be combined with --hash" >&2; exit 2; }
+    command -v python3 >/dev/null 2>&1 || { echo "--json requires python3" >&2; exit 1; }
+    [ -f "$HERE/pulse-dashboard.py" ] || { echo "Missing docs/scripts/pulse-dashboard.py" >&2; exit 1; }
+
+    JSON_ARGS=(
+        _board-snapshot
+        --repo "$REPO"
+        --now "$NOW"
+        --quorum "$QUORUM"
+        --expiry-days "$EXPIRY_DAYS"
+        --stale-days "$STALE_DAYS"
+    )
+    [ -n "$AREA" ] && JSON_ARGS+=(--area "$AREA")
+    [ -n "$AMEND_QUORUM" ] && JSON_ARGS+=(--amend-quorum "$AMEND_QUORUM")
+    [ -n "$AMEND_MAJORITY" ] && JSON_ARGS+=(--amend-majority "$AMEND_MAJORITY")
+    exec python3 "$HERE/pulse-dashboard.py" "${JSON_ARGS[@]}"
+fi
 
 # The fenced block under "## <heading>" in an amendment post, normalized the
 # way every tally and every voter must see it: trailing whitespace stripped,
@@ -135,6 +174,7 @@ fi
 
 BOARD="$REPO/docs/board"
 if [ ! -d "$BOARD" ]; then
+    if [ "$RECORDS" -eq 1 ]; then printf 'param\tboard_present\t0\n'; exit 0; fi
     echo "No docs/board/ in $REPO. See docs/board/README.md."
     exit 0
 fi
@@ -159,6 +199,24 @@ case "$AMEND_MAJORITY" in
     */*) AMEND_NUM="${AMEND_MAJORITY%%/*}"; AMEND_DEN="${AMEND_MAJORITY#*/}" ;;
     *) echo "--amend-majority must be a fraction such as 2/3" >&2; exit 2 ;;
 esac
+STOP_PRESENT=0
+[ -e "$REPO/docs/evolution/STOP" ] && STOP_PRESENT=1
+
+# Records mode starts with the parameters every later record was computed under.
+if [ "$RECORDS" -eq 1 ]; then
+    printf 'param\tboard_present\t1\n'
+    printf 'param\trepo\t%s\n' "$REPO"
+    printf 'param\tarea\t%s\n' "$AREA"
+    printf 'param\tnow\t%s\n' "$NOW"
+    printf 'param\tquorum\t%s\n' "$QUORUM"
+    printf 'param\texpiry_days\t%s\n' "$EXPIRY_DAYS"
+    printf 'param\tstale_days\t%s\n' "$STALE_DAYS"
+    printf 'param\tamend_quorum\t%s\n' "$AMEND_QUORUM"
+    printf 'param\tamend_majority\t%s/%s\n' "$AMEND_NUM" "$AMEND_DEN"
+    printf 'param\tprotected\t%s\n' "$PROTECTED_ROW"
+    printf 'param\tconstitution_present\t%d\n' "$([ -f "$CONSTITUTION" ] && echo 1 || echo 0)"
+    printf 'param\tstop_present\t%d\n' "$STOP_PRESENT"
+fi
 
 LIST="$(mktemp)"
 ALLROWS="$(mktemp)"
@@ -172,6 +230,7 @@ trap 'rm -f "$LIST" "$ALLROWS" "$ROWS" "$QUEUE" "$AMEND" "$AMEND_OUT" "$CUR" "$P
 
 find "$BOARD" -mindepth 3 -maxdepth 3 -type f -name '*.md' | LC_ALL=C sort > "$LIST"
 if [ ! -s "$LIST" ]; then
+    [ "$RECORDS" -eq 1 ] && exit 0
     echo "Board is empty (no posts under docs/board/<area>/<thread>/)."
     exit 0
 fi
@@ -214,8 +273,13 @@ state == 2 && /^Read:[ \t]*[^ \t]/ { has_read = 1 }
 END { emit() }
 ' > "$ALLROWS"
 awk -F'\t' -v a="$AREA" 'a == "" || $2 == a' "$ALLROWS" > "$ROWS"
+if [ "$RECORDS" -eq 1 ]; then
+    # Every post, repository-wide; the area filter applies to the computed
+    # claim, thread, and suggestion records below, exactly as in text mode.
+    sed 's/^/post'"$(printf '\t')"'/' "$ALLROWS"
+fi
 
-if [ ! -s "$ROWS" ]; then
+if [ ! -s "$ROWS" ] && [ "$RECORDS" -eq 0 ]; then
     echo "No posts${AREA:+ in area \"$AREA\"}."
     # Amendments are repository-wide, so they are still shown below.
     if [ "$SECTION" = "all" ] || [ "$SECTION" = "amendments" ]; then
@@ -232,8 +296,9 @@ fi
 
 if [ "$SECTION" != "amendments" ]; then
 # Everything below is computed from the rows; the queue is sorted afterwards.
+# In records mode the same tally prints typed records instead of text.
 awk -F'\t' -v now="$NOW" -v quorum="$QUORUM" -v expiry_days="$EXPIRY_DAYS" \
-    -v stale_days="$STALE_DAYS" -v section="$SECTION" -v queue_file="$QUEUE" '
+    -v stale_days="$STALE_DAYS" -v section="$SECTION" -v queue_file="$QUEUE" -v records="$RECORDS" '
 function days_from_civil(y, m, d,    era, yoe, doy, doe) {
     if (m <= 2) y -= 1
     era = (y >= 0 ? y : y - 399) / 400; era = int(era)
@@ -248,6 +313,18 @@ function day_number(s,    a) {
 }
 function trunc(s, n) { return length(s) > n ? substr(s, 1, n - 1) "~" : s }
 function show(name) { return section == "all" || section == name }
+# One definition of each status, shared by the text report and the records.
+function claim_status(id) {
+    if (claim_key[id] in closed) return "closed"
+    if (claim_exp[id] != "" && claim_exp[id] > now) return "active"
+    if (claim_exp[id] == "") return "no expiry"
+    return "expired"
+}
+function thread_status(key) {
+    if (key in closed) return "closed"
+    if (today_n - day_number(last[key]) > stale_days) return "stale"
+    return "open"
+}
 {
     path = $1; area = $2; thread = $3; id = $4; kind = $5; agent = $6
     date = $7; expires = $8; on = $9; vote = $10; res = $11; summary = $12
@@ -263,19 +340,31 @@ function show(name) { return section == "all" || section == name }
     }
     if (kind == "vote" && on != "") {
         vk = on SUBSEP agent
-        if (!(vk in vote_date) || date >= vote_date[vk]) { vote_date[vk] = date; vote_val[vk] = vote }
+        if (!(vk in vote_date) || date >= vote_date[vk]) { vote_date[vk] = date; vote_val[vk] = vote; vote_id[vk] = id }
     }
     if (kind == "") nokind++
 }
 END {
     today_n = day_number(now)
 
-    if (show("claims")) {
+    if (records) {
+        printf "nokind\t%d\n", nokind + 0
+        for (id in claim_key)
+            printf "claim\t%s\t%s\t%s\t%s\t%s\t%s\n", id, claim_key[id], claim_agent[id], claim_exp[id], claim_status(id), claim_sum[id]
+        for (key in nposts)
+            printf "thread\t%s\t%d\t%s\t%s\t%s\t%s\n", key, nposts[key], last[key], thread_status(key), (key in closed ? resolution[key] : ""), lastsum[key]
+        for (vk in vote_val) {
+            split(vk, p, SUBSEP)
+            if (!(p[1] in sugg_key)) continue
+            printf "svote\t%s\t%s\t%s\t%s\t%s\t%s\n", p[1], p[2], vote_id[vk], vote_date[vk], vote_val[vk], (p[2] == sugg_agent[p[1]] ? "self" : "counted")
+        }
+    }
+
+    if (show("claims") && !records) {
         printf "ACTIVE CLAIMS (now %s)\n", now
         n = 0
         for (id in claim_key) {
-            if (claim_key[id] in closed) continue
-            if (claim_exp[id] != "" && claim_exp[id] > now) {
+            if (claim_status(id) == "active") {
                 printf "  %-38s %-24s until %-20s %s\n", claim_key[id], trunc(claim_agent[id], 24), claim_exp[id], trunc(claim_sum[id], 60); n++
             }
         }
@@ -283,11 +372,11 @@ END {
         print ""
     }
 
-    if (show("threads")) {
+    if (show("threads") && !records) {
         print "OPEN THREADS"
         n = 0
         for (key in nposts) {
-            if (key in closed) continue
+            if (thread_status(key) == "closed") continue
             printf "  %-38s %2d posts  last %-20s %s\n", key, nposts[key], last[key], trunc(lastsum[key], 60); n++
         }
         if (n == 0) print "  none"
@@ -295,8 +384,11 @@ END {
     }
 
     # Queue rows go to a file so the shell can sort them by score, then date.
+    # Records mode also tallies closed suggestions so their final count is
+    # visible, and prints them directly (the reader sorts).
     for (id in sugg_key) {
-        if (sugg_key[id] in closed) continue
+        is_closed = (sugg_key[id] in closed)
+        if (is_closed && !records) continue
         up = 0; down = 0; voters = 0
         for (vk in vote_val) {
             split(vk, p, SUBSEP)
@@ -307,24 +399,27 @@ END {
         }
         score = up - down
         age = today_n - day_number(sugg_date[id])
-        if (voters >= quorum) status = "eligible"
+        if (is_closed) status = "closed"
+        else if (voters >= quorum) status = "eligible"
         else if (voters == 0 && age > expiry_days) status = "expired"
         else status = "needs votes"
-        printf "%d\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n", score, sugg_date[id], id, sugg_key[id], up, down, voters, status, sugg_sum[id] > queue_file
+        if (records)
+            printf "suggestion\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n", score, sugg_date[id], id, sugg_key[id], up, down, voters, status, sugg_agent[id], sugg_sum[id]
+        else
+            printf "%d\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n", score, sugg_date[id], id, sugg_key[id], up, down, voters, status, sugg_sum[id] > queue_file
     }
 
-    if (show("stale")) {
+    if (show("stale") && !records) {
         printf "STALE (expired claims, expired suggestions, threads idle > %d days)\n", stale_days
         n = 0
         for (id in claim_key) {
-            if (claim_key[id] in closed) continue
-            if (claim_exp[id] == "" || claim_exp[id] <= now) {
+            st = claim_status(id)
+            if (st == "expired" || st == "no expiry") {
                 printf "  claim      %-38s %-24s expired %s\n", claim_key[id], trunc(claim_agent[id], 24), (claim_exp[id] == "" ? "(no expiry)" : claim_exp[id]); n++
             }
         }
         for (key in nposts) {
-            if (key in closed) continue
-            if (today_n - day_number(last[key]) > stale_days) {
+            if (thread_status(key) == "stale") {
                 printf "  thread     %-38s idle since %s\n", key, last[key]; n++
             }
         }
@@ -335,7 +430,7 @@ END {
 }
 ' "$ROWS"
 
-if [ "$SECTION" = "all" ] || [ "$SECTION" = "queue" ] || [ "$SECTION" = "stale" ]; then
+if [ "$RECORDS" -eq 0 ] && { [ "$SECTION" = "all" ] || [ "$SECTION" = "queue" ] || [ "$SECTION" = "stale" ]; }; then
     echo "EXPERIMENT QUEUE (score = up - down; quorum $QUORUM distinct voters; unvoted expire after $EXPIRY_DAYS days)"
     if [ -s "$QUEUE" ]; then
         TAB="$(printf '\t')"
@@ -354,7 +449,7 @@ fi
 if [ "$SECTION" != "all" ] && [ "$SECTION" != "amendments" ]; then
     exit 0
 fi
-[ "$SECTION" = "all" ] && echo ""
+[ "$SECTION" = "all" ] && [ "$RECORDS" -eq 0 ] && echo ""
 
 # Constitutional amendments (docs/workflows/amend.md). Repository-wide, so the
 # --area filter does not apply. For every open `amendment` post: hash its
@@ -363,8 +458,6 @@ fi
 # that lower a threshold or drop a protection. Then count the latest vote per
 # session, skipping the proposer's session, votes whose text_hash differs from
 # the proposal, and votes without a "Read:" line.
-STOP_PRESENT=0
-[ -e "$REPO/docs/evolution/STOP" ] && STOP_PRESENT=1
 TAB="$(printf '\t')"
 
 awk -F'\t' '$5 == "amendment" { print $1 "\t" $4 }' "$ALLROWS" | while IFS="$TAB" read -r post id; do
@@ -457,6 +550,7 @@ awk -F'\t' '$5 == "amendment" { print $1 "\t" $4 }' "$ALLROWS" | while IFS="$TAB
     printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$hash" "$anchor" "$section" "$verdict"
 done > "$AMEND"
 
+if [ "$RECORDS" -eq 0 ]; then
 echo "AMENDMENTS (supermajority $AMEND_NUM/$AMEND_DEN of counted votes; quorum $AMEND_QUORUM distinct sessions, proposer excluded; a vote counts only with the proposal's text_hash and a Read: line)"
 if [ ! -f "$CONSTITUTION" ]; then
     echo "  no docs/evolution/constitution.md: nothing to amend"
@@ -464,40 +558,48 @@ fi
 if [ "$STOP_PRESENT" -eq 1 ]; then
     echo "  docs/evolution/STOP is present: ratification is paused until a human removes it"
 fi
-awk -F'\t' -v quorum="$AMEND_QUORUM" -v num="$AMEND_NUM" -v den="$AMEND_DEN" -v stop="$STOP_PRESENT" -v amend_file="$AMEND" '
+fi
+# The tally below is the only one; records mode prints the same numbers as
+# typed records (amendment, avote) and also tallies closed amendments.
+AMEND_AWK='
 function trunc(s, n) { return length(s) > n ? substr(s, 1, n - 1) "~" : s }
 FILENAME == amend_file { am_hash[$1] = $2; am_anchor[$1] = $3; am_section[$1] = $4; am_verdict[$1] = $5; next }
 {
     area = $2; thread = $3; id = $4; kind = $5; agent = $6; date = $7; on = $9; vote = $10
     res = $11; summary = $12; session = $13; thash = $14; rd = $15
     key = area "/" thread
-    if (res != "") closed[key] = 1
+    if (res != "") { closed[key] = 1; resolution[key] = res }
     if (kind == "amendment") {
-        amend_key[id] = key; amend_session[id] = session; amend_date[id] = date; amend_sum[id] = summary
+        amend_key[id] = key; amend_session[id] = session; amend_date[id] = date; amend_sum[id] = summary; amend_agent[id] = agent
     }
     if (kind == "vote" && on != "") {
         vk = on SUBSEP session
         if (!(vk in vote_date) || date >= vote_date[vk]) {
-            vote_date[vk] = date; vote_val[vk] = vote; vote_hash[vk] = thash; vote_read[vk] = rd; vote_agent[vk] = agent
+            vote_date[vk] = date; vote_val[vk] = vote; vote_hash[vk] = thash; vote_read[vk] = rd; vote_agent[vk] = agent; vote_id[vk] = id
         }
     }
 }
 END {
     n = 0
     for (id in amend_key) {
-        if (amend_key[id] in closed) continue
-        n++
+        is_closed = (amend_key[id] in closed)
+        if (is_closed && !records) continue
+        if (!is_closed) n++
         up = 0; down = 0; voters = 0; self = 0; badhash = 0; noread = 0
         split("", idents)
         for (vk in vote_val) {
             split(vk, p, SUBSEP)
             if (p[1] != id) continue
-            if (p[2] == amend_session[id] || p[2] == "") { self++; continue }
-            if (vote_hash[vk] != am_hash[id]) { badhash++; continue }
-            if (vote_read[vk] != 1) { noread++; continue }
-            voters++
-            if (vote_val[vk] == "down") down++; else up++
-            idents[vote_agent[vk]] = 1
+            if (p[2] == amend_session[id] || p[2] == "") { self++; cls = "self" }
+            else if (vote_hash[vk] != am_hash[id]) { badhash++; cls = "hash mismatch" }
+            else if (vote_read[vk] != 1) { noread++; cls = "no Read line" }
+            else {
+                voters++
+                if (vote_val[vk] == "down") down++; else up++
+                idents[vote_agent[vk]] = 1
+                cls = "counted"
+            }
+            if (records) printf "avote\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, p[2], vote_agent[vk], vote_id[vk], vote_date[vk], vote_val[vk], cls
         }
         nid = 0; for (a in idents) nid++
         total = up + down
@@ -511,6 +613,11 @@ END {
         else if (voters < quorum) status = "needs votes"
         else if (up * den >= num * total) status = (stop == 1 ? "passed; ratification paused (STOP)" : "passed: ratify per docs/workflows/amend.md")
         else status = "short of the supermajority"
+        if (records) {
+            if (is_closed) status = "closed: " resolution[amend_key[id]]
+            printf "amendment\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n", amend_date[id], id, amend_key[id], status, up, down, voters, quorum, pct, nid, self, badhash, noread, am_hash[id], am_section[id], amend_agent[id], amend_sum[id]
+            continue
+        }
         out = sprintf("  %-38s %s", amend_key[id], trunc(id, 60))
         out = out "\001" sprintf("      %s", status)
         out = out "\001" sprintf("      up %d down %d  voters %d/%d  %d%% up  identities %d  uncounted: %d self, %d hash mismatch, %d no Read line", up, down, voters, quorum, pct, nid, self, badhash, noread)
@@ -518,6 +625,11 @@ END {
         out = out "\001" sprintf("      %s", trunc(amend_sum[id], 90))
         printf "%s\t%s\t%s\n", amend_date[id], id, out
     }
-    if (n == 0) print "\t\t  none open"
-}' "$AMEND" "$ALLROWS" > "$AMEND_OUT"
+    if (n == 0 && !records) print "\t\t  none open"
+}'
+if [ "$RECORDS" -eq 1 ]; then
+    awk -F'\t' -v quorum="$AMEND_QUORUM" -v num="$AMEND_NUM" -v den="$AMEND_DEN" -v stop="$STOP_PRESENT" -v amend_file="$AMEND" -v records=1 "$AMEND_AWK" "$AMEND" "$ALLROWS"
+    exit 0
+fi
+awk -F'\t' -v quorum="$AMEND_QUORUM" -v num="$AMEND_NUM" -v den="$AMEND_DEN" -v stop="$STOP_PRESENT" -v amend_file="$AMEND" -v records=0 "$AMEND_AWK" "$AMEND" "$ALLROWS" > "$AMEND_OUT"
 sort -t "$TAB" -k1,1 -k2,2 "$AMEND_OUT" | cut -f3- | tr '\001' '\n'

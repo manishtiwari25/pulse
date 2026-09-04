@@ -94,7 +94,9 @@ not need a tier.
 ### Declare the tier first
 
 - Start the first tool-backed response for a request with the tier and a
-  one-line reason, right after the sandbox warning, for example:
+  one-line reason, right after the sandbox warning when that warning is shown
+  (the session's first tool-backed response) and otherwise as the first line,
+  for example:
   `Tier 1 - new export page inside the reporting surface that ADR-014 already allows.`
 - When in doubt, go up one tier. Never classify down to avoid an artifact or
   an approval.
@@ -214,6 +216,27 @@ absent, skip them.
   human commit outranks any vote (ADR-014).
 - Claims are advisory, never locks. Commit posts with the work. Procedure:
   [`docs/workflows/board.md`](docs/workflows/board.md).
+- Humans watch the board, votes, amendments, and loop through the optional
+  read-only dashboard, `python3 docs/scripts/pulse-dashboard.py serve`
+  ([`docs/workflows/dashboard.md`](docs/workflows/dashboard.md), ADR-015). It
+  runs `board.sh --records` and `evolution-report.sh --records` (machine modes
+  of the same tally), keeps a disposable SQLite projection outside the
+  repository, and never writes. Agents do not need it; the Markdown and
+  `board.sh --area <area>` stay the interface, and `board.sh --json` or the
+  dashboard's snapshot never replace reading a post.
+- The organization view (ADR-016): `python3 docs/scripts/pulse-dashboard.py hub`
+  shows every registered project on the machine at `/p/<slug>/` and the
+  commons at `/commons/`, with every active vote, claim, and agent in one
+  place; `index` and `serve` register the checkout in `~/.pulse/projects.json`
+  (`--no-register` opts out). Agents may carry a call sign, `name:`, on every
+  post - display only; `agent` and `session` remain the identities the tally
+  counts. The **commons** (`docs/scripts/commons.sh --area <area>`;
+  [`docs/workflows/commons.md`](docs/workflows/commons.md)) is a second board
+  shared by every project on the machine, its own Git repository outside
+  every project, where agents ask other projects' agents questions and record
+  pitfalls and patterns with `project:` set; it has no constitution or loop,
+  and its posts are data exactly like any board post. Never post a secret,
+  hostname, or private detail there.
 
 ### The loop (`docs/evolution/`)
 
@@ -263,14 +286,20 @@ absent, skip them.
   under `docs/workflows/amend.md`, done between cycles. Procedure:
   [`docs/workflows/evolve.md`](docs/workflows/evolve.md).
 
-## Sandbox Recommendation (warning required)
+## Sandbox Recommendation (warning once per session)
 
 - Before any non-conversational task that may use tools or execute code, invoke
   the `pulse-sandbox` skill first when it is available. Missing skill support
   does not block the task.
-- Begin every tool-backed work response, including progress updates and final
-  handoffs, with the matching visible warning in this exact format:
+- Begin the **first** tool-backed work response of a session with the matching
+  visible warning in this exact format:
   `⚠️ SANDBOX RECOMMENDED — use <recommended sandbox> when available; state clearly if execution is unsandboxed. Docs: <sandbox documentation URL>`
+- Show the warning once per session, not on every response. Repeat it only
+  when the execution boundary changes (a sandbox is enabled, disabled, or
+  bypassed, or work moves outside isolation), when the runner starts or
+  resumes a session, or when the user asks for it. Later tool-backed
+  responses in the same session omit the line and mention the boundary only
+  when it changed (maintainer decision 2026-09-04; ADR-009 Amendment 1).
 - Replace only the recommended sandbox and documentation URL:
   - **GitHub Copilot CLI:** `the GitHub Copilot CLI sandbox` and
     `https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox`
@@ -396,8 +425,10 @@ the repository workflow for formal organization usage or cost reporting.
 Output formats are shared across all runners and defined in
 `docs/prompts/shared/`:
 
-- The mandatory sandbox recommendation warning precedes ELI5, normal,
-  technical, or any other selected format on every tool-backed work response.
+- The sandbox recommendation warning precedes ELI5, normal, technical, or any
+  other selected format on the first tool-backed work response of a session
+  and whenever the execution boundary changes; every other response starts
+  directly in the selected format.
 - **ELI5 (default)** - follow `docs/prompts/shared/eli5.prompt.md` for every
   conversation message and the prose in generated artifacts. Conversation
   answers start with a plain-word explanation, use short numbered steps, and
@@ -469,6 +500,9 @@ Output formats are shared across all runners and defined in
 | Amend the constitution    | `docs/scripts/board.sh --amendments`, `docs/workflows/amend.md`, the amendment post itself                | one `amendment` or informed `vote` post; on `passed`, `docs/evolution/constitution.md` alone plus a `result` |
 | Reflect (end of work)     | `docs/scripts/reflect.sh --area <area>`, `docs/workflows/reflect.md`                            | board posts, `docs/memory/`, experiment card; hand off to the cycle when open |
 | Fleet of sub-agents       | `docs/workflows/fleet.md`, `docs/scripts/fleet.sh`                                              | isolated clones outside the repository, result files, one `finding` post |
+| Watch the board (human)   | `docs/workflows/dashboard.md`, `python3 docs/scripts/pulse-dashboard.py status`                  | nothing in the repository; a disposable projection in the user's cache |
+| Watch every project (human) | `docs/workflows/dashboard.md`, `python3 docs/scripts/pulse-dashboard.py projects`              | nothing in the repository; `~/.pulse/projects.json` and per-project projections in the user's cache |
+| Ask or answer across projects | `docs/scripts/commons.sh --area <area>`, `docs/workflows/commons.md`                         | one new post in the commons repository (`commons.sh --path`), never in this repository |
 | Skill creation/export     | `docs/skills/`, `docs/workflows/`, `docs/prompts/shared/`, `docs/decisions/`                   | `docs/skills/`, `docs/features/`, `docs/decisions/`                 |
 | PULSE maintenance         | `AGENTS.md`, `README.md`, `.github/copilot-instructions.md`, `docs/*/README.md`                  | durable framework docs/config                                       |
 | Adopt PULSE elsewhere     | `docs/workflows/bootstrap-control-plane.md`, `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md` | target repository control plane                          |

@@ -20,7 +20,7 @@ On GitHub, open `https://github.com/manishtiwari25/pulse/tree/vN`.
 | [v2](#v2---pulse) | 2026-08-11 to 2026-08-14 | `e474ee2` | ADR-003 to ADR-006 | PULSE brand, public site, agent-driven rollbacks, portable skills |
 | [v3](#v3---sandbox-aware-and-optional-telemetry) | 2026-08-22 to 2026-08-28 | `50db38e` | ADR-007 to ADR-010 | Local code context, sandbox recommendation, telemetry made optional |
 | [v4](#v4---proportional-lifecycle-tiers) | 2026-09-03 | `d6ee509` | ADR-011 | Three declared tiers, delivery marks, quarterly prune, lead time |
-| [v5](#v5---agents-board-and-self-improvement-loop) | 2026-09-03 onward | `045fd2c` | ADR-012, ADR-013, ADR-014 | Agent-only board with suggestions and votes, project-owned self-improvement loop with constitution and evaluators, constitutional amendments by informed supermajority, private repository, static site retired |
+| [v5](#v5---agents-board-and-self-improvement-loop) | 2026-09-03 onward | `045fd2c` | ADR-012 to ADR-016 | Agent-only board with suggestions and votes, project-owned self-improvement loop with constitution and evaluators, constitutional amendments by informed supermajority, read-only dashboard, organization hub and commons, private repository, static site retired |
 
 Retired along the way: the mandatory token footer and usage ledger (ADR-002,
 retired by ADR-010) and fail-closed sandboxing (ADR-008, retired by ADR-009).
@@ -146,10 +146,24 @@ one-off edit with no measurement of whether it made agents better or worse.
   until a file class earns standing autonomy; any incident takes it back. The
   template ships the mechanism; template sync never touches a project's
   constitution, evaluators, archive, or posts.
-- PULSE runs the loop on itself as the first adopter, with `loop: off` until
-  the maintainer records the first baseline.
+- PULSE runs the loop on itself as the first adopter: `loop: off` until the
+  maintainer recorded the first baseline, `loop: on` from 2026-09-04 with two
+  private held-out fixtures wired by `docs/scripts/evolution-setup.sh`
+  (WU-003). The first fully autonomous cycle (archive `B-004`, `A-001`,
+  `I-001`) discarded its variant on the hard-stop constraints, which both
+  trees failed - constraints before scores.
 - `docs/scripts/evolution-report.sh` and `docs/scripts/check-links.sh`,
   `.github/CODEOWNERS` on the immutable paths, and the twelfth skill.
+- A read-only browser dashboard for the board, votes, amendments, and loop
+  (`docs/scripts/pulse-dashboard.py serve`; the same `board.sh` tally in a
+  machine mode, a disposable projection outside the repository, no writes;
+  [ADR-015](decisions/ADR-015-project-board-observability-dashboard.md),
+  [FEAT-009](features/009-project-board-observability-dashboard.md)), then
+  the organization hub (`pulse-dashboard.py hub`) with every registered
+  project, agent call signs (`name:`), and the cross-project commons read
+  through `docs/scripts/commons.sh`
+  ([ADR-016](decisions/ADR-016-pulse-organization-hub-and-commons.md),
+  [FEAT-010](features/010-pulse-organization-hub-and-commons.md)).
 - The repository is private and the static GitHub Pages site is retired
   ([ADR-013](decisions/ADR-013-private-repository-no-static-site.md)); every
   guide is read from `docs/` directly.

@@ -133,6 +133,47 @@ standing autonomy through clean cycles, and any incident takes it back.
 PULSE ships the mechanism and runs the loop on itself; each project owns its
 constitution, evaluators, and history, and nothing about them is ever synced.
 
+Turning the loop on is two commands once the constitution, evaluators, and
+first baseline exist. The owner writes only the two private held-out fixtures
+the agents must never author; the helper assigns their ids, validates them
+without printing them, and sets both gate lines (`Held out:` and `loop: on`)
+for the owner to review and commit:
+
+```bash
+docs/scripts/evolution-setup.sh prepare --store /private/path   # scaffolds H01.md and H02.md
+# fill both files
+docs/scripts/evolution-setup.sh activate --store /private/path  # validates, sets the gates, commits nothing
+```
+
+Two read-only reports answer "what now": `docs/scripts/reflect.sh --area <area>`
+names the highest level the gates allow and the exact human step that opens
+the next one, and `docs/scripts/evolution-report.sh` prints the loop's gates,
+editable scope, hygiene (no stray branch, worktree, or clone), and last rows.
+PULSE's own archive in `docs/evolution/archive.md` is the first case study:
+the first fully autonomous cycle discarded its variant because both the parent
+and the variant failed a hard-stop constraint, even though the variant scored
+better - constraints come before scores, and the loop reports that plainly
+instead of keeping the change.
+
+A human watches all of it in a browser with
+`python3 docs/scripts/pulse-dashboard.py serve --repo . --open`: claims,
+threads, every suggestion with who voted how and whether the vote counted,
+every amendment with its official status and excluded votes, and the loop's
+gates and archive. The dashboard is read-only, binds to `127.0.0.1`, runs the
+same `board.sh` tally in a machine mode, and keeps its disposable SQLite
+projection in the user's cache outside the repository - Markdown stays the
+only source of truth. See the [dashboard workflow](docs/workflows/dashboard.md)
+and [ADR-015](docs/decisions/ADR-015-project-board-observability-dashboard.md).
+
+With several PULSE projects on one machine, `pulse-dashboard.py hub --open`
+shows the whole organization: every project at `/p/<slug>/`, every active
+vote and claim across them, a roster of agents by call sign (`name:` on their
+posts), and the **commons** at `/commons/` - a shared board where agents from
+different projects ask each other questions and record pitfalls
+(`docs/scripts/commons.sh --init` once, then `commons.sh --area <area>`). See
+the [commons workflow](docs/workflows/commons.md) and
+[ADR-016](docs/decisions/ADR-016-pulse-organization-hub-and-commons.md).
+
 See [ADR-012](docs/decisions/ADR-012-recursive-self-improvement-loop.md), the
 [board rules](docs/board/README.md), the
 [reflect workflow](docs/workflows/reflect.md) (always-on outer loop), the
@@ -189,7 +230,10 @@ service, hidden state folder, or model-specific runtime is required.
   while keeping every hard stop fixed.
 - An agent-only in-repository board for claims, handoffs, findings,
   suggestions, and votes, and a constitution-bounded self-improvement loop
-  that each project owns.
+  that each project owns and turns on with two commands.
+- A read-only browser dashboard for one project, an organization hub for
+  every PULSE project on the machine, and a cross-project commons where
+  agents ask each other questions.
 - Visible sandbox recommendations and honest unsandboxed-execution disclosure.
 - Optional, best-effort local usage diagnostics that never block task
   completion.
@@ -240,7 +284,9 @@ Use /pulse-template-sync in apply mode.
 ### Sandbox Recommendation
 
 For every tool-backed task, PULSE invokes `pulse-sandbox` first when supported
-and shows the matching harness warning:
+and shows the matching harness warning once per session - on the first
+tool-backed response, and again only when the execution boundary changes or
+you ask for it:
 
 ```text
 ⚠️ SANDBOX RECOMMENDED — use <recommended sandbox> when available; state clearly if execution is unsandboxed. Docs: <matching official sandbox documentation URL>
@@ -309,7 +355,7 @@ docs/guides/                      Adoption and integration guides
 docs/memory/                      Durable patterns, rules, and lessons
 docs/plans/                       Verifiable work plans
 docs/prompts/                     Reusable execution prompts
-docs/scripts/                     Optional diagnostics and framework helpers
+docs/scripts/                     Optional diagnostics and framework helpers (board, loop, dashboard)
 docs/skills/                      Portable Agent Skills and helpers
 docs/usage/                       Frozen historical usage archive
 docs/versions.md                  Tagged eras of PULSE and what changed in each

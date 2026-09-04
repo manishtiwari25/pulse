@@ -19,10 +19,11 @@ uncommitted work.
    - failure trigger
    - recovery checks
 4. Invoke `pulse-sandbox` when supported, print its exact harness-specific
-   recommendation warning with the matching sandbox documentation URL, and
-   report the active harness's real boundary before any command or tool.
-   Prefer isolation; otherwise disclose unsandboxed execution and continue
-   under normal permissions unless a stronger policy applies.
+   recommendation warning with the matching sandbox documentation URL once at
+   the start of the session, and report the active harness's real boundary
+   before any command or tool. Prefer isolation; otherwise disclose
+   unsandboxed execution and continue under normal permissions unless a
+   stronger policy applies.
 5. Read the canonical PULSE bootstrap sources:
    - `docs/workflows/bootstrap-control-plane.md`
    - `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md`

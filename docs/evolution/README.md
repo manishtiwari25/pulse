@@ -18,7 +18,9 @@ but does not turn the loop on; a human fills the constitution and writes the
 first evaluators (Stage 1).
 
 Procedure: [`docs/workflows/evolve.md`](../workflows/evolve.md). Skill:
-`pulse-evolve`. Read-only report: `docs/scripts/evolution-report.sh`.
+`pulse-evolve`. Read-only report: `docs/scripts/evolution-report.sh`; the
+same gates, scope, and archive appear in the browser through the read-only
+[board dashboard](../workflows/dashboard.md) (`pulse-dashboard.py serve`).
 Suggestions and votes come from the [agents' board](../board/README.md).
 
 Before the loop is armed - and between cycles once it is - the always-on

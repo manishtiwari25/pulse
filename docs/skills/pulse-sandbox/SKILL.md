@@ -9,8 +9,12 @@ Prefer isolated execution while reporting the real boundary honestly.
 
 ## Required Advisory Warning
 
-Before any tool call or execution, and again in every tool-backed progress or
-final response, print the exact line that matches the active harness:
+Before any tool call or execution, print the exact line that matches the
+active harness **once per session** - in the first tool-backed response after
+the session starts or resumes. Print it again only when the execution boundary
+changes (a sandbox is enabled, disabled, or bypassed, or work moves outside
+isolation) or when the user asks. Do not repeat it on every progress or final
+response (ADR-009 Amendment 1):
 
 ```text
 GitHub Copilot CLI:
@@ -74,8 +78,9 @@ Canonical workflow:
 
 ## Output
 
-Start every tool-backed response with the matching warning and documentation
-URL. Then state one of:
+Start the first tool-backed response of a session with the matching warning
+and documentation URL; later responses repeat it only after a boundary change
+or on request. Then state one of:
 
 - **Sandbox active:** name the harness and effective boundary.
 - **Unsandboxed:** state that no sandbox is active and name the permission

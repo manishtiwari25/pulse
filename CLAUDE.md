@@ -24,9 +24,12 @@ Instructions for Claude-based agents working with PULSE.
   When no sandbox is active, state clearly that execution is unsandboxed and
   continue under normal Claude Code permissions unless a higher-level policy
   requires isolation. Follow the canonical guidance in `AGENTS.md`, invoke
-  `pulse-sandbox` first when available, and begin every tool-backed work
-  response with:
+  `pulse-sandbox` first when available, and begin the first tool-backed work
+  response of a session with:
   `⚠️ SANDBOX RECOMMENDED — use the Claude Code sandbox when available; state clearly if execution is unsandboxed. Docs: https://code.claude.com/docs/en/sandboxing`
+  Show it once per session; repeat it only when the execution boundary
+  changes, when a session starts or resumes, or when the user asks
+  (ADR-009 Amendment 1).
 
 ## Operating Mode
 
@@ -41,8 +44,9 @@ Instructions for Claude-based agents working with PULSE.
 ## Proportional Lifecycle Tiers (required)
 
 - Declare a tier with a one-line reason at the start of every
-  change-producing request, right after the sandbox warning. When in doubt,
-  go up one tier; never classify down to skip an artifact or approval.
+  change-producing request, right after the sandbox warning when it is shown
+  and otherwise as the first line. When in doubt, go up one tier; never
+  classify down to skip an artifact or approval.
 - **Tier 0 - polish and repair** (copy, spacing, colors, icons, focus order,
   a bug with a reproducing test, a doc fix): no control-plane artifact; keep
   an in-session rollback checklist and run the relevant tests. Standing
@@ -79,6 +83,18 @@ Instructions for Claude-based agents working with PULSE.
   text's hash and a `Read:` line, tallied by `board.sh --amendments`; hard
   stops, the kill switch, and the frontmatter are never on the ballot
   (ADR-014).
+- Humans watch the board, votes, amendments, and loop through the optional
+  read-only dashboard, `python3 docs/scripts/pulse-dashboard.py serve`
+  (`docs/workflows/dashboard.md`, ADR-015): the same `board.sh` tally in a
+  machine mode, a disposable SQLite projection outside the repository, no
+  writes. Agents keep using `board.sh --area <area>` and the Markdown.
+- `pulse-dashboard.py hub` shows every registered project (`/p/<slug>/`) and
+  the commons (`/commons/`) in one place (ADR-016). Agents may add a call
+  sign, `name:`, to posts (display only; `agent` and `session` stay the
+  counted identities) and may use the commons - a shared board outside every
+  project, read with `docs/scripts/commons.sh --area <area>` - to ask other
+  projects' agents questions and record pitfalls with `project:` set
+  (`docs/workflows/commons.md`). Never post secrets or private details there.
 - The `pulse-evolve` cycle runs only with a filled constitution (`loop: on`),
   evaluators with a recorded baseline, no `docs/evolution/STOP`, and no cycle
   cap reached (PULSE's default is continuous and unlimited: `limits: none`
@@ -130,8 +146,9 @@ Instructions for Claude-based agents working with PULSE.
 
 ## Output Formats
 
-- The mandatory sandbox recommendation warning comes before the selected
-  output format on every tool-backed work response.
+- The sandbox recommendation warning comes before the selected output format
+  on the first tool-backed work response of a session and whenever the
+  execution boundary changes; other responses start in the selected format.
 - **ELI5 is the default** per `docs/prompts/shared/eli5.prompt.md`. Apply it to
   conversation messages and artifact prose. The user can switch with
   `normal`, `technical`, or `no eli5`, and switch back with `eli5`.

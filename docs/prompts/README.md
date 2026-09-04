@@ -13,6 +13,12 @@ Reusable prompt templates and future generated implementation prompts live here.
 
 - `shared/` - shared prompt templates and reusable workflows
 
+## Generated Implementation Prompts
+
+- [`project-board-observability-dashboard.prompt.md`](project-board-observability-dashboard.prompt.md) -
+  the implementation prompt that built the local read-only board and voting
+  dashboard (ADR-015, delivered 2026-09-04); reuse it for a rebuild or a port.
+
 ## Setup
 
 - [`integration-prompts.md`](integration-prompts.md) - one copy-and-paste

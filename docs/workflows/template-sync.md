@@ -47,9 +47,16 @@ trees against the recorded `lastSyncedCommit` (or the full tree on first sync)
 
 | Class | Paths | Action |
 | --- | --- | --- |
-| **Sync-safe** (template-owned) | `docs/workflows/`, `docs/scripts/`, `docs/skills/`, `docs/prompts/shared/`, `docs/*/_template*.md`, `docs/board/README.md`, `docs/evolution/README.md`, `docs/versions.md`, `.editorconfig`, `.gitattributes` | Copy from template when changed upstream and unmodified locally; if modified both sides, escalate to review. |
+| **Sync-safe** (template-owned) | `docs/workflows/`, `docs/scripts/` (including `docs/scripts/tests/`), `docs/skills/`, `docs/prompts/shared/`, `docs/*/_template*.md`, `docs/board/README.md`, `docs/evolution/README.md`, `docs/versions.md`, `.editorconfig`, `.gitattributes` | Copy from template when changed upstream and unmodified locally; if modified both sides, escalate to review. |
 | **Review-first** (rules, customized per repo) | `AGENTS.md`, `CLAUDE.md`, `README.md`, `.github/copilot-instructions.md`, `.github/CODEOWNERS`, `docs/README.md`, `docs/*/README.md` other than the two above | Never overwrite. Show the upstream diff and merge rule changes into the local version manually, preserving project-specific content. |
 | **Never sync** (project-owned content) | `docs/context/`, `docs/architecture/`, non-template files in `docs/decisions/`, `docs/features/`, `docs/memory/`, `docs/plans/` (including `WU-*` work units), `docs/prompts/` (outside `shared/`), `docs/evolution/constitution.md`, `docs/evolution/evaluators.md`, `docs/evolution/archive.md`, `docs/evolution/fixtures/`, `docs/evolution/STOP`, every post under `docs/board/`, archived `docs/usage/usage-log.md` rows, all product code | Leave untouched. |
+
+The board dashboard's SQLite projection is generated data in the user's cache
+outside the repository (`docs/workflows/dashboard.md`); it is never tracked,
+so it is never in any class above. The same holds for the hub's registry
+(`~/.pulse/projects.json`) and for the commons repository
+(`docs/workflows/commons.md`): both live outside every project and are the
+user's own data, never synced and never deleted by a sync.
 
 ## Procedure
 

@@ -5,7 +5,7 @@ status: Done
 tier: 2
 date: 2026-08-22
 delivered: 2026-08-22
-updated: 2026-08-27
+updated: 2026-09-04
 priority: Critical
 areas: [agents, security, execution]
 tags: [feature, sandbox, skills, copilot, claude, opencode]
@@ -17,8 +17,8 @@ tags: [feature, sandbox, skills, copilot, claude, opencode]
 
 The `pulse-sandbox` skill recommends the active harness's real isolation
 boundary before agent-controlled execution. Always-on instructions require a
-visible warning and honest disclosure when execution is unsandboxed, but
-missing sandbox support does not block ordinary work.
+visible warning once per session and honest disclosure when execution is
+unsandboxed, but missing sandbox support does not block ordinary work.
 
 ## User Story
 
@@ -33,7 +33,8 @@ balance safety with environments where a sandbox is unavailable.
 - [x] Add `pulse-sandbox` to the complete canonical skill pack.
 - [x] Invoke it first when a supported runner may execute or modify anything.
 - [x] Show the exact harness-specific sandbox warning and documentation URL in
-  every tool-backed work response.
+  the first tool-backed work response of a session, and again only when the
+  execution boundary changes or the user asks (ADR-009 Amendment 1).
 - [x] Map Copilot CLI, Claude Code, and OpenCode to accurate isolation paths.
 - [x] Report whether the effective boundary is sandboxed or unsandboxed.
 - [x] Prefer sandboxed execution when it is available and practical.
@@ -45,8 +46,8 @@ balance safety with environments where a sandbox is unavailable.
 
 ### Non-Functional
 
-- [x] **Visibility:** the warning is stable, always visible, and links directly
-  to the active harness's sandbox instructions.
+- [x] **Visibility:** the warning is stable, shown at the start of every
+  session, and links directly to the active harness's sandbox instructions.
 - [x] **Safety:** unsandboxed execution is explicit rather than hidden.
 - [x] **Portability:** the skill names required properties rather than
   pretending every harness uses the same mechanism.
@@ -56,7 +57,7 @@ balance safety with environments where a sandbox is unavailable.
 
 ### Included
 
-- Always-on recommendation warning and boundary-reporting rule.
+- Once-per-session recommendation warning and boundary-reporting rule.
 - Portable `pulse-sandbox` skill.
 - Harness mapping for Copilot CLI, Claude Code, OpenCode, and unknown runners.
 - Sandboxed and unsandboxed execution paths.
@@ -71,7 +72,8 @@ balance safety with environments where a sandbox is unavailable.
 
 ## Interface Changes
 
-Every tool-backed work response begins with:
+The first tool-backed work response of a session begins with (repeated only
+after a boundary change or on request):
 
 ```text
 ⚠️ SANDBOX RECOMMENDED — use <recommended sandbox> when available; state clearly if execution is unsandboxed. Docs: <matching sandbox documentation URL>

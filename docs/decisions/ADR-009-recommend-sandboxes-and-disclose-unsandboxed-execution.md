@@ -1,8 +1,9 @@
 ---
 id: ADR-009
 title: Recommend Sandboxes and Disclose Unsandboxed Execution
-status: Accepted
+status: Accepted (amended 2026-09-04)
 date: 2026-08-27
+updated: 2026-09-04
 delivery: delivered
 delivered: 2026-08-27
 areas: [agents, security, execution, harnesses]
@@ -53,8 +54,8 @@ Choose **Option 2**.
 
 - Keep `pulse-sandbox` as the first advisory skill for tool-backed work when
   the runner supports it.
-- Keep an always-visible, harness-specific warning with the matching official
-  documentation:
+- Keep a visible, harness-specific warning with the matching official
+  documentation, shown once per session (Amendment 1):
   `⚠️ SANDBOX RECOMMENDED — use <recommended sandbox> when available; state clearly if execution is unsandboxed. Docs: <sandbox documentation URL>`
 - Prefer an already active sandbox and use the narrowest practical
   filesystem, network, credential, MCP, and LSP access.
@@ -100,3 +101,37 @@ Choose **Option 2**.
   documentation.
 - [x] Validate warning consistency, links, HTML, skill discovery, and diff
   safety.
+- [x] Amendment 1: change the warning cadence to once per session in every
+  entry point, skill, workflow, feature spec, and evaluator that named it.
+
+## Amendments
+
+### Amendment 1 - Warn once per session (2026-09-04)
+
+**Signal.** The maintainer reported that the warning line printed at the top
+of every tool-backed response - progress updates and final hand-offs included -
+turns a useful safety reminder into noise that people stop reading.
+
+**Decision.** The warning is shown **once per session**: on the first
+tool-backed work response after a session starts or resumes. It is repeated
+only when the execution boundary changes (a sandbox is enabled, disabled, or
+bypassed, or work moves outside isolation) or when the user asks for it. Every
+other tool-backed response starts directly in the selected output format and
+mentions the boundary only when it changed.
+
+**Unchanged.** `pulse-sandbox` still runs first when available; the actual
+boundary is still determined and disclosed; unsandboxed execution is still
+named as such and never described as isolated; the exact warning text, the
+harness mapping, and every hard stop stay as written.
+
+**Reason.** A warning read once carries the same information as a warning read
+fifty times, and a reminder people scroll past protects no one. Repeating it at
+each boundary change keeps the one moment where the information is new.
+
+**Scope.** Wording changed in `AGENTS.md`, `CLAUDE.md`,
+`.github/copilot-instructions.md`, `README.md`, `docs/skills/README.md`,
+`docs/skills/pulse-sandbox/SKILL.md`,
+`docs/workflows/sandboxed-agent-execution.md`, `docs/workflows/reflect.md`,
+`docs/context/product.md`, `docs/features/005-sandbox-first-agent-execution.md`,
+`docs/features/006-portable-agent-skills.md`, the bootstrap workflow, prompt,
+and skill, and evaluator C2 in `docs/evolution/evaluators.md`.

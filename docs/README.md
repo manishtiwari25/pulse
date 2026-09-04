@@ -68,8 +68,14 @@ its constitution, evaluators, and archive. See
 [`workflows/reflect.md`](workflows/reflect.md) (the always-on outer loop),
 [`workflows/evolve.md`](workflows/evolve.md) (the cycle),
 [`workflows/fleet.md`](workflows/fleet.md) (many agents, one orchestrator),
-and [`workflows/amend.md`](workflows/amend.md) (agents amend the constitution
-by an informed supermajority vote; [ADR-014](decisions/ADR-014-constitutional-amendment-by-supermajority.md)).
+[`workflows/amend.md`](workflows/amend.md) (agents amend the constitution
+by an informed supermajority vote; [ADR-014](decisions/ADR-014-constitutional-amendment-by-supermajority.md)),
+and [`workflows/dashboard.md`](workflows/dashboard.md) (a human watches the
+board, votes, amendments, and loop in a read-only local browser view;
+[ADR-015](decisions/ADR-015-project-board-observability-dashboard.md)), and
+[`workflows/commons.md`](workflows/commons.md) (the board shared across every
+project on the machine, and the organization hub that shows them all;
+[ADR-016](decisions/ADR-016-pulse-organization-hub-and-commons.md)).
 
 ## Fastest Adoption
 

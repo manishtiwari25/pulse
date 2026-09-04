@@ -16,11 +16,14 @@ run. "No signal this session" is a valid result.
 
 ## Procedure
 
-1. Print the sandbox warning and the tier of the task you are reflecting on.
+1. Print the sandbox warning if this is the session's first tool-backed
+   response, then the tier of the task you are reflecting on.
 2. Run `docs/scripts/reflect.sh --area <area>` (read-only). It prints the
    working state, board summary, loop gates, product scope, hygiene (stray
    `evolve/*` branches, worktrees), health checks, the highest level allowed
-   right now, and the next human step. Do not compute these by hand.
+   right now, and the next human step. When held-out fixtures are the gate,
+   that step uses `docs/scripts/evolution-setup.sh` so the owner does not
+   invent ids or edit both gate lines manually. Do not compute these by hand.
 3. **Level A - observe.** List this session's signals, one line each with
    evidence, product first: failing or flaky tests, type or lint findings,
    coverage gaps, accessibility or performance reports, `TODO`/`FIXME`

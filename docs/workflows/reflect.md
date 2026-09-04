@@ -98,6 +98,12 @@ closed gate and report it; never work around a gate.
    come from the loop (variants) or from the maintainer's instruction
    (baselines).
 
+When the baseline exists but the held-out set is pending, the digest points
+to `docs/scripts/evolution-setup.sh`. Its `prepare` command assigns `H01` and
+`H02` in a maintainer-chosen private directory; after the owner fills them,
+`activate` validates them without displaying their contents and wires the two
+existing gates. Reflect still never writes evaluator or constitution files.
+
 ### Level D - Evolve (when `loop: on`, held-out set listed, no cap reached)
 
 With `limits: none` in the constitution (PULSE's default) no cap exists; with
@@ -139,7 +145,8 @@ the orchestrator merges the lists.
 
 ## Output
 
-Start with the sandbox warning and the tier of the task being reflected on,
+Start with the sandbox warning when this is the session's first tool-backed
+response (otherwise omit it) and the tier of the task being reflected on,
 then:
 
 - the level reached, and the gate that stopped the climb with its human step;

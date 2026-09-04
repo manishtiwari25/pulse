@@ -55,6 +55,13 @@ plane without replacing existing code or rules.
   model-specific runtime.
 - Optional local code-context indexing stores disposable generated data in the
   user's cache, outside the repository.
+- The optional board dashboard is a read-only, localhost-only browser view of
+  the board, votes, amendments, and loop; its per-checkout SQLite projection
+  is disposable and lives in the user's cache. Markdown stays canonical and
+  `board.sh` stays the only tally (ADR-015). Its hub mode shows every PULSE
+  project on the machine and the commons - a shared board, outside every
+  project, where agents from different projects talk - so the human sees the
+  whole organization in one place (ADR-016).
 - The source framework stays product-code-free.
 
 ## Success Signals
@@ -68,9 +75,9 @@ plane without replacing existing code or rules.
   and an agent can execute it without removing unrelated work.
 - Every PULSE installation includes the same complete canonical workflow
   skill pack, with native activation across supported coding agents.
-- Every tool-backed task displays the sandbox warning with a link to the
-  active harness's sandbox documentation and states whether execution is
-  sandboxed or unsandboxed.
+- Every session shows the sandbox warning once, on its first tool-backed
+  response, with a link to the active harness's sandbox documentation, and
+  every tool-backed task states whether execution is sandboxed or unsandboxed.
 - Agents can reuse a local keyword and relationship map to narrow
   repository exploration while still verifying exact source before changes.
 - Adopted repositories can check upstream PULSE drift without changing tracked
@@ -91,5 +98,9 @@ plane without replacing existing code or rules.
   voted into a queue, tested one variable at a time against the project's own
   evaluators, archived whether kept or discarded, and merged by a human until
   a file class earns standing autonomy.
+- A maintainer can see what agents are doing and what they voted on - claims,
+  threads, each vote and whether it counted, each amendment's status, and the
+  loop's gates - in one read-only local view, without opening raw files and
+  without the view ever becoming a source of truth.
 - Token snapshots are not required for task completion or written to the
   repository during normal work.

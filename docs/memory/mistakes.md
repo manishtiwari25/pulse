@@ -12,6 +12,12 @@
   of `docs/workflows/evolve.md`. Check `evolution-report.sh` - its PRODUCT
   SCOPE verdict and HYGIENE list show both problems before a cycle runs
   (ADR-012 Amendment 4).
+- `2026-09-04` - A per-project cache key hashed the repository path as given,
+  so on macOS a fixture under `/var/folders/...` and the same directory seen
+  as `/private/var/folders/...` produced two projections and a failing test.
+  Avoid by: resolve paths (`Path(...).resolve()`) before hashing, comparing,
+  or deriving an identity from them, and build test fixtures from resolved
+  paths too; a stale generated cache is a symptom to check before the parser.
 - `2026-09-04` - The first evolve cycle (archive A-001, B-004) measured
   fixtures with full autonomous runs (`copilot -p --allow-all-tools`) and
   found what three response-only baselines had hidden: every Tier 2 fixture
@@ -37,3 +43,4 @@
 ## Entry Format
 
 - `YYYY-MM-DD` - Short mistake or lesson. Avoid by: concrete prevention rule.
+- `2026-09-04` - A CLI that writes user-level state by default (`pulse-dashboard.py index` registers its repository in `~/.pulse/projects.json`) leaked three temporary fixtures into the real registry because one test called it without `--no-register` and nothing pinned the home directory. Avoid by: when a tool gains any default side effect outside the repository, pin its home variable (`PULSE_HOME`, `PULSE_DASHBOARD_HOME`, `PULSE_COMMONS`) to a throwaway directory in `setUpModule`, not per test class, and add one assertion that the real location is byte-identical before and after; then check `~/.pulse` and the cache dir by hand once after the first full run.

@@ -42,6 +42,15 @@
   kill switch as human commits on immutable paths, run one variable per
   cycle, and let autonomy be earned per file class and lost on the first
   incident.
+- `2026-09-04` - A safety banner repeated on every message becomes noise.
+  Apply when: show a standing warning once per session and again only when
+  the fact it reports changes (the boundary moved) or the user asks; keep the
+  disclosure itself on every task.
+- `2026-09-04` - One tally, two renderings. Apply when: a human view is built
+  over agent data that already has an official computation - add a machine
+  mode to the same script (`--records`), prove the text output is
+  byte-identical, project into a disposable store outside the repository,
+  and keep the view read-only; never re-implement the rule in the UI.
 - `2026-09-04` - Automate a human gate down to its irreducible part. Apply
   when: a rule needs a human to supply evidence the agent must not author
   (held-out fixtures, a baseline rating); ship a helper that assigns the ids,

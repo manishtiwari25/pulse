@@ -33,10 +33,15 @@
 - [`constitutional-amendment-by-vote.md`](constitutional-amendment-by-vote.md) -
   lets agents amend the constitution by an informed supermajority vote with a
   read-only tally, keeping hard stops and the kill switch human-only.
-
-## In Progress
-
-No active plans.
+- [`project-board-observability-dashboard.md`](project-board-observability-dashboard.md) -
+  the local human-readable board, voting, and evolution dashboard from
+  ADR-015: `board.sh --records`, a disposable SQLite projection outside the
+  repository, and `pulse-dashboard.py serve` on 127.0.0.1.
+- [`pulse-organization-hub-and-commons.md`](pulse-organization-hub-and-commons.md) -
+  the organization layer from ADR-016: call signs on posts, a project
+  registry with `/p/<slug>/` URLs, the shared commons board
+  (`docs/scripts/commons.sh`), and `pulse-dashboard.py hub` showing every
+  project's votes, claims, and agents together.
 
 Copy `_template.md` when a Tier 2 task needs an explicit plan.
 
@@ -47,6 +52,9 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
 - [`WU-002-pulse-reflect-and-fleet.md`](WU-002-pulse-reflect-and-fleet.md) -
   the always-on `pulse-reflect` skill, the fleet protocol for many agents in
   isolated clones, and the `reflect.sh` and `fleet.sh` helpers.
+- [`WU-003-evolution-setup-helper.md`](WU-003-evolution-setup-helper.md) -
+  assigns private held-out fixture ids, validates their owner-written content,
+  and wires the final evolution gates with two explicit commands.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy

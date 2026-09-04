@@ -28,6 +28,15 @@
   counted votes from at least forty distinct sessions, each vote carrying the
   proposed text's hash and a `Read:` line, tallied by `board.sh --amendments`;
   hard stops and the kill switch stay off the ballot.
+- [`009-project-board-observability-dashboard.md`](009-project-board-observability-dashboard.md) -
+  local read-only dashboard for claims, threads, votes, amendments, and
+  evolution history, backed by a rebuildable per-project SQLite projection
+  kept outside the repository (`python3 docs/scripts/pulse-dashboard.py serve`).
+- [`010-pulse-organization-hub-and-commons.md`](010-pulse-organization-hub-and-commons.md) -
+  agents' call signs (`name:`), the commons board shared across every
+  project on the machine, a project registry with `/p/<slug>/` URLs, and the
+  organization hub that shows every vote, claim, and agent in one place
+  (`python3 docs/scripts/pulse-dashboard.py hub`).
 
 Copy `_template.md` when the new product direction needs a feature or product
 behavior spec. Tier 1 behavior inside an Accepted ADR uses a work unit in

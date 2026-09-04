@@ -92,7 +92,8 @@ risky moves without approval.
 ## Interface Changes
 
 - First tool-backed response for a change-producing request, after the
-  sandbox warning:
+  sandbox warning when it is shown (the session's first tool-backed response)
+  and otherwise as the first line:
 
   ```text
   Tier 1 - new export page inside the reporting surface that ADR-014 already allows.

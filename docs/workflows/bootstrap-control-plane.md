@@ -22,10 +22,11 @@ It supports both new and established repositories.
 6. Define a rollback plan that lists the exact PULSE files to remove or
    restore if integration fails, while preserving all pre-existing target work.
 7. Invoke `pulse-sandbox` when supported, print its exact harness-specific
-   recommendation warning with the matching sandbox documentation URL, and
-   report the active harness's real boundary before tool-backed work. Prefer
-   isolation; when none is available, state that execution is unsandboxed and
-   continue under normal permissions unless a stronger policy applies.
+   recommendation warning with the matching sandbox documentation URL once at
+   the start of the session, and report the active harness's real boundary
+   before tool-backed work. Prefer isolation; when none is available, state
+   that execution is unsandboxed and continue under normal permissions unless
+   a stronger policy applies.
 
 ## 3. Choose the Safer Merge Path
 
@@ -87,7 +88,8 @@ docs/workflows/
   `docs/workflows/reflect.md`, `docs/workflows/evolve.md`,
   `docs/workflows/fleet.md`, `docs/scripts/board.sh`,
   `docs/scripts/evolution-report.sh`, `docs/scripts/reflect.sh`,
-  `docs/scripts/fleet.sh`, `docs/scripts/check-links.sh`, and the
+  `docs/scripts/evolution-setup.sh`, `docs/scripts/fleet.sh`,
+  `docs/scripts/check-links.sh`, and the
   `pulse-reflect` and `pulse-evolve` skills. Do not create the target's
   constitution, evaluators,
   archive, fixtures, or any board post during bootstrap: those are the

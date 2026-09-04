@@ -5,8 +5,10 @@ test, script, generated executable, local MCP server, or language server.
 
 ## 0. Warn and Load the Skill
 
-Invoke `pulse-sandbox` first when the runner supports skills. Begin every
-tool-backed work response with the exact line for the active harness:
+Invoke `pulse-sandbox` first when the runner supports skills. Begin the first
+tool-backed work response of a session with the exact line for the active
+harness, and show it again only when the execution boundary changes or the
+user asks (ADR-009 Amendment 1):
 
 ```text
 GitHub Copilot CLI:
@@ -191,7 +193,8 @@ unsandboxed result as isolated.
 
 Report:
 
-- the required sandbox recommendation warning
+- the sandbox recommendation warning when this is the session's first
+  tool-backed response or the boundary changed since it was last shown
 - harness and sandbox used
 - effective filesystem, network, credential, MCP, and LSP policy
 - any narrow grants

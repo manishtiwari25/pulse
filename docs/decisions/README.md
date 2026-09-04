@@ -12,12 +12,14 @@
 | [ADR-006](ADR-006-token-aware-delegation-advice.md) | Use Optional Token History for Honest Delegation Advice | Accepted | 2026-08-13 | delivered 2026-08-13 |
 | [ADR-007](ADR-007-local-code-context-index.md) | Use a Local Retrieval Index and Relationship Graph for Code Context | Accepted | 2026-08-20 | delivered 2026-08-22 |
 | [ADR-008](ADR-008-sandbox-first-agent-execution.md) | Require Fail-Closed Sandboxes for Agent Execution | Superseded | 2026-08-22 | retired |
-| [ADR-009](ADR-009-recommend-sandboxes-and-disclose-unsandboxed-execution.md) | Recommend Sandboxes and Disclose Unsandboxed Execution | Accepted | 2026-08-27 | delivered 2026-08-27 |
+| [ADR-009](ADR-009-recommend-sandboxes-and-disclose-unsandboxed-execution.md) | Recommend Sandboxes and Disclose Unsandboxed Execution | Accepted (amended 2026-09-04) | 2026-08-27 | delivered 2026-08-27 |
 | [ADR-010](ADR-010-optional-usage-telemetry.md) | Make Usage Telemetry Optional | Accepted | 2026-08-27 | delivered 2026-08-28 |
 | [ADR-011](ADR-011-proportional-lifecycle-tiers.md) | Size the Lifecycle Paperwork to the Change with Proportional Tiers | Accepted | 2026-09-03 | delivered 2026-09-03 |
 | [ADR-012](ADR-012-recursive-self-improvement-loop.md) | Give Adopting Repositories a Measured, Constitution-Bounded Self-Improvement Loop | Accepted | 2026-09-03 | delivered 2026-09-03 |
 | [ADR-013](ADR-013-private-repository-no-static-site.md) | Keep the Repository Private and Retire the Static Site | Accepted | 2026-09-03 | delivered 2026-09-03 |
 | [ADR-014](ADR-014-constitutional-amendment-by-supermajority.md) | Let Agents Amend the Constitution by an Informed Supermajority Vote | Accepted | 2026-09-03 | delivered 2026-09-03 |
+| [ADR-015](ADR-015-project-board-observability-dashboard.md) | Add a Local Project Board Dashboard over a Rebuildable SQLite Projection | Accepted | 2026-09-04 | delivered 2026-09-04 |
+| [ADR-016](ADR-016-pulse-organization-hub-and-commons.md) | Give Agents Call Signs, a Cross-Project Commons, and an Organization Hub | Accepted | 2026-09-04 | delivered 2026-09-04 |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable
 architectural or product decision.

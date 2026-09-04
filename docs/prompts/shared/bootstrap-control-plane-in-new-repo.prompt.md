@@ -93,7 +93,9 @@ Rules:
 - Before editing, define a rollback plan that identifies the target baseline,
   failure trigger, exact PULSE files to reverse, and recovery checks.
 - Before any tool-backed work, invoke `pulse-sandbox` when supported and print
-  its exact harness-specific warning:
+  its exact harness-specific warning once per session, on the first
+  tool-backed response (again only when the execution boundary changes or the
+  user asks):
   `⚠️ SANDBOX RECOMMENDED — use <recommended sandbox> when available; state clearly if execution is unsandboxed. Docs: <matching sandbox documentation URL>`.
   Use the official sandbox page for the active harness, prefer its real
   isolation boundary, and disclose unsandboxed execution when no sandbox is
@@ -125,8 +127,8 @@ Rules:
   template, `docs/evolution/README.md` and its three templates,
   `docs/workflows/board.md`, `docs/workflows/reflect.md`,
   `docs/workflows/evolve.md`, `docs/workflows/fleet.md`, `board.sh`,
-  `evolution-report.sh`, `reflect.sh`, `fleet.sh`, `check-links.sh`,
-  `pulse-reflect`, and `pulse-evolve`). Do not write
+  `evolution-report.sh`, `reflect.sh`, `evolution-setup.sh`, `fleet.sh`,
+  `check-links.sh`, `pulse-reflect`, and `pulse-evolve`). Do not write
   the target's constitution, evaluators, archive, fixtures, or any board post;
   those are the target's own human commits and the loop stays off until a
   baseline exists.
@@ -168,8 +170,9 @@ git diff --name-only
 Also resolve changed relative Markdown links, run existing targeted docs
 checks, confirm product files and user work were preserved, search for stale
 framework assumptions and local paths, and confirm no hidden control folder
-was added. Confirm the copied instructions require the exact sandbox warning,
-the matching documentation, and clear sandboxed-versus-unsandboxed disclosure.
+was added. Confirm the copied instructions require the exact sandbox warning
+once per session, the matching documentation, and clear
+sandboxed-versus-unsandboxed disclosure.
 
 If validation cannot be restored safely, follow the adopted rollback workflow
 and verify the original target baseline.
