@@ -51,6 +51,14 @@
   mode to the same script (`--records`), prove the text output is
   byte-identical, project into a disposable store outside the repository,
   and keep the view read-only; never re-implement the rule in the UI.
+- `2026-09-04` - A baseline row belongs to a commit, not to "main". Apply
+  when: an evolve cycle starts after the default branch moved since the row
+  the loop compares to - diff the fixture-visible tree (entry files,
+  `docs/**` minus the stripped answer keys) between the row's commit and
+  HEAD; if anything changed, re-measure the parent as a new `B-` row in the
+  same wave as the variant instead of reusing the old row, and say so in
+  the claim. Identical stripped content is the only case where reuse is
+  honest (B-004 for A-001); B-005 was needed for A-002.
 - `2026-09-04` - Automate a human gate down to its irreducible part. Apply
   when: a rule needs a human to supply evidence the agent must not author
   (held-out fixtures, a baseline rating); ship a helper that assigns the ids,
