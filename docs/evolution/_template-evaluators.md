@@ -106,7 +106,16 @@ Fixture ids listed here are scored but never shown to the loop when it forms
 or reviews a hypothesis. Keep their full text outside the repository or in a
 maintainer-only location and rotate them at each prune.
 
-Held out: <F0N, F0N>
+After the first baseline, let the setup helper assign the ids and wire both
+gates:
+
+```bash
+docs/scripts/evolution-setup.sh prepare --store /private/path
+# Fill the generated H01.md and H02.md.
+docs/scripts/evolution-setup.sh activate --store /private/path
+```
+
+Held out: pending
 
 ## Human calibration
 

@@ -32,6 +32,26 @@ project writes a number, and a plateau changes the hypothesis instead of
 stopping (ADR-012 amendment, 2026-09-03). `limits: none` in the constitution
 removes every budget limit at once (ADR-012 Amendment 2; see Limits below).
 
+## Fast owner setup
+
+After the constitution, evaluator suite, and baseline exist, the agent must
+not invent the final hidden tests it will later be measured against. The
+owner writes only those two private fixture bodies; the helper handles their
+ids and both repository gate lines:
+
+```bash
+docs/scripts/evolution-setup.sh prepare --store /private/path
+# Fill H01.md and H02.md in that private directory.
+docs/scripts/evolution-setup.sh activate --store /private/path
+```
+
+`prepare` never overwrites a fixture. `activate` validates the private files
+without printing their contents, requires a recorded baseline and an absent
+`STOP`, then sets `Held out: H01, H02` and `loop: on`. It does not commit;
+the owner reviews and commits those two human-owned gate files. The private
+path is chosen by the owner, stays outside the repository, and is never
+written into tracked files.
+
 ## The product first
 
 In a repository that adopts PULSE the loop's subject is the product that

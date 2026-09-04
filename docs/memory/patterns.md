@@ -42,6 +42,12 @@
   kill switch as human commits on immutable paths, run one variable per
   cycle, and let autonomy be earned per file class and lost on the first
   incident.
+- `2026-09-04` - Automate a human gate down to its irreducible part. Apply
+  when: a rule needs a human to supply evidence the agent must not author
+  (held-out fixtures, a baseline rating); ship a helper that assigns the ids,
+  scaffolds the private files, validates them blind, and wires every gate
+  line, so the human's whole task is writing the evidence - and refuses
+  rather than overwriting anything the human already wrote by hand.
 
 ## Populate When
 
