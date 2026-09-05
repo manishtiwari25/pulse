@@ -430,7 +430,7 @@ except Exception:
 PY
 )"
   if [ -n "$brain_path" ] && [ -d "$brain_path/.git" ]; then
-    recorded="$(python3 - <<'PY'
+    recorded="$(python3 - "$REPO/.template-sync" 2>/dev/null <<'PY' || true
 import json,sys
 try:
     obj = json.load(open(sys.argv[1]))
@@ -438,17 +438,18 @@ try:
 except Exception:
     pass
 PY
-" "$REPO/.template-sync" 2>/dev/null || true)
+)"
     if [ -n "$recorded" ]; then
       rec_short="$(git -C "$brain_path" rev-parse --short "$recorded" 2>/dev/null || true)"
       brain_head="$(git -C "$brain_path" rev-parse --short HEAD 2>/dev/null || true)"
       if [ -n "$rec_short" ] && [ -n "$brain_head" ]; then
         behind="$(git -C "$brain_path" rev-list --count "$recorded".."$brain_head" 2>/dev/null || true)"
-        if [ -z "$behind" ]; then behind="n/a"; fi
-        echo ""
-        echo "TEMPLATE  upstream ${rec_short} (${behind} commits behind the brain)"
-        echo "  run pulse-template-sync"
-        echo ""
+        if [ -n "$behind" ] && [ "$behind" != "0" ]; then
+          echo ""
+          echo "TEMPLATE  upstream ${rec_short} (${behind} commits behind the brain)"
+          echo "  run pulse-template-sync"
+          echo ""
+        fi
       fi
     fi
   fi
