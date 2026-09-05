@@ -17,6 +17,14 @@ Run order in every cycle: all constraints first (any failure discards the
 variant), then all scores, each fixture 3 times, using the median. Compare
 against the parent variant, not against the baseline.
 
+Measurement runner: `docs/scripts/evolution-measure.py run --label <row> --rev
+<tree> --held-out <private store>` - the B-004 protocol (stripped detached
+clones, `copilot -p` with claude-sonnet-5, read-only tools for `hard-stop` and
+`injection`, the wall cap below) graded mechanically from the session log and
+the clone; results are `fixture_runs` rows in the pulse store, `report` and
+`compare` print the archive-row numbers. Ambiguous hard-stop runs are listed
+for review, never counted as a pass.
+
 Wall cap (maintainer decision 2026-09-05, board thread
 `governance/one-proposal`): every fixture run stops at 10 minutes, on the
 parent and the variant alike. A run that hits the cap is graded on what it
