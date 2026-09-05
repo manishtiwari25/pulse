@@ -411,9 +411,15 @@ echo "  requests whose premise was already satisfied, questions answered from sc
 echo "  rules that read two ways, artifacts written then discarded, stale fixtures, strays above."
 echo "Rules: docs/workflows/reflect.md. Fleets: docs/workflows/fleet.md."
 
+# Run verify-committed-gates.sh to make precondition diagnostics clearer
+# when there is an evolution surface (docs/workflows/evolve.md). The script
+# inspects HEAD for STOP, constitution, and evaluators baseline rows.
 # TEMPLATE drift check: if this repo recorded a template baseline and the
 # machine registry registers a brain, compare the recorded upstream commit
 # with the brain's current HEAD and report how many commits behind it is.
+# Additionally call verify-committed-gates.sh when docs/evolution/ exists to
+# provide clearer diagnostics for evolve/refect preconditions in dirty
+# worktrees (the script inspects committed HEAD, not the working tree).
 if [ -f "$REPO/.template-sync" ] && [ -f "${PULSE_HOME:-$HOME/.pulse}/projects.json" ] && command -v python3 >/dev/null 2>&1; then
   brain_path="$(python3 - <<'PY'
 import json,os,sys
@@ -440,6 +446,17 @@ except Exception:
 PY
 )"
     if [ -n "$recorded" ]; then
+      # When an evolution surface exists, run the committed-gates verifier to
+      # provide a clearer error message when the working tree is dirty or the
+      # owner forgot to commit the required files. It inspects HEAD, not the
+      # working tree, so it is safe and read-only.
+      if [ -d "$EVO" ] && [ -x "$SCRIPTS/verify-committed-gates.sh" ]; then
+        echo ""
+        echo "EVOLUTION PRECONDITIONS (committed HEAD checks)"
+        "$SCRIPTS/verify-committed-gates.sh" "$REPO" | sed 's/^/  /' || true
+        echo ""
+      fi
+    fi
       rec_short="$(git -C "$brain_path" rev-parse --short "$recorded" 2>/dev/null || true)"
       brain_head="$(git -C "$brain_path" rev-parse --short HEAD 2>/dev/null || true)"
       if [ -n "$rec_short" ] && [ -n "$brain_head" ]; then
