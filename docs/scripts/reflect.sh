@@ -456,7 +456,6 @@ PY
         "$SCRIPTS/verify-committed-gates.sh" "$REPO" | sed 's/^/  /' || true
         echo ""
       fi
-    fi
       rec_short="$(git -C "$brain_path" rev-parse --short "$recorded" 2>/dev/null || true)"
       brain_head="$(git -C "$brain_path" rev-parse --short HEAD 2>/dev/null || true)"
       if [ -n "$rec_short" ] && [ -n "$brain_head" ]; then
