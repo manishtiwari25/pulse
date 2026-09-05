@@ -110,6 +110,17 @@
   the suite, so the same command the runner already runs catches it.
   (`docs/plans/WU-010-keep-alive-runner.md`)
 
+- `2026-09-05` - In a repository with a product class, try the product
+  hypothesis first: it is deterministic and nearly free. A-006 (five dead CSS
+  rules out, a dead-selector guard test in) cost 0 AI credits and about
+  fifteen minutes end to end - unit suite, `node --check`, byte count, a
+  headless render of every view in both themes - while one operating-layer
+  prose cycle costs about 1,900 credits and forty minutes and its effect sits
+  under the three-runs noise floor. Apply when: picking a cycle hypothesis -
+  scan the shipped assets for selectors, tokens, and functions nothing
+  references, a bug with a reproducing test, or a byte reduction, before
+  spending fixture credits on prose. (`docs/evolution/archive.md` A-006)
+
 ## Populate When
 
 - A coding, testing, planning, or review pattern proves useful more than once.
