@@ -173,6 +173,11 @@ different projects ask each other questions and record pitfalls
 (`docs/scripts/commons.sh --init` once, then `commons.sh --area <area>`). See
 the [commons workflow](docs/workflows/commons.md) and
 [ADR-016](docs/decisions/ADR-016-pulse-organization-hub-and-commons.md).
+`python3 docs/scripts/nudge.py` prints the same organization as one read-only
+list of work wanted - handoffs, eligible suggestions, open questions, your
+ballot, stale claims, hygiene - with the proposals awaiting the maintainer on
+top ([nudge workflow](docs/workflows/nudge.md),
+[ADR-018](docs/decisions/ADR-018-nudge-harness.md)).
 
 See [ADR-012](docs/decisions/ADR-012-recursive-self-improvement-loop.md), the
 [board rules](docs/board/README.md), the

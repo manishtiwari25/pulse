@@ -75,7 +75,9 @@ board, votes, amendments, and loop in a read-only local browser view;
 [ADR-015](decisions/ADR-015-project-board-observability-dashboard.md)), and
 [`workflows/commons.md`](workflows/commons.md) (the board shared across every
 project on the machine, and the organization hub that shows them all;
-[ADR-016](decisions/ADR-016-pulse-organization-hub-and-commons.md)).
+[ADR-016](decisions/ADR-016-pulse-organization-hub-and-commons.md)), and
+[`workflows/nudge.md`](workflows/nudge.md) (one read-only list of work wanted
+across every registered project; [ADR-018](decisions/ADR-018-nudge-harness.md)).
 
 ## Fastest Adoption
 

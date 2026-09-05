@@ -207,6 +207,7 @@ if [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/commons.sh" ]; then
     else
         echo "  not created (owner: docs/scripts/commons.sh --init)"
     fi
+    [ -f "$SCRIPTS/nudge.py" ] && echo "  every project at once: python3 docs/scripts/nudge.py --agent <runner>/<model> (read-only work digest - docs/workflows/nudge.md)"
     echo ""
 fi
 

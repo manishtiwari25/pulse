@@ -129,7 +129,11 @@ turned off when the OS asks for reduced motion.
   synced before ADR-016 has no `pulse-dashboard.py` and so never registers
   itself: run `register --repo PATH` from a current checkout (the hub uses
   its own `board.sh` and `evolution-report.sh` for a project whose scripts
-  predate `--records`) and sync that project when convenient.
+  predate `--records`) and sync that project when convenient. The same
+  registry feeds `python3 docs/scripts/nudge.py`, a read-only text digest of
+  work wanted across every registered project - handoffs, eligible
+  suggestions, open questions, your ballot, stale claims, hygiene - with
+  the proposals awaiting the human on top ([`nudge.md`](nudge.md), ADR-018).
 - **One projection per project**, in the same cache root as before; the hub
   refreshes each one on request, exactly as `serve` does, and re-reads the
   registry when it changes, so a newly indexed project appears without a

@@ -3,7 +3,7 @@ id: ADR-018
 title: A Nudge Harness - Project-Independent Agents That Work Where a Signal Asks
 status: Accepted
 date: 2026-09-05
-delivery: not started
+delivery: partially delivered
 delivered:
 areas: [agents, workflows, governance]
 tags: [adr, nudge, harness, fleet, hub, commons, vm, governance]

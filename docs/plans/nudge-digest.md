@@ -1,10 +1,10 @@
 ---
 id: PLAN-018
 title: Nudge Digest - One Read-Only List of Work Wanted Across Every Project
-status: Draft
+status: Done
 tier: 2
 date: 2026-09-05
-delivered:
+delivered: 2026-09-05
 tags: [plan, nudge, digest, hub, registry, commons, read-only]
 ---
 
@@ -50,23 +50,24 @@ It is the awareness half of the harness; acting on the list is slice 2.
 
 ## Steps
 
-- [ ] Write `docs/scripts/nudge.py` with `--registry PATH`, `--project SLUG`
+- [x] Write `docs/scripts/nudge.py` with `--registry PATH`, `--project SLUG`
       (repeatable), `--agent <runner>/<model>` (adds the ballot), `--by
       <default|project|age>`, `--limit N`, `--json`, `--now ISO-UTC`; exit 0
       when a project cannot be read but say so in the output.
-- [ ] Tests `docs/scripts/tests/test_nudge.py`: two temporary repositories
+- [x] Tests `docs/scripts/tests/test_nudge.py`: two temporary repositories
       with one of every signal, a registry pointing at them, a commons; assert
       the ranking, the `FOR THE HUMAN` block, the `human at work` flag, the
       JSON shape, and that no file in either repository, the registry, or the
       commons changed (hash before and after).
-- [ ] `docs/workflows/nudge.md`: when to run it (start of a session on the
+- [x] `docs/workflows/nudge.md`: when to run it (start of a session on the
       brain, after `reflect.sh`), how to read it, what it never does.
-- [ ] One line in `docs/scripts/reflect.sh` naming the command under the
+- [x] One line in `docs/scripts/reflect.sh` naming the command under the
       commons block; one row in `AGENTS.md` Routing ("Find work across
       projects"); a paragraph in `docs/workflows/dashboard.md` next to the
       registry.
-- [ ] Verification below; set `delivered:` and ADR-018 `delivery: partially
-      delivered`.
+- [x] Verification below; set `delivered:` and ADR-018 `delivery: partially
+      delivered`. Closed 2026-09-05: `nudge.py`, 8 tests, `nudge.md`, the
+      one-line edits; 62 tests pass, links clean.
 
 ## Rollback Plan
 
@@ -85,13 +86,13 @@ It is the awareness half of the harness; acting on the list is slice 2.
 
 ## Acceptance Criteria
 
-- [ ] One command lists work wanted across every registered project, ranked,
+- [x] One command lists work wanted across every registered project, ranked,
       with next step and tier, plus the proposals for the human.
-- [ ] Nothing is written anywhere by the command, proven by a test.
-- [ ] Relevant control-plane files are updated (workflow, routing, dashboard
+- [x] Nothing is written anywhere by the command, proven by a test.
+- [x] Relevant control-plane files are updated (workflow, routing, dashboard
       note, reflect line).
-- [ ] The rollback plan is scoped, safe, and executable.
-- [ ] On closure, `delivered:` is set here and ADR-018's `delivery:` mark is
+- [x] The rollback plan is scoped, safe, and executable.
+- [x] On closure, `delivered:` is set here and ADR-018's `delivery:` mark is
       updated.
 
 ## Verification

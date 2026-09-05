@@ -527,6 +527,7 @@ Output formats are shared across all runners and defined in
 | Watch the board (human)   | `docs/workflows/dashboard.md`, `python3 docs/scripts/pulse-dashboard.py status`                  | nothing in the repository; a disposable projection in the user's cache |
 | Watch every project (human) | `docs/workflows/dashboard.md`, `python3 docs/scripts/pulse-dashboard.py projects`              | nothing in the repository; `~/.pulse/projects.json` and per-project projections in the user's cache |
 | Ask or answer across projects | `docs/scripts/commons.sh --area <area>`, `docs/workflows/commons.md`                         | one new post in the commons repository (`commons.sh --path`), never in this repository |
+| Find work across projects | `python3 docs/scripts/nudge.py --agent <runner>/<model>`, `docs/workflows/nudge.md`              | nothing; the digest is read-only - act in the project it names, at the tier its `next:` line carries |
 | Skill creation/export     | `docs/skills/`, `docs/workflows/`, `docs/prompts/shared/`, `docs/decisions/`                   | `docs/skills/`, `docs/features/`, `docs/decisions/`                 |
 | PULSE maintenance         | `AGENTS.md`, `README.md`, `.github/copilot-instructions.md`, `docs/*/README.md`                  | durable framework docs/config                                       |
 | Adopt PULSE elsewhere     | `docs/workflows/bootstrap-control-plane.md`, `docs/prompts/shared/bootstrap-control-plane-in-new-repo.prompt.md` | target repository control plane                          |

@@ -1,10 +1,10 @@
 ---
 id: FEAT-012
 title: Nudge Digest - Work Wanted Across Every Project, Read-Only
-status: Draft
+status: Delivered
 tier: 2
 date: 2026-09-05
-delivered:
+delivered: 2026-09-05
 priority: High
 areas: [agents, workflows, governance]
 tags: [feature, nudge, digest, registry, commons, read-only]
@@ -37,42 +37,44 @@ opening each project.
 
 ### Functional
 
-- [ ] Reads `~/.pulse/projects.json` (or `PULSE_HOME`, or `--registry PATH`)
+- [x] Reads `~/.pulse/projects.json` (or `PULSE_HOME`, or `--registry PATH`)
       and, per project, `board.sh --records`, `evolution-report.sh --records`
       (when `docs/evolution/` exists), `git status --porcelain`, and the
       current branch; reads the commons when `commons.sh --path` exists.
-- [ ] Prints a `FOR THE HUMAN` block first: every `awaiting` proposal in every
+- [x] Prints a `FOR THE HUMAN` block first: every `awaiting` proposal in every
       project, with project, summary, and the post to read.
-- [ ] Prints `WORK WANTED`: one line per signal - project, kind, what, tier
+- [x] Prints `WORK WANTED`: one line per signal - project, kind, what, tier
       when known, next step (a command or a post to read) - ranked: handoffs,
       eligible suggestions where the loop gates are open, unanswered
       questions, ballot items (with `--agent`), stale claims, hygiene findings
       (stray `evolve/*` branches or worktrees, `STOP` present).
-- [ ] Marks a project with uncommitted changes `human at work`; its signals
+- [x] Marks a project with uncommitted changes `human at work`; its signals
       stay listed with the mark.
-- [ ] Says plainly when a project cannot be read (missing path, no
+- [x] Says plainly when a project cannot be read (missing path, no
       `docs/board/`) and continues with the rest; exit code 0.
-- [ ] `--project SLUG` (repeatable), `--by default|project|age`, `--limit N`,
+- [x] `--project SLUG` (repeatable), `--by default|project|age`, `--limit N`,
       `--json` (versioned snapshot with the same fields), `--now ISO-UTC`.
 
 ### Non-Functional
 
-- [ ] Performance: under two seconds for ten projects on this machine; each
+- [x] Performance: under two seconds for ten projects on this machine; each
       project's tally is invoked once.
-- [ ] Security: no network, no writes, no subprocess other than the two
-      tallies and `git`; paths are printed relative to each project; the
-      registry's absolute paths appear only with `--json`.
-- [ ] Reliability: a broken project never hides the others; the status words
+- [x] Security: no network, no writes, no subprocess other than the two
+      tallies and `git`; post paths are printed relative to each project; a
+      project's absolute path appears in text only when the entry is
+      unreadable or a duplicate slug (so the registry can be repaired), and
+      otherwise only with `--json`.
+- [x] Reliability: a broken project never hides the others; the status words
       are the tallies' own (`eligible`, `awaiting`, `stale`).
 
 ## Scope
 
 ### Area
 
-- [ ] `docs/scripts/nudge.py`, `docs/scripts/tests/test_nudge.py`
-- [ ] `docs/workflows/nudge.md`; one line each in `docs/scripts/reflect.sh`,
+- [x] `docs/scripts/nudge.py`, `docs/scripts/tests/test_nudge.py`
+- [x] `docs/workflows/nudge.md`; one line each in `docs/scripts/reflect.sh`,
       `AGENTS.md` Routing, `docs/workflows/dashboard.md`
-- [ ] Out of scope: starting agents, claims, pull requests, remotes, machines
+- [x] Out of scope: starting agents, claims, pull requests, remotes, machines
       (slices 2 and 3), any dashboard view (a later Tier 1 work unit under
       ADR-016 may show the same list).
 
@@ -124,11 +126,11 @@ None. Nothing is written; no new file format except the `--json` output.
 
 ## Acceptance Criteria
 
-- [ ] One command shows the whole organization's work wanted, ranked, with
+- [x] One command shows the whole organization's work wanted, ranked, with
       next steps and tiers, and the proposals for the human on top.
-- [ ] A test proves nothing was written to any repository, the registry, or
+- [x] A test proves nothing was written to any repository, the registry, or
       the commons.
-- [ ] The digest reads only the tallies' records and never a post body.
+- [x] The digest reads only the tallies' records and never a post body.
 
 ## Verification Plan
 
