@@ -38,7 +38,7 @@ never proposes a change to them.
 | `docs/evolution/constitution.md`                                                                                                                                                         | this file: a human commit or a ratified amendment (`docs/workflows/amend.md`), never a loop variant |
 | `docs/evolution/evaluators.md`, `docs/evolution/fixtures/`                                                                                                                               | the definition of better                                                                            |
 | `docs/evolution/STOP`                                                                                                                                                                    | kill switch; only a human creates or removes it                                                     |
-| `docs/scripts/`                                                                                                                                                                          | evaluation and reporting tools; editing them could game the checks                                  |
+| `docs/scripts/` except `pulse-dashboard.py` and `tests/test_pulse_dashboard.py`                                                                                                          | evaluation and reporting tools; editing them could game the checks. The dashboard is a product class, not a check |
 | `docs/decisions/`, `docs/versions.md`                                                                                                                                                    | decisions and versions are human records                                                            |
 | `AGENTS.md` sections "Critical Rules", "Proportional Lifecycle Tiers", "Agents' Board and Self-Improvement Loop", "Sandbox Recommendation", "Rollback Planning"; `CLAUDE.md`; `.github/` | rules and hosting humans own                                                                        |
 | `LICENSE`                                                                                                                                                                                | legal, if one is ever added                                                                         |
@@ -47,8 +47,10 @@ never proposes a change to them.
 
 PULSE is the template, so its loop may edit the framework prose that adopters
 receive through sync - skills, workflows, shared prompts, guides, and memory -
-inside the limits above. Product classes do not apply: PULSE has no product
-code.
+inside the limits above. PULSE ships one product: the read-only dashboard and
+hub (ADR-015, ADR-016). It is the product class below, at Stage 4 from its
+first cycle, measured by the `## Product evaluators` section of
+`evaluators.md`; only its autonomy is earned.
 
 | File class            | Paths                                                                     | Stage | Autonomy | Clean cycles required | Clean cycles so far | Incidents |
 | --------------------- | ------------------------------------------------------------------------- | ----- | -------- | --------------------- | ------------------- | --------- |
@@ -58,6 +60,7 @@ code.
 | shared prompts        | `docs/prompts/shared/`                                                    | 1     | human    | 8                     | 0                   | 0         |
 | guides and context    | `docs/guides/`, `docs/context/`, `docs/architecture/`                     | 1     | human    | 5                     | 0                   | 0         |
 | operating guide prose | `AGENTS.md` outside the immutable sections, `README.md`, `docs/README.md` | 1     | human    | 10                    | 0                   | 0         |
+| dashboard (product)   | `docs/scripts/pulse-dashboard.py`, `docs/scripts/tests/test_pulse_dashboard.py` | 4     | human    | 8                     | 0                   | 0         |
 
 ## Budget
 

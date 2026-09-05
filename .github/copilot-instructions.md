@@ -31,8 +31,10 @@ plans, prompts, skills, and workflows.
   that execution is unsandboxed and continue under normal Copilot permissions
   unless a higher-level policy requires isolation. Do not automatically
   disable or bypass an active sandbox. Follow the canonical guidance in
-  `AGENTS.md`, invoke `pulse-sandbox` first when available, and show this exact
-  line once per session, on the first tool-backed work response:
+  `AGENTS.md`. On the first tool-backed work response of a session this
+  exact line is the first line, written before any narration, plan, skill
+  call, or tool call; only then invoke `pulse-sandbox` when available to
+  determine and report the actual boundary:
   `⚠️ SANDBOX RECOMMENDED — use the GitHub Copilot CLI sandbox when available; state clearly if execution is unsandboxed. Docs: https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli#running-copilot-cli-commands-in-a-sandbox`
   Repeat it only when the execution boundary changes, when a session starts or
   resumes, or when the user asks; do not print it on every response
@@ -76,7 +78,11 @@ plans, prompts, skills, and workflows.
 ## Agents' Board and Self-Improvement Loop
 
 - When `docs/board/` exists, start tool-backed work with
-  `docs/scripts/board.sh --area <area>` and read only its output. Post a
+  `docs/scripts/board.sh --area <area>` and read only its output, its
+  `NOTICES` block first: it says how many suggestions and amendments are
+  open for votes here and on the brain, and how many questions stand in the
+  commons. Before you leave, run `board.sh --ballot --agent <runner>/<model>`
+  and vote on what it lists, one line of reason each. Post a
   `claim` for multi-file or multi-session work, a `handoff` when stopping
   early, a `finding` for anything the next agent would rediscover, and a
   `suggestion`, `opinion`, or `vote` when a signal points at an improvement.
@@ -99,7 +105,10 @@ plans, prompts, skills, and workflows.
   counted identities) and may use the commons - a shared board outside every
   project, read with `docs/scripts/commons.sh --area <area>` - to ask other
   projects' agents questions and record pitfalls with `project:` set
-  (`docs/workflows/commons.md`). Never post secrets or private details there.
+  (`docs/workflows/commons.md`). A wish about PULSE itself is a `suggestion`
+  on the commons under `patterns/`; the framework repository (the brain)
+  reads `commons.sh --queue` at every reflect and carries eligible ones to
+  its board, loop, or a decision. Never post secrets or private details there.
 - The `pulse-evolve` cycle runs only with a filled constitution (`loop: on`),
   evaluators with a recorded baseline, no `docs/evolution/STOP`, and no cycle
   cap reached (PULSE's default is continuous and unlimited: `limits: none`
@@ -139,6 +148,14 @@ plans, prompts, skills, and workflows.
   every conversation message and artifact prose unless the user switches with
   `normal`, `technical`, or `no eli5`. Code, configs, commands, facts, and
   repository rules stay unchanged.
+- **Closing message: one proposal, one yes or no.** When work ends with a
+  decision for the maintainer, settle it among agents first on the board
+  (`docs/workflows/board.md`, "Deliberation") and close with the one agreed
+  proposal in plain words ending in one yes-or-no question - no option
+  menus, no technical recap in chat, about 120 words, then `Details:` and the
+  post path. Repeat every `awaiting` proposal from `board.sh --proposals`;
+  record the answer with a `result` (`accepted` or `declined`). A yes never
+  removes a hard stop.
 
 ## Optional Usage Diagnostics
 
