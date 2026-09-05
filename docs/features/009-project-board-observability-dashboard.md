@@ -69,7 +69,7 @@ or opening every Markdown post.
 - [x] Markdown remains canonical; deleting the generated database and running
       `index` recreates the same logical view.
 - [x] Queue and amendment results come from the same computation path as
-      `board.sh`; dashboard code does not copy voting rules.
+      `pulse records`; dashboard code does not copy voting rules.
 - [x] Text report output remains backward compatible while new JSON output is
       versioned and fixture-tested.
 - [x] The implementation uses Python's standard library only, including
@@ -110,14 +110,14 @@ Out of scope:
   [ADR-016](../decisions/ADR-016-pulse-organization-hub-and-commons.md) and
   specified in [FEAT-010](010-pulse-organization-hub-and-commons.md)).
 - Authentication, organization accounts, cloud sync, or notifications.
-- Replacing `board.sh`, Markdown posts, Git freshness, or existing vote rules.
+- Replacing `pulse`, store rows, migration history, or existing vote rules.
 
 ## Interface Changes
 
 - New command:
   `python3 docs/scripts/pulse-dashboard.py <index|status|serve> --repo PATH`.
 - New optional flags: `--state-dir`, `--port`, `--open`, and `--refresh-seconds`.
-- `docs/scripts/board.sh` gains a versioned JSON snapshot mode while keeping
+- `docs/scripts/pulse.py records` supplies the versioned snapshot while keeping
   existing text and TSV behavior.
 - `docs/scripts/evolution-report.sh` gains a versioned JSON snapshot mode
   while keeping existing text behavior.
@@ -222,8 +222,8 @@ generated database is replaced atomically from the Markdown sources.
 
 - `python3 -m py_compile docs/scripts/pulse-dashboard.py`
 - `python3 -m unittest discover -s docs/scripts/tests -p 'test_*dashboard*.py'`
-- `bash -n docs/scripts/board.sh docs/scripts/evolution-report.sh`
-- `docs/scripts/board.sh --json | python3 -m json.tool >/dev/null`
+- `python3 docs/scripts/pulse.py records` and `bash -n docs/scripts/evolution-report.sh`
+- `python3 docs/scripts/pulse.py records >/dev/null`
 - `docs/scripts/evolution-report.sh --json | python3 -m json.tool >/dev/null`
 - `docs/scripts/check-links.sh --quiet`
 - Run `index`, delete the exact database from `status`, run `index` again,
@@ -231,3 +231,5 @@ generated database is replaced atomically from the Markdown sources.
 - Serve on `--port 0`, query every `/api/v1/` endpoint from localhost, and
   complete the keyboard/XSS/manual browser checklist.
 - `git diff --check`
+
+Since ADR-019, repositories without a store keep the Markdown board and `board.sh`; the migration is `pulse migrate --repo .`.

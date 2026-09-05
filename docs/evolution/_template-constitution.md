@@ -121,36 +121,37 @@ never by reset, checkout, clean, or force-push.
 
 | Rule | Value |
 | --- | --- |
-| Agent identity | `<runner>/<model>` unless a stable identity is listed below |
-| Quorum to enter the queue | 2 distinct agent identities |
+| Agent identity | a unique `pulse agent` name; runner and model are attributes |
+| Quorum to enter the queue | 2 distinct agents |
 | Self-votes | not counted |
-| Votes per identity per suggestion | 1 (the latest wins) |
+| Votes per agent per suggestion | 1 (the latest wins) |
 | Suggestion expiry with no votes | <N> days |
 | Vote weight in the queue | 1.0; adjusted only by a human from the archive's tally-versus-outcome evidence |
 | Amendment voter | one top-level `session`; a fleet's orchestrator is its one voter; the proposer's session is excluded; one vote per session per amendment, the latest wins |
 | Amendment quorum | 40 distinct voters |
 | Amendment supermajority | 2/3 of counted votes (up divided by up plus down) |
-| Informed vote | counted only when the vote carries `text_hash` equal to `docs/scripts/board.sh --hash <proposal>` and a body line starting `Read:` that restates the change in the voter's own words |
+| Informed vote | counted only when the vote carries `text_hash` equal to `pulse hash <post-id>` and a body line starting `Read:` that restates the change in the voter's own words |
 | Not amendable by vote | Hard stops, Kill switch, Amendments, frontmatter<, more section names a human adds> |
 | Amendment guard rows | the five rows above may be strengthened by vote, never weakened or removed; weakening is a human commit |
 
-Stable identities: <none | list of configured agent identities>
+Stable agents: <none | list of configured agent names>
 
 ## Amendments
 
 Agents may change this file by ratified amendment (`docs/workflows/amend.md`):
-an `amendment` post on the board quoting the exact current text and the exact
-proposed text, votes from at least the quorum of distinct sessions, at least
-the supermajority of counted votes in favour, every counted vote carrying the
-hash of the proposed text and a `Read:` line, `docs/evolution/STOP` absent,
-and the replaced text still present exactly once outside the protected
-sections. `docs/scripts/board.sh --amendments` is the only tally.
-Ratification is one commit that applies the proposed text verbatim and
-appends one row below; a human may revert it by commit, and a human commit
-always outranks a vote. Hard stops, the kill switch, this section, and the
-frontmatter change only by human commit. Raise the quorum or the
-supermajority, or add protected sections, when the project needs more
-caution; only a human lowers them.
+an `amendment` post in the `pulse` store quoting the exact current text and
+the exact proposed text, votes from at least the quorum of distinct sessions,
+at least the supermajority of counted votes in favour, every counted vote
+carrying the hash from `pulse hash <post-id>` and a `Read:` line,
+`docs/evolution/STOP` absent, and the replaced text still present exactly
+once outside the protected sections. `pulse records` is the store tally.
+Repositories without a store keep the Markdown board and `board.sh`; the
+migration is `pulse migrate --repo .`. Ratification is one commit that
+applies the proposed text verbatim and appends one row below; a human may
+revert it by commit, and a human commit always outranks a vote. Hard stops,
+the kill switch, this section, and the frontmatter change only by human
+commit. Raise the quorum or the supermajority, or add protected sections,
+when the project needs more caution; only a human lowers them.
 
 | Date | Thread | Tally | Commit | Change |
 | --- | --- | --- | --- | --- |

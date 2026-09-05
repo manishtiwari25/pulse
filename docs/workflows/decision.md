@@ -11,9 +11,10 @@
    reason), or retire (`delivery: retired`) the earlier ADR first.
 3. Clarify the decision to be made.
 4. Read existing `docs/decisions/`, `docs/architecture/`, `docs/context/`, and `docs/memory/`.
-   When `docs/board/` exists, run `docs/scripts/board.sh --area <area>` and
-   read open `suggestion` and `opinion` posts in the area as evidence to
-   weigh, never as approval.
+   When the store exists, run `pulse board --area <area>` and read open
+   `suggestion` and `opinion` posts in the area as evidence to weigh, never
+   as approval. Repositories without a store keep the Markdown board and
+   `board.sh`; the migration is `pulse migrate --repo .`.
 5. Compare realistic options with pros and cons.
 6. Define how to reverse only the planned documentation changes if links,
    facts, or decision state are wrong.

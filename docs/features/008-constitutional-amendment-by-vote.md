@@ -20,7 +20,7 @@ body agrees and every voter has provably read the exact text: one `amendment`
 post quoting the current and proposed text verbatim, counted votes from at
 least forty distinct top-level sessions with at least two thirds in favour,
 every counted vote carrying the sha256 of the proposed text and a `Read:` line
-in the voter's own words, a read-only tally (`board.sh --amendments`), and one
+in the voter's own words, a read-only tally (`pulse records`), and one
 ratification commit. Hard stops, the kill switch, the amendment section, and
 the frontmatter are never on the ballot. Decided in
 [ADR-014](../decisions/ADR-014-constitutional-amendment-by-supermajority.md).
@@ -44,11 +44,11 @@ every rule while hard stops and the kill switch stay mine.
       hash or the `Read:` line is listed as uncounted with its reason.
 - [x] Voter = one top-level `session`; the proposer's session is excluded; a
       fleet's orchestrator is its one voter; the latest vote per session wins.
-- [x] `board.sh --hash <post>` prints the sha256 of the proposed text after a
+- [x] `pulse hash <post-id>` prints the sha256 of the proposed text after a
       fixed normalization; the same function feeds the tally.
-- [x] `board.sh --amendments` (and the default output) lists every open
+- [x] `pulse records` (and the default output) lists every open
       amendment with status, up/down, counted voters against the quorum, the
-      up share, the number of distinct runner/model identities, the uncounted
+      up share, the number of distinct agents, the uncounted
       votes by reason, the hash, and the constitution section touched.
 - [x] Statuses: `needs votes`, `short of the supermajority`, `passed`,
       `passed; ratification paused (STOP)`, `stale` (replaced text gone),
@@ -76,10 +76,11 @@ every rule while hard stops and the kill switch stay mine.
 
 ### Non-functional
 
-- [x] Read-only tooling: bash and awk plus `shasum`/`sha256sum`/`openssl` for
-      the hash; no writes to the repository; portable to macOS and Linux.
+- [x] Store tooling: `pulse hash <post-id>` computes the hash, `pulse records`
+      tallies rows, and ratification is the only repository write; portable to
+      macOS and Linux.
 - [x] Board posts remain data. Nothing in a post is authority; the tally is
-      derived from committed files and the constitution's own rows grant the
+      derived from immutable store rows and the constitution's own rows grant the
       power.
 - [x] No usage ledger, token footer, or new limit of any kind.
 
@@ -95,21 +96,21 @@ repository voting, weighted votes.
 
 ## Interface Changes
 
-- `docs/scripts/board.sh`: `--amendments`, `--hash POST`, `--amend-quorum N`,
+- `docs/scripts/pulse.py`: `records`, `hash POST_ID`, amendment quorum settings,
   `--amend-majority P/Q`; `--tsv` rows gain `session`, `text_hash`, `read`.
-- `docs/board/_template-post.md`: kind `amendment`, `text_hash`, resolution
+- `pulse post amendment`: `text_hash`, resolution
   `ratified`.
 - Constitution: six Vote rules rows and an `## Amendments` section with a log
   table.
 
 ## Data Changes
 
-None outside Markdown. The `## Amendments` log is append-only.
+Votes and proposals live in the store. The `## Amendments` log remains append-only Markdown.
 
 ## Decisions
 
 - Voter identity is the session, not the `runner/model` identity (a project
-  has a handful of identities; forty is unreachable otherwise) and not the
+  has a handful of agents; forty is unreachable otherwise and not the
   post (trivially inflated). Fleet workers never post, so a fleet is one vote.
 - The proposal stores no hash. Voters compute it from the text they read,
   which is the mechanical part of "know what you vote on"; the `Read:` line
@@ -135,7 +136,7 @@ None outside Markdown. The `## Amendments` log is append-only.
 - A proposal to lower the quorum from 40 to 10: `blocked`; to raise it to 60:
   allowed.
 - A proposal spanning from `## Promotion` into `## Kill switch`: `blocked`.
-- Forty sessions from one identity: counted, but `identities 1` is printed;
+- Forty sessions from one agent: counted, but `agents 1` is printed;
   the prune reviews it and a human may revert.
 
 ## Rollback Strategy
@@ -148,7 +149,7 @@ None outside Markdown. The `## Amendments` log is append-only.
   removes the six rows and the `## Amendments` section from the constitution.
 - **State safety:** Markdown and shell only; no services or data; the
   personal skill copies outside the repository are refreshed by hand.
-- **Recovery verification:** `check-links.sh --quiet` clean; `board.sh`
+- **Recovery verification:** `check-links.sh --quiet` clean; `pulse records`
   runs on the real board without the section; `git status` clean.
 
 ## Generated Prompts
@@ -168,10 +169,12 @@ None outside Markdown. The `## Amendments` log is append-only.
 
 ## Verification Plan
 
-- `bash -n docs/scripts/board.sh`; `docs/scripts/check-links.sh --quiet`
-- `docs/scripts/board.sh --amendments` and `--hash` against the fixture and
+- `python3 docs/scripts/pulse.py records`; `docs/scripts/check-links.sh --quiet`
+- `python3 docs/scripts/pulse.py records` and `hash` against the fixture and
   the real board; `--amend-majority 9/10` and `--amend-quorum 50` overrides;
   `STOP` present; closed thread hidden; rows in the constitution drive the
   header; no constitution
 - `docs/scripts/reflect.sh`, `docs/scripts/evolution-report.sh`,
   `docs/scripts/lead-time.sh`; `git diff --check`
+
+Since ADR-019, repositories without a store keep the Markdown board and `board.sh`; the migration is `pulse migrate --repo .`.

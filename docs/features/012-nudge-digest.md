@@ -17,7 +17,7 @@ tags: [feature, nudge, digest, registry, commons, read-only]
 `docs/scripts/nudge.py` prints one ranked list of work wanted across every
 project registered on this machine, with the exact next step and its tier,
 plus the proposals that await the maintainer's yes or no. It reads the
-tallies every project already has (`board.sh --records`,
+tallies every project already has (`pulse records`,
 `evolution-report.sh --records`), the working state, and the commons; it
 starts no agent and writes nothing. This is slice 1 of
 [ADR-018](../decisions/ADR-018-nudge-harness.md): the awareness the maintainer
@@ -38,9 +38,9 @@ opening each project.
 ### Functional
 
 - [x] Reads `~/.pulse/projects.json` (or `PULSE_HOME`, or `--registry PATH`)
-      and, per project, `board.sh --records`, `evolution-report.sh --records`
+      and, per project, `pulse records`, `evolution-report.sh --records`
       (when `docs/evolution/` exists), `git status --porcelain`, and the
-      current branch; reads the commons when `commons.sh --path` exists.
+      current branch; reads the commons with `pulse board --project commons` when it exists.
 - [x] Prints a `FOR THE HUMAN` block first: every `awaiting` proposal in every
       project, with project, summary, and the post to read.
 - [x] Prints `WORK WANTED`: one line per signal - project, kind, what, tier
@@ -140,3 +140,5 @@ python3 docs/scripts/nudge.py
 python3 docs/scripts/nudge.py --json | python3 -m json.tool > /dev/null
 docs/scripts/check-links.sh --quiet && git diff --check
 ```
+
+Since ADR-019, repositories without a store keep the Markdown board and `board.sh`; the migration is `pulse migrate --repo .`.

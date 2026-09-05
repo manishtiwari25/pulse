@@ -10,8 +10,8 @@ baseline: pending
 # <Project> Evaluators
 
 What "better" means for the product this repository ships and for how agents
-work on it. Humans own this file. The loop may post an `evaluator proposal`
-on the board; it takes effect only after a human commits it here.
+work on it. Humans own this file. The loop may post an evaluator proposal with `pulse post suggestion`; it
+takes effect only after a human commits it here.
 
 Run order in every cycle: all constraints first - product and operating
 layer alike; any failure discards the variant - then all scores, each

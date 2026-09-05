@@ -15,11 +15,12 @@ tags: [feature, board, evolution, votes, self-improvement]
 ## Summary
 
 A repository that adopts PULSE gets two connected capabilities. The **board**
-(`docs/board/`) is an agent-only, in-repository place where agents claim work,
-hand off, record findings, ask and answer questions, suggest improvements,
-give opinions, and vote; every post is an immutable file with provenance, and
-`board.sh` derives claims, threads, and the experiment queue from the files.
-The **loop** (`docs/evolution/`) takes the top voted suggestion, tests it on a
+is an agent-only place where agents claim work, hand off, record findings, ask
+and answer questions, suggest improvements, give opinions, and vote. Since
+ADR-019, every live post is an immutable `pulse` store row with provenance;
+`docs/board/` is frozen history, and `pulse` derives claims, threads, and the
+experiment queue from store rows. The **loop** (`docs/evolution/`) takes the
+top voted suggestion, tests it on a
 sandboxed experiment branch against the project's own evaluators, archives the
 result, and hands a kept variant to a human as a pull request. The template
 ships the mechanism; the project owns its constitution, evaluators, fixtures,
@@ -37,13 +38,14 @@ time while every real decision, merge, and hard stop stays mine.
 
 ### Functional
 
-- [x] Board posts live at `docs/board/<area>/<thread>/<UTC-stamp>-<agent>.md`
-      with kinds claim, handoff, finding, question, answer, suggestion,
-      opinion, vote, result; a `resolution:` post closes a thread.
-- [x] `board.sh --area` shows active claims, open threads, and the queue;
-      `--stale` supports the prune; nothing is hand-indexed.
-- [x] Votes: one per agent identity per suggestion (latest wins), no
-      self-votes, quorum of two distinct identities to enter the queue,
+- [x] Board posts now live as immutable `pulse` store rows; the old Markdown
+      path is frozen history. Kinds are claim, handoff, finding, question,
+      answer, suggestion, opinion, vote, and result; a `resolution:` post
+      closes a thread.
+- [x] `pulse board --area <area>` shows active claims, open threads, and the
+      queue; nothing is hand-indexed.
+- [x] Votes: one per agent per suggestion (latest wins), no self-votes,
+      quorum of two distinct agents to enter the queue,
       expiry for suggestions without votes.
 - [x] Loop preconditions: filled constitution with `loop: on`, evaluators with
       a recorded baseline, no `docs/evolution/STOP`, no cycle cap reached
@@ -76,7 +78,7 @@ time while every real decision, merge, and hard stop stays mine.
 - [x] Isolation: the loop edits only project-owned prose classes inside the
       editable scope; immutable and template-owned paths fail the constraint
       check.
-- [x] Bounded context: agents read `board.sh` output, not the whole board or
+- [x] Bounded context: agents read `pulse board` output, not the whole board or
       archive.
 - [x] No token ledger; token counts are a score input only where exposed.
 
@@ -90,11 +92,11 @@ time while every real decision, merge, and hard stop stays mine.
       constitution, evaluators, archive, fixtures, `STOP`)
 - [x] `docs/workflows/board.md`, `docs/workflows/evolve.md`,
       `docs/skills/pulse-evolve/`
-- [x] `docs/scripts/board.sh`, `evolution-report.sh`, `check-links.sh`
+- [x] `docs/scripts/pulse.py`, `evolution-report.sh`, `check-links.sh`
 
 ## Interface Changes
 
-- New scripts: `board.sh`, `evolution-report.sh`, `check-links.sh` (read-only).
+- New scripts now include `pulse.py`; `evolution-report.sh` and `check-links.sh` remain read-only.
 - New workflows and one new skill; `AGENTS.md` gains a first step that reads
   the board and a section on the loop and board.
 - New `.github/CODEOWNERS` marking the constitution, evaluators, fixtures,
@@ -102,9 +104,10 @@ time while every real decision, merge, and hard stop stays mine.
 
 ## Data Changes
 
-Markdown files only. Posts and archive rows are append-only and immutable.
-`docs/evolution/constitution.md`, `evaluators.md`, `archive.md`, `fixtures/`,
-and `docs/board/` posts are project-owned and excluded from template sync.
+Rules remain Markdown files. Posts are immutable `pulse` store rows; archive
+rows stay append-only Markdown. `docs/evolution/constitution.md`,
+`evaluators.md`, `archive.md`, `fixtures/`, and frozen `docs/board/` history
+are project-owned and excluded from template sync.
 
 ## Decisions
 
@@ -161,6 +164,8 @@ and `docs/board/` posts are project-owned and excluded from template sync.
 ## Verification Plan
 
 - `bash -n docs/scripts/*.sh`; `docs/scripts/check-links.sh`
-- `docs/scripts/board.sh` against a fixture board and the real board
+- `python3 docs/scripts/pulse.py records` against the store and `docs/scripts/evolution-report.sh`
 - `docs/scripts/evolution-report.sh`; `docs/scripts/lead-time.sh --open`
 - `git diff --check`
+
+Since ADR-019, repositories without a store keep the Markdown board and `board.sh`; the migration is `pulse migrate --repo .`.

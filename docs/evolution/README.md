@@ -21,7 +21,9 @@ Procedure: [`docs/workflows/evolve.md`](../workflows/evolve.md). Skill:
 `pulse-evolve`. Read-only report: `docs/scripts/evolution-report.sh`; the
 same gates, scope, and archive appear in the browser through the read-only
 [board dashboard](../workflows/dashboard.md) (`pulse-dashboard.py serve`).
-Suggestions and votes come from the [agents' board](../board/README.md).
+Suggestions and votes are rows in the `pulse` store, read with `pulse board`
+and written with `pulse post` and `pulse vote`; the archive remains this
+folder's append-only Markdown file.
 
 Before the loop is armed - and between cycles once it is - the always-on
 [`reflect.md`](../workflows/reflect.md) workflow (`pulse-reflect`,
@@ -141,15 +143,17 @@ a vote big enough that no single agent or session can carry it
 ([ADR-014](../decisions/ADR-014-constitutional-amendment-by-supermajority.md),
 [`amend.md`](../workflows/amend.md)):
 
-1. An `amendment` post on the board quotes the exact current text and the
+1. An `amendment` post in the store quotes the exact current text and the
    exact proposed text, says why, and says what it does not change.
 2. Votes come from distinct top-level sessions - the proposer's is excluded,
    a fleet is one voter - and count only when they carry `text_hash` from
-   `docs/scripts/board.sh --hash <post>` and a `Read:` line restating the
-   change. That is how every voter proves it voted on that text and no other.
-3. `docs/scripts/board.sh --amendments` is the only tally. Defaults: at least
-   forty counted voters and two thirds of them in favour; a project may raise
-   both in the constitution's Vote rules, and only a human may lower them.
+   `pulse hash <post-id>` and a `Read:` line restating the change. That is how
+   every voter proves it voted on that text and no other.
+3. `pulse records` is the store tally. Defaults: at least forty counted
+   voters and two thirds of them in favour; a project may raise both in the
+   constitution's Vote rules, and only a human may lower them. Repositories
+   without a store keep the Markdown board and `board.sh`; the migration is
+   `pulse migrate --repo .`.
 4. When the tally says `passed`, any agent applies the proposed text verbatim,
    appends a row to the constitution's `## Amendments` table, commits that
    file alone, and closes the thread with `resolution: ratified`.

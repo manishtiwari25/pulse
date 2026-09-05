@@ -40,9 +40,9 @@ one server per repository.
 - [x] The dashboard shows the name wherever an agent appears (claims, threads,
       posts, votes, roster, activity), with the identity beside it, and falls
       back to `agent · session[:8]` when no name was given.
-- [x] `docs/scripts/commons.sh --init [PATH]` creates the commons repository
+- [x] `pulse` keeps the commons as the `commons` project in the store
       (Git, README, board README, post template); `--path` prints its
-      location; every other argument is passed to `board.sh --repo <commons>`.
+      location for old history; new reads use `pulse board --project commons`.
 - [x] Commons posts carry `project:`; the commons README states what belongs
       and what never belongs there.
 - [x] `pulse-dashboard.py register|unregister|projects` manage
@@ -59,7 +59,7 @@ one server per repository.
       every open amendment across projects and the commons with the official
       status from that project's own tally, proposer name, score, and quorum
       progress.
-- [x] The roster shows each agent identity with its names, sessions, projects,
+- [x] The roster shows each agent with its name, sessions, projects,
       posts, votes, claims, last seen, and whether it holds an active claim.
 - [x] Activity shows recent posts across the organization with project badge,
       name, kind, thread, and summary, linking into the project page.
@@ -70,7 +70,7 @@ one server per repository.
 
 ### Non-Functional
 
-- [x] `board.sh` and `evolution-report.sh` are unchanged; text and TSV output
+- [x] `pulse records` and `evolution-report.sh` provide the read path; text and TSV output
       stay byte-identical.
 - [x] Vote identity, quorum, self-vote exclusion, and "latest wins" are
       unchanged; names never enter a tally.
@@ -88,7 +88,7 @@ one server per repository.
 ### Area
 
 - [x] `name:` and `project:` in the post format and rules.
-- [x] Commons repository layout, `commons.sh`, and the commons workflow.
+- [x] Commons store project layout and the commons workflow.
 - [x] Registry, slugs, `register|unregister|projects`, auto-registration.
 - [x] Hub server, organization queries, and UI views.
 - [x] Documentation, operating guides, template-sync classification, tests.
@@ -104,7 +104,7 @@ Out of scope:
 ## Interface Changes
 
 - Post frontmatter: optional `name:`; on the commons also `project:`.
-- New script `docs/scripts/commons.sh`.
+- New script `docs/scripts/pulse.py` owns commons rows.
 - New subcommands: `pulse-dashboard.py hub|register|unregister|projects`;
   new flag `--no-register` on `index` and `serve`.
 - New files outside repositories: `~/.pulse/projects.json`, `~/.pulse/commons/`.
@@ -140,7 +140,7 @@ Out of scope:
 - A registered path no longer exists: shown as "missing on disk" with its
   last known slug; skipped by aggregation; `unregister` removes it.
 - The commons directory is absent: the commons card says how to create it;
-  `commons.sh` prints the same hint and exits non-zero.
+  `pulse board --project commons` prints the same hint and exits non-zero when the store is absent.
 - Two agents choose the same name: both show, each with its identity beside
   it; the rule asks agents to avoid it, the UI never merges them.
 - A name that is a runner/model string or contains markup: shown as text,
@@ -148,7 +148,7 @@ Out of scope:
 - A commons post without `project:`: shown with project "(unknown)".
 - The hub is asked for `/p/<unknown>/`: 404 JSON for the API, and the
   organization page for the HTML route with an explained state.
-- A project's tally fails (for example `board.sh` missing in an old checkout):
+- A project's tally fails (for example `pulse` store missing in an old checkout):
   the organization view shows the project's last error and the other
   projects keep working.
 
@@ -161,7 +161,7 @@ Out of scope:
   or maintainer rejection.
 - **Reversal:** inverse patch of the hub, registry, commons, and name code
   and docs; `~/.pulse/projects.json` and `~/.pulse/commons` are the user's
-  files - `status` and `commons.sh --path` print their exact locations; the
+  files - `pulse status` and `pulse projects` print their exact locations; the
   tool never deletes them.
 - **State safety:** no canonical Markdown is migrated; the commons is a normal
   Git repository the owner keeps; projections are disposable.
@@ -176,7 +176,7 @@ Out of scope:
 - [x] A question posted on the commons from project A and answered from
       project B appears in the commons thread with both names and projects.
 - [x] Names appear on every agent-bearing row of the project dashboard.
-- [x] `board.sh` text/TSV output unchanged; existing 16 tests still pass
+- [x] `pulse records` output matches migrated board records; existing tests still pass
       (23 in total with the hub tests, 2026-09-04).
 - [x] New tests cover: names and fallback, registry add/remove/collision,
       commons init and tally, hub routes and 404/405, project isolation under
@@ -190,3 +190,5 @@ Out of scope:
   `git diff --check`
 - Parity snippet from `docs/workflows/dashboard.md` (scripts unchanged)
 - Real-browser render of `/`, `/p/<slug>/`, `/commons/`
+
+Since ADR-019, repositories without a store keep the Markdown board and `board.sh`; the migration is `pulse migrate --repo .`.

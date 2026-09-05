@@ -34,11 +34,9 @@ replacing theirs.
 
 - F1 A suggestion, amendment, or result card shows **Veto** and **Endorse**
   controls with a required reason field (1-200 characters).
-- F2 Submitting writes one post file
-  `docs/board/<area>/<thread>/<stamp>-human_<login>.md` in the target
-  project with `kind: veto|endorse`, `agent: human/<login>`, `runner: human`,
-  `model: none`, `session: dashboard`, `on:` the target id, `summary:` the
-  reason, `date`, `branch`; nothing is committed.
+- F2 Submitting writes one `pulse decide <post-id> yes|no --words "..."`
+  decision row in the target project, plus the matching result post by the
+  built-in `human` agent; nothing is committed.
 - F3 The queue shows `vetoed` (never eligible, never expires) or `endorsed`
   (first at equal score, no vote added); an amendment ballot shows
   `closed: vetoed`; the loop's hypothesis pick skips vetoed and prefers
@@ -56,7 +54,7 @@ replacing theirs.
   action path; `/api/v1/health` reports `read_only`.
 - F9 A **Notice** control on the hub writes a human `notice` post
   (`summary:` text, required `expires:`) under `notices/` on the chosen
-  project board or on the commons; the NOTICES block of every `board.sh`
+  project board or on the commons; the NOTICES block of every `pulse board`
   digest on the machine and the hub strip show it verbatim until it
   expires; an agent-authored `notice` is quarantined and reported.
 - F10 A `vote` posted on the commons under `ballots/<brain-thread>/` with
@@ -71,24 +69,23 @@ replacing theirs.
   token in `X-PULSE-Token`, an `Origin` equal to the server's own, JSON
   bodies up to 16 KB; everything else is refused with 4xx and no write.
 - N2 No client-supplied string reaches a shell; file names are built from the
-  server clock and the slugged login; the reason is written as YAML text
-  with quotes escaped.
+  server clock and the slugged login; the reason is written as store text.
 - N3 Stdlib only; CSP unchanged; every value rendered as text; the tally
-  stays `board.sh`.
+  stays `pulse records`.
 - N4 The write path is covered by refusal tests for every guard and by one
-  success test that checks the file, its frontmatter, `board.sh` indexing,
+  success test that checks the store row, `pulse records` indexing,
   and that `git log` did not grow.
 
 ## Scope
 
 ### Area
 
-`docs/scripts/board.sh`, `docs/scripts/pulse-dashboard.py` and its assets,
-`docs/scripts/tests/`, `docs/board/_template-post.md`,
+`docs/scripts/pulse.py`, `docs/scripts/pulse-dashboard.py` and its assets,
+`docs/scripts/tests/`, `docs/board/README.md` frozen-history notes,
 `docs/workflows/{board,evolve,dashboard,commons}.md`.
 
 Out of scope: editing or deleting posts, commits, pushes, merges, any action
-by an agent identity through the write path, votes by humans (a human has a
+by an agent through the write path, votes by humans (a human has a
 veto and an endorsement, not a ballot).
 
 ## Interface Changes
@@ -144,7 +141,7 @@ Accepted.
 
 - [ ] F1-F8 observable on a throwaway fixture project through the hub.
 - [ ] N1 refusal tests and N4 success test pass.
-- [ ] `board.sh --queue` and `--amendments` show the new statuses; the loop's
+- [ ] `pulse queue` and `pulse records` show the new statuses; the loop's
       step-3 fixture skips a vetoed suggestion.
 - [ ] `check-links.sh` 0 broken; `git diff --check` clean.
 
@@ -153,6 +150,8 @@ Accepted.
 - Unit: `python3 -m unittest discover -s docs/scripts/tests`; the board
   script tests.
 - Browser: headless render of a suggestion card with controls, light and
-  dark; one manual veto on a fixture, then `board.sh --queue`.
+  dark; one manual veto on a fixture, then `pulse queue`.
 - Security: `curl` matrix - wrong method, missing token, foreign origin,
   oversize body, unknown action, read-only mode - all refused, no file.
+
+Since ADR-019, repositories without a store keep the Markdown board and `board.sh`; the migration is `pulse migrate --repo .`.

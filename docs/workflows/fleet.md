@@ -20,8 +20,10 @@ Helper: `docs/scripts/fleet.sh`.
   brief names as stripped or off limits.
 - **Scorer** - a read-only step the orchestrator runs over result files and
   clones with existing scripts (`check-links.sh --repo`, `bash -n`,
-  `git diff --check`, `lead-time.sh --repo`, `board.sh --repo`). Scoring code
-  written for the occasion lives outside the repository.
+  `git diff --check`, `lead-time.sh --repo`, `pulse records --project
+  <slug>`). Scoring code written for the occasion lives outside the
+  repository. Repositories without a store keep the Markdown board and
+  `board.sh`; the migration is `pulse migrate --repo .`.
 
 ## Procedure
 

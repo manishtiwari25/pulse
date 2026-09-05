@@ -65,15 +65,14 @@ maintainer on 2026-09-05; procedure in `docs/workflows/board.md`,
   position and name the dissent in one sentence.
 - **One question.** End with exactly one yes-or-no question per proposal
   (`Say yes and I do it; say no and nothing changes`). Every proposal that
-  `board.sh --proposals` lists as `awaiting` is repeated this way, one
-  question each, until the human answers.
+  `pulse proposals` lists as `awaiting` is repeated this way, one question
+  each, until the human answers.
 - **Short.** About 120 words for the whole closing message; no "In technical
-  terms" recap in chat. The technical detail lives in the board post and the
-  artifact; the message ends with `Details:` and that path.
-- **Record the answer.** When the human says yes or no, post the `result`
-  (`resolution: accepted` or `declined`) quoting the human's words, then act
-  on a yes - within the tier and the hard stops, which the human's yes never
-  removes.
+  terms" recap in chat. The technical detail lives in the `pulse` post and the artifact; the message
+  ends with `Details:` and that post id.
+- **Record the answer.** When the human says yes or no, record it with `pulse decide <post-id>
+  yes|no --words '...'`, then act on a yes - within the tier and the hard
+  stops, which the human's yes never removes.
 
 ## What Does Not Change
 

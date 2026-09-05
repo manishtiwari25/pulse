@@ -30,8 +30,10 @@ own evaluators say it is better. Skill: `pulse-evolve`.
 ## The cycle
 
 1. **Read the summaries, not the files.** `evolution-report.sh` for the loop
-   state, product scope, strays, and last rows; `board.sh --queue` for the
-   experiment queue. Do not read the whole archive or board.
+   state, product scope, strays, and last rows; `pulse queue` for the
+   experiment queue. Do not read the whole archive or board. Repositories
+   without a store keep the Markdown board and `board.sh`; the migration is
+   `pulse migrate --repo .`.
 2. **Pick one hypothesis, product first.** Take the top `eligible` suggestion
    whose file class is in the constitution's editable scope and whose paths
    pass the immutable-path check; when product and operating-layer
@@ -77,9 +79,9 @@ own evaluators say it is better. Skill: `pulse-evolve`.
    decision, and `Ref` = the branch or commit, with ` (unsandboxed)` appended
    when the cycle ran without a sandbox. Never edit an existing row.
 8. **Report back.** Post a `result` on the suggestion's board thread (or a
-   new thread for a signal-derived hypothesis) with `on:` the suggestion id,
-   the archive row, and the decision; close the thread with
-   `resolution: tested`.
+   new thread for a signal-derived hypothesis): `pulse post result --area
+   <area> --thread <thread> --summary '<archive row and decision>' --body
+   '<evidence>' --on <suggestion-id> --resolution tested`.
 9. **Clean - mandatory.** Remove what this cycle created and no longer
    needs, and nothing else:
    - a **discarded** variant: `git worktree remove <path>` for its worktree,

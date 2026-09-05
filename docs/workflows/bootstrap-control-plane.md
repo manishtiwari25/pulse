@@ -82,19 +82,20 @@ docs/workflows/
   and ADR delivery marks), `docs/plans/_template-work-unit.md`,
   `docs/workflows/prune.md`, and the read-only `docs/scripts/lead-time.sh`
   report. New ADRs in the target start with `delivery: not started`.
-- Include the board and loop mechanism: `docs/board/README.md`,
-  `docs/board/_template-post.md`, `docs/evolution/README.md`, the three
+- Include the board, store, and loop mechanism: `docs/board/README.md`
+  (frozen history format), `docs/evolution/README.md`, the three
   `docs/evolution/_template-*.md` files, `docs/workflows/board.md`,
-  `docs/workflows/reflect.md`, `docs/workflows/evolve.md`,
-  `docs/workflows/fleet.md`, `docs/scripts/board.sh`,
-  `docs/scripts/evolution-report.sh`, `docs/scripts/reflect.sh`,
-  `docs/scripts/evolution-setup.sh`, `docs/scripts/fleet.sh`,
-  `docs/scripts/check-links.sh`, and the
+  `docs/workflows/pulse.md`, `docs/workflows/reflect.md`,
+  `docs/workflows/evolve.md`, `docs/workflows/fleet.md`,
+  `docs/scripts/pulse.py`, `docs/scripts/evolution-report.sh`,
+  `docs/scripts/reflect.sh`, `docs/scripts/evolution-setup.sh`,
+  `docs/scripts/fleet.sh`, `docs/scripts/check-links.sh`, and the
   `pulse-reflect` and `pulse-evolve` skills. Do not create the target's
-  constitution, evaluators,
-  archive, fixtures, or any board post during bootstrap: those are the
-  target's own human commits, the loop stays off until a baseline exists, and
-  template sync never touches them.
+  constitution, evaluators, archive, fixtures, or any board post during
+  bootstrap: those are the target's own human commits, the loop stays off
+  until a baseline exists, and template sync never touches them. Repositories
+  without a store keep the Markdown board and `board.sh`; the migration is
+  `pulse migrate --repo .`.
 - Treat copied PULSE `SANDBOX REQUIRED`, fail-closed fallback, and ADR-008
   instruction text as superseded framework content. Replace it with the
   ADR-009 recommendation unless the target has an explicit local decision that

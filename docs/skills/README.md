@@ -201,7 +201,7 @@ continuous, so when a cycle ends the next begins. Read the queue and loop
 state first:
 
 ```bash
-docs/scripts/board.sh --queue
+pulse queue
 docs/scripts/evolution-report.sh
 ```
 

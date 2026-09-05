@@ -123,15 +123,17 @@ Rules:
   delivery marks), `docs/plans/_template-work-unit.md`,
   `docs/workflows/prune.md`, and the read-only `docs/scripts/lead-time.sh`
   report. Give every new ADR `delivery: not started`.
-- Include the board and loop mechanism (`docs/board/README.md` and its post
-  template, `docs/evolution/README.md` and its three templates,
-  `docs/workflows/board.md`, `docs/workflows/reflect.md`,
-  `docs/workflows/evolve.md`, `docs/workflows/fleet.md`, `board.sh`,
-  `evolution-report.sh`, `reflect.sh`, `evolution-setup.sh`, `fleet.sh`,
-  `check-links.sh`, `pulse-reflect`, and `pulse-evolve`). Do not write
-  the target's constitution, evaluators, archive, fixtures, or any board post;
-  those are the target's own human commits and the loop stays off until a
-  baseline exists.
+- Include the board, store, and loop mechanism (`docs/board/README.md` as
+  frozen history format, `docs/evolution/README.md` and its three templates,
+  `docs/workflows/board.md`, `docs/workflows/pulse.md`,
+  `docs/workflows/reflect.md`, `docs/workflows/evolve.md`,
+  `docs/workflows/fleet.md`, `pulse.py`, `evolution-report.sh`,
+  `reflect.sh`, `evolution-setup.sh`, `fleet.sh`, `check-links.sh`,
+  `pulse-reflect`, and `pulse-evolve`). Do not write the target's
+  constitution, evaluators, archive, fixtures, or any board post; those are
+  the target's own human commits and the loop stays off until a baseline
+  exists. Repositories without a store keep the Markdown board and `board.sh`;
+  the migration is `pulse migrate --repo .`.
 - Replace copied PULSE `SANDBOX REQUIRED`, fail-closed fallback, and ADR-008
   instruction text with the ADR-009 recommendation. Preserve stricter text
   only when the target has an explicit local decision requiring isolation, and

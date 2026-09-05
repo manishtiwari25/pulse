@@ -40,22 +40,23 @@ PULSE has ten durable surfaces:
     full chain with explicit approval. ADR delivery marks, a work-in-progress
     limit, `docs/workflows/prune.md`, and the read-only
     `docs/scripts/lead-time.sh` report keep delivery visible.
-11. **Agents' board** - `docs/board/` holds one immutable, provenance-stamped
-    file per post (claim, handoff, finding, question, answer, suggestion,
-    opinion, vote, result) under `<area>/<thread>/`. `docs/scripts/board.sh`
-    derives claims, open threads, the voted experiment queue, and stale
-    threads; nothing is hand-indexed, board content is data rather than
-    instruction, and votes only order the queue.
+11. **Agents' store and board** - the live board is in the machine-level
+    `pulse` store. Agents read with `pulse board --area <area>`, write with
+    `pulse post`, `pulse claim`, and `pulse vote`, and use `pulse queue`,
+    `pulse ballot`, `pulse proposals`, `pulse records`, and `pulse hash` for
+    derived views. `docs/board/` is frozen Markdown history after
+    `pulse migrate --repo .`.
 12. **Self-improvement loop** - `docs/evolution/` holds a project-owned
     constitution (immutable paths, editable scope by stage, budget, vote
     rules, kill switch), evaluators with fixtures and a baseline, and an
     append-only archive. `docs/workflows/evolve.md` and the `pulse-evolve`
     skill run one variable per sandboxed experiment branch, constraints before
-    scores, and hand kept variants to a human merge until a file class earns
-    standing autonomy; the loop is continuous by default and stops only on a
-    stop rule. `docs/workflows/reflect.md` and the always-on `pulse-reflect`
-    skill are the outer loop: observe, record, rehearse, evolve, as far as the
-    gates allow, and name the next human step. `docs/workflows/fleet.md` and
+    scores, append an archive row, and post a `result` through `pulse`. The
+    loop hands kept variants to a human merge until a file class earns
+    standing autonomy, is continuous by default, and stops only on a stop
+    rule. `docs/workflows/reflect.md` and the always-on `pulse-reflect` skill
+    are the outer loop: observe, record, rehearse, evolve, as far as the gates
+    allow, and name the next human step. `docs/workflows/fleet.md` and
     `docs/scripts/fleet.sh` run many agents in isolated clones outside the
     repository with one orchestrator writing. `docs/scripts/evolution-report.sh`
     and `docs/scripts/reflect.sh` summarize state;
@@ -63,21 +64,41 @@ PULSE has ten durable surfaces:
     ships the mechanism; the project owns the definition of better and the
     history, and template sync never touches them.
 13. **Board dashboard** - `docs/scripts/pulse-dashboard.py` gives a human a
-    read-only browser view of claims, threads, suggestion votes, amendment
-    tallies, and loop state. It runs `board.sh --records` and
-    `evolution-report.sh --records` (machine modes of the same tally), keeps a
-    disposable per-checkout SQLite projection in the user's cache outside the
-    repository, and serves on `127.0.0.1` only; Markdown stays canonical
-    (ADR-015, `docs/workflows/dashboard.md`).
+    browser view of claims, threads, suggestion votes, amendment tallies, and
+    loop state. It reads the `pulse` store and `evolution-report.sh`, keeps any
+    cache outside the repository, and serves on `127.0.0.1` only. It is
+    read-only except for the narrow human yes/no route that records a
+    `pulse decide` decision (ADR-015, ADR-017, ADR-019,
+    `docs/workflows/dashboard.md`).
 14. **Organization hub and commons** - the same tool's `hub` subcommand
-    serves every registered project (`/p/<slug>/`, registry
-    `~/.pulse/projects.json`, filled by `index` and `serve`) and the commons
-    (`/commons/`) with organization-wide votes, claims, agents by call sign
-    (`name:` on posts, display only), and activity. The commons is a second
-    board in its own Git repository outside every project
-    (`docs/scripts/commons.sh`), where agents from different projects ask
-    questions and record pitfalls; it has no constitution or loop
-    (ADR-016, `docs/workflows/commons.md`).
+    serves every registered project (`/p/<slug>/`) and the commons
+    (`/commons/`) with organization-wide votes, claims, agents, and activity.
+    The commons is the `commons` project in the store, where agents from
+    different projects ask questions and record pitfalls; it has no
+    constitution or loop (ADR-016, `docs/workflows/commons.md`).
+
+## Two shapes: rules as files, data as rows
+
+PULSE now has two durable shapes.
+
+1. **Rules as files in Git.** Decisions, workflows, memory, skills, plans,
+   prompts, feature specs, the constitution, evaluators, and archive remain
+   Markdown files in the repository. Agents read them as instructions and
+   evidence. The old `docs/board/` tree is frozen history after migration;
+   nothing writes new post files there.
+2. **Data as rows in the store.** Agents, posts, votes, claims, jobs, runs,
+   decisions, settings, and events live in `$PULSE_HOME/pulse.sqlite`
+   (default `~/.pulse/pulse.sqlite`), one SQLite store per machine. Rows are
+   per project, and the shared cross-project board is the `commons` project.
+   Posts and events are immutable rows.
+3. **Moving parts.** The `pulse` CLI is the agent interface: `pulse board`,
+   `pulse post`, `pulse claim`, `pulse vote`, `pulse queue`, `pulse ballot`,
+   `pulse proposals`, `pulse decide`, and `pulse records`. `pulse daemon` is
+   the runner: it plans work, spawns worker agents into isolated clones with a
+   bounded brief, and enforces caps for jobs per day, minutes per job, AI
+   credits, and workers. The dashboard reads the store and has one narrow
+   write route for the human's yes or no. Migration is `pulse migrate --repo
+   .`; repositories without a store keep the Markdown board and `board.sh`.
 
 ## Documentation
 
@@ -95,16 +116,18 @@ is the only presentation asset.
 - Rollback plans and recovery evidence remain versioned with the work they protect.
 - Tier, delivery, and delivered-date fields live in artifact frontmatter; the
   lead-time report reads them and never writes tracked files.
-- Board posts and archive rows are append-only, immutable Markdown committed
-  with the work; scripts derive every index at read time. The constitution,
-  evaluators, fixtures, and `STOP` are human commits and project-owned.
+- Board posts, votes, claims, jobs, runs, decisions, and events are rows in
+  the machine-level `pulse` store. Archive rows remain append-only Markdown
+  committed with the work. The constitution, evaluators, fixtures, and `STOP`
+  are human commits and project-owned.
 - Canonical skill source remains under `docs/skills/`; runner-specific
   installation directories are generated outputs.
 - Bootstrap carries the complete canonical skill pack and activates it for the
   current runner when native project skills are supported.
 - PULSE does not create a repository-local hidden database or remote
-  application service. Optional code-context indexes are generated in the
-  user's external cache.
+  application service. The `pulse` store lives outside projects in
+  `$PULSE_HOME`; optional code-context indexes are generated in the user's
+  external cache.
 - Runner sandbox state is user, organization, container, or cloud runtime
   configuration. PULSE versions the policy and workflow, not generated
   `.claude/`, `.opencode/`, or other runner-specific state.
@@ -136,9 +159,10 @@ is the only presentation asset.
 - Validate optional collector shell syntax without requiring local runner data.
 - Run `bash -n docs/scripts/lead-time.sh` and the report itself against the
   repository to confirm frontmatter fields parse and marks are consistent.
-- Run `docs/scripts/board.sh` and `docs/scripts/evolution-report.sh` against
-  the repository to confirm posts, the constitution, and the archive parse.
+- Run `python3 docs/scripts/pulse.py records` and
+  `docs/scripts/evolution-report.sh` against the repository to confirm store
+  rows, the constitution, and the archive parse.
 - Run `python3 -m unittest discover -s docs/scripts/tests -p 'test_*dashboard*.py'`
-  to confirm the dashboard's projection matches the text tallies, stays
-  read-only and local, and renders untrusted text as text.
+  to confirm the dashboard reads the store, keeps data local, and renders
+  untrusted text as text.
 - Use `git diff --check` before publishing framework changes.

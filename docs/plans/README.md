@@ -35,16 +35,15 @@
   read-only tally, keeping hard stops and the kill switch human-only.
 - [`project-board-observability-dashboard.md`](project-board-observability-dashboard.md) -
   the local human-readable board, voting, and evolution dashboard from
-  ADR-015: `board.sh --records`, a disposable SQLite projection outside the
-  repository, and `pulse-dashboard.py serve` on 127.0.0.1.
+  ADR-015, now reading `pulse records` from the ADR-019 store while serving on
+  127.0.0.1.
 - [`pulse-organization-hub-and-commons.md`](pulse-organization-hub-and-commons.md) -
-  the organization layer from ADR-016: call signs on posts, a project
-  registry with `/p/<slug>/` URLs, the shared commons board
-  (`docs/scripts/commons.sh`), and `pulse-dashboard.py hub` showing every
+  the organization layer from ADR-016, now the ADR-019 store projects,
+  agents, the `commons` project, and `pulse-dashboard.py hub` showing every
   project's votes, claims, and agents together.
 - [`democratic-board-human-veto.md`](democratic-board-human-veto.md) - the
-  Tier 2 plan for ADR-017 (Deferred 2026-09-05): human veto and endorse posts honored
-  by `board.sh`, the dashboard's narrow write path, the kill switch and
+  Tier 2 plan for ADR-017 (Deferred 2026-09-05): human yes/no decisions honored
+  by `pulse decide`, the dashboard's narrow write path, the kill switch and
   reports from the UI, and the electorate rule. Deferred with the ADR.
 - [`nudge-digest.md`](nudge-digest.md) - the Tier 2 plan for ADR-018 slice
   1: `docs/scripts/nudge.py`, its no-write tests, `docs/workflows/nudge.md`,
@@ -71,13 +70,13 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   under a reduced-motion guard, the roster grouped by identity with dormant
   sessions hidden, and the hub's brain badge (`--brain`).
 - [`WU-006-notices-and-ballot.md`](WU-006-notices-and-ballot.md) - the
-  `NOTICES` block at the top of every `board.sh` digest (votes wanted here,
-  on the brain, open commons questions), `board.sh --ballot --agent <id>`,
-  the ballot in `reflect.sh`, and the hub's notices strip.
+  `NOTICES` block at the top of every `pulse board` digest (votes wanted here,
+  on the brain, open commons questions), `pulse ballot --agent <name>`, the
+  ballot in `reflect.sh`, and the hub's notices strip.
 - [`WU-008-deliberate-then-one-yes-no.md`](WU-008-deliberate-then-one-yes-no.md) -
   agents deliberate on the board and hand the maintainer one plain-word
   proposal with one yes-or-no question: `resolution: agreed | accepted |
-  declined`, `board.sh --proposals`, `FOR THE HUMAN` in `reflect.sh`, the
+  declined`, `pulse proposals`, `FOR THE HUMAN` in `reflect.sh`, the
   dashboard's **For you** view, and the closing-message rule.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
@@ -92,3 +91,4 @@ WU-001-short-title.md
 A work unit closes when its acceptance criteria and verification pass; record
 the `delivered:` date and update the controlling ADR's `delivery:` mark at the
 same time.
+Repositories without a store keep the Markdown board and `board.sh`; the migration is `pulse migrate --repo .`.

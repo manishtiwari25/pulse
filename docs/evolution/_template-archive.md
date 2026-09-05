@@ -16,7 +16,7 @@ One row per evaluator run against an unchanged tree.
 ## Variants
 
 `Decision` is one of `kept`, `discarded`, `promoted`, or `reverted`.
-`Suggestion` is the board post id or `-` when the hypothesis came from
+`Suggestion` is the `pulse` post id or `-` when the hypothesis came from
 signals. `Votes` is `up/down/voters` at the time of the cycle.
 
 | Row | Date | Parent | Suggestion | Votes | File class | Change (one variable) | Hypothesis | Target: before -> after | Other scores | Decision | Ref |

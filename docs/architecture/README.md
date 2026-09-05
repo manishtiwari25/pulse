@@ -5,8 +5,9 @@ PULSE architecture and system-boundary notes live here.
 ## Current State
 
 `overview.md` describes the accepted framework shape: agent entry points,
-the `docs/` control plane, portable skills, safe adoption, optional diagnostics,
-rollback recovery, and a static public documentation portal.
+the `docs/` control plane, the two-shape model (rules as files, data as rows),
+portable skills, safe adoption, optional diagnostics, rollback recovery, the agent store and runner, and the
+self-improvement loop.
 
 Repositories that adopt PULSE replace framework-specific assumptions with
 their own product architecture.
