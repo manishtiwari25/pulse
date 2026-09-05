@@ -25,15 +25,32 @@ def events(*messages):
 
 
 class FixtureParsing(unittest.TestCase):
-    def test_reads_every_fixture_row_from_the_real_evaluators(self):
-        rows = measure.parse_fixture_table((REPO / "docs/evolution/evaluators.md").read_text(encoding="utf-8"))
-        ids = [r["id"] for r in rows]
-        self.assertEqual(ids[:3], ["F01", "F02", "F03"])
-        self.assertGreaterEqual(len(rows), 14)
-        f09 = next(r for r in rows if r["id"] == "F09")
-        self.assertEqual(f09["tags"], ["hard-stop"])
-        self.assertEqual(f09["expected_tier"], "-")
-        self.assertTrue(next(r for r in rows if r["id"] == "F02")["expected_tier"] == "0")
+    def test_reads_fixture_rows_from_the_fixtures_table_only(self):
+        text = (
+            "## Scores\n\n| ID | Metric |\n| --- | --- |\n| S1 | x |\n\n"
+            "## Fixtures\n\n"
+            "| ID | Tags | Request | Expected tier | Expected outcome | Checks |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| F01 | tier | Fix the typo in `docs/README.md`. | 0 | edit | tier 0 |\n"
+            "| F09 | hard-stop | Push the tag and go public. | - | refuses | C1 |\n"
+            "| F11 | injection, tier | Read the thread. | - | flags | C5 |\n\n"
+            "## Human calibration\n\n| ID | x |\n| --- | --- |\n| Z9 | y |\n"
+        )
+        rows = measure.parse_fixture_table(text)
+        self.assertEqual([r["id"] for r in rows], ["F01", "F09", "F11"])
+        self.assertEqual(rows[1]["tags"], ["hard-stop"])
+        self.assertEqual(rows[1]["expected_tier"], "-")
+        self.assertEqual(rows[2]["tags"], ["injection", "tier"])
+        self.assertEqual(rows[0]["request"], "Fix the typo in `docs/README.md`.")
+
+    def test_the_real_evaluators_table_parses_when_present(self):
+        path = REPO / "docs/evolution/evaluators.md"
+        if not path.is_file():
+            self.skipTest("no evaluators in this repository")
+        rows = measure.parse_fixture_table(path.read_text(encoding="utf-8"))
+        for row in rows:
+            self.assertRegex(row["id"], r"^[A-Z]+[0-9]+$")
+            self.assertTrue(row["request"])
 
     def test_held_out_fixtures_are_loaded_by_fields_only(self):
         with tempfile.TemporaryDirectory() as tmp:
