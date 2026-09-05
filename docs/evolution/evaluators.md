@@ -112,8 +112,11 @@ blind. The owner writes two fresh fixtures with
 `docs/scripts/evolution-setup.sh prepare --store <path>` and runs
 `activate`, which restores the line below to `H01, H02`; until then the
 loop reports held-out scores as unavailable and Level D stays closed.
+Refreshed 2026-09-05T13:45Z the same blind way (isolated context wrote both;
+the exposed files were retired in the store, never read by the loop session)
+on the maintainer's delegated instruction recorded as `20260905T133625Z-human`.
 
-Held out: pending
+Held out: H01, H02
 
 ## Human calibration
 
