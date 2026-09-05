@@ -97,6 +97,18 @@
   the tenant that ran least recently first and by priority within it. Prove
   each with a test that runs the loop twice, not once.
   (`docs/plans/WU-010-keep-alive-runner.md`)
+- `2026-09-05` - An agent's throwaway clone gets its own git identity and no
+  signing, and the check the runner verifies with must read what the worker
+  wrote. Apply when: a runner clones a repository for an agent on a human's
+  machine - the clone inherits the human's global `user.*`, `commit.gpgsign`
+  and signing key, so agent commits carry the human's signature and hang or
+  fail the moment the key's agent (1Password) locks; set `user.name`,
+  `user.email <agent>@pulse.local`, `commit.gpgsign false`, `tag.gpgsign
+  false` in the clone before the worker starts. And when the project's check
+  is a unit suite - a shell script that bash cannot parse landed with a green
+  check; put `bash -n` on every script and `compile()` on every module inside
+  the suite, so the same command the runner already runs catches it.
+  (`docs/plans/WU-010-keep-alive-runner.md`)
 
 ## Populate When
 

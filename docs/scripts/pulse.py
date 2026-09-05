@@ -1518,7 +1518,8 @@ def write_brief(job, project, agent, clone, minutes):
     w("   or crosses a hard stop, stop and explain that in %s instead of doing it." % RESULT_FILE)
     w("3. Never push, never add remotes, never call gh, never touch credentials, never install packages.")
     w("4. Verify with the project's own checks%s before committing." % (" (`%s`)" % project["verify_cmd"] if project["verify_cmd"] else ""))
-    w("5. Commit small, signed-off-by nobody: `git -c user.name=%s -c user.email=%s@pulse.local commit`." % (agent, agent))
+    w("5. Commit small with plain `git commit`: the clone is already configured with your name (%s), your" % agent)
+    w("   address (%s@pulse.local), and no commit signing - never sign as anyone else." % agent)
     w("6. Finish within %d minutes. Write %s at the clone root (do not commit it) with:" % (minutes, RESULT_FILE))
     w("   - `SUMMARY:` one line saying what changed and what you measured")
     w("   - `QUESTION:` one line when you stopped for a Tier 2 decision or a hard stop (optional)")
@@ -1647,6 +1648,11 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
         if out.returncode != 0:
             raise PulseError("clone failed: %s" % out.stderr.strip())
         git(clone, "remote", "remove", "origin")
+        # A clone commit is the agent's, never the human's: the agent's name and address and no
+        # signature, so a worker never borrows the human's key or waits on the human's signing agent.
+        for key, value in (("user.name", agent), ("user.email", "%s@pulse.local" % agent),
+                           ("commit.gpgsign", "false"), ("tag.gpgsign", "false")):
+            git(clone, "config", key, value)
         base = git(clone, "rev-parse", "HEAD", check=True).stdout.strip()
         brief_text = write_brief(job, project, agent, clone, minutes)
         brief_path = work_dir / ("%s.brief.md" % job["id"])

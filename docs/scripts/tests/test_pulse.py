@@ -638,6 +638,23 @@ class StoreTestCase(unittest.TestCase):
         self.assertEqual(pulse.parse_suggestion_line("evolution/thread: make C2 explicit"), ("", "", "make C2 explicit"))
         self.assertEqual(pulse.parse_suggestion_line("area/thread: make C2 explicit"), ("", "", "make C2 explicit"))
 
+    def test_a_clone_commit_is_the_agents_and_unsigned_whatever_the_machine_signs_with(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        worker = self.worker_script(
+            'git config --get commit.gpgsign > sign.txt\n'
+            'echo "changed by $PULSE_AGENT" >> README.md\n'
+            'git commit -qam "plain commit, no -c flags"\n'
+            'printf "SUMMARY: signing=%s\\n" "$(cat sign.txt)" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"])
+        self.assertIn("signing=false", run["summary"])
+        branch = run["branch"]
+        self.assertTrue(branch, "the plain commit landed")
+        who = git(self.repo, "log", "-1", "--format=%an <%ae>", branch).stdout.strip()
+        self.assertEqual(who, "aurora <aurora@pulse.local>", "the commit is the agent's, not the human's")
+        self.assertEqual(git(self.repo, "cat-file", "-p", branch).stdout.count("gpgsig"), 0, "unsigned")
+
     def test_a_run_is_the_workers_session_and_its_posts_carry_the_model(self):
         pulse.join_agent(self.con, "aurora", "copilot", "", kind="worker")
         pulse.set_setting(self.con, "worker_model", "tiny-model", "human")

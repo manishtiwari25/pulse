@@ -173,6 +173,17 @@ the store's own facts; settings are the caps).
       an hour behind the brain's stream of priority-13 improve jobs - the
       lease now rotates across projects (least recently run first, priority
       within a project). Four tests more (111 green).
+- [x] What the first human merge taught, fixed the same hour: a worker's
+      plain `git commit` inherited the machine's `commit.gpgsign true` and
+      1Password key, so agent commits carried the human's signature and,
+      once 1Password locked, hung a minute and failed - the clone now sets
+      `user.name`, `user.email <agent>@pulse.local`, `commit.gpgsign false`,
+      `tag.gpgsign false` and the brief says plain `git commit`; a landed
+      `reflect.sh` failed `bash -n` (a heredoc argument after the
+      terminator) yet passed the brain's check, which is the unit suite -
+      `test_scripts_parse.py` now parses every `docs/scripts/*.sh` and
+      compiles every `*.py`, so the suite the runner verifies with reads the
+      scripts too. Three tests more (114 green).
 
 ## Implementation Prompt
 
@@ -215,7 +226,7 @@ the store's own facts; settings are the caps).
 
 ## Acceptance Criteria
 
-- [x] The behavior above is delivered and verified (111 tests green).
+- [x] The behavior above is delivered and verified (114 tests green).
 - [x] The work stayed inside ADR-019's boundary.
 - [x] The rollback plan is scoped, safe, and executable.
 

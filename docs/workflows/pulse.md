@@ -87,7 +87,12 @@ the project that ran least recently goes first - one that never ran, first
 of all - and priority decides only within a project, so a brain with many
 voted-up cards never starves the other projects on the machine; leases
 expire and carry a generation number), clones the project's default
-branch into `$PULSE_HOME/work/<job>/` with no remote, writes the brief
+branch into `$PULSE_HOME/work/<job>/` with no remote and with the clone's
+git identity set to the agent - `user.name <agent>`, `user.email
+<agent>@pulse.local`, `commit.gpgsign false`, `tag.gpgsign false` - so a
+worker's commit is the agent's, never carries the human's signature, and
+never waits on the human's signing agent (a locked 1Password once hung
+every clone commit for a minute and failed it), writes the brief
 (`<job>.brief.md`: the task, the project's rules, Tier 0/1 only, how to
 report), runs one non-interactive worker - `copilot -p <brief> -C <clone>
 --allow-all-tools --deny-tool 'shell(git push)' --deny-tool 'shell(git
