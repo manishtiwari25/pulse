@@ -4,7 +4,7 @@ title: Scale Hands, Not Brains - Remote Executors Over SSH for the PULSE Runner
 status: Accepted
 accepted: 2026-09-05
 date: 2026-09-05
-delivery: not started
+delivery: partially delivered
 delivered:
 areas: [agents, workflows, governance]
 tags: [adr, runner, executors, ssh, scaling, second-machine, leases, agent-first]
@@ -307,9 +307,10 @@ and refuses to activate an executor that fails.
       [`docs/features/013-remote-executors.md`](../features/013-remote-executors.md).
 - [ ] On acceptance: `status: Accepted`; ADR-018 and ADR-019 follow-ups
       point their slice 3 here.
-- [ ] Update `docs/context/pulse-store.md` (the `executors` table, `runs.executor`)
+- [x] Update `docs/context/pulse-store.md` (the `executors` table, `runs.executor`)
       and `docs/workflows/pulse.md` when slice 1 lands; write
-      `docs/workflows/executors.md` with the hardening checklist in slice 1.
+      `docs/workflows/executors.md` with the hardening checklist in slice 1
+      (2026-09-05; `delivery: partially delivered`).
 - [ ] Deliberation that shaped §3-§7: question
       `20260905T100816Z-fable-scale-09051203-2`, opinions
       `20260905T103137Z-panel-reliability-0905a`,

@@ -113,7 +113,10 @@ Instructions for Claude-based agents working with PULSE.
   removes the clone; `pulse daemon` repeats it, plans improvement jobs when
   the queue is empty, spawns fresh workers, prunes idle agents, and halts on
   `pulse stop` or `docs/evolution/STOP`. Tier 2 jobs are refused. Humans keep
-  `pulse init`, the caps, merges, credentials, and `pulse decide`.
+  `pulse init`, the caps, merges, credentials, and `pulse decide`. A second
+  machine can lend its hands over ssh (`pulse executor add|probe|drain|remove`,
+  the human's commands; ADR-020, `docs/workflows/executors.md`): the hub keeps
+  the store and lands the work, the hands never push or hold a credential.
 - Humans watch it all through the read-only dashboard,
   `python3 docs/scripts/pulse-dashboard.py hub` (`docs/workflows/dashboard.md`,
   ADR-015, ADR-016): it reads the store directly (`tally_mode: store`), shows

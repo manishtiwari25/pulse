@@ -855,6 +855,21 @@ class StoreModeServerTestCase(unittest.TestCase):
         self.assertEqual(by_agent["boreal"]["status"], "pruned")
         self.assertEqual(by_agent["boreal"]["pruned_reason"], "no useful output for 14 days")
 
+    def test_executors_route_lists_this_machine_and_every_pair_of_hands(self):
+        con = dash.pulse.connect(self.home)
+        try:
+            dash.pulse.add_executor(con, "vm1", "pulse@10.0.0.4", "/srv/pulse", workers=2, projects="store-app", now="2026-09-10T12:00:00Z")
+        finally:
+            con.close()
+        rows = self.api("/api/v1/executors")
+        by_name = {r["name"]: r for r in rows}
+        self.assertEqual(sorted(by_name), ["local", "vm1"])
+        self.assertEqual(by_name["local"]["status"], "active")
+        self.assertEqual(by_name["local"]["running"], 0)
+        self.assertEqual(by_name["vm1"]["status"], "drained", "added hands wait for a probe")
+        self.assertEqual((by_name["vm1"]["address"], by_name["vm1"]["workers"], by_name["vm1"]["projects"]), ("pulse@10.0.0.4", 2, "store-app"))
+        self.assertNotIn("Set-Cookie", self.request("/api/v1/executors")[1])
+
     def test_decide_route_records_decision_result_and_refreshes_projection(self):
         before = self.api("/api/v1/proposals")
         self.assertEqual(before[0]["status"], "awaiting")

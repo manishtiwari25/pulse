@@ -1814,6 +1814,23 @@ def q_roster(hub):
     return out
 
 
+def q_executors(hub):
+    """The machines the runner may use (ADR-020): this one plus every ssh executor, read from the store with
+    the runs in progress on each. Empty without a store; the dashboard never probes or changes them."""
+    if not store_available(hub.home):
+        return []
+    con = pulse.open_store(hub.home)
+    try:
+        out = []
+        for r in pulse.executor_rows(con):
+            row = dict(r)
+            row["running"] = pulse.executor_running(con, r["name"])
+            out.append(row)
+        return out
+    finally:
+        con.close()
+
+
 def q_roster_from_store(hub):
     agents = {}
     con = pulse.open_store(hub.home)
@@ -2137,6 +2154,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, q_org_proposals(hub))
         if route == "roster":
             return self._json(200, q_roster(hub))
+        if route == "executors":
+            return self._json(200, q_executors(hub))
         if route == "votes":
             return self._json(200, q_votes(hub))
         if route == "activity":
@@ -3305,7 +3324,21 @@ APP_JS = r"""'use strict';
       box);
   }
   async function agents() {
-    const rows = await api('roster');
+    const [rows, executors] = await Promise.all([api('roster'), api('executors')]);
+    const executorTone = {active: 'ok', drained: '', unreachable: 'warn'};
+    const executorsBox = executors.length ? el('div', {class: 'stack'},
+      el('h2', null, 'Executors ', el('span', {class: 'badge'}, executors.length)),
+      el('p', {class: 'lead'}, 'Where the runner\'s jobs execute: this machine plus every pair of ssh hands added with pulse executor add (ADR-020). The dashboard only reads them; probe, drain, and remove are commands the human runs.'),
+      table(['executor', 'status', 'address', 'workers', 'running', 'projects', 'runs done', 'runs failed', 'errors', 'last probe', 'note'],
+        executors.map((x) => ({data: x, cells: [
+          el('span', {class: 'mono'}, x.name),
+          chip(x.status, executorTone[x.status] === undefined ? '' : executorTone[x.status]),
+          el('span', {class: 'small mono'}, x.address || '(this machine)'),
+          String(x.workers), String(x.running), x.projects,
+          num(x.runs_done || 0), num(x.runs_failed || 0), String(x.errors || 0),
+          el('span', {class: 'small mono'}, x.last_probe_at || ''),
+          el('span', {class: 'small'}, x.probe_note || ''),
+        ]})))) : null;
     const byAgent = new Map();
     const statusOrder = {working: 0, active: 1, recent: 2, idle: 3, dormant: 4, pruned: 5};
     for (const p of rows) {
@@ -3369,7 +3402,7 @@ APP_JS = r"""'use strict';
     render(el('h1', null, 'Agents', el('span', {class: 'sub'}, 'the roster across every project')), kpis,
       el('p', {class: 'lead'}, 'In store mode this roster comes from the agents table, grouped by agent name, with pruning history and scorecards. Markdown-only projects still group legacy posts without deleting anything.'),
       el('div', {class: 'toolbar'}, search, el('label', {class: 'check'}, onlyWorking, 'working only'), el('label', {class: 'check'}, showDormant, 'show dormant (' + counts.dormant + ')'), el('label', {class: 'check'}, showPruned, 'show pruned (' + counts.pruned + ')'), count),
-      box);
+      box, executorsBox);
   }
 
   async function activity() {

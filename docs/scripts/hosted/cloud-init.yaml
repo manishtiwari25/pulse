@@ -1,0 +1,63 @@
+#cloud-config
+# PULSE remote executor ("hands") - Ubuntu 24.04 (ADR-020, docs/workflows/executors.md).
+#
+# Rendered by azure-provision.sh, which replaces the two placeholders below:
+#   __HUB_PUBKEY__    the hub's ssh public key (one line), bound to the forced command
+#   __PULSE_HANDS__   the contents of docs/scripts/hosted/pulse-hands.sh, base64 encoded
+# The machine gets git, python3, Node.js 22 with the copilot CLI, a single-purpose user `pulse`
+# whose only key runs pulse-hands, and nothing that can push: no remote, no repository credential.
+# The human still logs the CLI in once:  ssh -t <admin>@<ip> sudo -iu pulse copilot login
+
+package_update: true
+package_upgrade: true
+packages:
+  - git
+  - python3
+  - ca-certificates
+  - curl
+  - gnupg
+
+users:
+  - name: pulse
+    gecos: PULSE executor (agents' hands)
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - 'command="PULSE_HANDS_WORKDIR=/srv/pulse /usr/local/bin/pulse-hands",restrict __HUB_PUBKEY__'
+
+write_files:
+  - path: /usr/local/bin/pulse-hands
+    permissions: '0755'
+    owner: root:root
+    encoding: b64
+    content: __PULSE_HANDS__
+  - path: /etc/ssh/sshd_config.d/60-pulse-hands.conf
+    permissions: '0644'
+    content: |
+      # The hands' user gets exactly what its authorized_keys line allows and nothing else.
+      Match User pulse
+          PasswordAuthentication no
+          AllowAgentForwarding no
+          AllowTcpForwarding no
+          X11Forwarding no
+          PermitTTY no
+          PermitTunnel no
+
+runcmd:
+  # Node.js 22 and the copilot CLI, for every user.
+  - mkdir -p /etc/apt/keyrings
+  - curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+  - echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+  - apt-get update
+  - apt-get install -y nodejs
+  - npm install -g @github/copilot
+  # The work directory the forced command roots every path in.
+  - mkdir -p /srv/pulse
+  - chown pulse:pulse /srv/pulse
+  - chmod 750 /srv/pulse
+  # Git never prompts and never signs on the hands.
+  - sudo -u pulse git config --global commit.gpgsign false
+  - sudo -u pulse git config --global core.askPass ""
+  - systemctl restart ssh || systemctl restart sshd
+
+final_message: "pulse-hands ready after $UPTIME seconds; log the copilot CLI in as user pulse, then run pulse executor add on the hub"

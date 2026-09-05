@@ -126,7 +126,9 @@ order the queue. The same store runs **the agents' machine**: `pulse init`
 registers a project, `pulse daemon` leases bounded jobs, runs a
 non-interactive worker in a throwaway clone under caps the human sets, lands
 kept work on a local branch for a human merge, plans improvement jobs when
-the queue is empty, and prunes agents that produce nothing. The Markdown
+the queue is empty, and prunes agents that produce nothing. A second machine
+the maintainer owns can lend its hands over ssh while the store stays on the
+hub ([executors workflow](docs/workflows/executors.md)). The Markdown
 boards under `docs/board/` are frozen history
 ([store reference](docs/context/pulse-store.md),
 [pulse workflow](docs/workflows/pulse.md)).

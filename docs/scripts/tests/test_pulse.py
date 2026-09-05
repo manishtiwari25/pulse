@@ -12,6 +12,7 @@ situation) and checks that `pulse records` prints the same typed records as
 `board.sh --records`, agent names aside.
 """
 
+import base64
 import importlib.util
 import io
 import json
@@ -1037,6 +1038,358 @@ class MigrationTestCase(unittest.TestCase):
         self.assertNotIn(self.fx.ids["eligible"], [s["id"] for s in sug], "model-b already voted")
         self.assertNotIn(self.fx.ids["needs_votes"], [s["id"] for s in sug], "model-b wrote it")
         self.assertEqual(len(am), 1)
+
+
+HANDS_SH = SCRIPTS / "hosted" / "pulse-hands.sh"
+
+# An `ssh` that never leaves the machine: it drops the options and the host and hands the command string to
+# pulse-hands exactly as sshd's forced command would (SSH_ORIGINAL_COMMAND). PULSE_SHIM_FAIL_VERB makes one verb
+# fail like a dead connection (exit 255); PULSE_SHIM_FAIL=always refuses every call.
+SSH_SHIM = r"""#!/bin/bash
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o|-p|-i|-l|-F) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+host="$1"; shift
+echo "$host $*" >> "$PULSE_SHIM_LOG"
+if [ "${PULSE_SHIM_FAIL:-}" = "always" ]; then echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; fi
+if [ -n "${PULSE_SHIM_FAIL_VERB:-}" ] && [[ "$1" == b64\ * ]]; then
+  verb=$(printf '%s' "${1#b64 }" | base64 --decode | tr '\0' '\n' | head -1)
+  if [ "$verb" = "$PULSE_SHIM_FAIL_VERB" ]; then echo "ssh: connection to $host closed by remote host" >&2; exit 255; fi
+fi
+export SSH_ORIGINAL_COMMAND="$*"
+exec bash "$PULSE_HANDS"
+"""
+
+
+class ExecutorTestCase(StoreTestCase):
+    """PLAN-020 slice 1: a remote executor over ssh, driven end to end through the shim and pulse-hands.sh."""
+
+    def setUp(self):
+        super().setUp()
+        self.remote = self.tmp / "remote"
+        self.remote.mkdir()
+        shim_dir = self.tmp / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "ssh"
+        shim.write_text(SSH_SHIM, encoding="utf-8")
+        shim.chmod(0o755)
+        self._env_before = {k: os.environ.get(k) for k in ("PATH", "PULSE_HANDS", "PULSE_HANDS_WORKDIR", "PULSE_HANDS_ALLOW_ANY_WORKER",
+                                                            "PULSE_HANDS_KEYS_OK", "PULSE_SHIM_LOG", "PULSE_SHIM_FAIL", "PULSE_SHIM_FAIL_VERB")}
+        os.environ["PATH"] = "%s:%s" % (shim_dir, os.environ.get("PATH", ""))
+        os.environ["PULSE_HANDS"] = str(HANDS_SH)
+        os.environ["PULSE_HANDS_WORKDIR"] = str(self.remote)
+        os.environ["PULSE_HANDS_ALLOW_ANY_WORKER"] = "1"
+        os.environ["PULSE_HANDS_KEYS_OK"] = "yes"
+        os.environ["PULSE_SHIM_LOG"] = str(self.tmp / "shim.log")
+        os.environ.pop("PULSE_SHIM_FAIL", None)
+        os.environ.pop("PULSE_SHIM_FAIL_VERB", None)
+
+    def tearDown(self):
+        for key, value in self._env_before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        super().tearDown()
+
+    def add_hands(self, name="hands", projects="*", workers=1, activate=True):
+        row = pulse.add_executor(self.con, name, "pulse@hands.example:2222", str(self.remote), workers=workers, projects=projects, now=NOW)
+        self.assertEqual(row["status"], "drained", "new hands take no job until a probe passes")
+        if activate:
+            ok, note = pulse.probe_executor(self.con, name, actor=pulse.HUMAN_AGENT, now=NOW)
+            self.assertTrue(ok, note)
+            self.assertEqual(pulse.executor_row(self.con, name)["status"], "active")
+        return pulse.executor_row(self.con, name)
+
+    def test_executor_lifecycle_add_probe_list_drain_remove(self):
+        with self.assertRaises(pulse.PulseError):
+            pulse.add_executor(self.con, "bad", "no-user-here", "/srv/pulse")
+        with self.assertRaises(pulse.PulseError):
+            pulse.add_executor(self.con, "bad", "u@h", "relative/path")
+        with self.assertRaises(pulse.PulseError):
+            pulse.add_executor(self.con, "local", "u@h", "/srv/pulse")
+        row = self.add_hands(projects="proj, Proj,other")
+        self.assertEqual(row["projects"], "other,proj")
+        self.assertTrue(pulse.executor_allows(row, "proj"))
+        self.assertFalse(pulse.executor_allows(row, "third"))
+        self.assertIn("ok:", row["probe_note"])
+        self.assertIn("keys_ok=yes", row["probe_note"])
+        code, out, err = run_cli("executor", "list")
+        self.assertEqual(code, 0, err)
+        self.assertIn("local", out)
+        self.assertIn("hands", out)
+        self.assertIn("pulse@hands.example:2222", out)
+        code, out, err = run_cli("status")
+        self.assertIn("executors", out)
+        self.assertIn("hands active", out)
+        # a probe that finds a loose key or a leftover remote fails and never activates
+        os.environ["PULSE_HANDS_KEYS_OK"] = "no"
+        ok, note = pulse.probe_executor(self.con, "hands", actor=pulse.HUMAN_AGENT, now=NOW)
+        self.assertFalse(ok)
+        self.assertIn("restrict", note)
+        os.environ["PULSE_HANDS_KEYS_OK"] = "yes"
+        code, out, err = run_cli("executor", "drain", "hands")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(pulse.executor_row(self.con, "hands")["status"], "drained")
+        run, reason = pulse.work_once(self.con, pulse.spawn_agent(self.con, "r", "m")["name"], executor="hands", now=NOW)
+        self.assertIsNone(run)
+        self.assertIn("drained", reason)
+        code, out, err = run_cli("executor", "activate", "hands")
+        self.assertNotEqual(code, 0, "the last probe failed: activate refuses until a probe passes")
+        code, out, err = run_cli("executor", "probe", "hands")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(pulse.executor_row(self.con, "hands")["status"], "active")
+        with self.assertRaises(pulse.PulseError):
+            pulse.set_executor_status(self.con, "local", "drained")
+        # a job directory a dead hub left on the hands is swept by the next passing probe, a busy one is kept
+        (self.remote / "job-old" / "clone").mkdir(parents=True)
+        (self.remote / "job-busy" / "clone").mkdir(parents=True)
+        self.con.execute("INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-b', 'job-busy', 'a', 'proj', ?, 'running', 'hands')", (NOW,))
+        ok, note = pulse.probe_executor(self.con, "hands", actor=pulse.HUMAN_AGENT, now=NOW)
+        self.assertTrue(ok, note)
+        self.assertIn("jobs=swept:1", note)
+        self.assertEqual(sorted(p.name for p in self.remote.iterdir()), ["job-busy"])
+        self.con.execute("DELETE FROM runs WHERE id = 'run-b'")
+        code, out, err = run_cli("executor", "remove", "hands")
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(pulse.executor_row(self.con, "hands"))
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM events WHERE action LIKE 'executor.%'").fetchone()[0] > 3, True)
+
+    def test_a_remote_run_lands_from_the_hands_casts_its_votes_and_leaves_nothing_behind(self):
+        self.add_hands()
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        pulse.join_agent(self.con, "borealis", "r", "m", kind="worker")
+        card = pulse.create_post(self.con, "suggestion", "proj", "evolution", "tidy", "shorten the README title; check:readme", agent="borealis")
+        own = pulse.create_post(self.con, "suggestion", "proj", "evolution", "mine", "aurora's own card; check:x", agent="aurora")
+        worker = self.worker_script(
+            'test -z "$PULSE_HOME" && test -z "$PULSE_CLI"\n'
+            'test -f "$PULSE_BRIEF" && grep -q "## Ballot" "$PULSE_BRIEF" && grep -q "%s" "$PULSE_BRIEF"\n'
+            'echo "changed by $PULSE_AGENT on $(hostname)" >> README.md\n'
+            'git commit -qam "worker change"\n'
+            'printf "SUMMARY: appended one line\\nFINDING: remote hands work\\nVOTE: %s up the title is long\\n'
+            'VOTE: %s up my own card\\nVOTE: 20990101T000000Z-nobody down not on the ballot\\n" > PULSE_RESULT.md' % (card["id"], card["id"], own["id"]))
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", Path(run["log"]).read_text())
+        self.assertEqual(run["executor"], "hands")
+        self.assertEqual(run["commits"], 1)
+        branch = "pulse/aurora/%s" % run["job_id"]
+        self.assertEqual(run["branch"], branch)
+        self.assertIn("changed by aurora", git(self.repo, "show", "%s:README.md" % branch).stdout)
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), before, "the real checkout is untouched")
+        self.assertEqual(git(self.repo, "status", "--porcelain").stdout, "")
+        # the clone was committed as the agent, unsigned
+        self.assertIn("aurora <aurora@pulse.local>", git(self.repo, "log", "-1", "--format=%an <%ae>", branch).stdout)
+        # nothing left on either side
+        self.assertEqual(sorted(p.name for p in self.remote.iterdir()), [], "the hands' job directory is removed")
+        self.assertFalse((self.home / "work" / ("%s.bundle" % run["job_id"])).exists(), "the bundle is removed")
+        self.assertFalse((self.home / "work" / run["job_id"]).exists())
+        # the hub pulled over ssh; the hands never learned the checkout path
+        shim_log = (self.tmp / "shim.log").read_text()
+        self.assertIn("git-upload-pack '%s/%s/clone'" % (self.remote, run["job_id"]), shim_log)
+        self.assertNotIn(str(self.repo), shim_log)
+        # the result names the executor, the finding is there, the votes were cast by the hub
+        result = self.con.execute("SELECT * FROM posts WHERE kind = 'result'").fetchone()
+        self.assertIn("executor `hands`", result["body"])
+        self.assertIn("remote hands work", result["body"])
+        self.assertIn("Votes: 1 cast of 3", result["body"])
+        votes = self.con.execute("SELECT * FROM posts WHERE kind = 'vote'").fetchall()
+        self.assertEqual(len(votes), 1, "one vote: the own card and the unknown id were skipped")
+        self.assertEqual((votes[0]["on_post"], votes[0]["vote"], votes[0]["agent"]), (card["id"], "up", "aurora"))
+        self.assertEqual(json.loads(votes[0]["extra"])["cast_by"], "hub-from-result")
+        self.assertIn("the title is long", votes[0]["summary"])
+        log = Path(run["log"]).read_text()
+        self.assertIn("was not on this run's ballot", log)
+        self.assertEqual(pulse.executor_row(self.con, "hands")["runs_done"], 1)
+        self.assertEqual(pulse.runs_today(self.con, NOW), 1)
+
+    def test_losing_the_hands_before_the_worker_is_an_error_after_it_is_a_failure(self):
+        self.add_hands()
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        worker = self.worker_script('printf "SUMMARY: fine\\n" > PULSE_RESULT.md')
+        job_id = self.con.execute("SELECT id FROM jobs").fetchone()["id"]
+        os.environ["PULSE_SHIM_FAIL_VERB"] = "prepare"
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("unreachable before worker start", run["summary"])
+        job = self.con.execute("SELECT status, attempts FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual((job["status"], job["attempts"]), ("queued", 1), "requeued: nothing was spent")
+        self.assertEqual(pulse.runs_today(self.con, NOW), 0)
+        self.assertEqual(pulse.executor_row(self.con, "hands")["errors"], 1)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM posts WHERE kind = 'result'").fetchone()[0], 0)
+        # three in a row: unreachable, with a backoff the daemon honours
+        pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        row = pulse.executor_row(self.con, "hands")
+        self.assertEqual((row["status"], row["errors"], row["backoff_minutes"]), ("unreachable", 3, 1))
+        self.assertTrue(row["next_probe_at"] > NOW)
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertIsNone(run)
+        self.assertIn("unreachable", reason)
+        self.assertEqual(pulse.executor_slots(self.con, NOW), ["local"], "an unreachable executor offers no slot")
+        # not due yet: nothing probed; due and still dead: backoff doubles; alive again: back in service
+        self.assertEqual(pulse.reprobe_due(self.con, 300, now=NOW), [])
+        later = pulse.plus_hours(NOW, 2 / 60.0)
+        os.environ["PULSE_SHIM_FAIL"] = "always"
+        self.assertEqual(pulse.reprobe_due(self.con, 300, now=later), [])
+        row = pulse.executor_row(self.con, "hands")
+        self.assertEqual((row["status"], row["backoff_minutes"]), ("unreachable", 2))
+        os.environ.pop("PULSE_SHIM_FAIL")
+        os.environ.pop("PULSE_SHIM_FAIL_VERB")
+        much_later = pulse.plus_hours(NOW, 1)
+        back = pulse.reprobe_due(self.con, 300, now=much_later)
+        self.assertEqual([n for n, _ in back], ["hands"])
+        row = pulse.executor_row(self.con, "hands")
+        self.assertEqual((row["status"], row["errors"], row["backoff_minutes"], row["next_probe_at"]), ("active", 0, 0, ""))
+        self.assertEqual(self.con.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()["status"], "failed",
+                         "three runner errors exhaust the job's attempts")
+        # the connection dies after the worker started: the agent's failed run, cap spent, job failed
+        job_id = pulse.add_job(self.con, "proj", "task", "again", created_by="test")[0]["id"]
+        os.environ["PULSE_SHIM_FAIL_VERB"] = "run"
+        run, why = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertIsNotNone(run, why)
+        self.assertEqual(run["status"], "failed", run["summary"])
+        self.assertIn("unreachable after worker start", run["summary"])
+        self.assertEqual(self.con.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()["status"], "failed")
+        self.assertEqual(pulse.runs_today(self.con, NOW), 1)
+        self.assertEqual(pulse.agent_row(self.con, "aurora")["jobs_failed"], 1)
+        self.assertEqual(pulse.executor_row(self.con, "hands")["runs_failed"], 1)
+        results = [r["summary"] for r in self.con.execute("SELECT summary FROM posts WHERE kind = 'result' ORDER BY id")]
+        self.assertEqual(len(results), 2, results)
+        self.assertIn("runner errors", results[0], "the job that ran out of attempts is reported too")
+        self.assertIn("unreachable after worker start", results[1])
+
+    def test_remote_timeout_verify_failure_owner_paths_and_a_committed_result_file(self):
+        self.add_hands()
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        pulse.set_setting(self.con, "jobs_per_day", "0", "human")  # four jobs in one test day
+        pulse.set_setting(self.con, "minutes_per_job", "0", "human")
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=self.worker_script("sleep 20"), now=NOW, executor="hands")
+        self.assertEqual(run["status"], "timeout", run["summary"])
+        self.assertEqual(sorted(p.name for p in self.remote.iterdir()), [], "cleaned after a timeout too")
+        pulse.set_setting(self.con, "minutes_per_job", "10", "human")
+        # verify fails on the hands: nothing lands
+        self.con.execute("UPDATE projects SET verify_cmd = 'grep -q never README.md' WHERE slug = 'proj'")
+        pulse.add_job(self.con, "proj", "task", "verify me", created_by="test")
+        worker = self.worker_script('echo x >> README.md\ngit commit -qam x\nprintf "SUMMARY: x\\n" > PULSE_RESULT.md')
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertEqual(run["status"], "failed", run["summary"])
+        self.assertIn("verify exit 1", run["summary"])
+        self.assertEqual(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "")
+        self.con.execute("UPDATE projects SET verify_cmd = 'true' WHERE slug = 'proj'")
+        # owner-owned paths never land from the hands either
+        pulse.add_job(self.con, "proj", "task", "owner paths", created_by="test")
+        worker = self.worker_script('mkdir -p docs/evolution && echo stop > docs/evolution/STOP\ngit add -A\ngit commit -qm stop\n'
+                                    'printf "SUMMARY: stopped it\\n" > PULSE_RESULT.md')
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertEqual(run["status"], "failed", run["summary"])
+        self.assertIn("owner-owned", run["summary"])
+        # a committed PULSE_RESULT.md is dropped with one more commit before landing
+        pulse.add_job(self.con, "proj", "task", "committed result", created_by="test")
+        worker = self.worker_script('echo y >> README.md\nprintf "SUMMARY: y\\n" > PULSE_RESULT.md\ngit add -A\ngit commit -qm y')
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertEqual(run["status"], "done", run["summary"])
+        self.assertEqual(run["commits"], 2)
+        self.assertNotEqual(git(self.repo, "cat-file", "-e", "%s:PULSE_RESULT.md" % run["branch"]).returncode, 0)
+
+    def test_the_daemon_fills_every_free_slot_and_honours_project_limits(self):
+        other = make_repo(self.tmp, "other")
+        code, out, err = run_cli("init", "--path", str(other), "--verify", "true")
+        self.assertEqual(code, 0, err)
+        self.add_hands("hands-a", projects="proj")
+        self.add_hands("hands-b", projects="*")
+        pulse.set_setting(self.con, "workers", "0", "human")  # nothing runs on this machine while hands exist
+        self.assertEqual(pulse.executor_slots(self.con, NOW), ["hands-a", "hands-b"])
+        worker = self.worker_script('sleep 1\nprintf "SUMMARY: hi from $PULSE_AGENT\\n" > PULSE_RESULT.md')
+        out = io.StringIO()
+        self.assertEqual(pulse.daemon(self.con, interval=0, worker_cmd=worker, max_loops=1, out=out), "done")
+        runs = self.con.execute("SELECT * FROM runs ORDER BY executor").fetchall()
+        self.assertEqual([r["status"] for r in runs], ["done", "done"], out.getvalue())
+        self.assertEqual([r["executor"] for r in runs], ["hands-a", "hands-b"])
+        self.assertEqual(runs[0]["project"], "proj", "hands-a serves proj only")
+        self.assertEqual(runs[1]["project"], "other")
+        self.assertNotEqual(runs[0]["agent"], runs[1]["agent"], "parallel slots use distinct workers")
+        self.assertIn("on hands-a", out.getvalue())
+        # an executor limited to one project refuses another
+        run, reason = pulse.work_once(self.con, runs[0]["agent"], project="other", executor="hands-a", now=NOW)
+        self.assertIsNone(run)
+        self.assertIn("does not serve other", reason)
+        # with no remote hands the machine always keeps one slot, even at workers 0
+        pulse.remove_executor(self.con, "hands-a")
+        pulse.remove_executor(self.con, "hands-b")
+        self.assertEqual(pulse.executor_slots(self.con, NOW), ["local"])
+        # a run a dead runner left behind is closed at daemon start and frees its slot
+        self.con.execute("INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-x', 'j', 'a', 'proj', ?, 'running', 'local')", (NOW,))
+        pulse.set_setting(self.con, "workers", "1", "human")
+        self.assertEqual(pulse.executor_slots(self.con, NOW), [])
+        out = io.StringIO()
+        pulse.daemon(self.con, interval=0, worker_cmd=worker, max_loops=1, out=out)
+        self.assertEqual(self.con.execute("SELECT status FROM runs WHERE id = 'run-x'").fetchone()["status"], "lost")
+        self.assertIn("closed 1 run(s)", out.getvalue())
+
+    def test_the_brief_carries_the_ballot_and_result_lines_carry_votes(self):
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        job = self.con.execute("SELECT * FROM jobs").fetchone()
+        project = pulse.project_by_slug(self.con, "proj")
+        ballot = [{"id": "20260901T000000Z-borealis", "key": "evolution/tidy", "up": 1, "down": 0, "summary": "shorten the title"}]
+        remote = pulse.write_brief(job, project, "aurora", "/srv/pulse/j/clone", 10, ballot=ballot, remote=True)
+        self.assertIn("## Ballot", remote)
+        self.assertIn("20260901T000000Z-borealis", remote)
+        self.assertIn("VOTE:", remote)
+        self.assertIn("no PULSE store", remote)
+        self.assertNotIn("$PULSE_CLI", remote)
+        local = pulse.write_brief(job, project, "aurora", "/tmp/clone", 10, ballot=[], remote=False)
+        self.assertIn("$PULSE_CLI", local)
+        self.assertIn("Nothing awaits your vote", local)
+        parsed = pulse.parse_result_text("SUMMARY: did it\n- VOTE: abc up   because it helps\nVOTE: def down\n`VOTE:` ghi UP: shouting\nFINDING: f\n")
+        self.assertEqual(parsed["votes"], [("abc", "up", "because it helps"), ("def", "down", ""), ("ghi", "up", "shouting")])
+        self.assertEqual(parsed["summary"], "did it")
+        self.assertEqual(parsed["findings"], ["f"])
+        self.assertFalse(pulse.parse_result_text(None)["found"])
+
+    def test_a_version_one_store_gains_the_executor_table_and_column_in_place(self):
+        self.con.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+        self.con.execute("DROP TABLE executors")
+        self.con.execute("ALTER TABLE runs DROP COLUMN executor")
+        self.con.close()
+        self.con = pulse.connect()
+        self.assertEqual(self.con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()["value"], "2")
+        self.assertIn("executor", {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")})
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM executors").fetchone()[0], 0)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM events WHERE action = 'schema.upgrade'").fetchone()[0], 1)
+        self.con.close()
+        self.con = pulse.connect()  # idempotent
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM events WHERE action = 'schema.upgrade'").fetchone()[0], 1)
+
+    def test_the_command_channel_is_argv_not_a_shell_string(self):
+        row = {"address": "pulse@hands.example:2222"}
+        cmd = pulse.ssh_command(row, ["verify", "j", "10", "--", "echo $(id); rm -rf /"])
+        self.assertEqual(cmd[-2], "pulse@hands.example")
+        self.assertIn("-p", cmd)
+        self.assertEqual(cmd[cmd.index("-p") + 1], "2222")
+        self.assertTrue(cmd[-1].startswith("b64 "))
+        self.assertNotIn("$", cmd[-1])
+        # the hands refuse a plain shell string and an unknown verb
+        env = dict(os.environ, SSH_ORIGINAL_COMMAND="probe; touch %s/pwned" % self.tmp)
+        res = subprocess.run(["bash", str(HANDS_SH)], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("refused", res.stderr)
+        self.assertFalse((self.tmp / "pwned").exists())
+        env["SSH_ORIGINAL_COMMAND"] = "b64 " + base64.b64encode(b"shutdown\0now\0").decode()
+        res = subprocess.run(["bash", str(HANDS_SH)], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("verb not allowed", res.stderr)
+        # the worker must be copilot unless the test switch is set, env keys are whitelisted, upload-pack stays under the workdir
+        env.pop("PULSE_HANDS_ALLOW_ANY_WORKER", None)
+        env["SSH_ORIGINAL_COMMAND"] = "git-upload-pack '/etc'"
+        res = subprocess.run(["bash", str(HANDS_SH)], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("under", res.stderr)
 
 
 if __name__ == "__main__":

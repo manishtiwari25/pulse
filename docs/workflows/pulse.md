@@ -81,6 +81,8 @@ Back up or share the data with `pulse export --sql FILE` or `--db FILE`
 pulse work --dry-run                # lease the top job, clone, write the brief, start nothing, clean up
 pulse work                          # one real job under the caps
 pulse daemon [--interval 300]       # plan, lease, run, prune - until pulse stop
+pulse work --executor vm1           # one job on a registered remote executor (ADR-020)
+pulse executor list                 # this machine and every pair of hands, with their state
 ```
 
 For each job the runner: leases it atomically (one leased job per project;
@@ -240,6 +242,46 @@ keeps the process alive and it checks the switch every interval) and `pulse
 start` resumes; `docs/evolution/STOP` in the brain stops it too. Without the
 service, `nohup python3 docs/scripts/pulse.py daemon --interval 300 >>
 ~/.pulse/logs/daemon.log 2>&1 &` still works for one login session.
+
+**More hands** ([ADR-020](../decisions/ADR-020-remote-executors.md),
+[`executors.md`](executors.md)). The store, the planner, and the landing stay
+on this machine, the hub; another machine the human owns can lend its hands.
+`pulse executor add vm1 --ssh pulse@HOST[:PORT] --workdir /srv/pulse
+[--workers N] [--projects a,b|'*']` registers it drained; `pulse executor
+probe vm1` checks it (the forced command answers, `git` and `copilot`
+exist, a login is present, the key is restricted, the work directory holds
+no clone with a remote, at least a gigabyte is free) and activates it when
+the checks pass; `list`, `drain`, `activate`, and `remove` (refused while a
+run is on it) complete the set - every change is an event and all of them
+are the human's commands. The same run has the same phases on any executor:
+the hub bundles the project's default branch, sends it over ssh, the hands
+clone it with no remote and the agent's identity, the hub writes the brief
+into the clone, the worker runs there under the same deny list and caps
+(with `--add-dir` grants for the job directory only - there is no store to
+reach), the hands run the project's own check, and the hub **fetches** the
+commits over the same ssh channel (`git fetch ssh://…/<job>/clone`) into
+`pulse/<agent>/<job>`, then tells the hands to remove the job directory. The
+hands never push, never hold a remote or a repository credential, and never
+see the store: the only program the hub's key may start there is
+`pulse-hands` (`docs/scripts/hosted/pulse-hands.sh`), which accepts a fixed
+list of verbs with argv passed as base64 - never a shell string - and git's
+own `git-upload-pack` for a job clone. A vote from there travels back as a
+`VOTE: <post-id> up|down <reason>` line in `PULSE_RESULT.md`: the brief
+carries the ballot (`## Ballot`), and the hub casts each line as the
+worker's vote (`cast_by: hub-from-result`) only for ids that were on that
+ballot, with a reason, never the worker's own card - the same rules the
+direct `pulse vote` path enforces. An ssh failure before the worker started
+is an `error` run (requeue, nothing spent); one after it started is `failed`
+(cap spent). Three transport errors in a row mark the executor
+`unreachable`; the daemon skips it and re-probes with a doubling wait (1,
+2, 4 minutes … up to its interval or an hour) until it answers or a human
+activates it, and `local` keeps working meanwhile. With several slots free
+the daemon leases in order - executors limited to some projects first, so
+an unrestricted one cannot starve them - then runs every leased job at once
+in its own thread with its own store connection, one distinct worker each,
+and prints `done <job> <agent> on <executor>: …` per run. `workers 0` keeps
+this machine idle while remote hands exist. `jobs_per_day` counts every
+executor together.
 
 ## Migration from the Markdown boards
 
