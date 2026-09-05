@@ -14,13 +14,16 @@ situation) and checks that `pulse records` prints the same typed records as
 
 import importlib.util
 import io
+import json
 import os
 import shutil
 import sqlite3
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -44,7 +47,7 @@ _ENV_BEFORE = {}
 
 
 def setUpModule():
-    for key in ("PULSE_HOME", "PULSE_AGENT", "PULSE_SESSION", "PULSE_COMMONS"):
+    for key in ("PULSE_HOME", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT", "PULSE_COMMONS"):
         _ENV_BEFORE[key] = os.environ.pop(key, None)
 
 
@@ -290,8 +293,8 @@ class StoreTestCase(unittest.TestCase):
         with self.assertRaises(pulse.PulseError):
             pulse.add_job(self.con, "proj", "task", "migrate the database", tier=2)
 
-    def worker_script(self, body):
-        script = self.tmp / "worker.sh"
+    def worker_script(self, body, name="worker.sh"):
+        script = self.tmp / name
         script.write_text("#!/bin/sh\nset -e\n" + body + "\n", encoding="utf-8")
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
         return str(script)
@@ -398,11 +401,7 @@ class StoreTestCase(unittest.TestCase):
         self.assertEqual(pulse.plan_jobs(self.con, "proj", now=NOW), [], "one job at a time per project")
         pulse.finish_job(self.con, jobs[0]["id"], "human", "done")
         jobs = pulse.plan_jobs(self.con, "proj", now=NOW)
-        self.assertEqual([j["kind"] for j in jobs], ["improve"], "the eligible suggestion is still open, so it is planned again")
-        pulse.create_post(self.con, "result", "proj", "evolution", "speed", "tested and kept", "row A-1", agent="aurora", resolution="tested")
-        pulse.finish_job(self.con, jobs[0]["id"], "human", "done")
-        jobs = pulse.plan_jobs(self.con, "proj", now=NOW)
-        self.assertEqual([j["kind"] for j in jobs], ["answer"])
+        self.assertEqual([j["kind"] for j in jobs], ["answer"], "a built suggestion is never planned again, even while its thread is open")
         pulse.finish_job(self.con, jobs[0]["id"], "human", "cancelled")
         jobs = pulse.plan_jobs(self.con, "proj", now=NOW)
         self.assertEqual([j["kind"] for j in jobs], ["reflect"], "a question gets one job ever; a cancelled attempt is not retried")
@@ -420,6 +419,387 @@ class StoreTestCase(unittest.TestCase):
         pulse.set_setting(self.con, "stop", "1", "human")
         out = io.StringIO()
         self.assertEqual(pulse.daemon(self.con, interval=0, worker_cmd=worker, max_loops=1, out=out), "stopped")
+
+    # -- WU-009: the loop's leaks -----------------------------------------
+
+    def test_runner_errors_requeue_the_job_and_do_not_count_against_the_cap(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        rejected = self.worker_script('echo "error: option --max-ai-credits argument 5 is invalid" >&2\nexit 1', "rejected.sh")
+        job_id = self.con.execute("SELECT id FROM jobs").fetchone()["id"]
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=rejected, now=NOW)
+        self.assertEqual(run["status"], "error")
+        self.assertIn("rejected at launch", run["summary"])
+        self.assertIn("max-ai-credits", run["summary"])
+        self.assertEqual(pulse.runs_today(self.con, NOW), 0, "a runner error is not a worker run")
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual((job["status"], job["attempts"], job["lease_agent"]), ("queued", 1, ""))
+        self.assertEqual(pulse.agent_row(self.con, "aurora")["jobs_failed"], 0, "not the agent's fault")
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM posts WHERE kind = 'result'").fetchone()[0], 0, "no board noise per retry")
+        # a missing worker command is a runner error too
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=str(self.tmp / "no-such-worker"), now=NOW)
+        self.assertEqual(run["status"], "error")
+        self.assertIn("not found", run["summary"])
+        # the third error exhausts the attempts: the job fails and one result says so
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=rejected, now=NOW)
+        self.assertEqual(run["status"], "error")
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual((job["status"], job["attempts"]), ("failed", 3))
+        self.assertIn("after 3 runner errors", job["result"])
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM posts WHERE kind = 'result'").fetchone()[0], 1)
+        self.assertEqual(pulse.runs_today(self.con, NOW), 0)
+        # a worker that ran and then failed still counts: it spent the credits
+        pulse.add_job(self.con, "proj", "task", "real failure", created_by="test")
+        slow_fail = self.worker_script('printf "SUMMARY: tried\\n" > PULSE_RESULT.md\nexit 1', "slow-fail.sh")
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=slow_fail, now=NOW)
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(pulse.runs_today(self.con, NOW), 1)
+        # the daemon waits after a runner error instead of spinning through the queue
+        pulse.add_job(self.con, "proj", "task", "again", created_by="test")
+        out = io.StringIO()
+        with unittest.mock.patch.object(pulse.time, "sleep") as sleep:
+            pulse.daemon(self.con, interval=7, worker_cmd=rejected, max_loops=2, out=out)
+        sleep.assert_called_with(7)
+        self.assertIn("error", out.getvalue())
+
+    def test_brief_tells_the_worker_to_vote_through_the_same_store(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        pulse.join_agent(self.con, "cinder", "r", "m")
+        sug = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "cache the table", "one variable",
+                                agent="cinder", date="2026-09-09T09:00:00Z")
+        # the worker does what the brief says: ballot, then one vote with a reason, through $PULSE_CLI and $PULSE_HOME
+        worker = self.worker_script(
+            'grep -q "ballot --project proj" "$PULSE_BRIEF"\n'
+            'python3 "$PULSE_CLI" ballot --project "$PULSE_PROJECT" | grep -q evolution/speed\n'
+            'python3 "$PULSE_CLI" vote %s up --summary "one variable, measurable" > /dev/null\n'
+            'printf "SUMMARY: voted\\n" > PULSE_RESULT.md' % sug["id"])
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", Path(run["log"]).read_text())
+        votes = self.con.execute("SELECT agent, vote, on_post FROM posts WHERE kind = 'vote'").fetchall()
+        self.assertEqual([(v["agent"], v["vote"], v["on_post"]) for v in votes], [("aurora", "up", sug["id"])])
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM posts WHERE kind = 'vote'").fetchone()[0], 1, "one store, no stray home")
+
+    def test_daemon_keeps_a_worker_pool_of_quorum_plus_one_and_rotates_it(self):
+        first = pulse.pick_worker(self.con)
+        names = {r["name"] for r in self.con.execute("SELECT name FROM agents WHERE kind = 'worker' AND status = 'active'")}
+        self.assertEqual(len(names), 3, "quorum 2 needs two distinct voters besides the card's own author")
+        self.assertIn(first, names)
+        job = pulse.lease_job(self.con, first, now=NOW)
+        pulse.finish_job(self.con, job["id"], first, "done", generation=job["generation"])
+        second = pulse.pick_worker(self.con)
+        self.assertNotEqual(first, second, "round-robin: the worker that leased least recently goes next")
+        pulse.add_job(self.con, "proj", "task", "two", created_by="test")
+        job = pulse.lease_job(self.con, second, now=NOW)
+        pulse.finish_job(self.con, job["id"], second, "done", generation=job["generation"])
+        third = pulse.pick_worker(self.con)
+        self.assertEqual(len({first, second, third}), 3, "every worker in the pool gets a turn before the first repeats")
+        pulse.add_job(self.con, "proj", "task", "three", created_by="test")
+        job = pulse.lease_job(self.con, third, now=NOW)
+        pulse.finish_job(self.con, job["id"], third, "done", generation=job["generation"])
+        self.assertEqual(pulse.pick_worker(self.con), first)
+        self.assertEqual(len({r["name"] for r in self.con.execute("SELECT name FROM agents WHERE kind = 'worker'")}), 3, "no unbounded growth")
+        self.assertEqual(pulse.pick_worker(self.con, agent=first), first, "an explicit agent is honored")
+
+    def test_the_lease_rotates_across_projects_so_a_busy_brain_never_starves_the_others(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        pulse.set_setting(self.con, "jobs_per_day", "0", "human")
+        other = make_repo(self.tmp, "other")
+        pulse.add_project(self.con, other, verify_cmd="true")
+        for j in self.con.execute("SELECT id FROM jobs WHERE status = 'queued'").fetchall():
+            pulse.finish_job(self.con, j["id"], "human", "cancelled")
+        for n in range(3):
+            pulse.add_job(self.con, "proj", "task", "brain %d" % n, priority=13, created_by="test")
+        pulse.add_job(self.con, "other", "task", "small fix", priority=0, created_by="test")
+        worker = self.worker_script('printf "SUMMARY: looked\n" > PULSE_RESULT.md')
+        order = []
+        for minute in range(4):
+            now = "2026-09-10T12:%02d:00Z" % minute
+            run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=now)
+            self.assertIsNotNone(run, reason)
+            order.append(run["project"])
+        self.assertEqual(order, ["proj", "other", "proj", "proj"],
+                         "no run anywhere: priority decides; then the project that never ran goes before the one that just did")
+        # within a project, priority still decides
+        pulse.add_job(self.con, "proj", "task", "low", priority=1, created_by="test")
+        pulse.add_job(self.con, "proj", "task", "high", priority=9, created_by="test")
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertEqual(self.con.execute("SELECT title FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()["title"], "high")
+
+    def test_a_stale_lease_never_lands_and_never_finishes_the_job(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        pulse.join_agent(self.con, "cinder", "r", "m", kind="worker")
+        job = pulse.lease_job(self.con, "aurora", now=NOW)
+        with self.assertRaises(pulse.PulseError):
+            pulse.finish_job(self.con, job["id"], "aurora", "done", generation=job["generation"] + 1)
+        self.assertTrue(pulse.renew_lease(self.con, job["id"], "aurora", job["generation"], 5, now=NOW))
+        self.assertFalse(pulse.renew_lease(self.con, job["id"], "aurora", job["generation"] + 1, 5, now=NOW), "a stale holder cannot renew")
+        pulse.finish_job(self.con, job["id"], "aurora", "queued", generation=job["generation"])
+        # A worker whose lease expired mid-run: another runner requeues and retakes the job while it works.
+        store = str(self.home / "pulse.sqlite")
+        worker = self.worker_script(
+            'echo late >> README.md\n'
+            'git -c user.name=w -c user.email=w@x -c commit.gpgsign=false commit -qam "late change"\n'
+            'python3 -c "import sqlite3; c = sqlite3.connect(%r); '
+            'c.execute(\\"UPDATE jobs SET generation = generation + 1, lease_agent = \'cinder\' WHERE id = ?\\", (%r,)); c.commit()"\n'
+            'printf "SUMMARY: too late\\n" > PULSE_RESULT.md' % (store, job["id"]))
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "stale", Path(run["log"]).read_text())
+        self.assertEqual(run["branch"], "")
+        self.assertEqual(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "", "nothing landed")
+        job_now = self.con.execute("SELECT status, lease_agent FROM jobs WHERE id = ?", (job["id"],)).fetchone()
+        self.assertEqual((job_now["status"], job_now["lease_agent"]), ("leased", "cinder"), "the new holder's job is untouched")
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM posts WHERE kind = 'result'").fetchone()[0], 0)
+        self.assertEqual(pulse.runs_today(self.con, NOW), 1, "the worker did run and spend; the cap counts it")
+
+    def test_ballot_queue_and_jobs_print_whole_ids_a_worker_can_paste(self):
+        long_name = "claude-fable-5-1-release-reviewer-ab"  # a legacy 36-character name; ids grow past 44
+        pulse.join_agent(self.con, long_name, "r", "m")
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        post = pulse.create_post(self.con, "suggestion", "proj", "governance", "long-ids", "a card", "", agent=long_name)
+        self.assertGreater(len(post["id"]), 44)
+        job = pulse.lease_job(self.con, "aurora", now=NOW)
+        pulse.finish_job(self.con, job["id"], "aurora", "queued", generation=job["generation"])
+        for args in (("ballot", "--project", "proj", "--agent", "aurora"), ("queue", "--project", "proj"),
+                     ("board", "--project", "proj", "--area", "governance")):
+            code, out, err = run_cli(*args)
+            self.assertEqual(code, 0, err)
+            self.assertIn(post["id"], out, "%s clipped the id" % args[0])
+            self.assertNotIn(post["id"][:43] + "~", out)
+        code, out, err = run_cli("jobs", "--project", "proj")
+        self.assertEqual(code, 0, err)
+        self.assertIn(job["id"], out)
+
+    # -- WU-010: keep-alive runner, no daily cap, self-feeding suggestions --
+
+    def test_jobs_per_day_zero_means_no_daily_cap(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        pulse.set_setting(self.con, "jobs_per_day", "0", "human")
+        self.assertEqual(pulse.daily_cap(self.con), 0)
+        worker = self.worker_script('printf "SUMMARY: looked around\\n" > PULSE_RESULT.md')
+        for i in range(3):
+            pulse.add_job(self.con, "proj", "task", "job %d" % i, created_by="test")
+        for i in range(3):
+            run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW[:10] + "T13:0%d:00Z" % i)
+            self.assertIsNotNone(run, reason)
+            self.assertEqual(run["status"], "done")
+        self.assertEqual(pulse.runs_today(self.con, NOW), 3)
+        code, out, err = run_cli("status")
+        self.assertEqual(code, 0, err)
+        self.assertIn("no daily cap", out)
+        # the other spellings of "none" and the default when unset
+        for word in ("none", "off", "unlimited", ""):
+            pulse.set_setting(self.con, "jobs_per_day", word, "human")
+            self.assertEqual(pulse.daily_cap(self.con), 0, word)
+        pulse.set_setting(self.con, "jobs_per_day", "2", "human")
+        self.assertEqual(pulse.daily_cap(self.con), 2)
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW[:10] + "T14:00:00Z")
+        self.assertIsNone(run)
+        self.assertIn("daily cap", reason)
+
+    def test_worker_suggestion_lines_become_suggestion_posts_the_next_ballot_shows(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        pulse.join_agent(self.con, "cinder", "r", "m", kind="worker")
+        worker = self.worker_script(
+            'printf "SUMMARY: onboarded\\n'
+            'SUGGESTION: evolution/speed: cache the tally table so board renders in half the time\\n'
+            'SUGGESTION: drop the README banner\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done")
+        sugs = self.con.execute("SELECT * FROM posts WHERE kind = 'suggestion' ORDER BY id").fetchall()
+        self.assertEqual(len(sugs), 2)
+        by_thread = {s["thread"]: s for s in sugs}
+        named = by_thread["speed"]
+        self.assertEqual(named["area"], "evolution")
+        self.assertIn("cache the tally table", named["summary"])
+        self.assertEqual(named["agent"], "aurora", "provenance is the worker that saw it")
+        self.assertIn(run["job_id"], named["body"])
+        default = [s for s in sugs if s["thread"] == run["job_id"].lower()]
+        self.assertEqual(len(default), 1, "no area/thread given: filed under evolution/<job id>, which the job's result does not close")
+        self.assertEqual(default[0]["area"], "evolution")
+        self.assertIn("drop the README banner", default[0]["summary"])
+        # the next worker's ballot lists them, so the loop feeds itself
+        code, out, err = run_cli("ballot", "--project", "proj", "--agent", "cinder")
+        self.assertEqual(code, 0, err)
+        for s in sugs:
+            self.assertIn(s["id"], out)
+        code, out, err = run_cli("ballot", "--project", "proj", "--agent", "aurora")
+        self.assertEqual(code, 0, err)
+        for s in sugs:
+            self.assertNotIn(s["id"], out, "no self-votes: the author's ballot does not list its own cards")
+
+    def test_parse_suggestion_line_splits_area_and_thread_only_when_well_formed(self):
+        self.assertEqual(pulse.parse_suggestion_line("evolution/speed: cache it"), ("evolution", "speed", "cache it"))
+        self.assertEqual(pulse.parse_suggestion_line("jobs/wu-010 - shorter briefs"), ("jobs", "wu-010", "shorter briefs"))
+        self.assertEqual(pulse.parse_suggestion_line("use https://x/y: not an area"), ("", "", "use https://x/y: not an area"))
+        self.assertEqual(pulse.parse_suggestion_line("Evolution/Speed: caps are not areas"), ("", "", "Evolution/Speed: caps are not areas"))
+        # a worker that copies the brief's placeholder literally gets the defaults, not a thread called "thread"
+        self.assertEqual(pulse.parse_suggestion_line("evolution/thread: make C2 explicit"), ("", "", "make C2 explicit"))
+        self.assertEqual(pulse.parse_suggestion_line("area/thread: make C2 explicit"), ("", "", "make C2 explicit"))
+
+    def test_a_run_is_the_workers_session_and_its_posts_carry_the_model(self):
+        pulse.join_agent(self.con, "aurora", "copilot", "", kind="worker")
+        pulse.set_setting(self.con, "worker_model", "tiny-model", "human")
+        worker = self.worker_script(
+            'python3 "$PULSE_CLI" post finding --area evolution --thread seen --summary "saw it" >/dev/null\n'
+            'printf "SUMMARY: looked\nSUGGESTION: evolution/thread: card\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done")
+        row = pulse.agent_row(self.con, "aurora")
+        self.assertIn(run["id"], json.loads(row["sessions"]), "the run id is the worker's session")
+        self.assertEqual(row["kind"], "worker")
+        posts = self.con.execute("SELECT kind, session, thread FROM posts WHERE agent = 'aurora' ORDER BY id").fetchall()
+        kinds = {p["kind"] for p in posts}
+        self.assertEqual(kinds, {"finding", "result", "suggestion"})
+        for p in posts:
+            self.assertEqual(p["session"], run["id"], "%s post carries the run as its session" % p["kind"])
+        sug = [p for p in posts if p["kind"] == "suggestion"][0]
+        self.assertEqual(sug["thread"], run["job_id"].lower(), "placeholder area/thread falls back to the default")
+
+    def test_plan_jobs_builds_only_suggestions_voted_up_on_balance(self):
+        for name in ("aurora", "cinder", "dusk"):
+            pulse.join_agent(self.con, name, "r", "m")
+        for j in self.con.execute("SELECT id FROM jobs WHERE status = 'queued'").fetchall():
+            pulse.finish_job(self.con, j["id"], "human", "cancelled")
+        down = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "delete the tests", "one variable",
+                                 agent="aurora", date="2026-09-09T09:00:00Z")
+        up = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "cache the tally", "one variable",
+                               agent="aurora", date="2026-09-09T09:01:00Z")
+        for voter, on, value in (("cinder", down, "down"), ("dusk", down, "down"), ("cinder", up, "up"), ("dusk", up, "up")):
+            pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "%s: because" % value, "", agent=voter,
+                              on=on["id"], vote=value, date="2026-09-09T10:00:00Z")
+        jobs = pulse.plan_jobs(self.con, "proj", now=NOW)
+        improve = [j for j in jobs if j["kind"] == "improve"]
+        self.assertEqual(len(improve), 1, [j["title"] for j in jobs])
+        self.assertEqual(improve[0]["source"], "suggestion:%s" % up["id"])
+
+    def test_a_suggestion_is_built_once_then_leaves_the_queue_and_the_ballot(self):
+        for name in ("aurora", "cinder", "dusk"):
+            pulse.join_agent(self.con, name, "r", "m", kind="worker" if name == "aurora" else "session")
+        for j in self.con.execute("SELECT id FROM jobs WHERE status = 'queued'").fetchall():
+            pulse.finish_job(self.con, j["id"], "human", "cancelled")
+        card = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "shorter README", "one variable",
+                                 agent="cinder", date="2026-09-09T09:00:00Z")
+        for voter in ("aurora", "dusk"):
+            pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up: because", "", agent=voter,
+                              on=card["id"], vote="up", date="2026-09-09T10:00:00Z")
+        first = pulse.plan_jobs(self.con, "proj", now=NOW)
+        self.assertEqual([j["source"] for j in first], ["suggestion:%s" % card["id"]])
+        worker = self.worker_script(
+            'printf "trimmed\n" >> README.md && git add README.md && git -c user.name=w -c user.email=w@x commit -qm trim\n'
+            'printf "SUMMARY: trimmed the README\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done")
+        # the card is built: the queue shows it, the ballot drops it, the planner never rebuilds it
+        t, _ = pulse.tally_for(self.con, "proj", None, NOW)
+        rec = [r for r in t.suggestion_records() if r["id"] == card["id"]][0]
+        self.assertEqual(rec["status"], "built")
+        code, out, err = run_cli("board", "--project", "proj", "--agent", "dusk")
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out, r"built\s+evolution/speed")
+        self.assertNotIn(card["id"], run_cli("ballot", "--project", "proj", "--agent", "dusk")[1])
+        again = pulse.plan_jobs(self.con, "proj", now=NOW)
+        self.assertEqual([j["source"] for j in again if j["kind"] == "improve"], [],
+                         "one improve job per suggestion, ever - the daemon does not rebuild a built card")
+        # a failed attempt is "tried" and also leaves the queue
+        other = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "drop the banner", "one variable",
+                                  agent="cinder", date="2026-09-09T09:30:00Z")
+        for voter in ("aurora", "dusk"):
+            pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up: sure", "", agent=voter,
+                              on=other["id"], vote="up", date="2026-09-09T10:30:00Z")
+        for j in self.con.execute("SELECT id FROM jobs WHERE status = 'queued'").fetchall():
+            pulse.finish_job(self.con, j["id"], "human", "cancelled")  # the fallback reflect job the planner added
+        job = pulse.plan_jobs(self.con, "proj", now=NOW)[0]
+        self.assertEqual(job["source"], "suggestion:%s" % other["id"])
+        pulse.finish_job(self.con, job["id"], "human", "failed")
+        t, _ = pulse.tally_for(self.con, "proj", None, NOW)
+        self.assertEqual({r["id"]: r["status"] for r in t.suggestion_records()}[other["id"]], "tried")
+        self.assertEqual([j for j in pulse.plan_jobs(self.con, "proj", now=NOW) if j["kind"] == "improve"], [])
+
+    def test_daemon_writes_a_heartbeat_survives_a_bad_loop_and_restarts_on_code_change(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        worker = self.worker_script('printf "SUMMARY: looked around\\n" > PULSE_RESULT.md')
+        source = self.tmp / "fake-pulse.py"
+        source.write_text("# v1\n")
+        out = io.StringIO()
+        with unittest.mock.patch.object(pulse, "plan_jobs", side_effect=[RuntimeError("boom"), [], []]), \
+                unittest.mock.patch.object(pulse.time, "sleep"):
+            result = pulse.daemon(self.con, interval=0, worker_cmd=worker, max_loops=2, out=out, source_path=str(source))
+        self.assertEqual(result, "done")
+        text = out.getvalue()
+        self.assertIn("daemon error: RuntimeError: boom", text)
+        self.assertIn("done", text, "the loop after the error ran the job")
+        self.assertIn("exited", pulse.daemon_status(self.con))
+        # a live heartbeat while looping
+        pulse.daemon_heartbeat(self.con, 5, 300)
+        status = pulse.daemon_status(self.con, now=NOW)
+        self.assertIn("pid %d" % os.getpid(), status)
+        self.assertIn("5 loop(s)", status)
+        self.assertTrue(status.startswith("alive") or status.startswith("silent"))
+        code, cli_out, err = run_cli("status")
+        self.assertEqual(code, 0, err)
+        self.assertIn("daemon", cli_out)
+        # the code on disk changed: the daemon returns "restart" so the process re-executes itself
+        out = io.StringIO()
+        pulse.add_job(self.con, "proj", "task", "again", created_by="test")
+        def bump(*a, **k):
+            source.write_text("# v2\n")
+            os.utime(source, (1, 1))
+            return []
+        with unittest.mock.patch.object(pulse, "plan_jobs", side_effect=bump):
+            result = pulse.daemon(self.con, interval=0, worker_cmd=worker, max_loops=5, out=out, source_path=str(source),
+                                  restart_on_change=True)
+        self.assertEqual(result, "restart")
+        self.assertIn("changed on disk", out.getvalue())
+        self.assertLessEqual(out.getvalue().count("done "), 1, "it stopped at the first loop after the change")
+
+    def test_worker_command_denies_the_remote_tools_and_runs_in_autopilot(self):
+        cmd, custom = pulse.worker_command(self.con, "the brief", Path("/tmp/clone"))
+        self.assertFalse(custom)
+        self.assertEqual(cmd[:3], ["copilot", "-p", "the brief"])
+        for needle in ("--allow-all-tools", "--disable-builtin-mcps", "--no-ask-user", "-s", "--autopilot"):
+            self.assertIn(needle, cmd)
+        self.assertEqual(cmd[cmd.index("--max-ai-credits") + 1], "30")
+        denied = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--deny-tool"]
+        self.assertEqual(denied, list(pulse.DENIED_TOOLS))
+        self.assertTrue(any("git push" in d for d in denied) and any("gh" in d for d in denied))
+        self.assertNotIn("--model", cmd, "empty worker_model means the runner's default")
+        self.assertNotIn("--allow-all-paths", cmd, "no broad path grant: only the store, the CLI's folder, and scratch")
+        added = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--add-dir"]
+        self.assertIn(str(self.home.resolve()), added, "the store the worker votes through")
+        self.assertIn(str(Path(pulse.__file__).resolve().parent), added, "the pulse.py the brief tells it to call")
+        self.assertIn(tempfile.gettempdir(), added)
+        pulse.set_setting(self.con, "worker_model", "claude-haiku-4.5", "human")
+        cmd, _ = pulse.worker_command(self.con, "the brief", Path("/tmp/clone"))
+        self.assertEqual(cmd[-2:], ["--model", "claude-haiku-4.5"])
+        cmd, custom = pulse.worker_command(self.con, "the brief", Path("/tmp/clone"), worker_cmd="sh -c 'echo x'")
+        self.assertEqual((cmd, custom), (["sh", "-c", "echo x"], True))
+
+    def test_service_files_keep_the_daemon_alive_and_carry_the_path(self):
+        plist = pulse.service_file_text("launchd", 120, "/usr/bin/python3", "/repo/docs/scripts/pulse.py",
+                                        "/home/u/.pulse/logs/daemon.log", "/opt/homebrew/bin:/usr/bin", "/home/u/.pulse")
+        for needle in ("<string>pulse.daemon</string>", "<key>KeepAlive</key><true/>", "<key>RunAtLoad</key><true/>",
+                       "<string>--interval</string>", "<string>120</string>", "/opt/homebrew/bin:/usr/bin",
+                       "<key>PULSE_HOME</key><string>/home/u/.pulse</string>", "daemon.log"):
+            self.assertIn(needle, plist)
+        unit = pulse.service_file_text("systemd", 120, "/usr/bin/python3", "/repo/docs/scripts/pulse.py",
+                                       "/home/u/.pulse/logs/daemon.log", "/usr/bin", "/home/u/.pulse")
+        for needle in ("Restart=always", "ExecStart=/usr/bin/python3 /repo/docs/scripts/pulse.py daemon --interval 120",
+                       "Environment=PATH=/usr/bin", "WantedBy=default.target"):
+            self.assertIn(needle, unit)
+        kind, path = pulse.service_paths("darwin", home="/home/u")
+        self.assertEqual((kind, str(path)), ("launchd", "/home/u/Library/LaunchAgents/pulse.daemon.plist"))
+        kind, path = pulse.service_paths("linux", home="/home/u")
+        self.assertEqual((kind, str(path)), ("systemd", "/home/u/.config/systemd/user/pulse-daemon.service"))
+        self.assertEqual(pulse.service_commands("launchd", path, "install")[1][:2], ["launchctl", "bootstrap"])
+        self.assertEqual(pulse.service_commands("systemd", path, "install")[-1][-2:], ["--now", "pulse-daemon"])
+        # `service show` renders without touching launchctl or systemctl
+        code, out, err = run_cli("service", "show", "--interval", "45")
+        self.assertEqual(code, 0, err)
+        self.assertIn("<string>45</string>" if sys.platform == "darwin" else "--interval 45", out)
 
     # -- export -----------------------------------------------------------
 

@@ -266,4 +266,13 @@ action.
       2026-09-05).
 - [ ] Slice 3 as its own work unit: a second machine (ADR-018 slice 3),
       replication of the store or git remotes, leases proven under
-      contention first.
+      contention first. Proposed on 2026-09-05 as
+      [ADR-020](ADR-020-remote-executors.md): remote executors over ssh
+      that keep this store the only brain; WU-009 delivered the renewable,
+      generation-checked leases it requires.
+- [x] Keep-alive at the maintainer's words (2026-09-05,
+      [WU-010](../plans/WU-010-keep-alive-runner.md)): `jobs_per_day 0` is
+      no daily cap; the daemon writes a heartbeat, survives a bad loop,
+      restarts itself when `pulse.py` changes, and is kept alive by
+      `pulse service install`; worker `SUGGESTION:` lines feed the next
+      ballot and the planner builds only cards voted up on balance.

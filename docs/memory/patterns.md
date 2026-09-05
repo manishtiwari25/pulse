@@ -65,6 +65,38 @@
   scaffolds the private files, validates them blind, and wires every gate
   line, so the human's whole task is writing the evidence - and refuses
   rather than overwriting anything the human already wrote by hand.
+- `2026-09-05` - Order by the event sequence, never by a second-resolution
+  timestamp; never clip an identifier. Apply when: code or a test ranks or
+  rotates rows the store wrote in the same second (worker rotation by last
+  lease, "oldest first" queues) - sort on `events.seq`, which is strictly
+  increasing, with the name as the tie-break, because tests pass one fixed
+  `now` and real runs collide at one-second resolution; and when a listing
+  prints an id an agent will paste into another command (`pulse ballot`,
+  `queue`, `jobs`) - pad for alignment, never truncate, or the worker's next
+  command fails with "No post" and the loop stalls silently. A test helper
+  that writes a fixture file must take a name, or two fixtures in one test
+  overwrite each other and the test proves the wrong script ran.
+- `2026-09-05` - A resolved thread buries whatever is filed there later; bind
+  a default parameter at call time, not definition time. Apply when: code
+  files a new card, question, or suggestion under a thread that another post
+  closes with a `resolution:` (a job's own `result` closes `jobs/<job-id>`,
+  so a worker suggestion defaulted there vanished from every ballot) - pick a
+  thread nothing closes and prove it with a test that reads the next ballot;
+  and when a Python function takes `out=sys.stdout` as a default - resolve it
+  inside the body (`out = out or sys.stdout`) or `redirect_stdout` in tests
+  and the CLI's `run_cli` capture see nothing.
+- `2026-09-05` - A queue that plans from votes needs a "done" state the votes
+  cannot give it, a pool one larger than the quorum, and rotation across
+  tenants before priority. Apply when: an eligibility predicate is computed
+  from posts alone - the first live day rebuilt one card three times because
+  a `done` job left it `eligible`; read the job table (`built`/`tried`) and
+  plan each card once; when workers are meant to reach quorum alone - an
+  author never votes on its own card, so `quorum` workers leave every worker
+  card one voter short (pool = `quorum + 1`); and when one project has many
+  voted-up cards - `ORDER BY priority` alone starves the others, so order by
+  the tenant that ran least recently first and by priority within it. Prove
+  each with a test that runs the loop twice, not once.
+  (`docs/plans/WU-010-keep-alive-runner.md`)
 
 ## Populate When
 

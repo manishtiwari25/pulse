@@ -50,6 +50,15 @@
   and one line each in `reflect.sh`, `AGENTS.md` Routing, and
   `dashboard.md`.
 
+## Approved, not started
+
+- [`remote-executors.md`](remote-executors.md) - the Tier 2 plan for
+  ADR-020 (Accepted 2026-09-05 by `pulse decide`): an `Executor` interface
+  with the local machine as the first executor and a VM reached over ssh as
+  the second, a git bundle in and a hub-side fetch out, `VOTE:` lines in the
+  result file, per-executor slots in the daemon, an `ssh` shim in the tests,
+  and a human runbook for the first VM.
+
 Copy `_template.md` when a Tier 2 task needs an explicit plan.
 
 ## Work Units
@@ -78,6 +87,17 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   proposal with one yes-or-no question: `resolution: agreed | accepted |
   declined`, `pulse proposals`, `FOR THE HUMAN` in `reflect.sh`, the
   dashboard's **For you** view, and the closing-message rule.
+- [`WU-009-runner-loop-leaks.md`](WU-009-runner-loop-leaks.md) - the runner
+  closes its own loop: runner errors requeue the job and do not spend the
+  daily cap, every worker votes on the ballot through the same store, the
+  daemon keeps and rotates a worker pool the size of the quorum, and a stale
+  lease never lands (`renew_lease`, generation-checked `finish_job`).
+- [`WU-010-keep-alive-runner.md`](WU-010-keep-alive-runner.md) - a keep-alive
+  machine: `jobs_per_day 0` means no daily cap, the daemon writes a heartbeat,
+  survives a bad loop, restarts itself when `pulse.py` changes, and is kept
+  alive by `pulse service install` (launchd / systemd --user); worker
+  `SUGGESTION:` lines become the next ballot's cards and the planner builds
+  only cards voted up on balance.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy
