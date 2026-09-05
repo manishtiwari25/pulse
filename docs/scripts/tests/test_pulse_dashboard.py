@@ -18,6 +18,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -622,6 +623,19 @@ class ProjectionTestCase(unittest.TestCase):
             rc = dash.main(argv)
         self.assertEqual(rc, expect, err.getvalue())
         return out.getvalue(), err.getvalue()
+
+
+class AssetTestCase(unittest.TestCase):
+    """The shipped page is three strings; a rule nothing renders is weight the page carries for nothing."""
+
+    def test_every_css_class_is_referenced_by_the_page_or_the_script(self):
+        css, js, html = dash.APP_CSS, dash.APP_JS, dash.INDEX_HTML
+        text = js + html
+        # classes built at runtime from a literal prefix, e.g. 'k-' + kind
+        prefixes = set(re.findall(r"""['"]([a-zA-Z][\w-]*-)['"]\s*\+""", js))
+        classes = sorted(set(re.findall(r"\.([a-zA-Z_][\w-]*)", css)))
+        dead = [c for c in classes if c not in text and not any(c.startswith(p) for p in prefixes)]
+        self.assertEqual(dead, [], "CSS classes no view uses: %s" % ", ".join(dead))
 
 
 class ServerTestCase(unittest.TestCase):
