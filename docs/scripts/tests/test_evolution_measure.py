@@ -3,6 +3,7 @@
 
 import importlib.util
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 
@@ -145,6 +146,36 @@ class Summaries(unittest.TestCase):
         self.assertEqual(s["held_out_tier_matches"], "1/3")
         self.assertEqual(s["held_out_per_fixture_median"], 0.0)
         self.assertEqual(s["s6_credits_total"], 420.0)
+
+
+class ProductEvaluators(unittest.TestCase):
+    def test_csp_header_joins_the_adjacent_string_literals(self):
+        src = '''        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'self'; "
+            "img-src 'self' data:",
+        )'''
+        self.assertEqual(measure.csp_header(src), "default-src 'none'; script-src 'self'; img-src 'self' data:")
+        self.assertIsNone(measure.csp_header("no header here"))
+
+    def test_imports_are_checked_against_the_standard_library(self):
+        self.assertTrue(measure.imported_modules("import os\nfrom pathlib import Path\n") <= set(sys.stdlib_module_names))
+        self.assertIn("requests", measure.imported_modules("import requests\nfrom .local import x\n"))
+
+    def test_test_names_are_collected_for_the_kept_check(self):
+        parent = measure.test_names("class T(unittest.TestCase):\n    def test_a(self): pass\n    def test_b(self): pass\n")
+        variant = measure.test_names("class T(unittest.TestCase):\n    def test_a(self): pass\n")
+        self.assertFalse(parent <= variant)
+        self.assertTrue(variant <= parent)
+
+    def test_the_real_dashboard_measures_when_present(self):
+        if not (REPO / measure.DASHBOARD).is_file():
+            self.skipTest("no dashboard in this repository")
+        src = (REPO / measure.DASHBOARD).read_text(encoding="utf-8")
+        self.assertTrue(measure.csp_header(src).startswith("default-src 'none'"))
+        self.assertTrue(measure.imported_modules(src) <= set(sys.stdlib_module_names))
+        module = measure.load_dashboard(REPO / measure.DASHBOARD)
+        self.assertGreater(len(module.INDEX_HTML + module.APP_CSS + module.APP_JS), 1000)
 
 
 if __name__ == "__main__":

@@ -20,10 +20,16 @@ Usage:
       [--dest DIR] [--repo PATH] [--keep-clones]
   evolution-measure.py report --label L [--dest DIR]
   evolution-measure.py compare --label PARENT --against VARIANT [--dest DIR]
+  evolution-measure.py product --label L --tree PATH [--parent PATH] [--dest DIR]
+      (P1-P6 of the evaluators' Product evaluators section; P4 needs a
+      headless Chromium and is reported as manual when none is installed)
 """
 
 import argparse
+import ast
 import concurrent.futures
+import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -32,6 +38,7 @@ import sqlite3
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -606,6 +613,126 @@ def cmd_compare(args):
                 "held_out_tier_matches", "held_out_per_fixture_median"):
         if key in a or key in b:
             print(f"  {key}: {a.get(key)} -> {b.get(key)}")
+    pa, pb = base / args.label / "product.json", base / args.against / "product.json"
+    if pa.is_file() and pb.is_file():
+        a, b = json.loads(pa.read_text()), json.loads(pb.read_text())
+        print("PRODUCT DELTA (variant - parent)")
+        for key in sorted(k for k in set(a) | set(b) if k[0] == "p" and k[1].isdigit()):
+            print(f"  {key}: {a.get(key)} -> {b.get(key)}")
+
+
+# ---------------------------------------------------------------- product (P1-P6)
+
+DASHBOARD = "docs/scripts/pulse-dashboard.py"
+DASH_TESTS = "docs/scripts/tests/test_pulse_dashboard.py"
+GUARDS = "docs/scripts/tests/test_pulse_dashboard_guards.py"
+BROWSERS = (
+    "chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+)
+
+
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def test_names(source):
+    tree = ast.parse(source)
+    return {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name.startswith("test")}
+
+
+def imported_modules(source):
+    names = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def csp_header(source):
+    m = re.search(r'"Content-Security-Policy",\s*((?:"[^"]*"\s*)+)', source)
+    return "".join(re.findall(r'"([^"]*)"', m.group(1))) if m else None
+
+
+def load_dashboard(path):
+    spec = importlib.util.spec_from_file_location("pulse_dashboard_measured", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def find_browser():
+    for name in BROWSERS:
+        found = name if name.startswith("/") and Path(name).is_file() else shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def measure_product(tree, parent=None):
+    tree = Path(tree).resolve()
+    parent = Path(parent).resolve() if parent else None
+    head = sh(["git", "rev-parse", "--short", "HEAD"], cwd=tree)
+    out = {"tree": str(tree), "rev": head.stdout.strip() or "worktree", "measured_at": utc_now()}
+    source = (tree / DASHBOARD).read_text(encoding="utf-8")
+    out["p1_suite"] = sh([sys.executable, "-m", "unittest", "discover", "-s", "docs/scripts/tests"], cwd=tree).returncode == 0
+    module = load_dashboard(tree / DASHBOARD)
+    if shutil.which("node"):
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(module.APP_JS)
+        out["p2_js_parses"] = sh(["node", "--check", fh.name]).returncode == 0
+        os.unlink(fh.name)
+    else:
+        out["p2_js_parses"] = "n/a: node missing"
+    out["p2_stdlib_only"] = imported_modules(source) <= set(sys.stdlib_module_names)
+    out["p2_csp"] = csp_header(source)
+    out["p3_guards"] = sh([sys.executable, "-m", "unittest", "docs.scripts.tests.test_pulse_dashboard_guards"],
+                          cwd=tree).returncode == 0
+    browser = find_browser()
+    out["p4"] = f"manual: WU-005 Verification with {browser}" if browser else "manual: no headless browser on this machine"
+    out["p6_bytes"] = len((module.INDEX_HTML + module.APP_CSS + module.APP_JS).encode("utf-8"))
+    if parent:
+        parent_source = (parent / DASHBOARD).read_text(encoding="utf-8")
+        out["p1_tests_kept"] = test_names((parent / DASH_TESTS).read_text(encoding="utf-8")) <= \
+            test_names((tree / DASH_TESTS).read_text(encoding="utf-8"))
+        out["p1_guard_untouched"] = sha256(parent / GUARDS) == sha256(tree / GUARDS)
+        out["p2_csp_unchanged"] = csp_header(parent_source) == out["p2_csp"]
+        if sha256(parent / DASHBOARD) == sha256(tree / DASHBOARD):
+            out["p5_catches_change"] = "n/a: dashboard unchanged"
+        else:
+            # The variant's tests against the parent's module: at least one must fail.
+            with tempfile.TemporaryDirectory() as tmp:
+                scripts = Path(tmp) / "docs" / "scripts"
+                shutil.copytree(parent / "docs" / "scripts", scripts,
+                                ignore=shutil.ignore_patterns("__pycache__"))
+                shutil.copy2(tree / DASH_TESTS, scripts / "tests" / "test_pulse_dashboard.py")
+                res = sh([sys.executable, "-m", "unittest", "test_pulse_dashboard"], cwd=scripts / "tests")
+                out["p5_catches_change"] = res.returncode != 0
+    return out
+
+
+def print_product(label, out):
+    print(f"PRODUCT {label} ({out['rev']})")
+    for key in sorted(k for k in out if k[0] == "p" and k[1].isdigit()):
+        print(f"  {key}: {out[key]}")
+
+
+def cmd_product(args):
+    dest = Path(args.dest).expanduser().resolve() / args.label
+    dest.mkdir(parents=True, exist_ok=True)
+    out = measure_product(args.tree, args.parent)
+    (dest / "product.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
+    con = store_connect()
+    if con is not None:
+        con.execute(
+            "INSERT OR REPLACE INTO fixture_runs (label, fixture, run_index, rev, model, held_out, grade,"
+            " credits, tokens_in, wall_s, timeout, session_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (args.label, "P1-P6", 1, out["rev"], "-", 0, json.dumps(out), None, None, None, 0, None, out["measured_at"]))
+        con.commit()
+    print_product(args.label, out)
 
 
 def main(argv=None):
@@ -632,6 +759,12 @@ def main(argv=None):
     cmp_.add_argument("--against", required=True)
     cmp_.add_argument("--dest", default=str(Path.home() / ".pulse" / "measurements"))
     cmp_.set_defaults(func=cmd_compare)
+    prod = sub.add_parser("product")
+    prod.add_argument("--label", required=True)
+    prod.add_argument("--tree", default=str(REPO))
+    prod.add_argument("--parent", default="")
+    prod.add_argument("--dest", default=str(Path.home() / ".pulse" / "measurements"))
+    prod.set_defaults(func=cmd_product)
     args = parser.parse_args(argv)
     args.func(args)
 
