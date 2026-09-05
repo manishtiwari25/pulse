@@ -12,11 +12,18 @@ own evaluators say it is better. Skill: `pulse-evolve`.
 ## Preconditions (all must hold; otherwise stop and report)
 
 1. `docs/evolution/constitution.md` exists, is filled, and has `loop: on`.
+   The `loop: on` value must be present in the committed default-branch head
+   used as the cycle parent. If `loop: on` appears only as uncommitted
+   changes in the working tree, stop and report — do not create an
+   experiment branch from that dirty worktree.
 2. `docs/evolution/evaluators.md` exists with at least one constraint, one
-   score, and fixtures; its `baseline:` names a row in `archive.md`. For a
-   product class it also has a **Product evaluators** section whose
-   constraints and at least one score have a baseline.
-3. `docs/evolution/STOP` does not exist.
+   score, and fixtures; its `baseline:` names a row in `archive.md`. The
+   evaluators file and the referenced baseline row must be present in the
+   committed default-branch head used as the cycle parent. For a product
+   class it also has a **Product evaluators** section whose constraints and
+   at least one score have a baseline.
+3. `docs/evolution/STOP` does not exist in the committed tree. Note: an
+   uncommitted `docs/evolution/STOP` file still halts the run immediately.
 4. No cycle cap is reached. With `limits: none` in the constitution (PULSE's
    default) there is none; with `limits: budget`, `Cycles per day` counts the
    archive rows dated today.
