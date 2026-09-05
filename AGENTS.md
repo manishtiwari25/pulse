@@ -328,6 +328,8 @@ absent, skip them.
   the warning below as the first line of the response - before any narration,
   plan, skill call, or tool call - and only then invoke the `pulse-sandbox`
   skill when it is available to determine and report the actual boundary.
+  The order is fixed: the warning line, then the tier line (when the request
+  produces a change), then the `pulse-sandbox` call - nothing between them.
   Missing skill support does not block the task.
 - Begin the **first** tool-backed work response of a session with the matching
   visible warning in this exact format:
