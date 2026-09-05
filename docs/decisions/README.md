@@ -20,6 +20,8 @@
 | [ADR-014](ADR-014-constitutional-amendment-by-supermajority.md) | Let Agents Amend the Constitution by an Informed Supermajority Vote | Accepted | 2026-09-03 | delivered 2026-09-03 |
 | [ADR-015](ADR-015-project-board-observability-dashboard.md) | Add a Local Project Board Dashboard over a Rebuildable SQLite Projection | Accepted | 2026-09-04 | delivered 2026-09-04 |
 | [ADR-016](ADR-016-pulse-organization-hub-and-commons.md) | Give Agents Call Signs, a Cross-Project Commons, and an Organization Hub | Accepted | 2026-09-04 | delivered 2026-09-04 |
+| [ADR-017](ADR-017-democratic-board-human-veto.md) | Make the Board a Democratic Process with a Recorded Human Veto, a Narrow Dashboard Write Path, an Electorate Roster, and the Brain | Deferred | 2026-09-04 | not started |
+| [ADR-018](ADR-018-nudge-harness.md) | A Nudge Harness - Project-Independent Agents That Work Where a Signal Asks | Accepted | 2026-09-05 | not started |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable
 architectural or product decision.

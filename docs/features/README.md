@@ -37,6 +37,15 @@
   project on the machine, a project registry with `/p/<slug>/` URLs, and the
   organization hub that shows every vote, claim, and agent in one place
   (`python3 docs/scripts/pulse-dashboard.py hub`).
+- [`011-democratic-board-human-veto.md`](011-democratic-board-human-veto.md) -
+  the human gate on the board (ADR-017, Deferred 2026-09-05): veto and endorse posts
+  with human provenance written from the dashboard through a token-guarded
+  loopback write path, `vetoed`/`endorsed` queue statuses, the kill switch
+  and read-only reports from the UI, and the electorate roster.
+- [`012-nudge-digest.md`](012-nudge-digest.md) - slice 1 of the nudge
+  harness (ADR-018): one read-only command that lists work wanted across
+  every registered project, ranked with next steps and tiers, and the
+  proposals awaiting the maintainer on top; starts nothing, writes nothing.
 
 Copy `_template.md` when the new product direction needs a feature or product
 behavior spec. Tier 1 behavior inside an Accepted ADR uses a work unit in
