@@ -95,7 +95,7 @@ docs/workflows/
   bootstrap: those are the target's own human commits, the loop stays off
   until a baseline exists, and template sync never touches them. Repositories
   without a store keep the Markdown board and `board.sh`; the migration is
-  `pulse migrate --repo .`. 
+  `pulse migrate --repo .`.
 - Treat copied PULSE `SANDBOX REQUIRED`, fail-closed fallback, and ADR-008
   instruction text as superseded framework content. Replace it with the
   ADR-009 recommendation unless the target has an explicit local decision that
