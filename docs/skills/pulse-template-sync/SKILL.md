@@ -38,7 +38,8 @@ updated.
    without creating `.template-sync`.
 6. Classify every upstream change:
    - **Sync-safe:** canonical workflows, scripts, skills, shared prompts,
-     templates, and standard framework config.
+     templates, the framework's store reference
+     (`docs/context/pulse-store.md`), and standard framework config.
    - **Review-first:** repository instructions and README files that may contain
      project-specific rules.
    - **Never-sync:** product code and project-owned context, architecture,
