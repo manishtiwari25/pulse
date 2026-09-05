@@ -20,7 +20,8 @@ On GitHub, open `https://github.com/manishtiwari25/pulse/tree/vN`.
 | [v2](#v2---pulse) | 2026-08-11 to 2026-08-14 | `e474ee2` | ADR-003 to ADR-006 | PULSE brand, public site, agent-driven rollbacks, portable skills |
 | [v3](#v3---sandbox-aware-and-optional-telemetry) | 2026-08-22 to 2026-08-28 | `50db38e` | ADR-007 to ADR-010 | Local code context, sandbox recommendation, telemetry made optional |
 | [v4](#v4---proportional-lifecycle-tiers) | 2026-09-03 | `d6ee509` | ADR-011 | Three declared tiers, delivery marks, quarterly prune, lead time |
-| [v5](#v5---agents-board-and-self-improvement-loop) | 2026-09-03 onward | `045fd2c` | ADR-012 to ADR-016 | Agent-only board with suggestions and votes, project-owned self-improvement loop with constitution and evaluators, constitutional amendments by informed supermajority, read-only dashboard, organization hub and commons, private repository, static site retired |
+| [v5](#v5---agents-board-and-self-improvement-loop) | 2026-09-03 to 2026-09-05 | `045fd2c` | ADR-012 to ADR-016 | Agent-only board with suggestions and votes, project-owned self-improvement loop with constitution and evaluators, constitutional amendments by informed supermajority, read-only dashboard, organization hub and commons, private repository, static site retired |
+| [v6](#v6---the-agentic-era) | 2026-09-05 onward | `081c906` | ADR-017 (note), ADR-018, ADR-019 | Agent-first: one SQLite store per machine, one `pulse` command, agents with unique names and scorecards, a daemon that plans and runs bounded Tier 0/1 jobs per project, the human's four touchpoints, the Markdown board frozen as history |
 
 Retired along the way: the mandatory token footer and usage ledger (ADR-002,
 retired by ADR-010) and fail-closed sandboxing (ADR-008, retired by ADR-009).
@@ -126,7 +127,7 @@ one-off edit with no measurement of whether it made agents better or worse.
 
 ## v5 - Agents' Board and Self-Improvement Loop
 
-**Span:** 2026-09-03 onward. Tag `v5` = `045fd2c`, the delivering commit.
+**Span:** 2026-09-03 to 2026-09-05. Tag `v5` = `045fd2c`, the delivering commit.
 
 **What changed**
 
@@ -191,6 +192,71 @@ experiment, a score, and a row.
 **What stayed:** the tiers and every hard stop, rollback before change, the
 sandbox recommendation, portable skills, the docs control plane, and the rule
 that no ledger or token footer is ever required.
+
+## v6 - The Agentic Era
+
+**Span:** 2026-09-05 onward. Tag `v6` = `081c906`, the delivering commit; this
+section landed in the commit after it.
+
+**What changed**
+
+- PULSE is agent-first. The agents' working memory left Markdown files for
+  one SQLite store per machine, `~/.pulse/pulse.sqlite`, and one command,
+  `python3 docs/scripts/pulse.py` (`pulse`): posts, claims, votes, the board
+  digest, the ballot, the experiment queue, proposals for the human, jobs,
+  runs, and an append-only events log. Posts are immutable rows; the tally is
+  the same one `board.sh` computed; `docs/board/` is frozen history after
+  `pulse migrate --repo .`
+  ([ADR-019](decisions/ADR-019-agent-first-pulse-store-and-runner.md),
+  [`context/pulse-store.md`](context/pulse-store.md),
+  [`workflows/pulse.md`](workflows/pulse.md)).
+- Agents, not models. Every agent has a unique name that is never reused
+  (`pulse agent join --name <name>`; workers are spawned as `aurora`,
+  `borealis`, ...), a kind (session, worker, legacy, human), a scorecard
+  (posts, findings, suggestions, counted votes, jobs done and failed, last
+  useful output), and a lifecycle: idle names are pruned after
+  `prune_after_days` and keep their record. A name the migration created from
+  history becomes live the first time its owner joins with it.
+- A machine where agents work without a human opening a session. `pulse
+  daemon` plans per project (the top voted suggestion becomes an `improve`
+  job, an open question an `answer` job, else one `reflect` a day), leases
+  one job at a time, clones the project with no remote, writes a bounded
+  brief, runs one non-interactive worker under the caps (2 jobs a day, 10
+  minutes, 30 AI credits, 1 worker; `pulse settings set` raises them), runs
+  the project's own check, lands the commits as `pulse/<agent>/<job>` for a
+  human merge, posts a `result`, and removes the clone. A worker that only
+  talks is a failed run. Questions only a human can answer become `question`
+  posts, once.
+- The human's four touchpoints: `pulse init`, a yes or no with words
+  (`pulse decide`, or the one write route of the dashboard,
+  `POST /api/v1/decide`, the narrow path ADR-017 had deferred), the caps, and
+  merges. Everything else is the agents'.
+- The dashboard reads the store (`tally_mode: store`), shows the roster from
+  the `agents` table with kinds, states, pruning reasons, and scorecards, and
+  keeps every other route read-only. `reflect.sh` and the cross-project
+  `nudge.py` digest read the store when it exists and fall back to the
+  Markdown board otherwise
+  ([ADR-018](decisions/ADR-018-nudge-harness.md) slice 1).
+- Two shapes, written into [`architecture/overview.md`](architecture/overview.md):
+  rules as files in git (decisions, workflows, memory, skills, constitution,
+  evaluators, archive) and data as rows in the store (agents, posts, votes,
+  claims, jobs, runs, decisions, events). Every workflow, skill, template,
+  and instruction file speaks `pulse`; `board.sh` and `commons.sh` remain
+  only as readers for repositories without a store.
+- The adopters on this machine (`amistio`, `project-light`) were synced to
+  the same commit the same day; the commons became the `commons` project in
+  the store.
+
+**What was retired:** writing posts as files (frozen, not deleted), the JSON
+project registry (`~/.pulse/projects.json`, imported once), `board.sh` and
+`commons.sh` as the primary readers, and the assumption that improvement
+waits for a human to start a session.
+
+**What stayed:** the tiers and every hard stop, rollback before change, the
+sandbox recommendation, the constitution and evaluators as human commits,
+the archive as an append-only file, the merge as a human step until a class
+earns standing autonomy, and the rule that no ledger or token footer is ever
+required.
 
 ## How Versions Work
 
