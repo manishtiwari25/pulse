@@ -120,6 +120,21 @@
   scan the shipped assets for selectors, tokens, and functions nothing
   references, a bug with a reproducing test, or a byte reduction, before
   spending fixture credits on prose. (`docs/evolution/archive.md` A-006)
+- `2026-09-05` - When one coordinator hands work to several parallel slots,
+  take the lease in the coordinator's thread - in a deliberate order, the
+  most constrained slot first - and let the threads only run what was
+  leased. Two threads racing the lease let an unrestricted executor take
+  the one job a project-limited executor could serve and left it idle
+  (`take_job` / `work_parallel` in `pulse.py`; sqlite connections are per
+  thread, so each runner thread opens its own). Apply when: adding
+  concurrency to a queue with per-slot eligibility rules.
+- `2026-09-05` - A command sent to another machine is argv, never a shell
+  string: `pulse.py` sends `b64 <base64 of NUL-separated argv>` and the
+  forced command `pulse-hands.sh` splits it with `read -d ''`, no `eval`,
+  and accepts a fixed verb list plus git's own `git-upload-pack` for a job
+  clone. A brief or a verify command with quotes can then never become a
+  second command. Apply when: any ssh, container exec, or RPC path carries a
+  user- or agent-authored string.
 
 ## Populate When
 
