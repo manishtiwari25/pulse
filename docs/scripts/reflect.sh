@@ -14,19 +14,21 @@
 # It never writes to the repository and always exits 0; failed checks are
 # printed, not raised, because the digest is input for an agent, not a gate.
 #
-# Usage: docs/scripts/reflect.sh [--repo PATH] [--area AREA] [--no-board]
+# Usage: docs/scripts/reflect.sh [--repo PATH] [--area AREA] [--agent ID] [--no-board]
 set -eu
 
 usage() {
     cat <<'EOF'
-Usage: docs/scripts/reflect.sh [--repo PATH] [--area AREA] [--no-board]
+Usage: docs/scripts/reflect.sh [--repo PATH] [--area AREA] [--agent ID] [--no-board]
 
-Read-only digest for pulse-reflect: git state, board summary, loop gates,
-product scope, hygiene, health checks, the level the gates allow, and the
-next human step.
+Read-only digest for pulse-reflect: git state, board summary, your ballot,
+loop gates, product scope, hygiene, health checks, the level the gates allow,
+and the next human step.
 
   --repo PATH   Repository root (default: the repository containing this script)
   --area AREA   Limit the board summary to one channel
+  --agent ID    Your identity (<runner>/<model>; default: $PULSE_AGENT); the ballot
+                then hides what you authored or already voted on
   --no-board    Skip the board summary (it is already on screen)
   -h, --help    Show this help
 EOF
@@ -35,12 +37,14 @@ EOF
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 AREA=""
+AGENT="${PULSE_AGENT:-}"
 SHOW_BOARD=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --repo) [ $# -ge 2 ] || { usage >&2; exit 2; }; REPO="$(cd "$2" && pwd)"; shift 2 ;;
         --area) [ $# -ge 2 ] || { usage >&2; exit 2; }; AREA="$2"; shift 2 ;;
+        --agent) [ $# -ge 2 ] || { usage >&2; exit 2; }; AGENT="$2"; shift 2 ;;
         --no-board) SHOW_BOARD=0; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
@@ -170,9 +174,39 @@ if [ "$HAS_BOARD" -eq 1 ] && [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/board.sh"
         "$SCRIPTS/board.sh" --repo "$REPO" | sed 's/^/  /'
     fi
     echo ""
+    # The ballot: what this identity can still vote on. Voting is the one
+    # thing every agent can do for the queue before it leaves.
+    echo "BALLOT (vote before you leave; one vote per identity, latest wins, no self-votes - docs/workflows/board.md step 8)"
+    if [ -n "$AGENT" ]; then
+        "$SCRIPTS/board.sh" --repo "$REPO" --ballot --agent "$AGENT" | sed 's/^/  /'
+    else
+        "$SCRIPTS/board.sh" --repo "$REPO" --ballot | sed 's/^/  /'
+    fi
+    echo ""
+    # Proposals the agents agreed on that wait for the human: the closing
+    # message repeats each one in plain words and asks for a yes or no
+    # (docs/workflows/board.md, Deliberation). Never re-open a settled debate.
+    echo "FOR THE HUMAN (repeat every awaiting proposal in your closing message, one yes/no each; record the answer as a result post - docs/workflows/board.md)"
+    "$SCRIPTS/board.sh" --repo "$REPO" --proposals --no-notices | sed '1d;/^$/d' | sed 's/^/  /'
+    echo ""
 elif [ "$HAS_BOARD" -eq 0 ]; then
     echo "BOARD"
     echo "  none (docs/board/ absent; Level B is not available)"
+    echo ""
+fi
+
+# --- Commons (ADR-016): suggestions about PULSE itself from every project ----
+# The framework repository (the brain) carries eligible commons suggestions to
+# its own board; every other project sees the open questions it could answer.
+if [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/commons.sh" ]; then
+    COMMONS_DIR="$("$SCRIPTS/commons.sh" --path 2>/dev/null || true)"
+    echo "COMMONS (docs/workflows/commons.md; suggestions here are signals for the brain, never experiments)"
+    if [ -n "$COMMONS_DIR" ] && [ -d "$COMMONS_DIR/docs/board" ]; then
+        "$SCRIPTS/commons.sh" --queue 2>/dev/null | sed 's/^/  /'
+        "$SCRIPTS/commons.sh" --area questions --threads 2>/dev/null | sed 's/^/  /'
+    else
+        echo "  not created (owner: docs/scripts/commons.sh --init)"
+    fi
     echo ""
 fi
 

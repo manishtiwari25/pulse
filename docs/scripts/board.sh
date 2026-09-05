@@ -12,7 +12,8 @@
 # Usage: docs/scripts/board.sh [--repo PATH] [--area NAME] [--now ISO-UTC]
 #                              [--quorum N] [--expiry-days N] [--stale-days N]
 #                              [--amend-quorum N] [--amend-majority P/Q]
-#                              [--claims|--threads|--queue|--amendments|--stale]
+#                              [--agent ID] [--no-notices]
+#                              [--claims|--threads|--proposals|--queue|--amendments|--stale|--ballot]
 #                              [--tsv|--records|--json]
 #        docs/scripts/board.sh --hash POST
 set -eu
@@ -22,16 +23,22 @@ usage() {
 Usage: docs/scripts/board.sh [--repo PATH] [--area NAME] [--now ISO-UTC]
                              [--quorum N] [--expiry-days N] [--stale-days N]
                              [--amend-quorum N] [--amend-majority P/Q]
-                             [--claims|--threads|--queue|--amendments|--stale]
+                             [--agent ID] [--no-notices]
+                             [--claims|--threads|--proposals|--queue|--amendments|--stale|--ballot]
                              [--tsv|--records|--json]
        docs/scripts/board.sh --hash POST
 
-Read-only index of docs/board/: active claims, open threads with their latest
-summary line, the experiment queue ordered by votes, constitutional amendments
-with their tallies, and stale items.
+Read-only index of docs/board/: notices (who is asking for a vote here, on the
+brain, and in the commons), active claims, open threads with their latest
+summary line, proposals the agents agreed on that wait for the human's yes or
+no, the experiment queue ordered by votes, constitutional amendments with their
+tallies, stale items, and the ballot an identity can still vote on.
 
   --repo PATH          Repository root (default: the repository containing this script)
   --area NAME          Only this channel (default: all; amendments are always repository-wide)
+  --agent ID           Your identity (<runner>/<model>; default: $PULSE_AGENT). The ballot
+                       then hides what you authored or already voted on
+  --no-notices         Do not print the NOTICES block at the top of the text report
   --now ISO-UTC        Reference time, e.g. 2026-09-03T08:00:00Z (default: now)
   --quorum N           Distinct voters a suggestion needs to enter the queue (default: 2)
   --expiry-days N      Days after which an unvoted suggestion expires (default: 14)
@@ -42,14 +49,21 @@ with their tallies, and stale items.
                        (default: the constitution's "Amendment supermajority" row, else 2/3)
   --claims             Show only active claims
   --threads            Show only open threads
+  --proposals          Show only proposals for the human: threads whose latest answer
+                       carries resolution: agreed, until a result post records the
+                       human's yes (resolution: accepted) or no (resolution: declined)
   --queue              Show only the experiment queue
   --amendments         Show only constitutional amendments and their tallies
   --stale              Show only expired claims, expired suggestions, and stale threads
+  --ballot             Show only what is open for a vote: suggestions and amendments,
+                       minus your own and those you voted on when --agent is given.
+                       With --tsv: one row per item (kind status key id up down
+                       voters author text_hash summary) for other scripts
   --tsv                Emit one tab-separated row per post and exit
   --records            Emit typed tab-separated records (param, post, claim, thread,
-                       suggestion, svote, amendment, avote, nokind) computed by the
-                       same tally as the text report; for local tools such as the
-                       dashboard. Cannot be combined with a section flag or --tsv
+                       proposal, suggestion, svote, amendment, avote, nokind) computed
+                       by the same tally as the text report; for local tools such as
+                       the dashboard. Cannot be combined with a section flag or --tsv
   --json               Emit a versioned JSON snapshot for local tools
                        (requires Python 3; cannot be combined with a section or --tsv)
   --hash POST          Print the sha256 of an amendment post's "## Proposed text" block
@@ -73,6 +87,8 @@ SECTION_EXPLICIT=0
 TSV=0
 RECORDS=0
 JSON=0
+BALLOT_AGENT="${PULSE_AGENT:-}"
+NOTICES=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -85,7 +101,9 @@ while [ $# -gt 0 ]; do
         --amend-quorum) [ $# -ge 2 ] || { usage >&2; exit 2; }; AMEND_QUORUM="$2"; shift 2 ;;
         --amend-majority) [ $# -ge 2 ] || { usage >&2; exit 2; }; AMEND_MAJORITY="$2"; shift 2 ;;
         --hash) [ $# -ge 2 ] || { usage >&2; exit 2; }; HASH_POST="$2"; shift 2 ;;
-        --claims|--threads|--queue|--amendments|--stale) SECTION="${1#--}"; SECTION_EXPLICIT=1; shift ;;
+        --agent) [ $# -ge 2 ] || { usage >&2; exit 2; }; BALLOT_AGENT="$2"; shift 2 ;;
+        --no-notices) NOTICES=0; shift ;;
+        --claims|--threads|--proposals|--queue|--amendments|--stale|--ballot) SECTION="${1#--}"; SECTION_EXPLICIT=1; shift ;;
         --tsv) TSV=1; shift ;;
         --records) RECORDS=1; shift ;;
         --json) JSON=1; shift ;;
@@ -175,6 +193,7 @@ fi
 BOARD="$REPO/docs/board"
 if [ ! -d "$BOARD" ]; then
     if [ "$RECORDS" -eq 1 ]; then printf 'param\tboard_present\t0\n'; exit 0; fi
+    [ "$TSV" -eq 1 ] && exit 0
     echo "No docs/board/ in $REPO. See docs/board/README.md."
     exit 0
 fi
@@ -226,11 +245,13 @@ AMEND="$(mktemp)"
 AMEND_OUT="$(mktemp)"
 CUR="$(mktemp)"
 PROP="$(mktemp)"
-trap 'rm -f "$LIST" "$ALLROWS" "$ROWS" "$QUEUE" "$AMEND" "$AMEND_OUT" "$CUR" "$PROP"' EXIT
+BAL="$(mktemp)"
+trap 'rm -f "$LIST" "$ALLROWS" "$ROWS" "$QUEUE" "$AMEND" "$AMEND_OUT" "$CUR" "$PROP" "$BAL"' EXIT
 
 find "$BOARD" -mindepth 3 -maxdepth 3 -type f -name '*.md' | LC_ALL=C sort > "$LIST"
 if [ ! -s "$LIST" ]; then
     [ "$RECORDS" -eq 1 ] && exit 0
+    [ "$TSV" -eq 1 ] && exit 0
     echo "Board is empty (no posts under docs/board/<area>/<thread>/)."
     exit 0
 fi
@@ -280,25 +301,100 @@ if [ "$RECORDS" -eq 1 ]; then
 fi
 
 if [ ! -s "$ROWS" ] && [ "$RECORDS" -eq 0 ]; then
-    echo "No posts${AREA:+ in area \"$AREA\"}."
+    [ "$TSV" -eq 1 ] || echo "No posts${AREA:+ in area \"$AREA\"}."
     # Amendments are repository-wide, so they are still shown below.
-    if [ "$SECTION" = "all" ] || [ "$SECTION" = "amendments" ]; then
+    if [ "$SECTION" = "ballot" ]; then
+        :
+    elif [ "$SECTION" = "all" ] || [ "$SECTION" = "amendments" ]; then
         SECTION=amendments
     else
         exit 0
     fi
 fi
 
-if [ "$TSV" -eq 1 ]; then
+if [ "$TSV" -eq 1 ] && [ "$SECTION" != "ballot" ]; then
     cat "$ROWS"
     exit 0
+fi
+
+# The ballot reuses the two tallies below in records mode and formats the
+# result afterwards, so its numbers can never drift from the text report.
+AWK_RECORDS="$RECORDS"
+[ "$SECTION" = "ballot" ] && AWK_RECORDS=1
+
+# NOTICES: who is asking for a vote right now - here, on the registered brain
+# (the PULSE framework checkout, docs/workflows/commons.md), and in the commons.
+# Text mode only, before everything else, because it is the one block an
+# agent must not miss. Counts come from --ballot --tsv of this same script
+# run on each board, so the tally is still the only one.
+ballot_counts() {
+    # $1 = repository root, then extra flags; prints "<suggestions> <amendments>".
+    local repo="$1" out
+    shift
+    out="$(bash "$HERE/board.sh" --repo "$repo" --now "$NOW" "$@" --ballot --tsv 2>/dev/null)" || return 1
+    printf '%s\n' "$out" | awk -F'\t' 'BEGIN { s = 0; a = 0 } $1 == "suggestion" { s++ } $1 == "amendment" { a++ } END { printf "%d %d\n", s, a }'
+}
+plural() { [ "$1" -eq 1 ] && printf '%s' "$2" || printf '%ss' "$2"; }
+if [ "$SECTION" = "all" ] && [ "$RECORDS" -eq 0 ] && [ "$NOTICES" -eq 1 ]; then
+    PULSE_HOME_DIR="${PULSE_HOME:-$HOME/.pulse}"
+    REGISTRY_FILE="$PULSE_HOME_DIR/projects.json"
+    BRAIN_PATH=""; BRAIN_SLUG=""; COMMONS_PATH="${PULSE_COMMONS:-}"
+    if [ -f "$REGISTRY_FILE" ] && command -v python3 >/dev/null 2>&1; then
+        REG="$(python3 - "$REGISTRY_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    data = {}
+brain = next((p for p in data.get("projects", []) if isinstance(p, dict) and p.get("brain")), None)
+print("%s\t%s\t%s" % (brain.get("path", "") if brain else "", brain.get("slug", "") if brain else "", data.get("commons") or ""))
+PY
+)"
+        NTAB="$(printf '\t')"
+        BRAIN_PATH="${REG%%"$NTAB"*}"; REST="${REG#*"$NTAB"}"; BRAIN_SLUG="${REST%%"$NTAB"*}"
+        [ -n "$COMMONS_PATH" ] || COMMONS_PATH="${REST#*"$NTAB"}"
+    fi
+    [ -n "$COMMONS_PATH" ] || COMMONS_PATH="$PULSE_HOME_DIR/commons"
+    HERE_REAL="$(cd "$REPO" && pwd -P)"
+    IS_COMMONS=0
+    [ -d "$COMMONS_PATH" ] && [ "$(cd "$COMMONS_PATH" && pwd -P)" = "$HERE_REAL" ] && IS_COMMONS=1
+    echo "NOTICES (who is asking for a vote; one vote per identity, latest wins, no self-votes - docs/workflows/board.md)"
+    if [ "$IS_COMMONS" -eq 1 ]; then
+        echo "  this is the commons: posts here are data for every project; it has no queue and no loop"
+    elif HERE_COUNTS="$(ballot_counts "$REPO" --quorum "$QUORUM" --expiry-days "$EXPIRY_DAYS" --amend-quorum "$AMEND_QUORUM" --amend-majority "$AMEND_MAJORITY")"; then
+        set -- $HERE_COUNTS
+        echo "  votes wanted here: $1 $(plural "$1" suggestion), $2 $(plural "$2" amendment) open - board.sh --ballot --agent <runner>/<model>"
+    fi
+    if [ -n "$BRAIN_PATH" ] && [ -d "$BRAIN_PATH/docs/board" ]; then
+        if [ "$(cd "$BRAIN_PATH" && pwd -P)" = "$HERE_REAL" ]; then
+            echo "  this repository is the brain: suggestions about PULSE itself belong on this board"
+        elif BRAIN_COUNTS="$(ballot_counts "$BRAIN_PATH")"; then
+            set -- $BRAIN_COUNTS
+            echo "  brain ${BRAIN_SLUG:-?}: $1 $(plural "$1" suggestion), $2 $(plural "$2" amendment) open for votes - board.sh --repo $BRAIN_PATH --ballot"
+        fi
+    fi
+    if [ -d "$COMMONS_PATH/docs/board" ]; then
+        if [ "$IS_COMMONS" -eq 0 ]; then
+            OPEN_Q="$(bash "$HERE/board.sh" --repo "$COMMONS_PATH" --now "$NOW" --records 2>/dev/null \
+                | awk -F'\t' '$1 == "thread" && index($2, "questions/") == 1 && $5 == "open" { n++ } END { printf "%d", n + 0 }')"
+            echo "  commons: $OPEN_Q open $(plural "$OPEN_Q" question) - docs/scripts/commons.sh --area questions"
+        fi
+    else
+        echo "  commons: not created ($COMMONS_PATH; owner: docs/scripts/commons.sh --init)"
+    fi
+    # Proposals the agents agreed on that still wait for the human's yes or no
+    # (repository-wide, like amendments): do not re-open the debate, remind the human.
+    AWAITING="$(awk -F'\t' '{ k = $2 "/" $3; if ($11 != "") r[k] = $11 } END { n = 0; for (k in r) if (r[k] == "agreed") n++; printf "%d", n }' "$ALLROWS")"
+    echo "  for the human: $AWAITING $(plural "$AWAITING" proposal) awaiting a yes or no - board.sh --proposals"
+    echo ""
 fi
 
 if [ "$SECTION" != "amendments" ]; then
 # Everything below is computed from the rows; the queue is sorted afterwards.
 # In records mode the same tally prints typed records instead of text.
+if [ "$SECTION" = "ballot" ]; then exec 3>"$BAL"; else exec 3>&1; fi
 awk -F'\t' -v now="$NOW" -v quorum="$QUORUM" -v expiry_days="$EXPIRY_DAYS" \
-    -v stale_days="$STALE_DAYS" -v section="$SECTION" -v queue_file="$QUEUE" -v records="$RECORDS" '
+    -v stale_days="$STALE_DAYS" -v section="$SECTION" -v queue_file="$QUEUE" -v records="$AWK_RECORDS" '
 function days_from_civil(y, m, d,    era, yoe, doy, doe) {
     if (m <= 2) y -= 1
     era = (y >= 0 ? y : y - 399) / 400; era = int(era)
@@ -325,13 +421,25 @@ function thread_status(key) {
     if (today_n - day_number(last[key]) > stale_days) return "stale"
     return "open"
 }
+# awaiting while the thread still ends on "agreed"; otherwise the recorded
+# answer of the human (accepted, declined) or whatever resolution came after.
+function proposal_status(key) {
+    if (resolution[key] == "agreed") return "awaiting"
+    return resolution[key]
+}
 {
     path = $1; area = $2; thread = $3; id = $4; kind = $5; agent = $6
     date = $7; expires = $8; on = $9; vote = $10; res = $11; summary = $12
     key = area "/" thread
     nposts[key]++
     if (!(key in last) || date >= last[key]) { last[key] = date; lastsum[key] = summary }
-    if (res != "") { closed[key] = 1; resolution[key] = res }
+    if (res != "") { closed[key] = 1; resolution[key] = res; res_id[key] = id; res_date[key] = date }
+    # A proposal for the human: the latest post in a thread that carries
+    # resolution: agreed (the agents finished deliberating). It waits until a
+    # later post records the answer of the human (accepted or declined).
+    if (res == "agreed") {
+        prop_id[key] = id; prop_agent[key] = agent; prop_date[key] = date; prop_sum[key] = summary
+    }
     if (kind == "claim") {
         claim_key[id] = key; claim_agent[id] = agent; claim_exp[id] = expires; claim_sum[id] = summary
     }
@@ -353,6 +461,11 @@ END {
             printf "claim\t%s\t%s\t%s\t%s\t%s\t%s\n", id, claim_key[id], claim_agent[id], claim_exp[id], claim_status(id), claim_sum[id]
         for (key in nposts)
             printf "thread\t%s\t%d\t%s\t%s\t%s\t%s\n", key, nposts[key], last[key], thread_status(key), (key in closed ? resolution[key] : ""), lastsum[key]
+        for (key in prop_id) {
+            st = proposal_status(key)
+            printf "proposal\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", key, prop_id[key], prop_agent[key], prop_date[key], st, \
+                (st == "awaiting" ? "" : res_id[key]), (st == "awaiting" ? "" : res_date[key]), prop_sum[key]
+        }
         for (vk in vote_val) {
             split(vk, p, SUBSEP)
             if (!(p[1] in sugg_key)) continue
@@ -380,6 +493,23 @@ END {
             printf "  %-38s %2d posts  last %-20s %s\n", key, nposts[key], last[key], trunc(lastsum[key], 60); n++
         }
         if (n == 0) print "  none"
+        print ""
+    }
+
+    if (show("proposals") && !records) {
+        print "PROPOSALS FOR THE HUMAN (the agents agreed; only the human decides - say yes or no in chat, and an agent records it as a result post with resolution: accepted or declined - docs/workflows/board.md)"
+        n = 0; d = 0
+        for (key in prop_id) {
+            if (proposal_status(key) != "awaiting") { d++; continue }
+            printf "  awaiting   %-38s since %-20s %s\n", key, prop_date[key], trunc(prop_sum[key], 60); n++
+            printf "             read docs/board/%s/%s.md\n", key, prop_id[key]
+        }
+        for (key in prop_id) {
+            st = proposal_status(key)
+            if (st == "awaiting") continue
+            printf "  %-10s %-38s on %-23s %s\n", st, key, res_date[key], trunc(prop_sum[key], 60)
+        }
+        if (n == 0 && d == 0) print "  none"
         print ""
     }
 
@@ -428,7 +558,8 @@ END {
         print ""
     }
 }
-' "$ROWS"
+' "$ROWS" >&3
+exec 3>&-
 
 if [ "$RECORDS" -eq 0 ] && { [ "$SECTION" = "all" ] || [ "$SECTION" = "queue" ] || [ "$SECTION" = "stale" ]; }; then
     echo "EXPERIMENT QUEUE (score = up - down; quorum $QUORUM distinct voters; unvoted expire after $EXPIRY_DAYS days)"
@@ -446,7 +577,7 @@ if [ "$RECORDS" -eq 0 ] && { [ "$SECTION" = "all" ] || [ "$SECTION" = "queue" ] 
 fi
 fi
 
-if [ "$SECTION" != "all" ] && [ "$SECTION" != "amendments" ]; then
+if [ "$SECTION" != "all" ] && [ "$SECTION" != "amendments" ] && [ "$SECTION" != "ballot" ]; then
     exit 0
 fi
 [ "$SECTION" = "all" ] && [ "$RECORDS" -eq 0 ] && echo ""
@@ -550,7 +681,7 @@ awk -F'\t' '$5 == "amendment" { print $1 "\t" $4 }' "$ALLROWS" | while IFS="$TAB
     printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$hash" "$anchor" "$section" "$verdict"
 done > "$AMEND"
 
-if [ "$RECORDS" -eq 0 ]; then
+if [ "$RECORDS" -eq 0 ] && [ "$SECTION" != "ballot" ]; then
 echo "AMENDMENTS (supermajority $AMEND_NUM/$AMEND_DEN of counted votes; quorum $AMEND_QUORUM distinct sessions, proposer excluded; a vote counts only with the proposal's text_hash and a Read: line)"
 if [ ! -f "$CONSTITUTION" ]; then
     echo "  no docs/evolution/constitution.md: nothing to amend"
@@ -629,6 +760,54 @@ END {
 }'
 if [ "$RECORDS" -eq 1 ]; then
     awk -F'\t' -v quorum="$AMEND_QUORUM" -v num="$AMEND_NUM" -v den="$AMEND_DEN" -v stop="$STOP_PRESENT" -v amend_file="$AMEND" -v records=1 "$AMEND_AWK" "$AMEND" "$ALLROWS"
+    exit 0
+fi
+
+# The ballot: the records both tallies printed above, filtered to what is
+# still open and, when an identity is given, to what it can still vote on.
+if [ "$SECTION" = "ballot" ]; then
+    awk -F'\t' -v quorum="$AMEND_QUORUM" -v num="$AMEND_NUM" -v den="$AMEND_DEN" -v stop="$STOP_PRESENT" -v amend_file="$AMEND" -v records=1 "$AMEND_AWK" "$AMEND" "$ALLROWS" >> "$BAL"
+    if [ "$TSV" -eq 0 ]; then
+        if [ -n "$BALLOT_AGENT" ]; then
+            echo "BALLOT for $BALLOT_AGENT (open items by other identities without your vote; vote up or down with the reason in the vote's summary - docs/workflows/board.md; an amendment vote also needs text_hash and a Read: line - docs/workflows/amend.md)"
+        else
+            echo "BALLOT (every open suggestion and amendment; add --agent <runner>/<model> to hide your own and those you voted on)"
+        fi
+    fi
+    awk -F'\t' -v me="$BALLOT_AGENT" -v tsv="$TSV" '
+    function trunc(s, n) { return length(s) > n ? substr(s, 1, n - 1) "~" : s }
+    $1 == "suggestion" {
+        if ($9 == "closed" || $9 == "expired") next
+        s_date[$4] = $3; s_key[$4] = $5; s_up[$4] = $6; s_down[$4] = $7; s_voters[$4] = $8; s_status[$4] = $9; s_agent[$4] = $10; s_sum[$4] = $11
+        next
+    }
+    $1 == "svote" { if ($3 == me) voted[$2] = 1; next }
+    $1 == "amendment" {
+        if ($5 ~ /^closed/) next
+        a_date[$3] = $2; a_key[$3] = $4; a_status[$3] = $5; a_up[$3] = $6; a_down[$3] = $7; a_voters[$3] = $8; a_quorum[$3] = $9
+        a_hash[$3] = $15; a_agent[$3] = $17; a_sum[$3] = $18
+        next
+    }
+    $1 == "avote" { if ($4 == me) voted[$2] = 1; next }
+    END {
+        n = 0
+        for (id in s_key) {
+            if (me != "" && (s_agent[id] == me || (id in voted))) continue
+            n++
+            if (tsv) printf "1\t%s\tsuggestion\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t\t%s\n", s_date[id], s_status[id], s_key[id], id, s_up[id], s_down[id], s_voters[id], s_agent[id], s_sum[id]
+            else printf "1\t%s\t  suggestion  %-12s %-38s %-44s up %d down %d voters %d  %s\n", s_date[id], s_status[id], s_key[id], trunc(id, 44), s_up[id], s_down[id], s_voters[id], trunc(s_sum[id], 50)
+        }
+        for (id in a_key) {
+            if (me != "" && (a_agent[id] == me || (id in voted))) continue
+            n++
+            st = a_status[id]
+            if (st ~ /^blocked/) st = "blocked"; else if (st ~ /^stale/) st = "stale"; else if (st ~ /^ambiguous/) st = "ambiguous"
+            else if (st ~ /^passed/) st = "passed"; else if (st ~ /^short/) st = "short"; else if (st ~ /^malformed|^unchecked/) st = "malformed"
+            if (tsv) printf "2\t%s\tamendment\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n", a_date[id], st, a_key[id], id, a_up[id], a_down[id], a_voters[id], a_agent[id], a_hash[id], a_sum[id]
+            else printf "2\t%s\t  amendment   %-12s %-38s %-44s voters %d/%d  text_hash %s  %s\n", a_date[id], st, a_key[id], trunc(id, 44), a_voters[id], a_quorum[id], (a_hash[id] == "" ? "-" : substr(a_hash[id], 1, 12) "~"), trunc(a_sum[id], 50)
+        }
+        if (n == 0 && !tsv) print "0\t\t  none - nothing open awaits " (me == "" ? "a vote" : "your vote")
+    }' "$BAL" | sort -t "$TAB" -k1,1n -k2,2 | cut -f3-
     exit 0
 fi
 awk -F'\t' -v quorum="$AMEND_QUORUM" -v num="$AMEND_NUM" -v den="$AMEND_DEN" -v stop="$STOP_PRESENT" -v amend_file="$AMEND" -v records=0 "$AMEND_AWK" "$AMEND" "$ALLROWS" > "$AMEND_OUT"

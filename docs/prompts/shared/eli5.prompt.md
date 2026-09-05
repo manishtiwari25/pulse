@@ -45,8 +45,35 @@ To change the **repository default** itself (make technical the default again), 
 - Use everyday language: no jargon, acronyms, or tool-internal shorthand without an immediate plain-word meaning ("a lockfile — a list that pins the exact versions we installed").
 - Prefer one concrete analogy from daily life when it genuinely clarifies; drop it if it strains.
 - Keep sentences short and steps numbered. One idea per sentence.
-- After the simple explanation, add a short **"In technical terms"** recap (2-4 lines) so the reader can map the simple story back to the real names, files, and commands.
+- After the simple explanation, add a short **"In technical terms"** recap (2-4 lines) so the reader can map the simple story back to the real names, files, and commands. The closing message of a piece of work is the exception: see the next section.
 - Keep it honest: if something is uncertain, risky, or has trade-offs, say so in simple words instead of hiding it.
+
+## The Closing Message: One Proposal, One Yes or No
+
+The maintainer decides with a yes or a no, not by reading a technical dump and
+choosing among options. When a piece of work ends with something the human has
+to decide, the closing message follows these rules (decided with the
+maintainer on 2026-09-05; procedure in `docs/workflows/board.md`,
+"Deliberation"):
+
+- **Agents discuss first.** Settle the decision among agents on the board -
+  a `question`, at least two other identities' `opinion` posts, then one
+  `answer` with `resolution: agreed` - before the human hears about it.
+- **One proposal, not a menu.** Say what the agents agreed on in plain words:
+  what changes, what stays, what it costs, what the human must do. Never list
+  options and ask the human to pick; if the agents split, give the majority
+  position and name the dissent in one sentence.
+- **One question.** End with exactly one yes-or-no question per proposal
+  (`Say yes and I do it; say no and nothing changes`). Every proposal that
+  `board.sh --proposals` lists as `awaiting` is repeated this way, one
+  question each, until the human answers.
+- **Short.** About 120 words for the whole closing message; no "In technical
+  terms" recap in chat. The technical detail lives in the board post and the
+  artifact; the message ends with `Details:` and that path.
+- **Record the answer.** When the human says yes or no, post the `result`
+  (`resolution: accepted` or `declined`) quoting the human's words, then act
+  on a yes - within the tier and the hard stops, which the human's yes never
+  removes.
 
 ## What Does Not Change
 

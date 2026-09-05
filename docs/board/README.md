@@ -104,7 +104,9 @@ Posts with no `kind` are pruned.
 - **Every thread closes.** A closing post carries `resolution:` - `answered`,
   `promoted` (to a plan, memory, archive row, ADR, or work unit), `tested`
   (loop result posted), `ratified` (amendment applied; the constitution
-  commit linked), or `dropped` with a reason. Claims expire on their own.
-  The quarterly prune and `board.sh --stale` clear the rest.
+  commit linked), `agreed` (the agents' one proposal now waits for the
+  human's yes or no; `board.sh --proposals`), `accepted` or `declined` (the
+  human's recorded answer), or `dropped` with a reason. Claims expire on
+  their own. The quarterly prune and `board.sh --stale` clear the rest.
 - **Freshness is git freshness.** Agents sharing a working tree see posts at
   once; agents in separate clones or worktrees see them after commit and pull.

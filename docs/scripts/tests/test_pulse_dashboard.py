@@ -27,6 +27,7 @@ import unittest
 import urllib.error
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -415,6 +416,58 @@ class ProjectionTestCase(unittest.TestCase):
         self.assertIsNone(self.query(dash.q_post, "no-such-post"))
         self.assertIsNone(self.query(dash.q_thread, "no/such-thread"))
 
+    def test_proposals_for_the_human_match_board_sh(self):
+        """WU-008: an answer with resolution: agreed is a proposal awaiting the human;
+        a later result with accepted or declined records the answer. Same tally as
+        `board.sh --proposals`; the dashboard only shows it."""
+        tmp = Path(tempfile.mkdtemp(prefix="pulse-dashboard-proposals-")).resolve()
+        try:
+            fx = Fixture(tmp, name="proposal-repo")
+            q = fx.post("question", "governance", "one-proposal", "runner-a/model-a", "2026-09-08T08:00:00Z",
+                        "Panel: settle D1-D8", session="s-a")
+            fx.post("opinion", "governance", "one-proposal", "runner-b/model-b", "2026-09-08T08:30:00Z",
+                    "D1 score", session="s-b", on=q)
+            agreed = fx.post("answer", "governance", "one-proposal", "runner-a/model-a", "2026-09-08T09:00:00Z",
+                             "We agreed on one plan. Yes or no?", session="s-a", on=q, resolution="agreed",
+                             body="D1: score. D2: yes.\n\n**Proposal for the human:** Grade the warning as a score\n"
+                                  "and adopt the step-9 sentence.\nYes or no?\n\nDissent: none.\n")
+            older = fx.post("answer", "governance", "older", "runner-b/model-b", "2026-09-01T09:00:00Z",
+                            "Rename the queue", session="s-b", resolution="agreed",
+                            body="Rename the experiment queue to the backlog. Yes or no?\n")
+            said_no = fx.post("result", "governance", "older", "runner-b/model-b", "2026-09-02T09:00:00Z",
+                              "The human said no: keep the name", session="s-b", on=older, resolution="declined",
+                              body="Human, in chat: no.\n")
+            fx._git_init()
+            state_dir = dash.project_state_dir(fx.repo, tmp / "home")
+            db = dash.build_projection(fx.repo, state_dir, now=NOW)
+            rows = query_db(db, dash.q_proposals)
+            self.assertEqual([(r["thread_key"], r["id"], r["status"]) for r in rows],
+                             [("governance/one-proposal", agreed, "awaiting"), ("governance/older", older, "declined")])
+            self.assertEqual(rows[0]["proposal_text"],
+                             "Grade the warning as a score and adopt the step-9 sentence. Yes or no?")
+            self.assertEqual((rows[0]["decided_id"], rows[0]["decided_summary"]), ("", ""))
+            self.assertEqual((rows[1]["decided_id"], rows[1]["decided_date"], rows[1]["decided_summary"]),
+                             (said_no, "2026-09-02T09:00:00Z", "The human said no: keep the name"))
+            self.assertEqual(rows[1]["proposal_text"], "Rename the experiment queue to the backlog. Yes or no?",
+                             "without a marked paragraph the first paragraph is the proposal")
+            self.assertEqual([r["id"] for r in query_db(db, dash.q_proposals, True)], [agreed])
+            o = query_db(db, dash.q_overview)
+            self.assertEqual((o["proposals_awaiting"], o["proposals_decided"]), (1, 1))
+            self.assertEqual(o["threads_closed"], 3, "agreed closes the agents' debate; the human still decides")
+            text = fx.board_text("--proposals")
+            self.assertIn("awaiting   governance/one-proposal", text)
+            self.assertIn("read docs/board/governance/one-proposal/%s.md" % agreed, text)
+            self.assertIn("declined   governance/older", text)
+            self.assertIn("for the human: 1 proposal awaiting a yes or no - board.sh --proposals",
+                          fx.board_text("--area", "governance"))
+            records = fx.board_text("--records")
+            props = [l.split("\t") for l in records.splitlines() if l.startswith("proposal\t")]
+            self.assertEqual({(p[1], p[5]) for p in props},
+                             {("governance/one-proposal", "awaiting"), ("governance/older", "declined")})
+            self.assertEqual(fx.git_status(), "", "the tally never writes")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_evolution_view(self):
         e = self.query(dash.q_evolution)
         self.assertEqual(e["summary"]["loop"], "off")
@@ -441,6 +494,38 @@ class ProjectionTestCase(unittest.TestCase):
         self.assertEqual(meta["board_params"]["quorum"], 2)
         self.assertEqual(meta["board_params"]["now"], NOW)
         self.assertEqual(meta["tally_script"], str(BOARD_SH))
+
+    def test_timeline_buckets_are_continuous_and_lose_nothing(self):
+        rows = [("2026-09-10T11:30:00Z", "vote"), ("2026-09-10T11:05:00Z", "vote"),
+                ("2026-09-09T13:00:00Z", "claim"),       # first hour of the 24-hour window
+                ("2026-09-09T12:59:59Z", "claim"),       # a day-bucket post just outside the hours
+                ("2026-08-12", "finding"),               # bare date on the first day of the window
+                ("2026-08-11T23:59:59Z", "finding"),     # before the window
+                ("2026-09-11T00:00:00Z", "result"),      # after now (clock skew): clamped into the last bucket
+                ("not a date", "opinion"), ("", None)]
+        tl = dash.timeline_buckets(rows, NOW)
+        self.assertEqual(tl["now"], NOW)
+        self.assertEqual((len(tl["hours"]), len(tl["days"])), (24, 30))
+        self.assertEqual((tl["hours"][0]["t"], tl["hours"][-1]["t"]), ("2026-09-09T13", "2026-09-10T12"))
+        self.assertEqual((tl["days"][0]["t"], tl["days"][-1]["t"]), ("2026-08-12", "2026-09-10"))
+        self.assertEqual((tl["total"], tl["before_window"], tl["unparsed"]), (9, 1, 2))
+        self.assertEqual(sum(b["n"] for b in tl["days"]), 6)
+        self.assertEqual(sum(b["n"] for b in tl["hours"]), 4)
+        by_hour = {b["t"]: b for b in tl["hours"]}
+        self.assertEqual(by_hour["2026-09-10T11"], {"t": "2026-09-10T11", "n": 2, "kinds": {"vote": 2}})
+        self.assertEqual(by_hour["2026-09-10T12"]["kinds"], {"result": 1})
+        self.assertEqual(by_hour["2026-09-09T13"]["kinds"], {"claim": 1})
+        by_day = {b["t"]: b for b in tl["days"]}
+        self.assertEqual(by_day["2026-08-12"]["kinds"], {"finding": 1})
+        self.assertEqual(by_day["2026-09-09"]["n"], 2)
+        self.assertEqual(dash.timeline_buckets([], "garbage")["days"][-1]["t"],
+                         datetime.now(timezone.utc).strftime("%Y-%m-%d"), "an unreadable reference time falls back to now")
+        via_db = self.query(dash.q_timeline)
+        self.assertEqual(via_db["now"], NOW, "the projection's frozen reference time drives the axis")
+        overview = self.query(dash.q_overview)
+        self.assertEqual(sum(b["n"] for b in via_db["days"]) + via_db["before_window"] + via_db["unparsed"],
+                         overview["posts"])
+        self.assertEqual(via_db["before_window"], 1, "the 2026-08-01 suggestion is older than the 30-day window")
 
     # --- placement, isolation, reproducibility ----------------------------
 
@@ -575,14 +660,46 @@ class ServerTestCase(unittest.TestCase):
         self.assertIn(b'aria-label="Sections"', body)
         self.assertNotIn(b"http://", body.replace(b"http://127.0.0.1", b""), "no external assets")
         self.assertNotIn(b"https://", body)
+        self.assertIn(b'id="theme"', body, "the theme toggle is part of the page")
         status, headers, js = self.request("/app.js")
         self.assertEqual(status, 200)
         self.assertNotIn(b"innerHTML", js, "the page only ever inserts text")
         self.assertNotIn(b"eval(", js)
         self.assertNotIn(b"https://", js, "no external requests")
+        self.assertNotIn(b"http://", js.replace(b"http://www.w3.org/2000/svg", b""),
+                         "the SVG namespace identifier is the only http literal; it is never fetched")
+        self.assertIn(b"createElementNS", js, "the chart is drawn with DOM calls, not markup")
         status, headers, css = self.request("/app.css")
         self.assertIn("text/css", headers["Content-Type"])
         self.assertIn(b":focus-visible", css, "keyboard focus is visible")
+        self.assertIn(b"prefers-color-scheme", css, "light and dark follow the system unless toggled")
+        self.assertIn(b"prefers-reduced-motion", css)
+
+    def test_wu005_static_markdown_and_motion_assets(self):
+        status, _, js = self.request("/app.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"function renderMarkdown", js)
+        for bad in (b"innerHTML", b"insertAdjacentHTML", b"eval(", b"https://"):
+            self.assertNotIn(bad, js)
+        self.assertNotIn(b"http://", js.replace(b"http://www.w3.org/2000/svg", b""))
+        self.assertNotIn(b"href=\"http", js)
+        status, _, css = self.request("/app.css")
+        self.assertEqual(status, 200)
+        self.assertIn(b"prefers-reduced-motion: no-preference", css)
+
+    def test_timeline_route_loses_no_post(self):
+        status, _, body = self.request("/api/v1/timeline")
+        self.assertEqual(status, 200)
+        tl = json.loads(body)
+        posts = json.loads(self.request("/api/v1/overview")[2])["posts"]
+        self.assertEqual((len(tl["hours"]), len(tl["days"])), (dash.TIMELINE_HOURS, dash.TIMELINE_DAYS))
+        self.assertEqual(tl["total"], posts)
+        self.assertEqual(sum(b["n"] for b in tl["days"]) + tl["before_window"] + tl["unparsed"], posts,
+                         "every post is in a day bucket, before the window, or reported as unparsed")
+        self.assertTrue(all(sum(b["kinds"].values()) == b["n"] for b in tl["days"] + tl["hours"]))
+        self.assertLessEqual(sum(b["n"] for b in tl["hours"]), sum(b["n"] for b in tl["days"][-2:]))
+        self.assertEqual(tl["days"][-1]["t"], tl["now"][:10], "the axis ends at the projection's reference time")
+        self.assertEqual(tl["hours"][-1]["t"], tl["now"][:13])
 
     def test_payload_stays_text_in_the_api(self):
         status, headers, body = self.request("/api/v1/posts/" + self.fx.ids["payload"])
@@ -596,7 +713,8 @@ class ServerTestCase(unittest.TestCase):
         self.assertEqual(json.loads(body)["posts"][0]["provenance_missing"], ["branch"])
 
     def test_every_read_route_answers(self):
-        for route in ("health", "project", "overview", "threads", "suggestions", "amendments", "evolution", "refresh"):
+        for route in ("health", "project", "overview", "threads", "suggestions", "amendments", "evolution", "timeline",
+                      "notices", "proposals", "refresh"):
             status, _, body = self.request("/api/v1/" + route)
             self.assertEqual(status, 200, route)
             json.loads(body)
@@ -650,7 +768,19 @@ class HubTestCase(unittest.TestCase):
         cls.alpha.post("claim", "governance", "names", "claude-code/opus", "2026-09-09T11:00:00Z",
                        "Working on names", session="s-luna", name="Luna",
                        expires="2026-09-12T00:00:00Z", files="[docs/x.md]")
+        # A proposal for the human in alpha: the panel's question, then the agreed answer (awaiting).
+        pq = cls.alpha.post("question", "governance", "one-proposal", "runner-q/model-q", "2026-09-08T08:00:00Z",
+                            "Which C2 fix?", session="s-q")
+        cls.alpha_proposal = cls.alpha.post(
+            "answer", "governance", "one-proposal", "runner-a/model-a", "2026-09-08T09:00:00Z",
+            "We agreed: grade C2 as a score. Yes or no?", session="s-a", on=pq, resolution="agreed",
+            body="D1: score.\n\n**Proposal for the human:** Grade the warning as a score, "
+                 "not a gate. Yes or no?\n\nDissent: none.\n")
         cls.alpha._git_init()
+        # The same call sign on a second agent id in beta: a collision the roster flags, never resolves.
+        cls.beta.post("finding", "governance", "call-signs", "runner-z/model-z", "2026-09-09T09:00:00Z",
+                      "Also called Sol", session="s-z", name="Sol")
+        cls.beta._git_init()
         cls.env_before = {k: os.environ.get(k) for k in ("PULSE_HOME", "PULSE_COMMONS", "PULSE_DASHBOARD_HOME")}
         os.environ["PULSE_HOME"] = str(cls.home)
         os.environ["PULSE_DASHBOARD_HOME"] = str(cls.state_root)
@@ -833,6 +963,31 @@ class HubTestCase(unittest.TestCase):
         self.assertEqual(health["projects"], ["alpha-app", "beta-service", "commons"])
         self.assertEqual(health["errors"], {})
 
+    def test_proposals_for_the_human_across_the_organization(self):
+        """WU-008: the agents' agreed answer is shown to the human on the hub, read-only;
+        the human answers in chat and an agent records it - the page has no button."""
+        org = self.api("/api/v1/org")
+        self.assertEqual(org["totals"]["proposals_awaiting"], 1)
+        self.assertEqual([(r["slug"], r["status"], r["id"]) for r in org["proposals"]],
+                         [("alpha-app", "awaiting", self.alpha_proposal)])
+        rows = self.api("/api/v1/proposals")
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual((r["slug"], r["base"], r["status"], r["thread_key"]),
+                         ("alpha-app", "/p/alpha-app", "awaiting", "governance/one-proposal"))
+        self.assertEqual(r["proposal_text"], "Grade the warning as a score, not a gate. Yes or no?")
+        self.assertNotIn("body", r, "the hub list carries the plain proposal, not every body")
+        self.assertEqual(r["agent"], "runner-a/model-a")
+        mine = self.api("/p/alpha-app/api/v1/proposals")
+        self.assertEqual([p["id"] for p in mine], [self.alpha_proposal])
+        self.assertIn("Proposal for the human", mine[0]["body"], "the project route keeps the body for the card")
+        self.assertEqual(self.api("/p/beta-service/api/v1/proposals"), [])
+        self.assertEqual(self.api("/p/alpha-app/api/v1/overview")["proposals_awaiting"], 1)
+        for path in ("/", "/p/alpha-app/"):
+            self.assertEqual(self.get(path)[0], 200, path)
+        self.assertIn(b"#/proposals", self.get("/app.js")[2], "the nav and the For-you view ship in the one script")
+        self.assertEqual(self.alpha.git_status(), "", "reading proposals never writes to the repository")
+
     def test_hub_refuses_the_rest(self):
         status, _, body = self.get("/p/nope/")
         self.assertEqual(status, 404)
@@ -854,6 +1009,112 @@ class HubTestCase(unittest.TestCase):
         self.assertEqual(status, 200)
         for bad in (b"innerHTML", b"eval(", b"https://"):
             self.assertNotIn(bad, js)
+        self.assertNotIn(b"http://", js.replace(b"http://www.w3.org/2000/svg", b""))
+
+    def test_roster_status_and_days_since_fields(self):
+        allowed = {"working", "active", "recent", "idle", "dormant"}
+        roster = self.api("/api/v1/roster")
+        self.assertTrue(roster)
+        self.assertTrue(all(p["status"] in allowed for p in roster))
+        self.assertTrue(all(isinstance(p["days_since"], float) for p in roster))
+        self.assertTrue(all(p["days_since"] >= 0 for p in roster))
+        self.assertTrue(any(p["status"] == "working" and p["active_claims"] for p in roster))
+
+    def test_brain_flag_round_trips_and_org_totals_report_it(self):
+        home2 = self.tmp / "brain-home"
+        state2 = self.tmp / "brain-cache"
+        self.run_main(["index", "--repo", str(self.alpha.repo), "--home", str(home2),
+                       "--state-dir", str(state2), "--now", NOW, "--brain"])
+        self.run_main(["index", "--repo", str(self.beta.repo), "--home", str(home2),
+                       "--state-dir", str(state2), "--now", NOW])
+        reg = dash.load_registry(home2)
+        flagged = [e["slug"] for e in reg["projects"] if e.get("brain")]
+        self.assertEqual(flagged, ["alpha-app"])
+        hub = dash.HubState(home2, state2, refresh_seconds=3600)
+        org = dash.q_org(hub)
+        self.assertEqual(org["totals"]["brain"], "alpha-app")
+        self.assertEqual([p["brain"] for p in org["projects"] if p["slug"] == "alpha-app"], [True])
+
+    def test_org_project_cards_expose_brain_boolean(self):
+        home2 = self.tmp / "brain-card-home"
+        state2 = self.tmp / "brain-card-cache"
+        self.run_main(["index", "--repo", str(self.alpha.repo), "--home", str(home2),
+                       "--state-dir", str(state2), "--now", NOW, "--brain"])
+        self.run_main(["index", "--repo", str(self.beta.repo), "--home", str(home2),
+                       "--state-dir", str(state2), "--now", NOW])
+        org = dash.q_org(dash.HubState(home2, state2, refresh_seconds=3600))
+        by_slug = {p["slug"]: p["brain"] for p in org["projects"]}
+        self.assertEqual(by_slug, {"alpha-app": True, "beta-service": False})
+
+    def test_hub_timeline_roster_collisions_and_vote_expiry(self):
+        tl = self.api("/api/v1/timeline")
+        self.assertEqual({s["slug"] for s in tl["series"]}, {"alpha-app", "beta-service", "commons"})
+        day_labels = [b["t"] for b in tl["days"]]
+        hour_labels = [b["t"] for b in tl["hours"]]
+        for s in tl["series"]:
+            self.assertEqual([b["t"] for b in s["days"]], day_labels, "every project shares one axis")
+            self.assertEqual([b["t"] for b in s["hours"]], hour_labels)
+            self.assertEqual(s["now"], tl["now"])
+        self.assertEqual(sum(s["total"] for s in tl["series"]), tl["total"])
+        self.assertEqual(sum(b["n"] for b in tl["days"]), sum(b["n"] for s in tl["series"] for b in s["days"]))
+        commons = next(s for s in tl["series"] if s["slug"] == "commons")
+        self.assertEqual((commons["kind"], commons["base"], commons["total"]), ("commons", "/commons", 3))
+        roster = self.api("/api/v1/roster")
+        sols = sorted((p for p in roster if p["name"] == "Sol"), key=lambda p: p["agent"])
+        self.assertEqual([p["agent"] for p in sols], ["copilot-cli/gpt-x", "runner-z/model-z"])
+        self.assertEqual([(p["name_shared"], p["shared_with"]) for p in sols],
+                         [(True, ["runner-z/model-z"]), (True, ["copilot-cli/gpt-x"])],
+                         "one call sign on two agent ids is flagged on both, never merged")
+        luna = next(p for p in roster if p["name"] == "Luna")
+        self.assertEqual((luna["name_shared"], luna["shared_with"]), (False, []))
+        self.assertTrue(all(p["name_shared"] is False for p in roster if not p["name"]),
+                        "anonymous identities never collide")
+        votes = self.api("/api/v1/votes")
+        self.assertTrue(all(s["expiry_days"] == 14 for s in votes["suggestions"]),
+                        "the board's expiry window travels with each suggestion so the page can say when it lapses")
+        self.assertEqual(self.api("/api/v1/activity")[0]["slug"], "commons", "the wider activity feed keeps its order")
+
+    def test_notices_mirror_board_sh_and_presence_needs_no_registry_write(self):
+        """WU-006: the hub carries the same notices board.sh prints (votes wanted,
+        brain, commons questions) and notices a project or commons appearing or
+        vanishing without a registry write."""
+        n = self.api("/api/v1/notices")
+        self.assertEqual(self.api("/api/v1/org")["notices"], n, "one computation, exposed twice")
+        self.assertEqual({b["slug"] for b in n["ballot"]}, {"alpha-app", "beta-service"})
+        for b in n["ballot"]:
+            self.assertEqual(set(b), {"slug", "base", "name", "brain", "suggestions", "amendments", "proposals"})
+            self.assertEqual(b["base"], "/p/" + b["slug"])
+        self.assertEqual(n["votes_open"], sum(b["suggestions"] + b["amendments"] for b in n["ballot"]))
+        self.assertEqual(n["proposals_awaiting"], 1, "alpha's agreed answer waits for the human")
+        self.assertEqual({b["slug"]: b["proposals"] for b in n["ballot"]}, {"alpha-app": 1, "beta-service": 0})
+        self.assertEqual((n["brain"], n["brains"]), ("", []), "no brain flagged in this registry")
+        self.assertEqual((n["commons_present"], n["commons_base"]), (True, "/commons"))
+        self.assertEqual(n["commons_questions"], self.api("/api/v1/org")["commons"]["questions_open"])
+        mine = self.api("/p/alpha-app/api/v1/notices")
+        self.assertEqual([b["slug"] for b in mine["ballot"]], ["alpha-app"], "a project route answers for its own board")
+        self.assertEqual((mine["ballot"][0]["base"], mine["commons_present"], mine["brain"]), ("", None, ""))
+        self.assertEqual(mine["proposals_awaiting"], 1)
+        self.assertIn(b'id="notices"', self.get("/")[2])
+        # Presence is re-evaluated on every read: the registry file does not change here.
+        delta = self.tmp / "delta-lib"
+        (delta / "docs" / "board" / "questions" / "t").mkdir(parents=True)
+        commons_post(delta, "question", "questions", "t", "runner-d/model-d", "2026-09-09T15:00:00Z",
+                     "Delta asks", session="s-d")
+        dash.register_project(self.home, delta)
+        try:
+            self.assertTrue(next(p for p in self.api("/api/v1/org")["projects"] if p["slug"] == "delta-lib")["present"])
+            shutil.rmtree(delta / "docs")
+            gone = next(p for p in self.api("/api/v1/org")["projects"] if p["slug"] == "delta-lib")
+            self.assertEqual((gone["present"], gone["missing"]), (False, True), "vanished without a registry write")
+            self.assertNotIn("delta-lib", {b["slug"] for b in self.api("/api/v1/notices")["ballot"]})
+            (delta / "docs" / "board" / "questions" / "t").mkdir(parents=True)
+            commons_post(delta, "question", "questions", "t", "runner-d/model-d", "2026-09-09T15:00:00Z",
+                         "Delta asks again", session="s-d")
+            back = next(p for p in self.api("/api/v1/org")["projects"] if p["slug"] == "delta-lib")
+            self.assertTrue(back["present"], "came back without a registry write or a restart")
+        finally:
+            dash.unregister_project(self.home, slug="delta-lib")
+            shutil.rmtree(delta, ignore_errors=True)
 
     def test_hub_follows_the_registry_and_never_writes_to_a_repository(self):
         gamma = self.tmp / "gamma-tool"

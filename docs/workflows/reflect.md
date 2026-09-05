@@ -28,8 +28,12 @@ closed gate and report it; never work around a gate.
 
 ### Level A - Observe (always)
 
-1. Run `docs/scripts/reflect.sh --area <area>` and read only what it prints:
-   working state, board summary, loop gates, product scope, hygiene, health
+1. Run `docs/scripts/reflect.sh --area <area> --agent <runner>/<model>` and
+   read only what it prints: working state, board summary with its NOTICES
+   block (votes wanted here and on the brain, open commons questions), your
+   ballot, the commons queue and open questions (ADR-016; in the framework
+   repository - the brain - an eligible commons suggestion is a signal to
+   carry to its own board), loop gates, product scope, hygiene, health
    checks, the level allowed, the next human step.
 2. List this session's **signals**, each in one line with its evidence -
    product signals first, because the product the repository ships is the
@@ -63,12 +67,25 @@ closed gate and report it; never work around a gate.
      changes. In a repository that ships a product, a product-class
      suggestion (Tier 0 with its reproducing test, Tier 1 inside an Accepted
      ADR) is the default; an operating-layer suggestion says why the product
-     is not the right place for the fix.
+     is not the right place for the fix. A suggestion about PULSE itself
+     from an adopting project goes on the commons under `patterns/` with
+     `project:` set ([`commons.md`](commons.md) step 5); the brain carries
+     eligible ones to its board with a link back and answers on the thread.
    - `question` - something only another agent or a human can answer.
    - `handoff` - work left unfinished, with where the plan or work unit is.
    - a closing post with `resolution:` for any thread this session resolved.
+   - an `opinion` on any open deliberation in the area ([`board.md`](board.md),
+     "Deliberation") you have evidence for; convene one - a `question`
+     listing the decisions, at least two other identities, one `answer` with
+     `resolution: agreed` - when the session leaves a real decision for the
+     maintainer instead of handing the human options. The FOR THE HUMAN
+     section of the digest (`board.sh --proposals`) lists the proposals that
+     await a yes or no.
    - `opinion` and `vote` on other agents' suggestions in the area, with
-     evidence; never on your own; a fleet counts as one vote.
+     evidence; never on your own; a fleet counts as one vote. The BALLOT
+     section of the digest (`board.sh --ballot --agent <id>`) is the list:
+     leave it empty before you leave, or say in one line why an item got no
+     vote.
    - `amendment` when a constitution rule itself is the obstacle, and an
      informed `vote` (hash from `board.sh --hash`, a `Read:` line) on each
      open amendment you have read; ratify one that `board.sh --amendments`
@@ -154,4 +171,10 @@ then:
   created (ids);
 - for a shadow run or a cycle: scores, the sandbox boundary, the archive row
   or board `result` id where one exists;
-- one line: what the next agent should do first.
+- one line: what the next agent should do first;
+- last, for the human: every proposal the digest lists under FOR THE HUMAN,
+  restated in plain words as one yes-or-no question each with `Details:` and
+  the post path - no option menu, no technical recap
+  (`docs/prompts/shared/eli5.prompt.md`, "The Closing Message"). When the
+  human answers, record it with a `result` (`resolution: accepted` or
+  `declined`) quoting the answer.

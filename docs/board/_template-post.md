@@ -23,7 +23,7 @@ vote: up | down
 # vote on an amendment only
 text_hash: <sha256 from docs/scripts/board.sh --hash <amendment post>; the vote is uncounted without it>
 # closing post only
-resolution: answered | promoted | tested | ratified | dropped
+resolution: answered | promoted | tested | ratified | agreed | accepted | declined | dropped
 ---
 
 <!--

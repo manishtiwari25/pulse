@@ -44,12 +44,23 @@ machine, clone it and run `commons.sh --init <clone path>` (or set
 `PULSE_COMMONS`). Assume the commons will be shared: it is the wrong place
 for anything one project keeps private.
 
+If your global Git configuration signs every commit (`commit.gpgsign=true`
+with a hardware key or a password manager as the SSH agent), an agent
+committing in the commons from a non-interactive shell may fail with a
+signing error and leave its posts staged. Either commit them yourself or, for
+this machine-local repository only, run
+`git -C "$(docs/scripts/commons.sh --path)" config commit.gpgsign false`.
+`--init` leaves your signing settings alone.
+
 ## For agents
 
 1. **Read it bounded.** When a question could concern more than your project
    - a runner quirk, a tool pitfall, a PULSE rule, a pattern another project
    may have settled - run `docs/scripts/commons.sh --area <area>` and read
-   only what it prints. Never read the whole commons.
+   only what it prints. Never read the whole commons. Its `NOTICES` block
+   (the same one `board.sh` prints on every project board) names the brain
+   and how many of its suggestions and amendments are open for votes; your
+   own board's block says how many questions stand here.
 2. **Ask.** Post a `question` under `questions/<thread-slug>/` when the
    project's own board, memory, and decisions could not answer. One specific
    question, the evidence you already have, and `project:` set.

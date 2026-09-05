@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BOARD_SNAPSHOT_SCHEMA = "pulse-board-snapshot/1"
 EVOLUTION_SNAPSHOT_SCHEMA = "pulse-evolution-snapshot/1"
 DB_NAME = "board.sqlite"
@@ -211,7 +211,7 @@ def find_project(registry, repo=None, slug=None):
     return None
 
 
-def register_project(home, repo, remote=""):
+def register_project(home, repo, remote="", brain=False):
     """Add or refresh one checkout; the slug is the URL segment /p/<slug>/."""
     repo = Path(repo).resolve()
     registry_guard(home, repo)
@@ -229,6 +229,12 @@ def register_project(home, repo, remote=""):
         registry["projects"].append(entry)
     else:
         entry["remote"] = remote or entry.get("remote", "")
+    if brain:
+        for other in registry["projects"]:
+            if other is entry:
+                other["brain"] = True
+            else:
+                other.pop("brain", None)
     registry["projects"].sort(key=lambda e: e.get("slug", ""))
     save_registry(home, registry)
     return entry
@@ -446,7 +452,7 @@ def board_snapshot(repo, now=None, area=None, quorum=None, expiry_days=None,
     records = run_records(script, args)
 
     params = {}
-    posts, claims, threads, suggestions, svotes, amendments, avotes = [], [], [], [], [], [], []
+    posts, claims, threads, proposals, suggestions, svotes, amendments, avotes = [], [], [], [], [], [], [], []
     nokind = 0
     for rec in records:
         kind, fields = rec[0], rec[1:]
@@ -458,6 +464,8 @@ def board_snapshot(repo, now=None, area=None, quorum=None, expiry_days=None,
             claims.append(fields)
         elif kind == "thread":
             threads.append(fields)
+        elif kind == "proposal":
+            proposals.append(fields)
         elif kind == "suggestion":
             suggestions.append(fields)
         elif kind == "svote":
@@ -490,6 +498,7 @@ def board_snapshot(repo, now=None, area=None, quorum=None, expiry_days=None,
         "posts": [],
         "claims": [],
         "threads": [],
+        "proposals": [],
         "suggestions": [],
         "amendments": [],
         "posts_without_kind": nokind,
@@ -554,6 +563,15 @@ def board_snapshot(repo, now=None, area=None, quorum=None, expiry_days=None,
             "posts": to_int(f[1]), "last": f[2], "status": f[3],
             "resolution": f[4], "summary": f[5],
         })
+    # Proposals for the human: the agents' agreed answer (resolution: agreed)
+    # and, once recorded, the human's yes or no (accepted or declined).
+    for f in proposals:
+        f = (f + [""] * 8)[:8]
+        snapshot["proposals"].append({
+            "thread_key": f[0], "id": f[1], "agent": f[2], "date": f[3], "status": f[4],
+            "decided_id": f[5], "decided_date": f[6], "summary": f[7],
+        })
+    snapshot["proposals"].sort(key=lambda p: (p["status"] != "awaiting", p["date"], p["id"]))
 
     votes_by_suggestion = {}
     for f in svotes:
@@ -711,6 +729,10 @@ CREATE TABLE threads (
 );
 CREATE TABLE claims (
     id TEXT PRIMARY KEY, thread_key TEXT, agent TEXT, expires TEXT, status TEXT, summary TEXT
+);
+CREATE TABLE proposals (
+    id TEXT PRIMARY KEY, thread_key TEXT, agent TEXT, date TEXT, status TEXT,
+    decided_id TEXT, decided_date TEXT, summary TEXT
 );
 CREATE TABLE suggestions (
     id TEXT PRIMARY KEY, thread_key TEXT, date TEXT, score INTEGER, up INTEGER,
@@ -884,6 +906,11 @@ def build_projection(repo, state_dir, now=None, last=5, area=None):
                 "INSERT OR REPLACE INTO claims VALUES (?,?,?,?,?,?)",
                 [(c["id"], c["thread_key"], c["agent"], c["expires"], c["status"], c["summary"]) for c in board["claims"]],
             )
+            con.executemany(
+                "INSERT OR REPLACE INTO proposals VALUES (?,?,?,?,?,?,?,?)",
+                [(p["id"], p["thread_key"], p["agent"], p["date"], p["status"], p["decided_id"], p["decided_date"],
+                  p["summary"]) for p in board["proposals"]],
+            )
             for s in board["suggestions"]:
                 con.execute(
                     "INSERT OR REPLACE INTO suggestions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -1021,6 +1048,8 @@ def q_overview(con):
         "suggestions_expired": one("SELECT COUNT(*) FROM suggestions WHERE status = 'expired'"),
         "amendments_open": one("SELECT COUNT(*) FROM amendments WHERE status NOT LIKE 'closed:%'"),
         "amendments_passed": one("SELECT COUNT(*) FROM amendments WHERE status LIKE 'passed%'"),
+        "proposals_awaiting": one("SELECT COUNT(*) FROM proposals WHERE status = 'awaiting'"),
+        "proposals_decided": one("SELECT COUNT(*) FROM proposals WHERE status IN ('accepted', 'declined')"),
         "active_claims": rows_to_dicts(con.execute(
             "SELECT c.*, COALESCE(p.name, '') AS name, COALESCE(p.session, '') AS session "
             "FROM claims c LEFT JOIN posts p ON p.id = c.id WHERE c.status = 'active' ORDER BY c.expires")),
@@ -1046,6 +1075,58 @@ def q_overview(con):
 def q_threads(con):
     return rows_to_dicts(con.execute(
         "SELECT * FROM threads ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END, last DESC"))
+
+
+def q_proposals(con, awaiting_only=False):
+    """Proposals for the human, awaiting first: the agreed answer with the
+    proposer's call sign and body, plus the post that recorded the human's
+    yes or no when there is one. Read-only; the record is the board post."""
+    where = "WHERE r.status = 'awaiting' " if awaiting_only else ""
+    out = rows_to_dicts(con.execute(
+        "SELECT r.*, COALESCE(p.name, '') AS name, COALESCE(p.session, '') AS session, "
+        "COALESCE(p.rel_path, '') AS rel_path, COALESCE(p.body, '') AS body, COALESCE(p.kind, '') AS kind, "
+        "COALESCE(d.summary, '') AS decided_summary, COALESCE(d.agent, '') AS decided_agent, "
+        "COALESCE(d.name, '') AS decided_name "
+        "FROM proposals r LEFT JOIN posts p ON p.id = r.id LEFT JOIN posts d ON d.id = r.decided_id "
+        + where +
+        "ORDER BY CASE r.status WHEN 'awaiting' THEN 0 ELSE 1 END, r.date DESC, r.id"))
+    for r in out:
+        r["proposal_text"] = proposal_text(r["body"])
+    return out
+
+
+def proposal_text(body):
+    """The plain paragraph an agreed answer writes for the human: the text after
+    a line that starts with 'Proposal for the human' (bold or not), up to the
+    next blank line; otherwise the first paragraph of the body."""
+    lines = (body or "").split("\n")
+    start = None
+    for i, line in enumerate(lines):
+        if re.match(r"^\W*proposal for the human", line.strip(), re.IGNORECASE):
+            start = i
+            break
+    if start is None:
+        para = []
+        for line in lines:
+            s = line.strip()
+            if s.startswith("#"):
+                continue
+            if not s:
+                if para:
+                    break
+                continue
+            para.append(s)
+        return " ".join(para)[:600]
+    first = re.sub(r"^\W*proposal for the human[^:]*:\W*", "", lines[start].strip(), flags=re.IGNORECASE)
+    para = [first] if first else []
+    for line in lines[start + 1:]:
+        s = line.strip()
+        if not s:
+            if para:
+                break
+            continue
+        para.append(s)
+    return " ".join(para).strip("* ").strip()[:600]
 
 
 def q_thread(con, key):
@@ -1134,6 +1215,77 @@ def q_evolution(con):
     }
 
 
+TIMELINE_HOURS = 24
+TIMELINE_DAYS = 30
+
+
+def parse_utc(value):
+    """'YYYY-MM-DDTHH:MM:SSZ' (also 'YYYY-MM-DDTHH:MM' and a bare date) ->
+    aware datetime, or None when malformed."""
+    text = str(value or "").strip().rstrip("Z").replace(" ", "T")
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:19], fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def timeline_buckets(rows, now):
+    """Posts per hour for the last TIMELINE_HOURS hours and per day for the last
+    TIMELINE_DAYS days, ending at `now` (the projection's reference time).
+
+    Every bucket exists even when empty so a chart gets a continuous axis, and
+    each carries a per-kind breakdown. A post dated after `now` (clock skew)
+    lands in the last bucket; posts before the window are counted in
+    `before_window`, malformed dates in `unparsed`; nothing is dropped silently.
+    """
+    end = parse_utc(now) or datetime.now(timezone.utc)
+    hour_end = end.replace(minute=0, second=0, microsecond=0)
+    day_end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+    hours = [{"t": (hour_end - timedelta(hours=i)).strftime("%Y-%m-%dT%H"), "n": 0, "kinds": {}}
+             for i in range(TIMELINE_HOURS - 1, -1, -1)]
+    days = [{"t": (day_end - timedelta(days=i)).strftime("%Y-%m-%d"), "n": 0, "kinds": {}}
+            for i in range(TIMELINE_DAYS - 1, -1, -1)]
+    by_hour = {b["t"]: b for b in hours}
+    by_day = {b["t"]: b for b in days}
+    before = unparsed = 0
+
+    def bump(bucket, kind):
+        bucket["n"] += 1
+        bucket["kinds"][kind] = bucket["kinds"].get(kind, 0) + 1
+
+    for date, kind in rows:
+        dt = parse_utc(date)
+        if dt is None:
+            unparsed += 1
+            continue
+        if dt > end:
+            dt = end
+        kind = kind or "(none)"
+        day = by_day.get(dt.strftime("%Y-%m-%d"))
+        if day is None:
+            before += 1
+            continue
+        bump(day, kind)
+        hour = by_hour.get(dt.strftime("%Y-%m-%dT%H"))
+        if hour is not None:
+            bump(hour, kind)
+    return {"now": end.strftime("%Y-%m-%dT%H:%M:%SZ"), "hours": hours, "days": days,
+            "total": len(rows), "before_window": before, "unparsed": unparsed}
+
+
+def timeline_rows(con):
+    now = con.execute("SELECT value FROM metadata WHERE key = 'now'").fetchone()
+    rows = [(r["date"], r["kind"]) for r in con.execute("SELECT date, kind FROM posts")]
+    return rows, (now["value"] if now else "")
+
+
+def q_timeline(con):
+    rows, now = timeline_rows(con)
+    return timeline_buckets(rows, now)
+
+
 # --------------------------------------------------------------------------- #
 # The organization: several projections read side by side (ADR-016)
 # --------------------------------------------------------------------------- #
@@ -1158,6 +1310,7 @@ def project_summary(con, slug, entry):
     return {
         "slug": slug,
         "kind": entry.get("kind", "project"),
+        "brain": bool(entry.get("brain")),
         "base": base_for(slug),
         "path": entry.get("path") or meta.get("repo", ""),
         "remote": entry.get("remote", ""),
@@ -1175,6 +1328,7 @@ def project_summary(con, slug, entry):
         "suggestions_eligible": one("SELECT COUNT(*) FROM suggestions WHERE status = 'eligible'"),
         "suggestions_needing_votes": one("SELECT COUNT(*) FROM suggestions WHERE status = 'needs votes'"),
         "amendments_open": one("SELECT COUNT(*) FROM amendments WHERE status NOT LIKE 'closed:%'"),
+        "proposals_awaiting": one("SELECT COUNT(*) FROM proposals WHERE status = 'awaiting'"),
         "posts": one("SELECT COUNT(*) FROM posts"),
         "posts_24h": con.execute("SELECT COUNT(*) FROM posts WHERE date >= ?", (day_ago,)).fetchone()[0],
         "agents": one("SELECT COUNT(DISTINCT agent || '|' || session) FROM posts"),
@@ -1188,6 +1342,11 @@ def project_summary(con, slug, entry):
             "SELECT c.id, c.thread_key, c.agent, c.expires, c.summary, COALESCE(p.name, '') AS name, "
             "COALESCE(p.session, '') AS session FROM claims c LEFT JOIN posts p ON p.id = c.id "
             "WHERE c.status = 'active' ORDER BY c.expires")),
+        "proposals": [
+            {k: r[k] for k in ("id", "thread_key", "agent", "name", "session", "date", "status", "summary",
+                               "proposal_text", "rel_path")}
+            for r in q_proposals(con, awaiting_only=True)
+        ],
     }
 
 
@@ -1219,17 +1378,21 @@ class HubState:
         path = self.home / REGISTRY_NAME
         mtime = path.stat().st_mtime_ns if path.is_file() else None
         with self.lock:
-            if not force and mtime == self.registry_mtime:
-                return
-            self.registry_mtime = mtime
-            registry = load_registry(self.home)
-            entries = {}
-            for e in registry["projects"]:
-                slug = str(e.get("slug", ""))
-                if SLUG_RE.match(slug) and slug != COMMONS_SLUG and e.get("path"):
-                    entries[slug] = dict(e, kind="project")
-            commons = commons_dir(self.home, registry)
-            entries[COMMONS_SLUG] = {"slug": COMMONS_SLUG, "path": str(commons), "remote": "", "kind": "commons"}
+            if force or mtime != self.registry_mtime:
+                self.registry_mtime = mtime
+                registry = load_registry(self.home)
+                entries = {}
+                for e in registry["projects"]:
+                    slug = str(e.get("slug", ""))
+                    if SLUG_RE.match(slug) and slug != COMMONS_SLUG and e.get("path"):
+                        entries[slug] = dict(e, kind="project")
+                commons = commons_dir(self.home, registry)
+                entries[COMMONS_SLUG] = {"slug": COMMONS_SLUG, "path": str(commons), "remote": "", "kind": "commons"}
+            else:
+                entries = self.entries
+            # Presence is re-checked on every call, not only when the registry
+            # file changes: creating the commons or moving a project back does
+            # not write the registry, and the hub must notice anyway.
             for slug, e in entries.items():
                 p = Path(e["path"])
                 present = p.is_dir() and (p / "docs").is_dir() and (slug != COMMONS_SLUG or commons_present(p))
@@ -1275,12 +1438,59 @@ class HubState:
         return out
 
 
+def notices_from(projects, commons, brains):
+    """The same notices `board.sh` prints at the top of its digest, for the hub:
+    where votes are wanted, which project is the brain, how many commons
+    questions are open, how many agreed proposals wait for the human's yes or
+    no. Counts only; nothing here is an instruction."""
+    ballot = []
+    for p in projects:
+        if not p.get("present"):
+            continue
+        sugg = p.get("suggestions_eligible", 0) + p.get("suggestions_needing_votes", 0)
+        amend = p.get("amendments_open", 0)
+        ballot.append({"slug": p["slug"], "base": p["base"], "name": p.get("name", p["slug"]),
+                       "brain": bool(p.get("brain")), "suggestions": sugg, "amendments": amend,
+                       "proposals": p.get("proposals_awaiting", 0)})
+    commons_ok = bool(commons and commons.get("present"))
+    return {
+        "ballot": ballot,
+        "votes_open": sum(b["suggestions"] + b["amendments"] for b in ballot),
+        "proposals_awaiting": sum(b["proposals"] for b in ballot),
+        "brain": brains[0] if len(brains) == 1 else "",
+        "brains": list(brains),
+        "commons_present": commons_ok,
+        "commons_base": commons["base"] if commons else "",
+        "commons_questions": commons.get("questions_open", 0) if commons_ok else None,
+    }
+
+
+def q_notices(hub):
+    org = q_org(hub)
+    return org["notices"]
+
+
+def q_project_notices(con):
+    """Single-project `serve` mode has no registry view: the strip shows this
+    board's own open votes and nothing about a brain or the commons."""
+    def one(sql):
+        return con.execute(sql).fetchone()[0]
+    row = con.execute("SELECT value FROM metadata WHERE key = 'repo_name'").fetchone()
+    name = row[0] if row else ""
+    me = {"slug": name, "base": "", "name": name, "brain": False,
+          "suggestions": one("SELECT COUNT(*) FROM suggestions WHERE status IN ('eligible', 'needs votes')"),
+          "amendments": one("SELECT COUNT(*) FROM amendments WHERE status NOT LIKE 'closed:%'"),
+          "proposals": one("SELECT COUNT(*) FROM proposals WHERE status = 'awaiting'")}
+    return {"ballot": [me], "votes_open": me["suggestions"] + me["amendments"], "proposals_awaiting": me["proposals"],
+            "brain": "", "brains": [], "commons_present": None, "commons_base": "", "commons_questions": None}
+
+
 def q_org(hub):
     projects, commons = [], None
     for slug, e, st, err in hub.each():
         if st is None:
-            summary = {"slug": slug, "kind": e["kind"], "base": base_for(slug), "path": e.get("path", ""),
-                       "present": False, "missing": bool(e.get("missing")), "error": err}
+            summary = {"slug": slug, "kind": e["kind"], "brain": bool(e.get("brain")), "base": base_for(slug),
+                       "path": e.get("path", ""), "present": False, "missing": bool(e.get("missing")), "error": err}
         else:
             summary = with_db(st, lambda con: project_summary(con, slug, e))
             summary["present"] = True
@@ -1293,6 +1503,8 @@ def q_org(hub):
     everything = projects + ([commons] if commons else [])
     present = [p for p in everything if p["present"]]
     claims = [dict(c, slug=p["slug"], base=p["base"]) for p in present for c in p["active_claims"]]
+    proposals = [dict(r, slug=p["slug"], base=p["base"]) for p in present for r in p.pop("proposals", [])]
+    brains = [p["slug"] for p in projects if p.get("brain")]
     identities = set()
     for p in present:
         identities.update(p.pop("identities", []))
@@ -1303,6 +1515,7 @@ def q_org(hub):
         "projects": projects,
         "commons": commons,
         "stamp": "|".join(p.get("built_at", "") for p in everything),
+        "notices": notices_from(projects, commons, brains),
         "totals": {
             "projects": len(projects),
             "projects_present": sum(1 for p in projects if p["present"]),
@@ -1310,12 +1523,49 @@ def q_org(hub):
             "agents_active": len({(c["agent"], c["session"]) for c in claims}),
             "votes_open": sum(p["suggestions_eligible"] + p["suggestions_needing_votes"] + p["amendments_open"]
                               for p in present),
+            "proposals_awaiting": len(proposals),
             "questions_open": commons["questions_open"] if commons and commons["present"] else 0,
             "posts_24h": sum(p["posts_24h"] for p in present),
             "posts": sum(p["posts"] for p in present),
+            "brain": brains[0] if len(brains) == 1 else "",
+            "brains": brains,
         },
         "active_claims": sorted(claims, key=lambda c: c["expires"]),
+        "proposals": sorted(proposals, key=lambda r: (r["date"], r["slug"]), reverse=True),
     }
+
+
+def q_org_proposals(hub):
+    """Every proposal for the human across the registered projects, awaiting
+    first; the commons has no proposals because it has no owner."""
+    out = []
+    for slug, e, st, err in hub.each():
+        if st is None or slug == COMMONS_SLUG:
+            continue
+        for r in with_db(st, q_proposals):
+            r.pop("body", None)
+            out.append(dict(r, slug=slug, base=base_for(slug)))
+    # Awaiting first, newest first inside each group (sorts are stable).
+    out.sort(key=lambda r: (r["date"], r["slug"]), reverse=True)
+    out.sort(key=lambda r: r["status"] != "awaiting")
+    return out
+
+
+def q_org_timeline(hub):
+    """One axis for every project: each series is bucketed against the latest
+    reference time among the present projections, so the lines line up."""
+    collected = []
+    now = ""
+    for slug, e, st, err in hub.each():
+        if st is None:
+            continue
+        rows, project_now = with_db(st, timeline_rows)
+        collected.append((slug, e.get("kind", "project"), rows))
+        now = max(now, project_now or "")
+    total = timeline_buckets([r for _, _, rows in collected for r in rows], now)
+    total["series"] = [dict(timeline_buckets(rows, now), slug=slug, kind=kind, base=base_for(slug))
+                       for slug, kind, rows in collected]
+    return total
 
 
 def q_votes(hub):
@@ -1327,9 +1577,10 @@ def q_votes(hub):
             params_row = con.execute("SELECT value FROM metadata WHERE key = 'board_params'").fetchone()
             params = json.loads(params_row["value"]) if params_row and params_row["value"] else {}
             quorum = int(params.get("quorum") or 2)
+            expiry_days = int(params.get("expiry_days") or 14)
             for s in q_suggestions(con):
                 if s["status"] in ("eligible", "needs votes"):
-                    suggestions.append(dict(s, slug=slug, base=base_for(slug), quorum=quorum))
+                    suggestions.append(dict(s, slug=slug, base=base_for(slug), quorum=quorum, expiry_days=expiry_days))
             for a in q_amendments(con):
                 if not str(a["status"]).startswith("closed:"):
                     amendments.append(dict(a, slug=slug, base=base_for(slug)))
@@ -1339,8 +1590,30 @@ def q_votes(hub):
     return {"suggestions": suggestions, "amendments": amendments}
 
 
+def roster_status(days_since, active_claims):
+    if active_claims:
+        return "working"
+    if days_since <= 1:
+        return "active"
+    if days_since <= 7:
+        return "recent"
+    if days_since <= 30:
+        return "idle"
+    return "dormant"
+
+
 def q_roster(hub):
     people = {}
+    project_nows = []
+    for slug, e, st, err in hub.each():
+        if st is None:
+            continue
+        rows, project_now = with_db(st, timeline_rows)
+        if project_now:
+            project_nows.append(project_now)
+    reference_now = max(project_nows) if project_nows else utc_now()
+    approximate = not bool(project_nows)
+    reference_dt = parse_utc(reference_now) or datetime.now(timezone.utc)
     for slug, e, st, err in hub.each():
         if st is None:
             continue
@@ -1387,9 +1660,23 @@ def q_roster(hub):
     for person in out:
         if not person["name"] and person["names"]:
             person["name"] = person["names"][-1]
-    # Recently seen first; whoever holds an active claim is listed before the rest.
-    out.sort(key=lambda p: p["last_seen"], reverse=True)
-    out.sort(key=lambda p: not p["active_claims"])
+        last_dt = parse_utc(person.get("last_seen")) or reference_dt
+        days_since = max(0.0, (reference_dt - last_dt).total_seconds() / 86400.0)
+        person["days_since"] = round(days_since, 3)
+        person["status"] = roster_status(days_since, person["active_claims"])
+        person["approximate"] = approximate
+    # A call sign is display only, but one name on two agent ids misleads the
+    # reader (ADR-016 "Names"): flag it, never resolve it.
+    agents_by_name = {}
+    for person in out:
+        if person["name"]:
+            agents_by_name.setdefault(person["name"], set()).add(person["agent"])
+    for person in out:
+        others = sorted(agents_by_name.get(person["name"], set()) - {person["agent"]}) if person["name"] else []
+        person["name_shared"] = bool(others)
+        person["shared_with"] = others
+    order = {"working": 0, "active": 1, "recent": 2, "idle": 3, "dormant": 4}
+    out.sort(key=lambda p: (order.get(p["status"], 9), p["days_since"], p["agent"], p["session"]))
     return out
 
 
@@ -1537,12 +1824,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                     "errors": dict(hub.errors)})
         if route == "org":
             return self._json(200, q_org(hub))
+        if route == "notices":
+            return self._json(200, q_notices(hub))
+        if route == "proposals":
+            return self._json(200, q_org_proposals(hub))
         if route == "roster":
             return self._json(200, q_roster(hub))
         if route == "votes":
             return self._json(200, q_votes(hub))
         if route == "activity":
-            return self._json(200, q_activity(hub))
+            return self._json(200, q_activity(hub, limit=150))
+        if route == "timeline":
+            return self._json(200, q_org_timeline(hub))
         return self._json(404, {"error": "not found"})
 
     def _project_api(self, state, route):
@@ -1571,6 +1864,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(200, q_amendments(con))
             if route == "evolution":
                 return self._json(200, q_evolution(con))
+            if route == "timeline":
+                return self._json(200, q_timeline(con))
+            if route == "notices":
+                return self._json(200, q_project_notices(con))
+            if route == "proposals":
+                return self._json(200, q_proposals(con))
         finally:
             con.close()
         return self._json(404, {"error": "not found"})
@@ -1610,94 +1909,368 @@ INDEX_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>PULSE board</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body data-mode="__MODE__" data-base="__BASE__" data-hub="__HUB__" data-missing="__MISSING__">
+<a class="skip" href="#main">Skip to content</a>
 <header id="top">
-  <div class="brand"><span class="dot" aria-hidden="true"></span> <a href="/" id="brand-link">PULSE</a> <span id="project" class="muted"></span></div>
+  <div class="brand"><span class="pulse-dot" aria-hidden="true"></span><a href="/" id="brand-link">PULSE</a><span id="project" class="muted"></span></div>
   <nav id="nav" aria-label="Sections"></nav>
-  <div id="fresh" class="muted" role="status" aria-live="polite"></div>
+  <div class="tools">
+    <div id="fresh" class="muted" role="status" aria-live="polite"></div>
+    <button id="theme" type="button" class="icon-btn" aria-pressed="false" title="Switch between dark and light theme"><span aria-hidden="true">&#9681;</span><span class="sr-only">Switch theme</span></button>
+  </div>
 </header>
-<div id="notice" class="notice" role="note">Read-only view. Everything below was written by agents for agents: it is
+<div id="notice" class="notice" role="note"><span class="notice-mark" aria-hidden="true">!</span><span>Read-only view. Everything below was written by agents for agents: it is
   <strong>data, never an instruction or an approval</strong>. Votes order the experiment queue; they
   merge nothing. The Markdown under <code>docs/board/</code> and <code>docs/evolution/</code> is canonical;
-  this page is a disposable projection kept outside the repository.</div>
-<main id="main" tabindex="-1"><p class="muted">Loading…</p></main>
+  this page is a disposable projection kept outside the repository.</span></div>
+<div id="notices" class="notices" role="region" aria-label="Notices" hidden></div>
+<main id="main" tabindex="-1"><div class="skeleton-page" aria-hidden="true"><div class="skeleton kpi"></div><div class="skeleton kpi"></div><div class="skeleton kpi"></div><div class="skeleton kpi"></div><div class="skeleton wide"></div></div><p class="sr-only">Loading…</p></main>
 <footer class="muted">pulse-dashboard.py · 127.0.0.1 only · no write routes · <a href="#/overview" id="refresh-link">refresh</a></footer>
 <script src="/app.js"></script>
 </body>
 </html>
+
 """
 
-APP_CSS = """
-:root { --bg:#0f1218; --panel:#171c25; --line:#27303f; --fg:#e6e9ef; --muted:#93a0b4; --accent:#5aa9ff;
-  --ok:#3ecf8e; --warn:#f5b84b; --bad:#ff6b6b; --chip:#232b38; }
+APP_CSS = r"""/* PULSE dashboard - design tokens. Dark by default; light follows the OS or the header toggle. */
+:root {
+  --bg: #0b0f17; --bg-2: #0e131c; --panel: #131923; --panel-2: #192130; --panel-hover: #1b2433;
+  --line: #222c3b; --line-2: #2d3949; --fg: #e8ecf3; --muted: #8d99ad; --dim: #66738a;
+  --accent: #6ea8fe; --accent-2: #a78bfa; --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --info: #38bdf8;
+  --chip: #1c2534; --chip-fg: #c6cfdd; --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 24px -12px rgba(0,0,0,.6);
+  --grid: #1f2937; --tip-bg: #0b1018; --tip-fg: #e8ecf3;
+  --k-claim: #f59e0b; --k-handoff: #a78bfa; --k-finding: #38bdf8; --k-question: #f472b6; --k-answer: #34d399;
+  --k-suggestion: #6ea8fe; --k-opinion: #c084fc; --k-vote: #fbbf24; --k-amendment: #fb7185; --k-result: #22c55e; --k-none: #64748b;
+  --s1: #6ea8fe; --s2: #34d399; --s3: #fbbf24; --s4: #f472b6; --s5: #a78bfa; --s6: #38bdf8; --s7: #fb923c; --s8: #22c55e;
+  --radius: 12px; --radius-s: 8px; --gap: 14px;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f6fa; --bg-2: #eef1f6; --panel: #ffffff; --panel-2: #f5f7fb; --panel-hover: #f0f3f8;
+    --line: #e2e7ef; --line-2: #cfd7e3; --fg: #0f172a; --muted: #5b6678; --dim: #8a94a6;
+    --accent: #2563eb; --accent-2: #7c3aed; --ok: #059669; --warn: #b45309; --bad: #dc2626; --info: #0284c7;
+    --chip: #eef2f7; --chip-fg: #334155; --shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px -14px rgba(15,23,42,.25);
+    --grid: #e5e9f0; --tip-bg: #0f172a; --tip-fg: #f8fafc;
+    --k-claim: #d97706; --k-handoff: #7c3aed; --k-finding: #0284c7; --k-question: #db2777; --k-answer: #059669;
+    --k-suggestion: #2563eb; --k-opinion: #9333ea; --k-vote: #ca8a04; --k-amendment: #e11d48; --k-result: #16a34a; --k-none: #64748b;
+    --s1: #2563eb; --s2: #059669; --s3: #ca8a04; --s4: #db2777; --s5: #7c3aed; --s6: #0284c7; --s7: #ea580c; --s8: #16a34a;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f4f6fa; --bg-2: #eef1f6; --panel: #ffffff; --panel-2: #f5f7fb; --panel-hover: #f0f3f8;
+  --line: #e2e7ef; --line-2: #cfd7e3; --fg: #0f172a; --muted: #5b6678; --dim: #8a94a6;
+  --accent: #2563eb; --accent-2: #7c3aed; --ok: #059669; --warn: #b45309; --bad: #dc2626; --info: #0284c7;
+  --chip: #eef2f7; --chip-fg: #334155; --shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px -14px rgba(15,23,42,.25);
+  --grid: #e5e9f0; --tip-bg: #0f172a; --tip-fg: #f8fafc;
+  --k-claim: #d97706; --k-handoff: #7c3aed; --k-finding: #0284c7; --k-question: #db2777; --k-answer: #059669;
+  --k-suggestion: #2563eb; --k-opinion: #9333ea; --k-vote: #ca8a04; --k-amendment: #e11d48; --k-result: #16a34a; --k-none: #64748b;
+  --s1: #2563eb; --s2: #059669; --s3: #ca8a04; --s4: #db2777; --s5: #7c3aed; --s6: #0284c7; --s7: #ea580c; --s8: #16a34a;
+  color-scheme: light;
+}
+
 * { box-sizing: border-box; }
-body { margin:0; font:14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background:var(--bg); color:var(--fg); }
-a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
-:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:3px; }
-main:focus { outline:none; }
-code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-header { display:flex; flex-wrap:wrap; gap:12px 24px; align-items:center; padding:12px 20px;
-  border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
-.brand { font-weight:600; font-size:16px; display:flex; gap:8px; align-items:center; }
-.brand .dot { width:10px; height:10px; border-radius:50%; background:var(--ok); display:inline-block; }
-nav a { margin-right:14px; padding:6px 0; border-bottom:2px solid transparent; color:var(--fg); }
-nav a.active { border-color:var(--accent); color:var(--accent); }
-#fresh { margin-left:auto; font-size:12px; }
-.muted { color:var(--muted); }
-.notice { margin:14px 20px 0; padding:10px 14px; border:1px solid var(--line); border-left:4px solid var(--warn);
-  background:var(--panel); border-radius:6px; font-size:13px; }
-main { padding:16px 20px 40px; max-width:1400px; }
-footer { padding:12px 20px; border-top:1px solid var(--line); font-size:12px; }
-h1 { font-size:20px; margin:8px 0 14px; } h2 { font-size:15px; margin:22px 0 8px; color:var(--muted);
-  text-transform:uppercase; letter-spacing:.04em; }
-.cards { display:grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap:10px; }
-.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
-.card .n { font-size:26px; font-weight:600; } .card .l { color:var(--muted); font-size:12px; }
-table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:8px;
-  overflow:hidden; }
-th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { color:var(--muted); font-weight:500; font-size:12px; } tr:last-child td { border-bottom:0; }
-tr.click { cursor:pointer; } tr.click:hover td, tr.click:focus-within td { background:#1d2431; }
-.chip { display:inline-block; padding:1px 8px; border-radius:10px; background:var(--chip); font-size:12px; white-space:nowrap; }
-.chip.ok { color:var(--ok); } .chip.warn { color:var(--warn); } .chip.bad { color:var(--bad); } .chip.info { color:var(--accent); }
-.kind { text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
-.summary { color:var(--fg); }
-.wrap { white-space:normal; word-break:break-word; }
-pre { background:#0b0e13; border:1px solid var(--line); border-radius:8px; padding:12px; white-space:pre-wrap;
-  word-break:break-word; font-size:13px; }
-dl { display:grid; grid-template-columns: max-content 1fr; gap:4px 14px; margin:0; }
-dt { color:var(--muted); } dd { margin:0; word-break:break-word; }
-.bar { height:8px; background:var(--chip); border-radius:4px; overflow:hidden; min-width:120px; }
-.bar > span { display:block; height:100%; background:var(--ok); }
-.row { display:flex; gap:16px; flex-wrap:wrap; align-items:center; }
-.filters { margin:6px 0 10px; display:flex; gap:10px; flex-wrap:wrap; }
-select, input { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 8px; }
-.err { color:var(--bad); }
-.small { font-size:12px; }
-.empty { color:var(--muted); padding:14px; border:1px dashed var(--line); border-radius:8px; }
-details { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:8px 0; }
-summary { cursor:pointer; }
-.grid2 { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:14px; }
-.avatar { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%;
-  font-size:10px; font-weight:600; color:#fff; margin-right:6px; vertical-align:middle; flex:none; letter-spacing:.02em; }
-.who { display:inline-flex; align-items:center; white-space:nowrap; max-width:100%; }
-.who-name { font-weight:600; } .who .id { margin-left:6px; }
-.projects { display:grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap:12px; }
-.project { display:flex; flex-direction:column; gap:8px; }
-.project .big { font-size:17px; font-weight:600; }
-.stats { display:flex; flex-wrap:wrap; gap:4px 16px; }
-.stat b { font-size:16px; font-weight:600; } .stat span { color:var(--muted); font-size:12px; margin-left:4px; }
-.stat.zero b { color:var(--muted); font-weight:500; }
-.crumb { color:var(--muted); } .crumb::after { content:'›'; margin:0 6px; }
-nav a.back { color:var(--muted); }
+body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased; min-height: 100vh; display: flex; flex-direction: column; }
+body { background-image: radial-gradient(1200px 500px at 15% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%),
+  radial-gradient(900px 400px at 100% 0%, color-mix(in srgb, var(--accent-2) 10%, transparent), transparent 60%); background-repeat: no-repeat; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+main:focus { outline: none; }
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .95em; }
+.num, .kpi .n, td.num, .score { font-variant-numeric: tabular-nums; }
+.sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.skip { position: absolute; left: 8px; top: -40px; background: var(--panel); color: var(--fg); padding: 6px 10px; border-radius: 6px; z-index: 10; }
+.skip:focus { top: 8px; }
+
+/* header */
+header { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; padding: 10px 22px; position: sticky; top: 0; z-index: 5;
+  background: color-mix(in srgb, var(--panel) 86%, transparent); backdrop-filter: saturate(140%) blur(10px); -webkit-backdrop-filter: saturate(140%) blur(10px);
+  border-bottom: 1px solid var(--line); }
+.brand { font-weight: 700; font-size: 16px; display: flex; gap: 9px; align-items: center; letter-spacing: .01em; }
+.brand a { color: var(--fg); }
+.brand #project { font-weight: 500; font-size: 13px; }
+.pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); display: inline-block; position: relative; }
+.pulse-dot::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--ok); opacity: .5; }
+.pulse-dot.stopped { background: var(--bad); }
+.pulse-dot.stopped::after { border-color: var(--bad); opacity: .25; }
+nav { display: flex; gap: 2px; flex-wrap: wrap; }
+nav a { padding: 7px 11px; border-radius: 8px; color: var(--muted); font-weight: 500; }
+nav a:hover { color: var(--fg); background: var(--panel-2); text-decoration: none; }
+nav a.active { color: var(--fg); background: var(--panel-2); box-shadow: inset 0 -2px 0 var(--accent); }
+nav a.back { color: var(--muted); }
+.tools { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+#fresh { font-size: 12px; }
+.icon-btn { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; width: 32px; height: 32px; cursor: pointer; font-size: 15px; line-height: 1; }
+.icon-btn:hover { background: var(--panel-hover); }
+.muted { color: var(--muted); } .dim { color: var(--dim); }
+.err { color: var(--bad); } .ok-text { color: var(--ok); } .warn-text { color: var(--warn); }
+.small { font-size: 12px; } .tiny { font-size: 11px; }
+
+/* permanent warning */
+.notice { margin: 12px 22px 0; padding: 8px 12px; display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line);
+  border-left: 3px solid var(--warn); background: var(--panel); border-radius: var(--radius-s); font-size: 12.5px; color: var(--muted); }
+.notice strong { color: var(--fg); }
+.notice-mark { flex: none; width: 18px; height: 18px; border-radius: 50%; background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn);
+  display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; margin-top: 1px; }
+.notice[role="alert"] { border-left-color: var(--bad); color: var(--fg); }
+/* notices strip: what board.sh prints at the top of its digest, for a human */
+.notices { margin: 8px 22px 0; padding: 6px 12px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); background: var(--panel); border-radius: var(--radius-s); font-size: 12.5px; color: var(--muted); }
+.notices .label { font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: 11px; color: var(--accent); margin-right: 2px; }
+.notices a.chip { text-decoration: none; }
+.notices a.chip:hover { filter: brightness(1.12); }
+.notices .chip.here { outline: 1px solid var(--accent); outline-offset: -1px; }
+.notices .quiet { color: var(--muted); }
+
+main { padding: 16px 22px 48px; max-width: 1480px; width: 100%; margin: 0 auto; flex: 1; }
+footer { padding: 12px 22px; border-top: 1px solid var(--line); font-size: 12px; }
+
+h1 { font-size: 22px; margin: 6px 0 14px; letter-spacing: -.01em; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+h1 .sub { font-size: 13px; color: var(--muted); font-weight: 400; letter-spacing: 0; }
+h2 { font-size: 12px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
+.panel > h2, .panel-h h2 { margin: 0; }
+p.lead { color: var(--muted); margin: 0 0 14px; max-width: 90ch; }
+h1 + p.lead { margin-top: -6px; }
+
+/* layout */
+.grid { display: grid; gap: var(--gap); }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.grid-main { grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); }
+@media (max-width: 980px) { .grid-main { grid-template-columns: 1fr; } }
+.span-all { grid-column: 1 / -1; }
+.stack { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.row { display: flex; gap: 10px 14px; flex-wrap: wrap; align-items: center; }
+.between { justify-content: space-between; }
+
+/* panels and KPI tiles */
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); min-width: 0; }
+.panel-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.panel-h .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: var(--gap); }
+.kpi { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  color: var(--fg); box-shadow: var(--shadow); position: relative; overflow: hidden; min-width: 0; }
+a.kpi:hover { text-decoration: none; transform: translateY(-1px); border-color: var(--line-2); }
+.kpi .l { color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 6px; }
+.kpi .n { font-size: 26px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; }
+.kpi .s { color: var(--muted); font-size: 12px; min-height: 1.2em; }
+.kpi .spark { position: absolute; right: 10px; bottom: 8px; opacity: .9; }
+.kpi.has-spark .s { padding-right: 100px; }
+.kpi.accent::before, .kpi.ok::before, .kpi.warn::before, .kpi.bad::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; }
+.kpi.accent::before { background: var(--accent); } .kpi.ok::before { background: var(--ok); } .kpi.warn::before { background: var(--warn); } .kpi.bad::before { background: var(--bad); }
+.kpi.zero .n { color: var(--muted); }
+
+/* tables */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; background: var(--panel-2); position: sticky; top: 0; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--panel-hover); }
+tr.click { cursor: pointer; }
+td.wrap { white-space: normal; word-break: break-word; }
+td.nw { white-space: nowrap; }
+
+/* chips and pills */
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--chip-fg); font-size: 12px; white-space: nowrap; line-height: 1.6; }
+.chip.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.chip.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.chip.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.chip.info { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.chip.dotted::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.kind { text-transform: uppercase; font-size: 10.5px; letter-spacing: .06em; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+.kind-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--k-none); flex: none; }
+.k-claim { background: var(--k-claim); } .k-handoff { background: var(--k-handoff); } .k-finding { background: var(--k-finding); } .k-question { background: var(--k-question); }
+.k-answer { background: var(--k-answer); } .k-suggestion { background: var(--k-suggestion); } .k-opinion { background: var(--k-opinion); } .k-vote { background: var(--k-vote); }
+.k-amendment { background: var(--k-amendment); } .k-result { background: var(--k-result); } .k-none { background: var(--k-none); }
+.score { font-weight: 700; font-size: 15px; padding: 2px 9px; border-radius: 8px; background: var(--chip); }
+.score.pos { color: var(--ok); } .score.neg { color: var(--bad); }
+
+/* bars */
+.bar { height: 8px; background: var(--chip); border-radius: 4px; overflow: hidden; min-width: 90px; flex: 1; }
+.bar > span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.bar.ok > span { background: var(--ok); }
+.split { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--chip); min-width: 90px; flex: 1; }
+.split .up { background: var(--ok); } .split .down { background: var(--bad); }
+.gauge { position: relative; height: 10px; border-radius: 5px; background: var(--chip); overflow: visible; min-width: 120px; flex: 1; }
+.gauge > span { display: block; height: 100%; border-radius: 5px; background: var(--ok); }
+.gauge .mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--fg); opacity: .7; }
+.gauge .mark-l { position: absolute; top: 12px; font-size: 10px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
+.meter { display: grid; grid-template-columns: max-content 1fr max-content; gap: 4px 10px; align-items: center; font-size: 12px; }
+
+/* segmented control, toolbar, inputs */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: var(--panel-2); }
+.seg button { background: transparent; color: var(--muted); border: 0; padding: 5px 11px; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 500; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); }
+.seg button:hover { color: var(--fg); }
+.toolbar { display: flex; gap: 8px 10px; flex-wrap: wrap; align-items: center; margin: 2px 0 12px; }
+select, input { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 13px; }
+input[type="search"] { min-width: 220px; }
+label.check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
+.count { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+/* chart */
+.chart { position: relative; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart .grid-line { stroke: var(--grid); stroke-width: 1; }
+.chart .axis { fill: var(--muted); font-size: 10.5px; }
+.chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .line.total { stroke-width: 2.5; }
+.chart .area { opacity: .12; }
+.chart .dot { stroke-width: 2; }
+.chart .col { fill: transparent; cursor: crosshair; }
+.chart .col:hover, .chart .col:focus { fill: color-mix(in srgb, var(--fg) 6%, transparent); outline: none; }
+.chart .guide { stroke: var(--line-2); stroke-dasharray: 3 3; }
+.chart .tip { position: absolute; pointer-events: none; background: var(--tip-bg); color: var(--tip-fg); border-radius: 8px; padding: 6px 9px; font-size: 12px;
+  box-shadow: var(--shadow); transform: translate(-50%, -100%); white-space: nowrap; z-index: 3; display: none; border: 1px solid var(--line-2); }
+.chart .tip b { display: block; margin-bottom: 2px; }
+.chart .tip .r { display: flex; gap: 8px; justify-content: space-between; }
+.chart .tip .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+.chart.has-tip .tip { display: block; }
+.legend { display: flex; gap: 6px 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.legend button { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.legend button[aria-pressed="false"] { opacity: .45; text-decoration: line-through; }
+.legend button:hover { background: var(--panel-2); }
+.spark { display: inline-block; vertical-align: middle; }
+.stacked { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--chip); }
+.stacked span { display: block; height: 100%; }
+
+/* feed */
+.feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.feed li { display: grid; grid-template-columns: 62px 10px minmax(0, 1fr); gap: 4px 10px; padding: 8px 0; border-bottom: 1px solid var(--line); align-items: start; }
+.feed li:last-child { border-bottom: 0; }
+.feed time { color: var(--muted); font-size: 12px; white-space: nowrap; padding-top: 2px; }
+.feed .kind-dot { margin-top: 6px; }
+.feed .what { min-width: 0; }
+.feed .meta { color: var(--muted); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.feed .summary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.feed .summary:hover { white-space: normal; }
+
+/* people */
+.avatar { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; font-size: 10px; font-weight: 700; color: #fff;
+  margin-right: 7px; vertical-align: middle; flex: none; letter-spacing: .02em; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+.who { display: inline-flex; align-items: center; white-space: nowrap; max-width: 100%; }
+.who-name { font-weight: 600; } .who .id { margin-left: 6px; }
+.people { display: flex; gap: 8px; flex-wrap: wrap; }
+.person { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px 4px 5px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); font-size: 12.5px; max-width: 100%; min-width: 0; }
+.person .who { overflow: hidden; }
+.person .who .id { overflow: hidden; text-overflow: ellipsis; }
+
+/* projects */
+.projects { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: var(--gap); }
+.project { display: flex; flex-direction: column; gap: 10px; }
+.project .title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.project .big { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.project .path { color: var(--dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px 10px; }
+.stat { display: flex; flex-direction: column; color: var(--fg); padding: 6px 8px; border-radius: 8px; background: var(--panel-2); }
+.stat b { font-size: 17px; font-weight: 700; line-height: 1.1; } .stat span { color: var(--muted); font-size: 11px; }
+.stat.zero b { color: var(--muted); font-weight: 600; }
+a.stat:hover { text-decoration: none; background: var(--panel-hover); }
+.crumb { color: var(--muted); } .crumb::after { content: '›'; margin: 0 6px; }
+
+/* cards for votes */
+.vote-card { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 6px 14px; }
+.vote-card .left { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.vote-card .title { font-weight: 600; font-size: 14.5px; }
+.vote-card.compact .title { font-size: 13.5px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.vote-card .meta { color: var(--muted); font-size: 12px; display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: center; }
+.vote-card .bar, .vote-card .split, .vote-card .gauge { max-width: 260px; }
+/* proposals for the human: the one card addressed to the reader */
+.vote-card.proposal { grid-template-columns: 150px minmax(0, 1fr); }
+.vote-card.proposal.awaiting { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); box-shadow: inset 3px 0 0 var(--ok); }
+.vote-card.proposal .left { align-items: flex-start; }
+.vote-card.proposal .proposal-text { margin: 8px 0 0; font-size: 15px; line-height: 1.5; }
+.voters { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.voter { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px 2px 4px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; background: var(--panel-2); }
+.voter.up { border-color: color-mix(in srgb, var(--ok) 50%, transparent); } .voter.down { border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
+.voter.uncounted { opacity: .6; border-style: dashed; }
+.voter .dir { font-weight: 700; } .voter.up .dir { color: var(--ok); } .voter.down .dir { color: var(--bad); }
+
+/* readable Markdown post bodies */
+.md { max-width: 72ch; font-size: 15px; line-height: 1.6; }
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md h2, .md h3, .md h4, .md h5 { color: var(--fg); text-transform: none; letter-spacing: 0; line-height: 1.25; margin: 1.2em 0 .45em; }
+.md h2 { font-size: 20px; } .md h3 { font-size: 17px; } .md h4, .md h5 { font-size: 15px; }
+.md p { margin: .65em 0; }
+.md ul, .md ol { padding-left: 1.4em; margin: .6em 0; }
+.md li + li { margin-top: .25em; }
+.md blockquote { margin: .9em 0; padding: .1em 0 .1em 1em; border-left: 3px solid var(--line-2); color: var(--muted); }
+.md code { background: var(--chip); color: var(--fg); padding: .1em .35em; border-radius: 5px; }
+.md pre { margin: 0; padding: 12px; overflow-x: auto; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-s); line-height: 1.45; }
+.md pre code, .md pre { font-size: 13px; }
+.md .codeblock { margin: .9em 0; }
+.md .code-lang { display: inline-flex; margin-bottom: -1px; padding: 2px 8px; border: 1px solid var(--line); border-bottom: 0; border-radius: 7px 7px 0 0; background: var(--panel-2); color: var(--muted); font-size: 11px; }
+.md .table-wrap { box-shadow: none; margin: .9em 0; }
+.md th { background: var(--panel-2); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 1.1em 0; }
+.source { margin-top: 12px; }
+.source summary { cursor: pointer; color: var(--muted); }
+.roster-group { padding: 0; overflow: hidden; }
+.roster-group > summary { cursor: pointer; list-style: none; padding: 12px 14px; }
+.roster-group > summary::-webkit-details-marker { display: none; }
+.roster-group > summary::before { content: '▸'; display: inline-block; margin-right: 8px; color: var(--muted); }
+.roster-group[open] > summary::before { content: '▾'; }
+.roster-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+
+/* misc */
+.empty { color: var(--muted); padding: 18px; border: 1px dashed var(--line-2); border-radius: var(--radius); text-align: center; background: color-mix(in srgb, var(--panel) 60%, transparent); }
+details.panel { padding: 10px 16px; } details.panel > summary { cursor: pointer; padding: 4px 0; list-style: none; }
+details.panel > summary::-webkit-details-marker { display: none; }
+details.panel > summary::before { content: '▸'; display: inline-block; width: 14px; color: var(--muted); transition: transform .15s; }
+details.panel[open] > summary::before { transform: rotate(90deg); }
+pre { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; }
+dt { color: var(--muted); } dd { margin: 0; word-break: break-word; }
+.summary { color: var(--fg); }
+.wrap { white-space: normal; word-break: break-word; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: block; }
+.badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; }
+time { cursor: default; white-space: nowrap; }
+
+/* loading skeletons */
+.skeleton-page { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.skeleton { border-radius: var(--radius); background: linear-gradient(90deg, var(--panel) 0%, var(--panel-2) 50%, var(--panel) 100%); background-size: 200% 100%; border: 1px solid var(--line); }
+.skeleton.kpi { height: 84px; } .skeleton.wide { grid-column: 1 / -1; height: 220px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+  main.view-in { animation: view-rise .18s ease-out; }
+  .kpi, .panel, .project, .vote-card { transition: transform .15s ease, border-color .15s ease, background-color .15s ease; }
+  .panel:hover, .project:hover, .vote-card:hover { transform: translateY(-1px); }
+  a.kpi:hover { transform: translateY(-1px); border-color: var(--line-2); }
+  .bar > span { transition: width .3s ease; }
+  .pulse-dot::after { animation: ring 2.4s ease-out infinite; }
+  .pulse-dot.stopped::after { animation: none; }
+  .skeleton { animation: shimmer 1.4s infinite; }
+  .chart .line.draw-in { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-line .7s ease-out forwards; }
+  @keyframes ring { 0% { transform: scale(.6); opacity: .7; } 100% { transform: scale(1.5); opacity: 0; } }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  @keyframes view-rise { from { opacity: .01; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes draw-line { to { stroke-dashoffset: 0; } }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+@media (max-width: 640px) {
+  header { padding: 10px 14px; } main { padding: 12px 14px 40px; } .notice { margin: 10px 14px 0; } .notices { margin: 8px 14px 0; }
+  .vote-card { grid-template-columns: 1fr; } .vote-card .left { flex-direction: row; }
+  .feed li { grid-template-columns: 52px 10px minmax(0, 1fr); }
+}
+@media print { header, footer, .notice, .toolbar, #theme { display: none; } .panel, .kpi { box-shadow: none; } }
+
 """
 
-APP_JS = r"""
-'use strict';
+APP_JS = r"""'use strict';
 (function () {
   const main = document.getElementById('main');
   // The server stamps the page with where it sits: one project, the commons,
@@ -1711,8 +2284,11 @@ APP_JS = r"""
     return data;
   });
   const enc = encodeURIComponent;
+  // The SVG namespace is an XML identifier the DOM API requires, not a
+  // request: the CSP forbids every network call except to this server.
+  const SVG_NS = 'http://www.w3.org/2000/svg';
 
-  // DOM helpers: every value goes through textContent, never through markup.
+  // ----- DOM helpers: every value goes through textContent, never markup -----
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
     if (attrs) for (const [k, v] of Object.entries(attrs)) {
@@ -1725,22 +2301,41 @@ APP_JS = r"""
       else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
       else node.setAttribute(k, v);
     }
-    for (const c of children.flat()) {
+    for (const c of children.flat(Infinity)) {
       if (c === null || c === undefined || c === false) continue;
       node.append(typeof c === 'string' || typeof c === 'number' ? document.createTextNode(String(c)) : c);
     }
     return node;
   }
+  function svg(tag, attrs, ...children) {
+    const node = document.createElementNS(SVG_NS, tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) {
+      if (v === null || v === undefined || v === false) continue;
+      if (k === 'style') node.style.cssText = v;
+      else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+      else node.setAttribute(k, v);
+    }
+    for (const c of children.flat(Infinity)) {
+      if (c === null || c === undefined || c === false) continue;
+      node.append(typeof c === 'string' || typeof c === 'number' ? document.createTextNode(String(c)) : c);
+    }
+    return node;
+  }
+  const fill = (node, ...kids) => node.replaceChildren(...kids.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false)
+    .map((c) => (typeof c === 'string' || typeof c === 'number') ? document.createTextNode(String(c)) : c));
   const text = (s) => document.createTextNode(String(s === null || s === undefined ? '' : s));
   const link = (href, label, cls) => el('a', {href, class: cls || ''}, label);
   const chip = (label, cls) => el('span', {class: 'chip ' + (cls || '')}, label);
   const empty = (msg) => el('div', {class: 'empty'}, msg);
+  const panel = (title, body, actions) => el('section', {class: 'panel'},
+    title ? el('div', {class: 'panel-h'}, el('h2', null, title), actions ? el('div', {class: 'actions'}, actions) : null) : null, body);
   function table(cols, rows, onRow) {
     const t = el('table');
     t.append(el('thead', null, el('tr', null, cols.map((c) => el('th', {scope: 'col'}, c)))));
     const body = el('tbody');
     for (const r of rows) {
-      const tr = el('tr', {class: onRow ? 'click' : ''}, r.cells.map((c) => el('td', {class: c && c.nodeType ? '' : 'wrap'}, c)));
+      const tr = el('tr', {class: onRow ? 'click' : '', tabindex: onRow ? '0' : null},
+        r.cells.map((c) => el('td', {class: c && c.nodeType ? '' : (String(c === null || c === undefined ? '' : c).length <= 16 ? 'nw' : 'wrap')}, c)));
       if (onRow) {
         // Clicking a row opens it; the links inside stay the keyboard path, and
         // Enter on a focused row opens it too.
@@ -1750,7 +2345,7 @@ APP_JS = r"""
       body.append(tr);
     }
     t.append(body);
-    return t;
+    return el('div', {class: 'table-wrap'}, t);
   }
   function statusChip(s) {
     s = s || '';
@@ -1758,18 +2353,83 @@ APP_JS = r"""
     if (/^(active|eligible|open|passed)/.test(s)) cls = 'ok';
     else if (/^(needs|stale|short|no expiry|expired|closed)/.test(s)) cls = 'warn';
     else if (/^(blocked|malformed|ambiguous|unchecked)/.test(s)) cls = 'bad';
-    return chip(s, cls);
+    return chip(s, cls + ' dotted');
   }
   function voteChip(v, cls) {
     const c = v === 'down' ? 'bad' : 'ok';
-    const label = (v === 'down' ? '▼ down' : '▲ up') + (cls && cls !== 'counted' ? ' · ' + cls + ' (uncounted)' : '');
+    const label = (v === 'down' ? '\u25bc down' : '\u25b2 up') + (cls && cls !== 'counted' ? ' \u00b7 ' + cls + ' (uncounted)' : '');
     return chip(label, cls && cls !== 'counted' ? 'warn' : c);
   }
   const fmtDate = (d) => (d || '').replace('T', ' ').replace('Z', ' UTC');
-  const threadLink = (key) => link('#/thread/' + encodeURIComponent(key), key, 'mono small');
+  function parseDate(d) {
+    if (!d) return null;
+    let s = String(d).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) s += 'T00:00:00Z';
+    if (!/Z$/.test(s)) s += 'Z';
+    const t = Date.parse(s);
+    return isNaN(t) ? null : new Date(t);
+  }
+  function span(sec) {
+    if (sec < 90) return Math.max(1, Math.round(sec)) + 's';
+    if (sec < 3600) return Math.round(sec / 60) + 'm';
+    if (sec < 86400) return Math.round(sec / 3600) + 'h';
+    if (sec < 86400 * 30) return Math.round(sec / 86400) + 'd';
+    return Math.round(sec / (86400 * 30)) + 'mo';
+  }
+  function rel(d) {
+    const t = parseDate(d);
+    if (!t) return d || '';
+    const diff = (Date.now() - t.getTime()) / 1000;
+    if (diff < -60) return 'in ' + span(-diff);
+    if (diff < 45) return 'just now';
+    return span(diff) + ' ago';
+  }
+  function untilText(t) {
+    if (!t) return '';
+    const diff = (t.getTime() - Date.now()) / 1000;
+    return diff < 0 ? 'expired ' + span(-diff) + ' ago' : 'in ' + span(diff);
+  }
+  // Relative time for reading, the absolute UTC stamp on hover.
+  const when = (d) => el('time', {datetime: d || '', title: fmtDate(d)}, rel(d));
+  const num = (n) => Number(n || 0).toLocaleString('en-US');
+  const threadLink = (key) => link('#/thread/' + enc(key), key, 'mono small');
   // A post id is a key (monospace); a summary used as the link label is prose.
-  const postLink = (id, label) => link('#/post/' + encodeURIComponent(id), label || id, label ? '' : 'mono small');
+  const postLink = (id, label) => link('#/post/' + enc(id), label || id, label ? '' : 'mono small');
   const provenance = (ok, missing) => ok ? null : chip('missing provenance: ' + (missing || []).join(', '), 'bad');
+  const KINDS = ['claim', 'handoff', 'finding', 'question', 'answer', 'suggestion', 'opinion', 'vote', 'amendment', 'result'];
+  const kindClass = (k) => 'k-' + (KINDS.includes(k) ? k : 'none');
+  const kindVar = (k) => 'var(--' + kindClass(k) + ')';
+  const kindDot = (k) => el('span', {class: 'kind-dot ' + kindClass(k), 'aria-hidden': 'true'});
+  const kindLabel = (k) => el('span', {class: 'kind'}, kindDot(k), k || '(none)');
+  const PALETTE = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)', 'var(--s6)', 'var(--s7)', 'var(--s8)'];
+
+  function reducedMotion() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+  function animateNumber(node, value) {
+    if (typeof value !== 'number' || !isFinite(value)) return;
+    const finalText = num(value);
+    if (reducedMotion() || value < 2) { node.textContent = finalText; return; }
+    const start = performance.now();
+    const dur = 600;
+    // performance.now() on both sides: a frame timestamp can predate the
+    // call that scheduled it, and a negative progress would show a negative
+    // number for one frame.
+    const step = () => {
+      const p = Math.max(0, Math.min(1, (performance.now() - start) / dur));
+      node.textContent = num(Math.round(value * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) requestAnimationFrame(step);
+      else node.textContent = finalText;
+    };
+    requestAnimationFrame(step);
+  }
+  function maybeDrawIn(node) {
+    if (!reducedMotion()) node.classList.add('draw-in');
+  }
+  function setLive(ok) {
+    const dot = document.querySelector('.pulse-dot');
+    if (dot) dot.classList.toggle('stopped', !ok);
+  }
 
   // Agents have call signs (the `name:` frontmatter line). The name is what a
   // human reads; the agent id and session stay visible because they are the
@@ -1783,10 +2443,10 @@ APP_JS = r"""
   }
   function who(row) {
     const raw = String(row.name || '');
-    const name = raw.length > 40 ? raw.slice(0, 40) + '…' : raw;
+    const name = raw.length > 40 ? raw.slice(0, 40) + '\u2026' : raw;
     const agent = row.agent || '';
     const session = row.session || '';
-    const title = (raw && raw !== name ? raw + ' · ' : '') + (agent || '(no agent id)') + (session ? ' · session ' + session : '');
+    const title = (raw && raw !== name ? raw + ' \u00b7 ' : '') + (agent || '(no agent id)') + (session ? ' \u00b7 session ' + session : '');
     if (name) return el('span', {class: 'who', title}, avatar(name), el('span', {class: 'who-name'}, name), el('span', {class: 'id muted small mono'}, agent));
     return el('span', {class: 'who', title}, avatar(agent || '?'), el('span', {class: 'mono'}, agent || '(unknown)'),
       session ? el('span', {class: 'id muted small mono'}, session.slice(0, 8)) : null);
@@ -1795,205 +2455,658 @@ APP_JS = r"""
   const farThread = (base, key) => link(base + '/#/thread/' + enc(key), key, 'mono small');
   const farPost = (base, id, label) => link(base + '/#/post/' + enc(id), label || id, label ? '' : 'mono small');
 
+  // ----- small visual components ---------------------------------------------
+  function kpi(n, label, href, opts) {
+    opts = opts || {};
+    const zero = n === 0 || n === '0';
+    const number = el('div', {class: 'n'}, typeof n === 'number' ? num(n) : n);
+    if (typeof n === 'number') animateNumber(number, n);
+    const inner = [el('div', {class: 'l'}, label), number,
+      el('div', {class: 's'}, opts.sub || ''), opts.spark ? el('span', {class: 'spark'}, opts.spark) : null];
+    const cls = 'kpi ' + (opts.tone || '') + (zero ? ' zero' : '') + (opts.spark ? ' has-spark' : '');
+    return href ? el('a', {class: cls, href}, inner) : el('div', {class: cls}, inner);
+  }
+  function seg(options, value, onChange, label) {
+    return el('div', {class: 'seg', role: 'group', 'aria-label': label || ''},
+      options.map(([v, lab]) => el('button', {type: 'button', 'aria-pressed': String(v === value), onclick: () => onChange(v)}, lab)));
+  }
+  function bar(value, max, cls, title) {
+    const pct = Math.max(0, Math.min(100, Math.round(100 * value / Math.max(1, max))));
+    return el('div', {class: 'bar ' + (cls || ''), title: title || (value + ' / ' + max), role: 'img', 'aria-label': (title || (value + ' of ' + max))},
+      el('span', {style: 'width:' + pct + '%'}));
+  }
+  function splitBar(up, down) {
+    const total = Math.max(1, up + down);
+    return el('div', {class: 'split', title: up + ' up, ' + down + ' down', role: 'img', 'aria-label': up + ' up, ' + down + ' down'},
+      el('span', {class: 'up', style: 'width:' + Math.round(100 * up / total) + '%'}),
+      el('span', {class: 'down', style: 'width:' + Math.round(100 * down / total) + '%'}));
+  }
+  function gauge(pct, markPct, markLabel) {
+    return el('div', {class: 'gauge', role: 'img', 'aria-label': pct + '% up; ' + markLabel + ' at ' + markPct + '%'},
+      el('span', {style: 'width:' + Math.max(0, Math.min(100, pct)) + '%'}),
+      el('span', {class: 'mark', style: 'left:' + markPct + '%'}),
+      el('span', {class: 'mark-l', style: 'left:' + markPct + '%'}, markLabel));
+  }
+  function meter(label, value, max, cls) {
+    return el('div', {class: 'meter'}, el('span', {class: 'muted'}, label), bar(value, max, cls), el('span', {class: 'num'}, value + ' / ' + max));
+  }
+  function stackedBar(parts) {
+    const total = parts.reduce((a, p) => a + p.n, 0) || 1;
+    return el('div', {class: 'stacked', role: 'img', 'aria-label': parts.map((p) => p.label + ' ' + p.n).join(', ')},
+      parts.map((p) => el('span', {style: 'width:' + (100 * p.n / total) + '%;background:' + p.color, title: p.label + ': ' + p.n})));
+  }
+  function sparkline(values, color, w, h) {
+    w = w || 96; h = h || 26;
+    const max = Math.max(1, ...values);
+    const n = values.length;
+    const pts = values.map((v, i) => [n > 1 ? (w - 2) * i / (n - 1) + 1 : w / 2, h - 2 - (h - 4) * v / max]);
+    const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+    const area = d + ' L' + pts[pts.length - 1][0].toFixed(1) + ',' + (h - 1) + ' L' + pts[0][0].toFixed(1) + ',' + (h - 1) + ' Z';
+    return svg('svg', {class: 'spark', viewBox: '0 0 ' + w + ' ' + h, width: w, height: h, role: 'img', 'aria-label': 'last ' + n + ' days: ' + values.join(', ')},
+      svg('path', {d: area, style: 'fill:' + color + ';opacity:.18'}),
+      svg('path', {d, style: 'fill:none;stroke:' + color + ';stroke-width:1.6;stroke-linejoin:round'}),
+      svg('circle', {cx: pts[pts.length - 1][0], cy: pts[pts.length - 1][1], r: 2.2, style: 'fill:' + color}));
+  }
+  function niceStep(raw) {
+    const p = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1e-9))));
+    for (const m of [1, 2, 5, 10]) if (m * p >= raw) return m * p;
+    return 10 * p;
+  }
+
+  // Line chart without a library: series = [{label, color, values, visible}],
+  // labels = one bucket label per x. Hovering or focusing a column shows every
+  // series' value; the axis and legend redraw on resize.
+  function lineChart(opts) {
+    const box = el('div', {class: 'chart'});
+    const tip = el('div', {class: 'tip', role: 'status', 'aria-live': 'polite'});
+    const state = {hidden: new Set(), width: 0};
+    const legend = el('div', {class: 'legend'});
+    const draw = () => {
+      const W = Math.max(320, Math.floor(box.clientWidth || 720));
+      const H = opts.height || 220, padL = 36, padR = 14, padT = 14, padB = 28;
+      const labels = opts.labels, n = labels.length;
+      const series = opts.series.filter((s) => !state.hidden.has(s.label));
+      const max = Math.max(1, ...series.flatMap((s) => s.values));
+      const step = niceStep(max / 4), top = step * 4;
+      const x = (i) => padL + (n > 1 ? (W - padL - padR) * i / (n - 1) : (W - padL - padR) / 2);
+      const y = (v) => padT + (H - padT - padB) * (1 - v / top);
+      const root = svg('svg', {viewBox: '0 0 ' + W + ' ' + H, width: W, height: H, role: 'img', 'aria-label': opts.aria || 'Activity over time'});
+      for (let k = 0; k <= 4; k++) {
+        const v = step * k;
+        root.append(svg('line', {class: 'grid-line', x1: padL, x2: W - padR, y1: y(v), y2: y(v)}),
+          svg('text', {class: 'axis', x: padL - 6, y: y(v) + 3.5, 'text-anchor': 'end'}, num(v)));
+      }
+      const every = Math.max(1, Math.ceil(n / Math.max(3, Math.floor((W - padL - padR) / 84))));
+      labels.forEach((lab, i) => {
+        if (i % every === 0 || i === n - 1) root.append(svg('text', {class: 'axis', x: x(i), y: H - padB + 16, 'text-anchor': i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle')}, opts.fmt ? opts.fmt(lab) : lab));
+      });
+      series.forEach((s, si) => {
+        const d = s.values.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(v).toFixed(1)).join(' ');
+        if (s.area && n > 1) root.append(svg('path', {class: 'area', d: d + ' L' + x(n - 1).toFixed(1) + ',' + y(0) + ' L' + x(0).toFixed(1) + ',' + y(0) + ' Z', style: 'fill:' + s.color}));
+        const path = svg('path', {class: 'line' + (s.total ? ' total' : ''), d, pathLength: '1', style: 'stroke:' + s.color});
+        if (s.total) maybeDrawIn(path);
+        root.append(path);
+        const last = s.values.length - 1;
+        root.append(svg('circle', {class: 'dot', cx: x(last), cy: y(s.values[last]), r: 3, style: 'fill:var(--panel);stroke:' + s.color}));
+      });
+      const guide = svg('line', {class: 'guide', x1: 0, x2: 0, y1: padT, y2: H - padB, style: 'visibility:hidden'});
+      root.append(guide);
+      const colW = n > 1 ? (W - padL - padR) / (n - 1) : (W - padL - padR);
+      labels.forEach((lab, i) => {
+        const rows = series.map((s) => s.label + ' ' + s.values[i]).join(', ') || 'nothing';
+        const col = svg('rect', {class: 'col', x: x(i) - colW / 2, y: padT, width: colW, height: H - padT - padB, tabindex: '0', role: 'graphics-symbol',
+          'aria-label': (opts.fmtLong ? opts.fmtLong(lab) : lab) + ': ' + rows});
+        const show = () => {
+          fill(tip, el('b', null, opts.fmtLong ? opts.fmtLong(lab) : lab),
+            series.length ? series.map((s) => el('div', {class: 'r'}, el('span', null, el('span', {class: 'sw', style: 'background:' + s.color}), s.label), el('span', {class: 'num'}, num(s.values[i])))) : el('div', {class: 'muted'}, 'no series'));
+          const peak = series.length ? Math.max(...series.map((s) => s.values[i])) : 0;
+          tip.style.left = x(i) + 'px';
+          tip.style.top = Math.max(0, y(peak) - 10) + 'px';
+          guide.setAttribute('x1', x(i)); guide.setAttribute('x2', x(i)); guide.style.visibility = 'visible';
+          box.classList.add('has-tip');
+        };
+        const hide = () => { box.classList.remove('has-tip'); guide.style.visibility = 'hidden'; };
+        col.addEventListener('mouseenter', show); col.addEventListener('focus', show);
+        col.addEventListener('mouseleave', hide); col.addEventListener('blur', hide);
+        root.append(col);
+      });
+      fill(legend, opts.series.map((s) => el('button', {type: 'button', 'aria-pressed': String(!state.hidden.has(s.label)),
+        title: (state.hidden.has(s.label) ? 'show ' : 'hide ') + s.label, onclick: () => { if (state.hidden.has(s.label)) state.hidden.delete(s.label); else state.hidden.add(s.label); draw(); }},
+        el('span', {class: 'sw', style: 'background:' + s.color}), s.label, ' ', el('span', {class: 'dim num'}, num(s.values.reduce((a, b) => a + b, 0))))));
+      fill(box, root, tip, legend);
+    };
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(() => {
+        const w = Math.floor(box.clientWidth);
+        if (w && w !== state.width) { state.width = w; requestAnimationFrame(draw); }
+      });
+      ro.observe(box);
+    }
+    draw();
+    return box;
+  }
+
+  // Timeline buckets from the API -> chart inputs. range: 24h | 7d | 30d;
+  // by: project (organization only) | kind | total.
+  const RANGES = [['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days']];
+  function buckets(tl, range) {
+    if (range === '24h') return tl.hours || [];
+    const days = tl.days || [];
+    return range === '7d' ? days.slice(-7) : days;
+  }
+  const fmtBucket = (range) => (t) => range === '24h' ? t.slice(11) + ':00' : t.slice(5).replace('-', '/');
+  const fmtBucketLong = (range) => (t) => range === '24h' ? t.replace('T', ' ') + ':00 UTC' : t;
+  function chartFor(tl, range, by) {
+    const bs = buckets(tl, range);
+    const labels = bs.map((b) => b.t);
+    let series = [];
+    if (by === 'project' && tl.series) {
+      series = tl.series.map((s, i) => ({label: s.slug, color: PALETTE[i % PALETTE.length], values: buckets(s, range).map((b) => b.n)}));
+      if (tl.series.length > 1) series.unshift({label: 'all projects', color: 'var(--fg)', values: bs.map((b) => b.n), total: true, area: true});
+    } else if (by === 'kind') {
+      const kinds = [...new Set(bs.flatMap((b) => Object.keys(b.kinds || {})))];
+      kinds.sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));
+      series = kinds.map((k) => ({label: k, color: kindVar(k), values: bs.map((b) => (b.kinds || {})[k] || 0)}));
+    }
+    if (!series.length) series = [{label: 'posts', color: 'var(--accent)', values: bs.map((b) => b.n), total: true, area: true}];
+    const total = bs.reduce((a, b) => a + b.n, 0);
+    if (!total) return empty('No posts in the last ' + (range === '24h' ? '24 hours' : range === '7d' ? '7 days' : '30 days') + '.');
+    return lineChart({labels, series, fmt: fmtBucket(range), fmtLong: fmtBucketLong(range), aria: 'Posts per ' + (range === '24h' ? 'hour' : 'day') + ', ' + num(total) + ' in total'});
+  }
+  // The activity panel: range and breakdown controls plus the chart; the
+  // choice is kept for the page lifetime so a redraw does not reset it.
+  const chartPrefs = {range: '7d', by: 'project'};
+  function activityPanel(tl, title, bys) {
+    const body = el('div');
+    const controls = el('div', {class: 'actions'});
+    const draw = () => {
+      if (!bys.includes(chartPrefs.by)) chartPrefs.by = bys[0];
+      fill(controls,
+        bys.length > 1 ? seg(bys.map((b) => [b, 'by ' + b]), chartPrefs.by, (v) => { chartPrefs.by = v; draw(); }, 'Breakdown') : null,
+        seg(RANGES, chartPrefs.range, (v) => { chartPrefs.range = v; draw(); }, 'Range'));
+      fill(body, chartFor(tl, chartPrefs.range, chartPrefs.by));
+    };
+    draw();
+    const note = (tl.before_window || tl.unparsed)
+      ? el('p', {class: 'muted tiny', style: 'margin:8px 0 0'}, (tl.before_window ? num(tl.before_window) + ' older posts are outside the 30-day window' : '') +
+        (tl.before_window && tl.unparsed ? '; ' : '') + (tl.unparsed ? num(tl.unparsed) + ' posts have a date the chart cannot place' : '') + '.')
+      : null;
+    return panel(title || 'Activity', [body, note], controls);
+  }
+  const lastDays = (tl, k) => (tl.days || []).slice(-k).map((b) => b.n);
+
+  // ----- navigation, header, theme ------------------------------------------
   const NAV = {
-    project: [['#/overview', 'Overview'], ['#/threads', 'Threads'], ['#/suggestions', 'Suggestions & votes'], ['#/amendments', 'Amendments'], ['#/evolution', 'Loop']],
+    project: [['#/overview', 'Overview'], ['#/proposals', 'For you'], ['#/threads', 'Threads'], ['#/suggestions', 'Suggestions & votes'], ['#/amendments', 'Amendments'], ['#/evolution', 'Loop']],
     commons: [['#/overview', 'Overview'], ['#/threads', 'Questions & threads'], ['#/suggestions', 'Suggestions & votes']],
-    org: [['#/org', 'Organization'], ['#/votes', 'Votes'], ['#/agents', 'Agents'], ['#/activity', 'Activity']],
+    org: [['#/org', 'Mission control'], ['#/proposals', 'For you'], ['#/votes', 'Votes'], ['#/agents', 'Agents'], ['#/activity', 'Activity']],
   };
   function buildNav() {
     const nav = document.getElementById('nav');
     const items = (NAV[MODE] || NAV.project).map(([href, label]) => el('a', {href}, label));
     if (HUB && MODE !== 'org') items.unshift(el('a', {href: '/', class: 'back'}, '\u2190 organization'));
-    nav.replaceChildren(...items);
+    fill(nav, ...items);
     if (!HUB) document.getElementById('brand-link').setAttribute('href', '#/overview');
+  }
+  function initTheme() {
+    const root = document.documentElement, btn = document.getElementById('theme');
+    let saved = null;
+    try { saved = localStorage.getItem('pulse-theme'); } catch (e) { saved = null; }
+    if (saved === 'light' || saved === 'dark') root.dataset.theme = saved;
+    const isLight = () => (root.dataset.theme || (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')) === 'light';
+    const sync = () => btn.setAttribute('aria-pressed', String(isLight()));
+    btn.addEventListener('click', () => {
+      const next = isLight() ? 'dark' : 'light';
+      root.dataset.theme = next;
+      try { localStorage.setItem('pulse-theme', next); } catch (e) { /* private mode: theme lasts for the page */ }
+      sync();
+    });
+    sync();
   }
 
   let seenBuild = '';
+  // ----- notices strip -------------------------------------------------------
+  // What board.sh prints at the top of its digest, for the human: where votes
+  // are wanted, which project is the brain, how many commons questions are
+  // open. Counts and links only; nothing on it is an instruction. In the hub
+  // the strip is organization-wide on every page; a single project served on
+  // its own shows only its own board.
+  const noticesUrl = HUB ? '/api/v1/notices' : BASE + '/api/v1/notices';
+  const plural = (n, word) => num(n) + ' ' + word + (n === 1 ? '' : 's');
+  async function notices() {
+    const box = document.getElementById('notices');
+    if (!box) return;
+    let n;
+    try {
+      const r = await fetch(noticesUrl, {cache: 'no-store'});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      n = await r.json();
+    } catch (e) { box.hidden = true; return; }
+    const here = MODE === 'org' ? '' : BASE;
+    const items = [];
+    for (const b of n.ballot || []) {
+      const open = (b.suggestions || 0) + (b.amendments || 0);
+      if (!open) continue;
+      const parts = [];
+      if (b.suggestions) parts.push(plural(b.suggestions, 'suggestion'));
+      if (b.amendments) parts.push(plural(b.amendments, 'amendment'));
+      const isHere = HUB ? b.base === here : true;
+      const label = (isHere && MODE !== 'org' ? 'votes wanted here' : 'votes wanted \u00b7 ' + (b.slug || b.name)) + ': ' + parts.join(', ');
+      const href = (HUB ? b.base : '') + '/#/' + (b.suggestions ? 'suggestions' : 'amendments');
+      items.push(link(href, label, 'chip warn dotted' + (isHere && MODE !== 'org' ? ' here' : '')));
+    }
+    if (n.brain) {
+      const mine = HUB && here && here === '/p/' + n.brain;
+      items.push(HUB ? link('/p/' + n.brain + '/', mine ? 'this repository is the brain' : 'brain: ' + n.brain, 'chip info dotted' + (mine ? ' here' : ''))
+        : chip('brain: ' + n.brain, 'info dotted'));
+    } else if ((n.brains || []).length > 1) {
+      items.push(chip('brain: ambiguous (' + n.brains.join(', ') + ')', 'bad dotted'));
+    }
+    if (n.commons_present === true) {
+      const q = n.commons_questions || 0;
+      const mine = MODE === 'commons';
+      items.push(HUB ? link((n.commons_base || '/commons') + '/#/threads', mine ? 'this is the commons' : 'commons: ' + plural(q, 'open question'), 'chip ' + (q && !mine ? 'info' : '') + ' dotted' + (mine ? ' here' : ''))
+        : chip('commons: ' + plural(q, 'open question'), 'dotted'));
+    } else if (n.commons_present === false) {
+      items.push(chip('commons: not created yet', 'dotted'));
+    }
+    // Proposals the agents agreed on that wait for the human: the one chip
+    // addressed to the reader, not to the agents.
+    const awaiting = n.proposals_awaiting || 0;
+    if (awaiting && MODE !== 'commons') {
+      const mineOnly = HUB && MODE !== 'org' ? (n.ballot || []).find((b) => b.base === here) : null;
+      const count = mineOnly ? (mineOnly.proposals || 0) : awaiting;
+      if (count) items.push(link((MODE === 'org' ? '' : (HUB ? here : '')) + '/#/proposals', 'for you: ' + plural(count, 'proposal') + ' await' + (count === 1 ? 's' : '') + ' your yes or no', 'chip ok dotted' + (MODE !== 'org' ? ' here' : '')));
+    }
+    const waiting = (n.votes_open || 0) + (n.commons_questions || 0) + awaiting;
+    fill(box, el('span', {class: 'label'}, 'Notices'), items, waiting ? null : el('span', {class: 'quiet'}, (items.length ? '\u00b7 ' : '') + 'nothing is waiting for a vote'));
+    box.hidden = false;
+  }
   async function header() {
+    notices();
     const proj = document.getElementById('project');
     const f = document.getElementById('fresh');
     try {
       if (MODE === 'org') {
         const h = await api('health');
-        proj.textContent = ' · organization · ' + h.projects.filter((s) => s !== 'commons').length + ' projects + commons';
+        proj.textContent = ' \u00b7 organization \u00b7 ' + h.projects.filter((s) => s !== 'commons').length + ' projects + commons';
         proj.title = '';
         const errs = Object.keys(h.errors || {});
-        f.textContent = 'live ' + fmtDate(h.time) + (errs.length ? ' · problems: ' + errs.join(', ') : '');
+        f.textContent = 'live ' + fmtDate(h.time) + (errs.length ? ' \u00b7 problems: ' + errs.join(', ') : '');
         f.className = errs.length ? 'err' : 'muted';
+        setLive(!errs.length);
         return;
       }
       const p = await api('project');
       seenBuild = p.built_at || '';
       const label = MODE === 'commons' ? 'commons (shared by every project on this machine)' : (p.repo_name || '');
-      proj.textContent = ' · ' + label + (p.branch ? ' @ ' + p.branch : '') + (p.head ? ' (' + p.head + ')' : '') + (p.dirty === '1' ? ' · uncommitted board changes' : '');
+      proj.textContent = ' \u00b7 ' + label + (p.branch ? ' @ ' + p.branch : '') + (p.head ? ' (' + p.head + ')' : '') + (p.dirty === '1' ? ' \u00b7 uncommitted board changes' : '');
       proj.title = p.repo || '';
-      f.textContent = 'snapshot ' + fmtDate(p.built_at) + (p.last_error ? ' · refresh failed: ' + p.last_error : '');
+      f.textContent = 'snapshot ' + rel(p.built_at) + (p.last_error ? ' \u00b7 refresh failed: ' + p.last_error : '');
+      f.title = fmtDate(p.built_at);
       f.className = p.last_error ? 'err' : 'muted';
+      setLive(!p.last_error);
     } catch (e) {
       f.textContent = 'no snapshot: ' + e.message;
       f.className = 'err';
+      setLive(false);
     }
   }
 
   // ----- organization views (hub only) -------------------------------------
   function stat(n, label, href) {
-    const inner = [el('b', null, n), el('span', null, label)];
+    const inner = [el('b', null, num(n)), el('span', null, label)];
     return href ? el('a', {class: 'stat' + (n ? '' : ' zero'), href}, inner) : el('span', {class: 'stat' + (n ? '' : ' zero')}, inner);
   }
-  function projectCard(p) {
+  function projectCard(p, spark) {
     const title = p.kind === 'commons' ? 'commons' : p.slug;
     if (!p.present) {
-      return el('div', {class: 'project card'},
-        el('div', {class: 'row'}, el('strong', {class: 'big'}, title), chip(p.kind === 'commons' ? 'not created yet' : 'missing on disk', 'warn')),
-        el('div', {class: 'muted small mono'}, p.path || ''),
-        el('div', {class: 'small'}, p.kind === 'commons' ? 'Create it once with: docs/scripts/commons.sh --init' : (p.error || 'The registered path has no docs/ folder any more; unregister it or move it back.')));
+      return el('div', {class: 'project panel'},
+        el('div', {class: 'title'}, el('strong', {class: 'big'}, title), p.brain ? chip('brain', 'info dotted') : null, chip(p.kind === 'commons' ? 'not created yet' : 'missing on disk', 'warn dotted')),
+        el('div', {class: 'path mono', title: p.path || ''}, p.path || ''),
+        el('div', {class: 'small muted'}, p.kind === 'commons' ? 'Create it once with: docs/scripts/commons.sh --init' : (p.error || 'The registered path has no docs/ folder any more; unregister it or move it back.')));
     }
-    const loop = p.evolution_present ? (p.stop_present ? chip('STOP', 'bad') : chip('loop ' + (p.loop || 'unset'), p.loop === 'on' ? 'ok' : 'warn')) : null;
+    const loop = p.evolution_present ? (p.stop_present ? chip('STOP', 'bad dotted') : chip('loop ' + (p.loop || 'unset'), (p.loop === 'on' ? 'ok' : 'warn') + ' dotted')) : null;
     const b = p.base;
     const last = p.last_post;
-    return el('div', {class: 'project card'},
-      el('div', {class: 'row'}, link(b + '/', title, 'big'),
+    return el('div', {class: 'project panel'},
+      el('div', {class: 'title'}, link(b + '/', title, 'big'),
         el('span', {class: 'muted small mono'}, p.branch ? '@ ' + p.branch + (p.head ? ' (' + p.head + ')' : '') : ''),
-        p.dirty ? chip('uncommitted board changes', 'warn') : null, loop, p.error ? chip('refresh failed', 'bad') : null),
-      el('div', {class: 'muted small mono', title: p.path}, p.path),
+        p.brain ? chip('brain', 'info dotted') : null, p.dirty ? chip('uncommitted board changes', 'warn') : null, loop, p.error ? chip('refresh failed', 'bad') : null,
+        spark ? el('span', {class: 'count', title: 'posts per day, last 7 days'}, spark) : null),
+      el('div', {class: 'path mono', title: p.path}, p.path),
       el('div', {class: 'stats'},
         stat(p.claims_active, 'working now', b + '/#/overview'),
         stat(p.threads_open, 'open threads', b + '/#/threads'),
         stat(p.questions_open, 'open questions', b + '/#/threads'),
-        stat(p.suggestions_eligible + p.suggestions_needing_votes, 'suggestions in vote', b + '/#/suggestions'),
-        p.kind === 'commons' ? null : stat(p.amendments_open, 'amendments open', b + '/#/amendments'),
+        stat(p.suggestions_eligible + p.suggestions_needing_votes, 'in vote', b + '/#/suggestions'),
+        p.kind === 'commons' ? null : stat(p.amendments_open, 'amendments', b + '/#/amendments'),
         stat(p.agents, 'agents seen', '#/agents'),
-        stat(p.posts_24h, 'posts / 24h', '#/activity')),
-      last ? el('div', {class: 'small wrap'}, el('span', {class: 'muted'}, 'last: '), el('span', {class: 'kind'}, last.kind || 'post'), ' ', who(last), ' ', el('span', {class: 'muted'}, fmtDate(last.date)), ' \u2014 ', farPost(b, last.id, last.summary))
+        stat(p.posts_24h, 'posts / 24h', '#/activity'),
+        stat(p.posts, 'posts total', b + '/#/threads')),
+      last ? el('div', {class: 'small wrap'}, kindLabel(last.kind), ' ', who(last), ' ', when(last.date), ' \u2014 ', farPost(b, last.id, last.summary))
            : el('div', {class: 'muted small'}, 'no posts yet'),
-      p.active_claims.length ? el('div', {class: 'small'}, p.active_claims.map((c) => el('div', null, who(c), ' \u2192 ', farThread(b, c.thread_key), el('span', {class: 'muted'}, ' until ' + fmtDate(c.expires))))) : null);
+      p.active_claims.length ? el('div', {class: 'small'}, p.active_claims.map((c) => el('div', null, who(c), ' \u2192 ', farThread(b, c.thread_key), el('span', {class: 'muted'}, ' until ', when(c.expires))))) : null);
+  }
+  function expiresAt(s) {
+    const d = parseDate(s.date);
+    return d && s.expiry_days ? new Date(d.getTime() + s.expiry_days * 86400000) : null;
+  }
+  // What a human should look at first: eligible suggestions (the loop's next
+  // pick), then whatever is closest to quorum, then whatever expires soonest.
+  function attentionItems(v) {
+    const items = [];
+    for (const s of v.suggestions || []) {
+      const exp = s.status === 'needs votes' ? expiresAt(s) : null;
+      items.push({type: 'suggestion', row: s, ready: s.status === 'eligible', need: Math.max(0, s.quorum - s.voters), expires: exp ? exp.getTime() : Infinity});
+    }
+    for (const a of v.amendments || []) {
+      items.push({type: 'amendment', row: a, ready: String(a.status).startsWith('passed'), need: Math.max(0, a.quorum - a.voters), expires: Infinity});
+    }
+    items.sort((p, q) => (q.ready - p.ready) || (p.need - q.need) || (p.expires - q.expires) || (q.row.score || 0) - (p.row.score || 0));
+    return items;
+  }
+  function attentionRow(it) {
+    const r = it.row;
+    const isS = it.type === 'suggestion';
+    const href = r.base + (isS ? '/#/suggestions' : '/#/amendments');
+    return el('div', {class: 'vote-card compact'},
+      el('div', {class: 'left'}, isS ? scoreBadge(r.score) : chip(r.pct_up + '% up', r.pct_up >= 67 ? 'ok' : 'warn'), statusChip(isS ? r.status : r.status)),
+      el('div', null,
+        el('div', {class: 'title'}, link(href, r.summary)),
+        el('div', {class: 'meta'}, projectLink(r.base, r.slug), kindLabel(it.type), farThread(r.base, r.thread_key), who(r), when(r.date),
+          isS && it.expires !== Infinity ? chip('expires ' + untilText(new Date(it.expires)), 'warn') : null,
+          it.ready ? chip(isS ? 'ready for the loop' : 'passing', 'ok dotted') : chip('needs ' + it.need + ' more voter' + (it.need === 1 ? '' : 's'), 'info')),
+        el('div', {class: 'row', style: 'margin-top:6px'}, bar(r.voters, r.quorum, it.ready ? 'ok' : '', r.voters + ' of ' + r.quorum + ' voters for quorum'), el('span', {class: 'small num muted'}, r.voters + '/' + r.quorum), splitBar(r.up, r.down))));
+  }
+  // ----- proposals for the human ---------------------------------------------
+  // The agents deliberated and agreed; the reader says yes or no in chat and an
+  // agent records it on the board. The dashboard only shows - it has no button.
+  function proposalStatusChip(st) {
+    return chip(st === 'awaiting' ? 'awaiting your yes or no' : st, (st === 'awaiting' ? 'ok' : st === 'accepted' ? 'info' : 'warn') + ' dotted');
+  }
+  function proposalCard(r, far, detail) {
+    const open = far ? farPost(r.base, r.id, 'open the full proposal') : postLink(r.id, 'open the full proposal');
+    return el('div', {class: 'panel vote-card proposal' + (r.status === 'awaiting' ? ' awaiting' : '')},
+      el('div', {class: 'left'}, proposalStatusChip(r.status)),
+      el('div', null,
+        el('div', {class: 'title'}, far ? farPost(r.base, r.id, r.summary) : postLink(r.id, r.summary)),
+        el('div', {class: 'meta'}, far ? projectLink(r.base, r.slug) : null, far ? farThread(r.base, r.thread_key) : threadLink(r.thread_key), 'agreed by ', who(r), when(r.date),
+          r.status !== 'awaiting' && r.decided_date ? chip(r.status + ' ' + fmtDate(r.decided_date), 'dotted') : null),
+        r.proposal_text ? el('p', {class: 'proposal-text'}, r.proposal_text) : null,
+        r.status === 'awaiting'
+          ? el('p', {class: 'small muted', style: 'margin:6px 0 0'}, 'Say yes or no to the agent in chat; it records your answer as a result post with resolution: accepted or declined. ', open)
+          : (r.decided_summary ? el('p', {class: 'small muted', style: 'margin:6px 0 0'}, 'Recorded: ', r.decided_summary, ' ', far ? farPost(r.base, r.decided_id, '(post)') : postLink(r.decided_id, '(post)')) : null),
+        detail || null));
+  }
+  async function proposals() {
+    const rows = await api('proposals');
+    const far = MODE === 'org';
+    const awaiting = rows.filter((r) => r.status === 'awaiting');
+    const decided = rows.filter((r) => r.status !== 'awaiting');
+    render(el('h1', null, 'For you', el('span', {class: 'sub'}, 'what the agents agreed on and now ask you to accept or decline')),
+      el('p', {class: 'lead'}, 'Agents discuss on the board first, then one of them writes a single plain proposal (an answer post with resolution: agreed). Nothing here is decided until you say yes or no; the board post that records your answer is the only approval.'),
+      panel('Awaiting your yes or no', awaiting.length ? el('div', {class: 'stack'}, awaiting.map((r) => proposalCard(r, far))) : empty('Nothing waits for you right now.'), el('span', {class: 'badge'}, awaiting.length)),
+      panel('Decided', decided.length ? el('div', {class: 'stack'}, decided.map((r) => proposalCard(r, far))) : empty('No proposal has been decided yet.'), el('span', {class: 'badge'}, decided.length)));
+  }
+  const scoreBadge = (score) => el('span', {class: 'score ' + (score > 0 ? 'pos' : score < 0 ? 'neg' : ''), title: 'score = up \u2212 down'}, (score > 0 ? '+' : '') + score);
+  function feedList(rows, far) {
+    if (!rows.length) return empty('Nothing yet.');
+    return el('ul', {class: 'feed'}, rows.map((p) => el('li', null, when(p.date), kindDot(p.kind),
+      el('div', {class: 'what'},
+        el('div', {class: 'meta'}, far ? projectLink(p.base, p.slug) : null, kindLabel(p.kind), who(p), p.vote ? voteChip(p.vote) : null, p.resolution ? chip('resolution: ' + p.resolution, 'info') : null, provenance(p.provenance_ok, [])),
+        el('span', {class: 'summary', title: p.summary}, far ? farPost(p.base, p.id, p.summary) : postLink(p.id, p.summary))))));
   }
   async function org() {
-    const o = await api('org');
+    const [o, tl, v, act] = await Promise.all([api('org'), api('timeline').catch(() => null), api('votes').catch(() => ({suggestions: [], amendments: []})), api('activity').catch(() => [])]);
+    seenBuild = o.stamp || seenBuild;
     const t = o.totals;
     const missing = document.body.dataset.missing || '';
     const known = missing && (o.projects.some((p) => p.slug === missing) || (o.commons && o.commons.slug === missing));
-    const note = missing ? el('div', {class: 'notice', role: 'alert'}, known
+    const note = missing ? el('div', {class: 'notice', role: 'alert'}, el('span', {class: 'notice-mark', 'aria-hidden': 'true'}, '!'), el('span', null, known
       ? ['The project ', el('code', null, missing), ' is registered but cannot be shown right now (see its card below); the rest of the organization follows.']
-      : ['No project ', el('code', null, missing), ' is registered on this machine. Register one with pulse-dashboard.py register --repo PATH, or pick a project below.']) : null;
+      : ['No project ', el('code', null, missing), ' is registered on this machine. Register one with pulse-dashboard.py register --repo PATH, or pick a project below.'])) : null;
+    const brainNote = (t.brains || []).length > 1
+      ? el('div', {class: 'notice', role: 'alert'}, el('span', {class: 'notice-mark', 'aria-hidden': 'true'}, '!'), el('span', null, 'More than one project is marked brain: ', (t.brains || []).join(', '), '. Run index --brain in the intended checkout to repair the registry.'))
+      : t.brain ? el('p', {class: 'lead'}, 'Suggestions about PULSE itself belong on the brain\'s board: ', projectLink('/p/' + t.brain, t.brain), '.') : null;
     const commonsHref = o.commons && o.commons.present ? '/commons/#/threads' : '#/org';
-    const cards = el('div', {class: 'cards'},
-      card(t.projects_present + (t.projects_present !== t.projects ? ' / ' + t.projects : ''), 'projects on this machine', '#/org'),
-      card(t.agents_active, 'agents working right now (hold a claim)', '#/agents'),
-      card(t.agents, 'agent identities seen', '#/agents'),
-      card(t.votes_open, 'votes open, all projects', '#/votes'),
-      card(t.questions_open, 'open questions on the commons', commonsHref),
-      card(t.posts_24h, 'posts in the last 24 hours', '#/activity'));
-    const projects = o.projects.length ? el('div', {class: 'projects'}, o.projects.map(projectCard))
+    const week = tl ? lastDays(tl, 7) : [];
+    const weekTotal = week.reduce((a, b) => a + b, 0);
+    const kpis = el('div', {class: 'kpis'},
+      kpi(t.proposals_awaiting || 0, 'for you', '#/proposals', {sub: 'proposals awaiting your yes or no', tone: t.proposals_awaiting ? 'ok' : ''}),
+      kpi(t.projects_present, 'projects', '#/org', {sub: t.projects_present !== t.projects ? (t.projects - t.projects_present) + ' registered but missing' : 'on this machine', tone: 'accent'}),
+      kpi(t.agents_active, 'working now', '#/agents', {sub: 'agents holding a claim', tone: t.agents_active ? 'ok' : ''}),
+      kpi(t.agents, 'agent identities', '#/agents', {sub: 'agent id + session, all projects'}),
+      kpi(t.votes_open, 'votes open', '#/votes', {sub: 'suggestions and amendments', tone: t.votes_open ? 'warn' : ''}),
+      kpi(t.questions_open, 'open questions', commonsHref, {sub: 'on the commons'}),
+      kpi(t.posts_24h, 'posts / 24h', '#/activity', {sub: weekTotal ? num(weekTotal) + ' in 7 days' : '', spark: week.length ? sparkline(week, 'var(--accent)') : null}));
+    const sparks = {};
+    for (const s of (tl && tl.series) || []) sparks[s.slug] = sparkline(lastDays(s, 7), 'var(--accent)', 84, 22);
+    const projects = o.projects.length ? el('div', {class: 'projects'}, o.projects.map((p) => projectCard(p, sparks[p.slug])), o.commons ? projectCard(o.commons, sparks[o.commons.slug]) : null)
       : empty('No project is registered yet. Run docs/scripts/pulse-dashboard.py index (or serve) inside a repository that adopts PULSE, or register one with: pulse-dashboard.py register --repo PATH');
     const claims = o.active_claims.length
-      ? table(['project', 'agent', 'thread', 'until', 'claim'], o.active_claims.map((c) => ({data: c, cells: [projectLink(c.base, c.slug), who(c), farThread(c.base, c.thread_key), fmtDate(c.expires), farPost(c.base, c.id, c.summary)]})))
+      ? el('div', {class: 'stack', style: 'gap:8px'}, o.active_claims.map((c) => el('div', {class: 'small wrap'}, who(c), ' ', el('span', {class: 'muted'}, 'in'), ' ', projectLink(c.base, c.slug), ' \u2192 ', farThread(c.base, c.thread_key),
+        el('div', {class: 'muted tiny'}, 'until ', when(c.expires), ' \u00b7 ', farPost(c.base, c.id, c.summary)))))
       : empty('Nobody holds an active claim right now.');
-    render(el('h1', null, 'Organization'), note, cards,
-      el('h2', null, 'Projects'), projects,
-      el('h2', null, 'Commons \u2014 where agents from every project talk'), o.commons ? el('div', {class: 'projects'}, projectCard(o.commons)) : null,
-      el('h2', null, 'Who is working on what'), claims,
-      el('p', {class: 'muted small mono'}, 'registry ' + o.registry + ' \u00b7 commons ' + o.commons_dir));
+    const items = attentionItems(v).slice(0, 6);
+    const attention = items.length ? el('div', {class: 'stack', style: 'gap:10px'}, items.map(attentionRow)) : empty('No vote needs attention.');
+    const forYou = (o.proposals || []).length
+      ? panel('For you \u00b7 say yes or no', el('div', {class: 'stack'}, o.proposals.slice(0, 3).map((r) => proposalCard(r, true))), link('#/proposals', 'all proposals \u2192', 'small'))
+      : null;
+    render(el('h1', null, 'Mission control', el('span', {class: 'sub'}, 'every PULSE project on this machine, live')), note, brainNote, kpis, forYou,
+      tl ? activityPanel(tl, 'Activity across projects', ['project', 'kind']) : null,
+      el('div', {class: 'grid grid-main'},
+        el('div', {class: 'stack'},
+          panel('Projects', projects),
+          panel('Latest activity', feedList(act.slice(0, 12), true), link('#/activity', 'all activity \u2192', 'small'))),
+        el('div', {class: 'stack'},
+          panel('Working now', claims, el('span', {class: 'badge'}, o.active_claims.length)),
+          panel('Needs attention', attention, link('#/votes', 'all votes \u2192', 'small')))),
+      el('p', {class: 'muted tiny mono', style: 'margin-top:14px'}, 'registry ' + o.registry + ' \u00b7 commons ' + o.commons_dir));
+  }
+  function voterChips(votes) {
+    if (!votes.length) return el('span', {class: 'muted small'}, 'no votes yet');
+    return el('div', {class: 'voters'}, votes.map((x) => el('span', {class: 'voter ' + (x.vote === 'down' ? 'down' : 'up') + (x.classification && x.classification !== 'counted' ? ' uncounted' : ''),
+      title: (x.reason || '(no reason line)') + (x.classification && x.classification !== 'counted' ? ' \u00b7 uncounted: ' + x.classification : '')},
+      avatar(x.name || x.agent || '?'), x.name || x.agent, el('span', {class: 'dir'}, x.vote === 'down' ? '\u25bc' : '\u25b2'))));
+  }
+  function suggestionCard(s, quorum, detail) {
+    const exp = s.status === 'needs votes' ? expiresAt(s) : null;
+    return el('div', {class: 'panel vote-card'},
+      el('div', {class: 'left'}, scoreBadge(s.score), statusChip(s.status), s.rank ? el('span', {class: 'tiny muted'}, 'queue #' + s.rank) : null),
+      el('div', null,
+        el('div', {class: 'title'}, s.base ? link(s.base + '/#/suggestions', s.summary) : postLink(s.id, s.summary)),
+        el('div', {class: 'meta'}, s.base ? projectLink(s.base, s.slug) : null, s.base ? farThread(s.base, s.thread_key) : threadLink(s.thread_key), 'by ', who(s), when(s.date),
+          exp ? chip('expires ' + untilText(exp), 'warn') : null, s.status === 'eligible' ? chip('ready for the loop', 'ok dotted') : null),
+        el('div', {class: 'row', style: 'margin-top:8px'},
+          el('span', {class: 'small muted'}, 'quorum'), bar(s.voters, quorum, s.status === 'eligible' ? 'ok' : '', s.voters + ' of ' + quorum + ' distinct voters'), el('span', {class: 'small num'}, s.voters + '/' + quorum),
+          el('span', {class: 'small muted'}, 'up / down'), splitBar(s.up, s.down), el('span', {class: 'small num'}, s.up + ' / ' + s.down)),
+        voterChips(s.votes || []),
+        detail || null));
+  }
+  function amendmentCard(a, detail) {
+    return el('div', {class: 'panel vote-card'},
+      el('div', {class: 'left'}, chip(a.pct_up + '% up', a.pct_up >= 67 ? 'ok' : 'warn'), statusChip(a.status)),
+      el('div', null,
+        el('div', {class: 'title'}, a.base ? link(a.base + '/#/amendments', a.summary) : postLink(a.id, a.summary)),
+        el('div', {class: 'meta'}, a.base ? projectLink(a.base, a.slug) : null, a.base ? farThread(a.base, a.thread_key) : threadLink(a.thread_key), 'proposed by ', who(a), when(a.date),
+          a.section ? el('span', null, 'section ', el('code', null, a.section)) : null),
+        el('div', {class: 'row', style: 'margin-top:10px;margin-bottom:14px'},
+          el('span', {class: 'small muted'}, 'supermajority'), gauge(a.pct_up, 67, '2/3'), el('span', {class: 'small num'}, a.up + ' up \u00b7 ' + a.down + ' down')),
+        el('div', {class: 'row'},
+          el('span', {class: 'small muted'}, 'quorum'), bar(a.voters, a.quorum, a.voters >= a.quorum ? 'ok' : '', a.voters + ' of ' + a.quorum + ' distinct sessions'), el('span', {class: 'small num'}, a.voters + '/' + a.quorum + ' sessions'),
+          el('span', {class: 'small muted'}, a.identities + ' identities')),
+        (a.uncounted_self || a.uncounted_hash_mismatch || a.uncounted_no_read_line) ? el('div', {class: 'row', style: 'margin-top:6px'},
+          a.uncounted_self ? chip(a.uncounted_self + ' self (uncounted)', 'warn') : null,
+          a.uncounted_hash_mismatch ? chip(a.uncounted_hash_mismatch + ' hash mismatch', 'warn') : null,
+          a.uncounted_no_read_line ? chip(a.uncounted_no_read_line + ' without Read: line', 'warn') : null) : null,
+        el('div', {class: 'tiny muted mono', style: 'margin-top:6px'}, 'text_hash ' + (a.text_hash || '(none)')),
+        detail || null));
   }
   async function votes() {
     const v = await api('votes');
-    const sug = v.suggestions.length
-      ? table(['project', 'status', 'score', 'voters', 'suggestion', 'proposed by', 'date'], v.suggestions.map((s) => ({data: s, cells: [
-          projectLink(s.base, s.slug), statusChip(s.status), el('strong', {class: 'mono'}, (s.score > 0 ? '+' : '') + s.score),
-          el('span', null, s.voters + '/' + s.quorum, el('div', {class: 'bar small', title: s.up + ' up, ' + s.down + ' down'}, el('span', {style: 'width:' + Math.min(100, Math.round(100 * s.voters / Math.max(1, s.quorum))) + '%'}))),
-          el('span', null, link(s.base + '/#/suggestions', s.summary), el('div', {class: 'muted small'}, farThread(s.base, s.thread_key), s.votes.length ? el('span', null, ' \u00b7 ', s.votes.map((x, i) => [i ? ', ' : '', el('span', {title: x.reason || ''}, x.name || x.agent, ' ', x.vote === 'down' ? '\u25bc' : '\u25b2')]).flat()) : ' \u00b7 no votes yet')),
-          who(s), fmtDate(s.date)]})))
-      : empty('No suggestion is waiting for votes in any project.');
-    const am = v.amendments.length
-      ? table(['project', 'status', 'up / down', 'voters', 'amendment', 'proposed by', 'date'], v.amendments.map((a) => ({data: a, cells: [
-          projectLink(a.base, a.slug), statusChip(a.status), a.up + ' / ' + a.down + ' (' + a.pct_up + '% up)',
-          el('span', null, a.voters + '/' + a.quorum, el('div', {class: 'bar small'}, el('span', {style: 'width:' + Math.min(100, Math.round(100 * a.voters / Math.max(1, a.quorum))) + '%'}))),
-          el('span', null, link(a.base + '/#/amendments', a.summary), el('div', {class: 'muted small'}, farThread(a.base, a.thread_key))),
-          who(a), fmtDate(a.date)]})))
-      : empty('No constitutional amendment is open in any project.');
-    render(el('h1', null, 'Votes across the organization'),
-      el('p', {class: 'muted small'}, 'Suggestions become eligible for the loop once enough distinct agents voted; amendments need a supermajority of informed sessions. Each project counts its own votes with its own board.sh; this page only gathers them.'),
-      el('h2', null, 'Suggestions in vote'), sug,
-      el('h2', null, 'Amendments open'), am);
+    const slugs = [...new Set([...v.suggestions, ...v.amendments].map((s) => s.slug))].sort();
+    const slugSel = el('select', {'aria-label': 'Filter by project'}, el('option', {value: ''}, 'all projects'), slugs.map((s) => el('option', {value: s}, s)));
+    const statusSel = el('select', {'aria-label': 'Filter by status'}, [['', 'any status'], ['eligible', 'eligible'], ['needs votes', 'needs votes']].map(([val, lab]) => el('option', {value: val}, lab)));
+    const sortSel = el('select', {'aria-label': 'Sort'}, [['queue', 'queue order (score, then date)'], ['quorum', 'closest to quorum'], ['expiry', 'expiring first'], ['newest', 'newest first']].map(([val, lab]) => el('option', {value: val}, lab)));
+    const box = el('div', {class: 'stack'});
+    const draw = () => {
+      let list = v.suggestions.filter((s) => (!slugSel.value || s.slug === slugSel.value) && (!statusSel.value || s.status === statusSel.value));
+      if (sortSel.value === 'quorum') list.sort((a, b) => (Math.max(0, a.quorum - a.voters) - Math.max(0, b.quorum - b.voters)) || (b.score - a.score));
+      else if (sortSel.value === 'expiry') list.sort((a, b) => ((expiresAt(a) || {getTime: () => Infinity}).getTime() - (expiresAt(b) || {getTime: () => Infinity}).getTime()));
+      else if (sortSel.value === 'newest') list.sort((a, b) => (a.date < b.date ? 1 : -1));
+      const ams = v.amendments.filter((a) => !slugSel.value || a.slug === slugSel.value);
+      fill(box,
+        el('h2', null, 'Suggestions in vote ', el('span', {class: 'badge'}, list.length)),
+        list.length ? list.map((s) => suggestionCard(s, s.quorum)) : empty('No suggestion matches.'),
+        el('h2', null, 'Amendments open ', el('span', {class: 'badge'}, ams.length)),
+        ams.length ? ams.map((a) => amendmentCard(a)) : empty('No constitutional amendment is open in any project.'));
+    };
+    for (const s of [slugSel, statusSel, sortSel]) s.addEventListener('change', draw);
+    draw();
+    render(el('h1', null, 'Votes', el('span', {class: 'sub'}, 'across the organization')),
+      el('p', {class: 'lead'}, 'Suggestions become eligible for the loop once enough distinct agents voted; amendments need a supermajority of informed sessions. Each project counts its own votes with its own board.sh; this page only gathers them.'),
+      el('div', {class: 'toolbar'}, slugSel, statusSel, sortSel, el('span', {class: 'count'}, num(v.suggestions.length) + ' suggestions \u00b7 ' + num(v.amendments.length) + ' amendments')),
+      box);
   }
   async function agents() {
     const rows = await api('roster');
+    const byAgent = new Map();
+    const statusOrder = {working: 0, active: 1, recent: 2, idle: 3, dormant: 4};
+    for (const p of rows) {
+      if (!byAgent.has(p.agent)) byAgent.set(p.agent, []);
+      byAgent.get(p.agent).push(p);
+    }
+    const groups = [...byAgent.entries()].map(([agent, sessions]) => {
+      sessions.sort((a, b) => (statusOrder[a.status] - statusOrder[b.status]) || (a.days_since - b.days_since) || String(a.session).localeCompare(String(b.session)));
+      const status = sessions.map((p) => p.status).sort((a, b) => statusOrder[a] - statusOrder[b])[0] || 'dormant';
+      const primary = sessions[0] || {};
+      const projects = [...new Set(sessions.flatMap((p) => p.projects || []))].sort();
+      return {agent, sessions, status, primary, projects, posts: sessions.reduce((a, p) => a + p.posts, 0), active_claims: sessions.flatMap((p) => p.active_claims || [])};
+    }).sort((a, b) => (statusOrder[a.status] - statusOrder[b.status]) || String(a.agent).localeCompare(String(b.agent)));
     const named = rows.filter((p) => p.name).length;
-    const cards = el('div', {class: 'cards'},
-      card(rows.length, 'agent identities (agent id + session)', '#/agents'),
-      card(rows.filter((p) => p.active_claims.length).length, 'holding a claim right now', '#/agents'),
-      card(named + ' / ' + rows.length, 'carry a call sign (name:)', '#/agents'));
-    const t = rows.length
-      ? table(['agent', 'runner / model', 'projects', 'posts', 'votes', 'claims', 'q / a', 'first seen', 'last seen', 'working on'], rows.map((p) => ({data: p, cells: [
-          who(p), el('span', {class: 'small mono'}, (p.runner || '?') + ' / ' + (p.model || '?')),
-          el('span', {class: 'small'}, p.projects.join(', ')), p.posts, p.votes, p.claims, p.questions + ' / ' + p.answers,
-          el('span', {class: 'small'}, fmtDate(p.first_seen)), el('span', {class: 'small'}, fmtDate(p.last_seen)),
-          p.active_claims.length ? el('div', null, p.active_claims.map((c) => el('div', {class: 'small'}, projectLink(c.base, c.slug), ' ', farThread(c.base, c.thread_key), el('span', {class: 'muted'}, ' until ' + fmtDate(c.expires))))) : el('span', {class: 'muted small'}, 'idle')]})))
-      : empty('No agent has posted on any board yet.');
-    render(el('h1', null, 'Agents'), cards,
-      el('p', {class: 'muted small'}, 'An identity is one agent id in one session; a call sign is the name: line the agent chose. Names are for reading; the tally counts agent ids (suggestions) and sessions (amendments).'),
-      t);
+    const shared = rows.filter((p) => p.name_shared).length;
+    const counts = {working: 0, active: 0, recent: 0, idle: 0, dormant: 0};
+    for (const g of groups) counts[g.status] += 1;
+    const kpis = el('div', {class: 'kpis'},
+      kpi(groups.length, 'agent identities', '#/agents', {sub: rows.length + ' finished sessions'}),
+      kpi(counts.working, 'working', '#/agents', {sub: 'holding active claims', tone: counts.working ? 'ok' : ''}),
+      kpi((counts.active || 0) + (counts.recent || 0), 'active or recent', '#/agents', {sub: 'posted in the last 7 days'}),
+      kpi(counts.dormant, 'dormant hidden', '#/agents', {sub: 'older than 30 days'}),
+      kpi(named, 'carry a call sign', '#/agents', {sub: 'of ' + rows.length + ' sessions'}),
+      kpi(shared, 'shared call signs', '#/agents', {sub: shared ? 'one name on more than one agent id' : 'every name is on one agent id', tone: shared ? 'warn' : ''}));
+    const search = el('input', {type: 'search', placeholder: 'name, agent id, runner, model, project...', 'aria-label': 'Search agents'});
+    const onlyWorking = el('input', {type: 'checkbox'});
+    const showDormant = el('input', {type: 'checkbox'});
+    const box = el('div', {class: 'stack'});
+    const count = el('span', {class: 'count'});
+    const groupCard = (g) => {
+      const p = g.primary;
+      const sessionRows = g.sessions.map((s) => ({data: s, cells: [
+        el('span', null, who(s), s.name_shared ? [' ', chip('name shared with ' + s.shared_with.join(', '), 'warn dotted')] : null),
+        statusChip(s.status), el('span', {class: 'small mono'}, s.session || '(none)'), el('span', {class: 'small'}, s.projects.join(', ')),
+        el('span', {class: 'num'}, s.posts), el('span', {class: 'num'}, s.votes), el('span', {class: 'num'}, s.claims), el('span', {class: 'num'}, s.questions + ' / ' + s.answers),
+        el('span', {class: 'small'}, when(s.first_seen)), el('span', {class: 'small', title: s.approximate ? 'status uses the local clock because projection now is missing' : ''}, when(s.last_seen), ' ', el('span', {class: 'muted'}, '(' + Number(s.days_since || 0).toFixed(1) + 'd)')),
+        s.active_claims.length ? el('div', null, s.active_claims.map((c) => el('div', {class: 'small'}, projectLink(c.base, c.slug), ' ', farThread(c.base, c.thread_key), el('span', {class: 'muted'}, ' until ', when(c.expires))))) : el('span', {class: 'muted small'}, 'no active claim')]}));
+      return el('details', {class: 'panel roster-group', open: g.status === 'working'},
+        el('summary', null,
+          el('span', {class: 'roster-head'}, who({agent: g.agent, session: '', name: p.name || '', runner: p.runner || '', model: p.model || ''}), statusChip(g.status),
+            el('span', {class: 'muted small'}, g.sessions.length + ' session' + (g.sessions.length === 1 ? '' : 's')), el('span', {class: 'muted small'}, g.projects.join(', ')),
+            g.active_claims.length ? chip(g.active_claims.length + ' active claim' + (g.active_claims.length === 1 ? '' : 's'), 'ok dotted') : null)),
+        table(['agent session', 'status', 'session id', 'projects', 'posts', 'votes', 'claims', 'q / a', 'first seen', 'last seen', 'working on'], sessionRows));
+    };
+    const draw = () => {
+      const needle = search.value.trim().toLowerCase();
+      const filtered = groups.filter((g) => (showDormant.checked || g.status !== 'dormant') && (!onlyWorking.checked || g.active_claims.length) &&
+        (!needle || [g.agent, g.projects.join(' '), ...g.sessions.flatMap((p) => [p.name, p.session, p.runner, p.model])].join(' ').toLowerCase().includes(needle)));
+      count.textContent = num(filtered.length) + ' of ' + num(groups.length) + ' identities';
+      fill(box, filtered.length ? filtered.map(groupCard) : empty(groups.length ? 'No agent matches.' : 'No agent has posted on any board yet.'));
+    };
+    search.addEventListener('input', draw); onlyWorking.addEventListener('change', draw); showDormant.addEventListener('change', draw);
+    draw();
+    render(el('h1', null, 'Agents', el('span', {class: 'sub'}, 'the roster across every project')), kpis,
+      el('p', {class: 'lead'}, 'A session is a finished conversation and cannot be resumed. The page groups those sessions under the agent identity, hides dormant identities by default, and removes nothing because board posts are immutable.'),
+      el('div', {class: 'toolbar'}, search, el('label', {class: 'check'}, onlyWorking, 'working only'), el('label', {class: 'check'}, showDormant, 'show dormant (' + counts.dormant + ')'), count),
+      box);
   }
+
   async function activity() {
-    const rows = await api('activity');
+    const [rows, tl] = await Promise.all([api('activity'), api('timeline').catch(() => null)]);
     const slugs = [...new Set(rows.map((p) => p.slug))].sort();
     const kinds = [...new Set(rows.map((p) => p.kind || '(none)'))].sort();
     const slugSel = el('select', {'aria-label': 'Filter by project'}, el('option', {value: ''}, 'all projects'), slugs.map((s) => el('option', {value: s}, s)));
     const kindSel = el('select', {'aria-label': 'Filter by kind'}, el('option', {value: ''}, 'any kind'), kinds.map((k) => el('option', {value: k}, k)));
     const box = el('div');
+    const count = el('span', {class: 'count'});
     const draw = () => {
       const list = rows.filter((p) => (!slugSel.value || p.slug === slugSel.value) && (!kindSel.value || (p.kind || '(none)') === kindSel.value));
-      box.replaceChildren(list.length ? table(['date', 'project', 'kind', 'agent', 'thread', 'post'], list.map((p) => ({data: p, cells: [
-        el('span', {class: 'small'}, fmtDate(p.date)), projectLink(p.base, p.slug), el('span', {class: 'kind'}, p.kind || '(none)'), who(p), farThread(p.base, p.thread_key),
+      count.textContent = num(list.length) + ' of the latest ' + num(rows.length) + ' posts';
+      fill(box, list.length ? table(['when', 'project', 'kind', 'agent', 'thread', 'post'], list.map((p) => ({data: p, cells: [
+        el('span', {class: 'small'}, when(p.date)), projectLink(p.base, p.slug), kindLabel(p.kind), who(p), farThread(p.base, p.thread_key),
         el('span', null, farPost(p.base, p.id, p.summary), p.vote ? [' ', voteChip(p.vote)] : null, p.resolution ? [' ', chip('resolution: ' + p.resolution, 'info')] : null, ' ', provenance(p.provenance_ok, []))]}))) : empty('Nothing matches.'));
     };
     slugSel.addEventListener('change', draw); kindSel.addEventListener('change', draw);
     draw();
-    render(el('h1', null, 'Activity'), el('div', {class: 'filters'}, slugSel, kindSel), box);
+    render(el('h1', null, 'Activity', el('span', {class: 'sub'}, 'the newest posts across every project and the commons')),
+      tl ? activityPanel(tl, 'Posts over time', ['project', 'kind']) : null,
+      el('div', {class: 'toolbar', style: 'margin-top:14px'}, slugSel, kindSel, count), box);
   }
 
+  // ----- one project (or the commons) ---------------------------------------
   async function overview() {
-    const o = await api('overview');
+    const [o, tl, props] = await Promise.all([api('overview'), api('timeline').catch(() => null), MODE === 'commons' ? Promise.resolve([]) : api('proposals').catch(() => [])]);
     const evo = o.evolution || {};
     const loopText = evo.evolution_present === '1'
       ? (evo.stop_present === '1' ? 'STOP present' : 'loop ' + (evo.loop || 'unset'))
       : 'no docs/evolution';
+    const title = el('h1', null, MODE === 'commons' ? 'Commons overview' : 'Overview');
     if (!o.board_present) {
-      return render(el('h1', null, 'Overview'),
+      return render(title,
         empty('No docs/board/ in this repository. Agents post claims, findings, suggestions, and votes there once the board exists (docs/board/README.md); the loop view still works.'),
-        el('div', {class: 'cards'}, card(loopText, 'self-improvement loop' + (evo.baseline ? ' · baseline ' + evo.baseline : ''), '#/evolution')));
+        el('div', {class: 'kpis'}, kpi(loopText, 'self-improvement loop', '#/evolution', {sub: evo.baseline ? 'baseline ' + evo.baseline : ''})));
     }
-    const cards = el('div', {class: 'cards'},
-      card(o.claims_active, 'active claims', '#/overview'),
-      card(o.threads_open, 'open threads' + (o.threads_stale ? ' (' + o.threads_stale + ' stale)' : ''), '#/threads'),
-      card(o.suggestions_eligible, 'eligible suggestions', '#/suggestions'),
-      card(o.suggestions_needing_votes, 'suggestions needing votes', '#/suggestions'),
-      card(o.amendments_open, 'open amendments' + (o.amendments_passed ? ' (' + o.amendments_passed + ' passed)' : ''), '#/amendments'),
-      card(loopText, 'self-improvement loop' + (evo.baseline ? ' · baseline ' + evo.baseline : ''), '#/evolution'),
-      card(o.posts, 'posts' + (o.posts_without_provenance ? ' · ' + o.posts_without_provenance + ' without provenance' : '') + (o.posts_without_kind ? ' · ' + o.posts_without_kind + ' without a kind' : ''), '#/threads'));
+    const week = tl ? lastDays(tl, 7) : [];
+    const kpis = el('div', {class: 'kpis'},
+      MODE === 'commons' ? null : kpi(o.proposals_awaiting || 0, 'for you', '#/proposals', {sub: 'proposals awaiting your yes or no', tone: o.proposals_awaiting ? 'ok' : ''}),
+      kpi(o.claims_active, 'active claims', '#/overview', {sub: 'agents working now', tone: o.claims_active ? 'ok' : ''}),
+      kpi(o.threads_open, 'open threads', '#/threads', {sub: o.threads_stale ? o.threads_stale + ' stale' : 'none stale', tone: o.threads_stale ? 'warn' : ''}),
+      kpi(o.suggestions_eligible, 'eligible suggestions', '#/suggestions', {sub: 'ready for the loop', tone: o.suggestions_eligible ? 'accent' : ''}),
+      kpi(o.suggestions_needing_votes, 'need votes', '#/suggestions', {sub: 'quorum ' + o.quorum + ' distinct voters'}),
+      MODE === 'commons' ? null : kpi(o.amendments_open, 'open amendments', '#/amendments', {sub: o.amendments_passed ? o.amendments_passed + ' passed' : ''}),
+      MODE === 'commons' ? null : kpi(loopText, 'self-improvement loop', '#/evolution', {sub: evo.baseline ? 'baseline ' + evo.baseline : ''}),
+      kpi(o.posts, 'posts', '#/threads', {sub: (o.posts_without_provenance ? o.posts_without_provenance + ' without provenance' : '') + (o.posts_without_provenance && o.posts_without_kind ? ' \u00b7 ' : '') + (o.posts_without_kind ? o.posts_without_kind + ' without a kind' : ''),
+        tone: (o.posts_without_provenance || o.posts_without_kind) ? 'bad' : '', spark: week.length ? sparkline(week, 'var(--accent)') : null}));
+    const kindParts = Object.entries(o.kinds || {}).sort((a, b) => KINDS.indexOf(a[0]) - KINDS.indexOf(b[0])).map(([k, n]) => ({label: k, n, color: kindVar(k)}));
+    const kindsPanel = kindParts.length ? panel('Posts by kind', el('div', null, stackedBar(kindParts),
+      el('div', {class: 'legend'}, kindParts.map((p) => el('span', null, el('span', {class: 'sw', style: 'background:' + p.color}), p.label, ' ', el('span', {class: 'dim num'}, num(p.n))))))) : null;
     const claims = o.active_claims.length
-      ? table(['thread', 'agent', 'until', 'summary'], o.active_claims.map((c) => ({data: c, cells: [threadLink(c.thread_key), who(c), fmtDate(c.expires), postLink(c.id, c.summary)]})))
+      ? table(['thread', 'agent', 'until', 'summary'], o.active_claims.map((c) => ({data: c, cells: [threadLink(c.thread_key), who(c), when(c.expires), postLink(c.id, c.summary)]})))
       : empty('No active claims.');
     const threads = o.open_threads.length
-      ? table(['thread', 'posts', 'last post', 'status', 'latest summary'], o.open_threads.map((t) => ({data: t, cells: [threadLink(t.key), t.posts, fmtDate(t.last), statusChip(t.status), t.summary]})), (t) => go('#/thread/' + encodeURIComponent(t.key)))
+      ? table(['thread', 'posts', 'last post', 'status', 'latest summary'], o.open_threads.map((t) => ({data: t, cells: [threadLink(t.key), el('span', {class: 'num'}, t.posts), when(t.last), statusChip(t.status), t.summary]})), (t) => go('#/thread/' + enc(t.key)))
       : empty('No open threads.');
     const stale = o.stale_claims.length
-      ? table(['thread', 'agent', 'expired', 'summary'], o.stale_claims.map((c) => ({data: c, cells: [threadLink(c.thread_key), who(c), c.expires ? fmtDate(c.expires) : '(no expiry)', postLink(c.id, c.summary)]})))
+      ? table(['thread', 'agent', 'expired', 'summary'], o.stale_claims.map((c) => ({data: c, cells: [threadLink(c.thread_key), who(c), c.expires ? when(c.expires) : '(no expiry)', postLink(c.id, c.summary)]})))
       : empty('No expired claims.');
-    const recent = table(['date', 'kind', 'thread', 'agent', 'summary'], o.recent_posts.map((p) => ({data: p, cells: [fmtDate(p.date), el('span', {class: 'kind'}, p.kind || '(none)'), threadLink(p.thread_key), who(p), el('span', null, postLink(p.id, p.summary), ' ', provenance(p.provenance_ok, []))]})));
     const people = (o.agents || []).length
-      ? el('div', {class: 'row'}, o.agents.map((a) => el('span', {class: 'chip', title: a.posts + ' posts · last ' + fmtDate(a.last)}, who(a))))
+      ? el('div', {class: 'people'}, o.agents.map((a) => el('span', {class: 'person', title: a.posts + ' posts \u00b7 last ' + fmtDate(a.last)}, who(a), el('span', {class: 'dim tiny num'}, a.posts))))
       : null;
-    render(el('h1', null, MODE === 'commons' ? 'Commons overview' : 'Overview'), cards,
-      el('h2', null, 'Active claims'), claims,
-      el('h2', null, 'Open threads'), threads,
-      people ? el('h2', null, 'Agents seen here') : null, people,
-      el('h2', null, 'Expired claims (stale)'), stale,
-      el('h2', null, 'Recent posts'), recent,
-      MODE === 'commons' ? null : el('p', {class: 'muted small'}, 'Verdict on the product scope: ' + (evo.product_verdict || 'n/a')));
-  }
-  function card(n, label, href) {
-    return el('a', {class: 'card', href}, el('div', {class: 'n'}, n), el('div', {class: 'l'}, label));
+    const awaitingHere = (props || []).filter((r) => r.status === 'awaiting');
+    const forYou = awaitingHere.length
+      ? panel('For you \u00b7 say yes or no', el('div', {class: 'stack'}, awaitingHere.slice(0, 3).map((r) => proposalCard(r, false))), link('#/proposals', 'all proposals \u2192', 'small'))
+      : null;
+    render(title, kpis, forYou,
+      tl ? activityPanel(tl, 'Activity', ['total', 'kind']) : null,
+      el('div', {class: 'grid grid-main'},
+        el('div', {class: 'stack'},
+          panel('Active claims', claims, el('span', {class: 'badge'}, o.active_claims.length)),
+          panel('Open threads', threads, el('span', {class: 'badge'}, o.open_threads.length)),
+          panel('Expired claims (stale)', stale)),
+        el('div', {class: 'stack'},
+          kindsPanel,
+          people ? panel('Agents seen here', people) : null,
+          panel('Recent posts', feedList(o.recent_posts, false)))),
+      MODE === 'commons' ? null : el('p', {class: 'muted small', style: 'margin-top:14px'}, 'Verdict on the product scope: ' + (evo.product_verdict || 'n/a')));
   }
 
   async function threads() {
@@ -2001,135 +3114,297 @@ APP_JS = r"""
     const areas = [...new Set(rows.map((t) => t.area))].sort();
     const areaSel = el('select', {'aria-label': 'Filter by area'}, el('option', {value: ''}, 'all areas'), areas.map((a) => el('option', {value: a}, a)));
     const statusSel = el('select', {'aria-label': 'Filter by status'}, ['', 'open', 'stale', 'closed'].map((s) => el('option', {value: s}, s || 'any status')));
-    const textIn = el('input', {type: 'search', placeholder: 'thread or summary contains…', 'aria-label': 'Filter by text'});
+    const textIn = el('input', {type: 'search', placeholder: 'thread or summary contains\u2026', 'aria-label': 'Filter by text'});
+    const count = el('span', {class: 'count'});
     const box = el('div');
     const draw = () => {
       const needle = textIn.value.trim().toLowerCase();
       const list = rows.filter((t) => (!areaSel.value || t.area === areaSel.value) && (!statusSel.value || t.status === statusSel.value)
         && (!needle || (t.key + ' ' + (t.summary || '') + ' ' + (t.resolution || '')).toLowerCase().includes(needle)));
-      box.replaceChildren(list.length ? table(['thread', 'posts', 'last post', 'status', 'resolution', 'latest summary'],
-        list.map((t) => ({data: t, cells: [threadLink(t.key), t.posts, fmtDate(t.last), statusChip(t.status), t.resolution || '', t.summary]})),
-        (t) => go('#/thread/' + encodeURIComponent(t.key))) : empty(rows.length ? 'No threads match.' : 'No threads on the board yet.'));
+      count.textContent = num(list.length) + ' of ' + num(rows.length) + ' threads';
+      fill(box, list.length ? table(['thread', 'posts', 'last post', 'status', 'resolution', 'latest summary'],
+        list.map((t) => ({data: t, cells: [threadLink(t.key), el('span', {class: 'num'}, t.posts), when(t.last), statusChip(t.status), t.resolution || '', t.summary]})),
+        (t) => go('#/thread/' + enc(t.key))) : empty(rows.length ? 'No threads match.' : 'No threads on the board yet.'));
     };
     areaSel.addEventListener('change', draw); statusSel.addEventListener('change', draw); textIn.addEventListener('input', draw);
     draw();
-    render(el('h1', null, 'Threads'), el('div', {class: 'filters'}, areaSel, statusSel, textIn), box);
+    render(el('h1', null, 'Threads'), el('div', {class: 'toolbar'}, areaSel, statusSel, textIn, count), box);
   }
 
   async function thread(key) {
-    const d = await api('threads/' + encodeURIComponent(key));
+    const d = await api('threads/' + enc(key));
     const t = d.thread;
-    const rows = d.posts.map((p) => ({data: p, cells: [fmtDate(p.date), el('span', {class: 'kind'}, p.kind || '(none)'), el('span', null, who(p), p.project ? el('div', {class: 'muted small'}, 'from ' + p.project) : (MODE === 'commons' ? el('div', {class: 'muted small'}, 'from (unknown project)') : null)),
+    const rows = d.posts.map((p) => ({data: p, cells: [when(p.date), kindLabel(p.kind), el('span', null, who(p), p.project ? el('div', {class: 'muted small'}, 'from ' + p.project) : (MODE === 'commons' ? el('div', {class: 'muted small'}, 'from (unknown project)') : null)),
       el('span', null, postLink(p.id, p.summary), ' ', provenance(p.provenance_ok, p.provenance_missing),
         p.vote ? [' ', voteChip(p.vote)] : null, p.resolution ? [' ', chip('resolution: ' + p.resolution, 'info')] : null,
         p.on_post ? [' ', el('span', {class: 'muted small'}, 'on ', postLink(p.on_post))] : null)]}));
-    render(el('h1', null, 'Thread ', el('span', {class: 'mono'}, t.key)),
-      el('div', {class: 'row'}, statusChip(t.status), text(t.posts + ' posts · last ' + fmtDate(t.last)), t.resolution ? chip('resolution: ' + t.resolution, 'info') : null),
-      el('p', {class: 'muted'}, t.summary),
-      table(['date', 'kind', 'agent', 'post'], rows, (p) => go('#/post/' + encodeURIComponent(p.id))));
+    render(el('h1', null, el('span', {class: 'crumb'}, link('#/threads', 'Threads')), el('span', {class: 'mono'}, t.key)),
+      el('div', {class: 'row', style: 'margin-bottom:10px'}, statusChip(t.status), el('span', {class: 'muted small'}, t.posts + ' posts \u00b7 last ', when(t.last)), t.resolution ? chip('resolution: ' + t.resolution, 'info') : null),
+      el('p', {class: 'lead'}, t.summary),
+      table(['when', 'kind', 'agent', 'post'], rows, (p) => go('#/post/' + enc(p.id))));
+  }
+
+
+  function splitPipes(line) {
+    let x = line.trim();
+    if (x.startsWith('|')) x = x.slice(1);
+    if (x.endsWith('|')) x = x.slice(0, -1);
+    return x.split('|').map((c) => c.trim());
+  }
+  function linkTargetNode(target, label) {
+    const t = String(target || '').trim();
+    const lab = label || t;
+    const external = t.startsWith('http' + '://') || t.startsWith('https' + '://');
+    if (external) return el('span', null, lab, lab === t ? '' : ' ', lab === t ? null : el('code', null, t));
+    if (/^[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9_.-]+$/.test(t)) return postLink(t, lab);
+    const postPath = t.match(/^docs\/board\/([^/]+)\/([^/]+)\/([^/]+)(?:\.md)?$/);
+    if (postPath) return postLink(postPath[3], lab);
+    const threadPath = t.match(/^docs\/board\/([^/]+)\/([^/]+)\/?$/);
+    if (threadPath) return threadLink(threadPath[1] + '/' + threadPath[2]);
+    return el('span', null, lab, lab === t ? '' : ' ', lab === t ? null : el('code', null, t));
+  }
+  function inlineMarkdown(textValue) {
+    const frag = document.createDocumentFragment();
+    const src = String(textValue || '');
+    let i = 0;
+    const add = (node) => frag.append(typeof node === 'string' ? text(node) : node);
+    while (i < src.length) {
+      const codeAt = src.indexOf('`', i);
+      const linkAt = src.indexOf('[', i);
+      const boldAt = src.indexOf('**', i);
+      const starAt = src.indexOf('*', i);
+      const starts = [codeAt, linkAt, boldAt, starAt].filter((n) => n >= 0).sort((a, b) => a - b);
+      if (!starts.length) { add(src.slice(i)); break; }
+      const j = starts[0];
+      if (j > i) add(src.slice(i, j));
+      if (src.startsWith('`', j)) {
+        const end = src.indexOf('`', j + 1);
+        if (end < 0) { add(src.slice(j)); break; }
+        add(el('code', null, src.slice(j + 1, end))); i = end + 1; continue;
+      }
+      if (src.startsWith('[', j)) {
+        const mid = src.indexOf('](', j + 1), end = mid >= 0 ? src.indexOf(')', mid + 2) : -1;
+        if (mid >= 0 && end >= 0) { add(linkTargetNode(src.slice(mid + 2, end), src.slice(j + 1, mid))); i = end + 1; continue; }
+      }
+      if (src.startsWith('**', j)) {
+        const end = src.indexOf('**', j + 2);
+        if (end >= 0) { add(el('strong', null, inlineMarkdown(src.slice(j + 2, end)))); i = end + 2; continue; }
+      }
+      if (src.startsWith('*', j)) {
+        const end = src.indexOf('*', j + 1);
+        if (end >= 0) { add(el('em', null, inlineMarkdown(src.slice(j + 1, end)))); i = end + 1; continue; }
+      }
+      add(src[j]); i = j + 1;
+    }
+    return frag;
+  }
+  function renderMarkdown(source) {
+    const textValue = String(source || '');
+    const root = el('div', {class: 'md'});
+    if (textValue.length > 200000) {
+      root.append(el('p', {class: 'muted small'}, 'Large body shown as source to keep the page responsive.'), el('pre', null, textValue));
+      return root;
+    }
+    const lines = textValue.replace(/\r\n?/g, '\n').split('\n');
+    let i = 0;
+    const para = [];
+    const flushPara = () => { if (para.length) { root.append(el('p', null, inlineMarkdown(para.join(' ')))); para.length = 0; } };
+    const codeBlock = (lang, body) => el('div', {class: 'codeblock'}, lang ? el('div', {class: 'code-lang'}, lang) : null, el('pre', null, body.join('\n')));
+    // Lists: an item is its marker line plus the lines that wrap it (posts
+    // wrap at 80 columns, indented or not, as CommonMark's lazy continuation
+    // allows), a deeper marker opens a nested list, and a blank line ends the
+    // list unless a sibling or a deeper item follows.
+    const LIST_RE = /^(\s*)([-*]|\d+\.)\s+(.*)$/;
+    const BLOCK_START = /^\s*(#{1,4}\s|```|>|(?:-{3,}|\*{3,})\s*$|\|)/;
+    const parseList = (baseIndent) => {
+      const ordered = /\d+\./.test(lines[i].match(LIST_RE)[2]);
+      const l = el(ordered ? 'ol' : 'ul');
+      while (i < lines.length) {
+        const m = lines[i].match(LIST_RE);
+        if (!m || m[1].length !== baseIndent || /\d+\./.test(m[2]) !== ordered) break;
+        const parts = [m[3]];
+        let nested = null;
+        i += 1;
+        while (i < lines.length) {
+          const cur = lines[i];
+          if (!cur.trim()) {
+            let j = i + 1;
+            while (j < lines.length && !lines[j].trim()) j += 1;
+            const nm = j < lines.length ? lines[j].match(LIST_RE) : null;
+            if (nm && nm[1].length >= baseIndent) { i = j; if (nm[1].length === baseIndent) break; continue; }
+            break;
+          }
+          const nm = cur.match(LIST_RE);
+          if (nm) {
+            if (nm[1].length > baseIndent) { nested = parseList(nm[1].length); continue; }
+            break;
+          }
+          if (cur.search(/\S/) > baseIndent || !BLOCK_START.test(cur)) { parts.push(cur.trim()); i += 1; continue; }
+          break;
+        }
+        const item = el('li', null, inlineMarkdown(parts.join(' ')));
+        if (nested) item.append(nested);
+        l.append(item);
+      }
+      return l;
+    };
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) { flushPara(); i += 1; continue; }
+      const fence = line.match(/^```\s*([^`]*)\s*$/);
+      if (fence) {
+        flushPara();
+        const body = [];
+        i += 1;
+        while (i < lines.length && !/^```\s*$/.test(lines[i])) { body.push(lines[i]); i += 1; }
+        if (i < lines.length) i += 1;
+        root.append(codeBlock(fence[1].trim(), body));
+        continue;
+      }
+      if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { flushPara(); root.append(el('hr')); i += 1; continue; }
+      const head = line.match(/^(#{1,4})\s+(.+)$/);
+      if (head) { flushPara(); root.append(el('h' + (head[1].length + 1), null, inlineMarkdown(head[2]))); i += 1; continue; }
+      if (/^>\s?/.test(line)) {
+        flushPara(); const qs = [];
+        while (i < lines.length && /^>\s?/.test(lines[i])) { qs.push(lines[i].replace(/^>\s?/, '')); i += 1; }
+        const bq = el('blockquote');
+        bq.append(renderMarkdown(qs.join('\n')));
+        root.append(bq); continue;
+      }
+      const list = line.match(LIST_RE);
+      if (list && list[1].length <= 3) { flushPara(); root.append(parseList(list[1].length)); continue; }
+      if (line.includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[i + 1])) {
+        flushPara(); const headers = splitPipes(line); i += 2; const rows = [];
+        while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+          const cells = splitPipes(lines[i]);
+          while (cells.length < headers.length) cells.push('');
+          rows.push({data: cells, cells: cells.slice(0, headers.length).map((c) => inlineMarkdown(c))}); i += 1;
+        }
+        root.append(table(headers, rows)); continue;
+      }
+      para.push(line.trim()); i += 1;
+    }
+    flushPara();
+    return root;
   }
 
   async function post(id) {
-    const p = await api('posts/' + encodeURIComponent(id));
+    const p = await api('posts/' + enc(id));
     const fm = p.frontmatter || {};
     const dl = el('dl');
     for (const k of Object.keys(fm)) dl.append(el('dt', null, k), el('dd', {class: 'mono'}, k === 'on' ? postLink(fm[k]) : fm[k]));
     const responses = p.responses.length
-      ? table(['date', 'kind', 'agent', 'vote', 'summary'], p.responses.map((r) => ({data: r, cells: [fmtDate(r.date), el('span', {class: 'kind'}, r.kind), who(r), r.vote ? voteChip(r.vote) : '', postLink(r.id, r.summary)]})))
+      ? table(['when', 'kind', 'agent', 'vote', 'summary'], p.responses.map((r) => ({data: r, cells: [when(r.date), kindLabel(r.kind), who(r), r.vote ? voteChip(r.vote) : '', postLink(r.id, r.summary)]})))
       : empty('No answers, opinions, votes, or results refer to this post.');
-    render(el('h1', null, el('span', {class: 'kind'}, p.kind || 'post'), ' ', el('span', {class: 'mono'}, p.id)),
-      el('div', {class: 'row'}, who(p), p.project ? chip('from project ' + p.project, 'info') : (MODE === 'commons' ? chip('from (unknown project)', 'warn') : null), threadLink(p.thread_key), provenance(p.provenance_ok, p.provenance_missing), el('span', {class: 'muted small mono'}, p.rel_path)),
+    render(el('h1', null, el('span', {class: 'crumb'}, threadLink(p.thread_key)), kindLabel(p.kind || 'post'), el('span', {class: 'mono small'}, p.id)),
+      el('div', {class: 'row', style: 'margin-bottom:10px'}, who(p), when(p.date), p.project ? chip('from project ' + p.project, 'info') : (MODE === 'commons' ? chip('from (unknown project)', 'warn') : null), provenance(p.provenance_ok, p.provenance_missing), el('span', {class: 'muted small mono'}, p.rel_path)),
       el('p', null, el('strong', null, p.summary)),
-      el('div', {class: 'grid2'},
-        el('div', null, el('h2', null, 'Frontmatter'), dl),
-        el('div', null, el('h2', null, 'Body (verbatim, as text)'), el('pre', null, p.body || '(empty)'))),
-      el('h2', null, 'Responses'), responses);
+      el('div', {class: 'grid grid-2'},
+        panel('Frontmatter', dl),
+        panel('Body', [renderMarkdown(p.body || ''), el('details', {class: 'source small'}, el('summary', null, 'source'), el('pre', null, p.body || '(empty)'))])),
+      panel('Responses', responses, el('span', {class: 'badge'}, p.responses.length)));
   }
 
   async function suggestions() {
     const [rows, project] = await Promise.all([api('suggestions'), api('project')]);
-    const quorum = (project.board_params || {}).quorum || 2;
+    const params = project.board_params || {};
+    const quorum = params.quorum || 2;
+    const expiryDays = params.expiry_days || 14;
     if (!rows.length) return render(el('h1', null, 'Suggestions & votes'), empty('No suggestions on the board. A suggestion names one variable, the file class, and the score it should move.'));
-    const blocks = rows.map((s) => {
-      const votes = s.votes.length
-        ? table(['voter', 'vote', 'counted', 'date', 'reason'], s.votes.map((v) => ({data: v, cells: [who(v), voteChip(v.vote, v.classification), v.classification === 'counted' ? 'yes' : 'no - ' + v.classification, fmtDate(v.date), postLink(v.post_id, v.reason || v.post_id)]})))
-        : empty('No votes yet.');
-      return el('details', {open: s.status === 'eligible' ? '' : null},
-        el('summary', null, el('span', {class: 'row'},
-          el('strong', {class: 'mono'}, (s.rank ? '#' + s.rank + ' ' : '') + 'score ' + (s.score > 0 ? '+' : '') + s.score),
-          statusChip(s.status), threadLink(s.thread_key),
-          el('span', {class: 'muted small'}, 'up ' + s.up + ' · down ' + s.down + ' · voters ' + s.voters + '/' + quorum + ' for quorum'), text(s.summary))),
-        el('p', {class: 'muted small'}, 'by ', who(s), ' on ', text(fmtDate(s.date)), ' · ', postLink(s.id, 'open the suggestion')),
-        votes);
-    });
-    render(el('h1', null, 'Suggestions & votes'),
-      el('p', {class: 'muted small'}, 'Order = the experiment queue: score (up − down) then date. A suggestion is eligible once ' + quorum + ' distinct voters weighed in; self-votes are shown but never counted; the latest vote per agent wins. Votes decide only what the loop tries next.'),
-      blocks);
+    const statusSel = el('select', {'aria-label': 'Filter by status'}, [['', 'any status'], ['eligible', 'eligible'], ['needs votes', 'needs votes'], ['expired', 'expired']].map(([val, lab]) => el('option', {value: val}, lab)));
+    const box = el('div', {class: 'stack'});
+    const draw = () => {
+      const list = rows.filter((s) => !statusSel.value || s.status === statusSel.value);
+      fill(box, list.length ? list.map((s) => {
+        const votes = s.votes.length
+          ? el('details', {class: 'small', style: 'margin-top:8px'}, el('summary', null, 'every vote (' + s.votes.length + ')'),
+            table(['voter', 'vote', 'counted', 'when', 'reason'], s.votes.map((v) => ({data: v, cells: [who(v), voteChip(v.vote, v.classification), v.classification === 'counted' ? 'yes' : 'no - ' + v.classification, when(v.date), postLink(v.post_id, v.reason || v.post_id)]}))))
+          : null;
+        return suggestionCard(Object.assign({}, s, {expiry_days: expiryDays}), quorum, votes);
+      }) : empty('No suggestion matches.'));
+    };
+    statusSel.addEventListener('change', draw);
+    draw();
+    render(el('h1', null, 'Suggestions & votes', el('span', {class: 'sub'}, 'the experiment queue')),
+      el('p', {class: 'lead'}, 'Order = the experiment queue: score (up \u2212 down) then date. A suggestion is eligible once ' + quorum + ' distinct voters weighed in; an unvoted one expires after ' + expiryDays + ' days; self-votes are shown but never counted; the latest vote per agent wins. Votes decide only what the loop tries next.'),
+      el('div', {class: 'toolbar'}, statusSel, el('span', {class: 'count'}, num(rows.length) + ' suggestions')),
+      box);
   }
 
   async function amendments() {
     const rows = await api('amendments');
     if (!rows.length) return render(el('h1', null, 'Constitutional amendments'), empty('No amendment is open. An amendment quotes the exact constitution text it replaces and the text it proposes; it passes only with a supermajority of informed votes from enough distinct sessions.'));
     const blocks = rows.map((a) => {
-      const total = a.up + a.down;
-      const pct = a.pct_up;
       const votes = a.votes.length
-        ? table(['session', 'voter', 'vote', 'counted', 'date', 'reason and Read: restatement'], a.votes.map((v) => ({data: v, cells: [el('span', {class: 'mono small'}, v.session || '(none)'), who({name: v.name, agent: v.agent}), voteChip(v.vote, v.classification), v.classification === 'counted' ? 'yes' : 'no - ' + v.classification, fmtDate(v.date),
-          el('span', null, postLink(v.post_id, v.reason || v.post_id), v.read_line ? el('div', {class: 'small muted'}, 'Read: ' + v.read_line) : el('div', {class: 'small err'}, 'no Read: line'))]})))
-        : empty('No votes yet.');
-      return el('details', {open: ''},
-        el('summary', null, el('span', {class: 'row'}, statusChip(a.status), threadLink(a.thread_key), text(a.summary))),
-        el('div', {class: 'row', style: 'margin:8px 0'},
-          el('div', {class: 'bar', title: pct + '% up'}, el('span', {style: 'width:' + Math.max(0, Math.min(100, pct)) + '%'})),
-          text(a.up + ' up · ' + a.down + ' down · ' + pct + '% up · voters ' + a.voters + '/' + a.quorum + ' · identities ' + a.identities),
-          el('span', {class: 'muted small'}, 'uncounted: ' + a.uncounted_self + ' self, ' + a.uncounted_hash_mismatch + ' hash mismatch, ' + a.uncounted_no_read_line + ' no Read line')),
-        el('p', {class: 'muted small'}, 'proposed by ', who(a), ' on ', text(fmtDate(a.date)), ' · section ', text(a.section || '-'), ' · text_hash ', el('code', null, a.text_hash || '(none)'), ' · ', postLink(a.id, 'open the amendment (current and proposed text)')),
-        votes);
+        ? el('details', {class: 'small', style: 'margin-top:8px'}, el('summary', null, 'every vote (' + a.votes.length + ')'),
+          table(['session', 'voter', 'vote', 'counted', 'when', 'reason and Read: restatement'], a.votes.map((v) => ({data: v, cells: [el('span', {class: 'mono small'}, v.session || '(none)'), who({name: v.name, agent: v.agent}), voteChip(v.vote, v.classification), v.classification === 'counted' ? 'yes' : 'no - ' + v.classification, when(v.date),
+            el('span', null, postLink(v.post_id, v.reason || v.post_id), v.read_line ? el('div', {class: 'small muted'}, 'Read: ' + v.read_line) : el('div', {class: 'small err'}, 'no Read: line'))]}))))
+        : null;
+      return amendmentCard(a, [votes, el('p', {class: 'small muted', style: 'margin:8px 0 0'}, postLink(a.id, 'open the amendment (current and proposed text)'))]);
     });
     render(el('h1', null, 'Constitutional amendments'),
-      el('p', {class: 'muted small'}, 'Tallied by docs/scripts/board.sh --amendments and nothing else. A vote counts only when it carries the proposal\u2019s text_hash and a Read: line; the proposer\u2019s session cannot vote; one vote per session, the latest wins. Hard stops, the kill switch, the Amendments section, and the frontmatter are never on the ballot.'),
-      blocks);
+      el('p', {class: 'lead'}, 'Tallied by docs/scripts/board.sh --amendments and nothing else. A vote counts only when it carries the proposal\u2019s text_hash and a Read: line; the proposer\u2019s session cannot vote; one vote per session, the latest wins. Hard stops, the kill switch, the Amendments section, and the frontmatter are never on the ballot.'),
+      el('div', {class: 'stack'}, blocks));
   }
 
   async function evolution() {
     const e = await api('evolution');
     const s = e.summary || {};
     if (s.evolution_present !== '1') return render(el('h1', null, 'Self-improvement loop'), empty('No docs/evolution/ in this repository. The loop starts when the owner fills the constitution and evaluators (docs/evolution/README.md).'));
-    const cards = el('div', {class: 'cards'},
-      el('div', {class: 'card'}, el('div', {class: 'n'}, s.stop_present === '1' ? 'STOP' : (s.loop || 'unset')), el('div', {class: 'l'}, s.stop_present === '1' ? 'kill switch present - every cycle halts' : 'loop flag (constitution)')),
-      el('div', {class: 'card'}, el('div', {class: 'n'}, s.baseline || 'unset'), el('div', {class: 'l'}, 'baseline (evaluators)')),
-      el('div', {class: 'card'}, el('div', {class: 'n'}, s.count_variants || '0'), el('div', {class: 'l'}, 'variants tried')),
-      el('div', {class: 'card'}, el('div', {class: 'n'}, s.count_baselines || '0'), el('div', {class: 'l'}, 'baseline runs')),
-      el('div', {class: 'card'}, el('div', {class: 'n'}, s.count_incidents || '0'), el('div', {class: 'l'}, 'incidents')));
+    const kpis = el('div', {class: 'kpis'},
+      kpi(s.stop_present === '1' ? 'STOP' : (s.loop || 'unset'), 'loop flag', null, {sub: s.stop_present === '1' ? 'kill switch present - every cycle halts' : 'from the constitution', tone: s.stop_present === '1' ? 'bad' : (s.loop === 'on' ? 'ok' : 'warn')}),
+      kpi(s.baseline || 'unset', 'baseline', null, {sub: 'from the evaluators'}),
+      kpi(Number(s.count_variants || 0), 'variants tried', null, {}),
+      kpi(Number(s.count_baselines || 0), 'baseline runs', null, {}),
+      kpi(Number(s.count_incidents || 0), 'incidents', null, {tone: Number(s.count_incidents || 0) ? 'bad' : ''}));
     const facts = el('dl');
     facts.append(el('dt', null, 'limits'), el('dd', null, s.limits_note || s.limits || 'unset'));
     if ((s.missing_files || []).length) facts.append(el('dt', null, 'missing'), el('dd', {class: 'err'}, s.missing_files.join(', ')));
-    const decisions = Object.keys(e.decisions).length ? Object.entries(e.decisions).map(([k, v]) => chip(k + ' ' + v, k === 'kept' || k === 'promoted' ? 'ok' : 'warn')) : [text('no variants yet')];
+    const decisions = Object.keys(e.decisions).length ? Object.entries(e.decisions).map(([k, v]) => chip(k + ' ' + v, (k === 'kept' || k === 'promoted' ? 'ok' : 'warn') + ' dotted')) : [text('no variants yet')];
     const origins = Object.entries(e.origins).map(([k, v]) => el('div', null, k === 'voted' ? 'from voted suggestions: ' : 'from signals: ', v.tried + ' tried, ' + v.kept + ' kept' + (v.tried ? ' (' + Math.round(100 * v.kept / v.tried) + '%)' : '')));
     const archive = Object.entries(e.archive).map(([section, tbl]) => {
       const cols = tbl.columns.length ? tbl.columns : ['Row'];
       const rows = tbl.rows;
       const shown = section.toLowerCase().startsWith('variant') ? rows.slice(-Number(s.last || 5)) : rows;
-      return el('div', null, el('h2', null, section + ' (' + rows.length + ')'),
-        shown.length ? table(cols, shown.map((r) => ({data: r, cells: cols.map((_, i) => r.cells[i] || '')}))) : empty('No rows.'));
+      return panel(section + ' (' + rows.length + ')', shown.length ? table(cols, shown.map((r) => ({data: r, cells: cols.map((_, i) => r.cells[i] || '')}))) : empty('No rows.'));
     });
     const scope = e.scope.length ? table(['file class', 'paths', 'stage', 'autonomy', 'clean cycles', 'incidents'],
-      e.scope.map((r) => ({data: r, cells: [r.file_class, el('span', {class: 'mono small'}, r.paths), r.stage, statusChip(r.autonomy), r.clean_cycles_so_far + ' / ' + r.clean_cycles_required, r.incidents]}))) : empty('The constitution has no editable-scope rows yet.');
-    const product = el('div', null, e.product_notes.map((n) => el('div', null, '· ', n)), el('p', null, el('strong', null, 'verdict: '), s.product_verdict || ''));
-    const hyg = e.hygiene.length ? table(['kind', 'name'], e.hygiene.map((h) => ({data: h, cells: [chip(h.kind, 'warn'), el('span', {class: 'mono'}, h.value)]}))) : el('p', {class: 'muted'}, s.hygiene_git === '0' ? 'not a git repository' : 'clean: main tree only, no evolve/* branches');
-    render(el('h1', null, 'Self-improvement loop'), cards, el('h2', null, 'Constitution'), facts,
-      el('h2', null, 'Decisions'), el('div', {class: 'row'}, decisions), el('div', {class: 'small muted'}, origins),
+      e.scope.map((r) => ({data: r, cells: [r.file_class, el('span', {class: 'mono small'}, r.paths), r.stage, statusChip(r.autonomy),
+        el('span', null, bar(Number(r.clean_cycles_so_far) || 0, Number(r.clean_cycles_required) || 1, 'ok'), el('span', {class: 'small num'}, ' ' + r.clean_cycles_so_far + ' / ' + r.clean_cycles_required)), r.incidents]}))) : empty('The constitution has no editable-scope rows yet.');
+    const product = el('div', null, e.product_notes.map((n) => el('div', null, '\u00b7 ', n)), el('p', null, el('strong', null, 'verdict: '), s.product_verdict || ''));
+    const hyg = e.hygiene.length ? table(['kind', 'name'], e.hygiene.map((h) => ({data: h, cells: [chip(h.kind, 'warn'), el('span', {class: 'mono'}, h.value)]}))) : el('p', {class: 'muted', style: 'margin:0'}, s.hygiene_git === '0' ? 'not a git repository' : 'clean: main tree only, no evolve/* branches');
+    render(el('h1', null, 'Self-improvement loop'), kpis,
+      el('div', {class: 'grid grid-2'},
+        panel('Constitution', facts),
+        panel('Decisions', el('div', null, el('div', {class: 'row'}, decisions), el('div', {class: 'small muted', style: 'margin-top:6px'}, origins)))),
       archive,
-      el('h2', null, 'Editable scope (autonomy per file class)'), scope,
-      el('h2', null, 'Product scope'), product,
-      el('h2', null, 'Hygiene (branches and worktrees the loop must remove)'), hyg);
+      panel('Editable scope (autonomy per file class)', scope),
+      el('div', {class: 'grid grid-2'},
+        panel('Product scope', product),
+        panel('Hygiene (branches and worktrees the loop must remove)', hyg)));
   }
 
-  function render(...nodes) { main.replaceChildren(...nodes.flat().filter(Boolean)); }
+  // A poll-triggered redraw is quiet: the rise animation belongs to navigation,
+  // not to a snapshot that changed under a reader.
+  let quietRedraw = false;
+  function render(...nodes) {
+    fill(main, nodes);
+    if (!reducedMotion() && !quietRedraw) {
+      main.classList.remove('view-in');
+      requestAnimationFrame(() => main.classList.add('view-in'));
+    }
+    quietRedraw = false;
+  }
   function go(hash) { location.hash = hash; }
   const DEFAULT_VIEW = MODE === 'org' ? '#/org' : '#/overview';
   async function route() {
-    const h = location.hash || DEFAULT_VIEW;
+    const full = location.hash || DEFAULT_VIEW;
+    // Optional chart state after '?', so a view with a range can be linked: #/activity?range=24h&by=kind
+    const q = full.indexOf('?');
+    const h = q === -1 ? full : full.slice(0, q);
+    const params = new URLSearchParams(q === -1 ? '' : full.slice(q + 1));
+    if (RANGES.some(([v]) => v === params.get('range'))) chartPrefs.range = params.get('range');
+    if (['project', 'kind', 'total'].includes(params.get('by'))) chartPrefs.by = params.get('by');
     for (const a of document.querySelectorAll('#nav a')) a.classList.toggle('active', a.getAttribute('href').startsWith('#') && h.startsWith(a.getAttribute('href')));
     header();
     try {
@@ -2138,6 +3413,7 @@ APP_JS = r"""
       const arg = m && m[2] ? decodeURIComponent(m[2]) : '';
       if (MODE === 'org') {
         if (view === 'votes') await votes();
+        else if (view === 'proposals') await proposals();
         else if (view === 'agents') await agents();
         else if (view === 'activity') await activity();
         else await org();
@@ -2146,15 +3422,17 @@ APP_JS = r"""
       if (view === 'threads') await threads();
       else if (view === 'thread') await thread(arg);
       else if (view === 'post') await post(arg);
+      else if (view === 'proposals' && MODE !== 'commons') await proposals();
       else if (view === 'suggestions') await suggestions();
       else if (view === 'amendments') await amendments();
       else if (view === 'evolution') await evolution();
       else await overview();
     } catch (e) {
-      render(el('p', {class: 'err'}, 'Could not load this view: ' + e.message));
+      render(el('div', {class: 'notice', role: 'alert'}, el('span', {class: 'notice-mark', 'aria-hidden': 'true'}, '!'), el('span', null, 'Could not load this view: ' + e.message)));
     }
   }
   buildNav();
+  initTheme();
   window.addEventListener('hashchange', () => route().then(() => main.focus()));
   document.getElementById('refresh-link').addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -2168,14 +3446,17 @@ APP_JS = r"""
     try {
       if (MODE === 'org') {
         const o = await api('org');
-        if (o.stamp !== seenBuild) { seenBuild = o.stamp; route(); }
+        // The first poll on a view that never fetched the org stamp only records it.
+        if (!seenBuild) seenBuild = o.stamp;
+        else if (o.stamp !== seenBuild) { seenBuild = o.stamp; quietRedraw = true; route(); }
         return;
       }
       const p = await api('project');
-      if (p.built_at !== seenBuild) { seenBuild = p.built_at; route(); }
+      if (p.built_at !== seenBuild) { seenBuild = p.built_at; quietRedraw = true; route(); }
     } catch (e) { header(); }
   }, 15000);
 })();
+
 """
 
 
@@ -2195,7 +3476,8 @@ def maybe_register(args, repo):
         return None
     try:
         return register_project(pulse_home(getattr(args, "home", None)), repo,
-                                git(repo, "config", "--get", "remote.origin.url"))
+                                git(repo, "config", "--get", "remote.origin.url"),
+                                brain=getattr(args, "brain", False))
     except DashboardError as exc:
         sys.stderr.write("pulse-dashboard: not registered: %s\n" % exc)
         return None
@@ -2277,12 +3559,18 @@ def cmd_serve(args):
 
 def cmd_hub(args):
     home = pulse_home(args.home)
+    brain_entry = None
+    if getattr(args, "brain", False) and not getattr(args, "no_register", False):
+        repo = resolve_repo(getattr(args, "repo", "."))
+        brain_entry = register_project(home, repo, git(repo, "config", "--get", "remote.origin.url"), brain=True)
     hub = HubState(home, state_home(args.state_dir), refresh_seconds=args.refresh_seconds,
                    max_age_seconds=args.max_age_seconds, last=args.last)
     server = DashboardServer(None, port=args.port, verbose=args.verbose, hub=hub)
     print("PULSE organization hub")
     print("Serving read-only on %s (127.0.0.1 only; Ctrl-C to stop)" % server.url)
     print("Registry:   %s" % (home / REGISTRY_NAME))
+    if brain_entry:
+        print("Brain:      /p/%s/" % brain_entry["slug"])
     for slug, e, st, err in hub.each():
         print("  %-16s %s%s" % (base_for(slug) + "/", e["path"], "  [%s]" % err if err else ""))
     if not [s for s in hub.entries if s != COMMONS_SLUG]:
@@ -2300,7 +3588,7 @@ def cmd_hub(args):
 
 def cmd_register(args):
     repo = resolve_repo(args.repo)
-    entry = register_project(pulse_home(args.home), repo, git(repo, "config", "--get", "remote.origin.url"))
+    entry = register_project(pulse_home(args.home), repo, git(repo, "config", "--get", "remote.origin.url"), brain=getattr(args, "brain", False))
     print("Registered /p/%s/ -> %s" % (entry["slug"], entry["path"]))
     print("Registry: %s" % (pulse_home(args.home) / REGISTRY_NAME))
     return 0
@@ -2392,6 +3680,8 @@ def build_parser():
         add_home(sp)
         sp.add_argument("--no-register", action="store_true",
                         help="do not add this checkout to the hub's project registry")
+        sp.add_argument("--brain", action="store_true",
+                        help="mark this checkout as the one machine-local PULSE brain project")
 
     sp = sub.add_parser("index", help="build or refresh the SQLite projection")
     add_repo(sp)
@@ -2417,7 +3707,8 @@ def build_parser():
     sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("hub", help="serve the organization: every registered project plus the commons")
-    add_home(sp)
+    add_register_opt(sp)
+    sp.add_argument("--repo", default=".", help="checkout to mark when --brain is used (default: current directory)")
     sp.add_argument("--state-dir", default=None,
                     help="where projections live (default: $PULSE_DASHBOARD_HOME or the user cache dir)")
     sp.add_argument("--port", type=int, default=8766, help="TCP port on 127.0.0.1 (0 picks a free port)")

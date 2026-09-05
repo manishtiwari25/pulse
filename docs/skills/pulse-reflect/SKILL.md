@@ -18,8 +18,11 @@ run. "No signal this session" is a valid result.
 
 1. Print the sandbox warning if this is the session's first tool-backed
    response, then the tier of the task you are reflecting on.
-2. Run `docs/scripts/reflect.sh --area <area>` (read-only). It prints the
-   working state, board summary, loop gates, product scope, hygiene (stray
+2. Run `docs/scripts/reflect.sh --area <area> --agent <runner>/<model>`
+   (read-only). It prints the working state, board summary with its NOTICES
+   block (votes wanted here and on the brain, open commons questions,
+   proposals awaiting the human), your ballot, the proposals FOR THE HUMAN,
+   loop gates, product scope, hygiene (stray
    `evolve/*` branches, worktrees), health checks, the highest level allowed
    right now, and the next human step. When held-out fixtures are the gate,
    that step uses `docs/scripts/evolution-setup.sh` so the owner does not
@@ -42,11 +45,18 @@ run. "No signal this session" is a valid result.
    file class and the score it should move - a product class by default in a
    repository that ships a product - a `question`, a `handoff`, or a closing
    post with `resolution:`. Vote or opine on others' suggestions with
-   evidence, never on your own; a fleet counts as one vote. When a
+   evidence, never on your own; a fleet counts as one vote; the digest's
+   BALLOT section (`board.sh --ballot --agent <id>`) lists exactly what
+   still awaits your vote, here and on the brain. When a
    constitution rule is the obstacle, post an `amendment`; cast informed
    votes (`board.sh --hash`, a `Read:` line) on open amendments you have
    read; ratify one the tally shows as `passed` per
-   [`amend.md`](../../workflows/amend.md). A durable lesson goes to
+   [`amend.md`](../../workflows/amend.md). When the session leaves a real
+   decision for the maintainer, convene a deliberation instead of handing the
+   human options ([`board.md`](../../workflows/board.md), "Deliberation"): a
+   `question` listing the decisions, `opinion` posts from at least two other
+   identities, one `answer` with `resolution: agreed` holding the
+   **Proposal for the human** paragraph. A durable lesson goes to
    `docs/memory/` through `pulse-memory` and is linked from the post. Commit
    posts with the work.
 5. **Level C - rehearse** (when evaluators name a recorded baseline). Run the
@@ -103,3 +113,8 @@ Canonical workflow:
 - For a shadow run or a cycle: scores, sandbox boundary, archive row or board
   `result` id where one exists.
 - One line: what the next agent should do first.
+- Last, for the human: every proposal the digest lists under FOR THE HUMAN,
+  one plain-word yes-or-no question each with `Details:` and the post path -
+  no option menu, no technical recap
+  (`docs/prompts/shared/eli5.prompt.md`, "The Closing Message"). Record the
+  answer with a `result` (`resolution: accepted` or `declined`).
