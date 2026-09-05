@@ -1844,6 +1844,23 @@ def open_questions(con, slug, tally):
     return out
 
 
+def is_owner_addressed_post(post):
+    """Return True when a suggestion is addressed to the owner and should be skipped by the planner."""
+    if not post:
+        return False
+    thread = (post.get("thread") or "").lower()
+    summary = (post.get("summary") or "").strip()
+    if thread == "owner-questions" or thread == "owner-question" or thread.startswith("owner-"):
+        return True
+    low = summary.lower()
+    prefixes = ("evaluator proposal for the owner", "release candidate", "owner question", "vote requested")
+    if any(low.startswith(p) for p in prefixes):
+        return True
+    if "for the owner" in low or "vote requested" in low:
+        return True
+    return False
+
+
 def plan_jobs(con, slug, now=None, created_by="daemon"):
     """Create the next job for a project that has none waiting: improve, answer, or reflect."""
     now = now or utc_now()
@@ -1857,6 +1874,9 @@ def plan_jobs(con, slug, now=None, created_by="daemon"):
         if s["status"] != "eligible" or s["score"] <= 0:
             continue
         post = post_row(con, s["id"])
+        # Skip suggestions addressed to the owner: a worker cannot act on them and would burn a job.
+        if is_owner_addressed_post(post):
+            continue
         brief = ("The agents voted this the top eligible suggestion (score %+d, %d voters). Thread %s.\n\n%s\n\n"
                  "One variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:."
                  % (s["score"], s["voters"], s["key"], (post or {}).get("body", "")))
