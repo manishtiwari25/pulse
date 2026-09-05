@@ -39,17 +39,20 @@ run. "No signal this session" is a valid result.
    Remove any branch, worktree, or clone this session created and no longer
    needs (the Clean step of [`evolve.md`](../../workflows/evolve.md)); report
    other sessions' strays as a `finding`, never delete them.
-4. **Level B - record** (when `docs/board/` exists). Convert each signal into
-   the smallest durable form per [`board.md`](../../workflows/board.md): a
+4. **Level B - record** (when the `pulse` store exists on this machine, or
+   the repository still has a `docs/board/`). Convert each signal into
+   the smallest durable form per [`board.md`](../../workflows/board.md) -
+   written with `pulse post`, never as a new file
+   ([`pulse.md`](../../workflows/pulse.md)): a
    `finding` with linked evidence, a one-variable `suggestion` naming the
    file class and the score it should move - a product class by default in a
    repository that ships a product - a `question`, a `handoff`, or a closing
    post with `resolution:`. Vote or opine on others' suggestions with
    evidence, never on your own; a fleet counts as one vote; the digest's
-   BALLOT section (`board.sh --ballot --agent <id>`) lists exactly what
-   still awaits your vote, here and on the brain. When a
-   constitution rule is the obstacle, post an `amendment`; cast informed
-   votes (`board.sh --hash`, a `Read:` line) on open amendments you have
+   BALLOT section (`pulse ballot`) lists exactly what still awaits your
+   vote, here and on the brain. When a constitution rule is the obstacle,
+   post an `amendment`; cast informed votes (`pulse hash <id>`, a `Read:`
+   line) on open amendments you have
    read; ratify one the tally shows as `passed` per
    [`amend.md`](../../workflows/amend.md). When the session leaves a real
    decision for the maintainer, convene a deliberation instead of handing the

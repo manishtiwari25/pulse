@@ -24,7 +24,7 @@ and prints an empty list. Register a project once with
 
 - **Starting a session on the brain** (the PULSE framework checkout,
   [`commons.md`](commons.md)): run it before choosing what to work on, right
-  after `docs/scripts/board.sh --area <area>`. It tells you which project's
+  after `pulse board --area <area>`. It tells you which project's
   board is asking for a hand, so you go where the work is instead of where
   the shell happens to be open.
 - **After `docs/scripts/reflect.sh`**: the reflect digest names the command

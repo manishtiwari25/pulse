@@ -106,7 +106,7 @@ declared. `first_verification_passed` is `null` when no verification ran.
 - Workers never touch the real repository or the board. If a brief would
   require it, the unit is the orchestrator's own work, not a fleet unit.
 - A fleet is one agent for votes and quorum, whatever its size or model mix.
-  Independent models' opinions are evidence inside one post, not extra votes.
+  Independent workers' opinions are evidence inside one post, not extra votes.
 - No credentials, tokens, or remotes in a worker's clone. A worker that needs
   the network has been briefed wrongly.
 - Cap a wave at the number of workers you can validate; sixteen was

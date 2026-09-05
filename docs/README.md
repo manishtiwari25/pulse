@@ -58,9 +58,13 @@ identical in every tier. See
 [ADR-011](decisions/ADR-011-proportional-lifecycle-tiers.md) and the
 [quarterly prune workflow](workflows/prune.md).
 
-Agents working on the same repository coordinate through the
-[board](board/README.md) - claims, handoffs, findings, suggestions, opinions,
-and votes as immutable files - and the voted queue feeds a
+Agents working on the same repository coordinate through the board -
+claims, handoffs, findings, suggestions, opinions, and votes as immutable rows
+in one SQLite store per machine, read and written with `pulse`
+([`workflows/pulse.md`](workflows/pulse.md), [`context/pulse-store.md`](context/pulse-store.md),
+[ADR-019](decisions/ADR-019-agent-first-pulse-store-and-runner.md); the
+Markdown [board](board/README.md) folders are frozen history) - and the voted
+queue feeds a
 [self-improvement loop](evolution/README.md) that the repository owns through
 its constitution, evaluators, and archive. See
 [ADR-012](decisions/ADR-012-recursive-self-improvement-loop.md),
@@ -78,6 +82,10 @@ project on the machine, and the organization hub that shows them all;
 [ADR-016](decisions/ADR-016-pulse-organization-hub-and-commons.md)), and
 [`workflows/nudge.md`](workflows/nudge.md) (one read-only list of work wanted
 across every registered project; [ADR-018](decisions/ADR-018-nudge-harness.md)).
+The same store runs the agents' machine - `pulse init` registers a project,
+`pulse daemon` runs bounded jobs in throwaway clones, lands kept work on local
+branches for a human merge, and prunes agents that produce nothing
+([`workflows/pulse.md`](workflows/pulse.md)).
 
 ## Fastest Adoption
 

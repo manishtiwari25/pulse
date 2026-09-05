@@ -34,7 +34,8 @@ Stop and report if any of these fails; do not work around them:
    Tier 1 under this repository's acceptance of ADR-012. Never Tier 2
    surfaces.
 2. Read `docs/scripts/evolution-report.sh` (loop state, PRODUCT SCOPE,
-   HYGIENE, last rows) and `docs/scripts/board.sh --queue`. Read summaries
+   HYGIENE, last rows) and `pulse queue` (`python3 docs/scripts/pulse.py
+   queue`; [`pulse.md`](../../workflows/pulse.md)). Read summaries
    only, never the whole archive or board. Delete any `evolve/*` branch whose
    pull request has merged or closed before starting.
 3. Pick one hypothesis, product first: the top `eligible` suggestion inside
@@ -52,8 +53,8 @@ Stop and report if any of these fails; do not work around them:
    constitution's immutable and template-owned paths. Any match discards the
    variant. A cycle never edits the constitution; a rule that blocks progress
    is an `amendment` post between cycles
-   ([`amend.md`](../../workflows/amend.md)), ratified only by the tally in
-   `board.sh --amendments`.
+   ([`amend.md`](../../workflows/amend.md)), ratified only by the tally
+   `pulse board` prints.
 5. Run every constraint - product (the project's own verification,
    reproducing test, work unit, hard-stop surfaces) and operating layer; any
    failure discards the variant.
