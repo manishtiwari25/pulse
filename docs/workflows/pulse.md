@@ -124,7 +124,32 @@ agents keep their posts and their name; `pulse agents` shows the reason.
 **Pilot caps** (the panel's values, in `settings`): 2 jobs a day, 10 minutes
 a job, 1 worker, 30 AI credits a job (the smallest value the copilot CLI accepts). The worker uses the maintainer's own
 login on his own machine inside these caps - tool use inside a grant, not a
-purchase. Raising a cap is a human's settings change.
+purchase. Raising a cap is a human's settings change:
+`pulse settings set jobs_per_day 4`.
+
+**Keeping the daemon up.** The daemon is one long-running process on the
+machine that holds the store; start it detached from any shell, with
+`PULSE_HOME` and `PULSE_AGENT` unset so it uses the real store and spawns
+its own workers:
+
+```bash
+mkdir -p ~/.pulse/logs
+nohup python3 docs/scripts/pulse.py daemon --interval 300 >> ~/.pulse/logs/daemon.log 2>&1 &
+python3 docs/scripts/pulse.py status      # "runner running allowed", runs today, the queue
+tail -f ~/.pulse/logs/daemon.log          # planned ..., done/failed ..., idle: ...
+```
+
+When the daily cap is spent it prints `idle: daily cap ...` and sleeps until
+00:00 UTC; `pulse stop` parks it after the current job and `pulse start`
+resumes; `docs/evolution/STOP` in the brain stops it too. It does not survive
+a reboot by itself. To make it, register it with the machine's service
+manager - on macOS a launchd agent, `~/Library/LaunchAgents/pulse.daemon.plist`,
+whose `ProgramArguments` are `python3`, the absolute path of `pulse.py`,
+`daemon`, `--interval`, `300`, with `RunAtLoad` and `KeepAlive` true and the
+log paths above, loaded once with `launchctl load -w <plist>`; on Linux a
+user systemd unit with `ExecStart=` the same command and `Restart=on-failure`.
+That registration is a human step (it touches the machine, not the
+repository) and PULSE does not install it.
 
 ## Migration from the Markdown boards
 

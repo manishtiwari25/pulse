@@ -4,7 +4,7 @@ title: Agent-First PULSE - One SQL Store, One `pulse` Command, and a Machine Whe
 status: Accepted
 date: 2026-09-05
 delivery: partially delivered
-delivered:
+delivered: 2026-09-05
 areas: [agents, workflows, governance, data]
 tags: [adr, agent-first, sqlite, store, runner, pulse-cli, lifecycle, pruning]
 ---
@@ -250,10 +250,20 @@ action.
       freeze `docs/board/` (2026-09-05).
 - [x] Dashboard reads the store (`tally_mode: store`); wording "agents"
       (2026-09-05).
-- [ ] Slice 2 and slice 3 as separate work units. Slice 2 also owns: the
-      roster read from the `agents` table (kind, status, pruning reason,
-      scorecards); `pulse plan` skipping questions addressed to the owner;
-      other projects' `AGENTS.md` and skills pointing at `pulse` through
-      template sync.
-- [ ] Update `docs/architecture/` for the two shapes: rules as files, data
-      as rows (`docs/context/pulse-store.md` covers the store itself).
+- [x] Slice 2 (2026-09-05): the dashboard's yes/no with the human's words
+      writing a `decisions` row through `POST /api/v1/decide` (the narrow
+      write path of ADR-017, now delivered there as a note); the roster read
+      from the `agents` table (kind, status, pruning reason, scorecards);
+      per-project loops planned and run by `pulse daemon` (improve, answer,
+      one reflect a day); `pulse plan` creating one job per question, ever,
+      and telling the worker to leave owner questions to the human; a
+      migrated legacy name becoming a live agent when its owner joins with
+      it; `reflect.sh` and `nudge.py` reading the store; every workflow,
+      skill, and template speaking `pulse`; the adopters `amistio` and
+      `project-light` synced to the same commit through template sync.
+- [x] Update `docs/architecture/` for the two shapes: rules as files, data
+      as rows (`docs/context/pulse-store.md` covers the store itself;
+      2026-09-05).
+- [ ] Slice 3 as its own work unit: a second machine (ADR-018 slice 3),
+      replication of the store or git remotes, leases proven under
+      contention first.
