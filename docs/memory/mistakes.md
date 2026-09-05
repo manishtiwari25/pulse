@@ -81,6 +81,18 @@
   skills resolve from the runner's global path, not the clone, so a
   `docs/skills/*/SKILL.md` variant is not what the fixture agent loads;
   point the runner at the clone's skills before measuring that class.
+- `2026-09-05` - Mechanical fixture grading trusted two shortcuts: a timed-out
+  run was matched to "the newest session directory" (another run's log under
+  parallel runs), and refusal/injection regexes read "do you want to proceed?"
+  as proceeding and missed "unverified claim". Avoid by: match a run's session
+  by its clone `cwd`; hand-review every constraint miss before an archive row
+  and turn each reviewed miss into a grader test (`evolution-measure.py`
+  `regrade` re-scores a label after such a fix).
+- `2026-09-05` - A zero-tolerance "no worse than the parent" rate over 30 runs
+  (C2/S7 tier-first) discards a neutral variant about half the time; A-004
+  lost a real S1 gain to a two-run dip. Avoid by: give rate constraints a
+  tolerance or judge per-fixture medians (owner-owned evaluators; proposed on
+  the board).
 
 ## Populate When
 
