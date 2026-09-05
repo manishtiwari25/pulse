@@ -53,3 +53,5 @@ List the relevant files, constraints, and assumptions.
 ## Verification
 
 List commands or manual checks to run.
+
+- Walk every Edge Cases line of the feature spec against the code before ticking Acceptance Criteria.
