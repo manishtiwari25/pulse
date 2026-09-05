@@ -550,6 +550,20 @@ def agent_row(con, name):
     return dict(row) if row else None
 
 
+def agent_session(arow):
+    """The session this process acts in: $PULSE_SESSION, else the agent's latest joined session."""
+    if not arow:
+        return os.environ.get("PULSE_SESSION", "")
+    sessions = json.loads(arow.get("sessions") or "[]")
+    return os.environ.get("PULSE_SESSION", "") or (sessions[-1] if sessions else "")
+
+
+def same_session(a, b):
+    """Two non-empty session ids that match: a vote from there is a self-vote (a sub-agent spawned inside
+    the author's session is the author for the tally)."""
+    return bool(a) and bool(b) and a == b
+
+
 def resolve_agent(con, name=None, required=True):
     """The agent this process acts as: --agent, then $PULSE_AGENT (a name or a legacy runner/model id)."""
     ident = name or os.environ.get("PULSE_AGENT", "")
@@ -699,8 +713,7 @@ def create_post(con, kind, project, area, thread, summary, body="", agent=None, 
         arow = agent_row(con, agent) or {"name": agent, "runner": runner or "", "model": model or "", "sessions": "[]"}
     agent_name = arow["name"]
     if not session:
-        sessions = json.loads(arow.get("sessions") or "[]")
-        session = os.environ.get("PULSE_SESSION", "") or (sessions[-1] if sessions else "")
+        session = agent_session(arow)
     if resolution and resolution not in RESOLUTIONS:
         raise PulseError("Resolution must be one of: %s" % ", ".join(RESOLUTIONS), 2)
     if kind == "vote":
@@ -716,6 +729,8 @@ def create_post(con, kind, project, area, thread, summary, body="", agent=None, 
             raise PulseError("No post %r to answer" % on, 2)
         if kind == "vote" and target["agent"] == agent_name and agent_name != HUMAN_AGENT:
             raise PulseError("No self-votes: %s wrote %s" % (agent_name, on), 2)
+        if kind == "vote" and agent_name != HUMAN_AGENT and same_session(session, target["session"]):
+            raise PulseError("No self-votes: %s was written in your session %s" % (on, session), 2)
         if kind == "vote" and target["kind"] not in ("suggestion", "amendment"):
             raise PulseError("Votes answer a suggestion or an amendment, not a %s" % target["kind"], 2)
         if kind == "vote" and target["kind"] == "amendment":
@@ -939,11 +954,12 @@ class Tally:
             if r["kind"] == "claim":
                 self.claims[r["id"]] = {"key": key, "agent": r["agent"], "expires": r["expires"], "summary": r["summary"]}
             if r["kind"] == "suggestion":
-                self.suggs[r["id"]] = {"key": key, "agent": r["agent"], "date": r["date"], "summary": r["summary"]}
+                self.suggs[r["id"]] = {"key": key, "agent": r["agent"], "date": r["date"], "summary": r["summary"],
+                                       "session": r["session"] or ""}
             if r["kind"] == "vote" and r["on_post"]:
                 vk = (r["on_post"], r["agent"])
                 if vk not in self.votes or r["date"] >= self.votes[vk]["date"]:
-                    self.votes[vk] = {"date": r["date"], "vote": r["vote"], "id": r["id"]}
+                    self.votes[vk] = {"date": r["date"], "vote": r["vote"], "id": r["id"], "session": r["session"] or ""}
             if not r["kind"]:
                 self.nokind += 1
         # amendments are repository-wide
@@ -990,7 +1006,7 @@ class Tally:
             is_closed = s["key"] in self.closed
             up = down = voters = 0
             for (on, agent), v in self.votes.items():
-                if on != sid or agent == s["agent"]:
+                if on != sid or agent == s["agent"] or same_session(v.get("session"), s["session"]):
                     continue
                 voters += 1
                 if v["vote"] == "down":
@@ -1010,7 +1026,8 @@ class Tally:
             else:
                 status = "needs votes"
             out.append({"score": score, "date": s["date"], "id": sid, "key": s["key"], "up": up, "down": down,
-                        "voters": voters, "status": status, "agent": s["agent"], "summary": s["summary"]})
+                        "voters": voters, "status": status, "agent": s["agent"], "summary": s["summary"],
+                        "session": s["session"]})
         out.sort(key=lambda r: (-r["score"], r["date"], r["id"]))
         return out
 
@@ -1076,7 +1093,7 @@ class Tally:
             out.append({"date": a["date"], "id": aid, "key": a["key"], "status": status, "up": up, "down": down,
                         "voters": voters, "quorum": p["amend_quorum"], "pct": pct, "nid": len(idents), "self": selfv,
                         "badhash": badhash, "noread": noread, "hash": hsh, "section": section, "agent": a["agent"],
-                        "summary": a["summary"], "open": not is_closed})
+                        "summary": a["summary"], "open": not is_closed, "session": a["session"] or ""})
         out.sort(key=lambda r: (r["date"], r["id"]))
         return out, avotes
 
@@ -1163,8 +1180,12 @@ def tally_for(con, slug, area=None, now=None, **flags):
 # Digest, ballot, proposals: what an agent reads at the start of work
 # --------------------------------------------------------------------------- #
 
-def ballot_items(con, slug, agent=None, now=None):
+def ballot_items(con, slug, agent=None, now=None, session=None):
+    """What one agent may still vote on. Own cards, cards from the agent's own session, and cards already voted
+    on are left out; `session` defaults to the agent's current one."""
     t, params = tally_for(con, slug, None, now)
+    if agent and session is None:
+        session = agent_session(agent_row(con, agent))
     suggestions, amendments = [], []
     voted = set()
     for v in t.svote_records():
@@ -1177,13 +1198,13 @@ def ballot_items(con, slug, agent=None, now=None):
     for s in t.suggestion_records():
         if s["status"] in ("closed", "expired", "built", "tried"):
             continue
-        if agent and (s["agent"] == agent or s["id"] in voted):
+        if agent and (s["agent"] == agent or s["id"] in voted or same_session(session, s["session"])):
             continue
         suggestions.append(s)
     for a in amends:
         if not a["open"]:
             continue
-        if agent and (a["agent"] == agent or a["id"] in voted):
+        if agent and (a["agent"] == agent or a["id"] in voted or same_session(session, a["session"])):
             continue
         amendments.append(a)
     return suggestions, amendments
@@ -1543,7 +1564,9 @@ def write_brief(job, project, agent, clone, minutes):
     w("   - `QUESTION:` one line when you stopped for a Tier 2 decision or a hard stop (optional)")
     w("   - `FINDING:` one line for anything the next agent would rediscover (optional, repeatable)")
     w("   - `SUGGESTION:` one line per improvement you saw but did not make: one file class, one variable, and")
-    w("     the check that should move (optional, repeatable). To file it under a board thread, start the line")
+    w("     the check that should move (optional, repeatable), ending in `Signal: <path in the clone | post id |")
+    w("     check:NAME>` naming the evidence; a card whose Signal does not resolve is listed for votes but never")
+    w("     planned into a job. To file it under a board thread, start the line")
     w("     with lowercase `AREA/THREAD:` written out, e.g. `SUGGESTION: governance/vote-reasons: ...`; without")
     w("     one it lands under `evolution/%s`. The runner posts it as a suggestion; other agents" % job["id"].lower())
     w("     vote on it, and when it reaches quorum with more ups than downs the daemon plans a job from it.")
@@ -1871,6 +1894,36 @@ def open_questions(con, slug, tally):
     return out
 
 
+SIGNAL_RE = re.compile(r"(?im)^\s*(?:-\s*)?`?signal`?\s*:\s*(.+?)\s*$|\bsignal:\s*(\S+)")
+
+
+def signal_resolves(con, project, post):
+    """A worker's card carries evidence when a `Signal:` names something that exists: a path in the project
+    tree, a post id in the store, or a `check:` name. Cards without one are never planned (wish from an
+    adopter's agents, commons 20260905T154439Z-helix-0905); the ballot still lists them to be voted down."""
+    text = "%s\n%s" % (post.get("summary") or "", post.get("body") or "")
+    root = Path(project["path"]) if project and project.get("path") else None
+    for m in SIGNAL_RE.finditer(text):
+        raw = (m.group(1) or m.group(2) or "").strip().strip("`'\"()[],;")
+        for token in re.split(r"[\s,;]+", raw):
+            token = token.strip("`'\"()[],;.")
+            if not token:
+                continue
+            if token.lower().startswith("check:") and len(token) > 6:
+                return True
+            if post_row(con, token) is not None:
+                return True
+            rel = token.split(":", 1)[0].split("#", 1)[0]
+            if root and rel and not rel.startswith("/") and ".." not in Path(rel).parts and (root / rel).exists():
+                return True
+    return False
+
+
+def is_worker_post(con, post):
+    row = agent_row(con, (post or {}).get("agent") or "")
+    return bool(row) and row.get("kind") == "worker"
+
+
 def is_owner_addressed_post(post):
     """Return True when a suggestion is addressed to the owner and should be skipped by the planner."""
     if not post:
@@ -1895,6 +1948,7 @@ def plan_jobs(con, slug, now=None, created_by="daemon"):
     if waiting:
         return []
     t, params = tally_for(con, slug, None, now)
+    project = project_by_slug(con, slug)
     created = []
     for s in t.suggestion_records():
         # Eligible means enough voters; the daemon builds only what they voted up on balance.
@@ -1903,6 +1957,9 @@ def plan_jobs(con, slug, now=None, created_by="daemon"):
         post = post_row(con, s["id"])
         # Skip suggestions addressed to the owner: a worker cannot act on them and would burn a job.
         if is_owner_addressed_post(post):
+            continue
+        # A worker's card without a resolving Signal: is a guess; the ballot keeps it, the planner does not.
+        if is_worker_post(con, post) and not signal_resolves(con, project, post):
             continue
         brief = ("The agents voted this the top eligible suggestion (score %+d, %d voters). Thread %s.\n\n%s\n\n"
                  "One variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:."

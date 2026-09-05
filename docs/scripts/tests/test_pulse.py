@@ -707,6 +707,69 @@ class StoreTestCase(unittest.TestCase):
         sug = [p for p in posts if p["kind"] == "suggestion"][0]
         self.assertEqual(sug["thread"], run["job_id"].lower(), "placeholder area/thread falls back to the default")
 
+    def test_votes_from_the_authors_session_are_self_votes(self):
+        # a sub-agent spawned inside the author's session shares its session id and must not lift the card
+        pulse.join_agent(self.con, "aurora", "r", "m", session="sess-1")
+        pulse.join_agent(self.con, "cinder", "r", "m", session="sess-1")
+        pulse.join_agent(self.con, "dusk", "r", "m", session="sess-2")
+        sug = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "cache the table", "one variable", agent="aurora")
+        self.assertEqual(sug["session"], "sess-1")
+        with self.assertRaises(pulse.PulseError) as ctx:
+            pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up: same session", agent="cinder", on=sug["id"], vote="up")
+        self.assertIn("session", str(ctx.exception))
+        code, out, err = run_cli("ballot", "--project", "proj", "--agent", "cinder")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn(sug["id"], out, "the ballot hides cards from the voter's own session")
+        code, out, err = run_cli("ballot", "--project", "proj", "--agent", "dusk")
+        self.assertEqual(code, 0, err)
+        self.assertIn(sug["id"], out)
+        pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up: fewer retries", agent="dusk", on=sug["id"], vote="up")
+        t, _ = pulse.tally_for(self.con, "proj")
+        rec = [s for s in t.suggestion_records() if s["id"] == sug["id"]][0]
+        self.assertEqual((rec["voters"], rec["up"]), (1, 1))
+        # the human is exempt, as for author self-votes
+        pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up: owner", agent=pulse.HUMAN_AGENT, on=sug["id"], vote="up",
+                          session="sess-1")
+
+    def test_plan_jobs_skips_worker_cards_without_a_resolving_signal(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        for name in ("cinder", "dusk"):
+            pulse.join_agent(self.con, name, "r", "m")
+        for j in self.con.execute("SELECT id FROM jobs WHERE status = 'queued'").fetchall():
+            pulse.finish_job(self.con, j["id"], "human", "cancelled")
+        guess = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "drop the README banner",
+                                  "One-variable improvement seen by the worker.", agent="aurora", date="2026-09-09T09:00:00Z")
+        for voter in ("cinder", "dusk"):
+            pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up: because", "", agent=voter,
+                              on=guess["id"], vote="up", date="2026-09-09T10:00:00Z")
+        jobs = pulse.plan_jobs(self.con, "proj", now=NOW)
+        self.assertEqual([j["kind"] for j in jobs], ["reflect"], "an evidence-free worker card is never planned")
+        code, out, err = run_cli("ballot", "--project", "proj", "--agent", "cinder")
+        self.assertEqual(code, 0, err)
+        for j in self.con.execute("SELECT id FROM jobs WHERE status = 'queued'").fetchall():
+            pulse.finish_job(self.con, j["id"], "human", "cancelled")
+        # a Signal that resolves - a path in the project tree, a post id, or a check name - is planned
+        for i, signal in enumerate(("Signal: README.md", "Signal: %s" % guess["id"], "Signal: check:unit")):
+            card = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "trim the README %d. %s" % (i, signal),
+                                     "One variable.\n%s" % signal, agent="aurora", date="2026-09-09T11:0%d:00Z" % i)
+            for voter in ("cinder", "dusk"):
+                pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up: because", "", agent=voter,
+                                  on=card["id"], vote="up", date="2026-09-09T12:00:00Z")
+            jobs = pulse.plan_jobs(self.con, "proj", now=NOW)
+            self.assertEqual([j["source"] for j in jobs], ["suggestion:%s" % card["id"]], signal)
+            for j in self.con.execute("SELECT id FROM jobs WHERE status = 'queued'").fetchall():
+                pulse.finish_job(self.con, j["id"], "human", "cancelled")
+        # a path outside the tree does not resolve; a session agent's card is not filtered at all
+        bad = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "escape. Signal: ../etc/passwd", "",
+                                agent="aurora", date="2026-09-09T13:00:00Z")
+        human_card = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "session agent card, no signal", "",
+                                       agent="cinder", date="2026-09-09T13:01:00Z")
+        for voter, on in (("cinder", bad), ("dusk", bad), ("aurora", human_card), ("dusk", human_card)):
+            pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up: because", "", agent=voter,
+                              on=on["id"], vote="up", date="2026-09-09T14:00:00Z")
+        jobs = pulse.plan_jobs(self.con, "proj", now=NOW)
+        self.assertEqual([j["source"] for j in jobs], ["suggestion:%s" % human_card["id"]])
+
     def test_plan_jobs_builds_only_suggestions_voted_up_on_balance(self):
         for name in ("aurora", "cinder", "dusk"):
             pulse.join_agent(self.con, name, "r", "m")

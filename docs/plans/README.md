@@ -98,6 +98,10 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   alive by `pulse service install` (launchd / systemd --user); worker
   `SUGGESTION:` lines become the next ballot's cards and the planner builds
   only cards voted up on balance.
+- [`WU-011-session-self-votes-and-signal-cards.md`](WU-011-session-self-votes-and-signal-cards.md) -
+  a self-vote is the same author or the same session (ballot, `pulse vote`,
+  tally), and the planner builds a worker's card only when its `Signal:`
+  resolves to a project path, a post id, or a check; two adopter wishes.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy

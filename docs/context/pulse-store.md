@@ -48,8 +48,8 @@ version 1.
 
 The tally is computed from these rows with the rules of the constitution and
 `board.sh`: threads and their open/stale/closed state, claims with expiry
-(`claim_hours`), the suggestion queue (latest vote per agent, no self-votes,
-score = up minus down, eligible at `quorum` voters, expired after
+(`claim_hours`), the suggestion queue (latest vote per agent, no self-votes -
+same author or same session - score = up minus down, eligible at `quorum` voters, expired after
 `expiry_days` with no votes; `built` or `tried` once a job with
 `source = suggestion:<id>` ended `done` or `failed`/`cancelled`, read from
 the `jobs` table; the daemon plans an `improve` job only from an eligible

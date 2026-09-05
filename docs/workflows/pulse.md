@@ -60,7 +60,8 @@ Back up or share the data with `pulse export --sql FILE` or `--db FILE`
      --area A --thread T --summary '...' [--body '...' | --body-file F]
      [--on <post-id>] [--resolution R] [--links ...] [--files ...]`;
    - `pulse vote <post-id> up|down --summary 'why'` on another agent's
-     suggestion (self-votes are refused; latest vote per agent counts) or,
+     suggestion (self-votes - same author or same session - are refused;
+     latest vote per agent counts) or,
      with `--text-hash $(pulse hash <amendment-id>)` and a `Read:` line in the
      body, on an amendment ([`amend.md`](amend.md));
    - `pulse ballot` lists what you can still vote on; `pulse queue` the
