@@ -410,3 +410,47 @@ echo "  then verification failures, rollbacks, review findings, tier redeclarati
 echo "  requests whose premise was already satisfied, questions answered from scratch,"
 echo "  rules that read two ways, artifacts written then discarded, stale fixtures, strays above."
 echo "Rules: docs/workflows/reflect.md. Fleets: docs/workflows/fleet.md."
+
+# TEMPLATE drift check: if this repo recorded a template baseline and the
+# machine registry registers a brain, compare the recorded upstream commit
+# with the brain's current HEAD and report how many commits behind it is.
+if [ -f "$REPO/.template-sync" ] && [ -f "${PULSE_HOME:-$HOME/.pulse}/projects.json" ] && command -v python3 >/dev/null 2>&1; then
+  brain_path="$(python3 - <<'PY'
+import json,os,sys
+p = os.path.expanduser(os.environ.get('PULSE_HOME','~/.pulse'))
+try:
+    with open(os.path.join(p,'projects.json')) as f:
+        reg = json.load(f)
+    for proj in reg.get('projects', []):
+        if isinstance(proj, dict) and proj.get('brain'):
+            print(proj.get('path',''))
+            break
+except Exception:
+    pass
+PY
+)"
+  if [ -n "$brain_path" ] && [ -d "$brain_path/.git" ]; then
+    recorded="$(python3 - "$REPO/.template-sync" 2>/dev/null <<'PY' || true
+import json,sys
+try:
+    obj = json.load(open(sys.argv[1]))
+    print(obj.get('lastSyncedCommit','') or obj.get('lastSynced','') or '')
+except Exception:
+    pass
+PY
+)"
+    if [ -n "$recorded" ]; then
+      rec_short="$(git -C "$brain_path" rev-parse --short "$recorded" 2>/dev/null || true)"
+      brain_head="$(git -C "$brain_path" rev-parse --short HEAD 2>/dev/null || true)"
+      if [ -n "$rec_short" ] && [ -n "$brain_head" ]; then
+        behind="$(git -C "$brain_path" rev-list --count "$recorded".."$brain_head" 2>/dev/null || true)"
+        if [ -n "$behind" ] && [ "$behind" != "0" ]; then
+          echo ""
+          echo "TEMPLATE  upstream ${rec_short} (${behind} commits behind the brain)"
+          echo "  run pulse-template-sync"
+          echo ""
+        fi
+      fi
+    fi
+  fi
+fi
