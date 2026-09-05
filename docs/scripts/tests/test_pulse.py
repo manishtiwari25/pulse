@@ -139,6 +139,13 @@ class StoreTestCase(unittest.TestCase):
             pulse.join_agent(self.con, "Bad Name!", "r", "m")
         with self.assertRaises(pulse.PulseError):
             pulse.join_agent(self.con, "human", "r", "m")
+        # a name the migration created from history becomes live when its owner joins with it
+        legacy, _ = pulse.join_agent(self.con, "ember", "copilot-cli", "model-a", kind="legacy", legacy_id="copilot-cli_model-a")
+        self.assertEqual(legacy["kind"], "legacy")
+        live, created = pulse.join_agent(self.con, "ember", "copilot-cli", "model-a", "s3")
+        self.assertFalse(created)
+        self.assertEqual(live["kind"], "session")
+        self.assertEqual(live["legacy_id"], "copilot-cli_model-a")
         spawned = pulse.spawn_agent(self.con, "copilot", "m")
         self.assertNotEqual(spawned["name"], "aurora")
         self.assertIn(spawned["name"], pulse.NAME_WORDS)

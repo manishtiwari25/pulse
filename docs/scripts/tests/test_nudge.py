@@ -23,14 +23,15 @@ SCRIPTS = HERE.parent
 NOW = "2026-09-10T12:00:00Z"
 
 
-def load_nudge():
-    spec = importlib.util.spec_from_file_location("pulse_nudge", SCRIPTS / "nudge.py")
+def load_script(name, filename):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / filename)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-nudge = load_nudge()
+nudge = load_script("pulse_nudge", "nudge.py")
+pulse = load_script("pulse_for_nudge_test", "pulse.py")
 
 CONSTITUTION_ON = """---
 loop: on
@@ -345,6 +346,7 @@ class NudgeTestCase(unittest.TestCase):
     def test_json_shape(self):
         snap = self.snapshot("--agent", Org.D)
         self.assertEqual(snap["version"], nudge.SNAPSHOT_VERSION)
+        self.assertEqual(snap["source"], "markdown")
         self.assertEqual(snap["now"], NOW)
         self.assertEqual(snap["registry"], str(self.org.registry))
         self.assertIsNone(snap["registry_error"])
@@ -368,6 +370,40 @@ class NudgeTestCase(unittest.TestCase):
         text = self.run_nudge("--registry", str(self.tmp / "absent.json"), "--home", str(self.tmp / "no-home"))
         self.assertIn("no registry at", text)
         self.assertIn("none - nothing on any board asks for work", text)
+
+    def test_store_source_preferred_when_present(self):
+        root = Path(tempfile.mkdtemp(prefix="pulse-nudge-store-")).resolve()
+        old_home = os.environ.get("PULSE_HOME")
+        try:
+            home = root / "home"
+            repo = root / "stored"
+            (repo / "docs" / "evolution").mkdir(parents=True)
+            (repo / "AGENTS.md").write_text("# rules\n", encoding="utf-8")
+            (repo / "README.md").write_text("stored\n", encoding="utf-8")
+            (repo / "docs" / "evolution" / "constitution.md").write_text(CONSTITUTION_ON, encoding="utf-8")
+            (repo / "docs" / "evolution" / "evaluators.md").write_text(EVALUATORS % "H01", encoding="utf-8")
+            (repo / "docs" / "evolution" / "archive.md").write_text(ARCHIVE, encoding="utf-8")
+            git_init(repo)
+            os.environ["PULSE_HOME"] = str(home)
+            con = pulse.connect(home, create=True)
+            try:
+                pulse.add_project(con, repo, slug="stored", brain=True, verify_cmd="true", actor="test")
+                pulse.join_agent(con, "aurora", "runner-a", "model-a", "s-store")
+                pulse.create_post(con, "question", "stored", "governance", "store-mode",
+                                  "Does store mode work?", agent="aurora")
+            finally:
+                con.close()
+            snap = self.snapshot("--project", "stored")
+            self.assertEqual(snap["source"], "store")
+            self.assertEqual([p["slug"] for p in snap["projects"]], ["stored"])
+            self.assertEqual([(w["project"], w["kind"], w["thread"]) for w in snap["work"]],
+                             [("stored", "question", "governance/store-mode")])
+        finally:
+            if old_home is None:
+                os.environ.pop("PULSE_HOME", None)
+            else:
+                os.environ["PULSE_HOME"] = old_home
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """nudge.py - one read-only list of work wanted across every PULSE project.
 
-Slice 1 of ADR-018 (docs/decisions/ADR-018-nudge-harness.md). Reads the
-registry that `pulse-dashboard.py index|serve|register` keeps in
-~/.pulse/projects.json (PULSE_HOME or --registry move it), then, per project,
-the tallies the project already has - `board.sh --records`,
+Slice 1 of ADR-018 (docs/decisions/ADR-018-nudge-harness.md). When the
+ADR-019 store exists, reads projects and board records from
+$PULSE_HOME/pulse.sqlite. Otherwise it reads the registry that
+`pulse-dashboard.py index|serve|register` keeps in ~/.pulse/projects.json
+(PULSE_HOME or --registry move it), then, per project, the tallies the project
+already has - `board.sh --records`,
 `evolution-report.sh --records` - plus `git status --porcelain` and the
 branch, and the commons when it exists. It prints:
 
@@ -28,6 +30,7 @@ Usage:
 """
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import subprocess
@@ -117,6 +120,13 @@ def records(script, args):
     return [line.split("\t") for line in out.split("\n") if line]
 
 
+def grouped_records(text):
+    grouped = {}
+    for row in (line.split("\t") for line in text.split("\n") if line):
+        grouped.setdefault(field(row, 0), []).append(row)
+    return grouped
+
+
 def field(row, i, default=""):
     return row[i] if len(row) > i else default
 
@@ -130,6 +140,23 @@ def pulse_home(explicit=None):
         return Path(explicit).expanduser().resolve()
     env = os.environ.get("PULSE_HOME")
     return Path(env).expanduser().resolve() if env else (Path.home() / ".pulse").resolve()
+
+
+def load_pulse_module():
+    spec = importlib.util.spec_from_file_location("pulse_store_for_nudge", HERE / "pulse.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def open_store(home):
+    try:
+        pulse = load_pulse_module()
+        if not pulse.store_exists(home):
+            return None, None
+        return pulse, pulse.open_store(home, readonly=True)
+    except Exception:
+        return None, None
 
 
 def load_registry(path):
@@ -233,10 +260,12 @@ def read_board(repo, now):
     script = pick_script(repo, "board.sh")
     if script is None:
         raise RuntimeError("no board.sh")
-    grouped = {}
-    for row in records(script, ["--repo", repo, "--now", now]):
-        grouped.setdefault(field(row, 0), []).append(row)
-    return grouped
+    return grouped_records("\n".join("\t".join(row) for row in records(script, ["--repo", repo, "--now", now])))
+
+
+def read_board_store(pulse, con, slug, now):
+    """Return store records in the board.sh --records layout, grouped by record kind."""
+    return grouped_records(pulse.snapshot_records(con, slug, now=now))
 
 
 def signal(kind, project, key, ident, summary, date, now, nxt, tier, **extra):
@@ -258,6 +287,9 @@ def project_signals(slug, repo, grouped, evo, gate, agent, now, human_at_work):
         by_thread.setdefault(field(row, P_AREA) + "/" + field(row, P_THREAD), []).append(row)
 
     def post_path(row):
+        path = field(row, 1)
+        if path.startswith("store:"):
+            return "pulse show %s" % field(row, P_ID)
         return "docs/board/%s/%s/%s.md" % (field(row, P_AREA), field(row, P_THREAD), field(row, P_ID))
 
     def thread_open(key):
@@ -307,9 +339,13 @@ def project_signals(slug, repo, grouped, evo, gate, agent, now, human_at_work):
             elif kind == "answer" and last_q is not None:
                 last_q = None
         if last_q is not None:
+            if field(last_q, 1).startswith("store:"):
+                nxt = "answer it: pulse post answer --project %s --area %s --thread %s --on %s --summary '...'" % (
+                    slug, field(last_q, P_AREA), field(last_q, P_THREAD), field(last_q, P_ID))
+            else:
+                nxt = "answer it: post kind answer with on: %s under docs/board/%s/" % (field(last_q, P_ID), key)
             out.append(signal("question", slug, key, field(last_q, P_ID), field(last_q, P_SUMMARY), field(last_q, P_DATE), now,
-                              "answer it: post kind answer with on: %s under docs/board/%s/" % (field(last_q, P_ID), key),
-                              "Tier 0 (an answer is a post)", agent=field(last_q, P_AGENT), human_at_work=human_at_work))
+                              nxt, "Tier 0 (an answer is a post)", agent=field(last_q, P_AGENT), human_at_work=human_at_work))
     # Ballot: what this identity has not voted on and did not write (board.sh --ballot, computed from the same records).
     if agent:
         voted = {field(r, 1) for r in grouped.get("svote", []) if field(r, 2) == agent}
@@ -317,9 +353,12 @@ def project_signals(slug, repo, grouped, evo, gate, agent, now, human_at_work):
         for row in grouped.get("suggestion", []):
             if field(row, 8) in ("closed", "expired") or field(row, 9) == agent or field(row, 3) in voted:
                 continue
+            vote_next = "vote with a one-line reason: pulse vote %s up|down --summary '...'" % field(row, 3) \
+                if any(field(p, 1).startswith("store:") for p in grouped.get("post", []) if field(p, 4) == field(row, 3)) \
+                else "vote with a one-line reason: docs/scripts/board.sh --ballot --agent %s" % agent
             out.append(signal("ballot", slug, field(row, 4), field(row, 3), field(row, 10), field(row, 2), now,
-                              "vote with a one-line reason: docs/scripts/board.sh --ballot --agent %s" % agent,
-                              "Tier 0 (a vote is a post)", status=field(row, 8), agent=field(row, 9), human_at_work=human_at_work))
+                              vote_next, "Tier 0 (a vote is a post)", status=field(row, 8), agent=field(row, 9),
+                              human_at_work=human_at_work))
         for row in grouped.get("amendment", []):
             if field(row, 4).startswith("closed") or field(row, 16) == agent or field(row, 2) in voted:
                 continue
@@ -363,35 +402,44 @@ def proposals(slug, grouped):
         if field(row, 5) != "awaiting":
             continue
         key, ident = field(row, 1), field(row, 2)
+        read = "pulse show %s" % ident if any(field(p, 1) == "store:%s" % ident for p in grouped.get("post", [])) \
+            else "docs/board/%s/%s.md" % (key, ident)
         out.append({"project": slug, "thread": key, "id": ident, "agent": field(row, 3), "date": field(row, 4),
-                    "summary": field(row, 8), "read": "docs/board/%s/%s.md" % (key, ident)})
+                    "summary": field(row, 8), "read": read})
     return out
 
 
-def inspect_project(entry, agent, now, kind="project"):
+def inspect_project(entry, agent, now, kind="project", source="markdown", pulse=None, con=None):
     slug = str(entry.get("slug") or "project")
     path = Path(str(entry.get("path") or "")).expanduser()
     info = {"slug": slug, "path": str(path), "kind": kind, "brain": bool(entry.get("brain")), "readable": False,
             "error": None, "branch": None, "dirty_paths": 0, "human_at_work": False,
             "loop": {"open": False, "reason": "no docs/evolution"}, "signals": [], "proposals": []}
-    if not path.is_dir():
+    path_required = kind == "project" or source == "markdown"
+    if path_required and not path.is_dir():
         info["error"] = "path missing"
         return info
-    if not (path / "docs" / "board").is_dir():
+    if source == "markdown" and not (path / "docs" / "board").is_dir():
         info["error"] = "no board (docs/board/ missing)"
         return info
-    status = git(path, "status", "--porcelain")
+    if path.is_dir():
+        status = git(path, "status", "--porcelain")
+    else:
+        status = None
     if status is not None:
         info["dirty_paths"] = len([line for line in status.split("\n") if line])
         info["human_at_work"] = info["dirty_paths"] > 0
         info["branch"] = git(path, "rev-parse", "--abbrev-ref", "HEAD") or None
     try:
-        grouped = read_board(path, now)
+        grouped = read_board_store(pulse, con, slug, now) if source == "store" else read_board(path, now)
     except RuntimeError as exc:
         info["error"] = "board tally failed: %s" % exc
         return info
+    except Exception as exc:
+        info["error"] = "store tally failed: %s" % exc
+        return info
     # The commons has no loop of its own (docs/workflows/commons.md).
-    evo = read_evolution(path) if kind == "project" else empty_evolution()
+    evo = read_evolution(path) if kind == "project" and path.is_dir() else empty_evolution()
     if evo["error"]:
         info["loop"] = {"open": False, "reason": evo["error"]}
     else:
@@ -421,13 +469,19 @@ def build(args):
     now = args.now or utc_now()
     home = pulse_home(args.home)
     registry_path = Path(args.registry).expanduser().resolve() if args.registry else home / REGISTRY_NAME
-    registry, reg_error = load_registry(registry_path)
+    pulse, con = open_store(home)
+    source = "store" if con is not None else "markdown"
+    if source == "store":
+        registry, reg_error = pulse.registry_from_store(con), None
+    else:
+        registry, reg_error = load_registry(registry_path)
     wanted = set(args.project or [])
     entries = [e for e in registry["projects"] if isinstance(e, dict)]
     unknown = sorted(s for s in wanted if s != "commons" and s not in {str(e.get("slug")) for e in entries})
     if wanted:
         entries = [e for e in entries if str(e.get("slug")) in wanted]
-    projects = [inspect_project(e, args.agent, now) for e in entries]
+    project_entries = [e for e in entries if str(e.get("slug")) != "commons"]
+    projects = [inspect_project(e, args.agent, now, source=source, pulse=pulse, con=con) for e in project_entries]
     seen = {}
     for p in projects:
         seen.setdefault(p["slug"], []).append(p)
@@ -437,8 +491,28 @@ def build(args):
                 p["duplicate"] = n
     commons = None
     cpath = commons_path(home, registry)
-    if (cpath / "docs" / "board").is_dir() and (not wanted or "commons" in wanted):
+    commons_registered = False
+    if source == "store":
+        commons_registered = any(str(e.get("slug")) == "commons" for e in registry["projects"] if isinstance(e, dict))
+        if not commons_registered:
+            try:
+                commons_registered = con.execute("SELECT 1 FROM posts WHERE project = ? LIMIT 1", ("commons",)).fetchone() is not None
+            except Exception:
+                commons_registered = False
+    if source == "store" and commons_registered and (not wanted or "commons" in wanted):
+        commons_entry = next((e for e in entries if str(e.get("slug")) == "commons"), {"slug": "commons", "path": str(cpath)})
+        commons = inspect_project(commons_entry, args.agent, now, kind="commons", source=source, pulse=pulse, con=con)
+    elif (cpath / "docs" / "board").is_dir() and (not wanted or "commons" in wanted):
         commons = inspect_project({"slug": "commons", "path": str(cpath)}, args.agent, now, kind="commons")
+    if commons and not commons["readable"]:
+        commons = None
+    if con is not None:
+        con.close()
+        con = None
+        pulse = None
+    if wanted and "commons" in wanted and commons is None and source == "store":
+        unknown = sorted(set(unknown + ["commons"]))
+    if commons:
         # The commons has no loop and no claims of its own; keep questions and the ballot only.
         commons["signals"] = [s for s in commons["signals"] if s["kind"] in ("question", "ballot")]
         commons["loop"] = {"open": False, "reason": "the commons has no loop"}
@@ -446,7 +520,7 @@ def build(args):
     work = order(work, args.by)
     for_human = [pr for p in projects for pr in p["proposals"]]
     return {
-        "version": SNAPSHOT_VERSION, "now": now, "registry": str(registry_path), "registry_error": reg_error,
+        "version": SNAPSHOT_VERSION, "source": source, "now": now, "registry": str(registry_path), "registry_error": reg_error,
         "unknown_projects": unknown, "commons": str(cpath) if commons else None,
         "projects": projects + ([commons] if commons else []),
         "for_the_human": sorted(for_human, key=lambda p: (p["date"], p["project"])),
@@ -468,6 +542,7 @@ def render(snapshot, limit):
     out = []
     projects = [p for p in snapshot["projects"] if p["kind"] == "project"]
     out.append("NUDGE - work wanted across %d project%s - %s" % (len(projects), "" if len(projects) == 1 else "s", snapshot["now"]))
+    out.append("  source: %s" % snapshot["source"])
     out.append("  registry: %s%s" % (tilde(snapshot["registry"]), "  (%s)" % snapshot["registry_error"] if snapshot["registry_error"] else ""))
     for slug in snapshot["unknown_projects"]:
         out.append("  unknown project: %s (not in the registry)" % slug)

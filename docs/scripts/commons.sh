@@ -92,4 +92,27 @@ if [ ! -d "$target/docs/board" ]; then
     echo "commons.sh: no commons at $target (create it once with: docs/scripts/commons.sh --init)" >&2
     exit 2
 fi
-exec bash "$HERE/board.sh" --repo "$target" "$@"
+machine_mode=0
+section="all"
+area=""
+ORIG_ARGS=("$@")
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --records|--json|--hash|--tsv) machine_mode=1 ;;
+        --queue) section="queue" ;;
+        --area) [ $# -ge 2 ] && area="$2"; shift ;;
+    esac
+    shift || break
+done
+if [ "$machine_mode" -eq 0 ] && { [ "$section" = "all" ] || [ "$section" = "queue" ]; } \
+    && [ -f "${PULSE_HOME:-$HOME/.pulse}/pulse.sqlite" ]; then
+    if [ "$section" = "queue" ]; then
+        echo "note: a pulse store exists on this machine; if the commons is registered, prefer \`python3 docs/scripts/pulse.py queue --project commons\`"
+    elif [ -n "$area" ]; then
+        echo "note: a pulse store exists on this machine; if the commons is registered, prefer \`python3 docs/scripts/pulse.py board --project commons --area $area\`"
+    else
+        echo "note: a pulse store exists on this machine; if the commons is registered, prefer \`python3 docs/scripts/pulse.py board --project commons\`"
+    fi
+    echo ""
+fi
+exec env PULSE_SUPPRESS_STORE_NOTE=1 bash "$HERE/board.sh" --repo "$target" "${ORIG_ARGS[@]}"

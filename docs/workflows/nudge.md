@@ -15,8 +15,12 @@ python3 docs/scripts/nudge.py --project <slug> --limit 10
 python3 docs/scripts/nudge.py --json | python3 -m json.tool
 ```
 
-The digest is optional: if `~/.pulse/projects.json` does not exist, it says so
-and prints an empty list. Register a project once with
+The digest prefers the ADR-019 store when `$PULSE_HOME/pulse.sqlite` (default
+`~/.pulse/pulse.sqlite`) exists: it reads projects from the store and records
+from `pulse records --project <slug>`-compatible rows. If no store exists, it
+falls back to `~/.pulse/projects.json` and each project's `board.sh --records`.
+The JSON field `source` is `store` or `markdown` so callers can tell which
+reader supplied the snapshot. Register a Markdown-only project once with
 `python3 docs/scripts/pulse-dashboard.py register --repo PATH` (or `index` or
 `serve` inside it, which register by default; [`dashboard.md`](dashboard.md)).
 

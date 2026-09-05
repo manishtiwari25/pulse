@@ -591,10 +591,13 @@ def join_agent(con, name, runner="", model="", session="", display="", kind="ses
     sessions = json.loads(row["sessions"] or "[]")
     if session and session not in sessions:
         sessions.append(session)
+    # A name the migration created from Markdown history becomes a live agent
+    # the first time its owner joins with it; the record and posts stay.
+    promoted = row["kind"] == "legacy" and kind in ("session", "worker")
     con.execute("UPDATE agents SET runner = COALESCE(NULLIF(?, ''), runner), model = COALESCE(NULLIF(?, ''), model), "
-                "display = COALESCE(NULLIF(?, ''), display), status = 'active', last_active_at = ?, sessions = ? WHERE name = ?",
-                (runner, model, display, now, json.dumps(sessions[-50:]), name))
-    event(con, name, "agent.resume", name, {"session": session})
+                "display = COALESCE(NULLIF(?, ''), display), kind = ?, status = 'active', last_active_at = ?, sessions = ? WHERE name = ?",
+                (runner, model, display, kind if promoted else row["kind"], now, json.dumps(sessions[-50:]), name))
+    event(con, name, "agent.resume", name, {"session": session, "promoted_from": "legacy" if promoted else ""})
     return agent_row(con, name), False
 
 

@@ -66,6 +66,34 @@ frontmatter_value() {
     ' "$1"
 }
 
+store_project_slug() {
+    # store_project_slug REPO -> registered project slug, or empty.
+    [ -f "${PULSE_HOME:-$HOME/.pulse}/pulse.sqlite" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    [ -f "$SCRIPTS/pulse.py" ] || return 0
+    python3 - "$SCRIPTS/pulse.py" "$REPO" <<'PY' 2>/dev/null || true
+import importlib.util
+import pathlib
+import sys
+
+spec = importlib.util.spec_from_file_location("pulse_store_for_reflect", sys.argv[1])
+pulse = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pulse)
+repo = pathlib.Path(sys.argv[2]).resolve()
+try:
+    con = pulse.open_store(readonly=True)
+    try:
+        for project in pulse.registry_from_store(con).get("projects", []):
+            if pathlib.Path(project.get("path", "")).resolve() == repo:
+                print(project.get("slug", ""))
+                break
+    finally:
+        con.close()
+except Exception:
+    pass
+PY
+}
+
 product_scope() {
     # product_scope CONSTITUTION EVALUATORS -> prints the PRODUCT SCOPE section;
     # returns 0 when the loop may improve the product, 1 when it is confined to
@@ -166,16 +194,43 @@ echo ""
 # --- Board -------------------------------------------------------------------
 HAS_BOARD=0
 [ -d "$BOARD" ] && HAS_BOARD=1
-if [ "$HAS_BOARD" -eq 1 ] && [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/board.sh" ]; then
+STORE_SLUG="$(store_project_slug)"
+if [ -n "$STORE_SLUG" ] && [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/pulse.py" ]; then
     echo "BOARD"
+    echo "  source: pulse store"
+    if [ -n "$AREA" ]; then
+        python3 "$SCRIPTS/pulse.py" board --project "$STORE_SLUG" --area "$AREA" | sed 's/^/  /'
+    else
+        python3 "$SCRIPTS/pulse.py" board --project "$STORE_SLUG" | sed 's/^/  /'
+    fi
+    echo ""
+    # The ballot: what this identity can still vote on. Voting is the one
+    # thing every agent can do for the queue before it leaves.
+    echo "BALLOT (vote before you leave; one vote per agent, latest wins, no self-votes - docs/workflows/pulse.md)"
+    if [ -n "$AGENT" ]; then
+        python3 "$SCRIPTS/pulse.py" ballot --project "$STORE_SLUG" --agent "$AGENT" | sed 's/^/  /'
+    else
+        python3 "$SCRIPTS/pulse.py" ballot --project "$STORE_SLUG" | sed 's/^/  /'
+    fi
+    echo ""
+    # Proposals the agents agreed on that wait for the human: the closing
+    # message repeats each one in plain words and asks for a yes or no
+    # (docs/workflows/board.md, Deliberation). Never re-open a settled debate.
+    echo "FOR THE HUMAN (repeat every awaiting proposal in your closing message, one yes/no each; only the human decides - docs/workflows/pulse.md)"
+    python3 "$SCRIPTS/pulse.py" proposals --project "$STORE_SLUG" | sed 's/^/  /'
+    echo ""
+    echo "EXPERIMENT QUEUE"
+    python3 "$SCRIPTS/pulse.py" queue --project "$STORE_SLUG" | sed 's/^/  /'
+    echo ""
+elif [ "$HAS_BOARD" -eq 1 ] && [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/board.sh" ]; then
+    echo "BOARD"
+    echo "  source: markdown board"
     if [ -n "$AREA" ]; then
         "$SCRIPTS/board.sh" --repo "$REPO" --area "$AREA" | sed 's/^/  /'
     else
         "$SCRIPTS/board.sh" --repo "$REPO" | sed 's/^/  /'
     fi
     echo ""
-    # The ballot: what this identity can still vote on. Voting is the one
-    # thing every agent can do for the queue before it leaves.
     echo "BALLOT (vote before you leave; one vote per identity, latest wins, no self-votes - docs/workflows/board.md step 8)"
     if [ -n "$AGENT" ]; then
         "$SCRIPTS/board.sh" --repo "$REPO" --ballot --agent "$AGENT" | sed 's/^/  /'
@@ -183,9 +238,6 @@ if [ "$HAS_BOARD" -eq 1 ] && [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/board.sh"
         "$SCRIPTS/board.sh" --repo "$REPO" --ballot | sed 's/^/  /'
     fi
     echo ""
-    # Proposals the agents agreed on that wait for the human: the closing
-    # message repeats each one in plain words and asks for a yes or no
-    # (docs/workflows/board.md, Deliberation). Never re-open a settled debate.
     echo "FOR THE HUMAN (repeat every awaiting proposal in your closing message, one yes/no each; record the answer as a result post - docs/workflows/board.md)"
     "$SCRIPTS/board.sh" --repo "$REPO" --proposals --no-notices | sed '1d;/^$/d' | sed 's/^/  /'
     echo ""

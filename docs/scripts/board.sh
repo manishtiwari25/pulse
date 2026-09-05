@@ -140,6 +140,21 @@ if [ "$JSON" -eq 1 ]; then
     exec python3 "$HERE/pulse-dashboard.py" "${JSON_ARGS[@]}"
 fi
 
+if [ "${PULSE_SUPPRESS_STORE_NOTE:-0}" != "1" ] && [ "$TSV" -eq 0 ] && [ "$RECORDS" -eq 0 ] \
+    && [ -z "$HASH_POST" ] && { [ "$SECTION" = "all" ] || [ "$SECTION" = "queue" ]; }; then
+    STORE_FILE="${PULSE_HOME:-$HOME/.pulse}/pulse.sqlite"
+    if [ -f "$STORE_FILE" ]; then
+        if [ "$SECTION" = "queue" ]; then
+            echo "note: a pulse store exists on this machine; if this project is registered, prefer \`python3 docs/scripts/pulse.py queue\`"
+        elif [ -n "$AREA" ]; then
+            echo "note: a pulse store exists on this machine; if this project is registered, prefer \`python3 docs/scripts/pulse.py board --area $AREA\`"
+        else
+            echo "note: a pulse store exists on this machine; if this project is registered, prefer \`python3 docs/scripts/pulse.py board\`"
+        fi
+        echo ""
+    fi
+fi
+
 # The fenced block under "## <heading>" in an amendment post, normalized the
 # way every tally and every voter must see it: trailing whitespace stripped,
 # leading and trailing blank lines dropped, one newline after each line.
