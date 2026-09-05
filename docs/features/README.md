@@ -46,6 +46,13 @@
   harness (ADR-018): one read-only command that lists work wanted across
   every registered project, ranked with next steps and tiers, and the
   proposals awaiting the maintainer on top; starts nothing, writes nothing.
+- [`013-remote-executors.md`](013-remote-executors.md) - remote executors
+  (ADR-020, Accepted 2026-09-05): the hub keeps the one store, the board, the leases,
+  and the landing; a VM the maintainer owns receives a project as a git
+  bundle over ssh, runs the same denied-tool worker under the same caps,
+  and the hub fetches the commits back as `pulse/<agent>/<job>`; `VOTE:`
+  lines in the result file become the worker's votes; no push, no remote,
+  no credential on the VM.
 
 Copy `_template.md` when the new product direction needs a feature or product
 behavior spec. Tier 1 behavior inside an Accepted ADR uses a work unit in

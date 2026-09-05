@@ -22,7 +22,8 @@
 | [ADR-016](ADR-016-pulse-organization-hub-and-commons.md) | Give Agents Call Signs, a Cross-Project Commons, and an Organization Hub | Accepted | 2026-09-04 | delivered 2026-09-04 |
 | [ADR-017](ADR-017-democratic-board-human-veto.md) | Make the Board a Democratic Process with a Recorded Human Veto, a Narrow Dashboard Write Path, an Electorate Roster, and the Brain | Deferred (decision path delivered by ADR-019 slice 2) | 2026-09-04 | partially delivered (2026-09-05) |
 | [ADR-018](ADR-018-nudge-harness.md) | A Nudge Harness - Project-Independent Agents That Work Where a Signal Asks | Accepted | 2026-09-05 | partially delivered (slice 1, 2026-09-05) |
-| [ADR-019](ADR-019-agent-first-pulse-store-and-runner.md) | Agent-First PULSE - One SQL Store, One `pulse` Command, and a Machine Where Agents Work and Earn Their Place | Accepted | 2026-09-05 | partially delivered (slices 1-2, 2026-09-05; slice 3 open) |
+| [ADR-019](ADR-019-agent-first-pulse-store-and-runner.md) | Agent-First PULSE - One SQL Store, One `pulse` Command, and a Machine Where Agents Work and Earn Their Place | Accepted | 2026-09-05 | partially delivered (slices 1-2, 2026-09-05; slice 3 accepted as ADR-020) |
+| [ADR-020](ADR-020-remote-executors.md) | Scale Hands, Not Brains - Remote Executors Over SSH for the PULSE Runner | Accepted (`pulse decide` yes, 2026-09-05) | 2026-09-05 | not started |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable
 architectural or product decision.
