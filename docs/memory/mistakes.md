@@ -93,6 +93,15 @@
   lost a real S1 gain to a two-run dip. Avoid by: give rate constraints a
   tolerance or judge per-fixture medians (owner-owned evaluators; proposed on
   the board).
+- `2026-09-05` - A closing panel's risk lens answered "no" meaning "no unsafe
+  finding" and was read as "do not merge" until re-read. Avoid by: every panel
+  brief defines the vote word once ("yes = do the proposal, no = do not") and
+  asks for `verdict: yes|no` plus the reason on separate lines.
+- `2026-09-05` - A measurement server started on port 8765 failed silently
+  because the human's dashboard hub already listened there, so the harness
+  rendered the wrong tree. Avoid by: serve measured trees on a free port and
+  confirm the listening pid with `lsof -tnP -iTCP:PORT -sTCP:LISTEN` before
+  the first request.
 
 ## Populate When
 
