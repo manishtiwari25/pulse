@@ -1756,26 +1756,27 @@ def pick_worker(con, agent=None):
 def daemon(con, agent=None, interval=300, dry_run=False, worker_cmd=None, home=None, max_loops=None, out=sys.stdout):
     loops = 0
     last_prune_day = ""
+    print("daemon started %s (interval %ss%s)" % (utc_now(), interval, ", dry run" if dry_run else ""), file=out, flush=True)
     while True:
         loops += 1
         now = utc_now()
         why = runner_stopped(con)
         if why:
-            print("stopped: %s" % why, file=out)
+            print("stopped: %s" % why, file=out, flush=True)
             return "stopped"
         if now[:10] != last_prune_day:
             for name, reason in prune_agents(con, now):
-                print("pruned %s: %s" % (name, reason), file=out)
+                print("pruned %s: %s" % (name, reason), file=out, flush=True)
             last_prune_day = now[:10]
         for proj in project_rows(con):
             for job in plan_jobs(con, proj["slug"], now):
-                print("planned %s %s: %s" % (job["kind"], job["id"], job["title"]), file=out)
+                print("planned %s %s: %s" % (job["kind"], job["id"], job["title"]), file=out, flush=True)
         worker = pick_worker(con, agent)
         run, reason = work_once(con, worker, dry_run=dry_run, worker_cmd=worker_cmd, home=home, now=now)
         if run:
-            print("%s %s %s: %s" % (run["status"], run["job_id"], run["agent"], run["summary"]), file=out)
+            print("%s %s %s: %s" % (run["status"], run["job_id"], run["agent"], run["summary"]), file=out, flush=True)
         else:
-            print("idle: %s" % reason, file=out)
+            print("idle: %s" % reason, file=out, flush=True)
         if max_loops is not None and loops >= max_loops:
             return "done"
         if run is None or reason.startswith("daily cap"):
