@@ -52,6 +52,8 @@ trees against the recorded `lastSyncedCommit` (or the full tree on first sync)
 | **Never sync** (project-owned content) | `docs/context/`, `docs/architecture/`, non-template files in `docs/decisions/`, `docs/features/`, `docs/memory/`, `docs/plans/` (including `WU-*` work units), `docs/prompts/` (outside `shared/`), `docs/evolution/constitution.md`, `docs/evolution/evaluators.md`, `docs/evolution/archive.md`, `docs/evolution/fixtures/`, `docs/evolution/STOP`, every post under `docs/board/`, archived `docs/usage/usage-log.md` rows, all product code | Leave untouched. |
 | **Framework-only** (never copied into an adopter) | `docs/versions.md` - PULSE's own version history; its links resolve only in the PULSE repository. An adopter's era is the commit in `.template-sync`. | Do not copy; remove a copy an earlier sync left behind. |
 
+Note: every link contained inside a template-owned file must resolve in the target repository after the sync. Template-owned files must not carry relative links to framework-only decisions (for example, ADR-012, ADR-014, ADR-015, ADR-016) unless the sync also copies those referenced framework files. Prefer absolute links to the canonical PULSE repository (e.g. https://github.com/manishtiwari25/pulse) for framework decisions the adopter will not receive.
+
 The board dashboard's SQLite projection is generated data in the user's cache
 outside the repository (`docs/workflows/dashboard.md`); it is never tracked,
 so it is never in any class above. The same holds for the hub's registry

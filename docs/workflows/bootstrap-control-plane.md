@@ -90,12 +90,12 @@ docs/workflows/
   `docs/scripts/pulse.py`, `docs/scripts/evolution-report.sh`,
   `docs/scripts/reflect.sh`, `docs/scripts/evolution-setup.sh`,
   `docs/scripts/fleet.sh`, `docs/scripts/check-links.sh`, and the
-  `pulse-reflect` and `pulse-evolve` skills. Do not create the target's
+  `pulse-reflect` and `pulse-evolve` skills. Note: every link contained inside a template-owned file must resolve in the target repository after the sync. Template-owned files must not carry relative links to framework-only decisions (for example, ADR-012, ADR-014, ADR-015, ADR-016) unless the sync also copies those referenced framework files. Prefer absolute links to the canonical PULSE repository (e.g. https://github.com/manishtiwari25/pulse) for framework decisions the adopter will not receive. Do not create the target's
   constitution, evaluators, archive, fixtures, or any board post during
   bootstrap: those are the target's own human commits, the loop stays off
   until a baseline exists, and template sync never touches them. Repositories
   without a store keep the Markdown board and `board.sh`; the migration is
-  `pulse migrate --repo .`.
+  `pulse migrate --repo .`. 
 - Treat copied PULSE `SANDBOX REQUIRED`, fail-closed fallback, and ADR-008
   instruction text as superseded framework content. Replace it with the
   ADR-009 recommendation unless the target has an explicit local decision that
