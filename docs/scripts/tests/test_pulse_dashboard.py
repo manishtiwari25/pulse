@@ -1310,5 +1310,49 @@ class HubTestCase(unittest.TestCase):
         self.assertEqual(self.beta.git_status(), "")
 
 
+    def test_headless_browser_smoke(self):
+        """Optional: render every dashboard view in headless Chromium and fail on console errors or CSP violations.
+
+        Looks for common Chrome/Chromium executables on PATH or in PLAYWRIGHT_BROWSERS_PATH.
+        Skips the test when none is found.
+        """
+        import re
+        from pathlib import Path
+
+        candidates = ["chromium", "google-chrome", "chrome-headless-shell", "chrome", "chromium-browser"]
+        bin_path = None
+        for c in candidates:
+            p = shutil.which(c)
+            if p:
+                bin_path = p
+                break
+        if bin_path is None:
+            pw = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+            if pw:
+                pwp = Path(pw)
+                if pwp.exists():
+                    for p in pwp.rglob("*"):
+                        name = p.name.lower()
+                        if ("chrome" in name or "chromium" in name) and p.is_file() and os.access(str(p), os.X_OK):
+                            bin_path = str(p)
+                            break
+        if bin_path is None:
+            self.skipTest("No headless Chromium/Chrome binary found on PATH or PLAYWRIGHT_BROWSERS_PATH")
+
+        routes = ["/#/", "/#/votes", "/#/agents", "/#/activity", "/#/threads", "/#/evolution"]
+        # Try each route; collect stderr and fail if console errors or CSP violations are observed.
+        for r in routes:
+            cmd = [bin_path, "--headless=new", "--disable-gpu", "--no-sandbox",
+                   "--enable-logging=stderr", "--virtual-time-budget=6000", self.url + r]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            except subprocess.TimeoutExpired as exc:
+                self.fail(f"Headless browser timed out loading {r}: {exc}")
+            stderr = (proc.stderr or "") + "\n" + (proc.stdout or "")
+            # Fail on CONSOLE lines with an error/severity marker, or common CSP violation messages.
+            if re.search(r"CONSOLE.*\b(error|severe|fatal)\b", stderr, re.I) or re.search(r"\bContent-Security-Policy\b|Refused to apply inline style|CSP violation|Refused to load the script", stderr, re.I):
+                self.fail(f"Headless render of {r} reported console/CSP errors:\n{stderr}")
+
+
 if __name__ == "__main__":
     unittest.main()
