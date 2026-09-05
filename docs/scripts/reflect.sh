@@ -415,7 +415,7 @@ echo "Rules: docs/workflows/reflect.md. Fleets: docs/workflows/fleet.md."
 # machine registry registers a brain, compare the recorded upstream commit
 # with the brain's current HEAD and report how many commits behind it is.
 if [ -f "$REPO/.template-sync" ] && [ -f "${PULSE_HOME:-$HOME/.pulse}/projects.json" ] && command -v python3 >/dev/null 2>&1; then
-  brain_path="$(python3 - <<'PY'
+  brain_info="$(python3 - <<'PY'
 import json,os,sys
 p = os.path.expanduser(os.environ.get('PULSE_HOME','~/.pulse'))
 try:
@@ -423,12 +423,15 @@ try:
         reg = json.load(f)
     for proj in reg.get('projects', []):
         if isinstance(proj, dict) and proj.get('brain'):
-            print(proj.get('path',''))
+            # print slug then path separated by a tab
+            print((proj.get('slug','') or '') + "\t" + (proj.get('path','') or ''))
             break
 except Exception:
     pass
 PY
 )"
+  brain_slug="$(printf '%s' "$brain_info" | cut -f1)"
+  brain_path="$(printf '%s' "$brain_info" | cut -f2-)"
   if [ -n "$brain_path" ] && [ -d "$brain_path/.git" ]; then
     recorded="$(python3 - "$REPO/.template-sync" 2>/dev/null <<'PY' || true
 import json,sys
@@ -446,7 +449,12 @@ PY
         behind="$(git -C "$brain_path" rev-list --count "$recorded".."$brain_head" 2>/dev/null || true)"
         if [ -n "$behind" ] && [ "$behind" != "0" ]; then
           echo ""
-          echo "TEMPLATE  upstream ${rec_short} (${behind} commits behind the brain)"
+          # include brain slug and path when available for easier triage
+          if [ -n "$brain_slug" ]; then
+            echo "TEMPLATE  upstream ${rec_short} (${behind} commits behind the brain)  brain: ${brain_slug} (${brain_path})"
+          else
+            echo "TEMPLATE  upstream ${rec_short} (${behind} commits behind the brain)"
+          fi
           echo "  run pulse-template-sync"
           echo ""
         fi
