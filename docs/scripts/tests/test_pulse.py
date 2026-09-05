@@ -341,6 +341,16 @@ class StoreTestCase(unittest.TestCase):
         self.assertIsNone(run)
         self.assertIn("daily cap", reason)
 
+    def test_worker_that_only_talks_is_a_failed_run(self):
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script('echo "Tier 0 - I would start by reading AGENTS.md"')  # exits 0, acts on nothing
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("wrote no PULSE_RESULT.md", run["summary"])
+        self.assertEqual(pulse.agent_row(self.con, "aurora")["jobs_failed"], 1)
+        brief = (self.home / "work" / ("%s.brief.md" % run["job_id"])).read_text()
+        self.assertIn("This is your only run", brief)
+
     def test_work_times_out_and_dry_run_keeps_the_job(self):
         pulse.join_agent(self.con, "aurora", "r", "m")
         pulse.set_setting(self.con, "minutes_per_job", "0", "human")  # 0 minutes -> immediate timeout

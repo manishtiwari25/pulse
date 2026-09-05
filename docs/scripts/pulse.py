@@ -1442,6 +1442,10 @@ def write_brief(job, project, agent, clone, minutes):
     w("The real checkout is elsewhere and you cannot reach it. Nothing you do here is merged; the runner")
     w("copies your commits to a local branch `pulse/%s/%s` for a human to review." % (agent, job["id"]))
     w("")
+    w("This is your only run: nobody reads your chat output and there is no second turn. Do not stop after a")
+    w("preamble or a plan - do the task now with your tools, then write %s. A run that leaves no %s" % (RESULT_FILE, RESULT_FILE))
+    w("counts as failed.")
+    w("")
     w("## Task (%s, Tier %d)" % (job["kind"], job["tier"]))
     w("")
     w(job["title"])
@@ -1467,9 +1471,10 @@ def write_brief(job, project, agent, clone, minutes):
 
 def parse_result_file(clone):
     path = Path(clone) / RESULT_FILE
-    out = {"summary": "", "questions": [], "findings": []}
+    out = {"summary": "", "questions": [], "findings": [], "found": False}
     if not path.is_file():
         return out
+    out["found"] = True
     for line in path.read_text(encoding="utf-8", errors="replace").split("\n"):
         m = re.match(r"^\s*-?\s*`?(SUMMARY|QUESTION|FINDING)`?:\s*(.+)$", line)
         if not m:
@@ -1570,6 +1575,10 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
                 if exit_code != 0:
                     status = "failed"
                     summary = "worker exited %s" % exit_code
+                elif not parsed["found"]:
+                    # The worker answered without acting (a preamble, a plan) or never reported.
+                    status = "failed"
+                    summary = "worker wrote no %s; nothing to land" % RESULT_FILE
                 elif commits == 0:
                     status = "done"
                     summary = parsed["summary"] or "no commits; nothing to land"
