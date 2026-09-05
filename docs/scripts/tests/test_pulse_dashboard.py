@@ -380,6 +380,15 @@ class ProjectionTestCase(unittest.TestCase):
         self.assertTrue(line.strip().startswith("+1"), line)
         self.assertIn("expired", next(l for l in queue.splitlines() if self.fx.ids["expired"] in l))
 
+    def test_vote_reason_uses_post_summary(self):
+        """The projection uses the vote post's frontmatter summary as the displayed reason."""
+        suggestions = self.query(dash.q_suggestions)
+        by_id = {s["id"]: s for s in suggestions}
+        s1 = by_id[self.fx.ids["eligible"]]
+        votes = {v["agent"]: v for v in s1["votes"]}
+        # runner-b/model-b voted with summary "up: fewer retries" in the fixture
+        self.assertEqual(votes["runner-b/model-b"]["reason"], "up: fewer retries")
+
     def test_amendment_tally_matches_board_sh(self):
         amendments = self.query(dash.q_amendments)
         self.assertEqual(len(amendments), 1)
