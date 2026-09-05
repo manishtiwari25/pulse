@@ -24,7 +24,9 @@ status    Read the repository gates and, when --store is supplied, validate
           H01.md and H02.md without printing their contents. Exits 0 when the
           gates are active, 1 otherwise; never writes.
 prepare   Create private H01.md and H02.md templates outside the repository.
-          Existing files are never overwritten.
+          Existing files are never overwritten; while the set is pending,
+          fixtures older than that decision are retired (renamed, never
+          deleted) so the templates are fresh.
 activate  Validate both private fixtures, the baseline, STOP, and the gate
           files, then set "Held out: H01, H02" and "loop: on". No commit is
           created.
@@ -211,6 +213,41 @@ validate_store() {
     return "$ok"
 }
 
+# Give the file at $1 the modification time of the pending decision: the
+# commit that last changed the `Held out:` line when HEAD already says
+# pending, otherwise the working copy's own time (the edit is not committed
+# yet, or this is not a git checkout). A fixture older than that moment was
+# written before the set was declared exposed and is stale.
+pending_reference() {
+    ref="$1"
+    stamp=""
+    if command -v git >/dev/null 2>&1 &&
+        git -C "$REPO" show HEAD:docs/evolution/evaluators.md 2>/dev/null |
+            grep -q '^Held out:[ \t]*pending[ \t]*$'; then
+        stamp="$(git -C "$REPO" log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S \
+            -S'Held out: pending' -- docs/evolution/evaluators.md 2>/dev/null || true)"
+    fi
+    if [ -n "$stamp" ] && touch -t "$stamp" "$ref" 2>/dev/null; then
+        return 0
+    fi
+    touch -r "$EVAL" "$ref"
+}
+
+# Print the ids of fixture files older than the pending decision. Only
+# meaningful while `Held out:` is pending; prints nothing otherwise.
+stale_fixtures() {
+    [ "$(held_out_value)" = "pending" ] || return 0
+    ref="$(mktemp)"
+    pending_reference "$ref"
+    for id in H01 H02; do
+        file="$STORE_REAL/$id.md"
+        if [ -f "$file" ] && [ "$file" -ot "$ref" ]; then
+            printf '%s\n' "$id"
+        fi
+    done
+    rm -f "$ref"
+}
+
 prepare_fixture() {
     id="$1"
     file="$STORE_REAL/$id.md"
@@ -253,11 +290,17 @@ case "$COMMAND" in
 status)
     repository_gate_state
     store_ready=0
+    store_stale=""
     if [ -n "$STORE" ]; then
         resolve_store
         if validate_store; then
-            store_ready=1
-            echo "  private set: ready (contents not displayed)"
+            store_stale="$(stale_fixtures | tr '\n' ' ' | sed 's/ $//')"
+            if [ -n "$store_stale" ]; then
+                echo "  private set: stale - $store_stale predate the pending decision (contents not displayed)"
+            else
+                store_ready=1
+                echo "  private set: ready (contents not displayed)"
+            fi
         else
             echo "  private set: not ready"
         fi
@@ -284,6 +327,8 @@ status)
     fi
     if [ -z "$STORE" ]; then
         echo "Next: docs/scripts/evolution-setup.sh prepare --store /private/path"
+    elif [ -n "$store_stale" ]; then
+        echo "Next: docs/scripts/evolution-setup.sh prepare --store \"$STORE_REAL\" (retires the stale fixtures, then write fresh text)"
     elif [ "$store_ready" -eq 1 ]; then
         echo "Next: docs/scripts/evolution-setup.sh activate --store \"$STORE_REAL\""
     else
@@ -299,6 +344,15 @@ prepare)
         if [ -e "$file" ] && { [ ! -f "$file" ] || [ -L "$file" ]; }; then
             fail "$id.md already exists but is not a regular file" 2
         fi
+    done
+    # A pending set means the current fixtures are exposed: move the stale
+    # ones aside (never delete them) so the templates below are fresh.
+    for id in $(stale_fixtures); do
+        retired="$STORE_REAL/$id.retired-$(date -u +%Y%m%dT%H%M%SZ).md"
+        [ ! -e "$retired" ] || fail "$retired already exists; try again in a second" 2
+        mv "$STORE_REAL/$id.md" "$retired"
+        chmod 600 "$retired"
+        echo "Retired stale $id.md as $(basename "$retired") (it predates the pending decision)."
     done
     prepare_fixture H01
     prepare_fixture H02
@@ -326,6 +380,8 @@ activate)
         *) fail "evaluators.md already has a non-pending held-out set; no changes made" ;;
     esac
     validate_store || fail "private fixtures are not ready; no repository files changed"
+    stale="$(stale_fixtures | tr '\n' ' ' | sed 's/ $//')"
+    [ -z "$stale" ] || fail "$stale predate the pending decision; run prepare and write fresh text; no repository files changed"
 
     tmp_eval="$(mktemp)"
     tmp_const="$(mktemp)"

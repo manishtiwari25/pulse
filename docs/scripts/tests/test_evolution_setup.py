@@ -123,6 +123,60 @@ class EvolutionSetupTests(unittest.TestCase):
         self.assertTrue((self.store / "H02.md").is_file())
         self.assertEqual(stat.S_IMODE((self.store / "H02.md").stat().st_mode), 0o600)
 
+    def age_store(self, hours=1):
+        """Date both fixtures before the pending decision (evaluators.md's time)."""
+        import os
+
+        past = self.evaluators.stat().st_mtime - hours * 3600
+        for fixture_id in ("H01", "H02"):
+            os.utime(self.store / f"{fixture_id}.md", (past, past))
+
+    def test_pending_set_treats_fixtures_older_than_the_decision_as_stale(self):
+        # Incident I-001: the set went pending because the fixtures leaked.
+        # Files written before that decision must never be re-armed.
+        self.store.mkdir(mode=0o700)
+        self.fill_valid_store()
+        self.age_store()
+        before = self.snapshot_gates()
+
+        status = self.run_helper("status", self.store)
+        self.assertEqual(status.returncode, 1)
+        self.assertIn("private set: stale - H01 H02 predate the pending decision", status.stdout)
+        self.assertIn("evolution-setup.sh prepare --store", status.stdout)
+        self.assertNotIn("activate --store", status.stdout)
+
+        activate = self.run_helper("activate", self.store)
+        self.assertEqual(activate.returncode, 1)
+        self.assertIn("predate the pending decision", activate.stderr)
+        self.assertEqual(self.snapshot_gates(), before)
+
+        prepare = self.run_helper("prepare", self.store)
+        self.assertEqual(prepare.returncode, 0, prepare.stderr)
+        retired = sorted(self.store.glob("H0?.retired-*.md"))
+        self.assertEqual(len(retired), 2)
+        self.assertIn("SECRET-H01", retired[0].read_text(encoding="utf-8"))
+        self.assertEqual(stat.S_IMODE(retired[0].stat().st_mode), 0o600)
+        self.assertIn("tier: TODO", (self.store / "H01.md").read_text(encoding="utf-8"))
+        self.assertNotIn("SECRET", prepare.stdout)
+
+        self.fill_valid_store()
+        activated = self.run_helper("activate", self.store)
+        self.assertEqual(activated.returncode, 0, activated.stderr)
+        self.assertIn("Held out: H01, H02", self.evaluators.read_text(encoding="utf-8"))
+
+    def test_active_set_never_calls_old_fixtures_stale(self):
+        self.evaluators.write_text(
+            EVALUATORS.replace("Held out: pending", "Held out: H01, H02"), encoding="utf-8"
+        )
+        self.constitution.write_text(CONSTITUTION.replace("loop: off", "loop: on"), encoding="utf-8")
+        self.store.mkdir(mode=0o700)
+        self.fill_valid_store()
+        self.age_store()
+
+        status = self.run_helper("status", self.store)
+        self.assertEqual(status.returncode, 0, status.stdout)
+        self.assertIn("private set: ready", status.stdout)
+
     def test_prepare_refuses_store_inside_repository_before_creation(self):
         inside = self.repo / "private" / "held-out"
         result = self.run_helper("prepare", inside)
