@@ -327,6 +327,38 @@ class StoreTestCase(unittest.TestCase):
         self.assertEqual(job["status"], "done")
         self.assertEqual(job["branch"], branch)
 
+    def test_work_drops_a_committed_result_file_before_landing(self):
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script(
+            'echo "changed by $PULSE_AGENT" >> README.md\n'
+            'printf "SUMMARY: appended and committed the result file too\\n" > PULSE_RESULT.md\n'
+            'git add -A && git -c user.name=w -c user.email=w@x -c commit.gpgsign=false commit -qm "worker change"')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"])
+        branch = "pulse/aurora/%s" % run["job_id"]
+        self.assertEqual(run["commits"], 2, "the worker's commit plus the runner's removal")
+        self.assertNotEqual(git(self.repo, "cat-file", "-e", "%s:PULSE_RESULT.md" % branch).returncode, 0,
+                            "PULSE_RESULT.md is not on the landed branch")
+        self.assertIn("changed by aurora", git(self.repo, "show", "%s:README.md" % branch).stdout)
+
+    def test_work_never_lands_commits_that_touch_owner_owned_paths(self):
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script(
+            'mkdir -p docs/evolution .github/workflows\n'
+            'echo "baseline: B-999" > docs/evolution/evaluators.md\n'
+            'echo "on: push" > .github/workflows/ci.yml\n'
+            'git add -A && git -c user.name=w -c user.email=w@x -c commit.gpgsign=false commit -qm "owner files"\n'
+            'printf "SUMMARY: edited the gates\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(run["branch"], "")
+        self.assertIn("owner-owned paths", run["summary"])
+        self.assertIn("docs/evolution/evaluators.md", run["summary"])
+        self.assertIn(".github/workflows/ci.yml", run["summary"])
+        self.assertEqual(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "", "nothing landed")
+
     def test_work_refuses_when_verify_fails_or_stopped_or_capped(self):
         pulse.join_agent(self.con, "aurora", "r", "m")
         self.con.execute("UPDATE projects SET verify_cmd = 'false' WHERE slug = 'proj'")
