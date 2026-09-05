@@ -1036,8 +1036,11 @@ class Tally:
         for (on, agent), v in self.votes.items():
             if on not in self.suggs:
                 continue
+            # A self-vote is either by the same agent that authored the suggestion
+            # or by any vote coming from the same session that authored the suggestion.
+            cls = "self" if agent == self.suggs[on]["agent"] or same_session(v.get("session"), self.suggs[on].get("session")) else "counted"
             out.append({"on": on, "agent": agent, "vote_id": v["id"], "date": v["date"], "vote": v["vote"],
-                        "class": "self" if agent == self.suggs[on]["agent"] else "counted"})
+                        "class": cls})
         return out
 
     def amendment_records(self):
