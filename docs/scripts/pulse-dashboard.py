@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""PULSE dashboard - a read-only local viewer for the agents' board and the loop.
+"""PULSE dashboard - a local viewer for the agents' board and the loop.
 
 The Markdown under docs/board/ and docs/evolution/ stays canonical and
 docs/scripts/board.sh stays the only tally. This tool runs those reports in
 their machine mode (--records), projects the result into a disposable SQLite
 file kept OUTSIDE the repository (one per checkout, in the user's cache
 directory), and serves it to a browser on 127.0.0.1 only. It never writes to
-the repository, never accepts a write request, and can be deleted and rebuilt
-at any time. Decided in ADR-015; procedure in docs/workflows/dashboard.md.
+the repository. In store mode it accepts one guarded write,
+POST /api/v1/decide, which records the human's yes or no through pulse.decide.
+The projection can be deleted and rebuilt at any time. Decided in ADR-015 and
+ADR-019; procedure in docs/workflows/dashboard.md.
 
 Subcommands:
   index    build or refresh the projection for a repository
   status   show where the projection lives and how fresh it is
-  serve    start the local read-only dashboard
+  serve    start the local dashboard
   snapshot print the board and evolution snapshots as JSON
   _board-snapshot / _evolution-snapshot
            used by board.sh --json and evolution-report.sh --json
@@ -62,7 +64,7 @@ class DashboardError(Exception):
 # --------------------------------------------------------------------------- #
 # The agents' store (ADR-019): when $PULSE_HOME/pulse.sqlite exists and knows
 # this checkout, posts and the registry come from it instead of the Markdown
-# board and projects.json. Everything stays read-only here.
+# board and projects.json. Reads stay side-effect-free here.
 # --------------------------------------------------------------------------- #
 
 def load_pulse_module():
@@ -84,6 +86,13 @@ pulse = load_pulse_module()
 
 def store_available(home=None):
     return pulse is not None and pulse.store_exists(home)
+
+
+def pulse_home_for_server(server):
+    hub = getattr(server, "hub", None)
+    if hub is not None:
+        return hub.home
+    return None
 
 
 def store_slug_for(repo, home=None):
@@ -1183,7 +1192,12 @@ def q_threads(con):
         "SELECT * FROM threads ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END, last DESC"))
 
 
-def q_proposals(con, awaiting_only=False):
+def projection_can_decide(con, home=None):
+    row = con.execute("SELECT value FROM metadata WHERE key = 'tally_mode'").fetchone()
+    return bool(row and row["value"] == "store" and store_available(home))
+
+
+def q_proposals(con, awaiting_only=False, can_decide=None):
     """Proposals for the human, awaiting first: the agreed answer with the
     proposer's call sign and body, plus the post that recorded the human's
     yes or no when there is one. Read-only; the record is the board post."""
@@ -1198,6 +1212,7 @@ def q_proposals(con, awaiting_only=False):
         "ORDER BY CASE r.status WHEN 'awaiting' THEN 0 ELSE 1 END, r.date DESC, r.id"))
     for r in out:
         r["proposal_text"] = proposal_text(r["body"])
+        r["can_decide"] = projection_can_decide(con) if can_decide is None else bool(can_decide)
     return out
 
 
@@ -1406,7 +1421,7 @@ def project_summary(con, slug, entry):
         return con.execute(sql).fetchone()[0]
     meta = {r["key"]: r["value"] for r in con.execute(
         "SELECT key, value FROM metadata WHERE key IN "
-        "('built_at', 'branch', 'head', 'dirty', 'repo', 'repo_name', 'board_present', 'now')")}
+        "('built_at', 'branch', 'head', 'dirty', 'repo', 'repo_name', 'board_present', 'now', 'tally_mode')")}
     evo = {r["key"]: r["value"] for r in con.execute(
         "SELECT key, value FROM evolution WHERE key IN ('loop', 'stop_present', 'baseline', 'evolution_present')")}
     last = con.execute(
@@ -1437,8 +1452,12 @@ def project_summary(con, slug, entry):
         "proposals_awaiting": one("SELECT COUNT(*) FROM proposals WHERE status = 'awaiting'"),
         "posts": one("SELECT COUNT(*) FROM posts"),
         "posts_24h": con.execute("SELECT COUNT(*) FROM posts WHERE date >= ?", (day_ago,)).fetchone()[0],
-        "agents": one("SELECT COUNT(DISTINCT agent || '|' || session) FROM posts"),
-        "identities": [r[0] for r in con.execute("SELECT DISTINCT agent || '|' || session FROM posts")],
+        "tally_mode": meta.get("tally_mode", ""),
+        "can_decide": meta.get("tally_mode") == "store" and store_available(),
+        "agents": one("SELECT COUNT(DISTINCT agent) FROM posts") if meta.get("tally_mode") == "store"
+                  else one("SELECT COUNT(DISTINCT agent || '|' || session) FROM posts"),
+        "identities": [r[0] for r in con.execute("SELECT DISTINCT agent FROM posts")] if meta.get("tally_mode") == "store"
+                      else [r[0] for r in con.execute("SELECT DISTINCT agent || '|' || session FROM posts")],
         "evolution_present": evo.get("evolution_present") == "1",
         "loop": evo.get("loop", ""),
         "stop_present": evo.get("stop_present") == "1",
@@ -1612,6 +1631,8 @@ def q_org(hub):
     present = [p for p in everything if p["present"]]
     claims = [dict(c, slug=p["slug"], base=p["base"]) for p in present for c in p["active_claims"]]
     proposals = [dict(r, slug=p["slug"], base=p["base"]) for p in present for r in p.pop("proposals", [])]
+    for r in proposals:
+        r["can_decide"] = store_available(hub.home)
     brains = [p["slug"] for p in projects if p.get("brain")]
     identities = set()
     for p in present:
@@ -1619,6 +1640,8 @@ def q_org(hub):
     return {
         "generated_at": utc_now(),
         "registry": str(hub.home / REGISTRY_NAME),
+        "tally_mode": "store" if store_available(hub.home) else "--records",
+        "can_decide": store_available(hub.home),
         "commons_dir": commons["path"] if commons else "",
         "projects": projects,
         "commons": commons,
@@ -1650,8 +1673,9 @@ def q_org_proposals(hub):
     for slug, e, st, err in hub.each():
         if st is None or slug == COMMONS_SLUG:
             continue
-        for r in with_db(st, q_proposals):
+        for r in with_db(st, lambda con: q_proposals(con, can_decide=store_available(hub.home))):
             r.pop("body", None)
+            r["can_decide"] = store_available(hub.home)
             out.append(dict(r, slug=slug, base=base_for(slug)))
     # Awaiting first, newest first inside each group (sorts are stable).
     out.sort(key=lambda r: (r["date"], r["slug"]), reverse=True)
@@ -1711,6 +1735,8 @@ def roster_status(days_since, active_claims):
 
 
 def q_roster(hub):
+    if store_available(hub.home):
+        return q_roster_from_store(hub)
     people = {}
     project_nows = []
     for slug, e, st, err in hub.each():
@@ -1788,6 +1814,112 @@ def q_roster(hub):
     return out
 
 
+def q_roster_from_store(hub):
+    agents = {}
+    con = pulse.open_store(hub.home)
+    try:
+        for r in con.execute("SELECT * FROM agents ORDER BY name"):
+            sessions = []
+            try:
+                raw = json.loads(r["sessions"] or "[]")
+                if isinstance(raw, list):
+                    sessions = [str(s) for s in raw]
+            except json.JSONDecodeError:
+                sessions = []
+            name = r["display"] or r["name"]
+            agents[r["name"]] = {
+                "agent": r["name"], "name": name, "names": [name] if name else [],
+                "kind": r["kind"], "status": r["status"], "agent_status": r["status"],
+                "runner": r["runner"], "model": r["model"], "session": "",
+                "sessions": sessions, "session_count": len(sessions),
+                "jobs_done": r["jobs_done"], "jobs_failed": r["jobs_failed"],
+                "posts": r["posts"], "store_posts": r["posts"],
+                "pruned_at": r["pruned_at"], "pruned_reason": r["pruned_reason"],
+                "last_useful_at": r["last_useful_at"], "last_active_at": r["last_active_at"],
+                "created_at": r["created_at"], "legacy_id": r["legacy_id"], "notes": r["notes"],
+                "votes": 0, "claims": 0, "questions": 0, "answers": 0, "suggestions": 0,
+                "findings": 0, "first_seen": "", "last_seen": "", "active_claims": [],
+                "projects": [], "days_since": 0.0, "approximate": False,
+                "name_shared": False, "shared_with": [],
+            }
+    finally:
+        con.close()
+
+    project_nows = []
+    for slug, e, st, err in hub.each():
+        if st is None:
+            continue
+        rows, project_now = with_db(st, timeline_rows)
+        if project_now:
+            project_nows.append(project_now)
+    reference_now = max(project_nows) if project_nows else utc_now()
+    reference_dt = parse_utc(reference_now) or datetime.now(timezone.utc)
+
+    for slug, e, st, err in hub.each():
+        if st is None:
+            continue
+
+        def collect(con):
+            rows = con.execute(
+                "SELECT agent, MAX(runner) AS runner, MAX(model) AS model, COUNT(*) AS posts, "
+                "SUM(kind = 'vote') AS votes, SUM(kind = 'claim') AS claims, SUM(kind = 'question') AS questions, "
+                "SUM(kind = 'answer') AS answers, SUM(kind = 'suggestion') AS suggestions, "
+                "SUM(kind = 'finding') AS findings, MIN(date) AS first_seen, MAX(date) AS last_seen, "
+                "(SELECT p2.name FROM posts p2 WHERE p2.agent = p.agent "
+                " AND p2.name != '' ORDER BY p2.date DESC LIMIT 1) AS label, "
+                "(SELECT p3.project FROM posts p3 WHERE p3.agent = p.agent "
+                " AND p3.project != '' ORDER BY p3.date DESC LIMIT 1) AS home_project "
+                "FROM posts p GROUP BY agent")
+            for r in rows:
+                person = agents.setdefault(r["agent"], {
+                    "agent": r["agent"], "name": r["agent"], "names": [], "kind": "legacy",
+                    "status": "active", "agent_status": "active", "runner": r["runner"], "model": r["model"],
+                    "session": "", "sessions": [], "session_count": 0, "jobs_done": 0, "jobs_failed": 0,
+                    "posts": 0, "store_posts": 0, "pruned_at": "", "pruned_reason": "",
+                    "last_useful_at": "", "last_active_at": "", "created_at": "", "legacy_id": "",
+                    "notes": "", "votes": 0, "claims": 0, "questions": 0, "answers": 0,
+                    "suggestions": 0, "findings": 0, "first_seen": "", "last_seen": "",
+                    "active_claims": [], "projects": [], "days_since": 0.0, "approximate": False,
+                    "name_shared": False, "shared_with": [],
+                })
+                if r["label"] and r["label"] not in person["names"]:
+                    person["names"].append(r["label"])
+                if r["last_seen"] and (not person["last_seen"] or r["last_seen"] >= person["last_seen"]):
+                    person["last_seen"] = r["last_seen"]
+                if r["first_seen"] and (not person["first_seen"] or r["first_seen"] < person["first_seen"]):
+                    person["first_seen"] = r["first_seen"]
+                for k in ("votes", "claims", "questions", "answers", "suggestions", "findings"):
+                    person[k] += r[k] or 0
+                person["posts"] = r["posts"] if person["store_posts"] == 0 else person["store_posts"]
+                label = slug if slug != COMMONS_SLUG or not r["home_project"] else "%s (from %s)" % (slug, r["home_project"])
+                if label not in person["projects"]:
+                    person["projects"].append(label)
+            for c in con.execute(
+                    "SELECT c.thread_key, c.summary, c.expires, c.agent, c.id "
+                    "FROM claims c WHERE c.status = 'active'"):
+                person = agents.get(c["agent"])
+                if person is not None:
+                    person["active_claims"].append({"slug": slug, "base": base_for(slug), "thread_key": c["thread_key"],
+                                                    "summary": c["summary"], "expires": c["expires"], "id": c["id"]})
+
+        with_db(st, collect)
+
+    out = list(agents.values())
+    for person in out:
+        if not person["first_seen"]:
+            person["first_seen"] = person["created_at"]
+        if not person["last_seen"]:
+            person["last_seen"] = person["last_active_at"] or person["created_at"]
+        recent = person["last_useful_at"] or person["last_seen"] or person["last_active_at"] or person["created_at"]
+        last_dt = parse_utc(recent) or reference_dt
+        person["days_since"] = round(max(0.0, (reference_dt - last_dt).total_seconds() / 86400.0), 3)
+        if person["status"] != "pruned" and person["active_claims"]:
+            person["status"] = "working"
+    order = {"working": 0, "active": 1, "idle": 2, "pruned": 3}
+    out.sort(key=lambda p: (order.get(p["status"], 9), p["days_since"], p["agent"]))
+    return out
+
+
 def q_activity(hub, limit=80):
     posts = []
     for slug, e, st, err in hub.each():
@@ -1805,7 +1937,7 @@ def q_activity(hub, limit=80):
 
 
 # --------------------------------------------------------------------------- #
-# The local server (127.0.0.1 only, GET only, no writes)
+# The local server (127.0.0.1 only; one guarded write route)
 # --------------------------------------------------------------------------- #
 
 class DashboardState:
@@ -1874,9 +2006,76 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_POST(self):
-        self._json(405, {"error": "read-only dashboard: no write routes"})
+        path = unquote(urlsplit(self.path).path)
+        if path == "/api/v1/decide":
+            return self._decide_api()
+        self._json(405, {"error": "read-only dashboard: no write routes except POST /api/v1/decide"})
 
-    do_PUT = do_DELETE = do_PATCH = do_POST
+    def _method_not_allowed(self):
+        self._json(405, {"error": "read-only dashboard: no write routes except POST /api/v1/decide"})
+
+    do_PUT = do_DELETE = do_PATCH = _method_not_allowed
+
+    def _decide_api(self):
+        home = pulse_home_for_server(self.server)
+        if self.server.server_address[0] != "127.0.0.1":
+            return self._json(403, {"error": "decide is loopback-only"})
+        if not store_available(home):
+            return self._json(409, {"error": "store is not available; POST /api/v1/decide requires the pulse store"})
+        if self.headers.get("X-Pulse-Decide", "") != "yes":
+            return self._json(403, {"error": "missing X-Pulse-Decide: yes"})
+        ctype = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            return self._json(415, {"error": "Content-Type must be application/json"})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return self._json(400, {"error": "bad Content-Length"})
+        if length <= 0 or length > 16 * 1024:
+            return self._json(400, {"error": "JSON body must be 1..16384 bytes"})
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self._json(400, {"error": "body must be JSON"})
+        if not isinstance(payload, dict):
+            return self._json(400, {"error": "body must be a JSON object"})
+        post_id = str(payload.get("post_id", "")).strip()
+        answer = str(payload.get("answer", "")).strip().lower()
+        words = str(payload.get("words", "")).strip()
+        con = None
+        try:
+            con = pulse.open_store(home, readonly=False)
+            con.execute("BEGIN IMMEDIATE")
+            result = pulse.decide(con, post_id, answer, words)
+            con.execute("COMMIT")
+        except pulse.PulseError as exc:
+            if con is not None:
+                try:
+                    con.execute("ROLLBACK")
+                except sqlite3.DatabaseError:
+                    pass
+            return self._json(400, {"error": str(exc)})
+        except sqlite3.DatabaseError as exc:
+            if con is not None:
+                try:
+                    con.execute("ROLLBACK")
+                except sqlite3.DatabaseError:
+                    pass
+            return self._json(500, {"error": "%s: %s" % (type(exc).__name__, exc)})
+        finally:
+            if con is not None:
+                con.close()
+        hub = getattr(self.server, "hub", None)
+        if hub is not None:
+            hub.reload(force=True)
+            for st in list(hub.states.values()):
+                try:
+                    st.ensure_fresh(force=True)
+                except DashboardError:
+                    pass
+        else:
+            self.server.state.ensure_fresh(force=True)
+        self._json(200, {"ok": True, "result_post": result["id"], "post_id": post_id, "answer": answer})
 
     def do_GET(self):
         path = unquote(urlsplit(self.path).path)
@@ -1977,7 +2176,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if route == "notices":
                 return self._json(200, q_project_notices(con))
             if route == "proposals":
-                return self._json(200, q_proposals(con))
+                return self._json(200, q_proposals(con, can_decide=store_available(pulse_home_for_server(self.server))))
         finally:
             con.close()
         return self._json(404, {"error": "not found"})
@@ -2037,7 +2236,7 @@ INDEX_HTML = """<!DOCTYPE html>
   this page is a disposable projection kept outside the repository.</span></div>
 <div id="notices" class="notices" role="region" aria-label="Notices" hidden></div>
 <main id="main" tabindex="-1"><div class="skeleton-page" aria-hidden="true"><div class="skeleton kpi"></div><div class="skeleton kpi"></div><div class="skeleton kpi"></div><div class="skeleton kpi"></div><div class="skeleton wide"></div></div><p class="sr-only">Loading…</p></main>
-<footer class="muted">pulse-dashboard.py · 127.0.0.1 only · no write routes · <a href="#/overview" id="refresh-link">refresh</a></footer>
+<footer class="muted">pulse-dashboard.py · 127.0.0.1 only · one write: decide · <a href="#/overview" id="refresh-link">refresh</a></footer>
 <script src="/app.js"></script>
 </body>
 </html>
@@ -2221,6 +2420,14 @@ td.nw { white-space: nowrap; }
 .toolbar { display: flex; gap: 8px 10px; flex-wrap: wrap; align-items: center; margin: 2px 0 12px; }
 select, input { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 13px; }
 input[type="search"] { min-width: 220px; }
+button.ok-btn, button.warn-btn { border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px; font: inherit; font-size: 13px; cursor: pointer; color: var(--fg); background: var(--panel-2); }
+button.ok-btn { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+button.warn-btn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+button.ok-btn:hover { background: color-mix(in srgb, var(--ok) 14%, var(--panel)); }
+button.warn-btn:hover { background: color-mix(in srgb, var(--warn) 14%, var(--panel)); }
+.decision-box { margin-top: 8px; }
+.decision-box input { min-width: min(360px, 100%); flex: 1; }
+.bad-text { color: var(--bad); min-height: 1.4em; margin-top: 4px; }
 label.check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
 .count { color: var(--muted); font-size: 12px; margin-left: auto; }
 
@@ -2391,6 +2598,16 @@ APP_JS = r"""'use strict';
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
     return data;
   });
+  const postJson = (p, payload) => fetch('/api/v1/' + p, {
+    method: 'POST',
+    cache: 'no-store',
+    headers: {'Content-Type': 'application/json', 'X-Pulse-Decide': 'yes'},
+    body: JSON.stringify(payload)
+  }).then(async (r) => {
+    const data = await r.json().catch(() => ({error: 'bad JSON'}));
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    return data;
+  });
   const enc = encodeURIComponent;
   // The SVG namespace is an XML identifier the DOM API requires, not a
   // request: the CSP forbids every network call except to this server.
@@ -2539,9 +2756,8 @@ APP_JS = r"""'use strict';
     if (dot) dot.classList.toggle('stopped', !ok);
   }
 
-  // Agents have call signs (the `name:` frontmatter line). The name is what a
-  // human reads; the agent id and session stay visible because they are the
-  // identities the tally actually counts.
+  // Agents have names. A legacy Markdown post may also carry a `name:` call
+  // sign; that label is display-only when there is no store.
   function avatar(seed) {
     let h = 0;
     for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
@@ -2554,7 +2770,7 @@ APP_JS = r"""'use strict';
     const name = raw.length > 40 ? raw.slice(0, 40) + '\u2026' : raw;
     const agent = row.agent || '';
     const session = row.session || '';
-    const title = (raw && raw !== name ? raw + ' \u00b7 ' : '') + (agent || '(no agent id)') + (session ? ' \u00b7 session ' + session : '');
+    const title = (raw && raw !== name ? raw + ' \u00b7 ' : '') + (agent || '(no agent)') + (session ? ' \u00b7 session ' + session : '');
     if (name) return el('span', {class: 'who', title}, avatar(name), el('span', {class: 'who-name'}, name), el('span', {class: 'id muted small mono'}, agent));
     return el('span', {class: 'who', title}, avatar(agent || '?'), el('span', {class: 'mono'}, agent || '(unknown)'),
       session ? el('span', {class: 'id muted small mono'}, session.slice(0, 8)) : null);
@@ -2928,13 +3144,27 @@ APP_JS = r"""'use strict';
         el('div', {class: 'row', style: 'margin-top:6px'}, bar(r.voters, r.quorum, it.ready ? 'ok' : '', r.voters + ' of ' + r.quorum + ' voters for quorum'), el('span', {class: 'small num muted'}, r.voters + '/' + r.quorum), splitBar(r.up, r.down))));
   }
   // ----- proposals for the human ---------------------------------------------
-  // The agents deliberated and agreed; the reader says yes or no in chat and an
-  // agent records it on the board. The dashboard only shows - it has no button.
+  // The agents deliberated and agreed; in store mode the human can record one
+  // yes/no decision through the single guarded write route.
   function proposalStatusChip(st) {
     return chip(st === 'awaiting' ? 'awaiting your yes or no' : st, (st === 'awaiting' ? 'ok' : st === 'accepted' ? 'info' : 'warn') + ' dotted');
   }
   function proposalCard(r, far, detail) {
     const open = far ? farPost(r.base, r.id, 'open the full proposal') : postLink(r.id, 'open the full proposal');
+    const err = el('div', {class: 'small bad-text', role: 'alert'});
+    const words = el('input', {type: 'text', placeholder: 'your words, recorded with the decision', 'aria-label': 'Decision words'});
+    const decideButton = (answer) => el('button', {type: 'button', class: answer === 'yes' ? 'ok-btn' : 'warn-btn', onclick: async () => {
+      err.textContent = '';
+      try {
+        await postJson('decide', {post_id: r.id, answer, words: words.value || ''});
+        await proposals();
+      } catch (e) {
+        err.textContent = e.message || String(e);
+      }
+    }}, answer === 'yes' ? 'Yes' : 'No');
+    const controls = r.status === 'awaiting' && r.can_decide
+      ? el('div', {class: 'decision-box'}, el('div', {class: 'row'}, words, decideButton('yes'), decideButton('no')), err)
+      : null;
     return el('div', {class: 'panel vote-card proposal' + (r.status === 'awaiting' ? ' awaiting' : '')},
       el('div', {class: 'left'}, proposalStatusChip(r.status)),
       el('div', null,
@@ -2943,7 +3173,7 @@ APP_JS = r"""'use strict';
           r.status !== 'awaiting' && r.decided_date ? chip(r.status + ' ' + fmtDate(r.decided_date), 'dotted') : null),
         r.proposal_text ? el('p', {class: 'proposal-text'}, r.proposal_text) : null,
         r.status === 'awaiting'
-          ? el('p', {class: 'small muted', style: 'margin:6px 0 0'}, 'Say yes or no to the agent in chat; it records your answer as a result post with resolution: accepted or declined. ', open)
+          ? (controls || el('p', {class: 'small muted', style: 'margin:6px 0 0'}, 'Say yes or no with pulse decide; it records your answer as a result post with resolution: accepted or declined. ', open))
           : (r.decided_summary ? el('p', {class: 'small muted', style: 'margin:6px 0 0'}, 'Recorded: ', r.decided_summary, ' ', far ? farPost(r.base, r.decided_id, '(post)') : postLink(r.decided_id, '(post)')) : null),
         detail || null));
   }
@@ -2984,7 +3214,7 @@ APP_JS = r"""'use strict';
       kpi(t.proposals_awaiting || 0, 'for you', '#/proposals', {sub: 'proposals awaiting your yes or no', tone: t.proposals_awaiting ? 'ok' : ''}),
       kpi(t.projects_present, 'projects', '#/org', {sub: t.projects_present !== t.projects ? (t.projects - t.projects_present) + ' registered but missing' : 'on this machine', tone: 'accent'}),
       kpi(t.agents_active, 'working now', '#/agents', {sub: 'agents holding a claim', tone: t.agents_active ? 'ok' : ''}),
-      kpi(t.agents, 'agent identities', '#/agents', {sub: 'agent id + session, all projects'}),
+      kpi(t.agents, 'agents', '#/agents', {sub: 'seen across all projects'}),
       kpi(t.votes_open, 'votes open', '#/votes', {sub: 'suggestions and amendments', tone: t.votes_open ? 'warn' : ''}),
       kpi(t.questions_open, 'open questions', commonsHref, {sub: 'on the commons'}),
       kpi(t.posts_24h, 'posts / 24h', '#/activity', {sub: weekTotal ? num(weekTotal) + ' in 7 days' : '', spark: week.length ? sparkline(week, 'var(--accent)') : null}));
@@ -3080,7 +3310,7 @@ APP_JS = r"""'use strict';
   async function agents() {
     const rows = await api('roster');
     const byAgent = new Map();
-    const statusOrder = {working: 0, active: 1, recent: 2, idle: 3, dormant: 4};
+    const statusOrder = {working: 0, active: 1, recent: 2, idle: 3, dormant: 4, pruned: 5};
     for (const p of rows) {
       if (!byAgent.has(p.agent)) byAgent.set(p.agent, []);
       byAgent.get(p.agent).push(p);
@@ -3094,47 +3324,54 @@ APP_JS = r"""'use strict';
     }).sort((a, b) => (statusOrder[a.status] - statusOrder[b.status]) || String(a.agent).localeCompare(String(b.agent)));
     const named = rows.filter((p) => p.name).length;
     const shared = rows.filter((p) => p.name_shared).length;
-    const counts = {working: 0, active: 0, recent: 0, idle: 0, dormant: 0};
+    const counts = {working: 0, active: 0, recent: 0, idle: 0, dormant: 0, pruned: 0};
     for (const g of groups) counts[g.status] += 1;
     const kpis = el('div', {class: 'kpis'},
-      kpi(groups.length, 'agents', '#/agents', {sub: rows.length + ' finished sessions'}),
+      kpi(groups.length, 'agents', '#/agents', {sub: rows.length + ' roster row' + (rows.length === 1 ? '' : 's')}),
       kpi(counts.working, 'working', '#/agents', {sub: 'holding active claims', tone: counts.working ? 'ok' : ''}),
       kpi((counts.active || 0) + (counts.recent || 0), 'active or recent', '#/agents', {sub: 'posted in the last 7 days'}),
-      kpi(counts.dormant, 'dormant hidden', '#/agents', {sub: 'older than 30 days'}),
-      kpi(named, 'carry a call sign', '#/agents', {sub: 'of ' + rows.length + ' sessions'}),
-      kpi(shared, 'shared call signs', '#/agents', {sub: shared ? 'one name on more than one agent id' : 'every name is on one agent id', tone: shared ? 'warn' : ''}));
+      kpi((counts.dormant || 0) + (counts.pruned || 0), 'hidden', '#/agents', {sub: 'dormant or pruned'}),
+      kpi(rows.reduce((a, p) => a + Number(p.jobs_done || 0), 0), 'jobs done', '#/agents', {sub: 'from the agents table'}),
+      kpi(rows.reduce((a, p) => a + Number(p.jobs_failed || 0), 0), 'jobs failed', '#/agents', {sub: 'from the agents table', tone: rows.some((p) => Number(p.jobs_failed || 0)) ? 'warn' : ''}));
     const search = el('input', {type: 'search', placeholder: 'name, agent id, runner, model, project...', 'aria-label': 'Search agents'});
     const onlyWorking = el('input', {type: 'checkbox'});
     const showDormant = el('input', {type: 'checkbox'});
+    const showPruned = el('input', {type: 'checkbox'});
     const box = el('div', {class: 'stack'});
     const count = el('span', {class: 'count'});
     const groupCard = (g) => {
       const p = g.primary;
       const sessionRows = g.sessions.map((s) => ({data: s, cells: [
         el('span', null, who(s), s.name_shared ? [' ', chip('name shared with ' + s.shared_with.join(', '), 'warn dotted')] : null),
-        statusChip(s.status), el('span', {class: 'small mono'}, s.session || '(none)'), el('span', {class: 'small'}, s.projects.join(', ')),
+        el('span', null, statusChip(s.status), ' ', s.kind ? chip(s.kind, 'info dotted') : null),
+        el('span', {class: 'small mono'}, (s.sessions && s.sessions.length) ? s.sessions.join(', ') : (s.session || '(none)')),
+        el('span', {class: 'small'}, s.projects.join(', ')),
         el('span', {class: 'num'}, s.posts), el('span', {class: 'num'}, s.votes), el('span', {class: 'num'}, s.claims), el('span', {class: 'num'}, s.questions + ' / ' + s.answers),
+        el('span', {class: 'num'}, s.jobs_done || 0), el('span', {class: 'num'}, s.jobs_failed || 0),
+        el('span', {class: 'small'}, s.last_useful_at ? when(s.last_useful_at) : el('span', {class: 'muted'}, '(none)')),
         el('span', {class: 'small'}, when(s.first_seen)), el('span', {class: 'small', title: s.approximate ? 'status uses the local clock because projection now is missing' : ''}, when(s.last_seen), ' ', el('span', {class: 'muted'}, '(' + Number(s.days_since || 0).toFixed(1) + 'd)')),
         s.active_claims.length ? el('div', null, s.active_claims.map((c) => el('div', {class: 'small'}, projectLink(c.base, c.slug), ' ', farThread(c.base, c.thread_key), el('span', {class: 'muted'}, ' until ', when(c.expires))))) : el('span', {class: 'muted small'}, 'no active claim')]}));
       return el('details', {class: 'panel roster-group', open: g.status === 'working'},
         el('summary', null,
           el('span', {class: 'roster-head'}, who({agent: g.agent, session: '', name: p.name || '', runner: p.runner || '', model: p.model || ''}), statusChip(g.status),
-            el('span', {class: 'muted small'}, g.sessions.length + ' session' + (g.sessions.length === 1 ? '' : 's')), el('span', {class: 'muted small'}, g.projects.join(', ')),
+            p.kind ? chip(p.kind, 'info dotted') : null,
+            el('span', {class: 'muted small'}, ((p.session_count || g.sessions.length) + ' session' + ((p.session_count || g.sessions.length) === 1 ? '' : 's'))), el('span', {class: 'muted small'}, g.projects.join(', ')),
+            p.status === 'pruned' && p.pruned_reason ? chip('pruned: ' + p.pruned_reason, 'warn') : null,
             g.active_claims.length ? chip(g.active_claims.length + ' active claim' + (g.active_claims.length === 1 ? '' : 's'), 'ok dotted') : null)),
-        table(['agent session', 'status', 'session id', 'projects', 'posts', 'votes', 'claims', 'q / a', 'first seen', 'last seen', 'working on'], sessionRows));
+        table(['agent', 'status / kind', 'sessions', 'projects', 'posts', 'votes', 'claims', 'q / a', 'jobs done', 'jobs failed', 'last useful', 'first seen', 'last seen', 'working on'], sessionRows));
     };
     const draw = () => {
       const needle = search.value.trim().toLowerCase();
-      const filtered = groups.filter((g) => (showDormant.checked || g.status !== 'dormant') && (!onlyWorking.checked || g.active_claims.length) &&
+      const filtered = groups.filter((g) => (showDormant.checked || g.status !== 'dormant') && (showPruned.checked || g.status !== 'pruned') && (!onlyWorking.checked || g.active_claims.length) &&
         (!needle || [g.agent, g.projects.join(' '), ...g.sessions.flatMap((p) => [p.name, p.session, p.runner, p.model])].join(' ').toLowerCase().includes(needle)));
       count.textContent = num(filtered.length) + ' of ' + num(groups.length) + ' agents';
       fill(box, filtered.length ? filtered.map(groupCard) : empty(groups.length ? 'No agent matches.' : 'No agent has posted on any board yet.'));
     };
-    search.addEventListener('input', draw); onlyWorking.addEventListener('change', draw); showDormant.addEventListener('change', draw);
+    search.addEventListener('input', draw); onlyWorking.addEventListener('change', draw); showDormant.addEventListener('change', draw); showPruned.addEventListener('change', draw);
     draw();
     render(el('h1', null, 'Agents', el('span', {class: 'sub'}, 'the roster across every project')), kpis,
-      el('p', {class: 'lead'}, 'A session is a finished conversation and cannot be resumed. The page groups those sessions under the agent, hides dormant agents by default, and removes nothing because board posts are immutable.'),
-      el('div', {class: 'toolbar'}, search, el('label', {class: 'check'}, onlyWorking, 'working only'), el('label', {class: 'check'}, showDormant, 'show dormant (' + counts.dormant + ')'), count),
+      el('p', {class: 'lead'}, 'In store mode this roster comes from the agents table, grouped by agent name, with pruning history and scorecards. Markdown-only projects still group legacy posts without deleting anything.'),
+      el('div', {class: 'toolbar'}, search, el('label', {class: 'check'}, onlyWorking, 'working only'), el('label', {class: 'check'}, showDormant, 'show dormant (' + counts.dormant + ')'), el('label', {class: 'check'}, showPruned, 'show pruned (' + counts.pruned + ')'), count),
       box);
   }
 
@@ -3650,7 +3887,7 @@ def cmd_serve(args):
     entry = maybe_register(args, repo)
     server = DashboardServer(state, port=args.port, verbose=args.verbose)
     print("PULSE dashboard for %s" % repo)
-    print("Serving read-only on %s (127.0.0.1 only; Ctrl-C to stop)" % server.url)
+    print("Serving on %s (127.0.0.1 only; one write: POST /api/v1/decide; Ctrl-C to stop)" % server.url)
     print("Projection: %s" % state.db_path)
     if entry:
         print("Registered as /p/%s/ for the hub (pulse-dashboard.py hub)" % entry["slug"])
@@ -3675,7 +3912,7 @@ def cmd_hub(args):
                    max_age_seconds=args.max_age_seconds, last=args.last)
     server = DashboardServer(None, port=args.port, verbose=args.verbose, hub=hub)
     print("PULSE organization hub")
-    print("Serving read-only on %s (127.0.0.1 only; Ctrl-C to stop)" % server.url)
+    print("Serving on %s (127.0.0.1 only; one write: POST /api/v1/decide; Ctrl-C to stop)" % server.url)
     print("Registry:   %s" % (home / REGISTRY_NAME))
     if brain_entry:
         print("Brain:      /p/%s/" % brain_entry["slug"])

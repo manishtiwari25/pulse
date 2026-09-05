@@ -634,8 +634,8 @@ class ServerTestCase(unittest.TestCase):
         cls.server.server_close()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    def request(self, path, method="GET"):
-        req = urllib.request.Request(self.url + path, method=method)
+    def request(self, path, method="GET", data=None, headers=None):
+        req = urllib.request.Request(self.url + path, data=data, headers=headers or {}, method=method)
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return resp.status, dict(resp.headers), resp.read()
@@ -738,6 +738,142 @@ class ServerTestCase(unittest.TestCase):
             self.assertEqual(status, 405, method)
             self.assertIn("read-only", json.loads(body)["error"])
         self.assertEqual(self.fx.git_status(), "", "serving never writes to the repository")
+
+    def test_decide_route_without_store_says_so(self):
+        body = json.dumps({"post_id": "nope", "answer": "yes", "words": "ok"}).encode()
+        status, _, payload = self.request("/api/v1/decide", method="POST", data=body,
+                                          headers={"Content-Type": "application/json", "X-Pulse-Decide": "yes"})
+        self.assertIn(status, (404, 409))
+        self.assertIn("store", json.loads(payload)["error"])
+
+
+class StoreModeServerTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="pulse-dashboard-store-server-")).resolve()
+        cls.home = cls.tmp / "pulse-home"
+        cls.state_root = cls.tmp / "cache"
+        cls.fx = Fixture(cls.tmp, name="store-app")
+        cls.env_before = {k: os.environ.get(k) for k in ("PULSE_HOME", "PULSE_AGENT", "PULSE_DASHBOARD_HOME")}
+        os.environ["PULSE_HOME"] = str(cls.home)
+        os.environ["PULSE_DASHBOARD_HOME"] = str(cls.state_root)
+        os.environ.pop("PULSE_AGENT", None)
+        cls.con = dash.pulse.connect(cls.home, create=True)
+        dash.pulse.add_project(cls.con, cls.fx.repo, slug="store-app", actor="test")
+        dash.pulse.join_agent(cls.con, "aurora", "copilot-cli", "model-a", "s-1", display="Aurora")
+        dash.pulse.join_agent(cls.con, "aurora", "copilot-cli", "model-a", "s-2", display="Aurora")
+        dash.pulse.join_agent(cls.con, "boreal", "copilot-cli", "model-b", "s-old", display="Boreal")
+        cls.con.execute("UPDATE agents SET jobs_done = 1, last_useful_at = ?, last_active_at = ? WHERE name = 'aurora'",
+                        ("2026-09-10T10:00:00Z", "2026-09-10T11:00:00Z"))
+        cls.proposal = dash.pulse.create_post(
+            cls.con, "answer", "store-app", "governance", "one-proposal",
+            "We agreed: ship slice 2?", "Proposal for the human: ship slice 2 now.",
+            agent="aurora", resolution="agreed")
+        cls.finding = dash.pulse.create_post(
+            cls.con, "finding", "store-app", "governance", "roster",
+            "Roster should use agent names", "one row per agent", agent="boreal")
+        cls.con.execute("UPDATE agents SET status = 'pruned', pruned_at = ?, pruned_reason = ?, last_active_at = ? "
+                        "WHERE name = 'boreal'",
+                        ("2026-09-01T00:00:00Z", "no useful output for 14 days", "2026-08-20T00:00:00Z"))
+        cls.con.execute("UPDATE agents SET posts = 1 WHERE name = 'boreal'")
+        cls.hub = dash.HubState(cls.home, cls.state_root, refresh_seconds=3600)
+        cls.server = dash.DashboardServer(None, port=0, hub=cls.hub)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+        cls.thread.start()
+        cls.url = cls.server.url.rstrip("/")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.con.close()
+        for k, v in cls.env_before.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def request(self, path, method="GET", data=None, headers=None):
+        req = urllib.request.Request(self.url + path, data=data, headers=headers or {}, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.status, dict(resp.headers), resp.read()
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, dict(exc.headers), exc.read()
+
+    def api(self, path, expect=200):
+        status, _, body = self.request(path)
+        self.assertEqual(status, expect, (path, body[:200]))
+        return json.loads(body)
+
+    def decide(self, post_id=None, answer="yes", words="ship it", headers=None):
+        body = json.dumps({"post_id": post_id or self.proposal["id"], "answer": answer, "words": words}).encode()
+        h = {"Content-Type": "application/json"}
+        if headers is None:
+            h["X-Pulse-Decide"] = "yes"
+        else:
+            h.update(headers)
+        return self.request("/api/v1/decide", method="POST", data=body, headers=h)
+
+    def test_store_roster_groups_by_agent_name_and_carries_scorecard(self):
+        rows = self.api("/api/v1/roster")
+        by_agent = {r["agent"]: r for r in rows}
+        self.assertIn("aurora", by_agent)
+        self.assertIn("boreal", by_agent)
+        self.assertEqual(len([r for r in rows if r["agent"] == "aurora"]), 1)
+        self.assertEqual(by_agent["aurora"]["name"], "Aurora")
+        self.assertEqual(by_agent["aurora"]["kind"], "session")
+        self.assertEqual(by_agent["aurora"]["status"], "active")
+        self.assertEqual(by_agent["aurora"]["jobs_done"], 1)
+        self.assertEqual(by_agent["aurora"]["session_count"], 2)
+        self.assertEqual(by_agent["aurora"]["sessions"], ["s-1", "s-2"])
+        self.assertEqual(by_agent["boreal"]["status"], "pruned")
+        self.assertEqual(by_agent["boreal"]["pruned_reason"], "no useful output for 14 days")
+
+    def test_decide_route_records_decision_result_and_refreshes_projection(self):
+        before = self.api("/api/v1/proposals")
+        self.assertEqual(before[0]["status"], "awaiting")
+        self.assertTrue(before[0]["can_decide"])
+        status, _, body = self.decide(words="owner says yes")
+        self.assertEqual(status, 200, body)
+        result_id = json.loads(body)["result_post"]
+        row = self.con.execute("SELECT answer, words, result_post FROM decisions WHERE post_id = ?",
+                               (self.proposal["id"],)).fetchone()
+        self.assertEqual((row["answer"], row["words"], row["result_post"]), ("yes", "owner says yes", result_id))
+        result = dash.pulse.post_row(self.con, result_id)
+        self.assertEqual((result["kind"], result["resolution"], result["on_post"]), ("result", "accepted", self.proposal["id"]))
+        after = self.api("/api/v1/proposals")
+        decided = next(r for r in after if r["id"] == self.proposal["id"])
+        self.assertEqual(decided["status"], "accepted")
+
+    def test_decide_route_requires_guard_header(self):
+        status, _, body = self.decide(post_id=self.finding["id"], headers={})
+        self.assertEqual(status, 403)
+        self.assertIn("X-Pulse-Decide", json.loads(body)["error"])
+
+    def test_decide_route_rejects_bad_answer(self):
+        status, _, body = self.decide(post_id=self.finding["id"], answer="maybe")
+        self.assertEqual(status, 400)
+        self.assertIn("yes or no", json.loads(body)["error"])
+
+    def test_decide_route_rejects_second_decision(self):
+        prop = dash.pulse.create_post(
+            self.con, "answer", "store-app", "governance", "twice",
+            "We agreed: decide once?", "Proposal for the human: decide once.",
+            agent="aurora", resolution="agreed")
+        self.hub.state("store-app").ensure_fresh(force=True)
+        self.assertEqual(self.decide(post_id=prop["id"], answer="no")[0], 200)
+        status, _, body = self.decide(post_id=prop["id"], answer="yes")
+        self.assertEqual(status, 400)
+        self.assertIn("already decided", json.loads(body)["error"])
+
+    def test_other_post_paths_stay_read_only(self):
+        status, _, body = self.request("/api/v1/org", method="POST", data=b"{}",
+                                       headers={"Content-Type": "application/json", "X-Pulse-Decide": "yes"})
+        self.assertEqual(status, 405)
+        self.assertIn("except POST /api/v1/decide", json.loads(body)["error"])
 
 
 def commons_post(commons, kind, area, thread, agent, date, summary, **kw):

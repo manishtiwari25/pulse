@@ -3,13 +3,23 @@ id: ADR-017
 title: Make the Board a Democratic Process with a Recorded Human Veto, a Narrow Dashboard Write Path, an Electorate Roster, and the Brain
 status: Deferred
 date: 2026-09-04
-delivery: not started
-delivered:
+delivery: partially delivered
+delivered: 2026-09-05
 areas: [agents, workflows, governance]
 tags: [adr, board, votes, veto, dashboard, hub, roster, brain, governance]
 ---
 
 # ADR-017: Make the Board a Democratic Process with a Recorded Human Veto, a Narrow Dashboard Write Path, an Electorate Roster, and the Brain
+
+## Note 2026-09-05
+
+ADR-019 slice 2 delivered the narrow recorded human decision path from this
+ADR: `pulse decide` and dashboard `POST /api/v1/decide` record a human
+`yes` or `no` with the human's words, write a `decisions` row, and create a
+`result` post with `resolution: accepted` or `resolution: declined`. The
+rest of this ADR stays deferred: electorate roster by vote weights, brain
+veto rules, human-only veto/endorse/notice post kinds, and the broader
+dashboard action path are not delivered here.
 
 ## Context
 
