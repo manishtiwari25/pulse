@@ -168,6 +168,44 @@ Start with the sandbox warning when this is the session's first tool-backed
 response (otherwise omit it) and the tier of the task being reflected on,
 then:
 
+### TEMPLATE output format and template-drift guidance
+
+Reflect's digest may print a TEMPLATE line when a repository records a
+template baseline and the registered brain differs from that baseline. The
+canonical short format that scripts print is:
+
+TEMPLATE  upstream <short-sha> (<n> commits behind the brain)
+
+Some callers and later versions include the brain slug and the template's
+path to make triage easier. When present the more informative form looks
+like:
+
+TEMPLATE  upstream <short-sha> (<n> commits behind the brain; brain: <brain-slug> at <path>)
+
+Maintainers' guidance when a TEMPLATE drift appears:
+
+- Read the TEMPLATE line to learn the recorded upstream short sha, the
+  number of commits behind the current brain, and — when available — the
+  brain slug and the template path. The brain slug identifies the template
+  source in the brain (useful when multiple template brains exist).
+- If the drift is actionable and you choose to "keep" the template
+  changes, move or update any tests or scripts the template owns. In
+  particular, tests under docs/scripts/tests may be relocated by a
+  template update: running
+
+  python3 -m unittest discover -s docs/scripts/tests
+
+  verifies the current test layout and should be re-run after any move.
+- When keeping template changes, also check and update references in
+  docs/scripts/reflect.sh and docs/scripts/evolution-report.sh which may
+  rely on the tests' path or the template-recorded layout.
+- If your process uses .template-sync or pulse-template-sync, update the
+  recorded upstream commit and note the brain slug in the drift report so
+  future triage is easier.
+
+(Keep template-owned paths small and move only the files the template
+intends; report any non-obvious relocation as a `finding` on the board.)
+
 - the level reached, and the gate that stopped the climb with its human step;
 - the signals listed, and the posts, memory entries, and experiment card
   created (ids);
