@@ -1970,11 +1970,104 @@ def admin_ssh_run(address, remote_command, stdin=None, timeout=120, control_path
     return proc.returncode, proc.stdout.decode("utf-8", "replace"), proc.stderr.decode("utf-8", "replace")
 
 
+TOKEN_RE = re.compile(r"(github_pat_|gho_|ghu_|ghp_|ghs_|ghr_)[A-Za-z0-9_]+")
+
+
+def classify_token(token):
+    if not token:
+        raise PulseError("no token on standard input; pipe it, e.g. `op read op://vault/item/field | pulse executor login ...`", 2)
+    if re.search(r"\s", token):
+        raise PulseError("the token must be one line with no whitespace inside", 2)
+    if token.startswith("github_pat_"):
+        return "pat"
+    if token.startswith("gho_"):
+        return "oauth"
+    if token.startswith("ghu_"):
+        return "user"
+    if token.startswith("ghp_"):
+        raise PulseError("a classic personal access token (ghp_) is rejected by the Copilot CLI; create a fine-grained token with the Copilot Requests permission (github_pat_)", 2)
+    raise PulseError("unsupported token prefix; use a fine-grained token (github_pat_), device-flow token (gho_), or user-to-server token (ghu_)", 2)
+
+
+def redact_tokens(text):
+    return TOKEN_RE.sub("[redacted]", text or "")
+
+
 def executor_login(con, name, admin_address, token_stream=None, remove=False, actor=HUMAN_AGENT, now=None):
     """`pulse executor login` (ADR-021 Amendment 1): place or remove the copilot login for user `pulse` on an executor
     over the admin session, then probe. Returns {"ok": bool, "kind": str, "rc": int, "lines": [str]}.
-    PLAN-021 step 3b fills this in."""
-    raise PulseError("pulse executor login is not implemented yet (PLAN-021 step 3b)", 2)
+    The token is never sent as an argument, printed, or recorded in an event."""
+    row = executor_row(con, name)
+    if row is None or name == LOCAL_EXECUTOR:
+        raise PulseError("No executor %s" % name, 2)
+    parse_ssh_address(admin_address)
+    if (token_stream is None) == (not remove):
+        raise PulseError("executor login needs exactly one of --with-token or --remove", 2)
+
+    lines = []
+    if remove:
+        kind = "removed"
+        command = "sudo -n -u pulse -H sh -c 'rm -rf -- \"$HOME/.copilot\"'"
+        try:
+            rc, out, err = admin_ssh_run(admin_address, command, timeout=120)
+        except ExecutorUnreachable as exc:
+            rc = SSH_EXIT_UNREACHABLE
+            ok = False
+            lines.append("%s unreachable: %s" % (name, exc))
+            event(con, actor, "executor.login", name, {"kind": kind, "rc": rc, "ok": ok})
+            return {"ok": ok, "kind": kind, "rc": rc, "lines": lines}
+        ok = rc == 0
+        if ok:
+            lines.append("login removed for user pulse on %s" % name)
+            before_status = row["status"]
+            probe_ok, note = probe_executor(con, name, actor=actor, now=now)
+            status = executor_row(con, name)["status"]
+            if not probe_ok and before_status == "active":
+                status = set_executor_status(con, name, "drained", actor=actor, note=note, now=now)["status"]
+            if probe_ok:
+                lines.append("%s: ok, %s: %s" % (name, status, note))
+            else:
+                lines.append("%s: probe FAILED (%s): %s" % (name, status, note))
+        else:
+            lines.append("login removal failed (exit %s)" % rc)
+            lines.extend(redact_tokens(out + err).splitlines()[-5:])
+        event(con, actor, "executor.login", name, {"kind": kind, "rc": rc, "ok": ok})
+        return {"ok": ok, "kind": kind, "rc": rc, "lines": lines}
+
+    isatty = getattr(token_stream, "isatty", None)
+    if callable(isatty) and isatty():
+        raise PulseError("the token must be piped, not typed", 2)
+    raw = token_stream.read()
+    if isinstance(raw, str):
+        token = raw.strip()
+        token_bytes = token.encode("utf-8")
+    else:
+        token_bytes = (raw or b"").strip()
+        token = token_bytes.decode("utf-8", "replace")
+    kind = classify_token(token)
+    command = "sudo -n -u pulse -H timeout 90 copilot login --with-token"
+    try:
+        rc, out, err = admin_ssh_run(admin_address, command, stdin=token_bytes + b"\n", timeout=120)
+    except ExecutorUnreachable as exc:
+        rc = SSH_EXIT_UNREACHABLE
+        ok = False
+        lines.append("%s unreachable: %s" % (name, exc))
+        event(con, actor, "executor.login", name, {"kind": kind, "rc": rc, "ok": ok})
+        return {"ok": ok, "kind": kind, "rc": rc, "lines": lines}
+    ok = rc == 0
+    if ok:
+        lines.append("login stored for user pulse on %s (kind %s)" % (name, kind))
+        probe_ok, note = probe_executor(con, name, actor=actor, now=now)
+        status = executor_row(con, name)["status"]
+        if probe_ok:
+            lines.append("%s: ok, %s: %s" % (name, status, note))
+        else:
+            lines.append("%s: probe FAILED (%s): %s" % (name, status, note))
+    else:
+        lines.append("login failed (exit %s)" % rc)
+        lines.extend(redact_tokens(out + err).splitlines()[-5:])
+    event(con, actor, "executor.login", name, {"kind": kind, "rc": rc, "ok": ok})
+    return {"ok": ok, "kind": kind, "rc": rc, "lines": lines}
 
 
 def parse_probe(text):
