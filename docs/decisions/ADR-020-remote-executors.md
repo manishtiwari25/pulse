@@ -327,6 +327,11 @@ token remain the human's hard stop.
       `20260905T103311Z-panel-value-0905a` (`pulse show <id>`).
 - [ ] Record memory if the first VM teaches a reusable lesson (bundle size,
       ssh flakiness, credit accounting).
+- [x] [WU-014](../plans/WU-014-executor-faults-are-the-machines.md)
+      (2026-09-06): a fault the machine caused - hands that refuse a verb,
+      a worker that cannot log in - drains the executor and returns the
+      job's attempt, inside the `drained` state and the `local` fallback
+      this decision defines; the probe fails hands without `keys=`.
 - [ ] Update `delivery:` and `delivered:` when the plan closes.
 
 ## Delivery

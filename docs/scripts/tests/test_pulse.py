@@ -504,6 +504,18 @@ class StoreTestCase(StoreFixture):
 
     # -- WU-009: the loop's leaks -----------------------------------------
 
+    def test_a_login_failure_on_this_machine_is_charged_like_any_runner_error(self):
+        # no executor row to drain here (WU-014): the daemon log shows the reason, the job keeps its attempt count
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        unauth = self.worker_script('echo "Error: re-authenticate with copilot login" >&2\nexit 1', "unauth.sh")
+        job_id = self.con.execute("SELECT id FROM jobs").fetchone()["id"]
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=unauth, now=NOW)
+        self.assertEqual(run["status"], "error")
+        self.assertIn("rejected at launch", run["summary"])
+        self.assertNotIn("the login on", run["summary"])
+        job = self.con.execute("SELECT status, attempts FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual((job["status"], job["attempts"]), ("queued", 1))
+
     def test_runner_errors_requeue_the_job_and_do_not_count_against_the_cap(self):
         pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
         rejected = self.worker_script('echo "error: option --max-ai-credits argument 5 is invalid" >&2\nexit 1', "rejected.sh")
@@ -1156,7 +1168,8 @@ HANDS_SH = SCRIPTS / "hosted" / "pulse-hands.sh"
 
 # An `ssh` that never leaves the machine: it drops the options and the host and hands the command string to
 # pulse-hands exactly as sshd's forced command would (SSH_ORIGINAL_COMMAND). PULSE_SHIM_FAIL_VERB makes one verb
-# fail like a dead connection (exit 255); PULSE_SHIM_FAIL=always refuses every call.
+# fail like a dead connection (exit 255); PULSE_SHIM_FAIL=always refuses every call; PULSE_SHIM_OLD_HANDS=1 answers
+# like hands installed before ADR-022 (no `key` verb, no keys= in the probe).
 SSH_SHIM = r"""#!/bin/bash
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -1171,6 +1184,11 @@ if [ "${PULSE_SHIM_FAIL:-}" = "always" ]; then echo "ssh: connect to host $host 
 if [ -n "${PULSE_SHIM_FAIL_VERB:-}" ] && [[ "$1" == b64\ * ]]; then
   verb=$(printf '%s' "${1#b64 }" | base64 --decode | tr '\0' '\n' | head -1)
   if [ "$verb" = "$PULSE_SHIM_FAIL_VERB" ]; then echo "ssh: connection to $host closed by remote host" >&2; exit 255; fi
+fi
+if [ -n "${PULSE_SHIM_OLD_HANDS:-}" ] && [[ "$1" == b64\ * ]]; then
+  verb=$(printf '%s' "${1#b64 }" | base64 --decode | tr '\0' '\n' | head -1)
+  if [ "$verb" = "key" ]; then echo "pulse-hands: verb not allowed: key" >&2; exit 2; fi
+  if [ "$verb" = "probe" ]; then export SSH_ORIGINAL_COMMAND="$*"; bash "$PULSE_HANDS" | sed -E 's/ keys=[^ ]*//'; exit "${PIPESTATUS[0]}"; fi
 fi
 export SSH_ORIGINAL_COMMAND="$*"
 exec bash "$PULSE_HANDS"
@@ -1190,7 +1208,8 @@ class HandsFixture(StoreFixture):
         shim.write_text(SSH_SHIM, encoding="utf-8")
         shim.chmod(0o755)
         self._env_before = {k: os.environ.get(k) for k in ("PATH", "PULSE_HANDS", "PULSE_HANDS_WORKDIR", "PULSE_HANDS_ALLOW_ANY_WORKER",
-                                                            "PULSE_HANDS_KEYS_OK", "PULSE_SHIM_LOG", "PULSE_SHIM_FAIL", "PULSE_SHIM_FAIL_VERB")}
+                                                            "PULSE_HANDS_KEYS_OK", "PULSE_SHIM_LOG", "PULSE_SHIM_FAIL", "PULSE_SHIM_FAIL_VERB",
+                                                            "PULSE_SHIM_OLD_HANDS")}
         os.environ["PATH"] = "%s:%s" % (shim_dir, os.environ.get("PATH", ""))
         os.environ["PULSE_HANDS"] = str(HANDS_SH)
         os.environ["PULSE_HANDS_WORKDIR"] = str(self.remote)
@@ -1199,6 +1218,7 @@ class HandsFixture(StoreFixture):
         os.environ["PULSE_SHIM_LOG"] = str(self.tmp / "shim.log")
         os.environ.pop("PULSE_SHIM_FAIL", None)
         os.environ.pop("PULSE_SHIM_FAIL_VERB", None)
+        os.environ.pop("PULSE_SHIM_OLD_HANDS", None)
 
     def tearDown(self):
         for key, value in self._env_before.items():
@@ -1288,6 +1308,67 @@ class ExecutorTestCase(HandsFixture):
         ok, note = pulse.probe_executor(self.con, "hands", now=NOW)
         self.assertTrue(ok, note)
         self.assertFalse((self.remote / "job-old").exists())
+
+
+    # -- WU-014: a machine fault drains the machine, never the job ----------
+
+    def test_hands_that_predate_this_hub_are_drained_and_the_job_goes_back_whole(self):
+        self.add_hands()
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        worker = self.worker_script('printf "SUMMARY: fine\\n" > PULSE_RESULT.md')
+        job_id = self.con.execute("SELECT id FROM jobs").fetchone()["id"]
+        os.environ["PULSE_SHIM_OLD_HANDS"] = "1"
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("refuse `key`", run["summary"])
+        self.assertIn("pulse pair <admin@host> --name hands", run["summary"])
+        job = self.con.execute("SELECT status, attempts, lease_agent FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual((job["status"], job["attempts"], job["lease_agent"]), ("queued", 0, ""), "the attempt is returned")
+        row = pulse.executor_row(self.con, "hands")
+        self.assertEqual((row["status"], row["errors"]), ("drained", 1))
+        self.assertTrue(row["probe_note"].startswith("fault: "), row["probe_note"])
+        self.assertEqual(pulse.runs_today(self.con, NOW), 0)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM events WHERE action = 'executor.drained'").fetchone()[0], 1)
+        self.assertEqual(pulse.executor_slots(self.con, NOW), ["local"], "drained hands offer no slot")
+        self.assertFalse(list((self.home / "work").glob("*.key")), "the run's key is gone with the run")
+        # the next lease goes to this machine, and the job lands there
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertEqual((run["status"], run["executor"]), ("done", "local"), run["summary"])
+        # a probe of the old hands fails and names the refresh; a human probe of refreshed hands re-activates them
+        ok, note = pulse.probe_executor(self.con, "hands", actor=pulse.HUMAN_AGENT, now=NOW)
+        self.assertFalse(ok)
+        self.assertIn("predate ADR-022", note)
+        self.assertEqual(pulse.executor_row(self.con, "hands")["status"], "drained")
+        os.environ.pop("PULSE_SHIM_OLD_HANDS")
+        ok, note = pulse.probe_executor(self.con, "hands", actor=pulse.HUMAN_AGENT, now=NOW)
+        self.assertTrue(ok, note)
+        self.assertEqual(pulse.executor_row(self.con, "hands")["status"], "active")
+
+    def test_a_worker_that_cannot_log_in_on_remote_hands_drains_them_not_the_job(self):
+        self.add_hands()
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        unauth = self.worker_script('echo "Error: re-authenticate. If using a Fine-Grained PAT, ensure it has the Copilot Requests permission" >&2\nexit 1')
+        job_id = self.con.execute("SELECT id FROM jobs").fetchone()["id"]
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=unauth, now=NOW, executor="hands")
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("rejected at launch", run["summary"])
+        self.assertIn("the login on hands, not the job", run["summary"])
+        self.assertIn("pulse executor login hands", run["summary"])
+        job = self.con.execute("SELECT status, attempts FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual((job["status"], job["attempts"]), ("queued", 0))
+        row = pulse.executor_row(self.con, "hands")
+        self.assertEqual(row["status"], "drained")
+        self.assertIn("fault: worker rejected at launch", row["probe_note"])
+        self.assertEqual(pulse.agent_row(self.con, "aurora")["jobs_failed"], 0)
+        self.assertIn("keys=-", self.hands("probe").stdout.decode(), "the job directory and its key were cleaned")
+        # a launch rejection that is not about the login stays the runner's ordinary error: charged, hands kept
+        pulse.probe_executor(self.con, "hands", actor=pulse.HUMAN_AGENT, now=NOW)
+        badflag = self.worker_script('echo "error: option --max-ai-credits argument 5 is invalid" >&2\nexit 1', "badflag.sh")
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=badflag, now=NOW, executor="hands")
+        self.assertEqual(run["status"], "error")
+        job = self.con.execute("SELECT status, attempts FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual((job["status"], job["attempts"]), ("queued", 1))
+        self.assertEqual(pulse.executor_row(self.con, "hands")["status"], "active")
 
     def test_prepare_verifies_the_bundle_with_a_git_that_needs_a_repository(self):
         # git 2.43 (Ubuntu 24.04) refuses `git bundle verify` outside a repository; the forced command starts

@@ -1782,6 +1782,20 @@ class ExecutorUnreachable(PulseError):
     """The ssh transport failed (exit 255): the hands did not answer. Nothing about the job itself is known."""
 
 
+class ExecutorFault(PulseError):
+    """The machine answered, and what it answered means a human must fix the machine (WU-014, ADR-020): its hands
+    refuse a verb this hub needs, or its worker cannot log in. Retrying the job there cannot help, so the executor
+    is drained and the job is given back to the queue with its attempt returned."""
+
+
+# A worker rejected at launch with one of these in its output failed for the machine's login, not the job's content.
+LOGIN_FAULT_RE = re.compile(r"re-?authenticat|not logged in|authenticat|unauthori[sz]ed|\b401\b|Copilot Requests|log ?in", re.I)
+
+
+def login_fault(text):
+    return bool(LOGIN_FAULT_RE.search(text or ""))
+
+
 def parse_ssh_address(text):
     m = re.match(r"^([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::([0-9]{1,5}))?$", (text or "").strip())
     if not m:
@@ -1907,14 +1921,20 @@ def remove_executor(con, name, actor=HUMAN_AGENT, now=None):
     event(con, actor, "executor.remove", name, {"address": row["address"]})
 
 
-def note_executor_run(con, name, status, note="", transport_error=False, now=None):
-    """Bookkeeping after a run: counters, consecutive transport errors, the unreachable mark and its backoff."""
+def note_executor_run(con, name, status, note="", transport_error=False, now=None, fault=False):
+    """Bookkeeping after a run: counters, consecutive transport errors, the unreachable mark and its backoff;
+    a fault (the machine answered wrongly: old hands, an expired login) drains the machine until a human probe passes."""
     if name == LOCAL_EXECUTOR:
         return
     row = executor_row(con, name)
     if row is None:
         return
     now = now or utc_now()
+    if fault:
+        con.execute("UPDATE executors SET errors = errors + 1, probe_note = ?, status = CASE WHEN status = 'active' THEN 'drained' ELSE status END "
+                    "WHERE name = ?", (trunc("fault: " + note, 300), name))
+        event(con, "runner", "executor.drained", name, {"fault": trunc(note, 200)})
+        return
     if transport_error:
         errors = int(row["errors"]) + 1
         failed = 0 if status == "error" else 1
@@ -2140,6 +2160,8 @@ def probe_executor(con, name, actor="runner", now=None):
                 problems.append("workdir is %s not %s" % (fields["workdir"], row["workdir"]))
             if fields.get("logged_in", "yes") != "yes":
                 problems.append("copilot is not logged in (run `copilot login` as the executor user)")
+            if "keys" not in fields:
+                problems.append("hands predate ADR-022 (no keys= field); refresh them with `pulse pair <admin@host> --name %s`" % name)
             try:
                 if int(fields.get("disk_free_mb", "0")) < 1024:
                     problems.append("under 1 GiB free")
@@ -3037,6 +3059,10 @@ class SshExecutor(LocalExecutor):
     def call(self, args, stdin=None, timeout=120):
         rc, out, err = ssh_run(self.row, args, stdin=stdin, timeout=timeout)
         self.log.append("$ ssh %s %s\n%s%s" % (self.row["address"], shlex.join([str(a) for a in args[:4]]), out[-4000:], err[-4000:]))
+        if rc != 0 and "verb not allowed" in (err or out):
+            # The hands are not the program this hub speaks: a machine fault, never the job's (WU-014).
+            raise ExecutorFault("hands on %s refuse `%s` (%s) - they predate this hub; refresh them with `pulse pair <admin@host> --name %s`"
+                                % (self.name, args[0] if args else "?", " ".join((err or out).split())[-120:], self.name))
         return rc, out, err
 
     def prepare(self):
@@ -3057,10 +3083,8 @@ class SshExecutor(LocalExecutor):
         # The run's private key crosses the wire once, over the same forced command, and can only sign (ADR-022 §2).
         rc, out, err = self.call(["key", self.job["id"], self.name], stdin=self.key_path.read_bytes())
         if rc != 0:
-            reason = " ".join((err or out).split())[-300:]
-            if "verb not allowed" in reason:
-                reason += " - the hands predate ADR-022; refresh them with `pulse pair <admin@host> --name %s`" % self.name
-            raise PulseError("remote key failed on %s (exit %d): %s" % (self.name, rc, reason))
+            raise ExecutorFault("remote key failed on %s (exit %d): %s - the machine cannot take a signing key; probe it with `pulse executor probe %s`"
+                                % (self.name, rc, " ".join((err or out).split())[-300:], self.name))
         return base
 
     def write_brief(self, text):
@@ -3182,6 +3206,7 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
     parsed = parse_result_text(None)
     ballot = []
     transport_error = False
+    fault = False
     pubkey = ""
     try:
         pubkey = make_run_key(ex.key_path, agent, run_id)
@@ -3225,8 +3250,12 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
                 elapsed = time.time() - started
                 if exit_code != 0 and not parsed["found"] and commits == 0 and elapsed < LAUNCH_SECONDS:
                     status = "error"
-                    summary = "worker rejected at launch (exit %s after %ds): %s" % (
-                        exit_code, elapsed, " ".join((outcome["stderr"] or outcome["stdout"] or "").split())[-300:] or "no output")
+                    said = " ".join((outcome["stderr"] or outcome["stdout"] or "").split())[-300:] or "no output"
+                    summary = "worker rejected at launch (exit %s after %ds): %s" % (exit_code, elapsed, said)
+                    if ex.remote and login_fault(said):
+                        # The machine's login, not the job: drain the hands, give the job back (WU-014).
+                        fault = True
+                        summary += " - the login on %s, not the job; run `pulse executor login %s --admin <admin@host> --with-token`" % (ex.name, ex.name)
                 elif exit_code != 0:
                     status = "failed"
                     summary = "worker exited %s" % exit_code
@@ -3303,6 +3332,11 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
         status = "failed" if ex.started else "error"
         summary = "executor %s unreachable %s worker start: %s" % (ex.name, "after" if ex.started else "before", exc)
         log.append(summary)
+    except ExecutorFault as exc:
+        # The machine answered wrongly (old hands, no login): its fault, never the job's - drained, job given back.
+        fault = True
+        status, summary = "error", str(exc)
+        log.append(summary)
     except PulseError as exc:
         status, summary = "error", str(exc)
         log.append(summary)
@@ -3321,7 +3355,7 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
             pass
     con.execute("UPDATE runs SET finished_at = ?, status = ?, exit_code = ?, seconds = ?, branch = ?, commits = ?, summary = ?, verify = ? WHERE id = ?",
                 (utc_now(), status, exit_code, seconds, branch, commits, summary, verify_note, run_id))
-    note_executor_run(con, ex.name, status, summary, transport_error=transport_error, now=now)
+    note_executor_run(con, ex.name, status, summary, transport_error=transport_error, now=now, fault=fault)
     if status == "stale":
         # Another runner holds the job now; its result, not this one, decides the job.
         event(con, agent, "run.finish", run_id, {"status": status, "commits": commits, "branch": "", "executor": ex.name})
@@ -3329,6 +3363,10 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
     job_status = "done" if status in ("done", "dry-run") else "failed"
     if status == "dry-run":
         job_status = "queued"
+    elif status == "error" and fault:
+        # The machine, not the runner or the agent, failed: the job goes back with its attempt returned.
+        job_status = "queued"
+        con.execute("UPDATE jobs SET attempts = MAX(attempts - 1, 0) WHERE id = ?", (job["id"],))
     elif status == "error":
         # The runner, not the agent, failed: the job goes back to the queue until its attempts run out.
         job_status = "queued" if job["attempts"] < MAX_ATTEMPTS else "failed"
@@ -3376,7 +3414,7 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
             log_path.write_text("\n".join(l for l in log if l), encoding="utf-8")
         except OSError:
             pass
-    event(con, agent, "run.finish", run_id, {"status": status, "commits": commits, "branch": branch, "executor": ex.name})
+    event(con, agent, "run.finish", run_id, {"status": status, "commits": commits, "branch": branch, "executor": ex.name, **({"fault": True} if fault else {})})
     return dict(con.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone())
 
 

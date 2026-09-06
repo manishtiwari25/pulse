@@ -211,6 +211,22 @@ run, `done <job> <agent> on vm1: <summary>`.
   unreachable`; the daemon skips the machine and re-probes with a doubling
   wait (1, 2, 4 minutes … capped at its interval or an hour). A passing
   probe - the daemon's or yours - brings it back with the counters reset.
+- **Faults - the machine answered, and the answer means a human must fix
+  it** ([WU-014](../plans/WU-014-executor-faults-are-the-machines.md)):
+  hands that refuse a verb this hub needs (`verb not allowed: key` - they
+  predate the hub; `pulse pair <admin@host> --name vm1` refreshes them) or
+  a worker rejected at launch for its login (`re-authenticate`, `not logged
+  in`, `Copilot Requests` … - `pulse executor login vm1 --admin
+  <admin@host> --with-token`). The run ends `error` naming the command, the
+  machine goes `drained` with `fault: …` in its `probe_note`
+  (`executor.drained` event), and the job returns to the queue **with its
+  attempt returned** - a machine fault never counts toward the three runner
+  errors that fail a job - so the next loop runs it on `local` or on other
+  hands. Only a human probe that passes (`probe`, `pair`, or `login`)
+  re-activates the machine; the probe itself fails hands without a `keys=`
+  field, so an upgraded hub names every machine left behind. On `local`
+  there is no row to drain: a login failure there is charged like any
+  runner error and shows in the daemon log.
 - **Drain** (`pulse executor drain vm1`) stops new leases and lets the
   running job finish. **Remove** (`pulse executor remove vm1`) is refused
   while a run is on it; drain first. Both are events; the machine's runs

@@ -124,6 +124,10 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   that lands only what the run's key signed, `pulse verify` and
   `pulse signers`, the hands' `key` verb, and `runs.signing_pubkey`
   (schema 3).
+- [`WU-014-executor-faults-are-the-machines.md`](WU-014-executor-faults-are-the-machines.md) -
+  a machine fault (hands that refuse a verb, a worker that cannot log in)
+  drains the executor and gives the job its attempt back (ADR-020); the
+  probe fails hands that predate ADR-022.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy
