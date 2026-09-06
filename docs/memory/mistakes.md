@@ -110,6 +110,18 @@
   entry (`docs/scripts/hosted/cloud-init.yaml`). Lesson: a provisioning file
   that has never booted a machine is untested however clean its syntax; boot
   one, log in as every user it promises, then trust the runbook.
+- `2026-09-06` - The hands' probe called `~/.copilot` existing a login, but
+  a failed `copilot login --with-token` also creates that folder (with only
+  `logs/`), so a never-logged-in machine could have been activated. Avoid by:
+  proving a state with an artifact only that state creates (a regular file
+  the login writes), and testing the negative case the failure path leaves
+  behind. Source: ADR-021 Amendment 1, `docs/scripts/hosted/pulse-hands.sh`.
+- `2026-09-06` - A "token" in a password-manager note turned out to be a
+  classic `ghp_` token behind a label; the Copilot CLI rejects classic tokens,
+  and only its prefix and length were ever inspected. Avoid by: classify the
+  secret's shape (prefix, length) locally before sending it anywhere, print
+  only the class, and name the accepted kinds in the refusal. Source: ADR-021
+  Amendment 1.
 
 ## Populate When
 

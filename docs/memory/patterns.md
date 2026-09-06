@@ -135,6 +135,19 @@
   clone. A brief or a verify command with quotes can then never become a
   second command. Apply when: any ssh, container exec, or RPC path carries a
   user- or agent-authored string.
+- `2026-09-06` - A golden test for a generated script that embeds another
+  file's text (the `pair` apply script embeds `pulse-hands.sh`) hashes the
+  script built from a fixed stand-in source, and checks the real embedding
+  separately with `assertIn`; otherwise every edit to the embedded file breaks
+  a golden about something else. Apply when: golden-hashing any template or
+  script that inlines a second file. Source: `docs/scripts/tests/test_pulse_pair.py`.
+- `2026-09-06` - A credential travels only as the standard input of one
+  command: read from a password manager (`op read ...`), classified by prefix
+  before it is sent (`github_pat_`, `gho_`, `ghu_` pass; `ghp_` refused), piped
+  into the remote command, with any token-shaped text redacted from output and
+  never written to argv, an event, a post, or a log. Apply when: an agent must
+  place a secret a human handed it. Source: ADR-021 Amendment 1,
+  `docs/scripts/pulse.py` `executor_login`.
 
 ## Populate When
 
