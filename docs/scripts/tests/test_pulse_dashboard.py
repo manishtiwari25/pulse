@@ -913,6 +913,7 @@ class StoreModeServerTestCase(unittest.TestCase):
         self.assertEqual((r["hands"]["free"], r["hands"]["slots"], r["hands"]["executors_active"], r["hands"]["any_project"]), (3, 3, 2, True))
         self.assertEqual((r["workers"]["pool"], r["workers"]["idle"], r["workers"]["busy"], r["workers"]["target"]), (2, 1, 1, quorum + 1))
         self.assertEqual(r["workers"]["idle_names"], [idle])
+        self.assertEqual(r["workers"]["prune_after_days"], 14, "the roster KPI names the prune rule from the store's setting")
         self.assertEqual((r["jobs"]["queued"], r["jobs"]["leased"], r["jobs"]["blocked"], r["jobs"]["running"], r["jobs"]["runs_today"]), (1, 1, 0, 0, 0))
         self.assertIsInstance(r["jobs"]["cap"], int)
         self.assertNotIn("Set-Cookie", self.request("/api/v1/runner")[1])

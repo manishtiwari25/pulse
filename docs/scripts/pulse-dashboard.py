@@ -1855,7 +1855,8 @@ def q_runner(hub):
         leasing = {r["lease_agent"] for r in con.execute("SELECT lease_agent FROM jobs WHERE status = 'leased'")}
         busy = [w for w in workers if w in leasing]
         pool = {"pool": len(workers), "idle": len(workers) - len(busy), "busy": len(busy),
-                "target": max(1, pulse.setting_int(con, "quorum") + 1), "idle_names": [w for w in workers if w not in leasing]}
+                "target": max(1, pulse.setting_int(con, "quorum") + 1), "idle_names": [w for w in workers if w not in leasing],
+                "prune_after_days": pulse.setting_int(con, "prune_after_days")}
         counts = {s: 0 for s in ("queued", "leased", "blocked")}
         for r in con.execute("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued', 'leased', 'blocked') GROUP BY status"):
             counts[r["status"]] = r["n"]
@@ -3410,7 +3411,7 @@ APP_JS = r"""'use strict';
     const counts = {working: 0, active: 0, recent: 0, idle: 0, dormant: 0, pruned: 0};
     for (const g of groups) counts[g.status] += 1;
     const kpis = el('div', {class: 'kpis'},
-      kpi(groups.length, 'agents', '#/agents', {sub: rows.length + ' roster row' + (rows.length === 1 ? '' : 's')}),
+      kpi(groups.length, 'names on the roster', '#/agents', {sub: 'identities, not processes' + (runner && runner.available && runner.workers.prune_after_days ? '; pruned after ' + runner.workers.prune_after_days + ' idle days' : '')}),
       kpi(counts.working, 'working', '#/agents', {sub: 'holding active claims', tone: counts.working ? 'ok' : ''}),
       standbyKpi(runner, runner && runner.available ? 'free slots on active executors \u00b7 daemon ' + runner.daemon.state : ''),
       runner && runner.available ? kpi(runner.workers.idle, 'workers in standby', '#/agents', {sub: 'of ' + runner.workers.pool + ' in the pool, target ' + runner.workers.target}) : null,
