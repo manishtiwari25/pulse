@@ -241,7 +241,12 @@ class ProductEvaluators(unittest.TestCase):
         self.assertTrue(measure.csp_header(src).startswith("default-src 'none'"))
         self.assertTrue(measure.imported_modules(src) <= set(sys.stdlib_module_names))
         module = measure.load_dashboard(REPO / measure.DASHBOARD)
-        self.assertGreater(len(module.INDEX_HTML + module.APP_CSS + module.APP_JS), 1000)
+        for name in ("INDEX_HTML", "APP_CSS", "APP_JS"):
+            self.assertFalse(hasattr(module, name), "the hub carries no page of its own since PLAN-023 phase B")
+        dist = REPO / measure.DIST
+        if not all((dist / name).is_file() for name in module.UI_FILES):
+            self.skipTest("no complete build in %s" % dist)
+        self.assertGreater(sum((dist / name).stat().st_size for name in module.UI_FILES), 1000, "P6 reads the build")
 
 
 if __name__ == "__main__":

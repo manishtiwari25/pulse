@@ -2,6 +2,13 @@
 
 ## Completed
 
+- [`PLAN-023-frontend-stack-for-the-hub.md`](PLAN-023-frontend-stack-for-the-hub.md) -
+  the Tier 2 plan for ADR-023 (delivered 2026-09-06): the owner's guard,
+  constitution, and evaluator edits first; a Vite + TypeScript + Preact +
+  Tailwind + Radix page under `docs/scripts/dashboard/` built to three fixed
+  files the standard-library hub serves, at parity with every WU-005 view
+  (phase A); the embedded page, `--ui` switch, and fallback retired, P2/P6
+  reading `dist/`, the app tree sync-safe (phase B, after the human's yes).
 - [`pulse-rebrand-and-public-docs.md`](pulse-rebrand-and-public-docs.md) -
   establishes the PULSE identity, the then-public documentation site (retired
   by ADR-013), and token-only usage reporting.
@@ -64,12 +71,7 @@
 
 ## In progress
 
-- [`PLAN-023-frontend-stack-for-the-hub.md`](PLAN-023-frontend-stack-for-the-hub.md) -
-  the Tier 2 plan for ADR-023 (Accepted 2026-09-06): the owner's guard, constitution,
-  and evaluator edits first; then a Vite + TypeScript + Preact + Tailwind +
-  Radix page under `docs/scripts/dashboard/` built to three fixed files the
-  standard-library hub serves, brought to parity with every WU-005 view
-  (phase A), then the embedded page retired (phase B).
+- (none)
 
 Copy `_template.md` when a Tier 2 task needs an explicit plan.
 

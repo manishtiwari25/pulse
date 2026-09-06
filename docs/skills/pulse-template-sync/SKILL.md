@@ -37,9 +37,12 @@ updated.
    check, compare the classified template paths with the current repository
    without creating `.template-sync`.
 6. Classify every upstream change:
-   - **Sync-safe:** canonical workflows, scripts, skills, shared prompts,
-     templates, the framework's store reference
-     (`docs/context/pulse-store.md`), and standard framework config.
+   - **Sync-safe:** canonical workflows, scripts (including the hub page's
+     app tree `docs/scripts/dashboard/` with its committed `dist/`, never
+     `node_modules/`; a `.gitignore` that ignores `dist/` needs
+     `!docs/scripts/dashboard/dist/`), skills, shared prompts, templates,
+     the framework's store reference (`docs/context/pulse-store.md`), and
+     standard framework config.
    - **Review-first:** repository instructions and README files that may contain
      project-specific rules.
    - **Never-sync:** product code and project-owned context, architecture,

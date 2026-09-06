@@ -47,7 +47,7 @@ trees against the recorded `lastSyncedCommit` (or the full tree on first sync)
 
 | Class | Paths | Action |
 | --- | --- | --- |
-| **Sync-safe** (template-owned) | `docs/workflows/`, `docs/scripts/` (including `docs/scripts/tests/`), `docs/skills/`, `docs/prompts/shared/`, `docs/*/_template*.md`, `docs/board/README.md`, `docs/evolution/README.md`, `docs/context/pulse-store.md` (the framework's store reference, the one framework-owned file in `docs/context/`), `.editorconfig`, `.gitattributes` | Copy from template when changed upstream and unmodified locally; if modified both sides, escalate to review. |
+| **Sync-safe** (template-owned) | `docs/workflows/`, `docs/scripts/` (including `docs/scripts/tests/` and the hub page's app tree `docs/scripts/dashboard/` with its committed `dist/`, never `node_modules/`), `docs/skills/`, `docs/prompts/shared/`, `docs/*/_template*.md`, `docs/board/README.md`, `docs/evolution/README.md`, `docs/context/pulse-store.md` (the framework's store reference, the one framework-owned file in `docs/context/`), `.editorconfig`, `.gitattributes` | Copy from template when changed upstream and unmodified locally; if modified both sides, escalate to review. |
 | **Review-first** (rules, customized per repo) | `AGENTS.md`, `CLAUDE.md`, `README.md`, `.github/copilot-instructions.md`, `.github/CODEOWNERS`, `docs/README.md`, `docs/*/README.md` other than the two above | Never overwrite. Show the upstream diff and merge rule changes into the local version manually, preserving project-specific content. |
 | **Never sync** (project-owned content) | `docs/context/`, `docs/architecture/`, non-template files in `docs/decisions/`, `docs/features/`, `docs/memory/`, `docs/plans/` (including `WU-*` work units), `docs/prompts/` (outside `shared/`), `docs/evolution/constitution.md`, `docs/evolution/evaluators.md`, `docs/evolution/archive.md`, `docs/evolution/fixtures/`, `docs/evolution/STOP`, every post under `docs/board/`, archived `docs/usage/usage-log.md` rows, all product code | Leave untouched. |
 | **Framework-only** (never copied into an adopter) | `docs/versions.md` - PULSE's own version history; its links resolve only in the PULSE repository. An adopter's era is the commit in `.template-sync`. | Do not copy; remove a copy an earlier sync left behind. |
@@ -96,6 +96,13 @@ user's own data, never synced and never deleted by a sync.
      template version: `git checkout <template-head> -- <path>`.
    - If the local copy was also modified, do not overwrite — move it to the review list.
    - Apply upstream deletions/renames of template-owned files too, unless the repo deliberately kept the file (then note it in the review list).
+   - The hub's page ships built: `docs/scripts/dashboard/dist/` (three files
+     and `BUILD.json`) is copied like any other sync-safe file, so the
+     adopter runs the hub with Python alone and never needs Node. A
+     `.gitignore` that ignores `dist/` must carry the negation
+     `!docs/scripts/dashboard/dist/` (as PULSE's own does) or the copied
+     build cannot be committed; add it in the same sync and list it in the
+     report. `node_modules/` is never copied.
 6. **Review rule changes.** For each changed review-first file, show a summary
    of the upstream diff (`git diff <lastSyncedCommit> <template-head> --
    <path>`) and merge relevant rule updates into the local file by hand,

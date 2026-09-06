@@ -129,9 +129,11 @@ ESLint). It is **built once** into three fixed files -
 `dist/index.html`, `dist/app.js`, `dist/app.css` - plus a `dist/BUILD.json`
 stamp, and those files are committed, so a human still runs the hub with
 Python alone: the server reads `dist/` at start and serves the three files
-at the same routes, with the same Content-Security-Policy and headers, as
-the embedded page it replaces. Nothing else under `dist/` or `src/` is ever
-served; no route was added.
+at `/`, `/app.js`, and `/app.css` with the same Content-Security-Policy and
+headers the hub has always sent. The Python module carries no page of its
+own (PLAN-023 phase B retired the embedded one); without a complete build
+the hub does not start. Nothing else under `dist/` or `src/` is ever served;
+no route was added.
 
 ```bash
 cd docs/scripts/dashboard
@@ -140,13 +142,12 @@ npm run lint           # eslint src --max-warnings 0
 npm run build          # tsc --noEmit, then vite build -> dist/
 ```
 
-- **Which page is served.** `--ui auto` (default) serves the build when
-  `dist/` is complete (three files and a parseable `BUILD.json`), else the
-  embedded page; `--ui legacy` always serves the embedded page - the
-  one-command rollback while phase A of PLAN-023 lasts; `--ui dist` refuses
-  to start without a complete build. The start log prints a `UI:` line
-  saying which one, the toolchain versions from the stamp, and `STALE` when
-  the stamp does not match the source.
+- **Which page is served.** The build, always. `dist/` must be complete
+  (three files and a parseable `BUILD.json`) or `serve` and `hub` stop at
+  once with one plain line naming what is missing and the build command to
+  run. The start log prints a `UI:` line with the toolchain versions from
+  the stamp, and `STALE` when the stamp does not match the source - the page
+  is still served, so a maintainer sees the old build while rebuilding.
 - **The stamp.** `BUILD.json` carries `source_hash`, a sha256 over
   `index.html`, `package.json`, `package-lock.json`, `tsconfig.json`,
   `vite.config.ts`, `eslint.config.js`, and every file under `src/` (sorted
@@ -165,11 +166,18 @@ npm run build          # tsc --noEmit, then vite build -> dist/
   origin. The owner's guard (`test_pulse_dashboard_guards.py`) checks the
   same on the served files; `BuiltUITestCase` is the editable twin the loop
   measures. Writing one of those words even in a comment fails both.
-- **Same numbers.** The A8 render (headless browser, both pages from the
-  same store, light and dark, 820 and 1400 px) compares every KPI on the
-  built page with the embedded page's and counts console errors, CSP blocks,
-  and off-origin requests; the acceptance line is 0 / 0 / 0 and identical
-  numbers.
+- **Same numbers.** The A8 render (headless browser, light and dark, 820
+  and 1400 px) counts console errors, CSP blocks, and off-origin requests on
+  every WU-005 view; the acceptance line is 0 / 0 / 0. During phase A the
+  same run compared every KPI with the embedded page's for the same store
+  and found them identical, which is what let phase B retire that page.
+- **Adopters receive the app tree.** `docs/scripts/dashboard/` (source,
+  configs, lock file, and the committed `dist/`; never `node_modules/`) is a
+  sync-safe path like the rest of `docs/scripts/`
+  ([`template-sync.md`](template-sync.md)). A repository whose `.gitignore`
+  ignores `dist/` needs the negation `!docs/scripts/dashboard/dist/` so the
+  build the sync copies can be committed; the first hub start says so if it
+  is missing, because it finds no complete build.
 - **What never changes.** The JSON routes, the projection, the store, the
   read-only rule, the one write (`POST /api/v1/decide`, loopback only), and
   the CSP. The frontend is a presentation layer over the same data.
@@ -360,10 +368,12 @@ commons is ever written.
 
 ## Rollback
 
-Restoring the embedded page without a code change is
-`python3 docs/scripts/pulse-dashboard.py hub --ui legacy` (phase A of
-PLAN-023); removing the built page is an inverse patch of
-`docs/scripts/dashboard/` and the `--ui` code in `pulse-dashboard.py`.
+Restoring the embedded page is `git revert` of the PLAN-023 phase B commit,
+which brings back the three page strings, the `--ui` switch, and the
+fallback to them; the build under `docs/scripts/dashboard/` stays and is
+served again as soon as the revert is undone. Removing the built page
+entirely is an inverse patch of `docs/scripts/dashboard/` and the `UI_`
+code in `pulse-dashboard.py` after that revert.
 Removing the dashboard is a normal inverse patch of `docs/scripts/pulse-dashboard.py`,
 `docs/scripts/tests/`, this workflow, and the `--records` and `--json` flags
 in the two reports; their text and TSV output is unchanged by those flags.

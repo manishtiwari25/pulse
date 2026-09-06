@@ -701,6 +701,8 @@ def cmd_compare(args):
 DASHBOARD = "docs/scripts/pulse-dashboard.py"
 DASH_TESTS = "docs/scripts/tests/test_pulse_dashboard.py"
 GUARDS = "docs/scripts/tests/test_pulse_dashboard_guards.py"
+UI_SOURCE = "docs/scripts/dashboard"
+DIST = "docs/scripts/dashboard/dist"
 BROWSERS = (
     "chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -755,20 +757,23 @@ def measure_product(tree, parent=None):
     source = (tree / DASHBOARD).read_text(encoding="utf-8")
     out["p1_suite"] = sh([sys.executable, "-m", "unittest", "discover", "-s", "docs/scripts/tests"], cwd=tree).returncode == 0
     module = load_dashboard(tree / DASHBOARD)
-    if shutil.which("node"):
-        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
-            fh.write(module.APP_JS)
-        out["p2_js_parses"] = sh(["node", "--check", fh.name]).returncode == 0
-        os.unlink(fh.name)
+    # PLAN-023 phase B: the page is the build under docs/scripts/dashboard/dist; the hub has no page of its own.
+    dist = tree / DIST
+    if shutil.which("node") and (dist / "app.js").is_file():
+        out["p2_js_parses"] = sh(["node", "--check", str(dist / "app.js")]).returncode == 0
     else:
-        out["p2_js_parses"] = "n/a: node missing"
+        out["p2_js_parses"] = "n/a: node missing" if shutil.which("node") else "n/a: no dist/app.js"
+    ui, why = module.load_built_ui(dist)
+    out["p2_build_complete"] = ui is not None or "no: %s" % why
+    if ui is not None and (tree / UI_SOURCE / "src").is_dir():
+        out["p2_build_matches_source"] = module.ui_source_hash(tree / UI_SOURCE) == ui.source_hash
     out["p2_stdlib_only"] = imported_modules(source) <= set(sys.stdlib_module_names)
     out["p2_csp"] = csp_header(source)
     out["p3_guards"] = sh([sys.executable, "-m", "unittest", "docs.scripts.tests.test_pulse_dashboard_guards"],
                           cwd=tree).returncode == 0
     browser = find_browser()
     out["p4"] = f"manual: WU-005 Verification with {browser}" if browser else "manual: no headless browser on this machine"
-    out["p6_bytes"] = len((module.INDEX_HTML + module.APP_CSS + module.APP_JS).encode("utf-8"))
+    out["p6_bytes"] = sum((dist / name).stat().st_size for name in module.UI_FILES if (dist / name).is_file())
     if parent:
         parent_source = (parent / DASHBOARD).read_text(encoding="utf-8")
         out["p1_tests_kept"] = test_names((parent / DASH_TESTS).read_text(encoding="utf-8")) <= \

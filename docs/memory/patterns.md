@@ -198,6 +198,21 @@
   security rules were written for hand-written scripts, or a generated
   artifact is committed next to its source. Source: ADR-023, PLAN-023 phase
   A, `docs/scripts/tests/test_pulse_dashboard.py` `BuiltUITestCase`.
+- `2026-09-06` - When a hand-written page is retired for a built one, move
+  its asset rules to the build instead of dropping them; they still find
+  real weight. Re-pointed at `dist/`, "every CSS class is used" (with CSS
+  identifier unescaping, `\32xl\:` is `2xl:`) found a dead `.hairline`
+  rule, and "every token is declared once" (counted inside `:root`-scoped
+  rules only, where both our tokens and Tailwind's theme land) found our
+  `--radius-xs` colliding with Tailwind v4's default theme token of the same
+  name - two declarations of one variable, the later winning by accident.
+  Name project tokens outside the utility framework's namespaces
+  (`--radius-tight`, not `--radius-xs`). A server class that loads the
+  committed build itself when no page is passed lets an owner-owned guard
+  module keep working with no edit, which is what "the guard is immutable"
+  requires. Apply when: a fallback page or switch is removed, or a design
+  token system meets a utility framework with its own theme variables.
+  Source: PLAN-023 phase B, `AssetTestCase`, `require_built_ui()`.
 
 ## Populate When
 

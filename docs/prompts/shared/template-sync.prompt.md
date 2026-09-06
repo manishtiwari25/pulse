@@ -42,7 +42,10 @@ The installed portable entry point is `/pulse-template-sync`.
    ADR-008 instruction text as superseded upstream policy; replace it with
    ADR-009 unless an explicit local decision requires strict isolation.
 6. Treat `docs/skills/` as sync-safe canonical source, but never modify
-   generated runner-specific skill installation directories.
+   generated runner-specific skill installation directories. Copy the hub
+   page's built files under `docs/scripts/dashboard/dist/` like any other
+   sync-safe file (never `node_modules/`), and add
+   `!docs/scripts/dashboard/dist/` to a `.gitignore` that ignores `dist/`.
 7. Never touch project-owned content: `docs/context/`, `docs/architecture/`,
    non-template files in `docs/decisions|features|memory|plans/`, archived
    `docs/usage/usage-log.md` rows, or any product code.

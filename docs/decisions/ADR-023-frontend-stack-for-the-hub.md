@@ -4,8 +4,8 @@ title: A Proper Frontend Stack for the Hub - Vite, TypeScript, the React API on 
 status: Accepted
 accepted: 2026-09-06
 date: 2026-09-06
-delivery: partially delivered
-delivered:
+delivery: delivered
+delivered: 2026-09-06
 areas: [dashboard, dependencies]
 tags: [adr, dashboard, hub, frontend, dependencies, build]
 ---
@@ -241,13 +241,18 @@ tokens live in one CSS file under `src/` and stay `light-dark()`-based.
       complete; legacy page as fallback (`--ui legacy`). A8 render: 76 cells,
       0 errors, 0 CSP blocks, 0 off-origin requests, identical KPI numbers;
       `app.js` 82 KB gzip of 150, `app.css` 7.5 KB of 20.
-- [ ] PLAN-023 phase B: delete the embedded page; new P6 baseline row.
+- [x] PLAN-023 phase B (2026-09-06, after the human's yes on
+      `20260906T100121Z-fable-scale-09051203`): the embedded page, the `--ui`
+      switch, and the fallback are gone; the server always serves the build
+      and refuses to start without one; P2 and P6 read `dist/`; the app tree
+      is sync-safe. New P6 number: 299,907 bytes of `dist/` (the owner
+      records the baseline row).
 - [x] `docs/workflows/dashboard.md` and `docs/context/stack.md` describe the
-      build, the fixed files, `--ui`, the stamp, the budget, and the guards.
+      build, the fixed files, the stamp, the budget, and the guards.
 - [x] Record memory: a framework's runtime always carries `innerHTML`; guard
       the source, not the bundle ([`docs/memory/patterns.md`](../memory/patterns.md),
       2026-09-06).
-- [ ] Update `delivery:` and `delivered:` when PLAN-023 closes.
+- [x] `delivery: delivered`, `delivered: 2026-09-06` when PLAN-023 closed.
 
 ## Delivery
 

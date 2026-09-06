@@ -49,6 +49,18 @@ def load_dashboard():
 
 dash = load_dashboard()
 
+# The W3C namespace identifiers are the only http literals a bundle may carry; they name SVG, XHTML, and
+# MathML nodes for createElementNS and are never fetched (ADR-023 §3).
+W3C_NS = (b"http://www.w3.org/2000/svg", b"http://www.w3.org/1999/xhtml", b"http://www.w3.org/1998/Math/MathML",
+          b"http://www.w3.org/XML/1998/namespace", b"http://www.w3.org/1998/")
+
+
+def without_w3c_namespaces(js):
+    for ns in W3C_NS:
+        js = js.replace(ns, b"")
+    return js
+
+
 # Every test in this module runs with the user-level PULSE home pinned to a
 # throwaway directory. `index` and `serve` register their repository there by
 # default (ADR-016), so without this guard a test that forgets --no-register
@@ -628,30 +640,47 @@ class ProjectionTestCase(unittest.TestCase):
 
 
 class AssetTestCase(unittest.TestCase):
-    """The shipped page is three strings; a rule nothing renders is weight the page carries for nothing."""
+    """The shipped page is the build under docs/scripts/dashboard/dist (ADR-023, PLAN-023 phase B); a rule
+    nothing renders or a token declared twice is weight the page carries for nothing."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dist = dash.UI_DIR
+        for name in dash.UI_FILES:
+            if not (cls.dist / name).is_file():
+                raise unittest.SkipTest("no complete build in %s (run `npm ci && npm run build`)" % cls.dist)
+        cls.html = (cls.dist / "index.html").read_text(encoding="utf-8")
+        cls.css = (cls.dist / "app.css").read_text(encoding="utf-8")
+        cls.js = (cls.dist / "app.js").read_text(encoding="utf-8")
+
+    @staticmethod
+    def css_unescape(ident):
+        # `2xl:grid-cols-2` is written `\32xl\:grid-cols-2` in a stylesheet: hex escapes first, then single characters.
+        ident = re.sub(r"\\([0-9a-fA-F]{1,6}) ?", lambda m: chr(int(m.group(1), 16)), ident)
+        return re.sub(r"\\(.)", r"\1", ident)
 
     def test_page_declares_an_icon_so_browsers_do_not_ask_for_favicon_ico(self):
         # Without a declared icon every browser fetches /favicon.ico, the hub answers 404, and the
         # console logs an error on each first visit; an empty data: icon ends the request.
-        self.assertIn('<link rel="icon" href="data:,">', dash.INDEX_HTML)
+        self.assertIn('<link rel="icon" href="data:,">', self.html)
 
     def test_every_css_class_is_referenced_by_the_page_or_the_script(self):
-        css, js, html = dash.APP_CSS, dash.APP_JS, dash.INDEX_HTML
-        text = js + html
-        # classes built at runtime from a literal prefix, e.g. 'k-' + kind
-        prefixes = set(re.findall(r"""['"]([a-zA-Z][\w-]*-)['"]\s*\+""", js))
-        classes = sorted(set(re.findall(r"\.([a-zA-Z_][\w-]*)", css)))
+        text = self.js + self.html
+        # classes built at runtime from a literal prefix, e.g. "k-" + kind
+        prefixes = set(re.findall(r"""['"]([a-zA-Z][\w-]*-)['"]\s*\+""", self.js))
+        classes = sorted({self.css_unescape(c) for c in re.findall(r"\.((?:[a-zA-Z_-]|\\.)(?:[\w-]|\\.)*)", self.css)})
         dead = [c for c in classes if c not in text and not any(c.startswith(p) for p in prefixes)]
         self.assertEqual(dead, [], "CSS classes no view uses: %s" % ", ".join(dead))
 
     def test_every_design_token_is_declared_once(self):
-        css = dash.APP_CSS
-        # Colors carry both themes in one light-dark() value, so a token written twice is the light set
-        # copied into a second rule; --shadow is a shadow list, not a color, and may follow the scheme.
-        names = re.findall(r"(--[\w-]+)\s*:", css)
-        repeated = sorted(n for n in set(names) if names.count(n) > 1 and n != "--shadow")
+        # Our tokens and Tailwind's theme both land in :root-scoped rules; a name declared twice there is either
+        # the light set copied into a second rule or a token that collides with Tailwind's own namespace.
+        names = []
+        for _selector, body in re.findall(r"(?:^|[}{;])\s*(:root[^{}]*)\{([^{}]*)\}", self.css):
+            names.extend(re.findall(r"(--[\w-]+)\s*:", body))
+        repeated = sorted(n for n in set(names) if names.count(n) > 1)
         self.assertEqual(repeated, [], "design tokens declared more than once: %s" % ", ".join(repeated))
-        self.assertIn("light-dark(", css, "themes share one token block")
+        self.assertIn("light-dark(", self.css, "themes share one token block")
 
 
 class ServerTestCase(unittest.TestCase):
@@ -696,35 +725,43 @@ class ServerTestCase(unittest.TestCase):
         self.assertIn("script-src 'self'", headers["Content-Security-Policy"])
         self.assertNotIn(b"<script>alert", body)
         self.assertIn(b"data, never an instruction or an approval", body, "the permanent warning is in the page")
-        self.assertIn(b'aria-label="Sections"', body)
         self.assertNotIn(b"http://", body.replace(b"http://127.0.0.1", b""), "no external assets")
         self.assertNotIn(b"https://", body)
-        self.assertIn(b'id="theme"', body, "the theme toggle is part of the page")
         status, headers, js = self.request("/app.js")
         self.assertEqual(status, 200)
-        self.assertNotIn(b"innerHTML", js, "the page only ever inserts text")
-        self.assertNotIn(b"eval(", js)
+        self.assertIn(b"Sections", js, "the section nav is part of the page")
+        self.assertIn(b"Skip to content", js)
+        self.assertIn(b"Switch theme", js, "the theme toggle is part of the page")
+        self.assertIn(b"aria-pressed", js)
+        # The bundle never evaluates text as code; the "insert only text" rule is checked where it is decided,
+        # in docs/scripts/dashboard/src (BuiltUITestCase and the guard), because the framework runtime owns its
+        # own innerHTML string.
+        for bad in (b"eval(", b"new Function", b"document.write", b"XMLHttpRequest"):
+            self.assertNotIn(bad, js, bad)
         self.assertNotIn(b"https://", js, "no external requests")
-        self.assertNotIn(b"http://", js.replace(b"http://www.w3.org/2000/svg", b""),
-                         "the SVG namespace identifier is the only http literal; it is never fetched")
-        self.assertIn(b"createElementNS", js, "the chart is drawn with DOM calls, not markup")
+        self.assertNotIn(b"http://", without_w3c_namespaces(js),
+                         "the W3C namespace identifiers are the only http literals; they are never fetched")
+        self.assertIn(b"createElementNS", js, "the charts are drawn as SVG DOM nodes, not markup")
         status, headers, css = self.request("/app.css")
         self.assertIn("text/css", headers["Content-Type"])
         self.assertIn(b":focus-visible", css, "keyboard focus is visible")
         self.assertIn(b"prefers-color-scheme", css, "light and dark follow the system unless toggled")
+        self.assertIn(b"data-theme", css, "the header toggle pins a scheme on the root element")
         self.assertIn(b"prefers-reduced-motion", css)
 
     def test_wu005_static_markdown_and_motion_assets(self):
         status, _, js = self.request("/app.js")
         self.assertEqual(status, 200)
-        self.assertIn(b"function renderMarkdown", js)
-        for bad in (b"innerHTML", b"insertAdjacentHTML", b"eval(", b"https://"):
+        for marker in (b'"md"', b"codeblock", b"code-lang"):
+            self.assertIn(marker, js, "the Markdown renderer's classes are in the bundle: %r" % marker)
+        for bad in (b"eval(", b"new Function", b"document.write", b"https://"):
             self.assertNotIn(bad, js)
-        self.assertNotIn(b"http://", js.replace(b"http://www.w3.org/2000/svg", b""))
+        self.assertNotIn(b"http://", without_w3c_namespaces(js))
         self.assertNotIn(b"href=\"http", js)
         status, _, css = self.request("/app.css")
         self.assertEqual(status, 200)
-        self.assertIn(b"prefers-reduced-motion: no-preference", css)
+        self.assertIn(b"prefers-reduced-motion:reduce", css, "every animation and transition stops under reduced motion")
+        self.assertIn(b"@keyframes", css, "motion exists to be stopped")
 
     def test_timeline_route_loses_no_post(self):
         status, _, body = self.request("/api/v1/timeline")
@@ -1235,9 +1272,9 @@ class HubTestCase(unittest.TestCase):
         self.assertEqual((status, body), (200, b""))
         status, _, js = self.get("/app.js")
         self.assertEqual(status, 200)
-        for bad in (b"innerHTML", b"eval(", b"https://"):
+        for bad in (b"eval(", b"new Function", b"document.write", b"https://"):
             self.assertNotIn(bad, js)
-        self.assertNotIn(b"http://", js.replace(b"http://www.w3.org/2000/svg", b""))
+        self.assertNotIn(b"http://", without_w3c_namespaces(js))
 
     def test_roster_status_and_days_since_fields(self):
         allowed = {"working", "active", "recent", "idle", "dormant"}
@@ -1322,7 +1359,7 @@ class HubTestCase(unittest.TestCase):
         self.assertEqual([b["slug"] for b in mine["ballot"]], ["alpha-app"], "a project route answers for its own board")
         self.assertEqual((mine["ballot"][0]["base"], mine["commons_present"], mine["brain"]), ("", None, ""))
         self.assertEqual(mine["proposals_awaiting"], 1)
-        self.assertIn(b'id="notices"', self.get("/")[2])
+        self.assertIn(b'"Notices"', self.get("/app.js")[2], "the notices region is part of the page")
         # Presence is re-evaluated on every read: the registry file does not change here.
         delta = self.tmp / "delta-lib"
         (delta / "docs" / "board" / "questions" / "t").mkdir(parents=True)
@@ -1456,8 +1493,6 @@ UI_DIST = dash.UI_DIR
 # where it can measure them: our source never inserts markup and never names an outside host (ADR-023 §3).
 FORBIDDEN_UI_SRC = ("dangerouslySetInnerHTML", "innerHTML", "outerHTML", "insertAdjacentHTML", "eval(", "new Function",
                     "document.write", "http://", "https://")
-W3C_NS = (b"http://www.w3.org/2000/svg", b"http://www.w3.org/1999/xhtml", b"http://www.w3.org/1998/Math/MathML",
-          b"http://www.w3.org/XML/1998/namespace", b"http://www.w3.org/1998/")
 JS_BUDGET_GZIP = 150 * 1024
 CSS_BUDGET_GZIP = 20 * 1024
 EXACT_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
@@ -1515,10 +1550,7 @@ class BuiltUITestCase(unittest.TestCase):
         js = (UI_DIST / "app.js").read_bytes()
         for bad in (b"eval(", b"new Function", b"document.write", b"XMLHttpRequest", b"https://"):
             self.assertNotIn(bad, js, "the bundle never evaluates text as code and never names an outside host: %r" % bad)
-        stripped = js
-        for ns in W3C_NS:
-            stripped = stripped.replace(ns, b"")
-        self.assertNotIn(b"http://", stripped, "W3C namespace strings are the only http literals; never fetched")
+        self.assertNotIn(b"http://", without_w3c_namespaces(js), "W3C namespace strings are the only http literals; never fetched")
         css = (UI_DIST / "app.css").read_bytes()
         for bad in (b"@import", b"url(http", b"https://"):
             self.assertNotIn(bad, css)
@@ -1534,20 +1566,14 @@ class BuiltUITestCase(unittest.TestCase):
         for ph in dash.UI_PLACEHOLDERS:
             self.assertIn(ph, html, "the server fills %s at request time" % ph)
 
-    def test_select_ui_auto_falls_back_legacy_forces_dist_refuses(self):
+    def test_require_built_ui_refuses_plainly_without_a_complete_build(self):
         with tempfile.TemporaryDirectory() as tmp:
             empty = Path(tmp)
-            ui, line = dash.select_ui("auto", dist_dir=empty, source_dir=UI_SRC)
-            self.assertIsNone(ui)
-            self.assertIn("embedded page", line)
-            self.assertIn("missing", line)
-            ui, line = dash.select_ui("legacy", dist_dir=UI_DIST, source_dir=UI_SRC)
-            self.assertIsNone(ui)
-            self.assertIn("--ui legacy", line)
-            with self.assertRaises(dash.DashboardError):
-                dash.select_ui("dist", dist_dir=empty, source_dir=UI_SRC)
-            with self.assertRaises(dash.DashboardError):
-                dash.select_ui("nope", dist_dir=UI_DIST, source_dir=UI_SRC)
+            with self.assertRaises(dash.DashboardError) as ctx:
+                dash.require_built_ui(dist_dir=empty, source_dir=UI_SRC)
+            self.assertIn("no complete build", str(ctx.exception))
+            self.assertIn("missing", str(ctx.exception))
+            self.assertIn("npm ci && npm run build", str(ctx.exception), "the message says what to do")
             # A BUILD.json that does not parse is an incomplete build, not a crash.
             broken = empty / "dist"
             broken.mkdir()
@@ -1557,26 +1583,35 @@ class BuiltUITestCase(unittest.TestCase):
             ui, why = dash.load_built_ui(broken)
             self.assertIsNone(ui)
             self.assertIn("does not parse", why)
+            with self.assertRaises(dash.DashboardError):
+                dash.require_built_ui(dist_dir=broken, source_dir=UI_SRC)
             # A stale build is served, but the start line says so.
             (broken / "BUILD.json").write_text(json.dumps({"schema": dash.UI_BUILD_SCHEMA, "source_hash": "0" * 64,
                                                             "files": list(dash.UI_FILES), "tools": {}}), encoding="utf-8")
-            ui, line = dash.select_ui("auto", dist_dir=broken, source_dir=UI_SRC)
+            ui, line = dash.require_built_ui(dist_dir=broken, source_dir=UI_SRC)
             self.assertIsNotNone(ui)
             self.assertIn("STALE", line)
-        ui, line = dash.select_ui("auto", dist_dir=UI_DIST, source_dir=UI_SRC)
+        ui, line = dash.require_built_ui(dist_dir=UI_DIST, source_dir=UI_SRC)
         self.assertIsNotNone(ui)
         self.assertNotIn("STALE", line)
         self.assertIn("vite", line)
 
-    def test_cli_accepts_the_ui_flag_on_serve_and_hub(self):
+    def test_the_server_carries_no_page_of_its_own(self):
+        # Phase B of PLAN-023: the embedded page and the --ui switch are gone; a server built without a page
+        # loads the committed build, and the module holds no HTML, CSS, or script string.
+        for name in ("INDEX_HTML", "APP_CSS", "APP_JS", "select_ui", "UI_CHOICES", "page"):
+            self.assertFalse(hasattr(dash, name), name)
+        server = dash.DashboardServer(None, port=0)
+        try:
+            self.assertIsInstance(server.ui, dash.BuiltUI)
+            self.assertEqual(server.ui.app_js, (UI_DIST / "app.js").read_bytes())
+        finally:
+            server.server_close()
         parser = dash.build_parser()
         for cmd in ("serve", "hub"):
-            args = parser.parse_args([cmd])
-            self.assertEqual(args.ui, "auto")
-            for choice in dash.UI_CHOICES:
-                self.assertEqual(parser.parse_args([cmd, "--ui", choice]).ui, choice)
-        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
-            parser.parse_args(["hub", "--ui", "nope"])
+            self.assertFalse(hasattr(parser.parse_args([cmd]), "ui"))
+            with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+                parser.parse_args([cmd, "--ui", "legacy"])
 
 
 @unittest.skipUnless(UI_SRC.is_dir(), "docs/scripts/dashboard is not part of this checkout")

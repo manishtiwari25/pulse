@@ -1,6 +1,6 @@
 {
  "schema": "pulse-hub-build/1",
- "source_hash": "df444ec52eac484b61d4d7db279473af3f6d785dffed75d94af0a39c3eb22c7a",
+ "source_hash": "5b6d220b1dd1ac3028a8d8831e5dbdf14a9bfe0d388751b25d0ad7ed31a7c2ec",
  "files": [
   "index.html",
   "app.js",

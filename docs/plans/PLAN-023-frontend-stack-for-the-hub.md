@@ -1,10 +1,10 @@
 ---
 id: PLAN-023
 title: A Proper Frontend Stack for the Hub - Scaffold, Reach Parity, Retire the Embedded Page
-status: In Progress
+status: Done
 tier: 2
 date: 2026-09-06
-delivered:
+delivered: 2026-09-06
 tags: [plan, dashboard, hub, frontend, dependencies, build]
 ---
 
@@ -112,16 +112,27 @@ and the embedded legacy page deleted.
 
 ### Phase B - Retire the embedded page
 
-- [ ] B1 Delete `APP_CSS`, `APP_JS`, the legacy `INDEX_HTML`, the `--ui`
+- [x] B1 Delete `APP_CSS`, `APP_JS`, the legacy `INDEX_HTML`, the `--ui`
       flag and the fallback; the hub fails at start with a plain message if
-      `dist/` is incomplete.
-- [ ] B2 Tests that referenced `APP_JS`/`APP_CSS` move to `dist/`;
+      `dist/` is incomplete. (`require_built_ui()`; `DashboardServer` loads
+      the build itself when none is passed, so the owner's guard module
+      needed no edit; 1,616 lines of page strings removed.)
+- [x] B2 Tests that referenced `APP_JS`/`APP_CSS` move to `dist/`;
       `evolution-measure.py product` reads `dist/` for P6; the owner
-      records the new P6 baseline row.
-- [ ] B3 Template-sync: `docs/scripts/dashboard/` (without
-      `node_modules/`) joins the sync-safe files; `.template-sync` notes.
-- [ ] B4 ADR-023 `delivery: delivered`, this plan `delivered:`, FEAT-015
-      `delivered:`; memory entry ("guard the source, not the bundle").
+      records the new P6 baseline row. (The three `AssetTestCase` rules
+      keep their names and now read the build; moving them found one dead
+      rule, `.hairline`, and one token colliding with Tailwind's default
+      theme, `--radius-xs`, both fixed in `tokens.css` and rebuilt. The two
+      tests of the `--ui` fallback are replaced by tests of the refusal and
+      of the module carrying no page. P2 also reports build completeness
+      and the source hash match. P6 on this tree: 299,907 bytes.)
+- [x] B3 Template-sync: `docs/scripts/dashboard/` (without
+      `node_modules/`) named in the sync-safe class of `template-sync.md`,
+      the skill, and the shared prompt, with the `.gitignore` negation an
+      adopter needs; `dashboard.md` says the same.
+- [x] B4 ADR-023 `delivery: delivered`, this plan `delivered:`, FEAT-015
+      `delivered:`; memory entry ("guard the source, not the bundle" was
+      recorded at phase A; phase B adds the token-namespace lesson).
 
 ## Rollback Plan
 
@@ -148,7 +159,7 @@ and the embedded legacy page deleted.
 
 ## Acceptance Criteria
 
-- [ ] ADR-023 `Accepted` and the owner's Step 1 edits committed before any
+- [x] ADR-023 `Accepted` and the owner's Step 1 edits committed before any
       phase A file exists in `main`.
 - [x] The Python hub still imports only the standard library; a human runs it
       with `python3 docs/scripts/pulse-dashboard.py hub` and nothing else.
@@ -157,9 +168,10 @@ and the embedded legacy page deleted.
 - [x] Every WU-005 view at parity, light and dark, two widths; P4 0 errors,
       0 CSP violations, 0 off-origin requests.
 - [x] Bundle within budget; `dist/` matches `src/` by hash.
-- [ ] FEAT-015's acceptance criteria met; the maintainer has seen the hub
-      on 8765 and said it looks right.
-- [ ] On closure, `delivered:` is set here and ADR-023's `delivery:` mark is
+- [x] FEAT-015's acceptance criteria met; the maintainer has seen the hub
+      on 8765 and said it looks right (`pulse decide` yes on the phase B
+      gate, `20260906T100221Z-human`).
+- [x] On closure, `delivered:` is set here and ADR-023's `delivery:` mark is
       updated.
 
 ## Verification

@@ -1,10 +1,10 @@
 ---
 id: FEAT-015
 title: A Modern Hub UI - What a User Enjoys and an Investor Recognises, on the Same Read-Only Data
-status: In Progress
+status: Done
 tier: 2
 date: 2026-09-06
-delivered:
+delivered: 2026-09-06
 priority: High
 areas: [dashboard]
 tags: [feature, dashboard, hub, frontend, design]
@@ -78,7 +78,8 @@ store, `pulse.py`, the runner, any new data.
 
 - New: `docs/scripts/dashboard/` (source, toolchain, committed `dist/`).
 - Changed: `pulse-dashboard.py` serves `dist/` at `/`, `/app.js`,
-  `/app.css`; `--ui legacy|dist` during phase A only.
+  `/app.css` and carries no page of its own (the `--ui legacy|dist` switch
+  existed during phase A only).
 - Unchanged: every `/api/v1/*` route and its JSON.
 
 ## Data Changes
@@ -99,8 +100,9 @@ None.
 
 ## Edge Cases
 
-- `dist/` missing or incomplete: phase A serves the legacy page and logs it;
-  phase B refuses to start with a plain message naming the build command.
+- `dist/` missing or incomplete: the hub refuses to start with a plain
+  message naming what is missing and the build command (phase A served the
+  legacy page instead and logged it).
 - Store absent (`/api/v1/runner` says `available: false`): Mission control
   shows the machine panel in its "no store on this machine" state, never an
   error toast.
@@ -123,8 +125,8 @@ None.
 
 ## Rollback Strategy
 
-PLAN-023 Rollback Plan: `--ui legacy` in phase A, `git revert` of the phase
-commits otherwise; no data or external state involved.
+PLAN-023 Rollback Plan: `git revert` of the phase B commit restores the
+embedded page and the `--ui` switch; no data or external state involved.
 
 ## Generated Prompts
 
@@ -140,8 +142,8 @@ handed to another runner.
       panel, working/testing/shipped, and the notices strip.
 - [x] Guards green; P4 0 errors / 0 CSP violations / 0 off-origin requests;
       bundle within budget; no serious axe issue.
-- [ ] The maintainer has looked at the hub on 8765 in both themes and said
-      it looks right.
+- [x] The maintainer has looked at the hub on 8765 in both themes and said
+      it looks right (`pulse decide` yes, `20260906T100221Z-human`).
 
 ## Verification Plan
 
