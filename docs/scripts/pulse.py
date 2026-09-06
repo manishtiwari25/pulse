@@ -2519,10 +2519,12 @@ def pair_inspection_pubkey(hub_home, dry_run, lines):
 
 
 def pair_check_alias(hub_home, name, host):
+    """An alias that already exists must point at the machine being paired. The admin address may itself be that
+    alias (`pair admin@hands-2 --name hands-2`): then the alias is the target by definition and is kept as is."""
     config = hub_home / ".ssh" / "config"
     text = config.read_text(encoding="utf-8") if config.exists() else ""
     block = pair_alias_state(text, name)
-    if block:
+    if block and host != name:
         target = block.get("hostname") or name
         if target != host:
             pair_refuse("alias %s already points elsewhere" % name)
@@ -2669,8 +2671,11 @@ def pair_executor(con, admin_address, name, workdir="/srv/pulse", workers=1, pro
             lines.append(pair_host_block(name, host, port).rstrip("\n"))
         for hk in inspection.get("hostkeys", []):
             lines.append("  known_hosts: %s %s" % (pair_known_host_prefix(host, port), hk))
-        lines.append("  executor add %s --ssh pulse@%s --workdir %s --workers %d --projects %s" %
-                     (name, name, workdir, workers, normalize_projects(projects)))
+        if existing:
+            lines.append("  executor %s already registered as pulse@%s: add skipped" % (name, name))
+        else:
+            lines.append("  executor add %s --ssh pulse@%s --workdir %s --workers %d --projects %s" %
+                         (name, name, workdir, workers, normalize_projects(projects)))
         lines.append("  probe %s" % name)
         return {"ok": True, "lines": lines, "inspection": inspection, "scripts": scripts,
                 "changed": [], "decision": decision}
@@ -3498,7 +3503,7 @@ def onboard_project(con, path, name=None, remote=None, brain=False, verify_cmd="
     lines.extend([
         "What stays human:",
         "1. record the baseline - run the project's own check (%s) and add a B- row in docs/evolution/evaluators.md, commit"
-        % (verify_cmd or "the verify command you choose"),
+        % (verify_cmd or project.get("verify_cmd") or "the verify command you choose"),
         "2. set loop: on in docs/evolution/constitution.md, commit",
     ])
     if not daemon_status(con, now).startswith("alive "):

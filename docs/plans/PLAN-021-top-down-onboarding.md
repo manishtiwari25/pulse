@@ -1,7 +1,7 @@
 ---
 id: PLAN-021
 title: Top-Down PULSE - `pulse onboard`, `pulse pair`, the First Reflect Now
-status: Approved
+status: In Progress
 tier: 2
 date: 2026-09-06
 delivered:
@@ -50,7 +50,7 @@ daemon stays the single supervisor and the dashboard stays read-only.
 
 ## Steps
 
-- [ ] **Step 1 - `pulse onboard`.** New subcommand wrapping `init`: scaffold
+- [x] **Step 1 - `pulse onboard`.** New subcommand wrapping `init`: scaffold
       `docs/evolution/` from the templates only when the folder is entirely
       absent; a partial folder is a refusal (exit 2, missing names listed)
       before any write; queue the onboarding job and a `reflect` job
@@ -62,11 +62,11 @@ daemon stays the single supervisor and the dashboard stays read-only.
       3) first. Tests: scaffold created once, partial folder refused with
       nothing written, existing files untouched, both jobs queued, index
       unchanged, `init` behavior unchanged, agent without decision refused.
-- [ ] **Step 2 - planner rule.** `plan_jobs` may plan a `reflect` job for a
+- [x] **Step 2 - planner rule.** `plan_jobs` may plan a `reflect` job for a
       project that has never had one, regardless of the daily cadence, so a
       project onboarded with plain `init` also starts within one loop.
       Test: fresh project, empty board, first `plan_jobs` yields a reflect.
-- [ ] **Step 3 - `pulse pair`.** New subcommand: hub key generation, the
+- [x] **Step 3 - `pulse pair`.** New subcommand: hub key generation, the
       remote steps of ADR-021 section 2 as one idempotent script sent over
       the admin session (`sudo` required; `--dry-run` prints every remote
       command and changes nothing), `~/.ssh/config` alias, host key trusted
@@ -83,7 +83,7 @@ daemon stays the single supervisor and the dashboard stays read-only.
       refusal fires with nothing written, the `sshd -t` failure path removes
       the drop-in, `add` + `probe` run, the alias is written once, the event
       carries the decision id.
-- [ ] **Step 3b - `pulse executor login` (ADR-021 Amendment 1).** New
+- [x] **Step 3b - `pulse executor login` (ADR-021 Amendment 1).** New
       `executor` action: the token arrives on standard input only, its prefix
       is checked before anything is sent (`github_pat_`, `gho_`, `ghu_`
       pass; `ghp_` and everything else refuse with exit 2), it is piped over
@@ -96,7 +96,7 @@ daemon stays the single supervisor and the dashboard stays read-only.
       Tests through an admin-session shim: refusals send nothing, the remote
       command is byte-stable, output is redacted, the event never carries
       the token, the probe fix distinguishes a `logs/`-only folder.
-- [ ] **Step 4 - docs and sync.** `docs/workflows/pulse.md` (onboard),
+- [x] **Step 4 - docs and sync.** `docs/workflows/pulse.md` (onboard),
       `docs/workflows/executors.md` (pair beside the Azure path; the "Never"
       paragraph gains the decided-proposal exception), ADR-020 section 6
       amendment note, `docs/context/pulse-store.md` (job sources, the
@@ -109,6 +109,27 @@ daemon stays the single supervisor and the dashboard stays read-only.
       against the machine cloud-init already prepared and record that every
       step reports present and nothing changed. No new VM is created for
       this plan.
+
+## Progress
+
+- 2026-09-06: steps 1-4 landed on the brain in one fleet pass (four workers in
+  isolated clones, merged after `python3 -m unittest discover -s
+  docs/scripts/tests` - 181 tests - links, `bash -n`, `git diff --check`).
+  Step 5, first half: `pulse onboard` on a scratch checkout under a temporary
+  `PULSE_HOME` registered the project, scaffolded `docs/evolution/` with
+  `loop: off`, queued the onboarding and first-reflect jobs, staged nothing,
+  and printed the two gates; the second run was a no-op. `pulse pair
+  pulseadmin@pulse-vm1 --name pulse-vm1 --dry-run` against the machine
+  cloud-init prepared returned exit 0 with every inspection field present
+  (`uname=Linux sudo=yes user=present hands=differs workdir=present
+  authorized_keys=ours dropin=present dropin_dir=yes remotes=0 apt=yes
+  copilot=present node=present git=present gitconfig=ok`; `hands=differs`
+  because the machine still runs the pre-Amendment-1 hands script) and
+  changed nothing on either side. `pulse executor login` refused an empty
+  standard input and a classic `ghp_` token before sending anything (exit 2,
+  no event). Open: the time-to-first-kept-commit measurement waits for the
+  first real onboarding with `loop: on`; the login of `pulse-vm1` waits for a
+  fine-grained token with the Copilot Requests permission.
 
 ## Rollback Plan
 
@@ -139,12 +160,12 @@ daemon stays the single supervisor and the dashboard stays read-only.
 
 ## Acceptance Criteria
 
-- [ ] `pulse onboard` on a fresh checkout: project registered, scaffold
+- [x] `pulse onboard` on a fresh checkout: project registered, scaffold
       present and uncommitted, onboarding + reflect jobs queued, the two
       human gates printed; a second run changes nothing.
-- [ ] A project's first `reflect` is planned within one daemon loop of
+- [x] A project's first `reflect` is planned within one daemon loop of
       onboarding (store evidence: the job's `created_at`).
-- [ ] `pulse pair --dry-run` prints every remote command and changes
+- [x] `pulse pair --dry-run` prints every remote command and changes
       nothing; against the machine cloud-init prepared it reports every step
       present; the shim tests cover the `sshd -t` failure path and every
       refusal; `PULSE_AGENT` set without a decision is refused.

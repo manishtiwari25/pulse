@@ -301,13 +301,13 @@ stores nothing), so a login that returns 0 is proof the token works.
 
 - [x] PLAN-021 approved by the human (`pulse decide` on the board proposal)
       before any code changes - `20260906T045718Z-human`, 2026-09-06.
-- [ ] Implement `pulse onboard`, `pulse pair`, `pulse executor login`
+- [x] Implement `pulse onboard`, `pulse pair`, `pulse executor login`
       (Amendment 1), and the first-reflect planner rule behind tests (ssh
-      shim for `pair` and `login`).
-- [ ] Update `docs/workflows/pulse.md`, `docs/workflows/executors.md`
+      shim for `pair` and `login`) - 2026-09-06.
+- [x] Update `docs/workflows/pulse.md`, `docs/workflows/executors.md`
       (the "Never" paragraph and ADR-020 section 6's exception),
       `docs/context/pulse-store.md`, `AGENTS.md`, `README.md`, the Copilot
-      and Claude instruction files.
+      and Claude instruction files - 2026-09-06.
 - [ ] Later, as a Tier 1 work unit under ADR-015: the read-only Flywheel
       view, once the store holds a few real onboardings to show.
 - [ ] Record memory if a reusable lesson appears.

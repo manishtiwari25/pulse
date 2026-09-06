@@ -19,7 +19,7 @@ from pathlib import Path
 import test_pulse as tp
 
 NOW = "2026-09-10T12:00:00Z"
-APPLY_SCRIPT_SHA256 = "5b52cbdda35398980623a1cafcf2fdbc42b04eb2fafe087ac6156acd07627517"
+APPLY_SCRIPT_SHA256 = "c511f242366c42cfbedaf7456ce765f7aea33fb7a451fa1c45fbdd072040a403"
 
 
 PAIR_SSH_SHIM = r"""#!/bin/bash
@@ -194,13 +194,18 @@ class PairFixture(tp.HandsFixture):
 
 class PairScriptTest(tp.StoreFixture):
     def test_apply_script_is_byte_stable_and_shell_valid(self):
-        script = tp.pulse.pair_apply_script("hands-2", "/srv/pulse", "ssh-ed25519 AAAATEST pulse-hub",
-                                           tp.pulse.pair_hands_source(), False)
+        # A fixed stand-in for pulse-hands.sh keeps the golden about the pairing steps, not about the hands' own text.
+        fake_hands = "#!/bin/bash\necho fake pulse-hands\n"
+        script = tp.pulse.pair_apply_script("hands-2", "/srv/pulse", "ssh-ed25519 AAAATEST pulse-hub", fake_hands, False)
         self.assertEqual(hashlib.sha256(script.encode("utf-8")).hexdigest(), APPLY_SCRIPT_SHA256,
                          "pair_apply_script changed; review ADR-021/cloud-init parity and update this hash intentionally")
-        sample = self.tmp / "pair-apply.sh"
-        sample.write_text(script, encoding="utf-8")
-        self.assertEqual(subprocess.run(["sh", "-n", str(sample)], capture_output=True, text=True).returncode, 0)
+        self.assertIn(fake_hands.strip(), script)
+        real = tp.pulse.pair_apply_script("hands-2", "/srv/pulse", "ssh-ed25519 AAAATEST pulse-hub", tp.pulse.pair_hands_source(), False)
+        self.assertIn(tp.HANDS_SH.read_text(encoding="utf-8").strip(), real)
+        for text, label in ((script, "pair-apply.sh"), (real, "pair-apply-real.sh")):
+            sample = self.tmp / label
+            sample.write_text(text, encoding="utf-8")
+            self.assertEqual(subprocess.run(["sh", "-n", str(sample)], capture_output=True, text=True).returncode, 0, label)
 
 
 class PairCommandTest(PairFixture):
