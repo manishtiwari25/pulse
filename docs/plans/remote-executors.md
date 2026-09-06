@@ -147,18 +147,42 @@ tested and used everywhere.
       maintainer's choice (`jobs_per_day 0`), so time and credits per run
       bound the work; no run ended for credits since `worker_model` was set.
 
-### Slice 2 - the first VM (human steps named)
+### Slice 2 - the first VM
 
-- [ ] The maintainer provisions the VM - `bash
-      docs/scripts/hosted/azure-provision.sh --group pulse-hands --location
-      <region> --name pulse-vm1 --pubkey ~/.ssh/id_ed25519.pub` renders
-      `cloud-init.yaml` (git, python3, Node 22, the copilot CLI, user
-      `pulse`, `/srv/pulse`, `pulse-hands` at `/usr/local/bin`, the hub's key
-      with `command=` and `restrict`, ssh admitted from his address only) -
-      logs the copilot CLI in on the single-purpose user (`ssh -t
-      pulseadmin@<ip> sudo -iu pulse copilot login`), and runs `pulse
-      executor add pulse-vm1 --ssh pulse@<ip> --workdir /srv/pulse
-      --workers 1 --projects '*'` and `pulse executor probe pulse-vm1`.
+- [x] The VM exists (2026-09-06). The owner had recorded in project-light's
+      MEM-008 that agents on this machine may create compute in the sandbox
+      subscription (service principal from 1Password, one fleet group named
+      by the subscription's standard in `germanywestcentral`, purpose tags
+      only, never a person's name), and asked in chat that the executor
+      follow it (decision `20260906T041719Z-human` on proposal
+      `20260905T202621Z-fable-scale-09051203`). An agent ran `bash
+      docs/scripts/hosted/azure-provision.sh --group <fleet group>
+      --location germanywestcentral --name pulse-vm1 --pubkey
+      ~/.ssh/pulse_hands_ed25519.pub --tag operator=pulse-agents --tag
+      purpose=pulse-executor --tag created-by=copilot-cli --tag
+      ttl=persistent --yes`: `Standard_B2ms`, 64 GiB, ssh from the hub's
+      address only, cloud-init clean (`errors: []`), Node 22, copilot CLI
+      1.0.83, user `pulse` locked to `pulse-hands` with `restrict`, sshd
+      `Match User pulse` hardening in force, git never signs or prompts.
+      The first attempt lacked `- default` in cloud-init's `users:` and had no
+      admin user; it was removed with the script's new `--delete` mode (the
+      group stayed) and recreated from the fixed file. The hub reaches it by
+      an ssh alias (`Host pulse-vm1`, dedicated passphrase-free key), and its
+      host key came through `az vm run-command` (`--host-key`), not a blind
+      first connection. Probe from outside: `hands=ok git=2.43.0
+      copilot=1.0.83 keys_ok=yes remotes=0 disk_free_mb=59622`; an unlisted
+      verb, a plain command, a git fetch outside a job clone, and a tty
+      request are all refused.
+- [x] Enrolled: `pulse executor add pulse-vm1 --ssh pulse@pulse-vm1
+      --workdir /srv/pulse --workers 1 --projects '*'`; `probe` reports
+      `copilot is not logged in` and keeps it `drained`; `work --dry-run
+      --executor pulse-vm1` answers `idle: executor pulse-vm1 is drained`.
+      The hands now report `logged_in=no` until `copilot login` ran (was
+      `unknown`, which the hub let pass and would have spent a job's three
+      attempts on a machine that cannot run the worker).
+- [ ] The maintainer logs the CLI in on the single-purpose user - `ssh -t
+      pulseadmin@pulse-vm1 sudo -iu pulse copilot login` - and runs `python3
+      docs/scripts/pulse.py executor probe pulse-vm1`, which activates it.
 - [ ] One job runs on it; the plan records bundle size, transfer time, and
       the run's credit report.
 - [ ] Close: `delivered:` here, `delivery: delivered` in ADR-020, ADR-018
@@ -213,7 +237,7 @@ tested and used everywhere.
 - [x] `--projects` is honored; `jobs_per_day` counts runs on every executor.
 - [x] Docs updated; the runbook with the hardening checklist exists in slice
       1; the gate's five clean local runs are recorded.
-- [ ] The maintainer's first VM has run one job (slice 2).
+- [ ] The first VM has run one job (slice 2; the VM exists and is enrolled, awaiting the maintainer's `copilot login`).
 - [ ] On closure, `delivered:` is set here and ADR-020's `delivery:` mark is
       updated.
 

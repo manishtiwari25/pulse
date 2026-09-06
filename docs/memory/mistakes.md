@@ -102,6 +102,14 @@
   rendered the wrong tree. Avoid by: serve measured trees on a free port and
   confirm the listening pid with `lsof -tnP -iTCP:PORT -sTCP:LISTEN` before
   the first request.
+- `2026-09-06` - A cloud-init `users:` list without `- default` silently
+  drops the cloud's own admin user: the first executor VM came up with the
+  `pulse` user working and `pulseadmin` refused (`Permission denied
+  (publickey)`), because `az vm create --ssh-key-values` places the key on
+  the *default* user and the list replaced it. Fix: `- default` as the first
+  entry (`docs/scripts/hosted/cloud-init.yaml`). Lesson: a provisioning file
+  that has never booted a machine is untested however clean its syntax; boot
+  one, log in as every user it promises, then trust the runbook.
 
 ## Populate When
 

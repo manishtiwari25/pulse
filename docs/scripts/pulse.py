@@ -1939,7 +1939,7 @@ def probe_executor(con, name, actor="runner", now=None):
                 problems.append("%s clone(s) with remotes" % fields.get("remotes"))
             if fields.get("workdir") and fields["workdir"].rstrip("/") != row["workdir"].rstrip("/"):
                 problems.append("workdir is %s not %s" % (fields["workdir"], row["workdir"]))
-            if fields.get("logged_in") == "no":
+            if fields.get("logged_in", "yes") != "yes":
                 problems.append("copilot is not logged in (run `copilot login` as the executor user)")
             try:
                 if int(fields.get("disk_free_mb", "0")) < 1024:

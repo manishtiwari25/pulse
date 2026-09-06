@@ -92,12 +92,11 @@ verb_probe() {
   else
     copv="missing"
   fi
-  # Logged in when the CLI keeps its config folder; "unknown" never fails the probe on its own.
-  if [ "$copv" != "missing" ]; then
-    if [ -d "$HOME/.copilot" ]; then logged_in="yes"; else logged_in="unknown"; fi
-  else
-    logged_in="no"
-  fi
+  # Logged in when the CLI keeps its config folder (copilot login writes it); anything less is "no", so the
+  # hub never hands a job to hands that cannot run copilot.
+  if [ "$copv" != "missing" ] && [ -d "$HOME/.copilot" ]; then logged_in="yes"; else logged_in="no"; fi
+  # The test suite's shell worker needs neither the CLI nor a login.
+  if [ "${PULSE_HANDS_ALLOW_ANY_WORKER:-0}" = "1" ]; then copv="${copv/missing/test}"; logged_in="yes"; fi
   # Every clone under the work directory must have no remote (a leftover with one is a finding, not a job host).
   if [ -d "$WORKDIR" ]; then
     for d in "$WORKDIR"/*/clone; do

@@ -18,6 +18,7 @@ packages:
   - gnupg
 
 users:
+  - default              # the admin user Azure names (its key: --ssh-key-values); without this line cloud-init skips it
   - name: pulse
     gecos: PULSE executor (agents' hands)
     shell: /bin/bash

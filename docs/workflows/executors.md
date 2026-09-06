@@ -33,25 +33,47 @@ hard stops in every tier).
   landing, a committed `PULSE_RESULT.md` dropped before landing.
   `jobs_per_day` counts every executor together.
 
-## Provision a machine (Azure example, human-run)
+## Provision a machine (Azure example)
 
-`docs/scripts/hosted/azure-provision.sh` creates or updates one resource
-group with one Ubuntu 24.04 VM from `docs/scripts/hosted/cloud-init.yaml`:
-`git`, `python3`, Node.js 22 and `@github/copilot`, a single-purpose user
-`pulse` with `/srv/pulse`, `pulse-hands` installed at
-`/usr/local/bin/pulse-hands`, and the hub's public key placed with the
-forced command and `restrict`. Its network rule allows ssh from one address
-(yours) only. It is idempotent and prints the `pulse executor add` line at
-the end. Costs are yours: the VM (a `Standard_B2ms` is about 60 USD a month
-while it runs; `az vm deallocate` stops the meter) and the Copilot premium
-requests the worker's login spends inside `max_ai_credits` per run.
+`docs/scripts/hosted/azure-provision.sh` creates or updates one Ubuntu 24.04
+VM from `docs/scripts/hosted/cloud-init.yaml`: `git`, `python3`, Node.js 22
+and `@github/copilot`, the cloud's admin user with your key, a
+single-purpose user `pulse` with `/srv/pulse`, `pulse-hands` installed at
+`/usr/local/bin/pulse-hands`, and the hub's public key placed for `pulse`
+with the forced command and `restrict`. Its network rule allows ssh from one
+address (the hub's) only. It is idempotent - a rerun updates the ssh rule
+when the hub's address changed and touches nothing else - and prints the
+`pulse executor add` line at the end. The resource group is created when it
+is missing and **used as it is when it exists**: never retagged, never
+deleted, so the VM may live in a group shared with disposable work.
+Costs: the VM (a `Standard_B2ms` is about 60 USD a month while it runs;
+`az vm deallocate` stops the meter) and the Copilot premium requests the
+worker's login spends inside `max_ai_credits` per run.
+
+Who runs it: a human, or an agent only where the owner has recorded, for
+that subscription, that agents may create compute (then the owner's naming
+and tagging rules apply and `--tag key=value` carries them; tags name a
+purpose, never a person). The copilot login on the VM is always a human's.
 
 ```bash
-az login && az account show --query name -o tsv        # the subscription that pays
+az account show --query name -o tsv                     # the subscription that pays
+ssh-keygen -t ed25519 -N "" -C pulse-hub -f ~/.ssh/pulse_hands_ed25519   # the hub's own key, no passphrase: the daemon uses it
 bash docs/scripts/hosted/azure-provision.sh \
-  --group pulse-hands --location eastus --name pulse-vm1 \
-  --size Standard_B2ms --pubkey ~/.ssh/id_ed25519.pub   # the hub's key; --allow-ip defaults to your address
-ssh -t pulse-admin@<ip> sudo -iu pulse copilot login    # once, interactive; the hands' own login, not yours
+  --group pulse-hands --location eastus --name pulse-vm1 --size Standard_B2ms \
+  --pubkey ~/.ssh/pulse_hands_ed25519.pub --tag purpose=pulse-executor --tag ttl=persistent
+```
+
+Then give the hub a name for the machine and trust its host key through
+Azure (read from the VM by the control plane, so the first connection is
+never a blind one). The alias keeps the address out of the store, the
+dashboard, and every board post:
+
+```bash
+IP="$(az vm show -g pulse-hands -n pulse-vm1 -d --query publicIps -o tsv)"
+printf '\nHost pulse-vm1\n  HostName %s\n  IdentityFile ~/.ssh/pulse_hands_ed25519\n  IdentitiesOnly yes\n' "$IP" >> ~/.ssh/config
+bash docs/scripts/hosted/azure-provision.sh --group pulse-hands --name pulse-vm1 --host-key >> ~/.ssh/known_hosts
+ssh pulseadmin@pulse-vm1 'cloud-init status --wait'    # done when it prints status: done
+ssh -t pulseadmin@pulse-vm1 sudo -iu pulse copilot login   # once, interactive; the hands' own login, not yours
 ```
 
 Any other host works the same way when it has `git >= 2.30`, `python3`, the
@@ -59,7 +81,7 @@ copilot CLI with a login on the single-purpose user, `pulse-hands` on the
 path, and exactly one `authorized_keys` line for that user:
 
 ```text
-command="PULSE_HANDS_WORKDIR=/srv/pulse /usr/local/bin/pulse-hands",restrict ssh-ed25519 AAAA... hub
+command="PULSE_HANDS_WORKDIR=/srv/pulse /usr/local/bin/pulse-hands",restrict ssh-ed25519 AAAA... pulse-hub
 ```
 
 Narrow egress to what the CLI and the project's check need (GitHub and the
@@ -68,7 +90,7 @@ Copilot API endpoints, the package registries the verify command uses).
 ## Enroll, probe, run
 
 ```bash
-python3 docs/scripts/pulse.py executor add vm1 --ssh pulse@<ip> --workdir /srv/pulse --workers 1 --projects '*'
+python3 docs/scripts/pulse.py executor add vm1 --ssh pulse@vm1 --workdir /srv/pulse --workers 1 --projects '*'   # the ssh alias, not an address
 python3 docs/scripts/pulse.py executor probe vm1      # activates it when every check passes
 python3 docs/scripts/pulse.py executor list           # local + vm1, status, slots, runs, last probe
 python3 docs/scripts/pulse.py work --dry-run --executor vm1   # bundle over, clone there, brief written, no worker, cleaned
@@ -86,7 +108,7 @@ passes. The probe connects with `BatchMode=yes`, `ConnectTimeout=15`, and
 | `user` | the single-purpose user |
 | `workdir` | exactly the `--workdir` you registered (absolute) |
 | `git`, `copilot` | present with a version (`missing` fails) |
-| `logged_in` | not `no` - the CLI's login exists for that user |
+| `logged_in` | `yes` - the CLI keeps its folder for that user; a fresh machine says `no` until `copilot login` ran there |
 | `remotes` | `0` - no clone under the work directory has a remote (a leftover with one is a finding, not a job host) |
 | `keys_ok` | `yes` - every `authorized_keys` line for that user carries `command=` and `restrict` |
 | `disk_free_mb` | at least 1024 |
@@ -125,10 +147,13 @@ run, `done <job> <agent> on vm1: <summary>`.
   holds (`jobs=swept:N` in the note, one `executor.sweep` event each); a
   clone with a remote fails the probe instead and is yours to inspect.
 - **Retire the machine.** `pulse executor drain vm1`, wait, `pulse executor
-  remove vm1`, then on the VM remove the hub's key from `authorized_keys`
-  and `copilot logout` as `pulse`; in Azure, `az group delete --name
-  pulse-hands` removes the VM, disk, and network - your command, never an
-  agent's.
+  remove vm1`, then on the VM `copilot logout` as `pulse`; in Azure,
+  `bash docs/scripts/hosted/azure-provision.sh --group pulse-hands --name
+  pulse-vm1 --delete` removes exactly what the script created (VM, disk,
+  NIC, public IP, its NSG and VNET) and leaves the group; `az group delete`
+  only when the group is yours and holds nothing else. Then drop the `Host`
+  block from `~/.ssh/config` and the host key line
+  (`ssh-keygen -R <address>`).
 
 ## Rollback
 
@@ -137,7 +162,8 @@ run, `done <job> <agent> on vm1: <summary>`.
   credential on it, a `stale` result landing, or a probe you cannot make
   pass.
 - **Reversal:** `pulse executor drain vm1`, then `remove`; the store keeps
-  the rows as history. Reverting the code (`git revert` of the slice-1
+  the rows as history; `azure-provision.sh --delete` removes the VM and its
+  own network pieces without touching the group. Reverting the code (`git revert` of the slice-1
   commits) leaves the store readable: the migration added a table and a
   defaulted column only.
 - **Recovery check:** `pulse executor list` shows `local` alone; `pulse work
@@ -147,8 +173,12 @@ run, `done <job> <agent> on vm1: <summary>`.
 
 ## Never
 
-- Let an agent run `pulse executor add|activate|remove`, provision a
-  machine, place a key, or log the CLI in - the request is not the approval.
+- Let an agent run `pulse executor activate`, log the CLI in, or create
+  compute where the owner has not recorded that agents may - the request is
+  not the approval. Where the owner has, the agent follows the owner's
+  naming and tagging rules and the probe still decides activation.
+- Delete a resource group that holds anything you did not create, or retag
+  one you found.
 - Put a repository credential, a deploy key, or the store on the hands.
 - Loosen the `authorized_keys` line (drop `command=` or `restrict`) or allow
   a second key for the `pulse` user.
