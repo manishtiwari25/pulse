@@ -153,6 +153,12 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   one `finding` a day (`runner/hands-wanted`) when every slot has been busy
   for half an hour, so the human learns when a machine would help (ADR-019,
   ADR-020, ADR-024).
+- [`WU-020-dashboard-settings.md`](WU-020-dashboard-settings.md) - the
+  human's runner caps are editable in the dashboard's Settings tab through
+  one guarded loopback route that runs the same validation as
+  `pulse settings set` (which now refuses bad values too), recorded with
+  `human:dashboard` provenance; the machine panel shows the capacity line and
+  a hands-wanted chip (ADR-025).
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy

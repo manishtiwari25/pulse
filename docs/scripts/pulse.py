@@ -64,6 +64,29 @@ DEFAULT_SETTINGS = {
     "stop": "0",
     "landing": "agents",  # agents: verified branches merge into the default branch by themselves; human: they wait (ADR-024)
 }
+# One rule per setting: (kind, bounds, one-line meaning). The CLI and the dashboard's settings route validate
+# through the same function, so a bad value fails the same way everywhere (ADR-025). Kinds: `count` (a whole
+# number, 0 allowed), `count-or-none` (a count, or none/off/unlimited), `credits` (a count with the CLI's floor),
+# `fraction` (n/m), `switch` (0 or 1), `choice` (one of the listed words), `command` (never empty), `text`.
+SETTING_RULES = {
+    "jobs_per_day": ("count-or-none", {"min": 0}, "worker runs the runner may start per UTC day on every executor together; 0 or none means no daily cap"),
+    "minutes_per_job": ("count", {"min": 0}, "wall-clock minutes one worker run may take before the runner stops it"),
+    "workers": ("count", {"min": 0}, "parallel slots on this machine (the local executor); 0 keeps it idle while remote hands exist"),
+    "parallel_per_project": ("count", {"min": 1}, "leased jobs one project may have in flight at once; 1 is one at a time"),
+    "max_ai_credits": ("credits", {"min": 30}, "AI credits one worker run may spend; the copilot CLI refuses anything below 30"),
+    "prune_after_days": ("count", {"min": 1}, "days without useful output after which an agent is pruned (its history stays)"),
+    "claim_hours": ("count", {"min": 1}, "hours a board claim stays active before it is treated as stale"),
+    "quorum": ("count", {"min": 1}, "distinct voters a suggestion needs before it is eligible for the queue"),
+    "expiry_days": ("count", {"min": 1}, "days a suggestion may wait for votes before it expires"),
+    "stale_days": ("count", {"min": 1}, "days after which an untouched thread counts as stale"),
+    "amend_quorum": ("count", {"min": 1}, "distinct sessions an amendment needs; may be raised by vote, lowered only by a human"),
+    "amend_majority": ("fraction", {}, "share of counted votes an amendment needs, as a fraction such as 2/3"),
+    "runner_cmd": ("command", {}, "the worker program the runner starts in each clone (copilot, or a path to a stand-in)"),
+    "worker_model": ("text", {}, "the model the worker runs with; empty means the runner's default"),
+    "stop": ("switch", {"choices": ["0", "1"]}, "the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)"),
+    "landing": ("choice", {"choices": ["agents", "human"]}, "agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)"),
+}
+NONE_WORDS = ("none", "off", "unlimited")
 PROTECTED_DEFAULT = "Hard stops, Kill switch, Amendments, frontmatter"
 POST_RECORD_FIELDS = ("path", "area", "thread", "id", "kind", "agent", "date", "expires",
                       "on", "vote", "resolution", "summary", "session", "text_hash", "read")
@@ -516,9 +539,53 @@ def setting_int(con, name):
         return int(DEFAULT_SETTINGS[name])
 
 
-def set_setting(con, name, value, actor):
+def validate_setting(name, value):
+    """The normalized value for a setting, or a PulseError that says what the setting takes (ADR-025)."""
     if name not in DEFAULT_SETTINGS:
         raise PulseError("Unknown setting %r. Known: %s" % (name, ", ".join(sorted(DEFAULT_SETTINGS))), 2)
+    kind, bounds, _ = SETTING_RULES.get(name, ("text", {}, ""))
+    text = str(value if value is not None else "").strip()
+    if kind in ("count", "count-or-none", "credits"):
+        if kind == "count-or-none" and text.lower() in NONE_WORDS:
+            return text.lower()
+        try:
+            number = int(text)
+        except ValueError:
+            extra = ", or one of %s" % "/".join(NONE_WORDS) if kind == "count-or-none" else ""
+            raise PulseError("%s takes a whole number%s, not %r" % (name, extra, text), 2)
+        if number < bounds.get("min", 0):
+            raise PulseError("%s must be at least %d, not %d" % (name, bounds["min"], number), 2)
+        return str(number)
+    if kind == "fraction":
+        n, m = majority(text)
+        if n > m:
+            raise PulseError("%s is a share of the votes: the numerator cannot exceed the denominator (%s)" % (name, text), 2)
+        return "%d/%d" % (n, m)
+    if kind in ("switch", "choice"):
+        if text.lower() not in bounds["choices"]:
+            raise PulseError("%s takes one of %s, not %r" % (name, ", ".join(bounds["choices"]), text), 2)
+        return text.lower()
+    if kind == "command" and not text:
+        raise PulseError("%s cannot be empty" % name, 2)
+    return text
+
+
+def settings_report(con):
+    """Every known setting with its value, default, rule, meaning, and provenance - the dashboard's settings
+    view and API read this; rows the whitelist does not know are left out (ADR-025)."""
+    rows = {r["name"]: dict(r) for r in con.execute("SELECT * FROM settings")}
+    report = []
+    for name in sorted(DEFAULT_SETTINGS):
+        kind, bounds, meaning = SETTING_RULES.get(name, ("text", {}, ""))
+        row = rows.get(name)
+        report.append({"name": name, "value": row["value"] if row else DEFAULT_SETTINGS[name], "default": DEFAULT_SETTINGS[name],
+                       "kind": kind, "min": bounds.get("min"), "choices": bounds.get("choices"), "description": meaning,
+                       "updated_at": row["updated_at"] if row else "", "updated_by": row["updated_by"] if row else ""})
+    return report
+
+
+def set_setting(con, name, value, actor):
+    value = validate_setting(name, value)
     con.execute("INSERT INTO settings (name, value, updated_at, updated_by) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, "
                 "updated_by = excluded.updated_by", (name, str(value), utc_now(), actor))

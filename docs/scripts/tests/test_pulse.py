@@ -579,7 +579,9 @@ class StoreTestCase(StoreFixture):
         self.assertNotEqual(first["id"], second["id"])
         self.assertIsNone(pulse.lease_job(self.con, "delta", now=NOW), "the third waits: two leased already")
         self.assertEqual(pulse.parallel_per_project(self.con), 2)
-        pulse.set_setting(self.con, "parallel_per_project", "0", "human")
+        with self.assertRaises(pulse.PulseError):
+            pulse.set_setting(self.con, "parallel_per_project", "0", "human")
+        self.con.execute("UPDATE settings SET value = '0' WHERE name = 'parallel_per_project'")  # an older tool's row
         self.assertEqual(pulse.parallel_per_project(self.con), 1, "never below one")
         code, out, err = run_cli("status")
         self.assertEqual(code, 0, err)
@@ -838,10 +840,15 @@ class StoreTestCase(StoreFixture):
         code, out, err = run_cli("status")
         self.assertEqual(code, 0, err)
         self.assertIn("no daily cap", out)
-        # the other spellings of "none" and the default when unset
-        for word in ("none", "off", "unlimited", ""):
+        # the other spellings of "none"; an empty value is a typo the setter refuses (ADR-025), though a
+        # legacy empty row is still read as no cap
+        for word in ("none", "off", "unlimited"):
             pulse.set_setting(self.con, "jobs_per_day", word, "human")
             self.assertEqual(pulse.daily_cap(self.con), 0, word)
+        with self.assertRaises(pulse.PulseError):
+            pulse.set_setting(self.con, "jobs_per_day", "", "human")
+        self.con.execute("UPDATE settings SET value = '' WHERE name = 'jobs_per_day'")
+        self.assertEqual(pulse.daily_cap(self.con), 0)
         pulse.set_setting(self.con, "jobs_per_day", "2", "human")
         self.assertEqual(pulse.daily_cap(self.con), 2)
         run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW[:10] + "T14:00:00Z")

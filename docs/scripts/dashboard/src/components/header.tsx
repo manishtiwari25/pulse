@@ -18,6 +18,7 @@ const NAV: Record<string, [string, string][]> = {
     ['#/suggestions', 'Suggestions & votes'],
     ['#/amendments', 'Amendments'],
     ['#/evolution', 'Loop'],
+    ['#/settings', 'Settings'],
   ],
   commons: [
     ['#/overview', 'Overview'],
@@ -30,6 +31,7 @@ const NAV: Record<string, [string, string][]> = {
     ['#/votes', 'Votes'],
     ['#/agents', 'Agents'],
     ['#/activity', 'Activity'],
+    ['#/settings', 'Settings'],
   ],
 };
 
@@ -309,7 +311,7 @@ export function Footer({ onRefresh }: { onRefresh: () => void }) {
       <span aria-hidden="true">{'\u00b7'}</span>
       <span>127.0.0.1 only</span>
       <span aria-hidden="true">{'\u00b7'}</span>
-      <span>one write: decide</span>
+      <span>two writes, both yours: decide, settings</span>
       <span aria-hidden="true">{'\u00b7'}</span>
       <button type="button" onClick={onRefresh} className="inline-flex items-center gap-1 text-accent hover:underline">
         <RefreshCw size={12} aria-hidden="true" /> refresh

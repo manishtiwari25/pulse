@@ -1878,7 +1878,21 @@ def q_runner(hub):
                 pass
         stopped = pulse.runner_stopped(con)
         return {"available": True, "now": now, "daemon": daemon, "runner": {"allowed": not stopped, "reason": stopped},
-                "hands": hands, "executors": executors, "workers": pool, "jobs": jobs}
+                "hands": hands, "executors": executors, "workers": pool, "jobs": jobs,
+                "capacity": pulse.capacity_status(con, now) if hasattr(pulse, "capacity_status") else ""}
+    finally:
+        con.close()
+
+
+def q_settings(hub_or_home, can_edit=False):
+    """The human's caps as the store holds them (ADR-025): every whitelisted setting with its value, default,
+    rule, meaning, and who changed it last. `can_edit` says whether this server would accept a change."""
+    home = getattr(hub_or_home, "home", hub_or_home)
+    if not store_available(home):
+        return {"available": False, "can_edit": False, "settings": []}
+    con = pulse.open_store(home)
+    try:
+        return {"available": True, "can_edit": bool(can_edit), "settings": pulse.settings_report(con)}
     finally:
         con.close()
 
@@ -2074,40 +2088,115 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    WRITE_ROUTES = "read-only dashboard: no write routes except POST /api/v1/decide and POST /api/v1/settings"
+
     def do_POST(self):
         path = unquote(urlsplit(self.path).path)
         if path == "/api/v1/decide":
             return self._decide_api()
-        self._json(405, {"error": "read-only dashboard: no write routes except POST /api/v1/decide"})
+        if path == "/api/v1/settings":
+            return self._settings_api()
+        self._json(405, {"error": self.WRITE_ROUTES})
 
     def _method_not_allowed(self):
-        self._json(405, {"error": "read-only dashboard: no write routes except POST /api/v1/decide"})
+        self._json(405, {"error": self.WRITE_ROUTES})
 
     do_PUT = do_DELETE = do_PATCH = _method_not_allowed
 
-    def _decide_api(self):
+    def _can_write(self):
+        """Whether this server accepts the human's two write routes: bound to loopback, with the store present."""
+        return self.server.server_address[0] == "127.0.0.1" and store_available(pulse_home_for_server(self.server))
+
+    def _write_payload(self, route, header):
+        """The guards every write route shares (ADR-017, ADR-025): loopback only, the store present, an explicit
+        header, JSON of 1..16384 bytes, a JSON object. Returns (payload, True), or (None, False) after answering the request."""
         home = pulse_home_for_server(self.server)
         if self.server.server_address[0] != "127.0.0.1":
-            return self._json(403, {"error": "decide is loopback-only"})
+            self._json(403, {"error": "%s is loopback-only" % route})
+            return None, False
         if not store_available(home):
-            return self._json(409, {"error": "store is not available; POST /api/v1/decide requires the pulse store"})
-        if self.headers.get("X-Pulse-Decide", "") != "yes":
-            return self._json(403, {"error": "missing X-Pulse-Decide: yes"})
+            self._json(409, {"error": "store is not available; POST /api/v1/%s requires the pulse store" % route})
+            return None, False
+        if self.headers.get(header, "") != "yes":
+            self._json(403, {"error": "missing %s: yes" % header})
+            return None, False
         ctype = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if ctype != "application/json":
-            return self._json(415, {"error": "Content-Type must be application/json"})
+            self._json(415, {"error": "Content-Type must be application/json"})
+            return None, False
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
-            return self._json(400, {"error": "bad Content-Length"})
+            self._json(400, {"error": "bad Content-Length"})
+            return None, False
         if length <= 0 or length > 16 * 1024:
-            return self._json(400, {"error": "JSON body must be 1..16384 bytes"})
+            self._json(400, {"error": "JSON body must be 1..16384 bytes"})
+            return None, False
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return self._json(400, {"error": "body must be JSON"})
+            self._json(400, {"error": "body must be JSON"})
+            return None, False
         if not isinstance(payload, dict):
-            return self._json(400, {"error": "body must be a JSON object"})
+            self._json(400, {"error": "body must be a JSON object"})
+            return None, False
+        return payload, True
+
+    def _refresh_after_write(self):
+        hub = getattr(self.server, "hub", None)
+        if hub is not None:
+            hub.reload(force=True)
+            for st in list(hub.states.values()):
+                try:
+                    st.ensure_fresh(force=True)
+                except DashboardError:
+                    pass
+        else:
+            self.server.state.ensure_fresh(force=True)
+
+    def _settings_api(self):
+        """POST /api/v1/settings {name, value}: one of the human's caps changes, validated by the same rule the CLI
+        uses, recorded with the actor human:dashboard (ADR-025). Agents never call this; the page is the human's."""
+        payload, ok = self._write_payload("settings", "X-Pulse-Settings")
+        if not ok:
+            return None
+        name = str(payload.get("name", "")).strip()
+        value = payload.get("value", "")
+        if not isinstance(value, (str, int, float)):
+            return self._json(400, {"error": "value must be a string or a number"})
+        home = pulse_home_for_server(self.server)
+        con = None
+        try:
+            con = pulse.open_store(home, readonly=False)
+            con.execute("BEGIN IMMEDIATE")
+            pulse.set_setting(con, name, str(value), "human:dashboard")
+            con.execute("COMMIT")
+            saved = [r for r in pulse.settings_report(con) if r["name"] == name][0]
+        except pulse.PulseError as exc:
+            if con is not None:
+                try:
+                    con.execute("ROLLBACK")
+                except sqlite3.DatabaseError:
+                    pass
+            return self._json(400, {"error": str(exc)})
+        except sqlite3.DatabaseError as exc:
+            if con is not None:
+                try:
+                    con.execute("ROLLBACK")
+                except sqlite3.DatabaseError:
+                    pass
+            return self._json(500, {"error": "%s: %s" % (type(exc).__name__, exc)})
+        finally:
+            if con is not None:
+                con.close()
+        self._refresh_after_write()
+        self._json(200, {"ok": True, "setting": saved})
+
+    def _decide_api(self):
+        payload, ok = self._write_payload("decide", "X-Pulse-Decide")
+        if not ok:
+            return None
+        home = pulse_home_for_server(self.server)
         post_id = str(payload.get("post_id", "")).strip()
         answer = str(payload.get("answer", "")).strip().lower()
         words = str(payload.get("words", "")).strip()
@@ -2134,16 +2223,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         finally:
             if con is not None:
                 con.close()
-        hub = getattr(self.server, "hub", None)
-        if hub is not None:
-            hub.reload(force=True)
-            for st in list(hub.states.values()):
-                try:
-                    st.ensure_fresh(force=True)
-                except DashboardError:
-                    pass
-        else:
-            self.server.state.ensure_fresh(force=True)
+        self._refresh_after_write()
         self._json(200, {"ok": True, "result_post": result["id"], "post_id": post_id, "answer": answer})
 
     def _page(self, mode, base, hub, missing=""):
@@ -2215,6 +2295,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, q_executors(hub))
         if route == "runner":
             return self._json(200, q_runner(hub))
+        if route == "settings":
+            return self._json(200, q_settings(hub, can_edit=self._can_write()))
         if route == "votes":
             return self._json(200, q_votes(hub))
         if route == "activity":
@@ -2255,6 +2337,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(200, q_project_notices(con))
             if route == "proposals":
                 return self._json(200, q_proposals(con, can_decide=store_available(pulse_home_for_server(self.server))))
+            if route == "settings":
+                return self._json(200, q_settings(pulse_home_for_server(self.server), can_edit=self._can_write()))
         finally:
             con.close()
         return self._json(404, {"error": "not found"})
@@ -2463,7 +2547,7 @@ def cmd_serve(args):
     ui, ui_line = require_built_ui()
     server = DashboardServer(state, port=args.port, verbose=args.verbose, ui=ui)
     print("PULSE dashboard for %s" % repo)
-    print("Serving on %s (127.0.0.1 only; one write: POST /api/v1/decide; Ctrl-C to stop)" % server.url)
+    print("Serving on %s (127.0.0.1 only; two writes: POST /api/v1/decide and /api/v1/settings; Ctrl-C to stop)" % server.url)
     print("Projection: %s" % state.db_path)
     print(ui_line)
     if entry:
@@ -2490,7 +2574,7 @@ def cmd_hub(args):
     ui, ui_line = require_built_ui()
     server = DashboardServer(None, port=args.port, verbose=args.verbose, hub=hub, ui=ui)
     print("PULSE organization hub")
-    print("Serving on %s (127.0.0.1 only; one write: POST /api/v1/decide; Ctrl-C to stop)" % server.url)
+    print("Serving on %s (127.0.0.1 only; two writes: POST /api/v1/decide and /api/v1/settings; Ctrl-C to stop)" % server.url)
     print("Registry:   %s" % (home / REGISTRY_NAME))
     print(ui_line)
     if brain_entry:

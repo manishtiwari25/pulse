@@ -831,6 +831,15 @@ class ServerTestCase(unittest.TestCase):
             self.assertIn("read-only", json.loads(body)["error"])
         self.assertEqual(self.fx.git_status(), "", "serving never writes to the repository")
 
+    def test_settings_route_without_store_says_so(self):
+        status, _, body = self.request("/api/v1/settings")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body), {"available": False, "can_edit": False, "settings": []})
+        status, _, body = self.request("/api/v1/settings", method="POST", data=b'{"name": "workers", "value": "1"}',
+                                       headers={"Content-Type": "application/json", "X-Pulse-Settings": "yes"})
+        self.assertEqual(status, 409, body)
+        self.assertIn("store is not available", json.loads(body)["error"])
+
     def test_decide_route_without_store_says_so(self):
         body = json.dumps({"post_id": "nope", "answer": "yes", "words": "ok"}).encode()
         status, _, payload = self.request("/api/v1/decide", method="POST", data=body,
@@ -1018,7 +1027,77 @@ class StoreModeServerTestCase(unittest.TestCase):
         status, _, body = self.request("/api/v1/org", method="POST", data=b"{}",
                                        headers={"Content-Type": "application/json", "X-Pulse-Decide": "yes"})
         self.assertEqual(status, 405)
-        self.assertIn("except POST /api/v1/decide", json.loads(body)["error"])
+        self.assertIn("except POST /api/v1/decide and POST /api/v1/settings", json.loads(body)["error"])
+
+    def put_setting(self, name, value, headers=None, raw=None):
+        body = raw if raw is not None else json.dumps({"name": name, "value": value}).encode()
+        h = {"Content-Type": "application/json"}
+        if headers is None:
+            h["X-Pulse-Settings"] = "yes"
+        else:
+            h.update(headers)
+        return self.request("/api/v1/settings", method="POST", data=body, headers=h)
+
+    def test_settings_route_lists_every_known_setting_with_its_rule(self):
+        # ADR-025: the whitelist in pulse.py is the contract - value, default, bounds, meaning, provenance.
+        r = self.api("/api/v1/settings")
+        self.assertTrue(r["available"])
+        self.assertTrue(r["can_edit"], "loopback with the store present")
+        by_name = {x["name"]: x for x in r["settings"]}
+        self.assertEqual(sorted(by_name), sorted(dash.pulse.DEFAULT_SETTINGS))
+        self.assertEqual((by_name["max_ai_credits"]["kind"], by_name["max_ai_credits"]["min"], by_name["max_ai_credits"]["default"]), ("credits", 30, "30"))
+        self.assertEqual(by_name["landing"]["choices"], ["agents", "human"])
+        self.assertTrue(by_name["parallel_per_project"]["description"])
+        self.assertEqual(by_name["worker_model"]["value"], "", "an unset setting shows its default")
+        # a row the whitelist does not know (an older tool's) is shown to no one
+        self.con.execute("INSERT OR REPLACE INTO settings (name, value, updated_at, updated_by) VALUES ('evolve_minutes', '240', '2026-09-05T00:00:00Z', 'init')")
+        self.con.commit()
+        self.assertNotIn("evolve_minutes", {x["name"] for x in self.api("/api/v1/settings")["settings"]})
+        self.assertNotIn("Set-Cookie", self.request("/api/v1/settings")[1])
+
+    def test_settings_route_changes_one_cap_with_provenance(self):
+        status, _, body = self.put_setting("parallel_per_project", 3)
+        self.assertEqual(status, 200, body)
+        saved = json.loads(body)["setting"]
+        self.assertEqual((saved["name"], saved["value"], saved["updated_by"]), ("parallel_per_project", "3", "human:dashboard"))
+        self.assertEqual(dash.pulse.setting(self.con, "parallel_per_project"), "3")
+        ev = self.con.execute("SELECT actor, detail FROM events WHERE action = 'setting' AND subject = 'parallel_per_project' ORDER BY seq DESC").fetchone()
+        self.assertEqual((ev["actor"], ev["detail"]), ("human:dashboard", "3"))
+        # the same rule as the CLI: a value is normalized, never stored as typed
+        status, _, body = self.put_setting("landing", " Human ")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(dash.pulse.setting(self.con, "landing"), "human")
+        self.assertEqual(self.put_setting("landing", "agents")[0], 200)
+        self.assertEqual(self.put_setting("parallel_per_project", "1")[0], 200)
+
+    def test_settings_route_refuses_what_the_cli_refuses(self):
+        for name, value, needle in (("workers", "two", "whole number"), ("max_ai_credits", 5, "at least 30"),
+                                    ("parallel_per_project", 0, "at least 1"), ("landing", "maybe", "one of agents, human"),
+                                    ("runner_cmd", "", "cannot be empty"), ("amend_majority", "3/2", "numerator"),
+                                    ("nope", "1", "Unknown setting")):
+            status, _, body = self.put_setting(name, value)
+            self.assertEqual(status, 400, (name, value, body))
+            self.assertIn(needle, json.loads(body)["error"])
+        self.assertEqual(dash.pulse.setting(self.con, "workers"), "1", "nothing changed")
+        status, _, body = self.put_setting("workers", ["1"])
+        self.assertEqual(status, 400)
+        self.assertIn("string or a number", json.loads(body)["error"])
+
+    def test_settings_route_shares_the_decide_guards(self):
+        status, _, body = self.put_setting("workers", "1", headers={})
+        self.assertEqual(status, 403)
+        self.assertIn("X-Pulse-Settings", json.loads(body)["error"])
+        status, _, body = self.put_setting("workers", "1", headers={"X-Pulse-Settings": "yes", "Content-Type": "text/plain"})
+        self.assertEqual(status, 415)
+        status, _, body = self.put_setting("workers", "1", raw=b"[1, 2]")
+        self.assertEqual(status, 400)
+        self.assertIn("JSON object", json.loads(body)["error"])
+        status, _, body = self.put_setting("workers", "1", raw=b"not json")
+        self.assertEqual(status, 400)
+        # the decide header does not open the settings route, nor the other way round
+        status, _, body = self.put_setting("workers", "1", headers={"X-Pulse-Decide": "yes"})
+        self.assertEqual(status, 403)
+        self.assertEqual(self.request("/api/v1/settings", method="PUT", data=b"{}", headers={"Content-Type": "application/json", "X-Pulse-Settings": "yes"})[0], 405)
 
 
 def commons_post(commons, kind, area, thread, agent, date, summary, **kw):

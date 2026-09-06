@@ -50,11 +50,14 @@ export function hubApi<T>(route: string): Promise<T> {
   return api<T>(route, '');
 }
 
+// The hub's two write routes, each behind its own explicit header (ADR-017, ADR-025).
+const WRITE_HEADERS: Record<string, string> = { decide: 'X-Pulse-Decide', settings: 'X-Pulse-Settings' };
+
 export function postJson<T>(route: string, payload: unknown): Promise<T> {
   return fetch('/api/v1/' + route, {
     method: 'POST',
     cache: 'no-store',
-    headers: { 'Content-Type': 'application/json', 'X-Pulse-Decide': 'yes' },
+    headers: { 'Content-Type': 'application/json', [WRITE_HEADERS[route] || 'X-Pulse-Decide']: 'yes' },
     body: JSON.stringify(payload),
   }).then((r) => readJson<T>(r));
 }
@@ -289,6 +292,27 @@ export interface Runner {
   executors: Executor[];
   workers: { pool: number; idle: number; busy: number; target: number; idle_names: string[]; prune_after_days: number };
   jobs: { queued: number; leased: number; blocked: number; running: number; runs_today: number; cap: number };
+  capacity?: string;
+}
+
+// One of the human's caps as the store holds it (ADR-025): the whitelist in
+// pulse.py is the contract, so the form never knows a setting the runner does not.
+export interface Setting {
+  name: string;
+  value: string;
+  default: string;
+  kind: 'count' | 'count-or-none' | 'credits' | 'fraction' | 'switch' | 'choice' | 'command' | 'text';
+  min: number | null;
+  choices: string[] | null;
+  description: string;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface SettingsPayload {
+  available: boolean;
+  can_edit: boolean;
+  settings: Setting[];
 }
 
 export interface RosterRow extends Who {

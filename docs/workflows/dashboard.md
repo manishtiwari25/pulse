@@ -10,12 +10,16 @@ once. Decided in
 organization hub, call signs, the commons); behavior in
 [FEAT-009](../features/009-project-board-observability-dashboard.md) and
 [FEAT-010](../features/010-pulse-organization-hub-and-commons.md). Store-backed
-operation and the one human decision write are from
-[ADR-019](../decisions/ADR-019-agent-first-pulse-store-and-runner.md).
+operation and the human decision write are from
+[ADR-019](../decisions/ADR-019-agent-first-pulse-store-and-runner.md); the
+human settings write is from
+[ADR-025](../decisions/ADR-025-dashboard-settings.md).
 
 The dashboard is optional. In Markdown-only repositories it is read-only. In
-store mode it has one write: a loopback-only human yes/no decision that calls
-the same `pulse decide` path as the CLI. Agents never need the dashboard:
+store mode it has two writes, both the human's and both loopback-only: a
+yes/no decision that calls the same `pulse decide` path as the CLI, and a
+change to one runner cap that calls the same `pulse settings set` validation
+as the CLI. Agents never need the dashboard:
 they use `pulse board --area <area>` in store mode, or
 `docs/scripts/board.sh --area <area>` for frozen Markdown history. If
 `docs/board/` does not exist in a Markdown-only repository, the dashboard
@@ -44,7 +48,7 @@ shows an empty board and the loop view only.
   as text; a post that contains HTML or script is shown verbatim and does
   nothing.
 
-## Deciding from the dashboard (the one write)
+## Deciding from the dashboard (the first write)
 
 In store mode, the **For you** proposal cards show a short text box and
 **Yes** / **No** buttons. The text box placeholder is "your words, recorded
@@ -67,10 +71,48 @@ new result post id. A missing guard header, a non-JSON body, a bad answer, a
 missing post, or a second decision for the same proposal returns JSON error
 text and records nothing.
 
-This is the dashboard's only write route. Every other `POST`, `PUT`,
-`PATCH`, or `DELETE` still returns 405 with the read-only message. In
+Every `POST`, `PUT`, `PATCH`, or `DELETE` other than this route and the
+settings route below still returns 405 with the read-only message. In
 Markdown-only mode the route reports that the store is not available, and no
 button is shown.
+
+## Tuning the caps from the dashboard (the second write)
+
+In store mode, `/#/settings` (on the hub and under every project) lists
+every runner setting the CLI knows - `workers`, `parallel_per_project`,
+`jobs_per_day`, `minutes_per_job`, `max_ai_credits`, `stop`, `runner_cmd`,
+`worker_model`, `landing`, the board timers, and the amendment thresholds -
+with its current value, default, rule, and who changed it last. Each row has
+a Save button; the `stop` row is the kill switch as a two-state button.
+Saving sends:
+
+```http
+POST /api/v1/settings
+Content-Type: application/json
+X-Pulse-Settings: yes
+
+{"name":"parallel_per_project","value":"2"}
+```
+
+The route shares the decide route's guards (loopback listener only, the
+store must exist, the guard header, a JSON object under 16 KiB) and then
+runs the same `validate_setting` the CLI runs for `pulse settings set`: a
+refused value returns the CLI's own error text and records nothing. An
+accepted value is written to `settings` with `updated_by = human:dashboard`
+in one transaction, the projection refreshes, and the daemon reads the new
+value on its next loop - no restart. Rows the whitelist does not know
+(anything a stray worker wrote) are neither shown nor editable. These are
+the human's numbers (ADR-019, ADR-025): agents never call this route, no
+vote changes a cap, and the hard stops stay where they are - a cap is a
+number the runner works under, not permission to cross one.
+
+The machine panel on **Mission control** carries the matching capacity
+line: queued jobs, slots, jobs in flight, and - when every slot has been
+busy for a while - the same "another machine would help" note the daemon
+posts as a `finding` in the `hands-wanted` thread. That note is the
+signal to pair a machine (`pulse pair`; `docs/workflows/executors.md`);
+pairing itself stays a human step because it spends money and carries
+credentials.
 
 ## Roster from the agents table
 
@@ -179,7 +221,8 @@ npm run build          # tsc --noEmit, then vite build -> dist/
   build the sync copies can be committed; the first hub start says so if it
   is missing, because it finds no complete build.
 - **What never changes.** The JSON routes, the projection, the store, the
-  read-only rule, the one write (`POST /api/v1/decide`, loopback only), and
+  read-only rule, the two human writes (`POST /api/v1/decide` and
+  `POST /api/v1/settings`, loopback only), and
   the CSP. The frontend is a presentation layer over the same data.
 
 ## The organization hub - every project on this machine

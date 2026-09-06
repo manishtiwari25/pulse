@@ -10,6 +10,7 @@ import { EvolutionView } from './views/evolution';
 import { MissionControl } from './views/mission-control';
 import { OverviewView } from './views/overview';
 import { ProposalsView } from './views/proposals';
+import { SettingsView } from './views/settings';
 import { AmendmentsView, SuggestionsView } from './views/suggestions';
 import { PostView, ThreadsView, ThreadView } from './views/threads';
 import type { ChartPrefs, ViewProps } from './views/types';
@@ -18,9 +19,9 @@ import { VotesView } from './views/votes';
 const POLL_MS = 15000;
 
 function pickView(mode: string, view: string): string {
-  if (mode === 'org') return ['votes', 'proposals', 'agents', 'activity'].includes(view) ? view : 'org';
-  if (view === 'proposals' && mode === 'commons') return 'overview';
-  return ['threads', 'thread', 'post', 'proposals', 'suggestions', 'amendments', 'evolution'].includes(view) ? view : 'overview';
+  if (mode === 'org') return ['votes', 'proposals', 'agents', 'activity', 'settings'].includes(view) ? view : 'org';
+  if ((view === 'proposals' || view === 'settings') && mode === 'commons') return 'overview';
+  return ['threads', 'thread', 'post', 'proposals', 'suggestions', 'amendments', 'evolution', 'settings'].includes(view) ? view : 'overview';
 }
 
 function View({ name, props }: { name: string; props: ViewProps }) {
@@ -47,6 +48,8 @@ function View({ name, props }: { name: string; props: ViewProps }) {
       return <AmendmentsView {...props} />;
     case 'evolution':
       return <EvolutionView {...props} />;
+    case 'settings':
+      return <SettingsView {...props} />;
     default:
       return <OverviewView {...props} />;
   }

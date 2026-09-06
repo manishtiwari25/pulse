@@ -504,6 +504,14 @@ export function MachinePanel({ r }: { r: Runner | null }) {
           {' in standby of ' + num(w.pool) + ' in the pool (target ' + w.target + ')' + (w.busy ? ', ' + w.busy + ' busy' : '')}
         </Line>
         <Line label="queue">{num(j.queued) + ' queued \u00b7 ' + num(j.leased) + ' leased \u00b7 ' + num(j.running) + ' running \u00b7 ' + plural(j.runs_today, 'run') + ' today' + (j.cap ? ' of ' + j.cap : ' (no daily cap)') + (j.blocked ? ' \u00b7 ' + j.blocked + ' blocked' : '')}</Line>
+        {r.capacity ? (
+          <Line label="capacity">
+            <Chip tone={r.capacity.includes('another machine') ? 'warn' : ''} dotted>
+              {r.capacity.includes('another machine') ? 'hands wanted' : 'waiting'}
+            </Chip>{' '}
+            {r.capacity}
+          </Line>
+        ) : null}
         <a href="#/agents" className="text-[13px]">
           {'agents and executors \u2192'}
         </a>
