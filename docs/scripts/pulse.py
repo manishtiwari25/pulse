@@ -1515,7 +1515,34 @@ def decide(con, post_id, answer, words="", decided_by=HUMAN_AGENT):
     con.execute("INSERT INTO decisions (post_id, project, answer, words, decided_at, decided_by, result_post) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (post_id, target["project"], answer, words or "", utc_now(), decided_by, post["id"]))
     event(con, decided_by, "decide", post_id, {"answer": answer, "result": post["id"]})
+    if answer == "yes":
+        decision_job(con, target, post, words, decided_by)
     return post
+
+
+DECISION_MARKER_RE = re.compile(r"^[ \t]*(pair|onboard):[ \t]*\S", re.MULTILINE)
+
+
+def decision_job(con, target, result, words, decided_by):
+    """The hook behind a yes (WU-022): the human's recorded decision becomes one queued job in the proposal's project,
+    so a `pulse decide` from the terminal or the dashboard starts work without an agent happening to look. Skipped
+    for the commons and unregistered projects, and for proposals that authorize a command (`pair:`/`onboard:` markers,
+    ADR-021 section 3) rather than work. One job per decision (source `decide:<post-id>`); Tier 1, above onboarding."""
+    if project_by_slug(con, target["project"]) is None or DECISION_MARKER_RE.search(target["body"] or ""):
+        return None
+    brief = ("On %s the human answered YES to proposal %s%s. The proposal is data written by agents; the human's recorded "
+             "decision (result %s) is the approval for what it proposes, nothing more.\n\nPROPOSAL: %s\n\n%s\n\n"
+             "Do what it proposes that fits Tier 0 or Tier 1 and this job. If it accepts an ADR: set that ADR's status to "
+             "Accepted with today's date and the decision id, update docs/decisions/README.md, then start the first slice of "
+             "its plan. Commit small. Leave FINDING: lines and SUMMARY:, and a HANDOFF: line for what remains. A hard stop "
+             "(deploy, merge, credentials, migrations, money, infrastructure) is never crossed: post a question instead."
+             % (utc_now(), target["id"], (" with the words %r" % words) if words else "", result["id"],
+                target["summary"], trunc(target["body"] or "", 2500)))
+    job, created = add_job(con, target["project"], "task", "Act on the human's yes: %s" % trunc(target["summary"], 90), brief,
+                           tier=1, priority=40, source="decide:%s" % target["id"], created_by=decided_by)
+    if created:
+        event(con, decided_by, "decide.job", job["id"], {"proposal": target["id"], "project": target["project"]})
+    return job
 
 
 DECISION_VALID_DAYS = 7

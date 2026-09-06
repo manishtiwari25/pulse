@@ -957,6 +957,8 @@ class StoreModeServerTestCase(unittest.TestCase):
             busy = dash.pulse.spawn_agent(con, runner="copilot", model="model-w", kind="worker")["name"]
             con.execute("INSERT INTO jobs (id, project, kind, title, status, created_at, lease_agent) VALUES (?, 'store-app', 'improve', 'leased one', 'leased', ?, ?)",
                         ("J-leased", dash.pulse.utc_now(), busy))
+            # the class shares one store: a decide test's yes may already have queued its job (WU-022), so count from there
+            queued_before = con.execute("SELECT count(*) FROM jobs WHERE status = 'queued'").fetchone()[0]
             con.execute("INSERT INTO jobs (id, project, kind, title, status, created_at) VALUES (?, 'store-app', 'improve', 'waiting one', 'queued', ?)",
                         ("J-queued", dash.pulse.utc_now()))
             dash.pulse.daemon_heartbeat(con, loops=3, interval=300)
@@ -978,7 +980,8 @@ class StoreModeServerTestCase(unittest.TestCase):
         self.assertEqual((r["workers"]["pool"], r["workers"]["idle"], r["workers"]["busy"], r["workers"]["target"]), (2, 1, 1, quorum + 1))
         self.assertEqual(r["workers"]["idle_names"], [idle])
         self.assertEqual(r["workers"]["prune_after_days"], 14, "the roster KPI names the prune rule from the store's setting")
-        self.assertEqual((r["jobs"]["queued"], r["jobs"]["leased"], r["jobs"]["blocked"], r["jobs"]["running"], r["jobs"]["runs_today"]), (1, 1, 0, 0, 0))
+        self.assertEqual((r["jobs"]["queued"], r["jobs"]["leased"], r["jobs"]["blocked"], r["jobs"]["running"], r["jobs"]["runs_today"]),
+                         (queued_before + 1, 1, 0, 0, 0))
         self.assertIsInstance(r["jobs"]["cap"], int)
         self.assertNotIn("Set-Cookie", self.request("/api/v1/runner")[1])
 

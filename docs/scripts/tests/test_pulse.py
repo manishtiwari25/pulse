@@ -279,6 +279,29 @@ class StoreTestCase(StoreFixture):
         code, out, _ = run_cli("proposals")
         self.assertIn("accepted", out)
 
+    def test_a_yes_queues_one_job_in_the_proposals_project(self):
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        prop = pulse.create_post(self.con, "answer", "proj", "runner", "environment", "Agreed: accept ADR-026", "Proposal: do X.",
+                                 agent="aurora", resolution="agreed")
+        before = self.con.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        result = pulse.decide(self.con, prop["id"], "yes", "go ahead")
+        job = self.con.execute("SELECT * FROM jobs WHERE source = ?", ("decide:%s" % prop["id"],)).fetchone()
+        self.assertIsNotNone(job)
+        self.assertEqual((job["kind"], job["tier"], job["priority"], job["status"], job["created_by"]), ("task", 1, 40, "queued", "human"))
+        self.assertIn("Act on the human's yes", job["title"])
+        for needle in ("answered YES", prop["id"], result["id"], "go ahead", "Proposal: do X.", "never crossed"):
+            self.assertIn(needle, job["brief"])
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], before + 1)
+        self.assertTrue(self.con.execute("SELECT 1 FROM events WHERE action = 'decide.job' AND subject = ?", (job["id"],)).fetchone())
+        # a no queues nothing; a proposal that authorizes a command (ADR-021 marker) queues nothing
+        declined = pulse.create_post(self.con, "answer", "proj", "runner", "environment", "Agreed: do Y", "Proposal: Y.", agent="aurora",
+                                     resolution="agreed")
+        pulse.decide(self.con, declined["id"], "no", "not now")
+        gate = pulse.create_post(self.con, "answer", "proj", "governance", "pair", "Agreed: pair hands-2", "Proposal.\n\npair: hands-2\n",
+                                 agent="aurora", resolution="agreed")
+        pulse.decide(self.con, gate["id"], "yes")
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], before + 1)
+
     def test_digest_lists_everything_an_agent_needs(self):
         pulse.join_agent(self.con, "aurora", "r", "m")
         pulse.create_post(self.con, "claim", "proj", "governance", "work", "building X", agent="aurora", expires="2026-09-11T12:00:00Z")
