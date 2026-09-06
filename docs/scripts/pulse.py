@@ -1409,6 +1409,40 @@ def decide(con, post_id, answer, words="", decided_by=HUMAN_AGENT):
     return post
 
 
+DECISION_VALID_DAYS = 7
+
+
+def authorizing_decision(con, marker, now=None, days=DECISION_VALID_DAYS):
+    """The newest human decision on a proposal whose body carries the exact line `marker` (`pair: hands-2`,
+    `onboard: my-app`), as a dict: post_id, answer, decided_at, and `valid` (a yes at most `days` old).
+    None when no decided proposal names the target (ADR-021 section 3). Only the human's own decisions count."""
+    now = now or utc_now()
+    pattern = re.compile(r"^[ \t]*%s[ \t]*$" % re.escape(marker), re.MULTILINE)
+    rows = con.execute("SELECT d.post_id, d.answer, d.decided_at, p.body FROM decisions d JOIN posts p ON p.id = d.post_id "
+                       "WHERE d.decided_by = ? ORDER BY d.decided_at DESC, d.post_id DESC", (HUMAN_AGENT,)).fetchall()
+    for r in rows:
+        if pattern.search(r["body"] or ""):
+            age = parse_iso(now) - parse_iso(r["decided_at"])
+            return {"post_id": r["post_id"], "answer": r["answer"], "decided_at": r["decided_at"],
+                    "valid": r["answer"] == "yes" and _dt.timedelta(0) <= age <= _dt.timedelta(days=days)}
+    return None
+
+
+def agent_gate(con, marker, actor, now=None):
+    """Who may run `pair` and `onboard` (ADR-021 section 3). The human: always, returns "". An agent (`PULSE_AGENT`
+    set): only with a valid decision naming the target; returns its post id for the event, or refuses with exit 2."""
+    if not actor or actor == HUMAN_AGENT:
+        return ""
+    found = authorizing_decision(con, marker, now)
+    if found is None:
+        raise PulseError("An agent may run this only after the human's `pulse decide ... yes` on a board proposal whose body "
+                         "carries the line `%s`; no decided proposal names it" % marker, 2)
+    if not found["valid"]:
+        raise PulseError("The newest decision naming `%s` (%s: %s on %s) does not authorize it; a yes at most %d days old is needed"
+                         % (marker, found["post_id"], found["answer"], found["decided_at"][:10], DECISION_VALID_DAYS), 2)
+    return found["post_id"]
+
+
 # --------------------------------------------------------------------------- #
 # Jobs and leases
 # --------------------------------------------------------------------------- #
@@ -1905,6 +1939,37 @@ def ssh_run(row, args, stdin=None, timeout=120):
     return proc.returncode, proc.stdout.decode("utf-8", "replace"), proc.stderr.decode("utf-8", "replace")
 
 
+def admin_ssh_command(address, remote_command, port_flag="-p", control_path=None):
+    """The human's own admin login (ADR-021 section 2, Amendment 1): their key or agent, BatchMode so nothing prompts,
+    ClearAllForwardings, and the remote command as one string for the admin's login shell. `control_path` reuses a
+    held ControlMaster session so a change to sshd can be undone through the connection that is already open."""
+    user, host, port = parse_ssh_address(address)
+    control = ("-o", "ControlPath=%s" % control_path) if control_path else ()
+    return ["ssh", *SSH_OPTIONS, *control, port_flag, str(port), "%s@%s" % (user, host), remote_command]
+
+
+def admin_ssh_run(address, remote_command, stdin=None, timeout=120, control_path=None):
+    """One command over the admin session. Exit 255 (the transport) raises ExecutorUnreachable; anything else is
+    returned as (rc, stdout, stderr). Standard input is sent as given and never logged."""
+    cmd = admin_ssh_command(address, remote_command, control_path=control_path)
+    try:
+        proc = subprocess.run(cmd, input=stdin if stdin is not None else b"", capture_output=True, timeout=timeout)
+    except FileNotFoundError:
+        raise ExecutorUnreachable("ssh is not installed on this machine")
+    except subprocess.TimeoutExpired:
+        raise ExecutorUnreachable("ssh to %s timed out after %ss" % (address.split("@")[0] + "@...", timeout))
+    if proc.returncode == SSH_EXIT_UNREACHABLE:
+        raise ExecutorUnreachable((proc.stderr or b"").decode("utf-8", "replace").strip()[-300:] or "ssh exit 255")
+    return proc.returncode, proc.stdout.decode("utf-8", "replace"), proc.stderr.decode("utf-8", "replace")
+
+
+def executor_login(con, name, admin_address, token_stream=None, remove=False, actor=HUMAN_AGENT, now=None):
+    """`pulse executor login` (ADR-021 Amendment 1): place or remove the copilot login for user `pulse` on an executor
+    over the admin session, then probe. Returns {"ok": bool, "kind": str, "rc": int, "lines": [str]}.
+    PLAN-021 step 3b fills this in."""
+    raise PulseError("pulse executor login is not implemented yet (PLAN-021 step 3b)", 2)
+
+
 def parse_probe(text):
     fields = {}
     for token in (text or "").split():
@@ -1985,6 +2050,15 @@ def sweep_executor_jobs(con, row, jobs):
             swept += 1
             event(con, "runner", "executor.sweep", row["name"], {"job": job_id})
     return swept
+
+
+def pair_executor(con, admin_address, name, workdir="/srv/pulse", workers=1, projects="*", install_copilot=False,
+                  dry_run=False, actor=HUMAN_AGENT, now=None, home_dir=None):
+    """`pulse pair` (ADR-021 section 2): turn an existing Linux machine into a pair of hands over the admin session -
+    hub key, inspection before any change, one idempotent apply script, the sshd drop-in guarded by `sshd -t` and a
+    second admin connection, the ~/.ssh/config alias and host key, `executor add`, `probe`, one `executor.pair` event.
+    Returns {"ok": bool, "lines": [str], ...}. PLAN-021 step 3 fills this in."""
+    raise PulseError("pulse pair is not implemented yet (PLAN-021 step 3)", 2)
 
 
 def reprobe_due(con, interval=300, now=None):
@@ -2622,6 +2696,14 @@ def plan_jobs(con, slug, now=None, created_by="daemon"):
     return created
 
 
+def onboard_project(con, path, name=None, remote=None, brain=False, verify_cmd="", actor="", now=None, home=None):
+    """`pulse onboard` (ADR-021 section 1): `init`, the loop's scaffold when docs/evolution/ is entirely absent (a
+    partial folder refuses before any write), the first `reflect` job now (source onboard-reflect:<slug>, priority
+    19), the human gates printed, one `project.onboard` event. Returns {"project": dict, "created": bool,
+    "scaffolded": [str], "jobs": [dict], "lines": [str]}. PLAN-021 step 1 fills this in."""
+    raise PulseError("pulse onboard is not implemented yet (PLAN-021 step 1)", 2)
+
+
 def pick_worker(con, agent=None, exclude=()):
     """The next free worker, rotated. The daemon keeps one worker more than the vote quorum, because a
     card's author never votes on it: with quorum 2, a worker's card needs two *other* workers to become
@@ -3207,6 +3289,26 @@ def build_parser():
     s.add_argument("--brain", action="store_true", help="this checkout is the PULSE framework itself")
     s.add_argument("--agent")
 
+    s = sub.add_parser("onboard", help="init, then the loop's scaffold and the first reflect now; prints what stays human (ADR-021)")
+    s.add_argument("path", nargs="?", default=".")
+    s.add_argument("--name")
+    s.add_argument("--remote")
+    s.add_argument("--verify", default="", help="the project's own check command, e.g. 'npm test'")
+    s.add_argument("--brain", action="store_true", help="this checkout is the PULSE framework itself")
+    s.add_argument("--agent")
+    s.add_argument("--now")
+
+    s = sub.add_parser("pair", help="turn an existing Linux machine into a pair of hands over your own admin ssh session (ADR-021)")
+    s.add_argument("address", help="admin@host[:port] - your login, with sudo; never stored")
+    s.add_argument("--name", required=True, help="the executor's name, also the ~/.ssh/config alias the hub will use")
+    s.add_argument("--workdir", default="/srv/pulse", help="absolute directory pulse-hands works in on the machine")
+    s.add_argument("--workers", type=int, default=1, help="jobs at once on this executor")
+    s.add_argument("--projects", default="*", help="comma-separated project slugs it serves, or *")
+    s.add_argument("--install-copilot", action="store_true", help="apt-based systems only: Node.js 22 and @github/copilot")
+    s.add_argument("--dry-run", action="store_true", help="print every remote command and local change; change nothing")
+    s.add_argument("--agent")
+    s.add_argument("--now")
+
     s = sub.add_parser("agent", help="join with a unique name, spawn a worker, or list")
     a = s.add_subparsers(dest="sub", required=True)
     j = a.add_parser("join")
@@ -3330,13 +3432,16 @@ def build_parser():
     s.add_argument("--executor", help="run on this pair of hands instead of this machine (pulse executor list)")
     s.add_argument("--now")
 
-    s = sub.add_parser("executor", help="remote hands over ssh (ADR-020): add, list, probe, drain, activate, remove")
-    s.add_argument("action", choices=("add", "list", "probe", "drain", "activate", "remove"))
+    s = sub.add_parser("executor", help="remote hands over ssh (ADR-020): add, list, probe, drain, activate, remove, login")
+    s.add_argument("action", choices=("add", "list", "probe", "drain", "activate", "remove", "login"))
     s.add_argument("name", nargs="?")
     s.add_argument("--ssh", help="user@host[:port] the hub connects to (add)")
     s.add_argument("--workdir", help="absolute directory pulse-hands works in on the executor, e.g. /srv/pulse (add)")
     s.add_argument("--workers", type=int, default=1, help="jobs at once on this executor (add)")
     s.add_argument("--projects", default="*", help="comma-separated project slugs it serves, or * (add)")
+    s.add_argument("--admin", help="admin@host[:port], your own login with sudo, for the copilot login of user pulse (login)")
+    s.add_argument("--with-token", action="store_true", help="read one Copilot token from stdin and log user pulse in (login)")
+    s.add_argument("--remove", action="store_true", help="remove the copilot login of user pulse (login)")
     s.add_argument("--now")
 
     s = sub.add_parser("daemon", help="plan, lease, run, prune - until stopped")
@@ -3426,10 +3531,22 @@ def main(argv=None):
             print("%s onboarding job %s" % ("queued" if new else "already queued", job["id"]))
             print("store: %s" % store_path(home))
             return 0
+        if args.cmd == "onboard":
+            con = connect(home, create=True)
+            report = onboard_project(con, args.path, name=args.name, remote=args.remote, brain=args.brain, verify_cmd=args.verify,
+                                     actor=args.agent or os.environ.get("PULSE_AGENT", "") or HUMAN_AGENT, now=args.now, home=home)
+            print("\n".join(report["lines"]))
+            return 0
         if args.cmd == "schema":
             print(schema_text(), end="")
             return 0
         con = connect(home)
+        if args.cmd == "pair":
+            report = pair_executor(con, args.address, args.name, workdir=args.workdir, workers=args.workers, projects=args.projects,
+                                   install_copilot=args.install_copilot, dry_run=args.dry_run,
+                                   actor=args.agent or os.environ.get("PULSE_AGENT", "") or HUMAN_AGENT, now=args.now)
+            print("\n".join(report["lines"]))
+            return 0 if report["ok"] else 1
         if args.cmd == "agent":
             if args.sub == "join":
                 row, created = join_agent(con, args.name, args.runner, args.model, args.session, args.display, args.kind)
@@ -3600,6 +3717,13 @@ def main(argv=None):
                 remove_executor(con, args.name)
                 print("%s removed; the machine, its key, and its login are yours to retire" % args.name)
                 return 0
+            if args.action == "login":
+                if not args.admin or args.with_token == args.remove:
+                    raise PulseError("executor login needs --admin admin@host[:port] and exactly one of --with-token or --remove", 2)
+                report = executor_login(con, args.name, args.admin, token_stream=sys.stdin.buffer if args.with_token else None,
+                                        remove=args.remove, actor=HUMAN_AGENT, now=args.now)
+                print("\n".join(report["lines"]))
+                return 0 if report["ok"] else 1
         if args.cmd == "daemon":
             result = daemon(con, args.agent, args.interval, args.dry_run, args.worker_cmd, home, args.max_loops,
                             restart_on_change=not args.no_restart)

@@ -1,7 +1,7 @@
 ---
 id: FEAT-014
 title: Top-Down PULSE - Onboard a Project With One Command, Pair a Machine With One Command
-status: Proposed
+status: Accepted
 tier: 2
 date: 2026-09-06
 delivered:
@@ -93,6 +93,33 @@ loop's gates, the credentials, and the decisions.
     name, no delegation; spent when the executor is removed or the seven
     days pass. The copilot login on the machine is never part of it.
 
+### `pulse executor login` (ADR-021 Amendment 1)
+
+15. `pulse executor login EXECUTOR --admin ADMIN@HOST[:PORT] --with-token`
+    reads one token from standard input only. Before anything is sent it
+    refuses with exit 2 when standard input is empty or a terminal, when the
+    token has whitespace inside, or when its prefix is not `github_pat_`,
+    `gho_`, or `ghu_`; a classic `ghp_` token is refused by name with the
+    docs' reason (the CLI rejects classic tokens).
+16. The token travels only as the standard input of one ssh command to the
+    admin address, `sudo -u pulse -H copilot login --with-token`; it never
+    appears in an argument, an environment variable the command sets, the
+    store, an event, a post, or printed output. Remote output is printed
+    with any `github_pat_…`/`gho_…`/`ghu_…`/`ghp_…` run replaced by
+    `[redacted]`. Exit 0 from the remote command means the CLI validated the
+    token online and stored it; the command then runs the probe and prints
+    its note. A non-zero exit is reported as is (redacted) and exits 1.
+17. `--remove` runs `sudo -u pulse -H rm -rf ~/.copilot` over the admin
+    session (the CLI has no `logout`), then probes; the executor is drained
+    by the failed probe. `--with-token` and `--remove` are exclusive.
+18. One `executor.login` event per run carries the executor name, the token
+    kind (`pat`, `oauth`, `user`, `removed`) and the remote exit code -
+    never the token and never the admin address. The command is the human's
+    in every tier (credential hard stop); `PULSE_AGENT` set does not change
+    who may run it, and no decision row extends to it. In `pulse-hands`,
+    `logged_in=yes` requires at least one regular file directly under
+    `~/.copilot`; a folder holding only `logs/` reports `no`.
+
 ### Measurement
 
 14. One recorded query (PLAN-021 Verification) gives the time from the
@@ -107,7 +134,8 @@ adopter sync.
 Out: any dashboard change (ADR-015/016; the Flywheel view is a follow-up),
 federated stores (ADR-020 option 2), installing copilot on non-apt systems,
 provisioning new VMs (the Azure script keeps that), committing or staging
-project-owned files, placing any credential, a new authorization command
+project-owned files, creating any credential (the login command only
+carries one the human hands it), a new authorization command
 (the existing `pulse decide` row is the authorization).
 
 ## Interface Changes
@@ -115,12 +143,15 @@ project-owned files, placing any credential, a new authorization command
 - `pulse onboard PATH [--verify CMD] [--name N] [--remote URL] [--brain]`
 - `pulse pair ADMIN@HOST[:PORT] --name EXECUTOR [--workdir /srv/pulse]
   [--workers 1] [--projects '*'] [--install-copilot] [--dry-run]`
+- `pulse executor login EXECUTOR --admin ADMIN@HOST[:PORT] (--with-token | --remove)`
 
 ## Data Changes
 
 None to the schema. New job `source` prefixes: `onboard-reflect:<slug>`.
 Events: `project.onboard`, `executor.pair` (with the remote steps' outcome
-and, for an agent-run command, the decision's post id; never an address).
+and, for an agent-run command, the decision's post id; never an address),
+`executor.login` (name, token kind, exit code; never the token or an
+address).
 
 ## Decisions
 

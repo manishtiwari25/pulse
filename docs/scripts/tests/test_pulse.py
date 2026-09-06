@@ -88,7 +88,10 @@ def run_cli(*args):
     return code, out.getvalue(), err.getvalue()
 
 
-class StoreTestCase(unittest.TestCase):
+class StoreFixture(unittest.TestCase):
+    """A fresh store and one registered project; no tests of its own, so other test modules can build on it
+    (`import test_pulse as tp`; subclass `tp.StoreFixture`) without re-running the store tests."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="pulse-store-test-")).resolve()
         self.home = self.tmp / "home"
@@ -103,6 +106,14 @@ class StoreTestCase(unittest.TestCase):
         self.con.close()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def worker_script(self, body, name="worker.sh"):
+        script = self.tmp / name
+        script.write_text("#!/bin/sh\nset -e\n" + body + "\n", encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        return str(script)
+
+
+class StoreTestCase(StoreFixture):
     # -- store and projects -------------------------------------------------
 
     def test_init_registers_project_and_queues_onboarding(self):
@@ -290,15 +301,35 @@ class StoreTestCase(unittest.TestCase):
         done = pulse.finish_job(self.con, job2["id"], "cinder", "done", "ok")
         self.assertEqual(done["status"], "done")
 
+    def test_the_decision_gate_lets_the_human_through_and_an_agent_only_with_a_fresh_yes(self):
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        self.assertEqual(pulse.agent_gate(self.con, "pair: hands-2", "human", now=NOW), "")
+        self.assertEqual(pulse.agent_gate(self.con, "pair: hands-2", "", now=NOW), "")
+        with self.assertRaises(pulse.PulseError):
+            pulse.agent_gate(self.con, "pair: hands-2", "aurora", now=NOW)
+        prop = pulse.create_post(self.con, "answer", "proj", "runner", "pair", "we agree: pair hands-2",
+                                 "The agents agreed.\n\npair: hands-2\n", agent="aurora", resolution="agreed")
+        with self.assertRaises(pulse.PulseError):   # proposed, not yet decided
+            pulse.agent_gate(self.con, "pair: hands-2", "aurora", now=NOW)
+        pulse.decide(self.con, prop["id"], "yes", "go ahead")
+        decided_at = self.con.execute("SELECT decided_at FROM decisions").fetchone()["decided_at"]
+        self.assertEqual(pulse.agent_gate(self.con, "pair: hands-2", "aurora", now=decided_at), prop["id"])
+        self.assertEqual(pulse.agent_gate(self.con, "pair: hands-2", "aurora", now=decided_at), prop["id"])
+        for other in ("pair: hands-3", "onboard: hands-2", "pair:hands-2"):
+            with self.assertRaises(pulse.PulseError):
+                pulse.agent_gate(self.con, other, "aurora", now=decided_at)
+        eight_days = (pulse.parse_iso(decided_at) + pulse._dt.timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self.assertRaises(pulse.PulseError):
+            pulse.agent_gate(self.con, "pair: hands-2", "aurora", now=eight_days)
+        later = pulse.create_post(self.con, "answer", "proj", "runner", "pair", "we agree: do not pair hands-2",
+                                  "Second thoughts.\n\npair: hands-2\n", agent="aurora", resolution="agreed")
+        pulse.decide(self.con, later["id"], "no", "not now")
+        with self.assertRaises(pulse.PulseError):   # the newest decision wins, and it is a no
+            pulse.agent_gate(self.con, "pair: hands-2", "aurora", now=decided_at)
+
     def test_tier_two_jobs_are_refused(self):
         with self.assertRaises(pulse.PulseError):
             pulse.add_job(self.con, "proj", "task", "migrate the database", tier=2)
-
-    def worker_script(self, body, name="worker.sh"):
-        script = self.tmp / name
-        script.write_text("#!/bin/sh\nset -e\n" + body + "\n", encoding="utf-8")
-        script.chmod(script.stat().st_mode | stat.S_IEXEC)
-        return str(script)
 
     def test_work_lands_commits_on_a_local_branch_without_touching_the_checkout(self):
         pulse.join_agent(self.con, "aurora", "r", "m")
@@ -1065,8 +1096,8 @@ exec bash "$PULSE_HANDS"
 """
 
 
-class ExecutorTestCase(StoreTestCase):
-    """PLAN-020 slice 1: a remote executor over ssh, driven end to end through the shim and pulse-hands.sh."""
+class HandsFixture(StoreFixture):
+    """A remote executor over ssh, driven through the shim and pulse-hands.sh; no tests of its own."""
 
     def setUp(self):
         super().setUp()
@@ -1104,6 +1135,10 @@ class ExecutorTestCase(StoreTestCase):
             self.assertTrue(ok, note)
             self.assertEqual(pulse.executor_row(self.con, name)["status"], "active")
         return pulse.executor_row(self.con, name)
+
+
+class ExecutorTestCase(HandsFixture):
+    """PLAN-020 slice 1: a remote executor over ssh, driven end to end through the shim and pulse-hands.sh."""
 
     def test_executor_lifecycle_add_probe_list_drain_remove(self):
         with self.assertRaises(pulse.PulseError):

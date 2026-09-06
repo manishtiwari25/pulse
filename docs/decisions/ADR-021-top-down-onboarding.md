@@ -1,9 +1,9 @@
 ---
 id: ADR-021
 title: Top-Down PULSE - One Command Onboards a Project, One Command Pairs a Machine, the Daemon Stays the One Supervisor
-status: Proposed
+status: Accepted
 date: 2026-09-06
-delivery: not started
+delivery: partially delivered
 delivered:
 areas: [agents, workflows, governance]
 tags: [adr, runner, onboarding, pairing, executors, daemon, agent-first, top-down]
@@ -227,8 +227,49 @@ for an agent-run `pair` (security); the Flywheel view and the fresh-VM proof
 cut from the first cut (value). All were folded into sections 1-5 above; one
 sub-ask - refusing on a dirty working tree - was rejected with its reason in
 section 1. Round two: three "yes", nothing remaining. The agreed proposal is
-`20260906T045241Z-fable-scale-09051203`; the human's `pulse decide` on it
-is the approval this ADR waits for.
+`20260906T045241Z-fable-scale-09051203`; the human accepted it with
+`pulse decide ... yes --words 'go ahead implement'` on 2026-09-06
+(decision `20260906T045718Z-human`), which made this ADR Accepted.
+
+## Amendments
+
+### Amendment 1 - a token login for the hands (2026-09-06)
+
+The GitHub Copilot CLI accepts a token on standard input
+(`copilot login --with-token`) and honours `COPILOT_GITHUB_TOKEN`, so the
+one step section 2 left to a person at the machine's keyboard can be run
+from the hub over the admin session. The CLI validates the token online
+before storing it (a wrong token fails with `401 Bad credentials` and
+stores nothing), so a login that returns 0 is proof the token works.
+
+- **Command:** `pulse executor login <executor> --admin <admin>@<host>[:port] --with-token`
+  reads exactly one token from standard input, never from an argument or an
+  environment variable of its own, and refuses with exit 2 - before anything
+  is sent - unless it is a fine-grained personal access token
+  (`github_pat_`), a device-flow token (`gho_`), or a user-to-server token
+  (`ghu_`); a classic `ghp_` token is refused by name because the CLI
+  rejects it. The token is piped over the admin's own ssh session into
+  `sudo -u pulse -H copilot login --with-token`; the command's output is
+  passed through with any token-shaped text redacted, then `probe` runs.
+  `--remove` deletes the CLI's folder for `pulse` (`~pulse/.copilot`) - the
+  CLI has no `logout` - and probes again, which leaves the executor drained.
+- **What is recorded:** one `executor.login` event with the executor name,
+  the token kind (`pat`, `oauth`, `user`, or `removed`), and the exit code -
+  never the token, never the admin address. Nothing is written to the store
+  besides that event and the probe.
+- **Who runs it:** a human, always - a credential is a hard stop in every
+  tier, and section 3's decided-proposal exception does not extend to it. A
+  human may hand an agent a password-manager reference in chat for one
+  placement; the agent then runs the command with the manager's `read` as
+  the pipe's source, prints neither the reference nor the value, and posts
+  nothing about either on the board or the commons.
+- **The probe's `logged_in` is fixed** in `pulse-hands`: a `~/.copilot`
+  folder that holds only `logs/` (which a failed login also leaves behind) is
+  not a login; at least one regular file directly under it is. The probe's
+  fields do not change.
+- **Docs amended:** `pulse-hands.sh` and `cloud-init.yaml` no longer say the
+  login must happen "here"; `executors.md` gains the command beside the
+  Azure path.
 
 ## Consequences
 
@@ -258,10 +299,11 @@ is the approval this ADR waits for.
 
 ## Follow-Up
 
-- [ ] PLAN-021 approved by the human (`pulse decide` on the board proposal)
-      before any code changes.
-- [ ] Implement `pulse onboard`, `pulse pair`, and the first-reflect planner
-      rule behind tests (ssh shim for `pair`).
+- [x] PLAN-021 approved by the human (`pulse decide` on the board proposal)
+      before any code changes - `20260906T045718Z-human`, 2026-09-06.
+- [ ] Implement `pulse onboard`, `pulse pair`, `pulse executor login`
+      (Amendment 1), and the first-reflect planner rule behind tests (ssh
+      shim for `pair` and `login`).
 - [ ] Update `docs/workflows/pulse.md`, `docs/workflows/executors.md`
       (the "Never" paragraph and ADR-020 section 6's exception),
       `docs/context/pulse-store.md`, `AGENTS.md`, `README.md`, the Copilot

@@ -1,7 +1,7 @@
 ---
 id: PLAN-021
 title: Top-Down PULSE - `pulse onboard`, `pulse pair`, the First Reflect Now
-status: Draft
+status: Approved
 tier: 2
 date: 2026-09-06
 delivered:
@@ -83,6 +83,19 @@ daemon stays the single supervisor and the dashboard stays read-only.
       refusal fires with nothing written, the `sshd -t` failure path removes
       the drop-in, `add` + `probe` run, the alias is written once, the event
       carries the decision id.
+- [ ] **Step 3b - `pulse executor login` (ADR-021 Amendment 1).** New
+      `executor` action: the token arrives on standard input only, its prefix
+      is checked before anything is sent (`github_pat_`, `gho_`, `ghu_`
+      pass; `ghp_` and everything else refuse with exit 2), it is piped over
+      the admin session into `sudo -u pulse -H copilot login --with-token`,
+      the remote output is passed through with token-shaped text redacted,
+      and `probe` follows; `--remove` deletes `~pulse/.copilot` and probes.
+      One `executor.login` event with the name, token kind, and exit code -
+      never the token or the admin address. In `pulse-hands`, `logged_in` is
+      `yes` only when a regular file sits directly under `~/.copilot`.
+      Tests through an admin-session shim: refusals send nothing, the remote
+      command is byte-stable, output is redacted, the event never carries
+      the token, the probe fix distinguishes a `logs/`-only folder.
 - [ ] **Step 4 - docs and sync.** `docs/workflows/pulse.md` (onboard),
       `docs/workflows/executors.md` (pair beside the Azure path; the "Never"
       paragraph gains the decided-proposal exception), ADR-020 section 6
@@ -144,12 +157,12 @@ daemon stays the single supervisor and the dashboard stays read-only.
 ## Verification
 
 ```bash
-python3 docs/scripts/tests/test_pulse.py
-python3 -m unittest docs.scripts.tests.test_pulse_dashboard docs.scripts.tests.test_pulse_dashboard_guards
+python3 -m unittest discover -s docs/scripts/tests    # test_pulse, test_pulse_onboard, test_pulse_pair, test_pulse_login, the dashboard suites
 bash -n docs/scripts/hosted/pulse-hands.sh docs/scripts/hosted/azure-provision.sh
 bash docs/scripts/check-links.sh && git diff --check
 python3 docs/scripts/pulse.py onboard /tmp/scratch-project --verify 'true'    # then: baseline, loop: on, watch pulse status
 python3 docs/scripts/pulse.py pair admin@host --name hands-2 --dry-run
+python3 docs/scripts/pulse.py executor login hands-2 --admin admin@host --with-token < /dev/null   # refuses: no token, nothing sent
 sqlite3 ~/.pulse/pulse.sqlite "SELECT e.at AS onboarded, MIN(r.finished_at) AS first_kept
   FROM events e JOIN runs r ON r.project = e.subject
   WHERE e.action = 'project.add' AND e.subject = '<slug>' AND r.status = 'done' AND r.commits > 0"   # ADR-021 section 5
