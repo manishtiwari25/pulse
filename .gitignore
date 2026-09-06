@@ -35,9 +35,8 @@ dist/
 build/
 coverage/
 *.out
-# ADR-023: the hub's built page is committed so a human runs the hub with Python alone;
-# BuiltUITestCase fails when it is stale against src/.
-!docs/scripts/dashboard/dist/
+# `go build ./cmd/pulse` drops the binary at the repo root; build into ~/.pulse/bin with -o instead.
+/pulse
 
 # JavaScript / TypeScript
 node_modules/
@@ -47,6 +46,9 @@ node_modules/
 .turbo/
 .vite/
 out/
+# The hub UI's static export is committed so a human builds the Go binary without Node.
+!web/hub/out/
+!web/hub/out/**
 .nyc_output/
 
 # .NET
@@ -66,7 +68,7 @@ venv/
 .coverage
 htmlcov/
 
-# Tool-specific agent directories (never committed — see AGENTS.md Critical Rules)
+# Tool-specific agent directories (never committed; `pulse hooks install` writes them per machine)
 .claude/
 .cursor/
 .codex/

@@ -1,21 +1,11 @@
 # Human review required on the paths the self-improvement loop may never
-# change (ADR-012) and on the rules humans own. Adopting repositories replace
-# the owner with their own maintainers.
+# change and on the rules humans own. Adopting repositories replace the owner
+# with their own maintainers.
 #
-# constitution.md may also change by a ratified amendment (ADR-014,
-# docs/workflows/amend.md). When such a commit reaches a pull request, the
-# reviewer checks `docs/scripts/board.sh --amendments` showed `passed` for
-# the thread named in the commit and that only the proposed text and one
-# log row changed. Remove the constitution line below only if the project
-# wants ratifications merged without that review.
+# Control-plane records (decisions, plans, constitution, evaluators, board)
+# live in the PULSE store, not in the tree; the loop's immutable paths are the
+# Go store schema, the web console, and this folder.
 
-/docs/evolution/constitution.md      @manishtiwari25
-/docs/evolution/evaluators.md        @manishtiwari25
-/docs/evolution/fixtures/            @manishtiwari25
-/docs/evolution/STOP                 @manishtiwari25
-/docs/scripts/                       @manishtiwari25
-/docs/decisions/                     @manishtiwari25
-/docs/versions.md                    @manishtiwari25
-/AGENTS.md                           @manishtiwari25
-/CLAUDE.md                           @manishtiwari25
+/internal/store/                     @manishtiwari25
+/web/hub/                            @manishtiwari25
 /.github/                            @manishtiwari25
