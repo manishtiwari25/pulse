@@ -348,6 +348,22 @@ if [ -x "$SCRIPTS/lead-time.sh" ]; then
         echo "  lead time:  FAILED - $(printf '%s\n' "$lt" | tail -1)"
     fi
 fi
+# Disk check: report free space for the pulse sqlite store's volume (df -k)
+DBPATH="${PULSE_HOME:-$HOME/.pulse}/pulse.sqlite"
+DBDIR="$(dirname "$DBPATH")"
+if df_out="$(df -k "$DBDIR" 2>/dev/null | tail -1 || true)" && [ -n "$df_out" ]; then
+    avail_kb="$(printf '%s' "$df_out" | awk '{print $4}')"
+    if [ -n "$avail_kb" ] && printf '%s' "$avail_kb" | grep -qE '^[0-9]+$'; then
+        threshold_kb=$((1024 * 1024))
+        if [ "$avail_kb" -lt "$threshold_kb" ]; then
+            human_gib="$(awk -v k="$avail_kb" 'BEGIN { printf "%.2f", k/1024/1024 }')"
+            echo "  disk:      WARNING - low free space: ${avail_kb}K (${human_gib} GiB) at ${DBDIR} - <1GiB"
+        else
+            human_gib="$(awk -v k="$avail_kb" 'BEGIN { printf "%.2f", k/1024/1024 }')"
+            echo "  disk:      ok - free: ${avail_kb}K (${human_gib} GiB) at ${DBDIR}"
+        fi
+    fi
+fi
 echo ""
 
 # --- Level -------------------------------------------------------------------
