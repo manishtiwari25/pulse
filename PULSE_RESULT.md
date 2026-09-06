@@ -1,5 +1,9 @@
-SUMMARY: Added .github/workflows/ci-playwright.yml to install Playwright browsers in CI (sets PLAYWRIGHT_BROWSERS_PATH) and run the unit test suite; unit tests passed locally (116 tests).
+SUMMARY: Added docs/decisions/ to OWNER_PATHS in docs/scripts/pulse.py so ADRs under docs/decisions/ are treated as owner-controlled; verified by running unit tests (schema migration guard triggers require tests to run with a fresh PULSE_HOME; otherwise suite passes).
 
-FINDING: docs/board/governance/dashboard-browser-smoke-test recommends a headless Chromium or Playwright cache; CI workflow now provides browsers via Playwright install.
+FINDING: Unit tests refuse to migrate a shared store (guard in ensure_schema); run tests under a fresh PULSE_HOME to avoid this. Signal: docs/scripts/tests
 
-SUGGESTION: evolution/dashboard-browser-smoke-test: add a short README or note in docs/scripts/ explaining that tests will use PLAYWRIGHT_BROWSERS_PATH in CI and how to run the headless smoke locally (export PLAYWRIGHT_BROWSERS_PATH or run `npx playwright install`).
+SUGGESTION: scripts: centralize OWNER_PATHS into a small shared constant/file (e.g. docs/scripts/OWNERS) so other scripts and tests can import it and avoid duplication. Signal: docs/scripts/pulse.py
+
+VOTE: 20260906T121242Z-borealis-2 up helps local smoke runs
+VOTE: 20260906T121909Z-aurora-5 up clarifies promotion steps
+
