@@ -35,6 +35,9 @@ dist/
 build/
 coverage/
 *.out
+# ADR-023: the hub's built page is committed so a human runs the hub with Python alone;
+# BuiltUITestCase fails when it is stale against src/.
+!docs/scripts/dashboard/dist/
 
 # JavaScript / TypeScript
 node_modules/

@@ -1,0 +1,15 @@
+{
+ "schema": "pulse-hub-build/1",
+ "source_hash": "df444ec52eac484b61d4d7db279473af3f6d785dffed75d94af0a39c3eb22c7a",
+ "files": [
+  "index.html",
+  "app.js",
+  "app.css"
+ ],
+ "tools": {
+  "vite": "7.3.6",
+  "preact": "10.29.8",
+  "tailwindcss": "4.3.3",
+  "typescript": "5.9.3"
+ }
+}

@@ -1,0 +1,169 @@
+/* PULSE hub - design tokens (FEAT-015). Dark-first; light follows the OS or
+   the header toggle. Every colour is declared once as light-dark(light, dark);
+   the scheme rules below only pick the side. No URL, no import of anything
+   the build did not inline. */
+@import "tailwindcss";
+
+:root {
+  --bg: light-dark(#f4f6fa, #0a0e15);
+  --bg-2: light-dark(#eef1f6, #0d121b);
+  --panel: light-dark(rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.04));
+  --panel-2: light-dark(#f5f7fb, rgba(255, 255, 255, 0.06));
+  --panel-hover: light-dark(#f0f3f8, rgba(255, 255, 255, 0.075));
+  --line: light-dark(rgba(15, 23, 42, 0.09), rgba(255, 255, 255, 0.09));
+  --line-2: light-dark(rgba(15, 23, 42, 0.16), rgba(255, 255, 255, 0.14));
+  --fg: light-dark(#0f172a, #e8ecf3);
+  --muted: light-dark(#5b6678, #8d99ad);
+  --dim: light-dark(#8a94a6, #66738a);
+  --accent: light-dark(#2563eb, #6ea8fe);
+  --accent-2: light-dark(#7c3aed, #a78bfa);
+  --ok: light-dark(#059669, #34d399);
+  --warn: light-dark(#b45309, #fbbf24);
+  --bad: light-dark(#dc2626, #f87171);
+  --info: light-dark(#0284c7, #38bdf8);
+  --chip: light-dark(#eef2f7, rgba(255, 255, 255, 0.07));
+  --chip-fg: light-dark(#334155, #c6cfdd);
+  --grid: light-dark(#e5e9f0, #1f2937);
+  --tip-bg: light-dark(#0f172a, #0b1018);
+  --tip-fg: light-dark(#f8fafc, #e8ecf3);
+  --k-claim: light-dark(#d97706, #f59e0b);
+  --k-handoff: light-dark(#7c3aed, #a78bfa);
+  --k-finding: light-dark(#0284c7, #38bdf8);
+  --k-question: light-dark(#db2777, #f472b6);
+  --k-answer: light-dark(#059669, #34d399);
+  --k-suggestion: light-dark(#2563eb, #6ea8fe);
+  --k-opinion: light-dark(#9333ea, #c084fc);
+  --k-vote: light-dark(#ca8a04, #fbbf24);
+  --k-amendment: light-dark(#e11d48, #fb7185);
+  --k-result: light-dark(#16a34a, #22c55e);
+  --k-none: #64748b;
+  --s1: light-dark(#2563eb, #6ea8fe);
+  --s2: light-dark(#059669, #34d399);
+  --s3: light-dark(#ca8a04, #fbbf24);
+  --s4: light-dark(#db2777, #f472b6);
+  --s5: light-dark(#7c3aed, #a78bfa);
+  --s6: light-dark(#0284c7, #38bdf8);
+  --s7: light-dark(#ea580c, #fb923c);
+  --s8: light-dark(#16a34a, #22c55e);
+  --radius: 16px;
+  --radius-s: 12px;
+  --radius-xs: 8px;
+  --shadow: light-dark(0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(0, 0, 0, 0.4)), light-dark(0 12px 32px -18px rgba(15, 23, 42, 0.25), 0 12px 32px -16px rgba(0, 0, 0, 0.7));
+  --glass: light-dark(rgba(244, 246, 250, 0.72), rgba(10, 14, 21, 0.62));
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) { color-scheme: light; }
+}
+:root[data-theme="light"] { color-scheme: light; }
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-panel-hover: var(--panel-hover);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-dim: var(--dim);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-info: var(--info);
+  --color-chip: var(--chip);
+  --color-chip-fg: var(--chip-fg);
+  --color-grid: var(--grid);
+  --color-tip-bg: var(--tip-bg);
+  --color-tip-fg: var(--tip-fg);
+  --radius-panel: var(--radius);
+  --radius-card: var(--radius-s);
+  --radius-chip: var(--radius-xs);
+  --shadow-panel: var(--shadow);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --animate-rise: rise 0.28s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-pulse-dot: pulse-dot 2.4s ease-in-out infinite;
+  --animate-draw: draw 0.9s ease-out both;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+  60% { box-shadow: 0 0 0 7px transparent; }
+}
+@keyframes draw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+
+@layer base {
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--fg);
+    background: var(--bg);
+    background-image:
+      radial-gradient(1200px 520px at 12% -12%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 62%),
+      radial-gradient(900px 420px at 100% 0%, color-mix(in srgb, var(--accent-2) 11%, transparent), transparent 60%);
+    background-repeat: no-repeat;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  main:focus { outline: none; }
+  code, pre, kbd { font-family: var(--font-mono); font-size: 0.95em; }
+  h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  table { border-collapse: collapse; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  .noscript { margin: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--panel); }
+}
+
+@layer components {
+  .tnum { font-variant-numeric: tabular-nums; }
+  .glass { background: var(--glass); backdrop-filter: saturate(160%) blur(14px); -webkit-backdrop-filter: saturate(160%) blur(14px); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .hairline { border: 1px solid var(--line); }
+  .kind-dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: var(--k-none); flex: none; }
+  .k-claim { --k: var(--k-claim); } .k-handoff { --k: var(--k-handoff); } .k-finding { --k: var(--k-finding); }
+  .k-question { --k: var(--k-question); } .k-answer { --k: var(--k-answer); } .k-suggestion { --k: var(--k-suggestion); }
+  .k-opinion { --k: var(--k-opinion); } .k-vote { --k: var(--k-vote); } .k-amendment { --k: var(--k-amendment); }
+  .k-result { --k: var(--k-result); } .k-none { --k: var(--k-none); }
+  .kind-dot[class*="k-"] { background: var(--k); }
+  .view-in { animation: var(--animate-rise); }
+  .live-dot { width: 9px; height: 9px; border-radius: 999px; background: var(--ok); animation: var(--animate-pulse-dot); }
+  .live-dot.stopped { background: var(--bad); animation: none; }
+  .draw-in { stroke-dasharray: 1; animation: var(--animate-draw); }
+  .md :where(h2, h3, h4, h5) { margin: 14px 0 6px; font-size: 1em; }
+  .md :where(p, ul, ol, blockquote, table, .codeblock) { margin: 0 0 10px; }
+  .md :where(ul, ol) { padding-left: 22px; }
+  .md ul { list-style: disc; } .md ol { list-style: decimal; }
+  .md blockquote { border-left: 3px solid var(--line-2); padding: 2px 12px; color: var(--muted); }
+  .md pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-xs); padding: 10px 12px; font-size: 12.5px; }
+  .md code { background: var(--chip); border-radius: 4px; padding: 0 4px; }
+  .md pre code { background: none; padding: 0; }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+  .md table td, .md table th { border-bottom: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; }
+  .md .code-lang { font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-bottom: -6px; }
+  .md .codeblock { margin-top: 6px; }
+  .skel { background: linear-gradient(90deg, var(--panel-2), var(--panel-hover), var(--panel-2)); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; border-radius: var(--radius-s); }
+  @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .details-marker > summary { list-style: none; cursor: pointer; }
+  .details-marker > summary::-webkit-details-marker { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
