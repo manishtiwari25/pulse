@@ -198,6 +198,7 @@ STORE_SLUG="$(store_project_slug)"
 if [ -n "$STORE_SLUG" ] && [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/pulse.py" ]; then
     echo "BOARD"
     echo "  source: pulse store"
+    echo "  brain: ${STORE_SLUG:-}"
     if [ -n "$AREA" ]; then
         python3 "$SCRIPTS/pulse.py" board --project "$STORE_SLUG" --area "$AREA" | sed 's/^/  /'
     else
