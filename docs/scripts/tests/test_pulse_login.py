@@ -38,6 +38,11 @@ if [ "${PULSE_ADMIN_RC:-0}" = "255" ]; then
   exit 255
 fi
 printf '%s\n' "$*" >> "$PULSE_ADMIN_LOG"
+if [[ "$*" == *storeTokenPlaintext* ]]; then
+  cat > /dev/null
+  printf 'settings=%s\n' "${PULSE_ADMIN_PREP_NOTE:-written}"
+  exit "${PULSE_ADMIN_PREP_RC:-0}"
+fi
 cat > "$PULSE_ADMIN_STDIN"
 printf '%s' "${PULSE_ADMIN_OUT:-}"
 printf '%s' "${PULSE_ADMIN_ERR:-}" >&2
@@ -54,7 +59,8 @@ class LoginFixture(tp.HandsFixture):
         shim.write_text(ADMIN_SSH_SHIM, encoding="utf-8")
         shim.chmod(0o755)
         self._login_env_before = {k: os.environ.get(k) for k in (
-            "HOME", "PATH", "PULSE_ADMIN_LOG", "PULSE_ADMIN_STDIN", "PULSE_ADMIN_RC", "PULSE_ADMIN_OUT", "PULSE_ADMIN_ERR")}
+            "HOME", "PATH", "PULSE_ADMIN_LOG", "PULSE_ADMIN_STDIN", "PULSE_ADMIN_RC", "PULSE_ADMIN_OUT", "PULSE_ADMIN_ERR",
+            "PULSE_ADMIN_PREP_RC", "PULSE_ADMIN_PREP_NOTE")}
         admin_home = self.tmp / "admin-home"
         admin_home.mkdir()
         os.environ["HOME"] = str(admin_home)
@@ -64,6 +70,8 @@ class LoginFixture(tp.HandsFixture):
         os.environ.pop("PULSE_ADMIN_RC", None)
         os.environ.pop("PULSE_ADMIN_OUT", None)
         os.environ.pop("PULSE_ADMIN_ERR", None)
+        os.environ.pop("PULSE_ADMIN_PREP_RC", None)
+        os.environ.pop("PULSE_ADMIN_PREP_NOTE", None)
         self.add_hands("hands-2")
 
     def tearDown(self):
@@ -100,6 +108,9 @@ class LoginFixture(tp.HandsFixture):
         self.assertFalse(self.admin_stdin.exists() and self.admin_stdin.read_bytes())
         self.assertEqual(self.events(), [])
 
+    def admin_lines(self):
+        return self.admin_log.read_text(encoding="utf-8").splitlines() if self.admin_log.exists() else []
+
     def run_login(self, token="", remove=False):
         if remove:
             return tp.run_cli("executor", "login", "hands-2", "--admin", "admin@box.example", "--remove")
@@ -110,6 +121,36 @@ class LoginFixture(tp.HandsFixture):
 class ExecutorLoginTestCase(LoginFixture):
     LOGIN_COMMAND = "sudo -n -u pulse -H timeout 90 copilot login --with-token"
     REMOVE_COMMAND = "sudo -n -u pulse -H sh -c 'rm -rf -- \"$HOME/.copilot\"'"
+
+    def test_login_command_and_prep_script_are_stable(self):
+        self.assertEqual(tp.pulse.LOGIN_COMMAND, self.LOGIN_COMMAND)
+        prep = tp.pulse.LOGIN_PREP_COMMAND
+        self.assertTrue(prep.startswith("sudo -n -u pulse -H sh -c '") and prep.endswith("'"))
+        self.assertNotIn("'", tp.pulse.LOGIN_PREP_SCRIPT)
+        self.assertIn('"storeTokenPlaintext": true', tp.pulse.LOGIN_PREP_SCRIPT.replace("\\", ""))
+        self.assertIn("settings.json", prep)
+        self.assertNotIn("config.json", prep)
+        self.assertIn("umask 077", prep)
+        self.assertEqual(subprocess.run(["sh", "-n", "-c", tp.pulse.LOGIN_PREP_SCRIPT], capture_output=True).returncode, 0)
+
+    def test_prep_script_writes_merges_and_keeps_settings_json(self):
+        home = self.tmp / "prep-home"
+        home.mkdir()
+        env = dict(os.environ, HOME=str(home))
+        run = lambda: subprocess.run(["sh", "-c", tp.pulse.LOGIN_PREP_SCRIPT], capture_output=True, text=True, env=env)
+        proc = run()
+        self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "settings=written"), proc.stderr)
+        settings = home / ".copilot" / "settings.json"
+        self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), {"storeTokenPlaintext": True})
+        self.assertEqual(stat.S_IMODE(settings.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(settings.parent.stat().st_mode), 0o700)
+        proc = run()
+        self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "settings=present"), proc.stderr)
+        if shutil.which("node"):
+            settings.write_text('{\n  "model": "x"\n}\n', encoding="utf-8")
+            proc = run()
+            self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "settings=merged"), proc.stderr)
+            self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), {"model": "x", "storeTokenPlaintext": True})
 
     def test_refuses_empty_stdin_without_sending_or_event(self):
         code, out, err = self.run_login("")
@@ -149,8 +190,9 @@ class ExecutorLoginTestCase(LoginFixture):
                 Path(os.environ["PULSE_SHIM_LOG"]).write_text("", encoding="utf-8")
                 code, out, err = self.run_login(token + "\n")
                 self.assertEqual(code, 0, err)
-                self.assertEqual(self.admin_log.read_text(encoding="utf-8").strip(), self.LOGIN_COMMAND)
+                self.assertEqual(self.admin_lines(), [tp.pulse.LOGIN_PREP_COMMAND, self.LOGIN_COMMAND])
                 self.assertEqual(self.admin_stdin.read_bytes(), token.encode("utf-8") + b"\n")
+                self.assertIn("settings=written", out)
                 detail = self.latest_event_detail(event_count)
                 event_count += 1
                 self.assertEqual(detail, {"kind": kind, "ok": True, "rc": 0})
@@ -160,6 +202,27 @@ class ExecutorLoginTestCase(LoginFixture):
                 self.assertNotIn(token, row["probe_note"])
                 self.assertNotIn(token, self.admin_log.read_text(encoding="utf-8"))
                 self.assertIn("b64 ", Path(os.environ["PULSE_SHIM_LOG"]).read_text(encoding="utf-8"))
+
+    def test_prep_failure_keeps_the_token_home(self):
+        token = "github_pat_" + "A" * 82
+        os.environ["PULSE_ADMIN_PREP_RC"] = "4"
+        os.environ["PULSE_ADMIN_PREP_NOTE"] = "unmergeable"
+        code, out, err = self.run_login(token)
+        self.assertEqual(code, 1)
+        self.assertIn("the token was not sent", out)
+        self.assertIn("settings=unmergeable", out)
+        self.assertEqual(self.admin_lines(), [tp.pulse.LOGIN_PREP_COMMAND])
+        self.assertFalse(self.admin_stdin.exists() and self.admin_stdin.read_bytes())
+        self.assertNotIn(token, out)
+        self.assertEqual(self.event_detail(), {"kind": "pat", "ok": False, "rc": 4, "step": "settings"})
+
+    def test_login_reactivates_a_drained_executor_when_the_probe_passes(self):
+        tp.pulse.set_executor_status(self.con, "hands-2", "drained", note="copilot is not logged in")
+        self.con.commit()
+        code, out, err = self.run_login("gho_" + "B" * 36)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tp.pulse.executor_row(self.con, "hands-2")["status"], "active")
+        self.assertIn("hands-2: ok, active:", out)
 
     def test_remote_failure_redacts_token_in_output_and_event(self):
         token = "gho_" + "B" * 36
@@ -238,18 +301,44 @@ class HandsProbeLoginTestCase(unittest.TestCase):
     def probe(self):
         return subprocess.run(["bash", str(tp.HANDS_SH)], capture_output=True, text=True, env=os.environ)
 
-    def test_logged_in_requires_regular_file_under_copilot_home(self):
-        proc = self.probe()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("logged_in=no", proc.stdout)
+    def test_logged_in_requires_a_login_record_in_config_json(self):
+        copilot_home = self.home / ".copilot"
+        for stage, prepare in (
+            ("no folder", lambda: None),
+            ("logs only", lambda: (copilot_home / "logs").mkdir(parents=True)),
+            ("settings consent only", lambda: (copilot_home / "settings.json").write_text('{"storeTokenPlaintext": true}\n', encoding="utf-8")),
+            ("empty config", lambda: (copilot_home / "config.json").write_text("{}\n", encoding="utf-8")),
+            ("logged out", lambda: (copilot_home / "config.json").write_text(
+                '// This file is managed automatically.\n{\n  "loggedInUsers": [],\n  "authTokens": {}\n}\n', encoding="utf-8")),
+        ):
+            with self.subTest(stage=stage):
+                prepare()
+                proc = self.probe()
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("logged_in=no", proc.stdout)
+        for stage, body in (
+            ("plaintext store", '{\n  "authTokens": {\n    "https://github.com:someone": "not-a-real-token"\n  },\n'
+                                '  "lastLoggedInUser": {"host": "https://github.com", "login": "someone"},\n'
+                                '  "loggedInUsers": [{"host": "https://github.com", "login": "someone"}]\n}\n'),
+            ("keychain store", '// User settings belong in settings.json.\n{\n  "loggedInUsers": [\n    {"host": "https://github.com", "login": "someone"}\n  ]\n}\n'),
+        ):
+            with self.subTest(stage=stage):
+                (copilot_home / "config.json").write_text(body, encoding="utf-8")
+                proc = self.probe()
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("logged_in=yes", proc.stdout)
+                self.assertNotIn("not-a-real-token", proc.stdout)
+
+    def test_logged_in_accepts_a_token_from_the_environment(self):
         (self.home / ".copilot" / "logs").mkdir(parents=True)
-        proc = self.probe()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("logged_in=no", proc.stdout)
-        (self.home / ".copilot" / "config.json").write_text("{}", encoding="utf-8")
-        proc = self.probe()
+        os.environ["COPILOT_GITHUB_TOKEN"] = "github_pat_" + "Z" * 82
+        try:
+            proc = self.probe()
+        finally:
+            os.environ.pop("COPILOT_GITHUB_TOKEN", None)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("logged_in=yes", proc.stdout)
+        self.assertNotIn("Z" * 20, proc.stdout)
 
 
 if __name__ == "__main__":

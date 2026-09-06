@@ -112,10 +112,21 @@
   one, log in as every user it promises, then trust the runbook.
 - `2026-09-06` - The hands' probe called `~/.copilot` existing a login, but
   a failed `copilot login --with-token` also creates that folder (with only
-  `logs/`), so a never-logged-in machine could have been activated. Avoid by:
-  proving a state with an artifact only that state creates (a regular file
-  the login writes), and testing the negative case the failure path leaves
-  behind. Source: ADR-021 Amendment 1, `docs/scripts/hosted/pulse-hands.sh`.
+  `logs/`), so a never-logged-in machine could have been activated; the
+  first repair ("any regular file") was fooled the same day by the
+  `settings.json` consent the login step itself writes. Avoid by: proving a
+  state with the record only that state creates (the `authTokens` or
+  `loggedInUsers` entry in `config.json`), and testing every negative case a
+  failure or preparation path leaves behind. Source: ADR-021 Amendment 1,
+  `docs/scripts/hosted/pulse-hands.sh`.
+- `2026-09-06` - A piped `copilot login --with-token` on a headless machine
+  validated the token, then discarded it: with no keychain the CLI asks
+  "store in plaintext?" and answers no for itself when standard input is not
+  a terminal. Avoid by: giving the consent in advance
+  (`storeTokenPlaintext: true` in `~/.copilot/settings.json`) before the
+  token is sent, and treating "succeeded" without the expected artifact as a
+  failure. Source: ADR-021 Amendment 1, `docs/scripts/pulse.py`
+  `LOGIN_PREP_SCRIPT`.
 - `2026-09-06` - A "token" in a password-manager note turned out to be a
   classic `ghp_` token behind a label; the Copilot CLI rejects classic tokens,
   and only its prefix and length were ever inspected. Avoid by: classify the

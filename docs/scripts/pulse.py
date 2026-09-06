@@ -1993,10 +1993,28 @@ def redact_tokens(text):
     return TOKEN_RE.sub("[redacted]", text or "")
 
 
+# A headless executor has no keychain, and `copilot login --with-token` asks for plaintext-storage consent only on a
+# terminal (it answers "no" for itself when stdin is a pipe, validates the token, then throws it away). The user
+# setting `storeTokenPlaintext` in ~/.copilot/settings.json is that consent given in advance; config.json is the
+# CLI's own file and is left alone. Written as user pulse, mode 700/600, merged with node when the file has other keys.
+LOGIN_PREP_SCRIPT = (
+    r'set -e; d="$HOME/.copilot"; f="$d/settings.json"; umask 077; mkdir -p "$d"; chmod 700 "$d"; '
+    r'if [ ! -s "$f" ]; then printf "{\n  \"storeTokenPlaintext\": true\n}\n" > "$f"; echo settings=written; '
+    r'elif grep -q "\"storeTokenPlaintext\"[[:space:]]*:[[:space:]]*true" "$f"; then echo settings=present; '
+    r'elif command -v node >/dev/null 2>&1; then node -e "const fs=require(\"fs\");const p=process.argv[1];'
+    r'const c=JSON.parse(fs.readFileSync(p,\"utf8\"));c.storeTokenPlaintext=true;'
+    r'fs.writeFileSync(p,JSON.stringify(c,null,2)+\"\n\")" "$f"; echo settings=merged; '
+    r'else echo settings=unmergeable; exit 4; fi'
+)
+LOGIN_PREP_COMMAND = "sudo -n -u pulse -H sh -c '%s'" % LOGIN_PREP_SCRIPT
+LOGIN_COMMAND = "sudo -n -u pulse -H timeout 90 copilot login --with-token"
+
+
 def executor_login(con, name, admin_address, token_stream=None, remove=False, actor=HUMAN_AGENT, now=None):
     """`pulse executor login` (ADR-021 Amendment 1): place or remove the copilot login for user `pulse` on an executor
     over the admin session, then probe. Returns {"ok": bool, "kind": str, "rc": int, "lines": [str]}.
-    The token is never sent as an argument, printed, or recorded in an event."""
+    Placing a login first writes the plaintext-storage consent (LOGIN_PREP_COMMAND); if that step fails the token
+    stays home. The token is never sent as an argument, printed, or recorded in an event."""
     row = executor_row(con, name)
     if row is None or name == LOCAL_EXECUTOR:
         raise PulseError("No executor %s" % name, 2)
@@ -2045,9 +2063,15 @@ def executor_login(con, name, admin_address, token_stream=None, remove=False, ac
         token_bytes = (raw or b"").strip()
         token = token_bytes.decode("utf-8", "replace")
     kind = classify_token(token)
-    command = "sudo -n -u pulse -H timeout 90 copilot login --with-token"
     try:
-        rc, out, err = admin_ssh_run(admin_address, command, stdin=token_bytes + b"\n", timeout=120)
+        prep_rc, prep_out, prep_err = admin_ssh_run(admin_address, LOGIN_PREP_COMMAND, timeout=120)
+        if prep_rc != 0:
+            lines.append("preparing ~/.copilot/settings.json for user pulse on %s failed (exit %s); the token was not sent" % (name, prep_rc))
+            lines.extend(redact_tokens(prep_out + prep_err).splitlines()[-5:])
+            event(con, actor, "executor.login", name, {"kind": kind, "rc": prep_rc, "ok": False, "step": "settings"})
+            return {"ok": False, "kind": kind, "rc": prep_rc, "lines": lines}
+        settings_note = next((l.strip() for l in prep_out.splitlines() if l.startswith("settings=")), "settings=unknown")
+        rc, out, err = admin_ssh_run(admin_address, LOGIN_COMMAND, stdin=token_bytes + b"\n", timeout=120)
     except ExecutorUnreachable as exc:
         rc = SSH_EXIT_UNREACHABLE
         ok = False
@@ -2056,7 +2080,7 @@ def executor_login(con, name, admin_address, token_stream=None, remove=False, ac
         return {"ok": ok, "kind": kind, "rc": rc, "lines": lines}
     ok = rc == 0
     if ok:
-        lines.append("login stored for user pulse on %s (kind %s)" % (name, kind))
+        lines.append("login stored for user pulse on %s (kind %s, %s)" % (name, kind, settings_note))
         probe_ok, note = probe_executor(con, name, actor=actor, now=now)
         status = executor_row(con, name)["status"]
         if probe_ok:

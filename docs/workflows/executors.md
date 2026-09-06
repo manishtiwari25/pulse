@@ -140,12 +140,21 @@ python3 docs/scripts/pulse.py executor login vm1 --admin admin@host --remove
 
 `executor login` reads one token from standard input only (`github_pat_`,
 `gho_`, or `ghu_`; classic `ghp_` is refused because the CLI rejects it),
-pipes it to `sudo -u pulse -H copilot login --with-token`, redacts
-token-shaped output, records only `executor.login` with the executor name,
-token kind (`pat`, `oauth`, `user`, or `removed`), and exit code, then
-probes. `--remove` deletes `~pulse/.copilot` because the CLI has no logout,
-then probes and leaves the executor drained. A `logs/`-only `~/.copilot`
-folder is not a login; the probe requires a regular file directly under it.
+first writes the storage consent as user `pulse` - a headless machine has no
+keychain, and the CLI's "store in plaintext?" question is answered no for
+itself when standard input is a pipe, so the token would validate and then
+be thrown away; `storeTokenPlaintext: true` in `~pulse/.copilot/settings.json`
+(700/600, merged if the file has other keys) is that consent given in
+advance, and the token stays home if this step fails - then pipes it to
+`sudo -u pulse -H copilot login --with-token`, redacts token-shaped output,
+records only `executor.login` with the executor name, token kind (`pat`,
+`oauth`, `user`, or `removed`), and exit code, then probes; a passing probe
+re-activates an executor the runner had drained for "not logged in".
+`--remove` deletes `~pulse/.copilot` because the CLI has no logout, then
+probes and leaves the executor drained. A `~/.copilot` holding only `logs/`
+or only `settings.json` is not a login; the probe requires a login record in
+`config.json` (non-empty `authTokens` or `loggedInUsers`) or a token in
+`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`.
 
 ## Enroll, probe, run
 
@@ -168,7 +177,7 @@ passes. The probe connects with `BatchMode=yes`, `ConnectTimeout=15`, and
 | `user` | the single-purpose user |
 | `workdir` | exactly the `--workdir` you registered (absolute) |
 | `git`, `copilot` | present with a version (`missing` fails) |
-| `logged_in` | `yes` - at least one regular file sits directly under `~/.copilot`; a fresh machine, or one with only `logs/` from a failed login, says `no` |
+| `logged_in` | `yes` - `~/.copilot/config.json` records a login (non-empty `authTokens` for a plaintext store or `loggedInUsers` for a keychain) or the CLI's token variable is set; a fresh machine, one with only `logs/` from a failed login, or one holding only the `settings.json` consent says `no` |
 | `remotes` | `0` - no clone under the work directory has a remote (a leftover with one is a finding, not a job host) |
 | `keys_ok` | `yes` - every `authorized_keys` line for that user carries `command=` and `restrict` |
 | `disk_free_mb` | at least 1024 |

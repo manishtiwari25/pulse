@@ -92,10 +92,17 @@ daemon stays the single supervisor and the dashboard stays read-only.
       and `probe` follows; `--remove` deletes `~pulse/.copilot` and probes.
       One `executor.login` event with the name, token kind, and exit code -
       never the token or the admin address. In `pulse-hands`, `logged_in` is
-      `yes` only when a regular file sits directly under `~/.copilot`.
+      `yes` only when `~/.copilot/config.json` records a login (or the CLI's
+      token variable is set). Before the token is sent, the consent
+      `storeTokenPlaintext: true` is written to `~pulse/.copilot/settings.json`
+      (a headless machine has no keychain and the CLI answers its own
+      consent prompt with no when standard input is a pipe).
       Tests through an admin-session shim: refusals send nothing, the remote
-      command is byte-stable, output is redacted, the event never carries
-      the token, the probe fix distinguishes a `logs/`-only folder.
+      commands are byte-stable, the consent script runs for real against a
+      temporary home (write, present, merge), a failed consent step keeps
+      the token home, output is redacted, the event never carries the token,
+      the probe rule distinguishes `logs/`-only and `settings.json`-only
+      folders from a real login record.
 - [x] **Step 4 - docs and sync.** `docs/workflows/pulse.md` (onboard),
       `docs/workflows/executors.md` (pair beside the Azure path; the "Never"
       paragraph gains the decided-proposal exception), ADR-020 section 6
@@ -130,6 +137,19 @@ daemon stays the single supervisor and the dashboard stays read-only.
   no event). Open: the time-to-first-kept-commit measurement waits for the
   first real onboarding with `loop: on`; the login of `pulse-vm1` waits for a
   fine-grained token with the Copilot Requests permission.
+- 2026-09-06, later: `pulse-vm1` activated. The maintainer handed a
+  fine-grained token by password-manager reference; the first
+  `pulse executor login pulse-vm1 --admin pulseadmin@pulse-vm1 --with-token`
+  validated it ("Login succeeded") and stored nothing - the CLI's
+  plaintext-storage consent has no terminal to ask on a piped login. The
+  consent (`storeTokenPlaintext: true` in `~pulse/.copilot/settings.json`)
+  was written, the second run stored the login (`config.json` gained
+  `authTokens` and `loggedInUsers`), the probe answered `logged_in=yes`, and
+  the executor returned from `drained` to `active`. The command now writes
+  that consent itself, and the hands count a login only from the
+  `config.json` record, so the consent file alone cannot pass as one. The
+  machine still runs the earlier hands script (`hands=differs`) until a real
+  `pulse pair` applies the new one.
 
 ## Rollback Plan
 

@@ -248,15 +248,26 @@ stores nothing), so a login that returns 0 is proof the token works.
   is sent - unless it is a fine-grained personal access token
   (`github_pat_`), a device-flow token (`gho_`), or a user-to-server token
   (`ghu_`); a classic `ghp_` token is refused by name because the CLI
-  rejects it. The token is piped over the admin's own ssh session into
-  `sudo -u pulse -H copilot login --with-token`; the command's output is
-  passed through with any token-shaped text redacted, then `probe` runs.
+  rejects it. Before the token leaves the hub, one admin command writes the
+  storage consent as user `pulse`: a headless machine has no keychain, the
+  CLI asks "store in plaintext?" only on a terminal and answers no for
+  itself when standard input is a pipe (the token validates, then is thrown
+  away with "the token was not saved"), and the user setting
+  `storeTokenPlaintext: true` in `~pulse/.copilot/settings.json` (mode 700
+  and 600, merged when the file has other keys) is that consent given in
+  advance; `config.json` is the CLI's own file and is not touched. If that
+  step fails the token stays home. Then the token is piped over the admin's
+  own ssh session into `sudo -u pulse -H copilot login --with-token`; the
+  command's output is passed through with any token-shaped text redacted,
+  then `probe` runs, and a passing probe run by the human re-activates an
+  executor the runner had drained for "not logged in".
   `--remove` deletes the CLI's folder for `pulse` (`~pulse/.copilot`) - the
   CLI has no `logout` - and probes again, which leaves the executor drained.
 - **What is recorded:** one `executor.login` event with the executor name,
-  the token kind (`pat`, `oauth`, `user`, or `removed`), and the exit code -
-  never the token, never the admin address. Nothing is written to the store
-  besides that event and the probe.
+  the token kind (`pat`, `oauth`, `user`, or `removed`), and the exit code
+  (plus `step: settings` when the consent step failed) - never the token,
+  never the admin address. Nothing is written to the store besides that
+  event and the probe.
 - **Who runs it:** a human, always - a credential is a hard stop in every
   tier, and section 3's decided-proposal exception does not extend to it. A
   human may hand an agent a password-manager reference in chat for one
@@ -264,12 +275,19 @@ stores nothing), so a login that returns 0 is proof the token works.
   the pipe's source, prints neither the reference nor the value, and posts
   nothing about either on the board or the commons.
 - **The probe's `logged_in` is fixed** in `pulse-hands`: a `~/.copilot`
-  folder that holds only `logs/` (which a failed login also leaves behind) is
-  not a login; at least one regular file directly under it is. The probe's
+  folder that holds only `logs/` (which a failed login also leaves behind)
+  or only the `settings.json` consent is not a login; a login record in
+  `config.json` is - a non-empty `authTokens` (plaintext store) or
+  `loggedInUsers` (keychain store) - as is a token in `COPILOT_GITHUB_TOKEN`,
+  `GH_TOKEN`, or `GITHUB_TOKEN`, which the CLI honours itself. The probe's
   fields do not change.
 - **Docs amended:** `pulse-hands.sh` and `cloud-init.yaml` no longer say the
   login must happen "here"; `executors.md` gains the command beside the
   Azure path.
+- **Delivered on `pulse-vm1`** (2026-09-06): the first attempt validated the
+  token and stored nothing (the consent prompt had no terminal); with the
+  consent written the second attempt stored it, the probe answered
+  `logged_in=yes`, and the executor returned to `active`.
 
 ## Consequences
 

@@ -93,8 +93,17 @@ verb_probe() {
   else
     copv="missing"
   fi
-  # A failed token login can leave only ~/.copilot/logs; count a login only when the CLI left a regular file.
-  if [ "$copv" != "missing" ] && [ -n "$(find "$HOME/.copilot" -maxdepth 1 -type f -print -quit 2>/dev/null)" ]; then logged_in="yes"; else logged_in="no"; fi
+  # A failed token login leaves only ~/.copilot/logs, and the login step writes settings.json before the token
+  # arrives; count a login only when config.json records one (authTokens for a plaintext store, loggedInUsers for a
+  # keychain) or when a token comes from an environment variable the CLI itself honors.
+  logged_in="no"
+  if [ "$copv" != "missing" ]; then
+    if [ -n "${COPILOT_GITHUB_TOKEN:-}${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
+      logged_in="yes"
+    elif [ -s "$HOME/.copilot/config.json" ] && tr -d ' \t\r\n' < "$HOME/.copilot/config.json" | grep -q -E '"(authTokens":\{"|loggedInUsers":\[\{")'; then
+      logged_in="yes"
+    fi
+  fi
   # The test suite's shell worker needs neither the CLI nor a login.
   if [ "${PULSE_HANDS_ALLOW_ANY_WORKER:-0}" = "1" ]; then copv="${copv/missing/test}"; logged_in="yes"; fi
   # Every clone under the work directory must have no remote (a leftover with one is a finding, not a job host).
