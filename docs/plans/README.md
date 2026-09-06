@@ -58,6 +58,19 @@
   the second, a git bundle in and a hub-side fetch out, `VOTE:` lines in the
   result file, per-executor slots in the daemon, an `ssh` shim in the tests,
   and a human runbook for the first VM.
+- [`PLAN-021-top-down-onboarding.md`](PLAN-021-top-down-onboarding.md) - the
+  Tier 2 plan for ADR-021 (In Progress): `pulse onboard`, `pulse pair`, the
+  first reflect queued at once, and the dashboard's Flywheel view.
+
+## Proposed, awaiting the decision
+
+- [`PLAN-023-frontend-stack-for-the-hub.md`](PLAN-023-frontend-stack-for-the-hub.md) -
+  the Tier 2 plan for ADR-023 (Proposed): the owner's guard, constitution,
+  and evaluator edits first; then a Vite + TypeScript + Preact + Tailwind +
+  Radix page under `docs/scripts/dashboard/` built to three fixed files the
+  standard-library hub serves, brought to parity with every WU-005 view
+  (phase A), then the embedded page retired (phase B). Nothing starts before
+  the ADR is Accepted.
 
 Copy `_template.md` when a Tier 2 task needs an explicit plan.
 
@@ -102,6 +115,9 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   a self-vote is the same author or the same session (ballot, `pulse vote`,
   tally), and the planner builds a worker's card only when its `Signal:`
   resolves to a project path, a post id, or a check; two adopter wishes.
+- [`WU-012-standby-hands-on-mission-control.md`](WU-012-standby-hands-on-mission-control.md) -
+  Mission control shows the agents' machine (ADR-016): hands in standby, the
+  worker pool, the daemon, and the queue, from a new `/api/v1/runner` route.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy

@@ -58,6 +58,12 @@
   the loop's files, and queues the first reflect now; `pulse pair` turns an
   existing Linux machine into hardened hands and enrolls it; the daemon stays
   the one supervisor and the dashboard stays read-only with a Flywheel view.
+- [`015-modern-hub-ui.md`](015-modern-hub-ui.md) - a modern hub UI
+  (ADR-023, Proposed 2026-09-06): the same read-only data as a designed
+  product - dark-first with a light theme, one accent, big tabular numbers,
+  Radix accessibility, Mission control as a ten-second story - every legacy
+  view at the same hash route, three fixed files under the unchanged CSP,
+  `app.js` within 150 KB gzipped.
 
 Copy `_template.md` when the new product direction needs a feature or product
 behavior spec. Tier 1 behavior inside an Accepted ADR uses a work unit in
