@@ -1,0 +1,160 @@
+---
+id: PLAN-021
+title: Top-Down PULSE - `pulse onboard`, `pulse pair`, the First Reflect Now
+status: Draft
+tier: 2
+date: 2026-09-06
+delivered:
+tags: [plan, runner, onboarding, pairing, executors, daemon, agent-first]
+---
+
+# Plan: Top-Down PULSE - `pulse onboard`, `pulse pair`, the First Reflect Now
+
+## Tier
+
+Tier 2 - two new commands, one of which configures another machine, and a
+planner rule; no ADR covered them until
+[ADR-021](../decisions/ADR-021-top-down-onboarding.md). Waits for the
+human's `pulse decide` on the board proposal before step 1.
+
+## Goal
+
+A fresh project reaches its first kept commit after one command and two
+named human commits (the evaluators' baseline and `loop: on`), and an
+existing Linux machine becomes a pair of hands after one command - while the
+daemon stays the single supervisor and the dashboard stays read-only.
+
+## Context
+
+- `docs/scripts/pulse.py`: `init` (register + onboarding job), `plan_jobs`
+  (improve -> answer -> one reflect a day), `add_executor`, `probe_executor`,
+  `ssh_command`/`ssh_run` (argv in base64, `BatchMode=yes`), the daemon's
+  slot filling, `install_service`.
+- `docs/scripts/hosted/pulse-hands.sh` (the forced command),
+  `cloud-init.yaml` (the same hardening, applied at first boot - the source
+  of truth for what `pair` must reproduce), `azure-provision.sh`.
+- `docs/evolution/_template-constitution.md`, `_template-evaluators.md`,
+  `_template-archive.md` (the scaffold `onboard` copies; `loop: off`).
+- `docs/scripts/pulse-dashboard.py` is not touched by this plan (ADR-021
+  section 4); the Flywheel view is a later Tier 1 work unit under ADR-015.
+- Tests: `docs/scripts/tests/test_pulse.py` (ssh shim, `HANDS_SH`,
+  `ExecutorTestCase`), `test_pulse_dashboard.py`,
+  `test_pulse_dashboard_guards.py` (immutable).
+- Constraints: project-owned files are never committed or staged by the
+  command; `pair` and `onboard` are the human's unless the store holds a
+  `decide yes` on a proposal naming the target (`pair: <executor>` /
+  `onboard: <slug>`, seven days; ADR-021 section 3); no address in the store
+  or on the board (ssh alias); every remote step idempotent, every check
+  before the first change, anything unexpected a refusal; `sshd -t` before
+  any reload and a second admin connection before `pair` lets go.
+
+## Steps
+
+- [ ] **Step 1 - `pulse onboard`.** New subcommand wrapping `init`: scaffold
+      `docs/evolution/` from the templates only when the folder is entirely
+      absent; a partial folder is a refusal (exit 2, missing names listed)
+      before any write; queue the onboarding job and a `reflect` job
+      (priority 19, source `onboard-reflect:<slug>`, one ever per project)
+      directly - not through the planner; print the new paths
+      (`git status --short docs/evolution`), the two human gates, and the
+      `pulse service install` hint when the daemon is not alive; when
+      `PULSE_AGENT` is set, require the `onboard: <slug>` decision (section
+      3) first. Tests: scaffold created once, partial folder refused with
+      nothing written, existing files untouched, both jobs queued, index
+      unchanged, `init` behavior unchanged, agent without decision refused.
+- [ ] **Step 2 - planner rule.** `plan_jobs` may plan a `reflect` job for a
+      project that has never had one, regardless of the daily cadence, so a
+      project onboarded with plain `init` also starts within one loop.
+      Test: fresh project, empty board, first `plan_jobs` yields a reflect.
+- [ ] **Step 3 - `pulse pair`.** New subcommand: hub key generation, the
+      remote steps of ADR-021 section 2 as one idempotent script sent over
+      the admin session (`sudo` required; `--dry-run` prints every remote
+      command and changes nothing), `~/.ssh/config` alias, host key trusted
+      through the admin connection, `executor add`, `probe`. All checks run
+      before the first change; the sshd block is a drop-in followed by
+      `sshd -t` (failure: drop-in removed, no reload, stop), then a reload,
+      then a second admin connection (failure: drop-in removed and reloaded
+      through the held session). `--install-copilot` only on apt systems.
+      Refusals: an `authorized_keys` for `pulse` with any other line, a
+      missing `sudo`, a non-Linux uname, an alias name already in
+      `~/.ssh/config` pointing elsewhere, `PULSE_AGENT` set without a
+      `pair: <executor>` decision in the last seven days. Tests through the
+      ssh shim: the generated remote script is byte-stable (golden), every
+      refusal fires with nothing written, the `sshd -t` failure path removes
+      the drop-in, `add` + `probe` run, the alias is written once, the event
+      carries the decision id.
+- [ ] **Step 4 - docs and sync.** `docs/workflows/pulse.md` (onboard),
+      `docs/workflows/executors.md` (pair beside the Azure path; the "Never"
+      paragraph gains the decided-proposal exception), ADR-020 section 6
+      amendment note, `docs/context/pulse-store.md` (job sources, the
+      decision lookup), `AGENTS.md`, `README.md`, Copilot and Claude
+      instruction files; sync to adopters; ADR-021 `delivery: partially
+      delivered` after step 1 lands, `delivered` here.
+- [ ] **Step 5 - prove it, cheaply.** Onboard one scratch project on this
+      machine (`onboard` -> baseline -> `loop: on`) and record the time to
+      its first kept commit with the query below; run `pair --dry-run`
+      against the machine cloud-init already prepared and record that every
+      step reports present and nothing changed. No new VM is created for
+      this plan.
+
+## Rollback Plan
+
+- **Baseline:** brain `main` at the commit before step 1; the live store
+  `~/.pulse/pulse.sqlite` (schema 2); `~/.ssh/config` without new `Host`
+  blocks; no scratch project registered.
+- **Trigger:** any failure in `python3 -m unittest discover -s
+  docs/scripts/tests`; `pair` leaving a remote `authorized_keys` line without
+  `command=`/`restrict`, or an sshd that refuses the admin; `onboard`
+  touching an existing `docs/evolution/` file or staging anything; an
+  agent-run `pair`/`onboard` proceeding without its decision row; or the
+  human's no.
+- **Reversal:** `git revert` of the step's commit(s) on the brain and the
+  adopters' sync commits; `pulse executor remove` for an executor `pair`
+  added; the remote machine's `pulse` user, its `authorized_keys`, and the
+  `Match User pulse` block removed by the admin (the exact inverse is printed
+  by `pair --dry-run`); the `Host` alias block deleted from `~/.ssh/config`;
+  a scratch project's `docs/evolution/` scaffold deleted with the scratch
+  checkout.
+- **State safety:** the store gains job rows with new `source` prefixes
+  only - no schema change; project-owned files are written only where
+  absent and never committed; `pair` never touches a machine's existing
+  users, keys, or sshd defaults outside the `pulse` user and its `Match`
+  block; nothing is pushed.
+- **Recovery verification:** both test suites pass; `pulse executor list`
+  shows only the executors that existed before; the admin can still ssh to
+  the machine; `pulse status` unchanged.
+
+## Acceptance Criteria
+
+- [ ] `pulse onboard` on a fresh checkout: project registered, scaffold
+      present and uncommitted, onboarding + reflect jobs queued, the two
+      human gates printed; a second run changes nothing.
+- [ ] A project's first `reflect` is planned within one daemon loop of
+      onboarding (store evidence: the job's `created_at`).
+- [ ] `pulse pair --dry-run` prints every remote command and changes
+      nothing; against the machine cloud-init prepared it reports every step
+      present; the shim tests cover the `sshd -t` failure path and every
+      refusal; `PULSE_AGENT` set without a decision is refused.
+- [ ] Time from onboard to first kept commit is recorded for one scratch
+      project with the query below; the human steps between were exactly
+      two.
+- [ ] Relevant control-plane files are updated and synced; on closure,
+      `delivered:` is set here and ADR-021's `delivery:` mark is updated.
+
+## Verification
+
+```bash
+python3 docs/scripts/tests/test_pulse.py
+python3 -m unittest docs.scripts.tests.test_pulse_dashboard docs.scripts.tests.test_pulse_dashboard_guards
+bash -n docs/scripts/hosted/pulse-hands.sh docs/scripts/hosted/azure-provision.sh
+bash docs/scripts/check-links.sh && git diff --check
+python3 docs/scripts/pulse.py onboard /tmp/scratch-project --verify 'true'    # then: baseline, loop: on, watch pulse status
+python3 docs/scripts/pulse.py pair admin@host --name hands-2 --dry-run
+sqlite3 ~/.pulse/pulse.sqlite "SELECT e.at AS onboarded, MIN(r.finished_at) AS first_kept
+  FROM events e JOIN runs r ON r.project = e.subject
+  WHERE e.action = 'project.add' AND e.subject = '<slug>' AND r.status = 'done' AND r.commits > 0"   # ADR-021 section 5
+```
+
+- Walk every Edge Cases line of
+  [FEAT-014](../features/014-top-down-onboarding.md) against the code before
+  ticking Acceptance Criteria.

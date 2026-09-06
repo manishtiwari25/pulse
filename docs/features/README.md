@@ -53,6 +53,11 @@
   and the hub fetches the commits back as `pulse/<agent>/<job>`; `VOTE:`
   lines in the result file become the worker's votes; no push, no remote,
   no credential on the VM.
+- [`014-top-down-onboarding.md`](014-top-down-onboarding.md) - top-down PULSE
+  (ADR-021, Proposed 2026-09-06): `pulse onboard` registers a project, scaffolds
+  the loop's files, and queues the first reflect now; `pulse pair` turns an
+  existing Linux machine into hardened hands and enrolls it; the daemon stays
+  the one supervisor and the dashboard stays read-only with a Flywheel view.
 
 Copy `_template.md` when the new product direction needs a feature or product
 behavior spec. Tier 1 behavior inside an Accepted ADR uses a work unit in
