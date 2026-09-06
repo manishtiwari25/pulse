@@ -2361,6 +2361,11 @@ def write_brief(job, project, agent, clone, minutes, ballot=None, remote=False, 
     w("   `%s` is the project's environment recipe (ADR-026)%s: a change to it travels alone - one commit that touches" % (
         RECIPE_PATH, "" if recipe is not None else ", not written yet"))
     w("   nothing else - and waits for a human landing; it never holds a secret, a token, or a password.")
+    if recipe is None:
+        w("   When your job asks you to write it, use exactly this frontmatter (a Markdown body below it is yours):")
+        w("   `---` / `recipe: 1` / `tools: [name@version, ...]` (exact pins, at most 12, or `[]`) / `setup:` (a `- line`")
+        w("   list that replaces the lockfile heuristic; `[]` runs nothing; omit the key to keep the heuristic) /")
+        w("   `env:` (`NAME: value` lines, plain values only, or `{}`) / `services: []` / `suggested_check: <command>` / `---`.")
     w("4. Verify with the project's own checks%s before committing." % (" (`%s`)" % project["verify_cmd"] if project["verify_cmd"] else ""))
     w("5. Commit small with plain `git commit`: the clone is already configured with your name (%s), your" % agent)
     w("   address (%s@pulse.local), this run's own signing key, and a hook that adds Pulse-Agent/Pulse-Job/" % agent)

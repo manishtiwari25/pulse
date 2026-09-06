@@ -2589,6 +2589,20 @@ class RecipeTestCase(StoreFixture):
         self.assertTrue(any("GITHUB_TOKEN" in p and "secret" in p for p in pulse.parse_recipe(refused["GITHUB_TOKEN name"])[1]))
         self.assertTrue(any("at most 12" in p for p in pulse.parse_recipe(refused["13 tools"])[1]))
 
+    def test_a_brief_without_a_recipe_teaches_the_shape_and_one_with_it_does_not(self):
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        job = self.con.execute("SELECT * FROM jobs").fetchone()
+        project = pulse.project_by_slug(self.con, "proj")
+        without = pulse.write_brief(job, project, "aurora", "/tmp/clone", 10, ballot=[], recipe=None)
+        self.assertIn("not written yet", without)
+        self.assertIn("use exactly this frontmatter", without, "an onboarding worker in a clone has no scaffold to copy")
+        self.assertIn("`recipe: 1`", without)
+        recipe, _ = pulse.parse_recipe(self.recipe(tools=["node@22.1.0"], env={"CI": "1"}))
+        with_it = pulse.write_brief(job, project, "aurora", "/tmp/clone", 10, ballot=[], recipe=recipe)
+        self.assertNotIn("use exactly this frontmatter", with_it)
+        self.assertIn("node@22.1.0", with_it)
+        self.assertIn("set for you: CI", with_it)
+
     def test_read_recipe_reads_the_named_commit_and_absent_means_none(self):
         self.assertEqual(pulse.read_recipe(self.repo, "HEAD"), (None, []))
         first = self.commit_recipe(self.recipe(tools=["node@22.1.0"]))
