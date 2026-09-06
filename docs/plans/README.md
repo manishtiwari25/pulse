@@ -159,6 +159,14 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   `pulse settings set` (which now refuses bad values too), recorded with
   `human:dashboard` provenance; the machine panel shows the capacity line and
   a hands-wanted chip (ADR-025).
+- [`WU-021-runnable-clones.md`](WU-021-runnable-clones.md) - before the
+  worker starts and before every check, the runner installs exactly what the
+  base commit's lockfile pins (`uv sync --frozen`, `corepack pnpm install
+  --frozen-lockfile`, `npm ci`, ...) in the throwaway clone and the landing
+  worktree, so a project's own check can pass there; a machine that lacks
+  the tool loses only that project for a day (or until the human probes it)
+  and one `finding` a day (`runner/tools-wanted`) prints the install line;
+  lockfiles join the check-defining files (ADR-019, ADR-020, ADR-024).
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy

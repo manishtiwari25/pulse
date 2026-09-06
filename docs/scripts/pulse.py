@@ -1690,6 +1690,165 @@ def drop_committed_result_file(clone):
         return False
     git(clone, "rm", "-q", "--cached", RESULT_FILE)
     return git(clone, "commit", "-q", "-m", "runner: drop %s (never committed)" % RESULT_FILE).returncode == 0
+
+
+# --------------------------------------------------------------------------- #
+# Runnable clones (WU-021): a throwaway clone has no dependencies, so a project whose check needs them could
+# never land a job. Before the worker starts, and before every check, the runner installs exactly what the
+# project's own lockfile pins - the worker itself never installs anything (brief rule 3). One rule per
+# ecosystem, matched at the root of the base commit; the first lockfile of a group wins.
+# --------------------------------------------------------------------------- #
+
+SETUP_RULES = (
+    # (group, lockfile at the repository root, install command, the tool the command needs)
+    ("python", "uv.lock", "uv sync --frozen --all-extras", "uv"),
+    ("python", "poetry.lock", "poetry install --no-interaction", "poetry"),
+    ("python", "Pipfile.lock", "pipenv sync --dev", "pipenv"),
+    ("node", "pnpm-lock.yaml", "corepack pnpm install --frozen-lockfile --prefer-offline", "corepack"),
+    ("node", "yarn.lock", "corepack yarn install --frozen-lockfile", "corepack"),
+    ("node", "bun.lock", "bun install --frozen-lockfile", "bun"),
+    ("node", "bun.lockb", "bun install --frozen-lockfile", "bun"),
+    ("node", "package-lock.json", "npm ci --no-audit --no-fund", "npm"),
+    ("go", "go.sum", "go mod download", "go"),
+    ("rust", "Cargo.lock", "cargo fetch", "cargo"),
+    ("ruby", "Gemfile.lock", "bundle install", "bundle"),
+    ("php", "composer.lock", "composer install --no-interaction", "composer"),
+)
+SETUP_LOCKFILES = tuple(rule[1] for rule in SETUP_RULES)
+# Non-interactive, quiet, and never a prompt: corepack's download question would otherwise hang the hands.
+SETUP_ENV = (("CI", "1"), ("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0"), ("GIT_TERMINAL_PROMPT", "0"),
+             ("PIP_DISABLE_PIP_VERSION_CHECK", "1"), ("UV_NO_PROGRESS", "1"), ("npm_config_update_notifier", "false"),
+             ("npm_config_fund", "false"))
+SETUP_MINUTES = 10  # a first install may download a large toolchain; later ones hit the machine's cache
+UNFIT_HOURS = 24  # how long a missing tool keeps a project off an executor before the runner tries again
+# What the human runs on the machine that lacks the tool (as the executor user unless the line says sudo).
+TOOL_HINTS = {
+    "uv": "curl -LsSf https://astral.sh/uv/install.sh | sh   (installs to ~/.local/bin, which the hands put on PATH)",
+    "poetry": "curl -sSL https://install.python-poetry.org | python3 -",
+    "pipenv": "python3 -m pip install --user pipenv",
+    "corepack": "corepack ships with Node 22 (the copilot install); if missing: npm install -g corepack",
+    "npm": "install Node 22 (pulse pair prints the nodesource steps)",
+    "bun": "curl -fsSL https://bun.sh/install | bash",
+    "go": "sudo apt-get install -y golang-go",
+    "cargo": "curl https://sh.rustup.rs -sSf | sh -s -- -y",
+    "bundle": "sudo apt-get install -y ruby-full && gem install --user-install bundler",
+    "composer": "sudo apt-get install -y composer",
+    "make": "sudo apt-get install -y make",
+}
+
+
+def setup_command(root, rev):
+    """(shell command, lockfiles) that install the dependencies the base commit `rev` pins at the repository root,
+    or ("", []) when no lockfile is there. Env is exported first so it reaches every command in the chain."""
+    listed = git(root, "ls-tree", "--name-only", rev, timeout=30)
+    names = set(listed.stdout.split("\n")) if listed.returncode == 0 else set()
+    seen_groups, commands, files = set(), [], []
+    for group, lockfile, command, _tool in SETUP_RULES:
+        if lockfile in names and group not in seen_groups:
+            seen_groups.add(group)
+            commands.append(command)
+            files.append(lockfile)
+    if not commands:
+        return "", []
+    exports = " ".join("%s=%s" % kv for kv in SETUP_ENV)
+    return "export %s; %s" % (exports, " && ".join(commands)), files
+
+
+def missing_tool(setup_cmd, rc, output):
+    """The tool a failed setup could not find, or "" when the failure was something else. `command not found`
+    (bash exit 127) names the machine, not the job: the project stays off that executor until a probe passes."""
+    text = output or ""
+    tools = [tool for _g, lockfile, command, tool in SETUP_RULES if command in (setup_cmd or "")]
+    for tool in tools:
+        if re.search(r"(^|[\s:'`])%s: (command )?not found" % re.escape(tool), text, re.M) or \
+           re.search(r"%s: No such file or directory" % re.escape(tool), text):
+            return tool
+    if rc == 127 and tools:
+        return tools[0]
+    return ""
+
+
+def unfit_marks(con):
+    row = con.execute("SELECT value FROM meta WHERE key = 'unfit'").fetchone()
+    try:
+        marks = json.loads(row["value"]) if row else {}
+    except (TypeError, ValueError):
+        marks = {}
+    return marks if isinstance(marks, dict) else {}
+
+
+def save_unfit_marks(con, marks):
+    con.execute("INSERT INTO meta (key, value) VALUES ('unfit', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (json.dumps(marks, sort_keys=True),))
+
+
+def mark_unfit(con, executor, project, tool, now=None):
+    """Remember that `executor` lacks `tool` for `project` (WU-021): its jobs go to other slots for UNFIT_HOURS
+    or until a probe of that executor passes, and the executor keeps every project it can still serve."""
+    now = now or utc_now()
+    marks = unfit_marks(con)
+    marks.setdefault(executor, {})[project] = {"tool": tool, "at": now}
+    save_unfit_marks(con, marks)
+    event(con, "runner", "executor.unfit", executor, {"project": project, "tool": tool})
+    return marks[executor][project]
+
+
+def unfit_projects(con, executor, now=None):
+    """{project: tool} the executor cannot set up right now; marks older than UNFIT_HOURS are dropped."""
+    now = now or utc_now()
+    marks = unfit_marks(con)
+    current = {}
+    for project, mark in (marks.get(executor) or {}).items():
+        try:
+            fresh = (parse_iso(now) - parse_iso(mark["at"])).total_seconds() < UNFIT_HOURS * 3600
+        except (KeyError, TypeError, ValueError):
+            fresh = False
+        if fresh:
+            current[project] = mark.get("tool", "?")
+    if current != (marks.get(executor) or {}):
+        if current:
+            marks[executor] = {p: (marks.get(executor) or {})[p] for p in current}
+        else:
+            marks.pop(executor, None)
+        try:
+            save_unfit_marks(con, marks)
+        except sqlite3.OperationalError:
+            pass  # a read-only reader (the dashboard) sees the same answer without pruning the row
+    return current
+
+
+def clear_unfit(con, executor):
+    """A passing probe means the human may have installed the tool: every mark on the executor is dropped."""
+    marks = unfit_marks(con)
+    if executor in marks:
+        marks.pop(executor)
+        save_unfit_marks(con, marks)
+        event(con, "runner", "executor.fit", executor, "")
+
+
+def tools_wanted(con, brain, executor, tool, project, now, actor="daemon"):
+    """Once a day per executor and tool, one `finding` on the brain's board: the machine lacks a tool a project's
+    lockfile needs, with the install line for the human. A measurement, never an instruction."""
+    if brain is None:
+        return None
+    thread = "tools-wanted"
+    needle = "%s lacks %s" % (executor, tool)
+    if con.execute("SELECT 1 FROM posts WHERE project = ? AND kind = 'finding' AND area = 'runner' AND thread = ? "
+                   "AND date LIKE ? AND summary LIKE ?", (brain["slug"], thread, now[:10] + "%", needle + "%")).fetchone():
+        return None
+    hint = TOOL_HINTS.get(tool, "install %s on the machine" % tool)
+    summary = trunc("%s for %s: its jobs run elsewhere until the tool is installed and `pulse executor probe %s` passes"
+                    % (needle, project, executor), 230)
+    body = ("Setting up a clone of %s on executor `%s` failed because `%s` is not installed there (WU-021). The runner "
+            "installs what the project's lockfile pins before a worker starts; without the tool it cannot, so %s jobs "
+            "go to other slots for %d hours and again after that until a probe passes.\n\nOn %s, as the executor user "
+            "unless the line says sudo:\n\n    %s\n\nthen on the hub: `pulse executor probe %s`. The human owns the machine; "
+            "this post is a measurement, not a request to act.\n" % (project, executor, tool, project, UNFIT_HOURS, executor, hint, executor))
+    post = create_post(con, "finding", brain["slug"], "runner", thread, summary, body, agent=actor, check_agent=False, date=now)
+    event(con, actor, "capacity.tools-wanted", brain["slug"], {"executor": executor, "tool": tool, "project": project, "post": post["id"]})
+    return post
+
+
 # A worker that exits non-zero this quickly with nothing to show never took a model turn
 # (a rejected flag, a missing login): the runner's error, not the agent's, and not a run
 # the daily cap should count.
@@ -1724,9 +1883,11 @@ def daily_cap(con):
         return int(DEFAULT_SETTINGS["jobs_per_day"])
 
 
-def write_brief(job, project, agent, clone, minutes, ballot=None, remote=False):
+def write_brief(job, project, agent, clone, minutes, ballot=None, remote=False, setup=""):
     """The worker's whole world in one file. `ballot` is the list of cards the agent may vote on, rendered in so a
-    worker with no store (a remote executor, ADR-020) can answer with `VOTE:` lines; `remote` drops the CLI paths."""
+    worker with no store (a remote executor, ADR-020) can answer with `VOTE:` lines; `remote` drops the CLI paths;
+    `setup` names the install command the runner already ran in the clone (WU-021), so the worker knows the
+    dependencies are there and never installs anything itself."""
     brief = []
     w = brief.append
     w("# PULSE job %s for %s (agent %s)" % (job["id"], project["slug"], agent))
@@ -1753,6 +1914,9 @@ def write_brief(job, project, agent, clone, minutes, ballot=None, remote=False):
     w("   privacy, migrations, dependencies, deploy, publish, security posture, or a surface no ADR covers)")
     w("   or crosses a hard stop, stop and explain that in %s instead of doing it." % RESULT_FILE)
     w("3. Never push, never add remotes, never call gh, never touch credentials, never install packages.")
+    if setup:
+        w("   The runner already installed the dependencies the lockfile pins (it ran `%s`); use them as they are" % setup.split("; ", 1)[-1])
+        w("   (`uv run`, `corepack pnpm`, `npm exec` and the like) and never change a lockfile - dependencies are Tier 2.")
     w("4. Verify with the project's own checks%s before committing." % (" (`%s`)" % project["verify_cmd"] if project["verify_cmd"] else ""))
     w("5. Commit small with plain `git commit`: the clone is already configured with your name (%s), your" % agent)
     w("   address (%s@pulse.local), this run's own signing key, and a hook that adds Pulse-Agent/Pulse-Job/" % agent)
@@ -1901,6 +2065,15 @@ class ExecutorFault(PulseError):
     """The machine answered, and what it answered means a human must fix the machine (WU-014, ADR-020): its hands
     refuse a verb this hub needs, or its worker cannot log in. Retrying the job there cannot help, so the executor
     is drained and the job is given back to the queue with its attempt returned."""
+
+
+class ExecutorUnfit(PulseError):
+    """The machine lacks a tool one project's lockfile needs (WU-021). Only that project is kept off it, for a
+    while; the job goes back to the queue with its attempt returned and the executor stays active for the rest."""
+
+    def __init__(self, message, tool, project):
+        super().__init__(message, 2)
+        self.tool, self.project = tool, project
 
 
 # A worker rejected at launch with one of these in its output failed for the machine's login, not the job's content.
@@ -2511,6 +2684,9 @@ def probe_executor(con, name, actor="runner", now=None):
         con.execute("UPDATE executors SET last_probe_at = ?, probe_note = ?, errors = 0, backoff_minutes = 0, next_probe_at = '', "
                     "status = CASE WHEN status = 'drained' AND ? = 'human' THEN 'active' WHEN status = 'unreachable' THEN 'active' ELSE status END "
                     "WHERE name = ?", (now, note, actor, name))
+        if actor == "human":
+            # The human probes after installing a tool (WU-021): the projects kept off this machine may try again.
+            clear_unfit(con, name)
     else:
         con.execute("UPDATE executors SET last_probe_at = ?, probe_note = ? WHERE name = ?", (now, note, name))
     event(con, actor, "executor.probe", name, {"ok": ok, "note": note})
@@ -3537,11 +3713,29 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
     ballot = []
     transport_error = False
     fault = False
+    unfit = None
     pubkey = ""
     try:
         pubkey = make_run_key(ex.key_path, agent, run_id)
         con.execute("UPDATE runs SET signing_pubkey = ? WHERE id = ?", (pubkey, run_id))
         base = ex.prepare()
+        setup_cmd, setup_files = setup_command(root, base)
+        if setup_cmd and not dry_run:
+            # The clone must be runnable before a worker spends a minute in it (WU-021): install exactly what the
+            # base commit's lockfile pins, on the executor, with its own cap; the worker never installs anything.
+            rc, sout = ex.verify(setup_cmd, max(minutes, SETUP_MINUTES))
+            log.append("$ %s  # setup from %s\n%s" % (setup_cmd, ", ".join(setup_files), (sout or "")[-20000:]))
+            if rc is None:
+                raise PulseError("setup on %s timed out after %d minutes (%s); the job goes back to the queue"
+                                 % (ex.name, max(minutes, SETUP_MINUTES), ", ".join(setup_files)))
+            if rc != 0:
+                tool = missing_tool(setup_cmd, rc, sout)
+                tail = " ".join((sout or "").split())[-300:] or "no output"
+                if tool:
+                    raise ExecutorUnfit("setup on %s needs `%s`, which is not installed there (%s); %s jobs run elsewhere "
+                                        "until it is and `pulse executor probe %s` passes" % (ex.name, tool, tail, project["slug"], ex.name),
+                                        tool, project["slug"])
+                raise PulseError("setup failed on %s (exit %d): %s" % (ex.name, rc, tail))
         try:
             # Suggestions only: a vote on an amendment carries a text hash and a Read: line, which a VOTE: line cannot.
             ballot, _amendments = ballot_items(con, project["slug"], agent=agent, now=now, session=run_id)
@@ -3551,7 +3745,7 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
                     item["body"] = (post_row(con, item["id"]) or {}).get("body", "")
         except Exception as exc:  # the ballot is a courtesy to the worker, never a reason to fail the run
             log.append("ballot unavailable: %r" % (exc,))
-        brief_text = write_brief(job, project, agent, clone, minutes, ballot=ballot, remote=ex.remote)
+        brief_text = write_brief(job, project, agent, clone, minutes, ballot=ballot, remote=ex.remote, setup=setup_cmd)
         brief_path = work_dir / ("%s.brief.md" % job["id"])
         brief_path.write_text(brief_text, encoding="utf-8")
         remote_brief = ex.write_brief(brief_text)
@@ -3683,6 +3877,12 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
         fault = True
         status, summary = "error", str(exc)
         log.append(summary)
+    except ExecutorUnfit as exc:
+        # The machine lacks one tool for this project (WU-021): the project waits for other slots, the machine
+        # keeps its other projects, the job goes back with its attempt returned, and the human reads one finding.
+        unfit = exc
+        status, summary = "error", str(exc)
+        log.append(summary)
     except PulseError as exc:
         status, summary = "error", str(exc)
         log.append(summary)
@@ -3702,6 +3902,9 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
     con.execute("UPDATE runs SET finished_at = ?, status = ?, exit_code = ?, seconds = ?, branch = ?, commits = ?, summary = ?, verify = ? WHERE id = ?",
                 (utc_now(), status, exit_code, seconds, branch, commits, summary, verify_note, run_id))
     note_executor_run(con, ex.name, status, summary, transport_error=transport_error, now=now, fault=fault)
+    if unfit is not None:
+        mark_unfit(con, ex.name, unfit.project, unfit.tool, now=now)
+        tools_wanted(con, brain_project(con), ex.name, unfit.tool, unfit.project, now, actor=agent)
     if status == "stale":
         # Another runner holds the job now; its result, not this one, decides the job.
         event(con, agent, "run.finish", run_id, {"status": status, "commits": commits, "branch": "", "executor": ex.name})
@@ -3709,7 +3912,7 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
     job_status = "done" if status in ("done", "dry-run") else "failed"
     if status == "dry-run":
         job_status = "queued"
-    elif status == "error" and fault:
+    elif status == "error" and (fault or unfit is not None):
         # The machine, not the runner or the agent, failed: the job goes back with its attempt returned.
         job_status = "queued"
         con.execute("UPDATE jobs SET attempts = MAX(attempts - 1, 0) WHERE id = ?", (job["id"],))
@@ -3813,6 +4016,18 @@ def take_job(con, agent, project=None, job_id=None, dry_run=False, now=None, exe
     projects = None if exrow["projects"] == "*" else exrow["projects"].split(",")
     if project and projects is not None and project not in projects:
         return None, exrow, "executor %s does not serve %s (projects %s)" % (exrow["name"], project, exrow["projects"])
+    unfit = unfit_projects(con, exrow["name"], now)
+    if unfit:
+        # A tool the project needs is missing on this machine (WU-021): its jobs go to other slots for now.
+        if project and project in unfit:
+            return None, exrow, "executor %s lacks %s for %s (install it, then `pulse executor probe %s`)" % (
+                exrow["name"], unfit[project], project, exrow["name"])
+        if projects is None:
+            projects = [r["slug"] for r in con.execute("SELECT slug FROM projects WHERE status = 'active'").fetchall()]
+        projects = [p for p in projects if p not in unfit]
+        if not projects:
+            return None, exrow, "executor %s lacks %s (install it, then `pulse executor probe %s`)" % (
+                exrow["name"], ", ".join(sorted(set(unfit.values()))), exrow["name"])
     job = lease_job(con, agent, project=project, job_id=job_id, now=now, projects=projects)
     if job is None:
         return None, exrow, "no queued job" + (" for %s" % project if project else "") + (" on %s" % exrow["name"] if exrow["name"] != LOCAL_EXECUTOR else "")
@@ -3845,7 +4060,8 @@ LAND_REFUSED_PATHS = ("docs/evolution/constitution.md", "docs/evolution/evaluato
 # branch's version: the check belongs to the base, a variant cannot vouch for itself (project-light, 2026-09-06: a
 # Makefile that echoed "skipping tests" instead of failing landed because it made its own check green).
 CHECK_FILES = ("Makefile", "GNUmakefile", "makefile", "package.json", "pyproject.toml", "setup.cfg", "setup.py", "tox.ini",
-               "pytest.ini", "noxfile.py", "conftest.py", "Justfile", "justfile", "Taskfile.yml", "Taskfile.yaml", "Rakefile")
+               "pytest.ini", "noxfile.py", "conftest.py", "Justfile", "justfile", "Taskfile.yml", "Taskfile.yaml", "Rakefile"
+               ) + SETUP_LOCKFILES  # a branch never changes what the check installs (WU-021): dependencies are Tier 2
 CHECK_CONFIG_RE = re.compile(r"^[^/]+\.config\.(js|cjs|mjs|ts|json)$")
 
 
@@ -4038,6 +4254,21 @@ def land_branch(con, project, branch, actor, job=None, home=None, verify=True, n
             guarded = check_definition_files(project["verify_cmd"], files, root)
             if guarded:
                 run_base_check_files(worktree, before, guarded)
+            setup_cmd, setup_files = setup_command(root, before)
+            if setup_cmd:
+                # The worktree is as bare as a clone (WU-021): install what the default branch's lockfile pins before
+                # the check. A setup failure says nothing about the branch, so the branch stays and lands later.
+                try:
+                    prep = subprocess.run(setup_cmd, shell=True, cwd=str(worktree), capture_output=True, text=True,
+                                          timeout=max(60, max(minutes, SETUP_MINUTES) * 60))
+                    prep_rc, prep_tail = prep.returncode, " ".join(((prep.stdout or "") + (prep.stderr or "")).split())[-300:]
+                except subprocess.TimeoutExpired:
+                    prep_rc, prep_tail = None, "timed out after %d min" % max(minutes, SETUP_MINUTES)
+                if prep_rc != 0:
+                    event(con, actor, "land.deferred", branch, {"project": project["slug"], "setup": ", ".join(setup_files),
+                                                                 "rc": prep_rc, "tail": prep_tail})
+                    return "deferred", "setup from %s failed on this machine (%s); nothing landed, try again once it is fixed" % (
+                        ", ".join(setup_files), prep_tail or "exit %s" % prep_rc)
             try:
                 ver = subprocess.run(project["verify_cmd"], shell=True, cwd=str(worktree), capture_output=True, text=True,
                                      timeout=max(60, minutes * 60))
@@ -5058,7 +5289,11 @@ def status_text(con):
 def executors_line(con, now=None):
     parts = []
     for row in executor_rows(con):
-        parts.append("%s %s (%d/%d busy)" % (row["name"], row["status"], executor_running(con, row["name"], now), int(row["workers"])))
+        part = "%s %s (%d/%d busy)" % (row["name"], row["status"], executor_running(con, row["name"], now), int(row["workers"]))
+        unfit = unfit_projects(con, row["name"], now)
+        if unfit:
+            part += "; lacks " + ", ".join("%s for %s" % (tool, project) for project, tool in sorted(unfit.items()))
+        parts.append(part)
     return ", ".join(parts)
 
 

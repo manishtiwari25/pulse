@@ -222,6 +222,20 @@
   machine would help (`runner/hands-wanted`, one finding a day) instead of
   buying one on a hunch. Apply when: "add a VM" is proposed for throughput,
   or a slot idles while work is queued. Source: WU-019.
+- `2026-09-06` - A check that passes only in an installed checkout is not a
+  check the runner can use until the runner installs. `capacity` read
+  `queued 0` beside a free slot while 65 jobs had failed: two adopters'
+  checks (`make test` → `.venv/...`, `corepack pnpm ... test` → `vitest`)
+  could never pass in a fresh clone, and the brain's own suite was red on
+  Linux only (`stat -f` on GNU stat, sshd's `SSH_ORIGINAL_COMMAND` reaching
+  the hands under test). A new VM would have failed identically. Make the
+  clone runnable first: install exactly what the base commit's lockfile
+  pins, on the executor, before the worker and before every check; a
+  missing tool marks the machine unfit for that project only and the
+  runner prints the install line (`runner/tools-wanted`). Apply when: runs
+  end "N commit(s) but verify exit 1/2/127", a queue is empty with slots
+  free, or a check fails on one OS and passes on another. Source: WU-021,
+  commit `5eb76b5`.
 
 ## Populate When
 

@@ -1468,6 +1468,178 @@ class LandingTestCase(StoreFixture):
             os.environ.pop("PULSE_JOB", None)
 
 
+class RunnableCloneTestCase(StoreFixture):
+    """WU-021: a throwaway clone is made runnable before the worker starts and before every check - the runner
+    installs what the base commit's lockfile pins; a machine that lacks the tool loses only that project."""
+
+    MISSING = "definitely-missing-tool-xyz"
+
+    def setUp(self):
+        super().setUp()
+        self._rules = pulse.SETUP_RULES
+        self._path = os.environ.get("PATH", "")
+        self.tools = self.tmp / "tools"
+        self.tools.mkdir()
+        os.environ["PATH"] = "%s:%s" % (self.tools, self._path)
+
+    def tearDown(self):
+        pulse.SETUP_RULES = self._rules
+        os.environ["PATH"] = self._path
+        super().tearDown()
+
+    def tool(self, name, body):
+        script = self.tools / name
+        script.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+        script.chmod(0o755)
+        return script
+
+    def commit_lockfile(self, name="fake.lock", repo=None):
+        repo = repo or self.repo
+        (repo / name).write_text("pinned\n", encoding="utf-8")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "add %s" % name)
+
+    def use_rule(self, tool, command=None):
+        pulse.SETUP_RULES = (("fake", "fake.lock", command or "%s install" % tool, tool),)
+
+    def test_setup_command_reads_root_lockfiles_at_the_base_commit_only(self):
+        self.assertEqual(pulse.setup_command(self.repo, "HEAD"), ("", []), "no lockfile, no setup")
+        (self.repo / "sub").mkdir()
+        (self.repo / "sub" / "package-lock.json").write_text("{}", encoding="utf-8")
+        self.commit_lockfile("sub/package-lock.json")
+        self.assertEqual(pulse.setup_command(self.repo, "HEAD"), ("", []), "a nested lockfile is not the project's")
+        self.commit_lockfile("uv.lock")
+        self.commit_lockfile("pnpm-lock.yaml")
+        (self.repo / "poetry.lock").write_text("uncommitted\n", encoding="utf-8")  # only the working tree has it
+        cmd, files = pulse.setup_command(self.repo, "HEAD")
+        self.assertEqual(files, ["uv.lock", "pnpm-lock.yaml"], "one rule per ecosystem, the first lockfile of a group wins")
+        self.assertTrue(cmd.startswith("export CI=1 "), cmd)
+        self.assertIn("COREPACK_ENABLE_DOWNLOAD_PROMPT=0", cmd)
+        self.assertIn("; uv sync --frozen --all-extras && corepack pnpm install --frozen-lockfile --prefer-offline", cmd)
+        base = git(self.repo, "rev-parse", "HEAD~2").stdout.strip()
+        self.assertEqual(pulse.setup_command(self.repo, base), ("", []), "detection follows the commit, not the tree")
+        for lockfile in pulse.SETUP_LOCKFILES:
+            self.assertIn(lockfile, pulse.CHECK_FILES, "a branch never changes what the check installs")
+
+    def test_missing_tool_names_the_machine_not_the_job(self):
+        cmd, _ = "export CI=1; uv sync --frozen --all-extras && corepack pnpm install --frozen-lockfile --prefer-offline", None
+        self.assertEqual(pulse.missing_tool(cmd, 127, "bash: line 1: uv: command not found"), "uv")
+        self.assertEqual(pulse.missing_tool(cmd, 127, "sh: corepack: not found"), "corepack")
+        self.assertEqual(pulse.missing_tool(cmd, 127, ""), "uv", "exit 127 with no words still blames a tool")
+        self.assertEqual(pulse.missing_tool(cmd, 1, "error: failed to resolve"), "", "a real failure is the job's")
+        self.assertEqual(pulse.missing_tool("", 127, "x: command not found"), "")
+
+    def test_setup_runs_in_the_clone_before_the_worker_and_the_brief_says_so(self):
+        self.use_rule("fake-tool")
+        self.tool("fake-tool", 'test "$1" = install && touch .installed && echo "fake-tool installed in $PWD"')
+        self.commit_lockfile()
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script(
+            'test -f .installed || { echo "setup did not run first" >&2; exit 1; }\n'
+            'grep -q "fake-tool install" "$PULSE_BRIEF" || { echo "the brief does not name the setup" >&2; exit 1; }\n'
+            'echo "changed by $PULSE_AGENT" >> README.md && git commit -qam "worker change"\n'
+            'printf "SUMMARY: ran with dependencies installed\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"])
+        log = Path(run["log"]).read_text(encoding="utf-8")
+        self.assertIn("# setup from fake.lock", log)
+        self.assertIn("fake-tool installed in", log)
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {}, "nothing was missing")
+
+    def test_a_missing_tool_keeps_only_that_project_off_the_machine_and_returns_the_attempt(self):
+        self.use_rule(self.MISSING)
+        self.commit_lockfile()
+        self.con.execute("UPDATE projects SET brain = 1 WHERE slug = 'proj'")
+        other = make_repo(self.tmp, "other")
+        pulse.add_project(self.con, str(other), verify_cmd="true", actor="human")
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script('echo "changed" >> README.md && git commit -qam "c" && printf "SUMMARY: ok\\n" > PULSE_RESULT.md')
+        pulse.add_job(self.con, "other", "task", "tidy the README of the other project", created_by="human")
+        self.con.execute("UPDATE jobs SET status = 'cancelled' WHERE project = 'other'")
+        run, reason = pulse.work_once(self.con, "aurora", project="proj", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("needs `%s`" % self.MISSING, run["summary"])
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual(job["status"], "queued", "the job waits for a machine that has the tool")
+        self.assertEqual(job["attempts"], 0, "the attempt is returned: the machine failed, not the agent")
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {"proj": self.MISSING})
+        self.assertEqual(self.con.execute("SELECT count(*) FROM posts WHERE kind = 'result'").fetchone()[0], 0, "no result for a machine's miss")
+        findings = self.con.execute("SELECT * FROM posts WHERE kind = 'finding' AND thread = 'tools-wanted'").fetchall()
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0]["summary"].startswith("local lacks %s for proj" % self.MISSING), findings[0]["summary"])
+        self.assertIn("pulse executor probe local", findings[0]["body"])
+        # the same project is not taken again here; another project still is
+        job2, exrow, why = pulse.take_job(self.con, "aurora", project="proj", now=NOW)
+        self.assertIsNone(job2)
+        self.assertIn("lacks %s for proj" % self.MISSING, why)
+        self.con.execute("UPDATE jobs SET status = 'queued' WHERE project = 'other'")
+        job3, exrow, why = pulse.take_job(self.con, "aurora", now=NOW)
+        self.assertIsNotNone(job3, why)
+        self.assertEqual(job3["project"], "other", "the machine keeps every project it can still serve")
+        self.con.execute("UPDATE jobs SET status = 'cancelled' WHERE project = 'other'")
+        job4, exrow, why = pulse.take_job(self.con, "aurora", now=NOW)
+        self.assertIsNone(job4)
+        self.assertEqual(why, "no queued job", "other projects may still be served; proj alone is off this machine")
+        self.con.execute("UPDATE projects SET status = 'paused' WHERE slug = 'other'")
+        job5, exrow, why = pulse.take_job(self.con, "aurora", now=NOW)
+        self.assertIsNone(job5)
+        self.assertIn("lacks %s" % self.MISSING, why, "with nothing else to serve, the reason names the tool")
+        self.con.execute("UPDATE projects SET status = 'active' WHERE slug = 'other'")
+        # a second miss the same day adds no second finding; the mark expires by itself
+        pulse.tools_wanted(self.con, pulse.brain_project(self.con), "local", self.MISSING, "proj", NOW)
+        self.assertEqual(self.con.execute("SELECT count(*) FROM posts WHERE kind = 'finding' AND thread = 'tools-wanted'").fetchone()[0], 1)
+        self.assertIn("lacks %s for proj" % self.MISSING, pulse.executors_line(self.con, NOW))
+        later = pulse.plus_hours(NOW, pulse.UNFIT_HOURS + 1)
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, later), {}, "the runner tries again after %dh" % pulse.UNFIT_HOURS)
+        self.assertNotIn("lacks", pulse.executors_line(self.con, later), "an expired mark is pruned from the store")
+
+    def test_a_setup_failure_that_is_not_a_missing_tool_is_a_runner_error(self):
+        self.use_rule("fake-tool")
+        self.tool("fake-tool", 'echo "resolution failed: boom" >&2; exit 1')
+        self.commit_lockfile()
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script('printf "SUMMARY: never runs\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("setup failed on local (exit 1): resolution failed: boom", run["summary"])
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual(job["status"], "queued", "a runner error goes back to the queue until attempts run out")
+        self.assertEqual(job["attempts"], 1, "the attempt counts: the setup itself is broken")
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {})
+        self.assertEqual(self.con.execute("SELECT count(*) FROM posts WHERE thread = 'tools-wanted'").fetchone()[0], 0)
+
+    def test_landing_installs_in_the_worktree_and_defers_when_it_cannot(self):
+        self.use_rule("fake-tool")
+        marker = self.tmp / "installs"
+        self.tool("fake-tool", 'touch .installed && echo "$PWD" >> "%s"' % marker)
+        self.con.execute("UPDATE projects SET verify_cmd = 'test -f .installed' WHERE slug = 'proj'")
+        self.commit_lockfile()
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script('echo "changed by $PULSE_AGENT" >> README.md && git commit -qam "c" && printf "SUMMARY: ok\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"])
+        self.assertEqual(marker.read_text(encoding="utf-8").count("\n"), 1, "installed once, in the clone")
+        # the tool breaks before the landing: the branch waits instead of being blamed
+        self.tool("fake-tool", 'echo "disk full" >&2; exit 1')
+        project = pulse.project_rows(self.con)[0]
+        results = pulse.land_pending(self.con, project, actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["deferred"], results)
+        self.assertIn("setup from fake.lock failed", results[0][1])
+        self.assertEqual(git(self.repo, "rev-parse", "--verify", "refs/heads/%s" % run["branch"]).returncode, 0, "the branch stays")
+        self.assertNotIn("changed by aurora", (self.repo / "README.md").read_text(encoding="utf-8"))
+        # the tool works again: the check runs in an installed worktree and the branch lands
+        self.tool("fake-tool", 'touch .installed && echo "$PWD" >> "%s"' % marker)
+        results = pulse.land_pending(self.con, project, actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["landed"], results)
+        self.assertIn("changed by aurora", (self.repo / "README.md").read_text(encoding="utf-8"))
+        self.assertEqual(marker.read_text(encoding="utf-8").count("\n"), 2, "installed again, in the landing worktree")
+        self.assertFalse((self.repo / ".installed").exists(), "the real checkout was never installed into")
+
+
 class MigrationTestCase(unittest.TestCase):
     """The Markdown board becomes rows; the tally stays identical to board.sh."""
 
@@ -2163,3 +2335,84 @@ class ExecutorTestCase(HandsFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunnableCloneRemoteTestCase(HandsFixture):
+    """WU-021 over ssh: the setup runs through the hands' `verify` verb; a machine that lacks a tool stays active
+    for its other projects and takes the project back after a human probe."""
+
+    MISSING = "definitely-missing-tool-xyz"
+
+    def setUp(self):
+        super().setUp()
+        self._rules = pulse.SETUP_RULES
+        self.tools = self.tmp / "tools"
+        self.tools.mkdir()
+        os.environ["PATH"] = "%s:%s" % (self.tools, os.environ.get("PATH", ""))
+
+    def tearDown(self):
+        pulse.SETUP_RULES = self._rules
+        super().tearDown()
+
+    def prepare(self, tool, body=None):
+        pulse.SETUP_RULES = (("fake", "fake.lock", "%s install" % tool, tool),)
+        if body is not None:
+            script = self.tools / tool
+            script.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+            script.chmod(0o755)
+        (self.repo / "fake.lock").write_text("pinned\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "add fake.lock")
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        self.add_hands()
+
+    def test_setup_runs_on_the_machine_before_the_worker(self):
+        self.prepare("fake-tool", 'touch .installed && echo "installed in $PWD"')
+        worker = self.worker_script(
+            'test -f .installed || { echo "setup did not run first" >&2; exit 1; }\n'
+            'echo "changed by $PULSE_AGENT" >> README.md && git commit -qam "worker change"\n'
+            'printf "SUMMARY: ran with dependencies installed\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"])
+        log = Path(run["log"]).read_text(encoding="utf-8")
+        self.assertIn("# setup from fake.lock", log)
+        self.assertIn("installed in %s" % (self.remote / run["job_id"] / "clone"), log, "installed in the remote clone")
+        verbs = []
+        for line in (self.tmp / "shim.log").read_text(encoding="utf-8").splitlines():
+            if " b64 " in line:
+                verbs.append(base64.b64decode(line.split(" b64 ", 1)[1].split()[0]).split(b"\0")[0].decode())
+        self.assertLess(verbs.index("verify"), verbs.index("brief"), "the setup precedes the brief and the worker: %s" % verbs)
+
+    def test_a_missing_tool_keeps_the_machine_active_and_a_human_probe_gives_the_project_back(self):
+        self.prepare(self.MISSING)
+        self.con.execute("UPDATE projects SET brain = 1 WHERE slug = 'proj'")
+        worker = self.worker_script('printf "SUMMARY: never runs\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("needs `%s`" % self.MISSING, run["summary"])
+        row = pulse.executor_row(self.con, "hands")
+        self.assertEqual(row["status"], "active", "a missing tool is not a fault: the machine keeps its other projects")
+        self.assertEqual(int(row["errors"]), 0)
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual((job["status"], job["attempts"]), ("queued", 0))
+        self.assertEqual(pulse.unfit_projects(self.con, "hands", NOW), {"proj": self.MISSING})
+        finding = self.con.execute("SELECT * FROM posts WHERE kind = 'finding' AND thread = 'tools-wanted'").fetchone()
+        self.assertIsNotNone(finding)
+        self.assertTrue(finding["summary"].startswith("hands lacks %s for proj" % self.MISSING), finding["summary"])
+        self.assertFalse((self.remote / run["job_id"]).exists(), "the job directory is cleaned like any run's")
+        _, _, why = pulse.take_job(self.con, "aurora", now=NOW, executor="hands")
+        self.assertIn("hands lacks %s" % self.MISSING, why)
+        self.assertIn("lacks %s for proj" % self.MISSING, pulse.executors_line(self.con, NOW))
+        # the daemon's own probe changes nothing; the human's probe, after installing the tool, does
+        ok, note = pulse.probe_executor(self.con, "hands", actor="daemon", now=NOW)
+        self.assertTrue(ok, note)
+        self.assertEqual(pulse.unfit_projects(self.con, "hands", NOW), {"proj": self.MISSING})
+        ok, note = pulse.probe_executor(self.con, "hands", actor=pulse.HUMAN_AGENT, now=NOW)
+        self.assertTrue(ok, note)
+        self.assertEqual(pulse.unfit_projects(self.con, "hands", NOW), {})
+        self.assertEqual(self.con.execute("SELECT count(*) FROM events WHERE action = 'executor.fit'").fetchone()[0], 1)
+        job2, _, why = pulse.take_job(self.con, "aurora", now=NOW, executor="hands")
+        self.assertIsNotNone(job2, why)
+        self.assertEqual(job2["id"], run["job_id"], "the same job is taken there again")

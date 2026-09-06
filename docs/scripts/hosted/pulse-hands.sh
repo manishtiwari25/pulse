@@ -38,6 +38,9 @@ set -euo pipefail
 
 WORKDIR="${PULSE_HANDS_WORKDIR:-/srv/pulse}"
 RESULT_FILE="PULSE_RESULT.md"
+# sshd starts a forced command with a minimal PATH; the tools a project's lockfile needs (uv, cargo, bun,
+# poetry) install under the executor user's home, so the hands see them too (WU-021).
+export PATH="${HOME:-/nonexistent}/.local/bin:${HOME:-/nonexistent}/.cargo/bin:${HOME:-/nonexistent}/.bun/bin:$PATH"
 
 die() { echo "pulse-hands: $*" >&2; exit 2; }
 

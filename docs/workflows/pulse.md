@@ -124,9 +124,16 @@ and `Pulse-Executor:` trailers - so a worker's commit is the agent's, signed
 by a key that lives as long as the run, never carries the human's
 signature, and never waits on the human's signing agent (a locked 1Password
 once hung every clone commit for a minute and failed it; pinning
-`gpg.ssh.program` keeps a machine-wide signer out), writes the brief
+`gpg.ssh.program` keeps a machine-wide signer out), installs what the base
+commit's lockfile pins so the clone is runnable (`uv sync --frozen`,
+`corepack pnpm install --frozen-lockfile`, `npm ci`, ... - one frozen,
+non-interactive command per ecosystem found at the repository root, run on
+the executor under its own cap; the worker itself never installs anything
+and a machine that lacks the tool loses only that project for a day while
+one `finding` a day on `runner/tools-wanted` prints the install line -
+[WU-021](../plans/WU-021-runnable-clones.md)), writes the brief
 (`<job>.brief.md`: the task, the project's rules, Tier 0/1 only, how to
-report), runs one non-interactive worker - `copilot -p <brief> -C <clone>
+report, the setup already run), runs one non-interactive worker - `copilot -p <brief> -C <clone>
 --allow-all-tools --deny-tool 'shell(git push)' --deny-tool 'shell(git
 remote)' --deny-tool 'shell(gh:*)' --add-dir <PULSE_HOME> --add-dir <dir of
 pulse.py> --add-dir <tmp> --disable-builtin-mcps --no-ask-user -s
@@ -202,7 +209,9 @@ session; a vote still approves nothing.
 
 **Landing** (`pulse land`, run first in every daemon loop; ADR-024): a
 verified branch reaches the default branch by itself. The runner merges it in
-a throwaway worktree under `PULSE_HOME/work/`, runs the project's verify
+a throwaway worktree under `PULSE_HOME/work/`, installs the default branch's
+pinned dependencies there the same way (a setup failure defers the branch,
+never blames it), runs the project's verify
 command on the merged result, and only then fast-forwards the checkout - and
 only when the checkout is on the default branch with no uncommitted tracked
 change; otherwise the landing is `deferred` and tried again next loop, so a
@@ -225,7 +234,9 @@ merging at the same time.
 Three guards keep the check honest (ADR-024 D8-D10). **The check belongs to
 the base**: when the branch changed a file that defines the check
 (`Makefile`, `package.json`, `pyproject.toml`, `tox.ini`, `pytest.ini`, a
-top-level `*.config.*`, any path the verify command names, and the like), the
+top-level `*.config.*`, every lockfile the runner installs from - `uv.lock`,
+`pnpm-lock.yaml`, `package-lock.json`, ... (WU-021) - any path the verify
+command names, and the like), the
 landing check runs with the default branch's version of those files - a
 variant that makes its own check green proves nothing; the note reads
 `check run with main's Makefile`. **Some paths never land**: the constitution,

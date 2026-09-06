@@ -260,6 +260,53 @@ help ([WU-019](../plans/WU-019-runner-throughput.md)):
 - **What stays yours:** the money, the credential, `jobs_per_day` and the
   other caps, and the merge of what the extra hands produce.
 
+## What a machine needs installed
+
+A throwaway clone has no dependencies, so before the worker starts and
+before every check the runner installs exactly what the project's lockfile
+pins ([WU-021](../plans/WU-021-runnable-clones.md)): `uv.lock` → `uv sync
+--frozen --all-extras`, `poetry.lock` → `poetry install`, `pnpm-lock.yaml` →
+`corepack pnpm install --frozen-lockfile`, `yarn.lock` → `corepack yarn
+install --frozen-lockfile`, `package-lock.json` → `npm ci`, `bun.lock` →
+`bun install --frozen-lockfile`, `go.sum` → `go mod download`, `Cargo.lock`
+→ `cargo fetch`, `Gemfile.lock` → `bundle install`, `composer.lock` →
+`composer install` - the first lockfile of each ecosystem at the repository
+root of the base commit, joined with `&&`, non-interactive. The worker never
+installs anything itself and a branch that edits a lockfile is checked
+against the default branch's copy: dependencies stay Tier 2.
+
+The *tools* those commands need are the machine's, and installing one is
+your act:
+
+- **What the runner does when a tool is missing.** The setup ends
+  `command not found`; the run is an `error`, the job goes back to the queue
+  with its attempt returned, and the machine is marked *unfit for that
+  project only* (`meta.unfit`) for 24 hours - it keeps serving every other
+  project and is never drained for this. `pulse status` shows `pulse-vm1
+  active (0/1 busy); lacks uv for project-light`, and once a day per machine
+  and tool the daemon posts one `finding` on the brain's board, area
+  `runner`, thread `tools-wanted`, with the install line. Data for you, never
+  an instruction.
+- **Install, then probe.** On the machine, as the executor user unless the
+  line says `sudo`:
+  - `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh` (lands in
+    `~/.local/bin`, which the hands put on PATH; refresh hands older than
+    WU-021 with `pulse pair <admin@host> --name <name>` first)
+  - `make`: `sudo apt-get install -y make` (a `make test` check needs it
+    even when the lockfile is `uv.lock`)
+  - Node tooling: `corepack` ships with the Node 22 that `pulse pair`
+    installs alongside `@github/copilot`; `pnpm`/`yarn` download through it
+    on first use
+  - `poetry`, `bun`, `cargo`, `go`, `bundle`, `composer`: the `finding`
+    prints the line for each
+  Then on the hub: `pulse executor probe <name>`. A **human** probe clears
+  the machine's unfit marks (the daemon's own rechecks do not, so a machine
+  is not retried every few minutes); the project's next job may run there
+  again.
+- **The provisioning template** (`docs/scripts/hosted/`) installs git,
+  Python 3, Node 22, and the Copilot CLI. Add `make` and `uv` to a new
+  machine when a Python project is on the hub.
+
 ## Watch, drain, remove
 
 - **Daemon log** (`~/.pulse/logs/daemon.log`): `error <job> … on vm1:
