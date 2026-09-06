@@ -251,6 +251,7 @@ absent, skip them.
   without touching the working tree, posts a `result`, and removes the
   clone. `pulse daemon` repeats that, plans improvement jobs when the queue
   is empty (top eligible suggestion, then an unanswered question, then one
+  `ballot` job per six hours when cards wait below quorum, then one
   `reflect` a day), spawns workers with fresh names, and prunes idle agents.
   `pulse stop` or the brain's `docs/evolution/STOP` halts it. Tier 2 jobs are
   refused; a worker that meets a hard stop posts a `question`. `pulse onboard

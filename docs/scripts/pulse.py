@@ -39,7 +39,7 @@ KINDS = ("claim", "handoff", "finding", "question", "answer", "suggestion",
 RESOLUTIONS = ("answered", "promoted", "tested", "ratified", "agreed",
                "accepted", "declined", "dropped", "proceeded")
 USEFUL_KINDS = ("finding", "answer", "result", "vote", "amendment", "opinion")
-JOB_KINDS = ("onboard", "task", "improve", "answer", "clean", "reflect")
+JOB_KINDS = ("onboard", "task", "improve", "answer", "ballot", "clean", "reflect")
 NAME_WORDS = ("aurora", "borealis", "cinder", "delta", "ember", "fjord", "granite",
               "harbor", "iris", "juniper", "kestrel", "lumen", "meridian", "nimbus",
               "orbit", "pallas", "quartz", "ripple", "sable", "tundra", "umber",
@@ -1682,6 +1682,11 @@ def write_brief(job, project, agent, clone, minutes, ballot=None, remote=False):
         for item in ballot:
             w("- `%s` %s (up %d, down %d): %s" % (item["id"], item.get("key", ""), int(item.get("up", 0)),
                                                   int(item.get("down", 0)), trunc(item.get("summary", ""), 160)))
+            if job["kind"] == "ballot" and item.get("body"):
+                w("")
+                for line in trunc(item["body"], 1500).splitlines():
+                    w("  > %s" % line)
+                w("")
     return "\n".join(brief) + "\n"
 
 
@@ -3215,6 +3220,10 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
         try:
             # Suggestions only: a vote on an amendment carries a text hash and a Read: line, which a VOTE: line cannot.
             ballot, _amendments = ballot_items(con, project["slug"], agent=agent, now=now, session=run_id)
+            if job["kind"] == "ballot":
+                # A ballot job judges the cards themselves, so the brief carries each body (hands without a store, ADR-020).
+                for item in ballot:
+                    item["body"] = (post_row(con, item["id"]) or {}).get("body", "")
         except Exception as exc:  # the ballot is a courtesy to the worker, never a reason to fail the run
             log.append("ballot unavailable: %r" % (exc,))
         brief_text = write_brief(job, project, agent, clone, minutes, ballot=ballot, remote=ex.remote)
@@ -3502,6 +3511,24 @@ def open_questions(con, slug, tally):
     return out
 
 
+BALLOT_HOURS = 6  # a card gets its own session's votes first; idle hands vote on what is still short after this long
+
+
+def ballot_due(con, slug, tally, now=None):
+    """The below-quorum cards an idle worker should vote on (WU-015): suggestions at `needs votes` older than
+    BALLOT_HOURS. Empty when none waits or when the planner made a ballot job for the project within BALLOT_HOURS,
+    whatever became of it - a broken worker must not loop on the ballot. The planning time lives in the job's
+    source (`ballot:<slug>:<stamp>`), so the check follows the planner's clock, not the row's."""
+    now = now or utc_now()
+    since = plus_hours(now, -BALLOT_HOURS)
+    prefix = "ballot:%s:" % slug
+    last = con.execute("SELECT MAX(substr(source, ?)) FROM jobs WHERE project = ? AND kind = 'ballot' AND source LIKE ?",
+                       (len(prefix) + 1, slug, prefix + "%")).fetchone()[0]
+    if last and last > stamp_of(since):
+        return []
+    return [s for s in tally.suggestion_records() if s["status"] == "needs votes" and s["date"] <= since]
+
+
 SIGNAL_RE = re.compile(r"(?im)^\s*(?:-\s*)?`?signal`?\s*:\s*(.+?)\s*$|\bsignal:\s*(\S+)")
 
 
@@ -3587,6 +3614,25 @@ def plan_jobs(con, slug, now=None, created_by="daemon"):
                 q["id"], q["area"], q["thread"], q["body"])
             job, new = add_job(con, slug, "answer", "Answer question %s: %s" % (q["id"], q["summary"]), brief, tier=0, priority=5,
                                source="question:%s" % q["id"], created_by=created_by)
+            if new:
+                created.append(job)
+    if not created:
+        # Idle hands vote (WU-015, the hygiene step of ADR-019 section 4): workers vote only at the end of a job,
+        # so with nothing to build the queue would starve on quorum. One ballot job per project per BALLOT_HOURS.
+        cards = ballot_due(con, slug, t, now)
+        if cards:
+            listed = "\n".join("- `%s` %s (%d of %d voters): %s" % (c["id"], c["key"], c["voters"], setting_int(con, "quorum"),
+                                                                  trunc(c["summary"], 160)) for c in cards)
+            brief = ("%d suggestion(s) on this project's board have waited more than %d hours below the vote quorum, and "
+                     "nothing else is queued. Read each card on the ballot below in full (its body is in the Ballot section; "
+                     "check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` "
+                     "line per card in %s: up when the change is one variable a worker could make and measure with the "
+                     "project's own checks, down when it is a guess, a duplicate, owner-only, or already done. Never vote on "
+                     "your own cards. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with "
+                     "how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n%s"
+                     % (len(cards), BALLOT_HOURS, RESULT_FILE, listed))
+            job, new = add_job(con, slug, "ballot", "Vote the ballot: %d card(s) below quorum for %s" % (len(cards), slug), brief,
+                               tier=0, priority=3, source="ballot:%s:%s" % (slug, stamp_of(now)), created_by=created_by)
             if new:
                 created.append(job)
     if not created:

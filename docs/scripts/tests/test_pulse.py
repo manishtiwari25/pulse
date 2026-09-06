@@ -491,6 +491,63 @@ class StoreTestCase(StoreFixture):
         pulse.finish_job(self.con, jobs[0]["id"], "human", "done")
         self.assertEqual(pulse.plan_jobs(self.con, "proj", now=NOW), [], "one reflect per day")
 
+    def test_plan_ballot_job_when_only_below_quorum_cards_wait(self):
+        """WU-015: idle hands vote. Workers vote only at the end of a job, so with nothing eligible and no open
+        question the planner makes one ballot job for cards older than BALLOT_HOURS - and never a second within it."""
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        pulse.join_agent(self.con, "cinder", "r", "m")
+        pulse.join_agent(self.con, "delta", "r", "m")
+        pulse.finish_job(self.con, self.con.execute("SELECT id FROM jobs").fetchone()["id"], "human", "cancelled")
+        old = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "cache the table",
+                                "one variable\nSignal: check:tests", agent="aurora", date="2026-09-10T05:00:00Z")
+        young = pulse.create_post(self.con, "suggestion", "proj", "evolution", "colour", "tint the header",
+                                  "fresh card", agent="cinder", date="2026-09-10T09:30:00Z")
+        pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up", agent="cinder", on=old["id"], vote="up",
+                          date="2026-09-10T06:00:00Z")
+        jobs = pulse.plan_jobs(self.con, "proj", now=NOW)
+        self.assertEqual([(j["kind"], j["tier"]) for j in jobs], [("ballot", 0)])
+        self.assertEqual(jobs[0]["source"], "ballot:proj:20260910T120000Z")
+        self.assertIn(old["id"], jobs[0]["brief"], "the seven-hour-old card at one voter of two is on the ballot")
+        self.assertNotIn(young["id"], jobs[0]["brief"], "a card younger than six hours is left for its own session")
+        self.assertIn("make no commits", jobs[0]["brief"])
+        self.assertEqual(pulse.plan_jobs(self.con, "proj", now=NOW), [], "one job at a time per project")
+        pulse.finish_job(self.con, jobs[0]["id"], "human", "failed")
+        jobs = pulse.plan_jobs(self.con, "proj", now="2026-09-10T15:00:00Z")
+        self.assertEqual([j["kind"] for j in jobs], ["reflect"],
+                         "no second ballot job within six hours, whatever became of the first; the day's reflect follows")
+        pulse.finish_job(self.con, jobs[0]["id"], "human", "done")
+        self.assertEqual(pulse.plan_jobs(self.con, "proj", now="2026-09-10T17:59:00Z"), [])
+        jobs = pulse.plan_jobs(self.con, "proj", now="2026-09-10T18:01:00Z")
+        self.assertEqual([j["kind"] for j in jobs], ["ballot"], "six hours on, the still-waiting cards get another ballot job")
+        self.assertIn(young["id"], jobs[0]["brief"], "the once-young card is old enough now")
+        pulse.finish_job(self.con, jobs[0]["id"], "human", "done")
+        pulse.create_post(self.con, "vote", "proj", "evolution", "colour", "up", agent="aurora", on=young["id"], vote="up",
+                          date="2026-09-10T18:30:00Z")
+        pulse.create_post(self.con, "vote", "proj", "evolution", "speed", "up", agent="delta", on=old["id"], vote="up",
+                          date="2026-09-10T18:30:00Z")
+        jobs = pulse.plan_jobs(self.con, "proj", now="2026-09-11T01:00:00Z")
+        self.assertEqual([j["kind"] for j in jobs], ["improve"], "a card the ballot carried to quorum is built before any ballot")
+        self.assertEqual(jobs[0]["source"], "suggestion:%s" % old["id"])
+
+    def test_ballot_job_brief_carries_each_card_body(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        pulse.join_agent(self.con, "cinder", "r", "m")
+        pulse.finish_job(self.con, self.con.execute("SELECT id FROM jobs").fetchone()["id"], "human", "cancelled")
+        card = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed", "cache the table",
+                                 "The body says why.\nSignal: check:tests", agent="cinder", date="2026-09-10T05:00:00Z")
+        job = pulse.plan_jobs(self.con, "proj", now=NOW)[0]
+        self.assertEqual(job["kind"], "ballot")
+        worker = self.worker_script('printf "SUMMARY: voted once\\nVOTE: %s up a real check would move\\n" > PULSE_RESULT.md' % card["id"])
+        run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertEqual(run["status"], "done", run["summary"])
+        self.assertEqual(run["commits"], 0)
+        brief = (self.home / "work" / ("%s.brief.md" % job["id"])).read_text(encoding="utf-8")
+        self.assertIn("## Task (ballot, Tier 0)", brief)
+        self.assertIn("  > The body says why.", brief, "a ballot job's brief quotes the card body for hands without a store")
+        votes = self.con.execute("SELECT agent, on_post, vote FROM posts WHERE kind = 'vote'").fetchall()
+        self.assertEqual([(v["agent"], v["on_post"], v["vote"]) for v in votes], [("aurora", card["id"], "up")])
+        self.assertEqual(self.con.execute("SELECT status FROM jobs WHERE id = ?", (job["id"],)).fetchone()["status"], "done")
+
     def test_daemon_runs_one_loop_and_stops_on_the_switch(self):
         pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
         worker = self.worker_script('printf "SUMMARY: looked around\\n" > PULSE_RESULT.md')

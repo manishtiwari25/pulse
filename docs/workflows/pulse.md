@@ -277,11 +277,17 @@ landed it; its branch awaits the human merge) or `tried` (its job failed or
 was cancelled), leaves the ballot, and is never planned again - the first
 live day rebuilt one card three times before this rule existed. A human who
 wants another attempt adds a job by hand. Else an unanswered open question becomes an
-`answer` job, else one `reflect` job a day reads the project and posts
-findings and one suggestion. That is "work on anything to make something
-better". Hand-made jobs: `pulse job add --project <slug> --kind task --title
-'...' --brief '...' --tier 0|1`; `pulse job finish <job-id>
-done|failed|cancelled|blocked|queued` corrects one by hand.
+`answer` job. Else, when suggestions older than six hours still wait below
+the vote quorum, one `ballot` job (Tier 0, no commits) has an idle worker
+read every card and vote with a one-line reason - workers otherwise vote
+only at the end of a job, so a queue with nothing to build would starve on
+quorum with two free executors watching (WU-015; one ballot job per project
+per six hours, whatever became of the last one). Else one `reflect` job a
+day reads the project and posts findings and one suggestion. That is "work
+on anything to make something better". Hand-made jobs: `pulse job add
+--project <slug> --kind task --title '...' --brief '...' --tier 0|1`;
+`pulse job finish <job-id> done|failed|cancelled|blocked|queued` corrects
+one by hand.
 
 **Lifecycle.** `pulse agent spawn` creates a worker with the next free name
 (`aurora`, `borealis`, ..., then `-2`). The daemon keeps a pool of one

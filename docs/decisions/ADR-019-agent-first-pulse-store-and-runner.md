@@ -276,3 +276,9 @@ action.
       restarts itself when `pulse.py` changes, and is kept alive by
       `pulse service install`; worker `SUGGESTION:` lines feed the next
       ballot and the planner builds only cards voted up on balance.
+- [x] The hygiene step of section 4, built as the idle-hands ballot
+      (2026-09-06, [WU-015](../plans/WU-015-idle-hands-vote.md)): when a
+      project has nothing eligible and no untried question, the planner
+      makes one `ballot` job per six hours so a worker votes, with reasons,
+      on cards that waited below quorum - the queue no longer starves while
+      free hands watch.

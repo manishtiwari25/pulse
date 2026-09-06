@@ -127,6 +127,11 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   a machine fault (hands that refuse a verb, a worker that cannot log in)
   drains the executor and gives the job its attempt back (ADR-020); the
   probe fails hands that predate ADR-022.
+- [`WU-015-idle-hands-vote.md`](WU-015-idle-hands-vote.md) - the planner's
+  hygiene step (ADR-019 §4): when nothing is eligible and no question is
+  untried, one `ballot` job per six hours has an idle worker vote, with
+  reasons, on cards that waited below quorum, so the queue cannot starve
+  itself while free hands watch.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy
