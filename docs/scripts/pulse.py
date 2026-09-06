@@ -1399,8 +1399,13 @@ def digest(con, slug, area=None, now=None, agent=None):
         w("")
     w("AGENTS (unique names; pruned after %s days without useful output)" % setting(con, "prune_after_days"))
     rows = agent_scorecards(con, include_pruned=False)
-    for r in rows:
+    # Detailed list: only agents with more than one post and not legacy; the rest fold into one summary line
+    detailed = [r for r in rows if int(r.get("posts") or 0) > 1 and (r.get("kind") or "") != "legacy"]
+    others = [r for r in rows if not (int(r.get("posts") or 0) > 1 and (r.get("kind") or "") != "legacy")]
+    for r in detailed:
         w("  %-16s %-7s %-8s posts %-4d jobs %d/%d  last useful %s" % (r["name"], r["status"], r["kind"], r["posts"], r["jobs_done"], r["jobs_done"] + r["jobs_failed"], r["last_useful_at"] or "-"))
+    if others:
+        w("  +%d single-post or legacy agents" % len(others))
     if not rows:
         w("  none joined yet: pulse agent join --name NAME --runner R --model M")
     return "\n".join(out) + "\n"
