@@ -220,8 +220,7 @@ if [ -n "$STORE_SLUG" ] && [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/pulse.py" ]
     echo "FOR THE HUMAN (repeat every awaiting proposal in your closing message, one yes/no each; only the human decides - docs/workflows/pulse.md)"
     python3 "$SCRIPTS/pulse.py" proposals --project "$STORE_SLUG" | sed 's/^/  /'
     echo ""
-    echo "EXPERIMENT QUEUE"
-    python3 "$SCRIPTS/pulse.py" queue --project "$STORE_SLUG" | sed 's/^/  /'
+    # EXPERIMENT QUEUE printed by pulse.py board; avoid duplicating it here
     echo ""
 elif [ "$HAS_BOARD" -eq 1 ] && [ "$SHOW_BOARD" -eq 1 ] && [ -x "$SCRIPTS/board.sh" ]; then
     echo "BOARD"
