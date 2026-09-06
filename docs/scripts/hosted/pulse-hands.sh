@@ -241,6 +241,9 @@ verb_run() {
     [ "$(basename -- "$1")" = "copilot" ] || die "only the copilot worker may run here"
   fi
   cd "$clone"
+  # The forced-command request must not leak into the worker: a test suite that spawns these hands would
+  # otherwise re-run the ssh request instead of its own argv.
+  unset SSH_ORIGINAL_COMMAND SSH_CONNECTION SSH_CLIENT
   set +e
   with_timeout "$minutes" "$@"
   rc=$?
@@ -295,6 +298,7 @@ verb_verify() {
   [ $# -eq 1 ] || die "verify takes one shell command string"
   clone="$(clone_dir "$job")"
   cd "$clone"
+  unset SSH_ORIGINAL_COMMAND SSH_CONNECTION SSH_CLIENT
   set +e
   with_timeout "$minutes" bash -c "$1"
   rc=$?

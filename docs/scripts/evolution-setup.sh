@@ -112,7 +112,14 @@ archive_has_baseline() {
 }
 
 file_mode() {
-    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+    # GNU stat first (-c), then BSD (-f); GNU's -f is filesystem status and can answer '%Lp' with text that
+    # is not a mode, which used to reach $((8#...)) as an empty or non-octal token on Linux hands.
+    local mode
+    mode="$(stat -c '%a' "$1" 2>/dev/null)" || mode="$(stat -f '%Lp' "$1" 2>/dev/null)" || return 1
+    case "$mode" in
+        ''|*[!0-7]*) return 1 ;;
+    esac
+    printf '%s\n' "$mode"
 }
 
 resolve_store() {

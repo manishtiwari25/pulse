@@ -1622,7 +1622,11 @@ class HandsFixture(StoreFixture):
         shim.chmod(0o755)
         self._env_before = {k: os.environ.get(k) for k in ("PATH", "PULSE_HANDS", "PULSE_HANDS_WORKDIR", "PULSE_HANDS_ALLOW_ANY_WORKER",
                                                             "PULSE_HANDS_KEYS_OK", "PULSE_SHIM_LOG", "PULSE_SHIM_FAIL", "PULSE_SHIM_FAIL_VERB",
-                                                            "PULSE_SHIM_OLD_HANDS")}
+                                                            "PULSE_SHIM_OLD_HANDS", "SSH_ORIGINAL_COMMAND", "SSH_CONNECTION", "SSH_CLIENT")}
+        # When this suite itself runs as a remote verify, sshd's forced-command request is in the environment;
+        # the hands under test must read the test's argv, not that request.
+        for key in ("SSH_ORIGINAL_COMMAND", "SSH_CONNECTION", "SSH_CLIENT"):
+            os.environ.pop(key, None)
         os.environ["PATH"] = "%s:%s" % (shim_dir, os.environ.get("PATH", ""))
         os.environ["PULSE_HANDS"] = str(HANDS_SH)
         os.environ["PULSE_HANDS_WORKDIR"] = str(self.remote)
