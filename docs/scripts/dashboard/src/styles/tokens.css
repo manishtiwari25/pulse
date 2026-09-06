@@ -2,7 +2,11 @@
    the header toggle. Every colour is declared once as light-dark(light, dark);
    the scheme rules below only pick the side. No URL, no import of anything
    the build did not inline. */
-@import "tailwindcss";
+/* Utilities are generated only from what src/ and index.html mention. Without the
+   source root, Tailwind scans the whole package - including the committed dist/ -
+   and the previous bundle keeps utilities alive that no view uses. */
+@import "tailwindcss" source("../");
+@source "../../index.html";
 
 :root {
   --bg: light-dark(#f4f6fa, #0a0e15);
