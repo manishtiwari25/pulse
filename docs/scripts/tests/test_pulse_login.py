@@ -69,6 +69,11 @@ class LoginFixture(tp.HandsFixture):
         shim = shim_dir / "ssh"
         shim.write_text(ADMIN_SSH_SHIM, encoding="utf-8")
         shim.chmod(0o755)
+        # The probe reports `copilot --version`; with HOME pointed at an empty admin home below, the real CLI would
+        # run its slow first-time setup on every test, so the version comes from a stand-in on the same PATH.
+        version_shim = shim_dir / "copilot"
+        version_shim.write_text("#!/bin/sh\necho 'GitHub Copilot CLI 1.0.0 (test stand-in)'\n", encoding="utf-8")
+        version_shim.chmod(0o755)
         self._login_env_before = {k: os.environ.get(k) for k in (
             "HOME", "PATH", "PULSE_ADMIN_LOG", "PULSE_ADMIN_STDIN", "PULSE_ADMIN_RC", "PULSE_ADMIN_OUT", "PULSE_ADMIN_ERR",
             "PULSE_ADMIN_PREP_RC", "PULSE_ADMIN_PREP_NOTE")}

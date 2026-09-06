@@ -233,6 +233,33 @@ restart: it reads the executors each loop and fills every free slot
 fallback), running the leased jobs in parallel and printing one line per
 run, `done <job> <agent> on vm1: <summary>`.
 
+## When to add a machine
+
+A machine costs money and carries a Copilot login, so adding one is always
+the human's act; the runner's part is to say, with numbers, when one would
+help ([WU-019](../plans/WU-019-runner-throughput.md)):
+
+- **Read the wait first.** `pulse status` prints a `capacity` line while
+  jobs are queued: `N job(s) queued, S slot(s), F in flight; every slot busy
+  for M min - another machine would help`.
+  Slots idle beside a queue means the *dispatch rules* are the limit, not
+  the hardware - raise `parallel_per_project` (one project may then run
+  more than one job at once; ADR-024 landing merges the branches and
+  requeues real conflicts with a patch) before pairing anything.
+- **Let the daemon ask.** After every slot has been busy for
+  `HANDS_WANTED_MINUTES` (30) with work still queued, the daemon posts one
+  `finding` a day on the brain's board, area `runner`, thread
+  `hands-wanted`, with the queue, slot, and in-flight counts and the three
+  answers: pair a machine, raise `workers` where a machine has spare cores,
+  or raise `parallel_per_project`. It is data for you, never an instruction;
+  it never buys, provisions, or pairs anything.
+- **Then pair.** Follow "Provision a machine" or "Pair a machine that
+  already exists" above, place the token with `pulse executor login <name>
+  --admin <admin@host> --with-token`, and the daemon fills the new slots on
+  its next tick - no restart, no setting to flip.
+- **What stays yours:** the money, the credential, `jobs_per_day` and the
+  other caps, and the merge of what the extra hands produce.
+
 ## Watch, drain, remove
 
 - **Daemon log** (`~/.pulse/logs/daemon.log`): `error <job> … on vm1:

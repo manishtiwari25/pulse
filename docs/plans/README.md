@@ -145,6 +145,14 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   two Draft proposals written by workers on 2026-09-05 about the evaluators'
   C2 pass rule and runs per fixture; `docs/evolution/evaluators.md` is
   owner-owned, so both wait for the owner and change nothing until then.
+- [`WU-019-runner-throughput.md`](WU-019-runner-throughput.md) - the daemon
+  dispatches continuously (a free slot is refilled while slower runs go on),
+  a project may run `parallel_per_project` jobs at once (default 1, the old
+  behaviour), a worker that commits and then hits the cap keeps its verified
+  commits, and `pulse status` shows a `capacity` line while jobs wait - with
+  one `finding` a day (`runner/hands-wanted`) when every slot has been busy
+  for half an hour, so the human learns when a machine would help (ADR-019,
+  ADR-020, ADR-024).
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy

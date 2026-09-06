@@ -128,7 +128,7 @@ there, **fetches** the result back over `ssh://`, and removes the clone.
   provides); a bundle travels per job (a single-branch bundle is small; a
   persistent mirror on the VM is a later optimization); the daemon becomes
   concurrent (one connection per run, WAL; one leased job per project still
-  holds); a bundle of a private repository leaves the hub - to a machine the
+  holds - raised to a per-project limit, `parallel_per_project`, by WU-019); a bundle of a private repository leaves the hub - to a machine the
   maintainer owns, the same trust as his laptop, and he decides per executor
   which projects may travel.
 
@@ -225,8 +225,10 @@ only the hub fetches.
 
 `jobs_per_day` stays one machine-wide human cap and now counts worker runs
 on every executor. Each executor has its own `workers`; the daemon runs up to
-the sum concurrently, one leased job per project as today, each run on its
-own store connection. A job goes to an eligible remote executor first and to
+the sum concurrently, `parallel_per_project` leased jobs per project (1 by
+default, as today; [WU-019](../plans/WU-019-runner-throughput.md)), each run
+on its own store connection, and a freed slot is refilled while slower runs
+are still going. A job goes to an eligible remote executor first and to
 `local` when no healthy remote is eligible; `local` is the fallback, never
 skipped. `max_ai_credits` and `minutes_per_job` apply per run wherever it
 runs. The credits come from each executor's own Copilot login - accounts the

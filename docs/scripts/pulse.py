@@ -50,6 +50,7 @@ DEFAULT_SETTINGS = {
     "jobs_per_day": "2",
     "minutes_per_job": "10",
     "workers": "1",
+    "parallel_per_project": "1",  # leased jobs one project may have at once; more hands only help above 1 (WU-019)
     "max_ai_credits": "30",  # the copilot CLI refuses anything below 30
     "prune_after_days": "14",
     "claim_hours": "4",
@@ -1518,11 +1519,19 @@ def add_job(con, project, kind, title, brief="", tier=1, priority=0, source="", 
     return dict(con.execute("SELECT * FROM jobs WHERE id = ?", (jid,)).fetchone()), True
 
 
+def parallel_per_project(con):
+    """Leased jobs one project may have at once (setting `parallel_per_project`, at least 1). Landing merges
+    branches that touch different files, so parallel jobs on one project cost only the odd textual conflict,
+    which the landing requeues with its patch (ADR-024)."""
+    return max(1, setting_int(con, "parallel_per_project"))
+
+
 def lease_job(con, agent, project=None, job_id=None, minutes=None, now=None, projects=None):
-    """Atomically take the next queued job. One leased job per project at a time. `projects` limits the lease to
-    the slugs an executor may serve (ADR-020); None means any project."""
+    """Atomically take the next queued job. At most `parallel_per_project` leased jobs per project at a time.
+    `projects` limits the lease to the slugs an executor may serve (ADR-020); None means any project."""
     now = now or utc_now()
     minutes = minutes if minutes is not None else setting_int(con, "minutes_per_job") + 5
+    limit = parallel_per_project(con)
     con.execute("BEGIN IMMEDIATE")
     try:
         expired = con.execute("SELECT id FROM jobs WHERE status = 'leased' AND lease_until != '' AND lease_until < ?", (now,)).fetchall()
@@ -1530,8 +1539,8 @@ def lease_job(con, agent, project=None, job_id=None, minutes=None, now=None, pro
             con.execute("UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?", (row["id"],))
             event(con, "lease", "job.requeue", row["id"], "lease expired")
         sql = ("SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' "
-               "AND NOT EXISTS (SELECT 1 FROM jobs k WHERE k.project = j.project AND k.status = 'leased')")
-        args = []
+               "AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.status = 'leased') < ?")
+        args = [limit]
         if project:
             sql += " AND j.project = ?"
             args.append(project)
@@ -2088,10 +2097,12 @@ def executor_running(con, name, now=None):
                        (name, horizon)).fetchone()[0]
 
 
-def executor_free_slots(con, row, now=None):
+def executor_free_slots(con, row, now=None, inflight=0):
+    """Free slots on one executor: its workers minus the runs the store shows running there, or minus the runs
+    this process still has in flight when that is more (a leased job's run row appears a moment after the lease)."""
     if row["status"] != "active":
         return 0
-    return max(0, int(row["workers"]) - executor_running(con, row["name"], now))
+    return max(0, int(row["workers"]) - max(executor_running(con, row["name"], now), int(inflight)))
 
 
 def pick_executor(con, slug, now=None):
@@ -3494,11 +3505,23 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
             exit_code = outcome["exit_code"]
             log.append(outcome["stdout"][-20000:])
             log.append(outcome["stderr"][-20000:])
+            parsed = parse_result_text(ex.result_text())
+            rescued = False
             if outcome["timeout"]:
                 status, exit_code = "timeout", None
                 log.append("timeout after %d minutes" % minutes)
-            parsed = parse_result_text(ex.result_text())
-            if status != "timeout":
+                if ex.commit_count(base) > 0:
+                    # The worker hit the cap after committing (WU-019): what it committed is judged like any other
+                    # run's commits - discarded when dirty or red, landed when the project's own check passes.
+                    rescued, exit_code = True, 0
+                    if not parsed["found"]:
+                        parsed = dict(parsed, found=True,
+                                      summary="hit the %d-minute cap before writing %s; the commits it made are kept only "
+                                              "because the check passed - the work may be partial" % (minutes, RESULT_FILE))
+                    else:
+                        parsed["summary"] = "hit the %d-minute cap after committing: %s" % (minutes, parsed["summary"] or "no summary")
+                    log.append("commits found after the timeout: judged like a finished run")
+            if status != "timeout" or rescued:
                 commits = ex.commit_count(base)
                 dirty = ex.dirty()
                 if dirty:
@@ -4108,10 +4131,10 @@ def is_owner_addressed_post(post):
 
 
 def plan_jobs(con, slug, now=None, created_by="daemon"):
-    """Create the next job for a project that has none waiting: improve, answer, or reflect."""
+    """Create the next job for a project with fewer than `parallel_per_project` waiting: improve, answer, or reflect."""
     now = now or utc_now()
     waiting = con.execute("SELECT COUNT(*) FROM jobs WHERE project = ? AND status IN ('queued', 'leased')", (slug,)).fetchone()[0]
-    if waiting:
+    if waiting >= parallel_per_project(con):
         return []
     t, params = tally_for(con, slug, None, now)
     project = project_by_slug(con, slug)
@@ -4339,16 +4362,18 @@ def pick_worker(con, agent=None, exclude=()):
     return spawn_agent(con, runner=setting(con, "runner_cmd"), model=setting(con, "worker_model"), kind="worker")["name"]
 
 
-def executor_slots(con, now=None):
+def executor_slots(con, now=None, busy=None):
     """One entry per free slot: remote executors first (they were added to carry the load), this machine last.
-    A machine with no executors always keeps one local slot so the runner can never idle itself out."""
+    `busy` maps executor name to the runs this process still has in flight there. A machine with no executors
+    always keeps one local slot so the runner can never idle itself out."""
+    busy = busy or {}
     slots = []
     remotes = executor_rows(con, include_local=False)
     for row in remotes:
-        slots += [row["name"]] * executor_free_slots(con, row, now)
+        slots += [row["name"]] * executor_free_slots(con, row, now, busy.get(row["name"], 0))
     local = local_executor_row(con)
-    slots += [LOCAL_EXECUTOR] * executor_free_slots(con, local, now)
-    if not slots and not remotes and executor_running(con, LOCAL_EXECUTOR, now) == 0:
+    slots += [LOCAL_EXECUTOR] * executor_free_slots(con, local, now, busy.get(LOCAL_EXECUTOR, 0))
+    if not slots and not remotes and executor_running(con, LOCAL_EXECUTOR, now) == 0 and not busy.get(LOCAL_EXECUTOR):
         slots = [LOCAL_EXECUTOR]
     return slots
 
@@ -4362,43 +4387,6 @@ def sweep_lost_runs(con, now=None):
                     (now, r["id"]))
         event(con, "runner", "run.lost", r["id"], "")
     return len(rows)
-
-
-def work_parallel(con, slots, workers, home, dry_run, worker_cmd, now):
-    """Several pairs of hands at once. The leases happen here, in order, executors limited to some projects
-    first so an unrestricted one cannot starve them; then one thread per leased job, each with its own store
-    connection (sqlite connections are per thread), and the caller waits for all. Returns (run, reason) pairs."""
-    import threading
-    rows = {name: executor_row(con, name) for name in slots}
-    order = sorted(range(len(slots)), key=lambda i: (rows[slots[i]]["projects"] == "*", i))
-    results = [None] * len(slots)
-    leased = []
-    for i in order:
-        try:
-            job, exrow, reason = take_job(con, workers[i], dry_run=dry_run, now=now, executor=slots[i], taken=len(leased))
-        except PulseError as exc:
-            job, reason = None, str(exc)
-        if job is None:
-            results[i] = (None, reason)
-        else:
-            leased.append((i, job))
-
-    def one(index, job):
-        thread_con = connect(home=home)
-        try:
-            run = run_job(thread_con, job, workers[index], dry_run=dry_run, worker_cmd=worker_cmd, home=home, now=now, executor=slots[index])
-            results[index] = (run, "")
-        except Exception as exc:  # one slot's failure never takes the others down
-            results[index] = (None, "daemon error on %s: %s: %s" % (slots[index], type(exc).__name__, exc))
-        finally:
-            thread_con.close()
-
-    threads = [threading.Thread(target=one, args=(i, job), name="pulse-%s" % slots[i], daemon=True) for i, job in leased]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    return [r if r is not None else (None, "slot never reported") for r in results]
 
 
 def daemon_heartbeat(con, loops, interval, note=""):
@@ -4446,44 +4434,158 @@ def source_compiles(path=None):
         return False, str(exc)
 
 
+DISPATCH_TICK_SECONDS = 15  # while runs are in flight the loop wakes this often (or when a run ends) to refill free slots
+HANDS_WANTED_MINUTES = 30  # jobs waiting this long with every slot busy is the signal that another machine would help
+
+
+class Dispatch:
+    """One run in flight: its thread, the slot it occupies, and its result once the thread reports."""
+
+    def __init__(self, slot, worker, job):
+        self.slot, self.worker, self.job = slot, worker, job
+        self.run, self.reason, self.thread = None, "", None
+
+
+def start_dispatch(con, slot, worker, job, home, dry_run, worker_cmd, now, wake):
+    """Run one leased job on its own thread with its own store connection (sqlite connections are per thread);
+    the thread sets `wake` when it ends so the loop refills the slot at once."""
+    import threading
+    d = Dispatch(slot, worker, job)
+
+    def one():
+        thread_con = connect(home=home)
+        try:
+            d.run = run_job(thread_con, job, worker, dry_run=dry_run, worker_cmd=worker_cmd, home=home, now=now, executor=slot)
+        except Exception as exc:  # one slot's failure never takes the others down
+            d.reason = "daemon error on %s: %s: %s" % (slot, type(exc).__name__, exc)
+        finally:
+            thread_con.close()
+            wake.set()
+
+    d.thread = threading.Thread(target=one, name="pulse-%s" % slot, daemon=True)
+    d.thread.start()
+    return d
+
+
+def capacity_note(con, queued, slots, inflight, starved_since, now):
+    """One row in `meta` the status command and the dashboard read: how much waits, how many hands there are."""
+    note = {"at": now, "queued": queued, "slots": slots, "inflight": inflight, "starved_since": starved_since or ""}
+    con.execute("INSERT INTO meta (key, value) VALUES ('capacity', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (json.dumps(note),))
+    con.commit()
+    return note
+
+
+def capacity_status(con, now=None):
+    """The status line for capacity: what waits and since when every slot has been busy, or "" when nothing waits."""
+    row = con.execute("SELECT value FROM meta WHERE key = 'capacity'").fetchone()
+    if not row:
+        return ""
+    try:
+        note = json.loads(row["value"])
+    except ValueError:
+        return ""
+    if not note.get("queued"):
+        return ""
+    line = "%d job(s) queued, %d slot(s), %d in flight" % (note["queued"], note["slots"], note["inflight"])
+    if note.get("starved_since"):
+        minutes = int((parse_iso(now or utc_now()) - parse_iso(note["starved_since"])).total_seconds() // 60)
+        line += "; every slot busy for %d min - another machine would help (pulse pair; docs/workflows/executors.md)" % minutes
+    return line
+
+
+def hands_wanted(con, brain, queued, slots, minutes, now, actor="daemon"):
+    """Once a day, when jobs have waited HANDS_WANTED_MINUTES with every slot busy, one `finding` on the brain's
+    board says so with the exact next step. Data for the human, who owns the money: never an instruction."""
+    if brain is None:
+        return None
+    if con.execute("SELECT 1 FROM posts WHERE project = ? AND kind = 'finding' AND area = 'runner' AND thread = 'hands-wanted' "
+                   "AND date LIKE ?", (brain["slug"], now[:10] + "%")).fetchone():
+        return None
+    summary = trunc("hands wanted: %d job(s) waited %d min with all %d slot(s) busy; pairing another machine "
+                    "(pulse pair) or raising workers/parallel_per_project would shorten the queue" % (queued, minutes, slots), 230)
+    body = ("The daemon on this machine found %d queued job(s) waiting for %d minutes while every executor slot (%d) was busy "
+            "(%s). More hands would shorten the queue: pair another machine with `pulse pair` (docs/workflows/executors.md), "
+            "raise `workers` on a machine that has the capacity, or raise `parallel_per_project` when the wait is on one "
+            "project. The human owns machines and money; this post is a measurement, not a request to act.\n" % (queued, minutes, slots, now))
+    post = create_post(con, "finding", brain["slug"], "runner", "hands-wanted", summary, body, agent=actor, check_agent=False, date=now)
+    event(con, actor, "capacity.hands-wanted", brain["slug"], {"queued": queued, "slots": slots, "minutes": minutes, "post": post["id"]})
+    return post
+
+
 def daemon(con, agent=None, interval=300, dry_run=False, worker_cmd=None, home=None, max_loops=None, out=sys.stdout,
            source_path=None, restart_on_change=False):
-    """The keep-alive loop: plan, work, sleep only when idle. Returns "stopped", "done" (max_loops), or
-    "restart" when the code on disk changed and restart_on_change is set - the caller re-executes."""
+    """The keep-alive loop: plan, work, sleep only when idle. Runs go out on threads and a slot refills as soon as
+    its run ends, so several machines stay busy together (WU-019). Returns "stopped", "done" (max_loops), or
+    "restart" when the code on disk changed and restart_on_change is set - the caller re-executes; in every case
+    the runs still in flight finish first."""
+    import threading
     loops = 0
     last_prune_day = ""
     stamp = source_stamp(source_path)
     broken_stamp = None
+    inflight = []
+    wake = threading.Event()
+    starved_since = ""
     lost = sweep_lost_runs(con)
     print("daemon started %s (interval %ss%s, pid %d)" % (utc_now(), interval, ", dry run" if dry_run else "", os.getpid()),
           file=out, flush=True)
     if lost:
         print("closed %d run(s) a previous runner left in progress as lost" % lost, file=out, flush=True)
+
+    def reap(wait=False):
+        """Collect the runs whose threads ended (all of them when `wait`), print each, keep the rest in flight."""
+        finished = []
+        for d in list(inflight):
+            if wait:
+                d.thread.join()
+            if not d.thread.is_alive():
+                inflight.remove(d)
+                finished.append(d)
+                if d.run:
+                    print("%s %s %s on %s: %s" % (d.run["status"], d.run["job_id"], d.run["agent"], d.slot, d.run["summary"]),
+                          file=out, flush=True)
+                elif d.reason:
+                    print("idle: %s" % d.reason, file=out, flush=True)
+        return finished
+
+    def leave(result, note):
+        if inflight:
+            print("%s: waiting for %d run(s) in flight to finish" % (note, len(inflight)), file=out, flush=True)
+            reap(wait=True)
+        daemon_heartbeat(con, loops, interval, note="exited" if result != "restart" else "restarting")
+        return result
+
     while True:
         loops += 1
         now = utc_now()
+        wake.clear()
+        finished = reap()
+        if finished and not inflight and all(d.run is None or d.run["status"] == "error" for d in finished):
+            # A runner error (bad flag, missing login, clone failure) or a slot that threw repeats until something
+            # changes: wait one interval before leasing again, do not spin through the queue.
+            time.sleep(interval)
         why = runner_stopped(con)
         if why:
             print("stopped: %s" % why, file=out, flush=True)
-            daemon_heartbeat(con, loops, interval, note="exited")
-            return "stopped"
+            return leave("stopped", "stopping")
         if restart_on_change and source_stamp(source_path) != stamp:
             ok, why = source_compiles(source_path)
             if ok:
                 print("pulse.py changed on disk; restarting to pick it up", file=out, flush=True)
-                daemon_heartbeat(con, loops, interval, note="restarting")
-                return "restart"
+                return leave("restart", "restarting")
             if source_stamp(source_path) != broken_stamp:
                 # Said once per broken save; the running code keeps the machine alive until the file compiles again.
                 broken_stamp = source_stamp(source_path)
                 print("pulse.py changed on disk but does not compile (%s); keeping the running code" % why, file=out, flush=True)
         daemon_heartbeat(con, loops, interval)
-        run, reason, runs, slots = None, "", [], []
+        started, reason, slots = [], "", []
         try:
             if now[:10] != last_prune_day:
                 for name, reason in prune_agents(con, now):
                     print("pruned %s: %s" % (name, reason), file=out, flush=True)
                 last_prune_day = now[:10]
+                reason = ""
             for proj in project_rows(con):
                 # Verified branches land first, so a requeued job is planned and taken in the same loop (ADR-024).
                 for state, note in land_pending(con, proj, actor="daemon", home=home, now=now):
@@ -4493,37 +4595,62 @@ def daemon(con, agent=None, interval=300, dry_run=False, worker_cmd=None, home=N
                     print("planned %s %s: %s" % (job["kind"], job["id"], job["title"]), file=out, flush=True)
             for name, note in reprobe_due(con, interval, now):
                 print("executor %s is reachable again: %s" % (name, note), file=out, flush=True)
-            slots = executor_slots(con, now)
+            busy = {}
+            for d in inflight:
+                busy[d.slot] = busy.get(d.slot, 0) + 1
+            slots = executor_slots(con, now, busy)
             if not slots:
                 reason = "every executor slot is busy"
-            elif len(slots) == 1:
-                worker = pick_worker(con, agent)
-                run, reason = work_once(con, worker, dry_run=dry_run, worker_cmd=worker_cmd, home=home, now=now, executor=slots[0])
-                runs = [run] if run else []
             else:
-                # Several pairs of hands: one thread per free slot, distinct workers, the loop waits for all.
-                names = []
-                for _ in slots:
-                    names.append(pick_worker(con, agent, exclude=names))
-                pairs = work_parallel(con, slots, names, home, dry_run, worker_cmd, now)
-                runs = [r for r, _ in pairs if r]
-                reason = "; ".join(sorted({why for r, why in pairs if not r and why})) or "no queued job"
+                # Executors limited to some projects lease first so an unrestricted one cannot starve them.
+                rows = {name: executor_row(con, name) for name in set(slots)}
+                order = sorted(range(len(slots)), key=lambda i: (rows[slots[i]]["projects"] == "*", i))
+                names = [d.worker for d in inflight]
+                reasons = set()
+                for i in order:
+                    worker = pick_worker(con, agent, exclude=names)
+                    try:
+                        job, exrow, why = take_job(con, worker, dry_run=dry_run, now=now, executor=slots[i], taken=len(started))
+                    except PulseError as exc:
+                        job, why = None, str(exc)
+                    if job is None:
+                        if why:
+                            reasons.add(why)
+                        continue
+                    names.append(worker)
+                    d = start_dispatch(con, slots[i], worker, job, home, dry_run, worker_cmd, now, wake)
+                    inflight.append(d)
+                    started.append(d)
+                reason = "; ".join(sorted(reasons)) or ("" if started else "no queued job")
+            queued = con.execute("SELECT COUNT(*) FROM jobs j JOIN projects p ON p.slug = j.project "
+                                 "WHERE j.status = 'queued' AND p.status = 'active'").fetchone()[0]
+            total_slots = len(inflight) + len(slots) - len(started)
+            starved = queued > 0 and len(slots) - len(started) == 0 and inflight
+            starved_since = (starved_since or now) if starved else ""
+            capacity_note(con, queued, total_slots, len(inflight), starved_since, now)
+            if starved_since:
+                waited = int((parse_iso(now) - parse_iso(starved_since)).total_seconds() // 60)
+                if waited >= HANDS_WANTED_MINUTES:
+                    post = hands_wanted(con, brain_project(con), queued, total_slots, waited, now)
+                    if post:
+                        print("hands wanted: %s" % post["summary"], file=out, flush=True)
         except Exception as exc:  # one bad loop must not end the machine; the next loop tries again
             reason = "daemon error: %s: %s" % (type(exc).__name__, exc)
             try:
                 con.rollback()
             except sqlite3.Error:
                 pass
-        for r in runs:
-            print("%s %s %s on %s: %s" % (r["status"], r["job_id"], r["agent"], r["executor"], r["summary"]), file=out, flush=True)
-        if not runs or (reason and len(runs) < len(slots)):
+        if not started and not inflight and reason:
+            print("idle: %s" % reason, file=out, flush=True)
+        elif reason and started and len(started) < len(slots):
             print("idle: %s" % reason, file=out, flush=True)
         if max_loops is not None and loops >= max_loops:
-            daemon_heartbeat(con, loops, interval, note="exited")
-            return "done"
-        # Idle, a runner error (bad flag, missing login, clone failure), or a daemon error repeats until
-        # something changes: wait one interval, do not spin. After a finished job the next one starts at once.
-        if not runs or all(r["status"] == "error" for r in runs):
+            return leave("done", "loop limit reached")
+        if inflight:
+            # Runs are in flight: wake when one ends, or after a tick, and refill the free slots.
+            wake.wait(DISPATCH_TICK_SECONDS)
+        else:
+            # Idle (nothing queued, every lease refused, or a daemon error): wait one interval, do not spin.
             time.sleep(interval)
 
 
@@ -4854,6 +4981,9 @@ def status_text(con):
     w("runner     %s" % (why or "running allowed"))
     w("daemon     %s" % daemon_status(con))
     w("executors  " + executors_line(con))
+    capacity = capacity_status(con)
+    if capacity:
+        w("capacity   %s" % capacity)
     w("settings   " + ", ".join("%s=%s" % (r["name"], r["value"]) for r in con.execute("SELECT name, value FROM settings ORDER BY name")))
     return "\n".join(out) + "\n"
 

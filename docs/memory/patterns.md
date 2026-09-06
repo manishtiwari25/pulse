@@ -213,6 +213,15 @@
   requires. Apply when: a fallback page or switch is removed, or a design
   token system meets a utility framework with its own theme variables.
   Source: PLAN-023 phase B, `AssetTestCase`, `require_built_ui()`.
+- `2026-09-06` - Machines do not shorten a queue the dispatcher serializes.
+  A second executor sat idle beside 36 eligible cards because the runner
+  leased one job per project, planned only for an empty queue, and joined
+  every slot before refilling any; the wait was in the rules, not the
+  hardware. Measure queued vs slots vs per-project limit (`pulse status`
+  `capacity` line) before adding hands, and let the daemon say when a
+  machine would help (`runner/hands-wanted`, one finding a day) instead of
+  buying one on a hunch. Apply when: "add a VM" is proposed for throughput,
+  or a slot idles while work is queued. Source: WU-019.
 
 ## Populate When
 

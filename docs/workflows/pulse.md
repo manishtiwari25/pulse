@@ -107,7 +107,8 @@ pulse land --branch evolve/memory/x # one branch, for example a kept evolve vari
 pulse executor list                 # this machine and every pair of hands, with their state
 ```
 
-For each job the runner: leases it atomically (one leased job per project;
+For each job the runner: leases it atomically (up to `parallel_per_project`
+leased jobs per project, 1 unless the human raises it - WU-019;
 the project that ran least recently goes first - one that never ran, first
 of all - and priority decides only within a project, so a brain with many
 voted-up cards never starves the other projects on the machine; leases

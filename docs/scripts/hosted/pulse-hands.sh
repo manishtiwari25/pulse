@@ -73,12 +73,22 @@ with_timeout() {
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout --kill-after=30 "${seconds}s" "$@"
   else
+    # Like timeout(1): the worker gets its own process group so its children die with it - a grandchild that
+    # outlived the budget would otherwise hold the pipes open and the caller would wait for it, not the budget.
     perl -e '
+      use POSIX qw(WNOHANG);
       my $t = shift @ARGV;
       my $pid = fork();
       if (!defined $pid) { die "fork: $!"; }
-      if ($pid == 0) { exec @ARGV or die "exec: $!"; }
-      local $SIG{ALRM} = sub { kill "TERM", $pid; sleep 2; kill "KILL", $pid; waitpid($pid, 0); exit 124; };
+      if ($pid == 0) { setpgrp(0, 0); exec @ARGV or die "exec: $!"; }
+      local $SIG{ALRM} = sub {
+        kill "TERM", -$pid;
+        my $gone = 0;
+        for (1..20) { if (waitpid($pid, WNOHANG) == $pid) { $gone = 1; last; } select(undef, undef, undef, 0.1); }
+        kill "KILL", -$pid;
+        waitpid($pid, 0) unless $gone;
+        exit 124;
+      };
       alarm $t;
       waitpid($pid, 0);
       my $rc = $? >> 8;

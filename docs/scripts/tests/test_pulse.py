@@ -24,6 +24,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
@@ -547,6 +548,105 @@ class StoreTestCase(StoreFixture):
         votes = self.con.execute("SELECT agent, on_post, vote FROM posts WHERE kind = 'vote'").fetchall()
         self.assertEqual([(v["agent"], v["on_post"], v["vote"]) for v in votes], [("aurora", card["id"], "up")])
         self.assertEqual(self.con.execute("SELECT status FROM jobs WHERE id = ?", (job["id"],)).fetchone()["status"], "done")
+
+    # -- WU-019: throughput - parallel jobs per project, rescued timeouts, hands wanted ---------------
+
+    def test_parallel_per_project_leases_and_plans_up_to_the_limit(self):
+        for name in ("aurora", "cinder", "delta", "echo"):
+            pulse.join_agent(self.con, name, "r", "m")
+        pulse.finish_job(self.con, self.con.execute("SELECT id FROM jobs").fetchone()["id"], "human", "cancelled")
+        cards = []
+        for i in range(3):
+            card = pulse.create_post(self.con, "suggestion", "proj", "evolution", "speed-%d" % i, "cache table %d" % i, "one variable",
+                                     agent="aurora", date="2026-09-09T09:0%d:00Z" % i)
+            for voter in ("cinder", "delta"):
+                pulse.create_post(self.con, "vote", "proj", "evolution", "speed-%d" % i, "up", agent=voter, on=card["id"], vote="up",
+                                  date="2026-09-09T10:00:00Z")
+            cards.append(card)
+        # the default keeps today's rule: one job per project waiting or running
+        self.assertEqual(len(pulse.plan_jobs(self.con, "proj", now=NOW)), 1)
+        self.assertEqual(pulse.plan_jobs(self.con, "proj", now=NOW), [])
+        first = pulse.lease_job(self.con, "aurora", now=NOW)
+        self.assertIsNotNone(first)
+        self.assertIsNone(pulse.lease_job(self.con, "cinder", now=NOW), "one leased job per project at the default")
+        # raised to 2: the planner tops the project up to two waiting jobs and a second lease goes through
+        pulse.set_setting(self.con, "parallel_per_project", "2", "human")
+        planned = pulse.plan_jobs(self.con, "proj", now=NOW)
+        self.assertEqual(len(planned), 1, "one more job, up to the limit")
+        self.assertEqual(pulse.plan_jobs(self.con, "proj", now=NOW), [], "two are waiting or running: the limit")
+        second = pulse.lease_job(self.con, "cinder", now=NOW)
+        self.assertIsNotNone(second, "a second job of the same project leases when parallel_per_project is 2")
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertIsNone(pulse.lease_job(self.con, "delta", now=NOW), "the third waits: two leased already")
+        self.assertEqual(pulse.parallel_per_project(self.con), 2)
+        pulse.set_setting(self.con, "parallel_per_project", "0", "human")
+        self.assertEqual(pulse.parallel_per_project(self.con), 1, "never below one")
+        code, out, err = run_cli("status")
+        self.assertEqual(code, 0, err)
+        self.assertIn("parallel_per_project=0", out)
+
+    def test_a_timed_out_worker_keeps_its_verified_commits(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        pulse.set_setting(self.con, "jobs_per_day", "0", "human")  # four runs in one test day
+        committed = self.worker_script('echo kept >> README.md\ngit commit -qam "kept before the cap"')
+        original = pulse.LocalExecutor.run_worker
+
+        def run_then_time_out(ex, cmd, env, minutes):
+            original(ex, cmd, env, minutes)
+            return {"timeout": True, "exit_code": None, "stdout": "", "stderr": ""}
+
+        with unittest.mock.patch.object(pulse.LocalExecutor, "run_worker", run_then_time_out):
+            run, _ = pulse.work_once(self.con, "aurora", worker_cmd=committed, now=NOW)
+        self.assertEqual(run["status"], "done", run["summary"])
+        self.assertEqual(run["commits"], 1)
+        self.assertIn("hit the 10-minute cap before writing PULSE_RESULT.md", run["summary"])
+        self.assertIn("may be partial", run["summary"])
+        self.assertTrue(run["branch"].startswith("pulse/aurora/"))
+        self.assertEqual(git(self.repo, "rev-list", "--count", "main..%s" % run["branch"]).stdout.strip(), "1")
+        self.assertEqual(self.con.execute("SELECT status FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()["status"], "done")
+        # a result file written before the cap keeps its summary, marked as a run that hit the cap
+        pulse.add_job(self.con, "proj", "task", "again", created_by="test")
+        reported = self.worker_script('echo more >> README.md\ngit commit -qam more\nprintf "SUMMARY: added more\\n" > PULSE_RESULT.md',
+                                      "reported.sh")
+        with unittest.mock.patch.object(pulse.LocalExecutor, "run_worker", run_then_time_out):
+            run, _ = pulse.work_once(self.con, "aurora", worker_cmd=reported, now=NOW)
+        self.assertEqual(run["status"], "done", run["summary"])
+        self.assertIn("hit the 10-minute cap after committing: added more", run["summary"])
+        # red commits are dropped exactly as they would be for a run that finished
+        self.con.execute("UPDATE projects SET verify_cmd = 'grep -q never README.md' WHERE slug = 'proj'")
+        pulse.add_job(self.con, "proj", "task", "red", created_by="test")
+        with unittest.mock.patch.object(pulse.LocalExecutor, "run_worker", run_then_time_out):
+            run, _ = pulse.work_once(self.con, "aurora", worker_cmd=committed, now=NOW)
+        self.assertEqual(run["status"], "failed", run["summary"])
+        self.assertIn("verify exit", run["summary"])
+        # nothing committed: a timeout, as before
+        self.con.execute("UPDATE projects SET verify_cmd = 'true' WHERE slug = 'proj'")
+        pulse.add_job(self.con, "proj", "task", "empty", created_by="test")
+        with unittest.mock.patch.object(pulse.LocalExecutor, "run_worker", run_then_time_out):
+            run, _ = pulse.work_once(self.con, "aurora", worker_cmd=self.worker_script("true", "nothing.sh"), now=NOW)
+        self.assertEqual(run["status"], "timeout", run["summary"])
+
+    def test_hands_wanted_is_one_finding_a_day_and_status_shows_capacity(self):
+        self.con.execute("UPDATE projects SET brain = 1 WHERE slug = 'proj'")
+        brain = pulse.brain_project(self.con)
+        self.assertEqual(pulse.capacity_status(self.con, NOW), "", "nothing recorded yet")
+        pulse.capacity_note(self.con, 3, 2, 2, "2026-09-10T11:15:00Z", NOW)
+        line = pulse.capacity_status(self.con, NOW)
+        self.assertIn("3 job(s) queued, 2 slot(s), 2 in flight", line)
+        self.assertIn("every slot busy for 45 min", line)
+        self.assertIn("pulse pair", line)
+        code, out, err = run_cli("status")
+        self.assertEqual(code, 0, err)
+        self.assertIn("capacity   3 job(s) queued", out)
+        post = pulse.hands_wanted(self.con, brain, 3, 2, 45, NOW)
+        self.assertIsNotNone(post)
+        self.assertEqual((post["kind"], post["area"], post["thread"]), ("finding", "runner", "hands-wanted"))
+        self.assertIn("hands wanted: 3 job(s) waited 45 min with all 2 slot(s) busy", post["summary"])
+        self.assertIn("not a request to act", post["body"])
+        self.assertIsNone(pulse.hands_wanted(self.con, brain, 4, 2, 60, NOW), "one finding a day")
+        self.assertIsNone(pulse.hands_wanted(self.con, None, 4, 2, 60, NOW), "no brain, no post")
+        pulse.capacity_note(self.con, 0, 2, 1, "", NOW)
+        self.assertEqual(pulse.capacity_status(self.con, NOW), "", "nothing waits: no line")
 
     def test_daemon_runs_one_loop_and_stops_on_the_switch(self):
         pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
@@ -1917,6 +2017,40 @@ class ExecutorTestCase(HandsFixture):
         self.assertEqual(run["status"], "done", run["summary"])
         self.assertEqual(run["commits"], 2)
         self.assertNotEqual(git(self.repo, "cat-file", "-e", "%s:PULSE_RESULT.md" % run["branch"]).returncode, 0)
+
+    def test_the_daemon_refills_a_freed_slot_while_another_run_is_in_flight(self):
+        """WU-019: the loop no longer waits for every slot; a slot refills as soon as its run ends."""
+        self.add_hands("hands-a", projects="*")
+        self.add_hands("hands-b", projects="*")
+        pulse.set_setting(self.con, "workers", "0", "human")
+        pulse.set_setting(self.con, "parallel_per_project", "4", "human")
+        pulse.set_setting(self.con, "jobs_per_day", "0", "human")
+        for j in self.con.execute("SELECT id FROM jobs WHERE status = 'queued'").fetchall():
+            pulse.finish_job(self.con, j["id"], "human", "cancelled")
+        pulse.add_job(self.con, "proj", "task", "slow one", created_by="test")
+        pulse.add_job(self.con, "proj", "task", "quick one", created_by="test")
+        pulse.add_job(self.con, "proj", "task", "quick two", created_by="test")
+        worker = self.worker_script('if grep -q "slow one" "$PULSE_BRIEF"; then sleep 4; fi\n'
+                                    'printf "SUMMARY: done by $PULSE_AGENT\\n" > PULSE_RESULT.md')
+        out = io.StringIO()
+        began = time.time()
+        with unittest.mock.patch.object(pulse, "DISPATCH_TICK_SECONDS", 1), \
+                unittest.mock.patch.object(pulse, "plan_jobs", return_value=[]):
+            self.assertEqual(pulse.daemon(self.con, interval=0, worker_cmd=worker, max_loops=3, out=out), "done")
+        elapsed = time.time() - began
+        runs = {r["job_id"]: r for r in self.con.execute("SELECT r.*, j.title FROM runs r JOIN jobs j ON j.id = r.job_id").fetchall()}
+        by_title = {r["title"]: r for r in runs.values()}
+        self.assertEqual(sorted(by_title), ["quick one", "quick two", "slow one"], out.getvalue())
+        self.assertEqual({r["status"] for r in by_title.values()}, {"done"}, out.getvalue())
+        self.assertLess(by_title["quick two"]["started_at"], by_title["slow one"]["finished_at"],
+                        "the second quick job started while the slow one was still running")
+        self.assertLess(elapsed, 9, "no loop waited for the slow run before refilling the other slot")
+        self.assertEqual(len({r["agent"] for r in by_title.values()}), 3, "every run in flight has its own worker")
+        self.assertEqual(out.getvalue().count(" on hands-"), 3, out.getvalue())
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM runs WHERE status = 'running'").fetchone()[0], 0,
+                         "max_loops drains the runs in flight before returning")
+        note = json.loads(self.con.execute("SELECT value FROM meta WHERE key = 'capacity'").fetchone()["value"])
+        self.assertEqual(note["slots"], 2)
 
     def test_the_daemon_fills_every_free_slot_and_honours_project_limits(self):
         other = make_repo(self.tmp, "other")
