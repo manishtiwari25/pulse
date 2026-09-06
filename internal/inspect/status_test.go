@@ -1,0 +1,112 @@
+package inspect
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestStatusRunnerCountsAndCapacity(t *testing.T) {
+	s := temporaryStore(t)
+	execSQL(t, s, `INSERT INTO projects(slug,name,path,status,brain,added_at) VALUES
+		('active','Active','/missing-active','active',0,?),
+		('inactive','Inactive','/missing-inactive','inactive',0,?)`, parityNow, parityNow)
+	for _, run := range []struct{ id, mode, status, at string }{
+		{"today", "real", "done", parityNow},
+		{"dry", "dry-run", "done", parityNow},
+		{"error", "real", "error", parityNow},
+		{"yesterday", "real", "done", "2026-09-05T23:59:59Z"},
+		{"running", "real", "running", "2026-09-06T18:50:00Z"},
+		{"stale-running", "real", "running", "2026-09-06T01:00:00Z"},
+	} {
+		execSQL(t, s, `INSERT INTO runs(id,job_id,agent,project,started_at,status,mode)
+			VALUES (?,'job','worker','active',?,?,?)`, run.id, run.at, run.status, run.mode)
+	}
+	execSQL(t, s, `INSERT INTO meta(key,value) VALUES
+		('capacity','{"queued":3,"slots":2,"inflight":2,"starved_since":"2026-09-06T18:29:01Z"}'),
+		('daemon','{"pid":123,"at":"2026-09-06T18:59:00Z","loops":4,"interval":30,"note":""}')`)
+	report, err := Status(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Projects) != 1 || report.Projects[0].Slug != "active" || report.RunsToday != 3 || report.DailyCap != 2 {
+		t.Fatalf("wrong status counts: %+v", report)
+	}
+	if report.Executors != "local active (1/1 busy)" {
+		t.Fatalf("stale running row counted as busy: %q", report.Executors)
+	}
+	if report.Daemon != "alive pid 123, last loop 60s ago, 4 loop(s), interval 30s" {
+		t.Fatalf("wrong heartbeat: %q", report.Daemon)
+	}
+	if report.Capacity != "3 job(s) queued, 2 slot(s), 2 in flight; every slot busy for 30 min - another machine would help (pulse pair; pulse record show WF-executors)" {
+		t.Fatalf("wrong capacity: %q", report.Capacity)
+	}
+	assertParity(t, invoke(t, s, false, "", "status"), oracle(t, s.Home, true, "status"))
+	asJSON := invoke(t, s, true, "", "status")
+	var decoded StatusReport
+	if err := json.Unmarshal([]byte(asJSON.out), &decoded); err != nil || decoded.Text() != report.Text() {
+		t.Fatalf("status JSON lost report information: %+v %v", asJSON, err)
+	}
+}
+
+func TestDaemonHeartbeatStates(t *testing.T) {
+	s := temporaryStore(t)
+	for _, tc := range []struct{ raw, want string }{
+		{"not json", "unreadable heartbeat"},
+		{`{"pid":42,"at":"2026-09-06T18:00:00Z","note":"exited"}`, "exited 2026-09-06T18:00:00Z (pid 42)"},
+		{`{"pid":42,"at":"2026-09-06T18:49:00Z","interval":300,"loops":2}`, "alive pid 42, last loop 660s ago, 2 loop(s), interval 300s"},
+		{`{"pid":42,"at":"2026-09-06T18:48:59Z","interval":300,"loops":2}`, "silent pid 42, last loop 661s ago, 2 loop(s), interval 300s"},
+		{`{"at":"2026-09-06T19:00:00Z"}`, "alive pid None, last loop 0s ago, 0 loop(s), interval Nones"},
+	} {
+		execSQL(t, s, `INSERT INTO meta(key,value) VALUES ('daemon',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, tc.raw)
+		got, err := DaemonStatus(s)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s: got %q, %v; want %q", tc.raw, got, err, tc.want)
+		}
+		assertParity(t, invoke(t, s, false, "", "status"), oracle(t, s.Home, true, "status"))
+	}
+}
+
+func TestUnfitMarksAreReadOnly(t *testing.T) {
+	s := temporaryStore(t)
+	raw := `{"local":{"fresh":{"tool":"tool:node@22","at":"2026-09-05T19:00:01Z"},"expired":{"tool":"uv","at":"2026-09-05T19:00:00Z"},"services":{"tool":"services","at":"2026-09-06T18:00:00Z"}}}`
+	execSQL(t, s, "INSERT INTO meta(key,value) VALUES ('unfit',?)", raw)
+	before := eventCount(t, s)
+	got, err := ExecutorsLine(s)
+	if err != nil || got != "local active (0/1 busy); lacks node@22 for fresh, needs services for services" {
+		t.Fatalf("unfit report: %q, %v", got, err)
+	}
+	after, _, err := s.Meta("unfit")
+	if err != nil || after != raw || eventCount(t, s) != before {
+		t.Fatal("status must not prune or rewrite expired unfit marks")
+	}
+}
+
+func TestDailyCapSpellings(t *testing.T) {
+	s := temporaryStore(t)
+	for _, value := range []string{"none", "off", "unlimited", "0", "3", "invalid-old-value", "-2"} {
+		execSQL(t, s, "UPDATE settings SET value=? WHERE name='jobs_per_day'", value)
+		got := invoke(t, s, false, "", "status")
+		want := oracle(t, s.Home, true, "status")
+		assertParity(t, got, want)
+		if value == "3" && !strings.Contains(got.out, "runs today 0 of 3 (jobs_per_day)") {
+			t.Fatalf("cap missing: %+v", got)
+		}
+	}
+}
+
+func TestListOutputsPreserveFixedWidths(t *testing.T) {
+	s := temporaryStore(t)
+	for _, row := range []struct{ id, status, project, title, result string }{
+		{"short", "queued", "one", "short", ""},
+		{"long", "leased", "a-project-slug-longer-than-the-column", strings.Repeat("\u754c", 65), strings.Repeat("result", 20)},
+		{"done", "done", "one", "finished", "success"},
+		{"blocked", "blocked", "two", "blocked", ""},
+	} {
+		execSQL(t, s, `INSERT INTO jobs(id,project,kind,title,status,created_at,result,lease_agent,lease_until)
+			VALUES (?,?,'task',?,?,?,?,'worker','2026-09-07T19:00:00Z')`, row.id, row.project, row.title, row.status, parityNow, row.result)
+	}
+	for _, args := range [][]string{nil, {"--all"}} {
+		assertParity(t, invoke(t, s, false, "", "jobs", args...), oracle(t, s.Home, true, append([]string{"jobs"}, args...)...))
+	}
+}
