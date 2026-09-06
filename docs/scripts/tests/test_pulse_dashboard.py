@@ -884,6 +884,43 @@ class StoreModeServerTestCase(unittest.TestCase):
         self.assertEqual((by_name["vm1"]["address"], by_name["vm1"]["workers"], by_name["vm1"]["projects"]), ("pulse@10.0.0.4", 2, "store-app"))
         self.assertNotIn("Set-Cookie", self.request("/api/v1/executors")[1])
 
+    def test_runner_route_counts_hands_in_standby_the_worker_pool_and_the_daemon(self):
+        con = dash.pulse.connect(self.home)
+        try:
+            dash.pulse.add_executor(con, "vm2", "pulse@10.0.0.5", "/srv/pulse", workers=2, projects="store-app", now="2026-09-10T12:00:00Z")
+            con.execute("UPDATE executors SET status = 'active' WHERE name = 'vm2'")
+            idle = dash.pulse.spawn_agent(con, runner="copilot", model="model-w", kind="worker")["name"]
+            busy = dash.pulse.spawn_agent(con, runner="copilot", model="model-w", kind="worker")["name"]
+            con.execute("INSERT INTO jobs (id, project, kind, title, status, created_at, lease_agent) VALUES (?, 'store-app', 'improve', 'leased one', 'leased', ?, ?)",
+                        ("J-leased", dash.pulse.utc_now(), busy))
+            con.execute("INSERT INTO jobs (id, project, kind, title, status, created_at) VALUES (?, 'store-app', 'improve', 'waiting one', 'queued', ?)",
+                        ("J-queued", dash.pulse.utc_now()))
+            dash.pulse.daemon_heartbeat(con, loops=3, interval=300)
+            quorum = dash.pulse.setting_int(con, "quorum")
+            con.commit()
+        finally:
+            con.close()
+        r = self.api("/api/v1/runner")
+        self.assertTrue(r["available"])
+        self.assertEqual(r["daemon"]["state"], "alive")
+        self.assertEqual((r["daemon"]["pid"], r["daemon"]["loops"], r["daemon"]["interval"]), (os.getpid(), 3, 300))
+        self.assertTrue(r["daemon"]["text"].startswith("alive pid"))
+        self.assertEqual(r["runner"], {"allowed": True, "reason": ""})
+        by_name = {x["name"]: x for x in r["executors"]}
+        self.assertEqual((by_name["local"]["status"], by_name["local"]["free"]), ("active", 1), "this machine keeps one free slot")
+        self.assertEqual((by_name["vm2"]["workers"], by_name["vm2"]["running"], by_name["vm2"]["free"], by_name["vm2"]["projects"]), (2, 0, 2, "store-app"))
+        self.assertEqual(by_name.get("vm1", {"free": 0})["free"], 0, "drained hands never count as standby")
+        self.assertEqual((r["hands"]["free"], r["hands"]["slots"], r["hands"]["executors_active"], r["hands"]["any_project"]), (3, 3, 2, True))
+        self.assertEqual((r["workers"]["pool"], r["workers"]["idle"], r["workers"]["busy"], r["workers"]["target"]), (2, 1, 1, quorum + 1))
+        self.assertEqual(r["workers"]["idle_names"], [idle])
+        self.assertEqual((r["jobs"]["queued"], r["jobs"]["leased"], r["jobs"]["blocked"], r["jobs"]["running"], r["jobs"]["runs_today"]), (1, 1, 0, 0, 0))
+        self.assertIsInstance(r["jobs"]["cap"], int)
+        self.assertNotIn("Set-Cookie", self.request("/api/v1/runner")[1])
+
+    def test_runner_route_without_a_store_says_so(self):
+        hub = dash.HubState(self.tmp / "no-store-home", self.tmp / "no-store-cache", refresh_seconds=3600)
+        self.assertEqual(dash.q_runner(hub), {"available": False})
+
     def test_decide_route_records_decision_result_and_refreshes_projection(self):
         before = self.api("/api/v1/proposals")
         self.assertEqual(before[0]["status"], "awaiting")

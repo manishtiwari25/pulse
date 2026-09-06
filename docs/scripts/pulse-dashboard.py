@@ -1825,8 +1825,54 @@ def q_executors(hub):
         for r in pulse.executor_rows(con):
             row = dict(r)
             row["running"] = pulse.executor_running(con, r["name"])
+            row["free"] = pulse.executor_free_slots(con, r)
             out.append(row)
         return out
+    finally:
+        con.close()
+
+
+def q_runner(hub):
+    """The agents' machine as the store sees it (ADR-019, ADR-020): is the daemon alive, how many hands stand
+    free on which executors and for which projects, how many workers wait in the pool, and what the queue
+    holds. Read only - the dashboard never spawns, drains, or stops anything."""
+    if not store_available(hub.home):
+        return {"available": False}
+    con = pulse.open_store(hub.home)
+    try:
+        now = pulse.utc_now()
+        executors = []
+        for r in pulse.executor_rows(con):
+            row = {k: r[k] for k in ("name", "kind", "status", "address", "workers", "projects", "last_probe_at", "probe_note")}
+            row["running"] = pulse.executor_running(con, r["name"], now)
+            row["free"] = pulse.executor_free_slots(con, r, now)
+            executors.append(row)
+        active = [x for x in executors if x["status"] == "active"]
+        hands = {"free": sum(x["free"] for x in active), "slots": sum(int(x["workers"]) for x in active),
+                 "executors_active": len(active), "executors": len(executors),
+                 "any_project": any(x["free"] and x["projects"] == "*" for x in active)}
+        workers = [r["name"] for r in con.execute("SELECT name FROM agents WHERE status = 'active' AND kind = 'worker' ORDER BY name")]
+        leasing = {r["lease_agent"] for r in con.execute("SELECT lease_agent FROM jobs WHERE status = 'leased'")}
+        busy = [w for w in workers if w in leasing]
+        pool = {"pool": len(workers), "idle": len(workers) - len(busy), "busy": len(busy),
+                "target": max(1, pulse.setting_int(con, "quorum") + 1), "idle_names": [w for w in workers if w not in leasing]}
+        counts = {s: 0 for s in ("queued", "leased", "blocked")}
+        for r in con.execute("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued', 'leased', 'blocked') GROUP BY status"):
+            counts[r["status"]] = r["n"]
+        jobs = dict(counts, running=sum(x["running"] for x in executors), runs_today=pulse.runs_today(con, now), cap=pulse.daily_cap(con))
+        text = pulse.daemon_status(con, now)
+        daemon = {"state": "never started" if text.startswith("never") else text.split(" ")[0], "text": text}
+        beat = con.execute("SELECT value FROM meta WHERE key = 'daemon'").fetchone()
+        if beat:
+            try:
+                b = json.loads(beat["value"])
+                daemon.update({"pid": b.get("pid"), "at": b.get("at"), "loops": int(b.get("loops") or 0),
+                               "interval": int(b.get("interval") or 0), "note": b.get("note") or ""})
+            except (ValueError, TypeError):
+                pass
+        stopped = pulse.runner_stopped(con)
+        return {"available": True, "now": now, "daemon": daemon, "runner": {"allowed": not stopped, "reason": stopped},
+                "hands": hands, "executors": executors, "workers": pool, "jobs": jobs}
     finally:
         con.close()
 
@@ -2156,6 +2202,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, q_roster(hub))
         if route == "executors":
             return self._json(200, q_executors(hub))
+        if route == "runner":
+            return self._json(200, q_runner(hub))
         if route == "votes":
             return self._json(200, q_votes(hub))
         if route == "activity":
@@ -2684,6 +2732,27 @@ APP_JS = r"""'use strict';
     const label = (v === 'down' ? '\u25bc down' : '\u25b2 up') + (cls && cls !== 'counted' ? ' \u00b7 ' + cls + ' (uncounted)' : '');
     return chip(label, cls && cls !== 'counted' ? 'warn' : c);
   }
+  const executorTone = {active: 'ok', drained: '', unreachable: 'warn'};
+  // The agents' machine as the store sees it (/api/v1/runner): the daemon, the free hands per executor,
+  // the worker pool, and the queue. Read only - nothing here starts or stops anything.
+  function machinePanel(r) {
+    if (!r || !r.available) return null;
+    const d = r.daemon || {}, h = r.hands || {}, w = r.workers || {}, j = r.jobs || {};
+    const line = (label, body) => el('div', {class: 'small wrap'}, el('span', {class: 'muted'}, label + ' '), body);
+    const alive = d.state === 'alive' || d.state === 'silent';
+    return panel('The agents\u2019 machine', el('div', {class: 'stack', style: 'gap:8px'},
+      line('daemon', [chip(d.state, d.state === 'alive' ? 'ok' : (d.state === 'silent' ? 'warn' : 'bad')),
+        alive ? [' pid ', el('span', {class: 'mono'}, String(d.pid)), ' \u00b7 last loop ', when(d.at), ' \u00b7 every ' + span(d.interval || 300)] : (d.at ? [' ', when(d.at)] : null)]),
+      r.runner && !r.runner.allowed ? line('runner', [chip('stopped', 'bad'), ' ' + r.runner.reason]) : null,
+      line('hands', [el('strong', null, num(h.free)), ' in standby of ' + plural(h.slots, 'slot') + ' on ' + plural(h.executors_active, 'active executor') + (h.any_project ? ' \u00b7 any project' : '')]),
+      el('div', {class: 'stack', style: 'gap:4px;padding-left:12px'}, (r.executors || []).map((x) => el('div', {class: 'tiny wrap'},
+        el('span', {class: 'mono'}, x.name), ' ', chip(x.status, executorTone[x.status] || ''),
+        ' ' + x.free + ' free of ' + x.workers + (x.running ? ', ' + x.running + ' running' : '') + ' \u00b7 ' + (x.projects === '*' ? 'any project' : x.projects)))),
+      line('workers', [el('strong', null, num(w.idle)), ' in standby of ' + num(w.pool) + ' in the pool (target ' + w.target + ')' + (w.busy ? ', ' + w.busy + ' busy' : '')]),
+      line('queue', num(j.queued) + ' queued \u00b7 ' + num(j.leased) + ' leased \u00b7 ' + num(j.running) + ' running \u00b7 ' + plural(j.runs_today, 'run') + ' today' + (j.cap ? ' of ' + j.cap : ' (no daily cap)') + (j.blocked ? ' \u00b7 ' + j.blocked + ' blocked' : ''))),
+      link('#/agents', 'agents and executors \u2192', 'small'));
+  }
+  const standbyKpi = (r, sub) => r && r.available ? kpi(r.hands.free, 'hands in standby', '#/agents', {sub, tone: r.hands.free ? 'ok' : 'warn'}) : null;
   const fmtDate = (d) => (d || '').replace('T', ' ').replace('Z', ' UTC');
   function parseDate(d) {
     if (!d) return null;
@@ -3195,7 +3264,7 @@ APP_JS = r"""'use strict';
         el('span', {class: 'summary', title: p.summary}, far ? farPost(p.base, p.id, p.summary) : postLink(p.id, p.summary))))));
   }
   async function org() {
-    const [o, tl, v, act] = await Promise.all([api('org'), api('timeline').catch(() => null), api('votes').catch(() => ({suggestions: [], amendments: []})), api('activity').catch(() => [])]);
+    const [o, tl, v, act, runner] = await Promise.all([api('org'), api('timeline').catch(() => null), api('votes').catch(() => ({suggestions: [], amendments: []})), api('activity').catch(() => []), api('runner').catch(() => null)]);
     seenBuild = o.stamp || seenBuild;
     const t = o.totals;
     const missing = document.body.dataset.missing || '';
@@ -3213,6 +3282,7 @@ APP_JS = r"""'use strict';
       kpi(t.proposals_awaiting || 0, 'for you', '#/proposals', {sub: 'proposals awaiting your yes or no', tone: t.proposals_awaiting ? 'ok' : ''}),
       kpi(t.projects_present, 'projects', '#/org', {sub: t.projects_present !== t.projects ? (t.projects - t.projects_present) + ' registered but missing' : 'on this machine', tone: 'accent'}),
       kpi(t.agents_active, 'working now', '#/agents', {sub: 'agents holding a claim', tone: t.agents_active ? 'ok' : ''}),
+      standbyKpi(runner, runner && runner.available ? plural(runner.hands.slots, 'slot') + ' on ' + plural(runner.hands.executors_active, 'executor') + ' \u00b7 daemon ' + runner.daemon.state : ''),
       kpi(t.agents, 'agents', '#/agents', {sub: 'seen across all projects'}),
       kpi(t.votes_open, 'votes open', '#/votes', {sub: 'suggestions and amendments', tone: t.votes_open ? 'warn' : ''}),
       kpi(t.questions_open, 'open questions', commonsHref, {sub: 'on the commons'}),
@@ -3237,6 +3307,7 @@ APP_JS = r"""'use strict';
           panel('Projects', projects),
           panel('Latest activity', feedList(act.slice(0, 12), true), link('#/activity', 'all activity \u2192', 'small'))),
         el('div', {class: 'stack'},
+          machinePanel(runner),
           panel('Working now', claims, el('span', {class: 'badge'}, o.active_claims.length)),
           panel('Needs attention', attention, link('#/votes', 'all votes \u2192', 'small')))),
       el('p', {class: 'muted tiny mono', style: 'margin-top:14px'}, 'registry ' + o.registry + ' \u00b7 commons ' + o.commons_dir));
@@ -3307,17 +3378,16 @@ APP_JS = r"""'use strict';
       box);
   }
   async function agents() {
-    const [rows, executors] = await Promise.all([api('roster'), api('executors')]);
-    const executorTone = {active: 'ok', drained: '', unreachable: 'warn'};
+    const [rows, executors, runner] = await Promise.all([api('roster'), api('executors'), api('runner').catch(() => null)]);
     const executorsBox = executors.length ? el('div', {class: 'stack'},
       el('h2', null, 'Executors ', el('span', {class: 'badge'}, executors.length)),
       el('p', {class: 'lead'}, 'Where the runner\'s jobs execute: this machine plus every pair of ssh hands added with pulse executor add (ADR-020). The dashboard only reads them; probe, drain, and remove are commands the human runs.'),
-      table(['executor', 'status', 'address', 'workers', 'running', 'projects', 'runs done', 'runs failed', 'errors', 'last probe', 'note'],
+      table(['executor', 'status', 'address', 'workers', 'running', 'free', 'projects', 'runs done', 'runs failed', 'errors', 'last probe', 'note'],
         executors.map((x) => ({data: x, cells: [
           el('span', {class: 'mono'}, x.name),
           chip(x.status, executorTone[x.status] === undefined ? '' : executorTone[x.status]),
           el('span', {class: 'small mono'}, x.address || '(this machine)'),
-          String(x.workers), String(x.running), x.projects,
+          String(x.workers), String(x.running), String(x.free === undefined ? '' : x.free), x.projects === '*' ? 'any project' : x.projects,
           num(x.runs_done || 0), num(x.runs_failed || 0), String(x.errors || 0),
           el('span', {class: 'small mono'}, x.last_probe_at || ''),
           el('span', {class: 'small'}, x.probe_note || ''),
@@ -3342,6 +3412,8 @@ APP_JS = r"""'use strict';
     const kpis = el('div', {class: 'kpis'},
       kpi(groups.length, 'agents', '#/agents', {sub: rows.length + ' roster row' + (rows.length === 1 ? '' : 's')}),
       kpi(counts.working, 'working', '#/agents', {sub: 'holding active claims', tone: counts.working ? 'ok' : ''}),
+      standbyKpi(runner, runner && runner.available ? 'free slots on active executors \u00b7 daemon ' + runner.daemon.state : ''),
+      runner && runner.available ? kpi(runner.workers.idle, 'workers in standby', '#/agents', {sub: 'of ' + runner.workers.pool + ' in the pool, target ' + runner.workers.target}) : null,
       kpi((counts.active || 0) + (counts.recent || 0), 'active or recent', '#/agents', {sub: 'posted in the last 7 days'}),
       kpi((counts.dormant || 0) + (counts.pruned || 0), 'hidden', '#/agents', {sub: 'dormant or pruned'}),
       kpi(rows.reduce((a, p) => a + Number(p.jobs_done || 0), 0), 'jobs done', '#/agents', {sub: 'from the agents table'}),
