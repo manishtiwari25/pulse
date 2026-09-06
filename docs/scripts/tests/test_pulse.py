@@ -17,6 +17,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 import stat
@@ -1139,6 +1140,36 @@ class HandsFixture(StoreFixture):
 
 class ExecutorTestCase(HandsFixture):
     """PLAN-020 slice 1: a remote executor over ssh, driven end to end through the shim and pulse-hands.sh."""
+
+    def test_prepare_verifies_the_bundle_with_a_git_that_needs_a_repository(self):
+        # git 2.43 (Ubuntu 24.04) refuses `git bundle verify` outside a repository; the forced command starts
+        # in the hands' home, which is none, so every remote job used to die at prepare with "does not verify".
+        real_git = shutil.which("git")
+        wrapper = self.tmp / "bin" / "git"
+        wrapper.write_text(
+            "#!/bin/bash\n"
+            "if [ \"$1\" = bundle ] && [ \"$2\" = verify ] && ! %s rev-parse --git-dir >/dev/null 2>&1; then\n"
+            "  echo 'error: need a repository to verify a bundle' >&2; exit 1\n"
+            "fi\n"
+            "exec %s \"$@\"\n" % (shlex.quote(real_git), shlex.quote(real_git)), encoding="utf-8")
+        wrapper.chmod(0o755)
+        bundle = self.tmp / "source.bundle"
+        self.assertEqual(git(self.repo, "bundle", "create", "-q", str(bundle), "main").returncode, 0)
+        home = self.tmp / "hands-home"
+        home.mkdir()
+        done = subprocess.run(["bash", str(HANDS_SH), "prepare", "job-1", "main", "hands-1"], input=bundle.read_bytes(),
+                              cwd=str(home), env=dict(os.environ), capture_output=True, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stderr.decode("utf-8", "replace"))
+        base = done.stdout.decode("utf-8").strip().split()[-1]
+        self.assertEqual(base, git(self.repo, "rev-parse", "main").stdout.strip())
+        self.assertTrue((self.remote / "job-1" / "clone" / ".git").is_dir())
+        self.assertEqual(sorted(p.name for p in (self.remote / "job-1").iterdir()), ["clone"], "no bundle or scratch repository left behind")
+        # a broken bundle still dies the same way and leaves the job directory clean of scratch
+        broken = subprocess.run(["bash", str(HANDS_SH), "prepare", "job-2", "main", "hands-1"], input=b"not a bundle",
+                                cwd=str(home), env=dict(os.environ), capture_output=True, timeout=120)
+        self.assertEqual(broken.returncode, 2)
+        self.assertIn("the bundle does not verify", broken.stderr.decode("utf-8"))
+        self.assertFalse((self.remote / "job-2" / "verify").exists())
 
     def test_executor_lifecycle_add_probe_list_drain_remove(self):
         with self.assertRaises(pulse.PulseError):

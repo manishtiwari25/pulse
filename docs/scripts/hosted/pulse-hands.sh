@@ -144,7 +144,11 @@ verb_prepare() {
   mkdir -p "$dir"
   bundle="$dir/source.bundle"
   cat > "$bundle"
-  git bundle verify "$bundle" >/dev/null 2>&1 || die "the bundle does not verify"
+  # Older gits (2.43 on Ubuntu 24.04 among them) refuse `git bundle verify` outside a repository, and the
+  # forced command starts in the hands' home, which is none: verify from an empty scratch repository.
+  git init -q "$dir/verify" || die "cannot make the scratch repository"
+  git -C "$dir/verify" bundle verify "$bundle" >/dev/null 2>&1 || { rm -rf "$dir/verify"; die "the bundle does not verify"; }
+  rm -rf "$dir/verify"
   if [ "$branch" = "HEAD" ]; then
     git -c advice.detachedHead=false clone -q --no-tags "$bundle" "$dir/clone"
   else
