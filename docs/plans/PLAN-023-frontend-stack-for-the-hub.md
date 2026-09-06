@@ -1,7 +1,7 @@
 ---
 id: PLAN-023
 title: A Proper Frontend Stack for the Hub - Scaffold, Reach Parity, Retire the Embedded Page
-status: Draft
+status: In Progress
 tier: 2
 date: 2026-09-06
 delivered:
@@ -124,8 +124,7 @@ and the embedded legacy page deleted.
 
 ## Rollback Plan
 
-- **Baseline:** `main` at the commit before phase A (recorded here when it
-  starts); `pulse-dashboard.py`, its tests, `docs/workflows/dashboard.md`,
+- **Baseline:** `main` at `553b14a` (the commit before Step 1 and phase A); `pulse-dashboard.py`, its tests, `docs/workflows/dashboard.md`,
   and the new `docs/scripts/dashboard/` tree are the only files touched.
   The store, the runner, `pulse.py`, and `pulse-hands.sh` are not involved.
 - **Trigger:** any guard test red; P4 render with an error, a CSP violation,

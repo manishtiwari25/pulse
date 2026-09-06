@@ -59,7 +59,7 @@
   existing Linux machine into hardened hands and enrolls it; the daemon stays
   the one supervisor and the dashboard stays read-only with a Flywheel view.
 - [`015-modern-hub-ui.md`](015-modern-hub-ui.md) - a modern hub UI
-  (ADR-023, Proposed 2026-09-06): the same read-only data as a designed
+  (ADR-023, Accepted 2026-09-06): the same read-only data as a designed
   product - dark-first with a light theme, one accent, big tabular numbers,
   Radix accessibility, Mission control as a ten-second story - every legacy
   view at the same hash route, three fixed files under the unchanged CSP,

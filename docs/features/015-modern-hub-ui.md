@@ -1,7 +1,7 @@
 ---
 id: FEAT-015
 title: A Modern Hub UI - What a User Enjoys and an Investor Recognises, on the Same Read-Only Data
-status: Draft
+status: In Progress
 tier: 2
 date: 2026-09-06
 delivered:

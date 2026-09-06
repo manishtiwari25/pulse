@@ -1,7 +1,8 @@
 ---
 id: ADR-023
 title: A Proper Frontend Stack for the Hub - Vite, TypeScript, the React API on Preact, Tailwind, and Radix, Built to Three Fixed Files the Read-Only Python Hub Serves
-status: Proposed
+status: Accepted
+accepted: 2026-09-06
 date: 2026-09-06
 delivery: not started
 delivered:
@@ -230,9 +231,11 @@ tokens live in one CSS file under `src/` and stay `light-dark()`-based.
 
 ## Follow-Up
 
-- [ ] Human approval of this ADR (`status: Accepted`); the human edits the
-      guard module, constitution class paths, and evaluators P2/P6 as in §3
-      and §5 (the agent prepares the exact diff in PLAN-023 step 1).
+- [x] Human approval of this ADR (`status: Accepted`, `pulse decide` yes on
+      `20260906T074412Z-fable-scale-09051203` at 2026-09-06T08:51:35Z); the
+      Step 1 edits to the guard module, constitution class paths, and
+      evaluators P2/P6 (§3, §5) landed as one separate commit the human can
+      revert alone.
 - [ ] PLAN-023 phase A: scaffold, design tokens, components, Mission
       control and every view to parity, served by the hub when `dist/` is
       complete; legacy page as fallback.

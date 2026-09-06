@@ -62,15 +62,14 @@
   Tier 2 plan for ADR-021 (In Progress): `pulse onboard`, `pulse pair`, the
   first reflect queued at once, and the dashboard's Flywheel view.
 
-## Proposed, awaiting the decision
+## In progress
 
 - [`PLAN-023-frontend-stack-for-the-hub.md`](PLAN-023-frontend-stack-for-the-hub.md) -
-  the Tier 2 plan for ADR-023 (Proposed): the owner's guard, constitution,
+  the Tier 2 plan for ADR-023 (Accepted 2026-09-06): the owner's guard, constitution,
   and evaluator edits first; then a Vite + TypeScript + Preact + Tailwind +
   Radix page under `docs/scripts/dashboard/` built to three fixed files the
   standard-library hub serves, brought to parity with every WU-005 view
-  (phase A), then the embedded page retired (phase B). Nothing starts before
-  the ADR is Accepted.
+  (phase A), then the embedded page retired (phase B).
 
 Copy `_template.md` when a Tier 2 task needs an explicit plan.
 
