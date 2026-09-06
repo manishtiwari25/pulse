@@ -116,8 +116,8 @@ Canonical workflow:
 - For a shadow run or a cycle: scores, sandbox boundary, archive row or board
   `result` id where one exists.
 - One line: what the next agent should do first.
-- Last, for the human: every proposal the digest lists under FOR THE HUMAN,
-  one plain-word yes-or-no question each with `Details:` and the post path -
-  no option menu, no technical recap
-  (`docs/prompts/shared/eli5.prompt.md`, "The Closing Message"). Record the
-  answer with a `result` (`resolution: accepted` or `declined`).
+- Last: what landed, what was discarded and why, what the agents do next;
+  a yes-or-no question only for a proposal that waits at a hard stop, with
+  `Details:` and the post path - no option menu, no technical recap
+  (`docs/prompts/shared/eli5.prompt.md`, "The Closing Message"; ADR-024).
+  Record a human veto with a `result` (`resolution: declined`) and revert.

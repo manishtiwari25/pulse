@@ -57,20 +57,23 @@ One row per file class. `Stage` says what the row opens: `1` listed but not
 editable yet; `2` an operating-layer class, editable while `loop: on`; `4` a
 product class, editable while `loop: on` and `evaluators.md` has product
 evaluators with a baseline. Stages are not an order to climb: a product class
-does not wait for any other class. `Autonomy` is `human` (a human merges) or
-`standing` (the loop merges), earned per class when `Clean cycles so far`
-reaches `Clean cycles required` with no incident; an incident on a class sets
-`autonomy: human` and resets `Clean cycles so far` to 0. Product classes come
+does not wait for any other class. `Autonomy` is `standing` (the loop lands
+kept variants itself with `pulse land`; PULSE's default since ADR-024) or
+`human` (kept variants wait on their branch for a human merge). A project
+that prefers to earn it starts every row at `human` and moves a class to
+`standing` when `Clean cycles so far` reaches `Clean cycles required` with no
+incident; either way an incident on a class sets `autonomy: human` and resets
+`Clean cycles so far` to 0 until the owner restores it. Product classes come
 first because the product is the loop's subject.
 
 | File class | Paths | Stage | Autonomy | Clean cycles required | Clean cycles so far | Incidents |
 | --- | --- | --- | --- | --- | --- | --- |
-| product polish | <product paths, e.g. `src/`, `apps/`, `packages/` minus the hard-stop surfaces above>, Tier 0 with a reproducing test or the check the polish satisfies | 4 | human | 10 | 0 | 0 |
-| product behavior | <the same paths>, Tier 1 inside an Accepted ADR, the work unit in the same variant | 4 | human | 10 | 0 | 0 |
-| memory | `docs/memory/` | 2 | human | 5 | 0 | 0 |
-| local rules | project-owned sections of `AGENTS.md` | 2 | human | 8 | 0 | 0 |
-| project prompts | `docs/prompts/` outside `shared/` | 2 | human | 5 | 0 | 0 |
-| project skills and workflows | project-owned `docs/skills/`, `docs/workflows/` files | 2 | human | 5 | 0 | 0 |
+| product polish | <product paths, e.g. `src/`, `apps/`, `packages/` minus the hard-stop surfaces above>, Tier 0 with a reproducing test or the check the polish satisfies | 4 | standing | 10 | 0 | 0 |
+| product behavior | <the same paths>, Tier 1 inside an Accepted ADR, the work unit in the same variant | 4 | standing | 10 | 0 | 0 |
+| memory | `docs/memory/` | 2 | standing | 5 | 0 | 0 |
+| local rules | project-owned sections of `AGENTS.md` | 2 | standing | 8 | 0 | 0 |
+| project prompts | `docs/prompts/` outside `shared/` | 2 | standing | 5 | 0 | 0 |
+| project skills and workflows | project-owned `docs/skills/`, `docs/workflows/` files | 2 | standing | 5 | 0 | 0 |
 
 ## Budget
 
@@ -104,14 +107,18 @@ settings, not limits: they define "better" and apply in both modes.
 
 Every cycle runs on an experiment branch inside the strongest sandbox the
 runner supports and reports the actual boundary. An unsandboxed cycle is
-recorded as such in the archive and is never promoted with standing autonomy.
+recorded as such in the archive row; landing is decided by the constraints and
+scores, and the owner reverts by commit (ADR-024). A project that wants the
+boundary to gate landing writes here: "an unsandboxed cycle is never landed
+with standing autonomy".
 
 ## Branches and worktrees
 
 Every experiment branch, worktree, or fleet clone the loop creates is removed
 when its cycle ends: a discarded variant's branch and worktree go in the same
-cycle; a kept variant's branch lives exactly as long as its pull request and
-goes when that request merges or closes; fleet clones go through
+cycle; a kept variant's branch goes when `pulse land` has put it on the
+default branch (or, under `autonomy: human`, when its human merge is done);
+fleet clones go through
 `docs/scripts/fleet.sh clean` once their results are validated. A run never
 ends with a stray `evolve/*` branch or worktree. The loop removes only what it
 created - never another branch, never a tree with uncommitted human work,
@@ -158,11 +165,17 @@ when the project needs more caution; only a human lowers them.
 
 ## Promotion
 
-- Stages 1-2: every kept variant is a pull request a human merges or closes.
-- Stage 3+: a class with `autonomy: standing` may merge kept variants inside
-  its paths only; anything touching another class stays a human merge.
+- A kept variant of a class with `autonomy: standing` lands on the default
+  branch by the loop itself (`pulse land --branch evolve/...`, ADR-024): merge
+  in a throwaway worktree, the project's own check on the merged result, a
+  fast-forward of a clean checkout, the branch deleted. The diff must stay
+  inside that class's paths; anything touching another class is discarded.
+- A kept variant of a class with `autonomy: human` waits on its branch for a
+  human merge.
 - Product classes (Stage 4) additionally need the project's tests and
-  benchmarks to pass and a human-rated sample at the cadence in the evaluators.
+  benchmarks to pass; a human-rated sample at the cadence in the evaluators is
+  the owner's check on the loop, not a gate before landing.
+- The loop never pushes; publishing is the owner's act.
 
 ## Kill switch
 

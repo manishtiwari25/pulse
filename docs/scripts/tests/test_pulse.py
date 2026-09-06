@@ -1133,6 +1133,136 @@ class StoreTestCase(StoreFixture):
         con.close()
 
 
+class LandingTestCase(StoreFixture):
+    """ADR-024: verified work lands on the default branch by itself; nothing that conflicts or fails the check ever does."""
+
+    def work(self, body, agent="aurora"):
+        if pulse.agent_row(self.con, agent) is None:
+            pulse.join_agent(self.con, agent, "r", "m")
+        body += '\nprintf "SUMMARY: %s\\n" > PULSE_RESULT.md' % "one line appended"
+        run, reason = pulse.work_once(self.con, agent, worker_cmd=self.worker_script(body, name="%s.sh" % agent), now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"])
+        self.assertTrue(run["branch"])
+        return run
+
+    def project(self):
+        return pulse.project_rows(self.con)[0]
+
+    def test_land_merges_a_verified_branch_and_removes_it(self):
+        run = self.work('echo "changed by $PULSE_AGENT" >> README.md && git add -A && git commit -qm "worker change"')
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["landed"], results)
+        self.assertIn("changed by aurora", (self.repo / "README.md").read_text(encoding="utf-8"))
+        self.assertEqual(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "", "the landed branch is removed")
+        self.assertEqual(git(self.repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(), "main")
+        self.assertEqual(git(self.repo, "status", "--porcelain").stdout.strip(), "", "the checkout is clean after the fast-forward")
+        self.assertEqual(git(self.repo, "worktree", "list").stdout.count("\n"), 1, "the landing worktree is gone")
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual(job["status"], "done")
+        self.assertIn("landed", job["result"])
+        post = self.con.execute("SELECT * FROM posts WHERE kind = 'result' AND resolution = 'proceeded'").fetchone()
+        self.assertIsNotNone(post, "the landing is a result post")
+        self.assertIn("landed on main", post["summary"])
+        self.assertEqual(self.con.execute("SELECT count(*) FROM events WHERE action = 'land.landed'").fetchone()[0], 1)
+        self.assertEqual(pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW), [], "nothing waits any more")
+
+    def test_land_defers_while_the_checkout_is_busy_then_merges(self):
+        self.work('echo "changed by $PULSE_AGENT" >> README.md && git add -A && git commit -qm "worker change"')
+        (self.repo / "AGENTS.md").write_text("# rules\n\nedited by the human\n", encoding="utf-8")
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["deferred"], results)
+        self.assertIn("uncommitted", results[0][1])
+        self.assertTrue(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "the branch waits")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "human work on main")
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["landed"], results)
+        self.assertIn("changed by aurora", (self.repo / "README.md").read_text(encoding="utf-8"))
+        self.assertIn("edited by the human", (self.repo / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertIn("Land pulse/aurora/", git(self.repo, "log", "-1", "--format=%s").stdout, "a merge commit when main moved")
+        self.assertEqual(git(self.repo, "status", "--porcelain").stdout.strip(), "")
+
+    def test_land_requeues_a_conflicting_job_and_keeps_a_patch(self):
+        run = self.work('echo "changed by $PULSE_AGENT" >> README.md && git add -A && git commit -qm "worker change"')
+        (self.repo / "README.md").write_text("rewritten on main\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "conflicting human change")
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["conflict"], results)
+        self.assertEqual((self.repo / "README.md").read_text(encoding="utf-8"), "rewritten on main\n", "main is untouched")
+        self.assertEqual(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "", "the conflicting branch is removed")
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual((job["status"], job["attempts"], job["branch"]), ("queued", 0, ""), "the job runs again on the current main")
+        self.assertIn("conflicts with main", job["result"])
+        patches = list((self.home / "patches" / "proj").glob("*.patch"))
+        self.assertEqual(len(patches), 1, "the earlier attempt is kept as a patch")
+        self.assertIn("changed by aurora", patches[0].read_text(encoding="utf-8"))
+        self.assertEqual(git(self.repo, "status", "--porcelain").stdout.strip(), "")
+        self.assertEqual(git(self.repo, "worktree", "list").stdout.count("\n"), 1)
+
+    def test_land_requeues_when_the_merged_result_fails_the_check(self):
+        self.con.execute("UPDATE projects SET verify_cmd = 'test ! -f BREAK'")
+        run = self.work('echo "changed by $PULSE_AGENT" >> README.md && git add -A && git commit -qm "worker change"')
+        (self.repo / "BREAK").write_text("", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "main now fails the check together with the branch")
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["failed-verify"], results)
+        self.assertNotIn("changed by aurora", (self.repo / "README.md").read_text(encoding="utf-8"), "nothing landed")
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual(job["status"], "queued")
+        self.assertIn("verify exit 1", job["result"])
+        self.assertEqual(self.con.execute("SELECT count(*) FROM events WHERE action = 'land.failed-verify'").fetchone()[0], 1)
+
+    def test_landing_setting_human_keeps_branches_until_asked(self):
+        self.work('echo "changed by $PULSE_AGENT" >> README.md && git add -A && git commit -qm "worker change"')
+        pulse.set_setting(self.con, "landing", "human", "human")
+        self.assertEqual(pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW), [])
+        self.assertTrue(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "the branch waits for a human")
+        code, out, err = run_cli("land", "--project", "proj")
+        self.assertEqual(code, 0, err)
+        self.assertIn("landed", out)
+        self.assertEqual(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "")
+
+    def test_land_command_takes_one_evolve_branch_without_a_job(self):
+        git(self.repo, "checkout", "-q", "-b", "evolve/memory/one-lesson")
+        (self.repo / "LESSON.md").write_text("kept\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "kept variant")
+        git(self.repo, "checkout", "-q", "main")
+        code, out, err = run_cli("land", "--project", "proj", "--branch", "evolve/memory/one-lesson")
+        self.assertEqual(code, 0, err + out)
+        self.assertTrue((self.repo / "LESSON.md").is_file())
+        self.assertEqual(git(self.repo, "branch", "--list", "evolve/*").stdout.strip(), "")
+        code, out, err = run_cli("land", "--project", "proj", "--branch", "feature/other")
+        self.assertNotEqual(code, 0, "only pulse/* and evolve/* branches land")
+
+    def test_a_worker_never_migrates_the_shared_store(self):
+        self.con.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(pulse.SCHEMA_VERSION - 1),))
+        self.con.commit()
+        self.con.close()
+        os.environ["PULSE_JOB"] = "job-test"
+        try:
+            with self.assertRaises(pulse.PulseError) as ctx:
+                pulse.connect()
+            self.assertIn("never migrates", str(ctx.exception))
+            probe = sqlite3.connect(str(self.home / "pulse.sqlite"))
+            self.assertEqual(probe.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0],
+                             str(pulse.SCHEMA_VERSION - 1), "the store is untouched")
+            probe.close()
+        finally:
+            os.environ.pop("PULSE_JOB", None)
+        self.con = pulse.connect()
+        self.assertEqual(self.con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()["value"],
+                         str(pulse.SCHEMA_VERSION), "the runner itself migrates as before")
+        os.environ["PULSE_JOB"] = "job-test"
+        try:
+            pulse.connect().close()  # an up-to-date store is read fine from a worker
+        finally:
+            os.environ.pop("PULSE_JOB", None)
+
+
 class MigrationTestCase(unittest.TestCase):
     """The Markdown board becomes rows; the tally stays identical to board.sh."""
 

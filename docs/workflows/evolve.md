@@ -94,34 +94,39 @@ own evaluators say it is better. Skill: `pulse-evolve`.
    - a **discarded** variant: `git worktree remove <path>` for its worktree,
      then `git branch -D evolve/<file-class>/<short-hypothesis>` - the
      archive row and the `result` post hold everything worth keeping;
-   - a **kept** variant: the branch stays only while its pull request is
-     open; remove its worktree now, and delete the branch (locally, and on
-     the remote where the host does not do it) as soon as the request merges
-     or closes - check for such branches at the start of every cycle;
+   - a **kept** variant: remove its worktree now, then land the branch with
+     `pulse land --branch evolve/<file-class>/<short-hypothesis>` (step 10),
+     which deletes the branch once it is on the default branch; a class with
+     `autonomy: human` keeps the branch for a human merge instead - check for
+     such branches at the start of every cycle;
    - **fleet clones**: `fleet.sh clean --dest <dir>` once every result file
      is validated;
    - finish with `git worktree prune` and confirm `git worktree list` shows
      the main tree only and `git branch --list 'evolve/*'` lists only
-     branches with an open pull request. `reflect.sh` and
+     branches of classes with `autonomy: human`. `reflect.sh` and
      `evolution-report.sh` print any stray as HYGIENE.
    Never remove a branch or worktree the loop did not create, a tree with
    uncommitted human work, or anything by reset, checkout, clean, or
    force-push.
-10. **Promote.** A kept variant becomes a pull request from the experiment
-    branch. Stages 1-2 and any class with `autonomy: human`: a human merges or
-    closes it. A class with `autonomy: standing`: merge only if the diff stays
-    inside that class's paths; anything else is a human merge. A product
-    variant additionally needs the project's tests and benchmarks green and a
-    human-rated sample at the cadence in the evaluators. Never merge a
-    variant from an unsandboxed cycle with standing autonomy.
-11. **Count.** On a clean merge, add one to the class's `Clean cycles so far`
-    in the constitution by proposing the update in the same pull request; the
-    constitution itself is a human commit, so the human accepts the count.
+10. **Land.** A kept variant lands on the default branch by the loop itself
+    (ADR-024): `pulse land --branch evolve/<file-class>/<short-hypothesis>`
+    merges it in a throwaway worktree, runs the project's own check on the
+    merged result, fast-forwards the checkout only when it is clean and on the
+    default branch, and deletes the branch. A conflict or a red check lands
+    nothing: the branch is removed, its commits are kept as a patch under
+    `PULSE_HOME/patches/`, and the cycle is recorded as discarded at landing.
+    The diff must stay inside one editable class's paths; the archive row
+    records the landing commit and the sandbox boundary. A class with
+    `autonomy: human` (after an incident, or by the project's choice) keeps
+    its branch for a human merge; nothing is ever pushed by the loop.
+11. **Count.** On a clean landing, add one to the class's `Clean cycles so
+    far` in the constitution in a separate human-attributed commit or leave
+    it for the maintainer's next pass; the constitution stays a human file.
 12. **Again.** When no stop rule fired, start the next cycle from the default
     branch: run `pulse-reflect` first (observe and record the cycle's own
-    signals), then return to step 1 with the next hypothesis. Kept variants
-    waiting for a human merge stay as pull requests; the next cycle's parent
-    is whatever the default branch holds. There is no count limit unless the
+    signals), then return to step 1 with the next hypothesis. The next
+    cycle's parent is whatever the default branch holds, which now includes
+    the variant just landed. There is no count limit unless the
     constitution has `limits: budget` and a number under `Cycles per day`.
     Never pause the run to ask the owner something: post a `question` or a
     `finding` on the board and continue with a different hypothesis or file

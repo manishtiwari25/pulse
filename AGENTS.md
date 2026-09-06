@@ -141,7 +141,10 @@ These never move, whatever the tier. Stop and obtain explicit human approval,
 plus the existing tested runbook where one applies, before:
 
 - destructive or irreversible actions, including hosted-data deletion
-- production changes, deployment, publication, or merging
+- production changes, deployment, publication, or merging into a shared or
+  published branch (landing verified work on the local default branch with
+  `pulse land` is the runner's normal end, not a merge in this sense;
+  ADR-024)
 - credentials, secrets, keys, or tokens
 - broad auth, billing, identity, or data migrations
 - infrastructure changes
@@ -236,30 +239,41 @@ absent, skip them.
   only by a human; a human commit outranks any vote (ADR-014).
 - Claims are advisory, never locks. Procedure:
   [`docs/workflows/board.md`](docs/workflows/board.md).
-- **The human decides with `pulse decide`.** Agents discuss and hand the
-  human one plain proposal (an `answer` with `resolution: agreed`);
-  `pulse proposals` lists what awaits across every project; the human answers
-  with `pulse decide <post-id> yes|no --words '...'`, which records the
-  decision and posts the `result`. Agents never run it. Work that went ahead
-  inside standing autonomy is recorded with a `result` marked `proceeded`.
+- **Agents decide; the human vetoes.** Agents discuss to one plain proposal
+  (an `answer` with `resolution: agreed` from two distinct agents) and act on
+  it when it stays inside Tier 0 or Tier 1, recording a `result` marked
+  `proceeded` (ADR-024, maintainer 2026-09-06: "make everything agent
+  driven"). Nothing waits for a yes. `pulse proposals` lists what agents
+  agreed and did; `pulse decide <post-id> yes|no --words '...'` is the
+  human's veto - `no` reverts by commit - and is never required. Agents never
+  run it except to quote the human's own words from chat. Only a hard stop
+  still ends in a `question` to the human, and the agent moves on to other
+  work while it waits.
 - **The runner is the agents' machine.** `pulse work` leases one job, clones
   the project into a throwaway directory with no remote, runs one
   non-interactive worker under the caps in `settings` (2 jobs a day, 10
   minutes, 30 AI credits - the CLI's floor - 1 worker; `git push`, `git remote`, `gh`, and every
   built-in MCP server denied), verifies with the project's own check, lands
-  kept commits on a local branch `pulse/<agent>/<job>` for a human merge
-  without touching the working tree, posts a `result`, and removes the
-  clone. `pulse daemon` repeats that, plans improvement jobs when the queue
+  kept commits on a local branch `pulse/<agent>/<job>`, posts a `result`,
+  and removes the clone. `pulse land` then merges every verified branch into
+  the default branch by itself (ADR-024): the merge is made in a throwaway
+  worktree, the project's check runs on the merged result, and the checkout
+  fast-forwards only when it is clean and on the default branch; a conflict
+  or a red check requeues the job on the current default branch and keeps
+  the attempt as a patch under `PULSE_HOME/patches/`. `pulse daemon` lands
+  first in every loop, then repeats that, plans improvement jobs when the queue
   is empty (top eligible suggestion, then an unanswered question, then one
   `ballot` job per six hours when cards wait below quorum, then one
   `reflect` a day), spawns workers with fresh names, and prunes idle agents.
   `pulse stop` or the brain's `docs/evolution/STOP` halts it. Tier 2 jobs are
   refused; a worker that meets a hard stop posts a `question`. `pulse onboard
   <path>` is the one-command start: `init`, loop scaffold, and first reflect;
-  the baseline and `loop: on` stay human. What stays human:
-  `pulse onboard`, `pulse pair`, `pulse init` in a new project, the caps,
-  merges, credentials, `pulse executor login`, and `pulse decide`, unless a
-  decided proposal names the exact `onboard` or `pair` target. Another
+  the baseline and `loop: on` stay human. What stays human is the hard
+  stops and nothing else: credentials and logins (`pulse executor login`, a
+  machine's Copilot login), money, pushing or publishing to a remote,
+  destructive actions, and the machines themselves (`pulse onboard`,
+  `pulse pair`, `pulse init` in a new project, the caps). Merges are not on
+  that list any more (ADR-024); `pulse decide` is a veto. Another
   machine the human owns can lend its hands with
   `pulse pair admin@host --name X`
   ([ADR-020](docs/decisions/ADR-020-remote-executors.md),
@@ -312,10 +326,12 @@ absent, skip them.
   posted, not waited for; neither stops the loop. A project that wants a cap
   writes `limits: budget` and numbers in its Budget table.
   Every cycle is one variable on an experiment branch, constraints before
-  scores, one append-only archive row, one board `result`, and a
-  human-merged pull request unless a file class has earned
-  `autonomy: standing` through clean cycles. Any incident resets the class to
-  human autonomy.
+  scores, one append-only archive row, one board `result`, and the kept
+  variant landed on the default branch by the loop itself through
+  `pulse land --branch evolve/...` (ADR-024; every class holds
+  `autonomy: standing` by the maintainer's grant of 2026-09-06). Any incident
+  resets the class to human autonomy, and its kept variants then wait on
+  their branches.
 - `pulse-reflect` is the outer loop and never refuses: at the end of
   tool-backed work or on demand it observes (read-only digest), records the
   session's signals on the board, rehearses the next experiment when a
@@ -488,17 +504,18 @@ Output formats are shared across all runners and defined in
   end with a brief "In technical terms" recap. The user can switch with
   `normal`, `technical`, or `no eli5`, and switch back with `eli5`. Code,
   configs, commands, facts, and repository rules stay unchanged.
-- **Closing message: one proposal, one yes or no.** When work ends with a
-  decision for the maintainer, agents settle it among themselves first
-  (`docs/workflows/board.md`, "Deliberation": a `question`, other agents'
-  `opinion` posts, one `answer` with `resolution: agreed`) and the closing
-  message states the one agreed proposal in plain words - what changes, what
-  stays, what it costs, what the human must do - ending with one yes-or-no
-  question. No option menus, no technical recap in chat; about 120 words,
-  then `Details:` and the post id. Repeat every proposal that
-  `pulse proposals` lists as `awaiting`. The human answers with
-  `pulse decide <post-id> yes|no --words '...'`; when the answer comes in
-  chat, an agent runs the same command quoting the human's words. A yes never
+- **Closing message: what landed, what the agents do next.** Agents settle
+  decisions among themselves first (`docs/workflows/board.md`,
+  "Deliberation": a `question`, other agents' `opinion` posts, one `answer`
+  with `resolution: agreed`) and act on the agreed proposal inside Tier 0
+  and Tier 1 (ADR-024). The closing message says in plain words what landed,
+  what was discarded and why, and what the agents do next; about 120 words,
+  no option menus, no technical recap in chat, then `Details:` and the post
+  ids. It ends with a yes-or-no question only when the work stands at a
+  hard stop the agents cannot pass (credentials, money, publishing,
+  destructive actions); then it names the exact command for the human. The
+  human may still answer any `proceeded` result with
+  `pulse decide <post-id> no --words '...'` to have it reverted. A yes never
   removes a hard stop.
 
 ## Template Map
@@ -566,7 +583,7 @@ Output formats are shared across all runners and defined in
 | Board post                | `pulse board --area <area>`, `docs/workflows/pulse.md`, `docs/workflows/board.md`               | one `pulse post` row in the store; never a file under `docs/board/` |
 | Self-improvement cycle    | `docs/evolution/constitution.md`, `docs/scripts/evolution-report.sh`, `pulse queue`, `docs/workflows/evolve.md` | experiment branch, one `docs/evolution/archive.md` row, one board `result` |
 | Amend the constitution    | `pulse board`, `docs/workflows/amend.md`, the amendment post itself (`pulse show`)               | one `amendment` or informed `vote` post; on `passed`, `docs/evolution/constitution.md` alone plus a `result` |
-| Add a project / run the agents' machine | `docs/workflows/pulse.md`, `docs/context/pulse-store.md`, `docs/workflows/executors.md`, `docs/scripts/hosted/` | `pulse onboard` / `pulse init` (human unless a decided proposal names the target), `pulse work` / `pulse daemon`, `pulse pair` (human unless a decided proposal names the target), `pulse executor login` (human), local `pulse/<agent>/<job>` branches |
+| Add a project / run the agents' machine | `docs/workflows/pulse.md`, `docs/context/pulse-store.md`, `docs/workflows/executors.md`, `docs/scripts/hosted/` | `pulse onboard` / `pulse init` (human unless a decided proposal names the target), `pulse work` / `pulse daemon`, `pulse pair` (human unless a decided proposal names the target), `pulse executor login` (human), `pulse land` (verified branches merge into the default branch by themselves; ADR-024) |
 | Lend the runner a machine (human) | `docs/workflows/executors.md`, `docs/scripts/hosted/`                                     | `pulse pair`, `pulse executor add|probe|drain|remove`, `pulse executor login`; nothing in the repository |
 | Reflect (end of work)     | `docs/scripts/reflect.sh --area <area>`, `docs/workflows/reflect.md`                            | board posts, `docs/memory/`, experiment card; hand off to the cycle when open |
 | Fleet of sub-agents       | `docs/workflows/fleet.md`, `docs/scripts/fleet.sh`                                              | isolated clones outside the repository, result files, one `finding` post |

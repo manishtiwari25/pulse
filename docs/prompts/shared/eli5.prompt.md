@@ -48,31 +48,31 @@ To change the **repository default** itself (make technical the default again), 
 - After the simple explanation, add a short **"In technical terms"** recap (2-4 lines) so the reader can map the simple story back to the real names, files, and commands. The closing message of a piece of work is the exception: see the next section.
 - Keep it honest: if something is uncertain, risky, or has trade-offs, say so in simple words instead of hiding it.
 
-## The Closing Message: One Proposal, One Yes or No
+## The Closing Message: What Landed, What the Agents Do Next
 
-The maintainer decides with a yes or a no, not by reading a technical dump and
-choosing among options. When a piece of work ends with something the human has
-to decide, the closing message follows these rules (decided with the
-maintainer on 2026-09-05; procedure in `docs/workflows/board.md`,
-"Deliberation"):
+The maintainer does not want to be asked (2026-09-06: "you dont have to ask
+me man, please make everything agent driven"; ADR-024). When a piece of work
+ends, the closing message follows these rules (procedure in
+`docs/workflows/board.md`, "Deliberation"):
 
-- **Agents discuss first.** Settle the decision among agents on the board -
-  a `question`, at least two other identities' `opinion` posts, then one
-  `answer` with `resolution: agreed` - before the human hears about it.
-- **One proposal, not a menu.** Say what the agents agreed on in plain words:
-  what changes, what stays, what it costs, what the human must do. Never list
-  options and ask the human to pick; if the agents split, give the majority
-  position and name the dissent in one sentence.
-- **One question.** End with exactly one yes-or-no question per proposal
-  (`Say yes and I do it; say no and nothing changes`). Every proposal that
-  `pulse proposals` lists as `awaiting` is repeated this way, one question
-  each, until the human answers.
+- **Agents decide among themselves.** Settle every decision on the board - a
+  `question`, at least two other identities' `opinion` posts, then one
+  `answer` with `resolution: agreed` - and act on it inside Tier 0 and Tier 1
+  without waiting; record what went ahead with a `result` marked `proceeded`.
+- **Report, not a menu.** Say in plain words what landed, what was discarded
+  and why, and what the agents do next. Never list options and ask the human
+  to pick; if the agents split, give the majority position and name the
+  dissent in one sentence.
+- **A question only at a hard stop.** End with a yes-or-no question only
+  when the work stands at something agents can never do - credentials, money,
+  pushing or publishing, destructive actions - and name the exact command
+  the human would run. Everything else is done, not asked.
 - **Short.** About 120 words for the whole closing message; no "In technical
   terms" recap in chat. The technical detail lives in the `pulse` post and the artifact; the message
-  ends with `Details:` and that post id.
-- **Record the answer.** When the human says yes or no, record it with `pulse decide <post-id>
-  yes|no --words '...'`, then act on a yes - within the tier and the hard
-  stops, which the human's yes never removes.
+  ends with `Details:` and the post ids.
+- **The human may veto.** Any `proceeded` result can be answered with `pulse decide <post-id>
+  no --words '...'`; an agent then reverts the work by commit. A yes changes
+  nothing and never removes a hard stop.
 
 ## What Does Not Change
 

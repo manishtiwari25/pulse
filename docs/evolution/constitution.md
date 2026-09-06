@@ -27,6 +27,9 @@ Identical to the hard stops in `AGENTS.md`. The loop never crosses them and
 never proposes a change to them.
 
 - destructive or irreversible actions, production, deploy, publish, merge
+  into a shared or published branch (landing verified work on the local
+  default branch through `pulse land` is the loop's normal end, not a merge
+  in this sense; ADR-024)
 - credentials, hosted-data deletion, broad auth, billing, or data migration
 - infrastructure, major dependency upgrades, policy-sensitive security
 - purchases, ambiguous evidence
@@ -50,17 +53,20 @@ receive through sync - skills, workflows, shared prompts, guides, and memory -
 inside the limits above. PULSE ships one product: the read-only dashboard and
 hub (ADR-015, ADR-016). It is the product class below, at Stage 4 from its
 first cycle, measured by the `## Product evaluators` section of
-`evaluators.md`; only its autonomy is earned.
+`evaluators.md`. Autonomy is `standing` for every class since 2026-09-06 by
+the maintainer's grant (ADR-024, "make everything agent driven"); an incident
+returns the class to `human` until the maintainer restores it. The clean-cycle
+counts stay as the record the grant would otherwise have waited for.
 
 | File class            | Paths                                                                     | Stage | Autonomy | Clean cycles required | Clean cycles so far | Incidents |
 | --------------------- | ------------------------------------------------------------------------- | ----- | -------- | --------------------- | ------------------- | --------- |
-| memory                | `docs/memory/`                                                            | 1     | human    | 5                     | 0                   | 0         |
-| skill prose           | `docs/skills/*/SKILL.md`, `docs/skills/README.md`                         | 1     | human    | 8                     | 0                   | 0         |
-| workflows             | `docs/workflows/` except `rollback.md` and `sandboxed-agent-execution.md` | 1     | human    | 8                     | 0                   | 0         |
-| shared prompts        | `docs/prompts/shared/`                                                    | 1     | human    | 8                     | 0                   | 0         |
-| guides and context    | `docs/guides/`, `docs/context/`, `docs/architecture/`                     | 1     | human    | 5                     | 0                   | 0         |
-| operating guide prose | `AGENTS.md` outside the immutable sections, `README.md`, `docs/README.md` | 1     | human    | 10                    | 0                   | 0         |
-| dashboard (product)   | `docs/scripts/pulse-dashboard.py`, `docs/scripts/tests/test_pulse_dashboard.py`, `docs/scripts/dashboard/src/**`, `docs/scripts/dashboard/index.html`, `docs/scripts/dashboard/vite.config.ts`, `docs/scripts/dashboard/tsconfig*.json`, `docs/scripts/dashboard/eslint.config.js`, `docs/scripts/dashboard/package.json` (ADR-023; `package-lock.json` and `dist/**` are generated outputs of `npm ci && npm run build`, never a variable an experiment edits by hand) | 4     | human    | 8                     | 0                   | 0         |
+| memory                | `docs/memory/`                                                            | 1     | standing | 5                     | 0                   | 0         |
+| skill prose           | `docs/skills/*/SKILL.md`, `docs/skills/README.md`                         | 1     | standing | 8                     | 0                   | 0         |
+| workflows             | `docs/workflows/` except `rollback.md` and `sandboxed-agent-execution.md` | 1     | standing | 8                     | 0                   | 0         |
+| shared prompts        | `docs/prompts/shared/`                                                    | 1     | standing | 8                     | 0                   | 0         |
+| guides and context    | `docs/guides/`, `docs/context/`, `docs/architecture/`                     | 1     | standing | 5                     | 0                   | 0         |
+| operating guide prose | `AGENTS.md` outside the immutable sections, `README.md`, `docs/README.md` | 1     | standing | 10                     | 0                   | 0         |
+| dashboard (product)   | `docs/scripts/pulse-dashboard.py`, `docs/scripts/tests/test_pulse_dashboard.py`, `docs/scripts/dashboard/src/**`, `docs/scripts/dashboard/index.html`, `docs/scripts/dashboard/vite.config.ts`, `docs/scripts/dashboard/tsconfig*.json`, `docs/scripts/dashboard/eslint.config.js`, `docs/scripts/dashboard/package.json` (ADR-023; `package-lock.json` and `dist/**` are generated outputs of `npm ci && npm run build`, never a variable an experiment edits by hand) | 4     | standing | 8                     | 0                   | 0         |
 
 ## Budget
 
@@ -86,7 +92,10 @@ still apply.
 
 Every cycle runs on an experiment branch inside the strongest sandbox the
 runner supports and reports the actual boundary. An unsandboxed cycle is
-recorded as such in the archive and is never promoted with standing autonomy.
+recorded as such in the archive row. Since 2026-09-06 (ADR-024) the boundary
+is a record, not a gate: a kept variant lands whatever the boundary was,
+because landing is decided by the constraints and scores, and the human
+reverts by commit. A project that wants the old gate writes it back here.
 
 ## Vote rules
 
@@ -126,10 +135,17 @@ switch, this section, and the frontmatter change only by human commit.
 
 ## Promotion
 
-- Stages 1-2: every kept variant is a pull request the maintainer merges or
-  closes.
-- Stage 3+: a class with `autonomy: standing` may merge kept variants inside
-  its paths only; anything touching another class stays a human merge.
+- A kept variant lands on the default branch by the loop itself through
+  `pulse land --branch evolve/...` (ADR-024): the merge is made in a
+  throwaway worktree, the project's own check runs on the merged result, the
+  checkout fast-forwards only when it is clean and on the default branch.
+  The archive row records the landing commit.
+- A variant whose diff leaves the paths of one editable class, touches an
+  immutable path, or fails any constraint is discarded, never landed.
+- A class with `autonomy: human` (after an incident, or by a project's
+  choice) keeps its kept variants on their branches for a human merge.
+- Nothing is pushed or published by the loop; the remote moves only by a
+  human's hand.
 
 ## Kill switch
 

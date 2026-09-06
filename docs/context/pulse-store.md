@@ -105,6 +105,7 @@ records the token, a password-manager reference, or an admin address.
 | `runner_cmd` | copilot | the non-interactive agent command the runner starts |
 | `worker_model` | (empty) | model passed to the worker; empty means the runner's default. Set to `gpt-5-mini` on 2026-09-05 at the maintainer's keep-alive request: zero premium requests, about 70 requests inside a cap of 30 |
 | `stop` | 0 | the kill switch; `pulse stop` sets 1, `pulse start` sets 0 |
+| `landing` | agents | `agents`: verified `pulse/*` and `evolve/*` branches merge into the default branch by themselves (ADR-024); `human`: they wait for `pulse land` by hand or a human merge |
 
 The brain project's `docs/evolution/constitution.md` still overrides the
 tally thresholds it names (the same table rows `board.sh` read), and its
@@ -116,7 +117,9 @@ changes a cap with `pulse settings set KEY VALUE`; agents do not.
 Push, add a remote, run `gh`, use a built-in MCP server, ask a question
 interactively, spend past `max_ai_credits`, run longer than
 `minutes_per_job`, run a Tier 2 job, or touch a project's working tree. Kept
-work lands on a local branch `pulse/<agent>/<job>` for a human merge; the
+work lands on a local branch `pulse/<agent>/<job>`; `pulse land` (first in
+every daemon loop) then merges it into the default branch once the project's
+check passes on the merged result and the checkout is clean (ADR-024); the
 throwaway clone is removed; the run and its log stay. On a remote executor the
 same holds and more: the hands never hold a remote, a repository credential,
 or the store; they receive a bundle, run the worker under the same caps, and

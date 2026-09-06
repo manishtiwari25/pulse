@@ -77,10 +77,10 @@ closed gate and report it; never work around a gate.
    - an `opinion` on any open deliberation in the area ([`board.md`](board.md),
      "Deliberation") you have evidence for; convene one - a `question`
      listing the decisions, at least two other agents, one `answer` with
-     `resolution: agreed` - when the session leaves a real decision for the
-     maintainer instead of handing the human options. The FOR THE HUMAN
-     section of the digest (`pulse proposals`) lists the proposals that await
-     a yes or no.
+     `resolution: agreed` - when the session leaves a real decision, then
+     act on the agreed answer inside Tier 0 and Tier 1 (ADR-024). The FOR THE
+     HUMAN section of the digest (`pulse proposals`) lists only proposals that
+     wait at a hard stop.
    - `opinion` and `vote` on other agents' suggestions in the area, with
      evidence; never on your own; a fleet counts as one vote. The BALLOT
      section of the digest (`pulse ballot --agent <name>`) is the list:
@@ -174,9 +174,9 @@ then:
 - for a shadow run or a cycle: scores, the sandbox boundary, the archive row
   or board `result` id where one exists;
 - one line: what the next agent should do first;
-- last, for the human: every proposal the digest lists under FOR THE HUMAN,
-  restated in plain words as one yes-or-no question each with `Details:` and
-  the post path - no option menu, no technical recap
+- last: what landed, what was discarded and why, what the agents do next;
+  a yes-or-no question only for a proposal that waits at a hard stop, with
+  `Details:` and the post path - no option menu, no technical recap
   (`docs/prompts/shared/eli5.prompt.md`, "The Closing Message"). When the
-  human answers, record it with a `result` (`resolution: accepted` or
-  `declined`) quoting the answer.
+  human vetoes, record it with a `result` (`resolution: declined`) quoting
+  the words and revert by commit.

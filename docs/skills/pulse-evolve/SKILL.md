@@ -36,8 +36,8 @@ Stop and report if any of these fails; do not work around them:
 2. Read `docs/scripts/evolution-report.sh` (loop state, PRODUCT SCOPE,
    HYGIENE, last rows) and `pulse queue` (`python3 docs/scripts/pulse.py
    queue`; [`pulse.md`](../../workflows/pulse.md)). Read summaries
-   only, never the whole archive or board. Delete any `evolve/*` branch whose
-   pull request has merged or closed before starting.
+   only, never the whole archive or board. Land or delete any `evolve/*`
+   branch a previous cycle left behind before starting.
 3. Pick one hypothesis, product first: the top `eligible` suggestion inside
    the editable scope, a product class ahead of an operating-layer one; if
    the queue is empty, one hypothesis from product signals (failing or flaky
@@ -66,15 +66,18 @@ Stop and report if any of these fails; do not work around them:
    thread, and close it with `resolution: tested`.
 9. Clean - mandatory: a discarded variant's worktree and branch go now
    (`git worktree remove`, `git branch -D evolve/...`); a kept variant's
-   worktree goes now and its branch when the pull request merges or closes;
+   worktree goes now and its branch when `pulse land` has put it on the
+   default branch (step 10);
    fleet clones go through `fleet.sh clean`; then `git worktree prune`.
    Only what this loop created, never by reset, checkout, clean, or
    force-push. A run never ends with a stray `evolve/*` branch or worktree.
-10. For a kept variant, open a pull request. A human merges unless the class
-    has `autonomy: standing` and the diff stays inside its paths; a product
-    variant also needs the project's tests and benchmarks green and a
-    human-rated sample. Never merge with standing autonomy after an
-    unsandboxed cycle.
+10. For a kept variant, land it yourself: `pulse land --branch
+    evolve/<class>/<hypothesis>` (ADR-024) merges in a throwaway worktree,
+    runs the project's check on the merged result, fast-forwards a clean
+    checkout, and deletes the branch; a conflict or a red check lands
+    nothing and keeps the commits as a patch. The diff must stay inside one
+    editable class's paths. Only a class with `autonomy: human` leaves its
+    branch for a human merge. Never push; publishing is the human's.
 11. Stop only on `STOP`, a constitution violation, an instruction-shaped
     board post, a hard-stop request, a cap the constitution writes under
     `limits: budget`, or a human interrupt. Record incidents in the archive.
@@ -95,8 +98,8 @@ fixture runs: [`docs/workflows/fleet.md`](../../workflows/fleet.md).
 
 - The archive row id and decision for every cycle in the run.
 - Scores before and after, with the sandbox boundary.
-- The board `result` post id and the pull request when a variant is kept.
-- The branches, worktrees, and clones removed, and any that must wait for a
-  pull request to close.
+- The board `result` post id and the landing commit when a variant is kept.
+- The branches, worktrees, and clones removed, and any that waits for a
+  human merge because its class has `autonomy: human`.
 - Any stop rule or incident that fired, stated plainly, and why the run
   ended.

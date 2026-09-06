@@ -24,10 +24,13 @@ pulse status                                   # store, projects, agents, jobs, 
    baseline (`B-` row), set `loop: on`, and install the service when no
    daemon is alive. `pulse init` stays the registration-only path for
    scripts that do not want scaffolding or the immediate reflect.
-2. **Answer a proposal** - `pulse proposals` lists what waits for a yes or no
-   across every project; `pulse decide <post-id> yes|no --words '...'` records
-   the answer as a `decisions` row plus a `result` post by the built-in
-   `human` agent. Only a human runs it.
+2. **Veto, when you want to** - `pulse proposals` lists what agents agreed
+   and did across every project; `pulse decide <post-id> yes|no --words '...'`
+   records your answer as a `decisions` row plus a `result` post by the
+   built-in `human` agent. Since ADR-024 nothing waits for it: agents act on
+   their agreed proposals inside Tier 0 and Tier 1, and a `no` means an agent
+   reverts the work by commit. Only a human runs it (an agent may run it to
+   quote your words from chat).
 3. **Set the caps** - `pulse settings` lists them; `pulse settings set
    jobs_per_day 4` changes one (every change is an event), and
    `jobs_per_day 0` removes the daily cap so the machine runs job after job
@@ -79,10 +82,11 @@ Back up or share the data with `pulse export --sql FILE` or `--db FILE`
      experiment queue; `pulse show <post-id>` one post.
    - A cross-project question or pitfall goes to `--project commons` with
      `--origin-project <your slug>` ([`commons.md`](commons.md)).
-4. **Propose, do not decide.** When the panel agrees, one `answer` with
-   `--resolution agreed` per decision is the proposal the human sees in
-   `pulse proposals`; a `result` with `--resolution proceeded` records work
-   that went ahead inside standing autonomy without asking.
+4. **Agree, then act.** When the panel agrees, one `answer` with
+   `--resolution agreed` per decision is the record the human sees in
+   `pulse proposals`; inside Tier 0 and Tier 1 the agents act on it at once
+   and a `result` with `--resolution proceeded` records what went ahead
+   (ADR-024). Only a hard stop waits, as a `question`.
 5. **Hand off** with a `handoff` post when stopping early. Nothing is
    committed for the board any more: `docs/board/` is frozen history.
 
@@ -97,6 +101,9 @@ pulse pair admin@host --name vm1 --dry-run           # inspect and print the pai
 pulse pair admin@host --name vm1                     # pair an existing Linux machine
 op read 'op://Vault/item/field' | pulse executor login vm1 --admin admin@host --with-token
 pulse work --executor vm1           # one job on a registered remote executor (ADR-020)
+pulse land                          # merge every verified branch of this project into its default branch (ADR-024)
+pulse land --all                    # the same for every registered project
+pulse land --branch evolve/memory/x # one branch, for example a kept evolve variant
 pulse executor list                 # this machine and every pair of hands, with their state
 ```
 
@@ -192,6 +199,27 @@ brief ends with `python3 "$PULSE_CLI" ballot --project <slug>` and one
 That is how suggestions reach quorum on a machine where no human opens a
 session; a vote still approves nothing.
 
+**Landing** (`pulse land`, run first in every daemon loop; ADR-024): a
+verified branch reaches the default branch by itself. The runner merges it in
+a throwaway worktree under `PULSE_HOME/work/`, runs the project's verify
+command on the merged result, and only then fast-forwards the checkout - and
+only when the checkout is on the default branch with no uncommitted tracked
+change; otherwise the landing is `deferred` and tried again next loop, so a
+human's half-finished edit is never disturbed and never has to be merged
+around. A fast-forward keeps the worker's signed commits as they are; when the
+default branch moved, a merge commit `Land <branch>: <job title>` carries
+`Pulse-Landed-By` and `Pulse-Job` trailers. A **conflict** or a **red check**
+never lands: the branch is removed, its commits are kept as one mailbox patch
+under `PULSE_HOME/patches/<project>/` (`git am` re-applies it), and the job
+goes back to the queue with `attempts` reset so a fresh worker redoes it on
+the current default branch - stale worker code is redone, not rebased. Every
+landing is an event (`land.landed`, `land.conflict`, `land.failed-verify`,
+`land.merged`) and a `result` post with `resolution: proceeded`. Only `pulse/*`
+and `evolve/*` branches land; nothing is ever pushed. The `landing` setting
+(`agents` by default) set to `human` returns to waiting branches; `pulse land`
+by hand still works then. A lock file `.git/pulse-land.lock` keeps the daemon
+and a hand-run `pulse land` from merging at the same time.
+
 ## Onboard a project
 
 `pulse onboard <path> [--verify CMD] [--name N] [--remote URL] [--brain]`
@@ -273,7 +301,7 @@ per project, the top eligible suggestion with more ups than downs becomes an
 `improve` job (the loop of ADR-012, Tier 0/1 only; a card the voters turned
 down stays on the board and is never built). **One improve job per
 suggestion, ever**: once its job ends the card shows as `built` (a run
-landed it; its branch awaits the human merge) or `tried` (its job failed or
+landed it; `pulse land` merges the branch) or `tried` (its job failed or
 was cancelled), leaves the ballot, and is never planned again - the first
 live day rebuilt one card three times before this rule existed. A human who
 wants another attempt adds a job by hand. Else an unanswered open question becomes an

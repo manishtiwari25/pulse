@@ -166,6 +166,16 @@
   (`@import "tailwindcss" source("../")` plus `@source` for the entry HTML),
   and write asset tests against the source files, never against the bundle
   alone - a bundle can vouch for its own stylesheet.
+- `2026-09-06` - A worker editing `docs/scripts/pulse.py` in its throwaway
+  clone ran the edited tool against the real `PULSE_HOME`, migrated the live
+  store to a schema the installed runner did not know (`schema.upgrade` 4,
+  a `projects.setup_cmd` column), and then timed out - every `pulse` command
+  on the machine refused to start until the column was dropped and
+  `meta.schema_version` set back by hand. Avoid by: a worker never creates or
+  migrates a store it did not open at its own version (`worker_context()` in
+  `ensure_schema`: a newer or older existing store is an error, an equal one
+  is left alone); only the runner and the human's own `pulse` migrate; treat
+  any `schema.upgrade` event from a `run-*` actor as an incident.
 
 ## Populate When
 

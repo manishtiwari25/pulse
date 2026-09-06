@@ -59,6 +59,7 @@ DEFAULT_SETTINGS = {
     "runner_cmd": "copilot",
     "worker_model": "",
     "stop": "0",
+    "landing": "agents",  # agents: verified branches merge into the default branch by themselves; human: they wait (ADR-024)
 }
 PROTECTED_DEFAULT = "Hard stops, Kill switch, Amendments, frontmatter"
 POST_RECORD_FIELDS = ("path", "area", "thread", "id", "kind", "agent", "date", "expires",
@@ -430,7 +431,30 @@ def connect(home=None, create=False, readonly=False):
     return con
 
 
+def worker_context(home=None):
+    """True inside a runner's worker: PULSE_JOB is set, or this very script runs from a clone under PULSE_HOME.
+    A worker's clone may carry a newer pulse.py; it must never reshape the store every other tool shares."""
+    if os.environ.get("PULSE_JOB"):
+        return True
+    try:
+        return is_inside(Path(__file__).resolve(), pulse_home(home))
+    except (OSError, RuntimeError):
+        return False
+
+
 def ensure_schema(con):
+    have = None
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").fetchone():
+        row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        have = int(row["value"]) if row else None
+    if have is not None and worker_context():
+        # An existing store seen from a worker: read it as it is; never create, alter, or migrate anything.
+        if have > SCHEMA_VERSION:
+            raise PulseError("Store schema %s is newer than this tool (%d); update pulse.py" % (have, SCHEMA_VERSION))
+        if have < SCHEMA_VERSION:
+            raise PulseError("Store schema %d is older than this tool (%d), and a worker never migrates the shared store; "
+                             "run your tests under a fresh PULSE_HOME" % (have, SCHEMA_VERSION))
+        return
     con.executescript(SCHEMA_SQL)
     row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     if row is None:
@@ -1557,7 +1581,7 @@ def renew_lease(con, job_id, agent, generation, minutes, now=None):
 
 
 # --------------------------------------------------------------------------- #
-# The runner: bounded, sandboxed-by-clone, never pushes, never merges
+# The runner: bounded, sandboxed-by-clone, never pushes; verified work lands on the default branch (ADR-024)
 # --------------------------------------------------------------------------- #
 
 DENIED_TOOLS = ("shell(git push)", "shell(git remote)", "shell(gh:*)")
@@ -3397,7 +3421,7 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
     if status != "dry-run" and not (status == "error" and job_status == "queued"):
         body = ["Run `%s` of job `%s` (%s, Tier %d) by %s on executor `%s`: **%s** in %ss." % (
             run_id, job["id"], job["kind"], job["tier"], agent, ex.name, status, seconds), ""]
-        body.append("- Commits: %d%s" % (commits, "; branch `%s` (local, human-merged)" % branch if branch else ""))
+        body.append("- Commits: %d%s" % (commits, "; branch `%s` (local; lands on the default branch at the next landing pass, ADR-024)" % branch if branch else ""))
         if verify_note:
             body.append("- Verify: %s" % verify_note)
         body.append("- Log: %s" % log_path)
@@ -3491,6 +3515,199 @@ def work_once(con, agent, project=None, job_id=None, dry_run=False, worker_cmd=N
         return None, reason
     run = run_job(con, job, agent, dry_run=dry_run, worker_cmd=worker_cmd, home=home, now=now, executor=exrow["name"])
     return run, ""
+
+
+# --------------------------------------------------------------------------- #
+# Landing (ADR-024): verified work reaches the default branch by itself. The merge is tried in a throwaway
+# worktree, the project's own check runs on the merged result, and only then does the checkout fast-forward.
+# A conflict or a red check never lands: the job goes back to the queue on the current default branch and the
+# branch's commits are kept as a patch file. Nothing here pushes; publishing stays a human act.
+LAND_LOCK_MINUTES = 30
+LANDED_BRANCH_PREFIXES = ("pulse/", "evolve/")
+
+
+def checkout_state(root, default_branch):
+    """(on_default, clean) for the human's checkout: landing fast-forwards it only when both are true."""
+    head = git(root, "rev-parse", "--abbrev-ref", "HEAD", timeout=10)
+    status = git(root, "status", "--porcelain", "--untracked-files=no", timeout=60)
+    on_default = head.returncode == 0 and head.stdout.strip() == default_branch
+    clean = status.returncode == 0 and not status.stdout.strip()
+    return on_default, clean
+
+
+def landing_lock(root):
+    """One landing at a time per checkout: the daemon and a `pulse land` by hand never merge concurrently.
+    Returns the lock path, or None when another landing holds it (a lock older than LAND_LOCK_MINUTES is stale)."""
+    path = Path(root) / ".git" / "pulse-land.lock"
+    for _ in range(2):
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                age = time.time() - path.stat().st_mtime
+            except OSError:
+                continue
+            if age < LAND_LOCK_MINUTES * 60:
+                return None
+            path.unlink(missing_ok=True)
+            continue
+        except OSError:
+            return None
+        os.write(fd, ("%d %s\n" % (os.getpid(), utc_now())).encode())
+        os.close(fd)
+        return path
+    return None
+
+
+def save_branch_patch(root, base, branch, home_dir, slug):
+    """The branch's commits as one mailbox patch under PULSE_HOME/patches/<project>/, so a requeued job's earlier
+    attempt is never lost: `git am` re-applies it, the run log says why it did not land."""
+    folder = Path(home_dir) / "patches" / slug
+    folder.mkdir(parents=True, exist_ok=True)
+    out = git(root, "format-patch", "--stdout", "%s..%s" % (base, branch), timeout=120)
+    path = folder / (branch.replace("/", "__") + ".patch")
+    path.write_text(out.stdout if out.returncode == 0 else "", encoding="utf-8")
+    return path
+
+
+def requeue_job(con, job, actor, why, patch_path=None):
+    """A branch that could not land sends its job back to the queue on the current default branch."""
+    note = "requeued: %s" % why
+    if patch_path:
+        note += "; earlier attempt kept at %s" % patch_path
+    finish_job(con, job["id"], actor, "queued", note)
+    con.execute("UPDATE jobs SET attempts = 0, branch = '' WHERE id = ?", (job["id"],))
+    event(con, actor, "job.requeue", job["id"], {"why": why, "patch": str(patch_path or "")})
+
+
+def land_branch(con, project, branch, actor, job=None, home=None, verify=True, now=None):
+    """Land one branch on the project's default branch. Returns (state, note) with state one of
+    landed, merged (already contained), deferred (checkout busy or moved; try again later), conflict,
+    failed-verify, locked, missing, off (setting landing != agents), stopped."""
+    now = now or utc_now()
+    root = Path(project["path"])
+    default = project["default_branch"] or "main"
+    home_dir = pulse_home(home)
+    why = runner_stopped(con)
+    if why:
+        return "stopped", why
+    if (root / "docs" / "evolution" / "STOP").exists():
+        return "stopped", "docs/evolution/STOP is present in %s" % root
+    if not branch.startswith(LANDED_BRANCH_PREFIXES):
+        raise PulseError("pulse lands only %s branches, not %s" % (" and ".join(p + "*" for p in LANDED_BRANCH_PREFIXES), branch), 2)
+    if git(root, "rev-parse", "--verify", "--quiet", "refs/heads/%s" % branch, timeout=10).returncode != 0:
+        return "missing", "branch %s does not exist in %s" % (branch, root)
+    if git(root, "merge-base", "--is-ancestor", branch, default, timeout=30).returncode == 0:
+        git(root, "branch", "-D", branch, timeout=30)
+        event(con, actor, "land.merged", branch, {"project": project["slug"]})
+        return "merged", "%s was already contained in %s; branch removed" % (branch, default)
+    on_default, clean = checkout_state(root, default)
+    if not on_default:
+        return "deferred", "the checkout of %s is not on %s" % (root, default)
+    if not clean:
+        return "deferred", "the checkout of %s has uncommitted changes" % root
+    lock = landing_lock(root)
+    if lock is None:
+        return "locked", "another landing holds %s" % (root / ".git" / "pulse-land.lock")
+    worktree = home_dir / "work" / ("land-%s-%d" % (project["slug"], os.getpid()))
+    title = (job["title"] if job else "") or branch
+    log = []
+    try:
+        base = git(root, "merge-base", default, branch, timeout=30).stdout.strip()
+        git(root, "worktree", "remove", "--force", str(worktree), timeout=60)
+        git(root, "worktree", "add", "--detach", str(worktree), default, timeout=120, check=True)
+        merged = git(worktree, "merge", "--ff-only", branch, timeout=120)
+        if merged.returncode != 0:
+            msg = "Land %s: %s\n\nPulse-Landed-By: %s\n%s" % (branch, trunc(title, 200), actor,
+                                                         "Pulse-Job: %s\n" % job["id"] if job else "")
+            merged = git(worktree, "-c", "user.name=pulse", "-c", "user.email=pulse@pulse.local", "-c", "commit.gpgsign=false",
+                         "merge", "--no-ff", "--no-edit", "-m", msg, branch, timeout=300)
+        if merged.returncode != 0:
+            git(worktree, "merge", "--abort", timeout=60)
+            log.append(merged.stdout + merged.stderr)
+            patch = save_branch_patch(root, base, branch, home_dir, project["slug"])
+            if job:
+                requeue_job(con, job, actor, "%s conflicts with %s" % (branch, default), patch)
+            git(root, "branch", "-D", branch, timeout=30)
+            event(con, actor, "land.conflict", branch, {"project": project["slug"], "patch": str(patch), "job": job["id"] if job else ""})
+            return "conflict", "%s conflicts with %s; %s; patch at %s" % (
+                branch, default, "job %s requeued on the current %s" % (job["id"], default) if job else "branch removed", patch)
+        sha = git(worktree, "rev-parse", "HEAD", timeout=10).stdout.strip()
+        verify_note = "no verify command"
+        if verify and project["verify_cmd"]:
+            minutes = setting_int(con, "minutes_per_job")
+            try:
+                ver = subprocess.run(project["verify_cmd"], shell=True, cwd=str(worktree), capture_output=True, text=True,
+                                     timeout=max(60, minutes * 60))
+                ok, verify_note = ver.returncode == 0, "verify exit %d" % ver.returncode
+                tail = (ver.stdout or "")[-4000:] + (ver.stderr or "")[-4000:]
+            except subprocess.TimeoutExpired:
+                ok, verify_note, tail = False, "verify timed out after %d min" % minutes, ""
+            if not ok:
+                patch = save_branch_patch(root, base, branch, home_dir, project["slug"])
+                if job:
+                    requeue_job(con, job, actor, "%s on the merged %s: %s" % (verify_note, default, branch), patch)
+                git(root, "branch", "-D", branch, timeout=30)
+                event(con, actor, "land.failed-verify", branch, {"project": project["slug"], "patch": str(patch), "note": verify_note,
+                                                                  "tail": tail[-1500:]})
+                return "failed-verify", "%s on the merged %s; %s; patch at %s" % (
+                    verify_note, default, "job %s requeued" % job["id"] if job else "branch removed", patch)
+        on_default, clean = checkout_state(root, default)
+        if not (on_default and clean):
+            return "deferred", "the checkout changed while the merge was verified; nothing landed, try again"
+        ff = git(root, "merge", "--ff-only", sha, timeout=120)
+        if ff.returncode != 0:
+            return "deferred", "%s moved while the merge was verified; nothing landed, try again (%s)" % (default, ff.stderr.strip()[:200])
+        git(root, "branch", "-D", branch, timeout=30)
+        commits = git(root, "rev-list", "--count", "%s..%s" % (base, sha), timeout=30).stdout.strip() or "?"
+        detail = {"project": project["slug"], "sha": sha, "commits": commits, "verify": verify_note, "job": job["id"] if job else ""}
+        event(con, actor, "land.landed", branch, detail)
+        if job:
+            # The branch column empties: it means "waits to land"; the result line and the event keep the name.
+            con.execute("UPDATE jobs SET result = result || ?, branch = '' WHERE id = ?", (" | landed %s from %s" % (sha[:12], branch), job["id"]))
+        arow = agent_row(con, actor)
+        create_post(con, "result", project["slug"], "jobs" if job else "evolution", job["id"] if job else slugify(branch.split("/")[-1]),
+                    trunc("landed on %s as %s (%s commit(s), %s): %s" % (default, sha[:12], commits, verify_note, title), 230),
+                    "Branch `%s` landed on `%s` by %s under ADR-024 (agent-driven landing): merged in a throwaway worktree, "
+                    "`%s` on the merged result (%s), then a fast-forward of the checkout. The branch is removed; the commits are on %s.\n"
+                    % (branch, default, actor, project["verify_cmd"] or "no verify command", verify_note, default),
+                    agent=arow or actor, check_agent=bool(arow), branch=default, resolution="proceeded")
+        return "landed", "%s landed on %s as %s (%s, %s commit(s))" % (branch, default, sha[:12], verify_note, commits)
+    finally:
+        git(root, "worktree", "remove", "--force", str(worktree), timeout=60)
+        git(root, "worktree", "prune", timeout=30)
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+
+def pending_landings(con, slug):
+    """Done jobs whose branch still waits, oldest first."""
+    return [dict(r) for r in con.execute("SELECT * FROM jobs WHERE project = ? AND status = 'done' AND branch != '' "
+                                         "ORDER BY finished_at, created_at", (slug,))]
+
+
+def land_pending(con, project, actor="daemon", home=None, now=None, verify=True, limit=None, force=False):
+    """Land every waiting branch of one project, oldest first; stop at the first deferral (the checkout is busy).
+    Returns [(state, note)]. Does nothing when the landing setting is not `agents`, unless forced by hand."""
+    if not force and setting(con, "landing") != "agents":
+        return []
+    out = []
+    for job in pending_landings(con, project["slug"]):
+        if limit is not None and len(out) >= limit:
+            break
+        try:
+            state, note = land_branch(con, project, job["branch"], actor, job=job, home=home, verify=verify, now=now)
+        except PulseError as exc:
+            state, note = "error", str(exc)
+        if state == "missing":
+            con.execute("UPDATE jobs SET branch = '' WHERE id = ?", (job["id"],))
+            event(con, actor, "land.missing", job["branch"], {"job": job["id"]})
+        out.append((state, note))
+        if state in ("deferred", "locked", "stopped"):
+            break
+    return out
 
 
 def open_questions(con, slug, tally):
@@ -3935,6 +4152,10 @@ def daemon(con, agent=None, interval=300, dry_run=False, worker_cmd=None, home=N
                 for name, reason in prune_agents(con, now):
                     print("pruned %s: %s" % (name, reason), file=out, flush=True)
                 last_prune_day = now[:10]
+            for proj in project_rows(con):
+                # Verified branches land first, so a requeued job is planned and taken in the same loop (ADR-024).
+                for state, note in land_pending(con, proj, actor="daemon", home=home, now=now):
+                    print("landing %s: %s" % (state, note), file=out, flush=True)
             for proj in project_rows(con):
                 for job in plan_jobs(con, proj["slug"], now):
                     print("planned %s %s: %s" % (job["kind"], job["id"], job["title"]), file=out, flush=True)
@@ -4523,6 +4744,13 @@ def build_parser():
     s.add_argument("--executor", help="run on this pair of hands instead of this machine (pulse executor list)")
     s.add_argument("--now")
 
+    s = sub.add_parser("land", help="merge verified pulse/* and evolve/* branches into the default branch (ADR-024)")
+    s.add_argument("--branch", help="one branch; default: every waiting branch of the project, oldest first")
+    s.add_argument("--project")
+    s.add_argument("--all", action="store_true", help="every registered project")
+    s.add_argument("--limit", type=int, help="land at most this many branches")
+    s.add_argument("--no-verify", action="store_true", help="skip the project's check on the merged result")
+
     s = sub.add_parser("executor", help="remote hands over ssh (ADR-020): add, list, probe, drain, activate, remove, login")
     s.add_argument("action", choices=("add", "list", "probe", "drain", "activate", "remove", "login"))
     s.add_argument("name", nargs="?")
@@ -4839,8 +5067,26 @@ def main(argv=None):
                 return 3
             print("%s %s by %s on %s: %s" % (run["status"], run["job_id"], run["agent"], run["executor"], run["summary"]))
             if run["branch"]:
-                print("branch %s (local; review and merge by hand)" % run["branch"])
+                print("branch %s (local; `pulse land` or the daemon merges it once the checkout is clean)" % run["branch"])
             return 0 if run["status"] in ("done", "dry-run") else 1
+        if args.cmd == "land":
+            actor = os.environ.get("PULSE_AGENT", "") or HUMAN_AGENT
+            targets = project_rows(con) if args.all else [current_project(con, args.project)]
+            worst = 0
+            for proj in targets:
+                if args.branch:
+                    row = con.execute("SELECT * FROM jobs WHERE project = ? AND branch = ? ORDER BY finished_at DESC",
+                                      (proj["slug"], args.branch)).fetchone()
+                    results = [land_branch(con, proj, args.branch, actor, job=dict(row) if row else None, home=home,
+                                           verify=not args.no_verify)]
+                else:
+                    results = land_pending(con, proj, actor=actor, home=home, verify=not args.no_verify, limit=args.limit, force=True)
+                if not results:
+                    print("%s: nothing waiting" % proj["slug"])
+                for state, note in results:
+                    print("%s %s: %s" % (proj["slug"], state, note))
+                    worst = max(worst, {"landed": 0, "merged": 0, "conflict": 1, "failed-verify": 1, "missing": 1}.get(state, 3))
+            return worst
         if args.cmd == "executor":
             if args.action == "list":
                 print(executors_text(con, args.now), end="")

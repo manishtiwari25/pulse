@@ -27,6 +27,7 @@
 | [ADR-021](ADR-021-top-down-onboarding.md) | Top-Down PULSE - One Command Onboards a Project, One Command Pairs a Machine, the Daemon Stays the One Supervisor | Accepted | 2026-09-06 | partially delivered |
 | [ADR-022](ADR-022-git-native-agent-identity.md) | Git-Native Agent Identity - Every Agent Commit Names Its Agent, Carries Its Job, and Is Signed by a Key That Lives Only for That Run | Accepted | 2026-09-06 | delivered |
 | [ADR-023](ADR-023-frontend-stack-for-the-hub.md) | A Proper Frontend Stack for the Hub - Vite, TypeScript, the React API on Preact, Tailwind, and Radix, Built to Three Fixed Files the Read-Only Python Hub Serves | Accepted | 2026-09-06 | delivered |
+| [ADR-024](ADR-024-agent-driven-landing.md) | Agent-Driven Landing - Verified Work Merges Itself, Agents Decide Among Themselves, and the Human Keeps Only the Hard Stops | Accepted (maintainer in chat, 2026-09-06) | 2026-09-06 | partially delivered |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable
 architectural or product decision.

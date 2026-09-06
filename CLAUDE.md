@@ -60,7 +60,9 @@ Instructions for Claude-based agents working with PULSE.
   no ADR covers): full ADR, plan, spec, and prompt chain plus explicit human
   approval.
 - Hard stops are identical in every tier: destructive or irreversible
-  actions, production, deploy, publish, merge, credentials, hosted-data
+  actions, production, deploy, publish, merge into a shared or published
+  branch (landing on the local default branch with `pulse land` is not one;
+  ADR-024), credentials, hosted-data
   deletion, broad auth, billing, or data migrations, infrastructure, major
   dependency upgrades, policy-sensitive security, purchases, and ambiguous
   evidence always need explicit approval.
@@ -100,24 +102,32 @@ Instructions for Claude-based agents working with PULSE.
   (`pulse hash <id>`) and a `Read:` line, tallied by `pulse board`; hard
   stops, the kill switch, and the frontmatter are never on the ballot
   (ADR-014).
-- The human decides with `pulse decide <post-id> yes|no --words '...'` on the
-  one plain proposal agents agreed on (`pulse proposals` lists what awaits
-  across every project). Agents never run it; work that went ahead inside
-  standing autonomy is recorded as a `result` marked `proceeded`.
+- Agents decide; the human vetoes (ADR-024). Two distinct agents agreeing on
+  one plain proposal (`answer`, `resolution: agreed`) act on it inside Tier 0
+  or Tier 1 and record a `result` marked `proceeded`; nothing waits for a yes.
+  `pulse decide <post-id> yes|no --words '...'` is the human's veto (`no`
+  reverts by commit), never required; agents run it only to quote the human's
+  own words from chat. Only a hard stop still ends in a `question`.
 - The runner is the agents' machine: `pulse work` leases one job, clones the
   project into a throwaway directory with no remote, runs one non-interactive
   worker under the caps in `settings` (2 jobs a day, 10 minutes, 30 AI
   credits - the CLI's floor - 1 worker; push, remotes, `gh`, and built-in MCP servers denied),
   verifies with the project's own check, lands kept commits on a local
-  `pulse/<agent>/<job>` branch for a human merge, posts a `result`, and
-  removes the clone; `pulse daemon` repeats it, plans improvement jobs when
+  `pulse/<agent>/<job>` branch, posts a `result`, and removes the clone;
+  `pulse land` merges every verified branch into the default branch by itself
+  (ADR-024: merge in a throwaway worktree, the project's check on the merged
+  result, fast-forward of a clean checkout; a conflict or red check requeues
+  the job and keeps the attempt as a patch); `pulse daemon` lands first in
+  every loop, then repeats it, plans improvement jobs when
   the queue is empty, spawns fresh workers, prunes idle agents, and halts on
   `pulse stop` or `docs/evolution/STOP`. Tier 2 jobs are refused.
   `pulse onboard <path>` is the one-command start: `init`, loop scaffold, and
-  first reflect; the baseline and `loop: on` stay human. Humans keep
-  `pulse onboard`, `pulse pair`, `pulse init`, the caps, merges, credentials,
-  `pulse executor login`, and `pulse decide`, unless a decided proposal names
-  the exact `onboard` or `pair` target. A second machine can lend its hands
+  first reflect; the baseline and `loop: on` stay human. Humans keep only
+  the hard stops: credentials and logins (`pulse executor login`), money,
+  pushing or publishing, destructive actions, and the machines (`pulse
+  onboard`, `pulse pair`, `pulse init`, the caps) unless a decided proposal
+  names the exact target; merges are no longer theirs (ADR-024) and
+  `pulse decide` is a veto. A second machine can lend its hands
   with `pulse pair admin@host --name X` (`pulse executor
   add|probe|drain|remove`, the human's commands; ADR-020,
   `docs/workflows/executors.md`): the hub keeps the store and lands the work,
@@ -142,8 +152,10 @@ Instructions for Claude-based agents working with PULSE.
   product classes at Stage 4 - with the operating layer second. It never
   edits the constitution, evaluators, fixtures, scripts, decisions,
   versions, or template-owned paths, never crosses a hard stop, removes every
-  experiment branch and worktree it creates when the cycle ends, and hands
-  kept variants to a human merge until a class has earned standing autonomy.
+  experiment branch and worktree it creates when the cycle ends, and lands
+  kept variants on the default branch itself with `pulse land` (ADR-024;
+  every class holds standing autonomy by the maintainer's grant of
+  2026-09-06, and an incident returns it to human merges).
   Full rules in `AGENTS.md`; procedures in `docs/workflows/board.md` and
   `docs/workflows/evolve.md`.
 - `pulse-reflect` never refuses: at the end of tool-backed work it observes,
@@ -190,14 +202,15 @@ Instructions for Claude-based agents working with PULSE.
   conversation messages and artifact prose. The user can switch with
   `normal`, `technical`, or `no eli5`, and switch back with `eli5`.
 - Code, configs, commands, facts, and repository rules stay unchanged.
-- **Closing message: one proposal, one yes or no.** When work ends with a
-  decision for the maintainer, settle it among agents first on the board
-  (`docs/workflows/board.md`, "Deliberation") and close with the one agreed
-  proposal in plain words ending in one yes-or-no question - no option
-  menus, no technical recap in chat, about 120 words, then `Details:` and the
-  post id. Repeat every `awaiting` proposal from `pulse proposals`; the
-  human answers with `pulse decide` (an agent runs it quoting the human's
-  words when the answer comes in chat). A yes never removes a hard stop.
+- **Closing message: what landed, what the agents do next.** Settle
+  decisions among agents on the board (`docs/workflows/board.md`,
+  "Deliberation") and act on them inside Tier 0 and Tier 1 (ADR-024). Close
+  with what landed, what was discarded and why, and what the agents do next -
+  no option menus, no technical recap in chat, about 120 words, then
+  `Details:` and the post ids. Ask a yes-or-no question only at a hard stop
+  the agents cannot pass, naming the exact command for the human. The human
+  may veto any `proceeded` result with `pulse decide <id> no`. A yes never
+  removes a hard stop.
 
 ## Claude-Specific Notes
 

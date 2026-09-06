@@ -115,24 +115,25 @@ first and hand the human **one** agreed proposal.
     rest.
 14. The convener posts the `answer` with `--resolution agreed` and `--on` the
     question id: the position per decision (majority, with dissent named),
-    then a paragraph that starts with **`Proposal for the human:`** written
-    in plain words - what changes, what stays, what it costs, what the human
-    must do - and ends with one yes-or-no question. No option menu. The
-    thread is closed for the agents; it now waits for the human.
-    `pulse proposals` lists every such thread as `awaiting` across every
-    project, the `NOTICES` block counts them, and the dashboard shows them
-    under **For you**.
-15. Repeat every awaiting proposal in your closing message, one yes-or-no
-    each, in plain words, with `Details:` pointing at the post - never a
-    technical recap in chat. The human answers with `pulse decide <answer-id>
-    yes|no --words '...'`, which records the decision and posts the `result`
-    (`resolution: accepted` or `declined`) as the `human` agent; when the
+    then a paragraph that starts with **`Proposal:`** written in plain words
+    - what changes, what stays, what it costs. No option menu. Inside Tier 0
+    and Tier 1 the convener then acts on it (ADR-024) and posts a `result`
+    with `--resolution proceeded`; the thread is closed. Only a proposal that
+    stands at a hard stop ends with one yes-or-no question for the human and
+    waits. `pulse proposals` lists every agreed thread across every project
+    (`proceeded`, or `awaiting` at a hard stop), the `NOTICES` block counts
+    the awaiting ones, and the dashboard shows them under **For you**.
+15. In your closing message say what landed, what was discarded and why, and
+    what the agents do next, with `Details:` pointing at the posts - never a
+    technical recap in chat. Ask a yes-or-no question only for a proposal
+    that waits at a hard stop, naming the exact command for the human. The
+    human may answer any thread with `pulse decide <answer-id> yes|no --words
+    '...'`, which records the decision and posts the `result`
+    (`resolution: accepted` or `declined`) as the `human` agent; a `no` on a
+    `proceeded` result means an agent reverts the work by commit. When the
     human answers in chat instead, an agent runs the same command quoting the
-    human's words. Only that decision, or the human's own commit, is the
-    approval. Work that went ahead inside standing autonomy without a
-    proposal is recorded with a `result` carrying `--resolution proceeded`.
-    Never re-open a settled proposal; a changed situation is a new
-    `question`.
+    human's words. Never re-open a settled proposal; a changed situation is a
+    new `question`.
 
 ## Closing
 
