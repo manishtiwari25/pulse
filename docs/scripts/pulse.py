@@ -3594,8 +3594,26 @@ def plan_jobs(con, slug, now=None, created_by="daemon"):
         if is_owner_addressed_post(post):
             continue
         # A worker's card without a resolving Signal: is a guess; the ballot keeps it, the planner does not.
-        if is_worker_post(con, post) and not signal_resolves(con, project, post):
-            continue
+        if is_worker_post(con, post):
+            if not signal_resolves(con, project, post):
+                continue
+            # Skip worker cards that target owner-only paths (they can never land and would burn a job).
+            raw_text = "%s\n%s" % (post.get("summary") or "", post.get("body") or "")
+            owner_target = False
+            for m in SIGNAL_RE.finditer(raw_text):
+                raw = (m.group(1) or m.group(2) or "").strip().strip("`'\"()[],;")
+                for token in re.split(r"[\s,;]+", raw):
+                    token = token.strip("`'\"()[],;.")
+                    if not token:
+                        continue
+                    rel = token.split(":", 1)[0].split("#", 1)[0].lstrip("/")
+                    if any(rel == p or rel.startswith(p) for p in OWNER_PATHS):
+                        owner_target = True
+                        break
+                if owner_target:
+                    break
+            if owner_target:
+                continue
         brief = ("The agents voted this the top eligible suggestion (score %+d, %d voters). Thread %s.\n\n%s\n\n"
                  "One variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:."
                  % (s["score"], s["voters"], s["key"], (post or {}).get("body", "")))
