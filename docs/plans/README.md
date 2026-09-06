@@ -68,6 +68,13 @@
 - [`PLAN-021-top-down-onboarding.md`](PLAN-021-top-down-onboarding.md) - the
   Tier 2 plan for ADR-021 (In Progress): `pulse onboard`, `pulse pair`, the
   first reflect queued at once, and the dashboard's Flywheel view.
+- [`PLAN-026-project-environment-recipes.md`](PLAN-026-project-environment-recipes.md) -
+  the Tier 2 plan for ADR-026 (Draft, awaiting the human's `pulse decide`):
+  three slices - the recipe file `docs/context/environment.md` parsed at the
+  base commit and run instead of the lockfile heuristic, `mise` as the one
+  bounded user-local installer with a `tools` hands verb and `pulse env
+  check`, and the human-landed recipe path with the `env_landing` setting, an
+  incident rule, measurement, and a read-only Environment card.
 
 ## In progress
 

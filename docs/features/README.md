@@ -64,6 +64,14 @@
   Radix accessibility, Mission control as a ten-second story - every legacy
   view at the same hash route, three fixed files under the unchanged CSP,
   `app.js` within 150 KB gzipped.
+- [`016-project-environment-recipes.md`](016-project-environment-recipes.md) -
+  project environment recipes (ADR-026, Proposed 2026-09-06): every onboarded
+  project carries `docs/context/environment.md` - pinned tools, setup lines,
+  non-secret env, declared services, a suggested check - written by the
+  onboarding agent, read by the runner at the base commit, installed
+  user-locally through `mise` on whichever machine takes the job, shown in
+  `pulse env check` and a read-only dashboard card, and landed only after the
+  human's `pulse decide` until `env_landing` is set to `agents`.
 
 Copy `_template.md` when the new product direction needs a feature or product
 behavior spec. Tier 1 behavior inside an Accepted ADR uses a work unit in
