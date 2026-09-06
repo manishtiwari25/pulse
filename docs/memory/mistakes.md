@@ -143,6 +143,18 @@
   it, and refresh paired machines (`pulse pair`) in the same breath; the
   daemon now refuses a save that does not compile. Source: WU-013, WU-014,
   `docs/scripts/pulse.py` `daemon` (`source_compiles`).
+- `2026-09-06` - A board post body written as `--body "$(cat <<'EOF' ... EOF)"`
+  ran every backtick in the Markdown as a command: the quoted heredoc
+  delimiter does not protect text once it sits inside `$(...)`, so an
+  inline `` `git push` `` in the prose was executed (it failed with
+  "Repository not found" before any transfer; `origin/main` verified
+  unchanged) and the post itself was rejected. A hard stop was one working
+  credential away. Avoid by: never pass agent-written prose through
+  `$(...)`; write the body to a file in the session workspace and use
+  `pulse post ... --body-file <path>`, keep hard-stop commands out of prose
+  or write them without backticks, and after any shell error that mentions a
+  remote, check `git status -sb` and `git log origin/<branch> -1` before
+  anything else.
 
 ## Populate When
 
