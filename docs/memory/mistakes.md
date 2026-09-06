@@ -133,6 +133,16 @@
   secret's shape (prefix, length) locally before sending it anywhere, print
   only the class, and name the accepted kinds in the refusal. Source: ADR-021
   Amendment 1.
+- `2026-09-06` - The keep-alive daemon re-executes itself when `pulse.py`'s
+  mtime changes, and it runs from the brain's working tree - so every save
+  of an edit in progress went live within one loop, before any test or
+  commit, against the real store and a real VM (two jobs died on hands the
+  new code did not match yet). Avoid by: treat the brain checkout as
+  production while the daemon runs - edit on a branch or worktree, or
+  `pulse stop` first; land a hands change before the hub change that needs
+  it, and refresh paired machines (`pulse pair`) in the same breath; the
+  daemon now refuses a save that does not compile. Source: WU-013, WU-014,
+  `docs/scripts/pulse.py` `daemon` (`source_compiles`).
 
 ## Populate When
 

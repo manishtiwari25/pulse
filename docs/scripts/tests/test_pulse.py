@@ -992,6 +992,27 @@ class StoreTestCase(StoreFixture):
         self.assertEqual(result, "restart")
         self.assertIn("changed on disk", out.getvalue())
         self.assertLessEqual(out.getvalue().count("done "), 1, "it stopped at the first loop after the change")
+        # a save that does not compile (an edit in progress) never takes the loop down: it keeps running the old code,
+        # says so once, and restarts only when the file compiles again
+        out = io.StringIO()
+        pulse.add_job(self.con, "proj", "task", "once more", created_by="test")
+        source.write_text("# v3\n")
+        os.utime(source, (2, 2))
+        saves = iter([("def broken(:\n", (3, 3)), ("def broken(:\n", (3, 3)), ("# v4\n", (4, 4))])
+        def save_next(*a, **k):
+            text, times = next(saves, (None, None))
+            if text is not None:
+                source.write_text(text)
+                os.utime(source, times)
+            return []
+        with unittest.mock.patch.object(pulse, "plan_jobs", side_effect=save_next):
+            result = pulse.daemon(self.con, interval=0, worker_cmd=worker, max_loops=6, out=out, source_path=str(source),
+                                  restart_on_change=True)
+        self.assertEqual(result, "restart")
+        self.assertEqual(out.getvalue().count("does not compile"), 1, "one warning per broken save, not one per loop")
+        self.assertIn("line 1:", out.getvalue())
+        self.assertEqual(out.getvalue().count("changed on disk; restarting"), 1)
+        self.assertEqual(pulse.source_compiles(str(pulse.__file__)), (True, ""))
 
     def test_worker_command_denies_the_remote_tools_and_runs_in_autopilot(self):
         cmd, custom = pulse.worker_command(self.con, "the brief", Path("/tmp/clone"))

@@ -3838,6 +3838,19 @@ def source_stamp(path=None):
         return 0.0
 
 
+def source_compiles(path=None):
+    """Whether the code on disk would start: a half-saved edit must never take the keep-alive loop down with it.
+    Returns (True, "") or (False, "line N: reason")."""
+    path = path or __file__
+    try:
+        compile(Path(path).read_text(encoding="utf-8"), str(path), "exec")
+        return True, ""
+    except SyntaxError as exc:
+        return False, "line %s: %s" % (exc.lineno, exc.msg)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return False, str(exc)
+
+
 def daemon(con, agent=None, interval=300, dry_run=False, worker_cmd=None, home=None, max_loops=None, out=sys.stdout,
            source_path=None, restart_on_change=False):
     """The keep-alive loop: plan, work, sleep only when idle. Returns "stopped", "done" (max_loops), or
@@ -3845,6 +3858,7 @@ def daemon(con, agent=None, interval=300, dry_run=False, worker_cmd=None, home=N
     loops = 0
     last_prune_day = ""
     stamp = source_stamp(source_path)
+    broken_stamp = None
     lost = sweep_lost_runs(con)
     print("daemon started %s (interval %ss%s, pid %d)" % (utc_now(), interval, ", dry run" if dry_run else "", os.getpid()),
           file=out, flush=True)
@@ -3859,9 +3873,15 @@ def daemon(con, agent=None, interval=300, dry_run=False, worker_cmd=None, home=N
             daemon_heartbeat(con, loops, interval, note="exited")
             return "stopped"
         if restart_on_change and source_stamp(source_path) != stamp:
-            print("pulse.py changed on disk; restarting to pick it up", file=out, flush=True)
-            daemon_heartbeat(con, loops, interval, note="restarting")
-            return "restart"
+            ok, why = source_compiles(source_path)
+            if ok:
+                print("pulse.py changed on disk; restarting to pick it up", file=out, flush=True)
+                daemon_heartbeat(con, loops, interval, note="restarting")
+                return "restart"
+            if source_stamp(source_path) != broken_stamp:
+                # Said once per broken save; the running code keeps the machine alive until the file compiles again.
+                broken_stamp = source_stamp(source_path)
+                print("pulse.py changed on disk but does not compile (%s); keeping the running code" % why, file=out, flush=True)
         daemon_heartbeat(con, loops, interval)
         run, reason, runs, slots = None, "", [], []
         try:

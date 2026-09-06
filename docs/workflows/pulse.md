@@ -347,7 +347,11 @@ While it runs, the daemon writes a **heartbeat** each loop (`meta` key
 is printed as `daemon error: ...` and the next loop tries again after one
 interval. When `pulse.py` changes on disk it prints `changed on disk;
 restarting` and re-executes itself, so a merged fix reaches the running
-daemon without a hand restart (`daemon --no-restart` turns that off). After a
+daemon without a hand restart (`daemon --no-restart` turns that off). It
+watches the file, not the commit: an edit saved in the brain's checkout is
+live within one loop, so a save that does not compile is refused once
+(`does not compile (line N: ...); keeping the running code`) and the loop
+keeps running the old code until the file compiles again. After a
 runner error it prints `error ...` and waits one interval instead of burning
 through the queue; `pulse stop` parks it after the current job (the service
 keeps the process alive and it checks the switch every interval) and `pulse
