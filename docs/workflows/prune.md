@@ -79,6 +79,16 @@ link check and `git diff --check`.
     Leave the changes uncommitted unless the user asks for publication. Use
     [`rollback.md`](rollback.md) if recovery is needed.
 
+12. Optionally, delete merged runner branches (human-run): from the repository root run:
+
+    ```bash
+    git branch --merged main | grep '^ pulse/' | xargs git branch -d
+    ```
+
+    Only delete branches already merged into `main` (use `-d`, never `-D`).
+    This removes local `pulse/<agent>/<job>` branches that have been merged; verify with
+    `git branch --list 'pulse/*' | wc -l` before and after, and record the before count in the prune notes.
+
 ## Do Not
 
 - Delete or rewrite ADRs; supersede or retire them visibly.
