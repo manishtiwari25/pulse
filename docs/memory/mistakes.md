@@ -176,6 +176,25 @@
   `ensure_schema`: a newer or older existing store is an error, an equal one
   is left alone); only the runner and the human's own `pulse` migrate; treat
   any `schema.upgrade` event from a `run-*` actor as an incident.
+- `2026-09-06` - A fine-grained token placed with `pulse executor login`
+  passed `copilot login --with-token` and every probe (`logged_in=yes`), yet
+  Copilot refused each worker at launch ("Authentication failed … ensure it
+  has the 'Copilot Requests' permission"); the machine sat `drained` for a
+  day and nothing re-checked it. Avoid by: a stored login is not a working
+  one - validate with one real copilot call through the hands
+  (`login_check`, `pulse executor probe <name> --login`), ask GitHub about
+  the token before sending it (401 → never sent; record the expiry), and let
+  a login-drained machine recover by itself with a doubling recheck instead
+  of waiting for a human probe (WU-016).
+- `2026-09-06` - The first agent-driven landings merged a branch that made
+  its own check unfailable (`make test` ending in `|| echo "skipping"`) and
+  one that added a CI workflow plus a committed `PULSE_RESULT.md`; both were
+  green because the branch defined the check that judged it. Avoid by: the
+  check that judges a landing belongs to the base (`run_base_check_files`
+  restores the base's Makefile/package.json/pytest config before verify),
+  owner paths and `.github/workflows/` are refused at landing, a committed
+  result file is dropped, and two requeues end a job (ADR-024 D8-D10);
+  revert such landings by commit, never by reset.
 
 ## Populate When
 

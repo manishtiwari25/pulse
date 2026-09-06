@@ -50,6 +50,17 @@ exit "${PULSE_ADMIN_RC:-0}"
 """
 
 
+FAKE_COPILOT = r"""#!/bin/sh
+printf '%%s\n' "$*" >> '%(log)s'
+if [ -e '%(flag)s' ]; then
+  echo 'Error: Authentication failed (Request ID: TEST) - the token may be invalid, expired, or lacking the required permissions' >&2
+  echo "Run 'copilot login' to re-authenticate. If using a Fine-Grained PAT, ensure it has the 'Copilot Requests' permission" >&2
+  exit 1
+fi
+echo ok
+"""
+
+
 class LoginFixture(tp.HandsFixture):
     def setUp(self):
         super().setUp()
@@ -72,15 +83,35 @@ class LoginFixture(tp.HandsFixture):
         os.environ.pop("PULSE_ADMIN_ERR", None)
         os.environ.pop("PULSE_ADMIN_PREP_RC", None)
         os.environ.pop("PULSE_ADMIN_PREP_NOTE", None)
+        # The login check runs "copilot" through the hands; this stand-in answers ok, or refuses the login when the
+        # flag file exists, so no test ever reaches Copilot or GitHub.
+        self.refuse_flag = self.tmp / "copilot-refuses"
+        self.copilot_log = self.tmp / "copilot.log"
+        fake = self.tmp / "fake-copilot"
+        fake.write_text(FAKE_COPILOT % {"flag": self.refuse_flag, "log": self.copilot_log}, encoding="utf-8")
+        fake.chmod(0o755)
+        tp.pulse.set_setting(self.con, "runner_cmd", str(fake), "human")
+        self.con.commit()
+        self.facts = {"ok": None, "user": "", "expires": "", "note": "GitHub not reached (test); the token's validity is unknown"}
+        self._facts_patch = unittest.mock.patch.object(tp.pulse, "github_token_facts", side_effect=lambda token, **kw: dict(self.facts))
+        self._facts_patch.start()
         self.add_hands("hands-2")
 
     def tearDown(self):
+        self._facts_patch.stop()
         for key, value in self._login_env_before.items():
             if value is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
         super().tearDown()
+
+    def copilot_calls(self):
+        return self.copilot_log.read_text(encoding="utf-8").splitlines() if self.copilot_log.exists() else []
+
+    def check_events(self):
+        return [json.loads(r["detail"]) for r in self.con.execute(
+            "SELECT detail FROM events WHERE action = 'executor.login-check' AND subject = 'hands-2' ORDER BY rowid")]
 
     @property
     def admin_log(self):
@@ -343,3 +374,183 @@ class HandsProbeLoginTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoginCheckTestCase(LoginFixture):
+    """A stored login is not a working one: the login check makes one real copilot call through the hands, drains a
+    machine Copilot refuses, and the daemon's recheck returns it to service when the token is fixed."""
+
+    def row(self):
+        return tp.pulse.executor_row(self.con, "hands-2")
+
+    def test_login_runs_the_check_and_drains_when_copilot_refuses_the_token(self):
+        self.refuse_flag.write_text("", encoding="utf-8")
+        code, out, err = self.run_login("github_pat_" + "A" * 82)
+        self.assertEqual(code, 1, out)
+        self.assertIn("login check FAILED (drained)", out)
+        self.assertIn("Copilot Requests permission", out)
+        self.assertIn("Authentication failed", out)
+        row = self.row()
+        self.assertEqual(row["status"], "drained")
+        self.assertTrue(tp.pulse.login_drained(row), row["probe_note"])
+        self.assertEqual(row["backoff_minutes"], 15)
+        self.assertTrue(row["next_probe_at"])
+        self.assertEqual([e["kind"] for e in self.check_events()], ["refused"])
+        self.assertEqual(self.latest_event_detail(), {"kind": "pat", "ok": False, "rc": 0})
+        # one call, one-word prompt, no tools, the worker model, run inside a clone the hands then removed
+        self.assertEqual(len(self.copilot_calls()), 1)
+        self.assertIn("-p %s --no-ask-user --disable-builtin-mcps -s" % tp.pulse.LOGIN_CHECK_PROMPT, self.copilot_calls()[0])
+        self.assertEqual([p.name for p in self.remote.iterdir() if p.name.startswith("login-check-")], [])
+
+    def test_login_passes_the_check_and_records_what_github_said(self):
+        self.facts = {"ok": True, "user": "octocat", "expires": "2027-01-01 00:00:00 UTC", "note": "GitHub accepts the token for octocat"}
+        code, out, err = self.run_login("github_pat_" + "A" * 82)
+        self.assertEqual(code, 0, out)
+        self.assertIn("GitHub accepts the token for octocat", out)
+        self.assertIn("hands-2: ok, active: login ok", out)
+        self.assertEqual(self.latest_event_detail(), {"kind": "pat", "ok": True, "rc": 0, "expires": "2027-01-01 00:00:00 UTC", "user": "octocat"})
+        self.assertEqual(tp.pulse.login_expiry(self.con, "hands-2"), "2027-01-01 00:00:00 UTC")
+        self.assertEqual([e["kind"] for e in self.check_events()], ["ok"])
+        listing = tp.pulse.executors_text(self.con)
+        self.assertIn("login ok at", listing)
+        self.assertIn("token expires 2027-01-01", listing)
+
+    def test_login_warns_when_the_token_expires_soon(self):
+        soon = tp.pulse.plus_hours(tp.pulse.utc_now(), 48)[:10]
+        self.facts = {"ok": True, "user": "octocat", "expires": "%s 00:00:00 UTC" % soon, "note": "GitHub accepts the token for octocat"}
+        code, out, err = self.run_login("github_pat_" + "A" * 82)
+        self.assertEqual(code, 0, out)
+        self.assertIn("warning: the token expires in 2 day(s), on %s" % soon, out)
+        self.assertIn("WARNING the token expires", tp.pulse.executors_text(self.con))
+
+    def test_login_refuses_a_token_github_rejects_without_sending_it(self):
+        self.facts = {"ok": False, "user": "", "expires": "", "note": "GitHub refuses the token (401): invalid, expired, or revoked - the token was not sent"}
+        code, out, err = self.run_login("github_pat_" + "A" * 82)
+        self.assertEqual(code, 1)
+        self.assertIn("GitHub refuses the token (401)", out)
+        self.assertEqual(self.admin_lines(), [], "nothing went to the machine")
+        self.assertEqual(self.event_detail(), {"kind": "pat", "ok": False, "rc": 1, "step": "github"})
+        self.assertEqual(self.copilot_calls(), [])
+
+    def test_a_shallow_probe_keeps_a_login_drained_machine_drained_and_the_deep_probe_returns_it(self):
+        self.refuse_flag.write_text("", encoding="utf-8")
+        self.run_login("gho_" + "B" * 36)
+        self.assertEqual(self.row()["status"], "drained")
+        ok, note = tp.pulse.probe_executor(self.con, "hands-2", actor=tp.pulse.HUMAN_AGENT, now=tp.NOW)
+        self.assertTrue(ok, note)
+        row = self.row()
+        self.assertEqual(row["status"], "drained", "logged_in=yes is not a working login")
+        self.assertTrue(tp.pulse.login_drained(row), row["probe_note"])
+        # `pulse executor probe` of such a machine includes the login check without --login
+        code, out, err = tp.run_cli("executor", "probe", "hands-2")
+        self.assertEqual(code, 1, out)
+        self.assertIn("login check FAILED (drained)", out)
+        self.refuse_flag.unlink()
+        code, out, err = tp.run_cli("executor", "probe", "hands-2", "--login")
+        self.assertEqual(code, 0, out)
+        self.assertIn("login check ok (active)", out)
+        row = self.row()
+        self.assertEqual((row["status"], row["backoff_minutes"], row["next_probe_at"]), ("active", 0, ""))
+        self.assertTrue(self.con.execute("SELECT 1 FROM events WHERE action = 'executor.recovered' AND subject = 'hands-2'").fetchone())
+
+    def test_the_daemon_rechecks_with_a_doubling_wait_and_recovers_by_itself(self):
+        self.refuse_flag.write_text("", encoding="utf-8")
+        self.run_login("gho_" + "B" * 36)
+        row = self.row()
+        self.assertEqual((row["status"], row["backoff_minutes"]), ("drained", 15))
+        first_due = row["next_probe_at"]
+        # not due yet: nothing happens
+        self.assertEqual(tp.pulse.reprobe_due(self.con, interval=300, now=tp.pulse.plus_hours(first_due, -1 / 60.0)), [])
+        self.assertEqual(len(self.check_events()), 1)
+        # due, still refused: waits twice as long
+        self.assertEqual(tp.pulse.reprobe_due(self.con, interval=300, now=first_due), [])
+        row = self.row()
+        self.assertEqual((row["status"], row["backoff_minutes"]), ("drained", 30))
+        self.assertGreater(row["next_probe_at"], first_due)
+        self.assertEqual([e["kind"] for e in self.check_events()], ["refused", "refused"])
+        # the human fixed the token on GitHub: the next recheck brings the machine back
+        self.refuse_flag.unlink()
+        back = tp.pulse.reprobe_due(self.con, interval=300, now=row["next_probe_at"])
+        self.assertEqual([name for name, _ in back], ["hands-2"])
+        row = self.row()
+        self.assertEqual((row["status"], row["backoff_minutes"], row["next_probe_at"]), ("active", 0, ""))
+        self.assertEqual([e["kind"] for e in self.check_events()], ["refused", "refused", "ok"])
+
+    def test_the_wait_never_exceeds_six_hours(self):
+        self.refuse_flag.write_text("", encoding="utf-8")
+        self.run_login("gho_" + "B" * 36)
+        self.con.execute("UPDATE executors SET backoff_minutes = 300, next_probe_at = ? WHERE name = 'hands-2'", (tp.NOW,))
+        self.con.commit()
+        tp.pulse.reprobe_due(self.con, interval=300, now=tp.NOW)
+        self.assertEqual(self.row()["backoff_minutes"], 360)
+
+    def test_a_launch_fault_schedules_the_first_recheck(self):
+        tp.pulse.note_executor_run(self.con, "hands-2", "error", note="worker rejected at launch (exit 1 after 8s): Authentication failed",
+                                   now=tp.NOW, fault=True)
+        row = self.row()
+        self.assertEqual((row["status"], row["backoff_minutes"]), ("drained", 15))
+        self.assertTrue(tp.pulse.login_drained(row))
+        # a fault that is not about the login drains without a recheck (a human probe returns it, as before)
+        tp.pulse.set_executor_status(self.con, "hands-2", "active", note="ok")
+        tp.pulse.note_executor_run(self.con, "hands-2", "error", note="hands predate ADR-022", now=tp.NOW, fault=True)
+        row = self.row()
+        self.assertEqual((row["status"], row["backoff_minutes"], row["next_probe_at"]), ("drained", 0, ""))
+        self.assertFalse(tp.pulse.login_drained(row))
+
+    def test_expiry_warning_and_fault_line(self):
+        self.assertEqual(tp.pulse.expiry_warning("", now=tp.NOW), "")
+        self.assertEqual(tp.pulse.expiry_warning("2030-01-01 00:00:00 UTC", now=tp.NOW), "")
+        self.assertIn("expired on 2020-01-01", tp.pulse.expiry_warning("2020-01-01 12:00:00 UTC", now=tp.NOW))
+        self.assertIn("expires in 3 day(s)", tp.pulse.expiry_warning(tp.pulse.plus_hours(tp.NOW, 72)[:10], now=tp.NOW))
+        self.assertEqual(tp.pulse.fault_line("warming up\nError: Authentication failed (Request ID: X)\n • hint"), "Error: Authentication failed (Request ID: X)")
+        self.assertEqual(tp.pulse.fault_line("\n\nok\n"), "ok")
+        self.assertEqual(tp.pulse.fault_line(""), "")
+
+
+class GithubTokenFactsTestCase(unittest.TestCase):
+    """The token goes to GitHub once, before it goes anywhere else; what GitHub says decides whether it is sent."""
+
+    class _Resp:
+        def __init__(self, body, headers):
+            self._body = body
+            self.headers = headers
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def test_accepted_token_reports_user_and_expiry(self):
+        seen = {}
+
+        def fake_urlopen(req, timeout=0):
+            seen["url"] = req.full_url
+            seen["auth"] = req.get_header("Authorization")
+            return self._Resp(b'{"login": "octocat"}', {"github-authentication-token-expiration": "2027-01-01 00:00:00 UTC"})
+
+        with unittest.mock.patch.object(tp.pulse.urllib.request, "urlopen", fake_urlopen):
+            facts = tp.pulse.github_token_facts("github_pat_" + "A" * 82, api="https://api.example")
+        self.assertEqual(seen["url"], "https://api.example/user")
+        self.assertEqual(seen["auth"], "Bearer github_pat_" + "A" * 82)
+        self.assertEqual((facts["ok"], facts["user"], facts["expires"]), (True, "octocat", "2027-01-01 00:00:00 UTC"))
+        self.assertIn("expires 2027-01-01", facts["note"])
+
+    def test_refused_and_unreachable(self):
+        def refused(req, timeout=0):
+            raise tp.pulse.urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+        def gone(req, timeout=0):
+            raise tp.pulse.urllib.error.URLError("no route")
+
+        with unittest.mock.patch.object(tp.pulse.urllib.request, "urlopen", refused):
+            facts = tp.pulse.github_token_facts("gho_" + "B" * 36, api="https://api.example")
+        self.assertIs(facts["ok"], False)
+        self.assertIn("not sent", facts["note"])
+        with unittest.mock.patch.object(tp.pulse.urllib.request, "urlopen", gone):
+            facts = tp.pulse.github_token_facts("gho_" + "B" * 36, api="https://api.example")
+        self.assertIsNone(facts["ok"])
+        self.assertIn("not reached", facts["note"])

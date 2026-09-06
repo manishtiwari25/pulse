@@ -214,11 +214,28 @@ under `PULSE_HOME/patches/<project>/` (`git am` re-applies it), and the job
 goes back to the queue with `attempts` reset so a fresh worker redoes it on
 the current default branch - stale worker code is redone, not rebased. Every
 landing is an event (`land.landed`, `land.conflict`, `land.failed-verify`,
-`land.merged`) and a `result` post with `resolution: proceeded`. Only `pulse/*`
-and `evolve/*` branches land; nothing is ever pushed. The `landing` setting
-(`agents` by default) set to `human` returns to waiting branches; `pulse land`
-by hand still works then. A lock file `.git/pulse-land.lock` keeps the daemon
-and a hand-run `pulse land` from merging at the same time.
+`land.refused`, `land.merged`) and a `result` post with `resolution:
+proceeded`. Only `pulse/*` and `evolve/*` branches land; nothing is ever
+pushed. The `landing` setting (`agents` by default) set to `human` returns to
+waiting branches; `pulse land` by hand still works then. A lock file
+`.git/pulse-land.lock` keeps the daemon and a hand-run `pulse land` from
+merging at the same time.
+
+Three guards keep the check honest (ADR-024 D8-D10). **The check belongs to
+the base**: when the branch changed a file that defines the check
+(`Makefile`, `package.json`, `pyproject.toml`, `tox.ini`, `pytest.ini`, a
+top-level `*.config.*`, any path the verify command names, and the like), the
+landing check runs with the default branch's version of those files - a
+variant that makes its own check green proves nothing; the note reads
+`check run with main's Makefile`. **Some paths never land**: the constitution,
+the evaluators, `STOP`, `.github/workflows/`, and for `pulse/*` branches
+every worker owner path; such a branch is `refused`, its patch kept, its job
+ended `failed` rather than redone, and a branch that changes nothing but
+`PULSE_RESULT.md` is refused the same way (a result file on an otherwise sound
+branch is dropped in one extra commit). **Two requeues, then failed**: a job
+whose branch conflicts or fails the check twice is not requeued a third time;
+it ends `failed` with the patch kept (`job.abandoned`), so a check that
+cannot pass on this machine never becomes a credit-spending loop.
 
 ## Onboard a project
 

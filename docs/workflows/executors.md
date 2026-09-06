@@ -155,13 +155,47 @@ be thrown away; `storeTokenPlaintext: true` in `~pulse/.copilot/settings.json`
 advance, and the token stays home if this step fails - then pipes it to
 `sudo -u pulse -H copilot login --with-token`, redacts token-shaped output,
 records only `executor.login` with the executor name, token kind (`pat`,
-`oauth`, `user`, or `removed`), and exit code, then probes; a passing probe
-re-activates an executor the runner had drained for "not logged in".
-`--remove` deletes `~pulse/.copilot` because the CLI has no logout, then
-probes and leaves the executor drained. A `~/.copilot` holding only `logs/`
-or only `settings.json` is not a login; the probe requires a login record in
-`config.json` (non-empty `authTokens` or `loggedInUsers`) or a token in
-`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`.
+`oauth`, `user`, or `removed`), and exit code, then probes and runs the
+**login check** below; only a passing check re-activates an executor the
+runner had drained for its login. `--remove` deletes `~pulse/.copilot`
+because the CLI has no logout, then probes and leaves the executor drained.
+A `~/.copilot` holding only `logs/` or only `settings.json` is not a login;
+the probe requires a login record in `config.json` (non-empty `authTokens`
+or `loggedInUsers`) or a token in `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or
+`GITHUB_TOKEN`.
+
+### A stored login is not a working one: the login check
+
+`copilot login --with-token` only asks GitHub who the token belongs to. A
+fine-grained token **without the "Copilot Requests" permission**, or an
+account without Copilot, logs in fine and is refused at the first real
+request (`Authentication failed … ensure it has the 'Copilot Requests'
+permission`) - pulse-vm1 sat `drained` for a day in 2026-09 with
+`logged_in=yes` in every probe. So the truth is one real call
+([WU-016](../plans/WU-016-executor-login-check.md)):
+
+- **Before the token leaves your machine** `executor login` asks GitHub
+  about it (`GET /user`, the token in the header, nothing logged): a refused
+  token (401/403) is never sent, an accepted one records the account name
+  and the expiry GitHub reports in the `executor.login` event, and an expiry
+  within seven days prints a warning. When GitHub cannot be reached the
+  token is sent anyway and the fact is marked unknown.
+- **After the token is stored** the hub runs the same verbs a job uses -
+  `prepare` a one-commit clone, `run` the copilot CLI with the worker model
+  and a one-word prompt (`--no-ask-user --disable-builtin-mcps -s`, two
+  minutes), `clean` - and records `executor.login-check` with `ok`, `kind`
+  (`ok`, `refused`, `failed`, `hands`, `unreachable`), and the copilot
+  line that names the fault. `pulse executor probe vm1 --login` runs it by
+  hand; the plain `probe` of a machine drained for its login includes it.
+- **A refused login drains the machine and schedules its own recovery**:
+  `fault: copilot refuses the login …` in `probe_note`, `backoff_minutes`
+  15, `next_probe_at`. The daemon runs the login check again when it is due
+  (15, 30, 60 … minutes, at most every six hours) and, the moment it passes -
+  because the token's permissions were fixed on GitHub, or a new token was
+  placed with `executor login` - sets the machine `active` by itself
+  (`executor.recovered`). A shallow probe that passes keeps such a machine
+  drained: `logged_in=yes` only says a login is stored. `pulse executor
+  list` shows the last check and the known expiry under each machine.
 
 ## Enroll, probe, run
 
@@ -222,11 +256,14 @@ run, `done <job> <agent> on vm1: <summary>`.
   (`executor.drained` event), and the job returns to the queue **with its
   attempt returned** - a machine fault never counts toward the three runner
   errors that fail a job - so the next loop runs it on `local` or on other
-  hands. Only a human probe that passes (`probe`, `pair`, or `login`)
-  re-activates the machine; the probe itself fails hands without a `keys=`
-  field, so an upgraded hub names every machine left behind. On `local`
-  there is no row to drain: a login failure there is charged like any
-  runner error and shows in the daemon log.
+  hands. A login fault also seeds the recovery wait: the daemon reruns the
+  login check (15, 30, 60 … minutes, capped at six hours) and re-activates
+  the machine by itself when it passes. For every other fault only a human
+  probe that passes (`probe`, `pair`, or `login`) re-activates the machine;
+  the probe itself fails hands without a `keys=` field, so an upgraded hub
+  names every machine left behind. On `local` there is no row to drain: a
+  login failure there is charged like any runner error and shows in the
+  daemon log.
 - **Drain** (`pulse executor drain vm1`) stops new leases and lets the
   running job finish. **Remove** (`pulse executor remove vm1`) is refused
   while a run is on it; drain first. Both are events; the machine's runs

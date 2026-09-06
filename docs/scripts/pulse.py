@@ -28,6 +28,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 SCHEMA_VERSION = 3
@@ -1825,6 +1827,185 @@ def login_fault(text):
     return bool(LOGIN_FAULT_RE.search(text or ""))
 
 
+# A recorded login is not a working one (pulse-vm1, 2026-09-06: a fine-grained token GitHub accepted as a login was
+# refused for every Copilot request, and the probe said logged_in=yes all day). The login check is the truth: one
+# real call of the copilot CLI through the same verbs a job uses - a one-commit clone, the cheapest worker model,
+# a one-word answer - so "the check passed" means "a worker can launch here". A refused login drains the machine
+# and the daemon rechecks it with a growing wait, so the machine returns to service by itself once the token is
+# fixed (its permissions changed on GitHub, or a new one placed with `pulse executor login`).
+LOGIN_CHECK_PROMPT = "Reply with exactly the word ok and nothing else."
+LOGIN_CHECK_MINUTES = 2
+LOGIN_BACKOFF_MINUTES = (15, 360)   # first recheck after 15 minutes, doubling, at most every 6 hours
+LOGIN_EXPIRY_WARN_DAYS = 7
+GITHUB_API = "https://api.github.com"
+
+
+def tiny_bundle():
+    """A one-commit repository as a git bundle: the login check needs a clone to stand in, nothing more."""
+    with tempfile.TemporaryDirectory(prefix="pulse-login-check-") as tmp:
+        repo = Path(tmp) / "repo"
+        git(tmp, "init", "-q", "--initial-branch=main", str(repo), check=True)
+        git(repo, "-c", "user.name=pulse", "-c", "user.email=pulse@pulse.local", "-c", "commit.gpgsign=false",
+            "commit", "-q", "--allow-empty", "-m", "login check", check=True)
+        bundle = Path(tmp) / "check.bundle"
+        git(repo, "bundle", "create", "-q", str(bundle), "main", check=True)
+        return bundle.read_bytes()
+
+
+def fault_line(text, limit=200):
+    """The first line that names the fault (authentication, login), else the first non-empty line; one line, trimmed."""
+    lines = [" ".join(line.split()) for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
+    for line in lines:
+        if LOGIN_FAULT_RE.search(line):
+            return redact_tokens(line)[:limit]
+    return redact_tokens(lines[0] if lines else "")[:limit]
+
+
+def login_check_command(con):
+    cmd = [setting(con, "runner_cmd") or "copilot", "-p", LOGIN_CHECK_PROMPT, "--no-ask-user", "--disable-builtin-mcps", "-s"]
+    model = setting(con, "worker_model")
+    if model:
+        cmd += ["--model", model]
+    return cmd
+
+
+def login_check(con, name, actor="runner", now=None, apply=True):
+    """Can a worker launch on this executor? Returns (ok, note). With apply, a passing check puts a drained machine
+    back in service and a refused login drains an active one and schedules the next recheck."""
+    now = now or utc_now()
+    row = executor_row(con, name)
+    if row is None or name == LOCAL_EXECUTOR:
+        raise PulseError("No executor %s" % name, 2)
+    job = "login-check-%s" % re.sub(r"[^0-9A-Za-z]", "", now)
+    started = time.time()
+    ok, kind, said = False, "", ""
+    try:
+        rc, out, err = ssh_run(row, ["prepare", job, "main", "pulse"], stdin=tiny_bundle(), timeout=120)
+        if rc != 0:
+            kind, said = "hands", "prepare failed (exit %s): %s" % (rc, " ".join((err or out).split())[-200:])
+        else:
+            try:
+                rc, out, err = ssh_run(row, ["run", job, str(LOGIN_CHECK_MINUTES), "--", *login_check_command(con)],
+                                       timeout=LOGIN_CHECK_MINUTES * 60 + 60)
+                said = fault_line((err or "") + "\n" + (out or ""))
+                if rc == 0 and not login_fault(said):
+                    ok, kind = True, "ok"
+                elif login_fault(said):
+                    kind = "refused"
+                else:
+                    kind = "failed"
+            finally:
+                ssh_run(row, ["clean", job], timeout=60)
+    except ExecutorUnreachable as exc:
+        kind, said = "unreachable", str(exc)
+    seconds = int(time.time() - started)
+    if ok:
+        note = "login ok: copilot answered in %ds" % seconds
+    elif kind == "refused":
+        note = ("copilot refuses the login on %s: %s - GitHub accepts the token but Copilot does not: a fine-grained token needs "
+                "the Copilot Requests permission, and the account needs Copilot; fix the token on GitHub or place a new one with "
+                "`pulse executor login %s --admin <admin@host> --with-token`" % (name, said, name))
+    elif kind == "failed":
+        note = "copilot failed on %s (exit %s): %s" % (name, rc, said)
+    else:
+        note = "%s: %s" % (kind, redact_tokens(said)[:200])
+    event(con, actor, "executor.login-check", name, {"ok": ok, "kind": kind, "note": trunc(note, 300), "seconds": seconds})
+    if apply:
+        row = executor_row(con, name)
+        if ok and row["status"] == "drained":
+            set_executor_status(con, name, "active", actor=actor, note=trunc("ok: " + note, 300), now=now)
+            con.execute("UPDATE executors SET backoff_minutes = 0, next_probe_at = '', errors = 0 WHERE name = ?", (name,))
+            event(con, actor, "executor.recovered", name, {"note": trunc(note, 200)})
+        elif ok:
+            con.execute("UPDATE executors SET backoff_minutes = 0, next_probe_at = '' WHERE name = ?", (name,))
+        else:
+            # Any failed check waits longer before the next one; only a refused login drains an active machine.
+            wait = min(LOGIN_BACKOFF_MINUTES[1], max(LOGIN_BACKOFF_MINUTES[0], int(row["backoff_minutes"] or 0) * 2))
+            if kind == "refused":
+                con.execute("UPDATE executors SET probe_note = ?, backoff_minutes = ?, next_probe_at = ?, "
+                            "status = CASE WHEN status = 'active' THEN 'drained' ELSE status END WHERE name = ?",
+                            (trunc("fault: " + note, 300), wait, plus_hours(now, wait / 60.0), name))
+                if row["status"] == "active":
+                    event(con, actor, "executor.drained", name, {"fault": trunc(note, 200)})
+            elif row["status"] == "drained":
+                con.execute("UPDATE executors SET backoff_minutes = ?, next_probe_at = ? WHERE name = ?",
+                            (wait, plus_hours(now, wait / 60.0), name))
+    return ok, note
+
+
+def login_drained(row):
+    """Drained because Copilot refused the machine's login (the fault path scheduled a recheck)."""
+    return row["status"] == "drained" and login_fault(row["probe_note"] or "") and bool(row["next_probe_at"])
+
+
+def last_login_check(con, name):
+    """The latest login-check verdict for an executor, or None."""
+    row = con.execute("SELECT at, detail FROM events WHERE action = 'executor.login-check' AND subject = ? ORDER BY seq DESC LIMIT 1",
+                      (name,)).fetchone()
+    if row is None:
+        return None
+    try:
+        detail = json.loads(row["detail"])
+    except (TypeError, ValueError):
+        detail = {}
+    return {"at": row["at"], "ok": bool(detail.get("ok")), "note": detail.get("note", "")}
+
+
+def login_expiry(con, name):
+    """The expiry GitHub reported for the token last placed on an executor ('' when unknown or none)."""
+    row = con.execute("SELECT detail FROM events WHERE action = 'executor.login' AND subject = ? ORDER BY seq DESC LIMIT 1",
+                      (name,)).fetchone()
+    if row is None:
+        return ""
+    try:
+        return json.loads(row["detail"]).get("expires", "") or ""
+    except (TypeError, ValueError, AttributeError):
+        return ""
+
+
+def github_token_facts(token, api=None, timeout=15):
+    """What GitHub says about a token before it is placed anywhere: {"ok": True/False/None, "user", "expires", "note"}.
+    ok is None when GitHub could not be reached; the token travels only to GitHub, never into a log or an event."""
+    api = (api or os.environ.get("PULSE_GITHUB_API") or GITHUB_API).rstrip("/")
+    req = urllib.request.Request(api + "/user", headers={"Authorization": "Bearer " + token, "User-Agent": "pulse",
+                                                          "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+            expires = (resp.headers.get("github-authentication-token-expiration") or "").strip()
+            user = body.get("login", "") if isinstance(body, dict) else ""
+            return {"ok": True, "user": user, "expires": expires,
+                    "note": "GitHub accepts the token%s%s" % (" for %s" % user if user else "", ", expires %s" % expires if expires else "")}
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return {"ok": False, "user": "", "expires": "",
+                    "note": "GitHub refuses the token (%d): invalid, expired, or revoked - the token was not sent" % exc.code}
+        return {"ok": None, "user": "", "expires": "", "note": "GitHub answered %d; the token's validity is unknown" % exc.code}
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return {"ok": None, "user": "", "expires": "", "note": "GitHub not reached (%s); the token's validity is unknown" % str(exc)[:80]}
+
+
+def expiry_warning(expires, now=None, days=LOGIN_EXPIRY_WARN_DAYS):
+    """'expires in N day(s)' / 'expired' when the token's expiry is within `days`, else ''."""
+    if not expires:
+        return ""
+    m = re.match(r"(\d{4}-\d{2}-\d{2})", expires)
+    if not m:
+        return ""
+    try:
+        when = _dt.datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc)
+        ref = _dt.datetime.strptime((now or utc_now())[:10], "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc)
+    except ValueError:
+        return ""
+    left = (when - ref).days
+    if left < 0:
+        return "the token expired on %s" % m.group(1)
+    if left <= days:
+        return "the token expires in %d day(s), on %s" % (left, m.group(1))
+    return ""
+
+
 def parse_ssh_address(text):
     m = re.match(r"^([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::([0-9]{1,5}))?$", (text or "").strip())
     if not m:
@@ -1963,6 +2144,10 @@ def note_executor_run(con, name, status, note="", transport_error=False, now=Non
         con.execute("UPDATE executors SET errors = errors + 1, probe_note = ?, status = CASE WHEN status = 'active' THEN 'drained' ELSE status END "
                     "WHERE name = ?", (trunc("fault: " + note, 300), name))
         event(con, "runner", "executor.drained", name, {"fault": trunc(note, 200)})
+        if login_fault(note):
+            # A login fault heals when the human fixes the token; the daemon checks again with a growing wait.
+            con.execute("UPDATE executors SET backoff_minutes = ?, next_probe_at = ? WHERE name = ?",
+                        (LOGIN_BACKOFF_MINUTES[0], plus_hours(now, LOGIN_BACKOFF_MINUTES[0] / 60.0), name))
         return
     if transport_error:
         errors = int(row["errors"]) + 1
@@ -2122,6 +2307,14 @@ def executor_login(con, name, admin_address, token_stream=None, remove=False, ac
         token_bytes = (raw or b"").strip()
         token = token_bytes.decode("utf-8", "replace")
     kind = classify_token(token)
+    facts = github_token_facts(token)
+    lines.append(facts["note"])
+    if facts["ok"] is False:
+        event(con, actor, "executor.login", name, {"kind": kind, "rc": 1, "ok": False, "step": "github"})
+        return {"ok": False, "kind": kind, "rc": 1, "lines": lines}
+    warn = expiry_warning(facts["expires"], now=now)
+    if warn:
+        lines.append("warning: %s" % warn)
     try:
         prep_rc, prep_out, prep_err = admin_ssh_run(admin_address, LOGIN_PREP_COMMAND, timeout=120)
         if prep_rc != 0:
@@ -2141,15 +2334,23 @@ def executor_login(con, name, admin_address, token_stream=None, remove=False, ac
     if ok:
         lines.append("login stored for user pulse on %s (kind %s, %s)" % (name, kind, settings_note))
         probe_ok, note = probe_executor(con, name, actor=actor, now=now)
-        status = executor_row(con, name)["status"]
         if probe_ok:
-            lines.append("%s: ok, %s: %s" % (name, status, note))
+            # The stored login is checked for real before the machine takes a job.
+            check_ok, check_note = login_check(con, name, actor=actor, now=now)
+            status = executor_row(con, name)["status"]
+            if check_ok:
+                lines.append("%s: ok, %s: %s; %s" % (name, status, check_note, note))
+            else:
+                ok = False
+                lines.append("%s: login check FAILED (%s): %s" % (name, status, check_note))
         else:
+            status = executor_row(con, name)["status"]
             lines.append("%s: probe FAILED (%s): %s" % (name, status, note))
     else:
         lines.append("login failed (exit %s)" % rc)
         lines.extend(redact_tokens(out + err).splitlines()[-5:])
-    event(con, actor, "executor.login", name, {"kind": kind, "rc": rc, "ok": ok})
+    event(con, actor, "executor.login", name, {"kind": kind, "rc": rc, "ok": ok, **({"expires": facts["expires"]} if facts["expires"] else {}),
+                                               **({"user": facts["user"]} if facts["user"] else {})})
     return {"ok": ok, "kind": kind, "rc": rc, "lines": lines}
 
 
@@ -2169,6 +2370,7 @@ def probe_executor(con, name, actor="runner", now=None):
     row = executor_row(con, name)
     if row is None or name == LOCAL_EXECUTOR:
         raise PulseError("No executor %s" % name, 2)
+    drained_for_login = login_drained(row)
     ok, note = False, ""
     try:
         rc, out, err = ssh_run(row, ["probe"], timeout=60)
@@ -2214,7 +2416,12 @@ def probe_executor(con, name, actor="runner", now=None):
     except ExecutorUnreachable as exc:
         note = "unreachable: %s" % exc
     note = trunc(note, 300)
-    if ok:
+    if ok and drained_for_login:
+        # The probe only sees that a login is stored; a machine drained because Copilot refused that login stays
+        # drained until the login check passes (`pulse executor probe <name> --login`, or the daemon's recheck).
+        con.execute("UPDATE executors SET last_probe_at = ?, probe_note = ?, errors = 0 WHERE name = ?",
+                    (now, trunc("fault: login refused, awaiting the login check; %s" % note, 300), name))
+    elif ok:
         con.execute("UPDATE executors SET last_probe_at = ?, probe_note = ?, errors = 0, backoff_minutes = 0, next_probe_at = '', "
                     "status = CASE WHEN status = 'drained' AND ? = 'human' THEN 'active' WHEN status = 'unreachable' THEN 'active' ELSE status END "
                     "WHERE name = ?", (now, note, actor, name))
@@ -2855,12 +3062,20 @@ def pair_executor(con, admin_address, name, workdir="/srv/pulse", workers=1, pro
 
 def reprobe_due(con, interval=300, now=None):
     """Unreachable executors are probed again with a doubling wait (1, 2, 4 ... minutes, capped at the daemon
-    interval) and return to service by themselves when they answer."""
+    interval) and return to service by themselves when they answer. A machine drained for its login is checked
+    again with `login_check` (15 minutes, doubling, at most every 6 hours) and returns to service when it passes."""
     now = now or utc_now()
     back = []
     cap = max(1, int(interval) // 60)
     for row in executor_rows(con, include_local=False):
-        if row["status"] != "unreachable" or (row["next_probe_at"] and row["next_probe_at"] > now):
+        if row["next_probe_at"] and row["next_probe_at"] > now:
+            continue
+        if login_drained(row):
+            ok, note = login_check(con, row["name"], actor="runner", now=now)
+            if ok:
+                back.append((row["name"], note))
+            continue
+        if row["status"] != "unreachable":
             continue
         ok, note = probe_executor(con, row["name"], actor="runner", now=now)
         if ok:
@@ -3524,6 +3739,60 @@ def work_once(con, agent, project=None, job_id=None, dry_run=False, worker_cmd=N
 # branch's commits are kept as a patch file. Nothing here pushes; publishing stays a human act.
 LAND_LOCK_MINUTES = 30
 LANDED_BRANCH_PREFIXES = ("pulse/", "evolve/")
+# A job whose branch could not land twice is not requeued a third time: it ends failed with its patch kept.
+LAND_REQUEUE_LIMIT = 2
+# No branch lands these, whoever cut it: the loop's constitution and evaluators, the kill switch, CI (infrastructure).
+LAND_REFUSED_PATHS = ("docs/evolution/constitution.md", "docs/evolution/evaluators.md", "docs/evolution/STOP", ".github/workflows/")
+# Files that define the project's check itself. When a branch changes one, the landing check runs with the default
+# branch's version: the check belongs to the base, a variant cannot vouch for itself (project-light, 2026-09-06: a
+# Makefile that echoed "skipping tests" instead of failing landed because it made its own check green).
+CHECK_FILES = ("Makefile", "GNUmakefile", "makefile", "package.json", "pyproject.toml", "setup.cfg", "setup.py", "tox.ini",
+               "pytest.ini", "noxfile.py", "conftest.py", "Justfile", "justfile", "Taskfile.yml", "Taskfile.yaml", "Rakefile")
+CHECK_CONFIG_RE = re.compile(r"^[^/]+\.config\.(js|cjs|mjs|ts|json)$")
+
+
+def branch_files(root, base, branch):
+    """Paths the branch changed since it left the default branch."""
+    out = git(root, "diff", "--name-only", "%s..%s" % (base, branch), timeout=60)
+    return sorted(f for f in out.stdout.split("\n") if f.strip()) if out.returncode == 0 else []
+
+
+def refused_paths(files, branch):
+    """Changed paths no landing accepts: LAND_REFUSED_PATHS for every branch, the worker owner paths for pulse/* too."""
+    guarded = LAND_REFUSED_PATHS + (OWNER_PATHS if branch.startswith("pulse/") else ())
+    return sorted(f for f in files if any(f == p or f.startswith(p) for p in guarded))
+
+
+def check_definition_files(verify_cmd, files, root):
+    """The changed paths that define the check: build and test configuration, plus every path the verify command
+    names (a directory token covers the files under it)."""
+    names = set(CHECK_FILES)
+    try:
+        tokens = shlex.split(verify_cmd or "")
+    except ValueError:
+        tokens = (verify_cmd or "").split()
+    for tok in tokens:
+        clean = tok.strip("'\"").lstrip("./").rstrip("/")
+        if clean and not clean.startswith("-") and ("/" in clean or (Path(root) / clean).exists()):
+            names.add(clean)
+    out = []
+    for f in files:
+        if f in names or CHECK_CONFIG_RE.match(f) or any(f.startswith(n + "/") for n in names):
+            out.append(f)
+    return out
+
+
+def run_base_check_files(worktree, before, files):
+    """Put the default branch's version of the check-defining files into the merged worktree before the check runs;
+    a file the branch added is removed for the run. The merge commit itself keeps the branch's content."""
+    for f in files:
+        if git(worktree, "cat-file", "-e", "%s:%s" % (before, f), timeout=10).returncode == 0:
+            git(worktree, "checkout", before, "--", f, timeout=60)
+        else:
+            try:
+                (Path(worktree) / f).unlink()
+            except OSError:
+                pass
 
 
 def checkout_state(root, default_branch):
@@ -3571,13 +3840,30 @@ def save_branch_patch(root, base, branch, home_dir, slug):
 
 
 def requeue_job(con, job, actor, why, patch_path=None):
-    """A branch that could not land sends its job back to the queue on the current default branch."""
-    note = "requeued: %s" % why
-    if patch_path:
-        note += "; earlier attempt kept at %s" % patch_path
-    finish_job(con, job["id"], actor, "queued", note)
+    """A branch that could not land sends its job back to the queue on the current default branch - at most
+    LAND_REQUEUE_LIMIT times; after that the job ends failed and its patch stays for a human or a later job."""
+    earlier = con.execute("SELECT count(*) FROM events WHERE action = 'job.requeue' AND subject = ?", (job["id"],)).fetchone()[0]
+    kept = "; earlier attempt kept at %s" % patch_path if patch_path else ""
+    if earlier >= LAND_REQUEUE_LIMIT:
+        finish_job(con, job["id"], actor, "failed", "not landed after %d requeues: %s%s" % (earlier, why, kept))
+        con.execute("UPDATE jobs SET branch = '' WHERE id = ?", (job["id"],))
+        event(con, actor, "job.abandoned", job["id"], {"why": why, "patch": str(patch_path or ""), "requeues": earlier})
+        return "failed"
+    finish_job(con, job["id"], actor, "queued", "requeued: %s%s" % (why, kept))
     con.execute("UPDATE jobs SET attempts = 0, branch = '' WHERE id = ?", (job["id"],))
     event(con, actor, "job.requeue", job["id"], {"why": why, "patch": str(patch_path or "")})
+    return "queued"
+
+
+def refuse_branch(con, root, base, branch, actor, job, home_dir, slug, why):
+    """A branch that must not land: its patch is kept, the job ends failed, the branch goes."""
+    patch = save_branch_patch(root, base, branch, home_dir, slug)
+    if job:
+        finish_job(con, job["id"], actor, "failed", "not landed: %s; patch at %s" % (why, patch))
+        con.execute("UPDATE jobs SET branch = '' WHERE id = ?", (job["id"],))
+    git(root, "branch", "-D", branch, timeout=30)
+    event(con, actor, "land.refused", branch, {"project": slug, "patch": str(patch), "why": why, "job": job["id"] if job else ""})
+    return "refused", "%s not landed: %s; %s; patch at %s" % (branch, why, "job %s failed" % job["id"] if job else "branch removed", patch)
 
 
 def land_branch(con, project, branch, actor, job=None, home=None, verify=True, now=None):
@@ -3599,8 +3885,18 @@ def land_branch(con, project, branch, actor, job=None, home=None, verify=True, n
         return "missing", "branch %s does not exist in %s" % (branch, root)
     if git(root, "merge-base", "--is-ancestor", branch, default, timeout=30).returncode == 0:
         git(root, "branch", "-D", branch, timeout=30)
+        if job:
+            con.execute("UPDATE jobs SET branch = '' WHERE id = ?", (job["id"],))
         event(con, actor, "land.merged", branch, {"project": project["slug"]})
         return "merged", "%s was already contained in %s; branch removed" % (branch, default)
+    base = git(root, "merge-base", default, branch, timeout=30).stdout.strip()
+    files = branch_files(root, base, branch)
+    refused = refused_paths(files, branch)
+    if refused:
+        return refuse_branch(con, root, base, branch, actor, job, home_dir, project["slug"],
+                             "it changes %s, which no landing accepts" % ", ".join(refused[:4]))
+    if not files or (files == [RESULT_FILE]):
+        return refuse_branch(con, root, base, branch, actor, job, home_dir, project["slug"], "it changes nothing but %s" % RESULT_FILE)
     on_default, clean = checkout_state(root, default)
     if not on_default:
         return "deferred", "the checkout of %s is not on %s" % (root, default)
@@ -3613,7 +3909,7 @@ def land_branch(con, project, branch, actor, job=None, home=None, verify=True, n
     title = (job["title"] if job else "") or branch
     log = []
     try:
-        base = git(root, "merge-base", default, branch, timeout=30).stdout.strip()
+        before = git(root, "rev-parse", "--verify", "refs/heads/%s" % default, timeout=10).stdout.strip()
         git(root, "worktree", "remove", "--force", str(worktree), timeout=60)
         git(root, "worktree", "add", "--detach", str(worktree), default, timeout=120, check=True)
         merged = git(worktree, "merge", "--ff-only", branch, timeout=120)
@@ -3632,10 +3928,18 @@ def land_branch(con, project, branch, actor, job=None, home=None, verify=True, n
             event(con, actor, "land.conflict", branch, {"project": project["slug"], "patch": str(patch), "job": job["id"] if job else ""})
             return "conflict", "%s conflicts with %s; %s; patch at %s" % (
                 branch, default, "job %s requeued on the current %s" % (job["id"], default) if job else "branch removed", patch)
+        if git(worktree, "ls-files", "--error-unmatch", RESULT_FILE, timeout=10).returncode == 0:
+            # An older worker committed its result file: it goes in one more commit, the branch content stays.
+            git(worktree, "rm", "-q", RESULT_FILE, timeout=30)
+            git(worktree, "-c", "user.name=pulse", "-c", "user.email=pulse@pulse.local", "-c", "commit.gpgsign=false",
+                "commit", "-q", "-m", "Land %s: drop %s" % (branch, RESULT_FILE), timeout=60)
         sha = git(worktree, "rev-parse", "HEAD", timeout=10).stdout.strip()
         verify_note = "no verify command"
         if verify and project["verify_cmd"]:
             minutes = setting_int(con, "minutes_per_job")
+            guarded = check_definition_files(project["verify_cmd"], files, root)
+            if guarded:
+                run_base_check_files(worktree, before, guarded)
             try:
                 ver = subprocess.run(project["verify_cmd"], shell=True, cwd=str(worktree), capture_output=True, text=True,
                                      timeout=max(60, minutes * 60))
@@ -3643,6 +3947,8 @@ def land_branch(con, project, branch, actor, job=None, home=None, verify=True, n
                 tail = (ver.stdout or "")[-4000:] + (ver.stderr or "")[-4000:]
             except subprocess.TimeoutExpired:
                 ok, verify_note, tail = False, "verify timed out after %d min" % minutes, ""
+            if guarded:
+                verify_note += ", check run with %s's %s" % (default, ", ".join(guarded[:3]) + (" +%d" % (len(guarded) - 3) if len(guarded) > 3 else ""))
             if not ok:
                 patch = save_branch_patch(root, base, branch, home_dir, project["slug"])
                 if job:
@@ -3659,7 +3965,7 @@ def land_branch(con, project, branch, actor, job=None, home=None, verify=True, n
         if ff.returncode != 0:
             return "deferred", "%s moved while the merge was verified; nothing landed, try again (%s)" % (default, ff.stderr.strip()[:200])
         git(root, "branch", "-D", branch, timeout=30)
-        commits = git(root, "rev-list", "--count", "%s..%s" % (base, sha), timeout=30).stdout.strip() or "?"
+        commits = git(root, "rev-list", "--count", "%s..%s" % (before, sha), timeout=30).stdout.strip() or "?"
         detail = {"project": project["slug"], "sha": sha, "commits": commits, "verify": verify_note, "job": job["id"] if job else ""}
         event(con, actor, "land.landed", branch, detail)
         if job:
@@ -4545,6 +4851,13 @@ def executors_text(con, now=None):
                 "", row["workdir"], int(row["runs_done"]), int(row["runs_failed"]), int(row["errors"]),
                 "; next probe %s" % row["next_probe_at"] if row["next_probe_at"] else ""))
             out.append("%14s probe %s: %s" % ("", row["last_probe_at"] or "never", row["probe_note"] or "-"))
+            check = last_login_check(con, row["name"])
+            expires = login_expiry(con, row["name"])
+            warn = expiry_warning(expires, now=now)
+            if check or expires:
+                out.append("%14s login %s%s%s" % (
+                    "", ("%s at %s: %s" % ("ok" if check["ok"] else "FAILED", check["at"], check["note"])) if check else "never checked",
+                    "; token expires %s" % expires if expires else "", "; WARNING %s" % warn if warn else ""))
     return "\n".join(out) + "\n"
 
 
@@ -4759,6 +5072,8 @@ def build_parser():
     s.add_argument("--workers", type=int, default=1, help="jobs at once on this executor (add)")
     s.add_argument("--projects", default="*", help="comma-separated project slugs it serves, or * (add)")
     s.add_argument("--admin", help="admin@host[:port], your own login with sudo, for the copilot login of user pulse (login)")
+    s.add_argument("--login", action="store_true", help="probe: also run the login check - one real copilot call through the hands; "
+                   "a passing check returns a drained machine to service, a refused login drains it")
     s.add_argument("--with-token", action="store_true", help="read one Copilot token from stdin and log user pulse in (login)")
     s.add_argument("--remove", action="store_true", help="remove the copilot login of user pulse (login)")
     s.add_argument("--now")
@@ -5100,9 +5415,16 @@ def main(argv=None):
                 print("added %s (%s, %s); it is drained until `pulse executor probe %s` passes" % (row["name"], row["address"], row["workdir"], row["name"]))
                 return 0
             if args.action == "probe":
-                ok, note = probe_executor(con, args.name, actor=HUMAN_AGENT, now=args.now)
+                actor = os.environ.get("PULSE_AGENT") or HUMAN_AGENT
+                row = executor_row(con, args.name)
+                deep = args.login or (row is not None and login_drained(row))
+                ok, note = probe_executor(con, args.name, actor=actor, now=args.now)
                 row = executor_row(con, args.name)
                 print("%s %s: %s" % (args.name, "ok, " + row["status"] if ok else "FAILED (" + row["status"] + ")", note))
+                if ok and deep:
+                    ok, note = login_check(con, args.name, actor=actor, now=args.now)
+                    row = executor_row(con, args.name)
+                    print("%s login check %s (%s): %s" % (args.name, "ok" if ok else "FAILED", row["status"], note))
                 return 0 if ok else 1
             if args.action == "drain":
                 set_executor_status(con, args.name, "drained", note="drained by the human")

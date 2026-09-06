@@ -1215,6 +1215,104 @@ class LandingTestCase(StoreFixture):
         self.assertIn("verify exit 1", job["result"])
         self.assertEqual(self.con.execute("SELECT count(*) FROM events WHERE action = 'land.failed-verify'").fetchone()[0], 1)
 
+    def done_job_with_branch(self, files, agent="aurora", title="older work", suffix=""):
+        """A done job whose branch was cut before today's run-time guards existed: the files are committed by hand."""
+        job, _ = pulse.add_job(self.con, "proj", "task", title, created_by="test", dedupe_source=False)
+        branch = "pulse/%s/%s%s" % (agent, job["id"], suffix)
+        git(self.repo, "branch", branch, "main")
+        wt = self.tmp / ("wt-%s%s" % (job["id"], suffix))
+        git(self.repo, "worktree", "add", "--detach", str(wt), branch)
+        for name, text in files.items():
+            (wt / name).parent.mkdir(parents=True, exist_ok=True)
+            (wt / name).write_text(text, encoding="utf-8")
+        git(wt, "add", "-A")
+        git(wt, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", title)
+        git(self.repo, "branch", "-f", branch, git(wt, "rev-parse", "HEAD").stdout.strip())
+        git(self.repo, "worktree", "remove", "--force", str(wt))
+        self.con.execute("UPDATE jobs SET status = 'done', branch = ?, finished_at = ? WHERE id = ?", (branch, NOW, job["id"]))
+        return job["id"], branch
+
+    def test_land_refuses_a_branch_that_changes_ci_or_owner_paths(self):
+        job_id, _ = self.done_job_with_branch({".github/workflows/ci.yml": "on: push\n", "README.md": "also fine\n"})
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["refused"], results)
+        self.assertFalse((self.repo / ".github" / "workflows" / "ci.yml").exists(), "nothing landed")
+        self.assertEqual(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "", "the refused branch is removed")
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual((job["status"], job["branch"]), ("failed", ""), "the job is not retried: the change itself is refused")
+        self.assertIn(".github/workflows/ci.yml", job["result"])
+        self.assertEqual(len(list((self.home / "patches" / "proj").glob("*.patch"))), 1, "the patch is kept for a human")
+        self.assertEqual(self.con.execute("SELECT count(*) FROM events WHERE action = 'land.refused'").fetchone()[0], 1)
+
+    def test_land_runs_the_check_that_main_defines_not_the_branch_s(self):
+        (self.repo / "check.sh").write_text("#!/bin/sh\ntest ! -f BREAK\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "the project's check")
+        self.con.execute("UPDATE projects SET verify_cmd = 'sh check.sh'")
+        # The branch breaks the code and rewrites the check so that it passes anyway.
+        run = self.work('touch BREAK && printf "#!/bin/sh\\nexit 0\\n" > check.sh && git add -A && git commit -qm "green by decree"')
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["failed-verify"], results)
+        self.assertIn("check run with main's check.sh", results[0][1])
+        self.assertFalse((self.repo / "BREAK").exists(), "nothing landed")
+        self.assertEqual((self.repo / "check.sh").read_text(encoding="utf-8"), "#!/bin/sh\ntest ! -f BREAK\n", "main's check is untouched")
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual(job["status"], "queued")
+        # A branch that changes the check but leaves the code sound still lands; the note says whose check ran.
+        self.work('printf "#!/bin/sh\\ntest ! -f BREAK && echo checked\\n" > check.sh && git add -A && git commit -qm "louder check"', agent="borealis")
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["landed"], results)
+        self.assertIn("check run with main's check.sh", results[0][1])
+        self.assertIn("echo checked", (self.repo / "check.sh").read_text(encoding="utf-8"), "the branch's own change is what landed")
+
+    def test_land_stops_requeueing_after_the_limit_and_keeps_the_patch(self):
+        self.con.execute("UPDATE projects SET verify_cmd = 'test ! -f BREAK'")
+        run = self.work('echo "changed by $PULSE_AGENT" >> README.md && git add -A && git commit -qm "worker change"')
+        (self.repo / "BREAK").write_text("", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "main fails its own check for now")
+        job_id = run["job_id"]
+        for attempt in range(pulse.LAND_REQUEUE_LIMIT):
+            results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+            self.assertEqual([s for s, _ in results], ["failed-verify"], (attempt, results))
+            self.assertEqual(self.con.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()[0], "queued")
+            self.con.execute("UPDATE jobs SET status = 'done', branch = ? WHERE id = ?", (self.work_again(job_id, attempt), job_id))
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["failed-verify"], results)
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual((job["status"], job["branch"]), ("failed", ""), "the third failure ends the job instead of requeueing it")
+        self.assertIn("not landed after 2 requeues", job["result"])
+        self.assertEqual(self.con.execute("SELECT count(*) FROM events WHERE action = 'job.abandoned'").fetchone()[0], 1)
+        self.assertTrue(list((self.home / "patches" / "proj").glob("*.patch")), "the patch stays")
+
+    def work_again(self, job_id, attempt):
+        """A fresh branch for the same job, as a rerun would leave it."""
+        branch = "pulse/aurora/%s-retry%d" % (job_id, attempt)
+        git(self.repo, "branch", branch, "main")
+        wt = self.home / ("retry-%d" % attempt)
+        git(self.repo, "worktree", "add", "--detach", str(wt), branch)
+        (wt / "README.md").write_text("retry %d\n" % attempt, encoding="utf-8")
+        git(wt, "add", "-A")
+        git(wt, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "retry %d" % attempt)
+        git(self.repo, "branch", "-f", branch, git(wt, "rev-parse", "HEAD").stdout.strip())
+        git(self.repo, "worktree", "remove", "--force", str(wt))
+        return branch
+
+    def test_land_drops_a_committed_result_file_and_refuses_an_empty_branch(self):
+        job_id, _ = self.done_job_with_branch({"README.md": "changed by an older worker\n", "PULSE_RESULT.md": "SUMMARY: x\n"})
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["landed"], results)
+        self.assertIn("changed by an older worker", (self.repo / "README.md").read_text(encoding="utf-8"))
+        self.assertFalse((self.repo / "PULSE_RESULT.md").exists(), "the result file never reaches main")
+        self.assertEqual(git(self.repo, "ls-files", "PULSE_RESULT.md").stdout.strip(), "")
+        self.assertIn("drop PULSE_RESULT.md", git(self.repo, "log", "-3", "--format=%s").stdout)
+        self.assertEqual(self.con.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()[0], "done")
+        job_id, _ = self.done_job_with_branch({"PULSE_RESULT.md": "SUMMARY: only\n"}, agent="borealis", title="empty work")
+        results = pulse.land_pending(self.con, self.project(), actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["refused"], results)
+        self.assertIn("nothing but PULSE_RESULT.md", results[0][1])
+        self.assertEqual(self.con.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()[0], "failed")
+
     def test_landing_setting_human_keeps_branches_until_asked(self):
         self.work('echo "changed by $PULSE_AGENT" >> README.md && git add -A && git commit -qm "worker change"')
         pulse.set_setting(self.con, "landing", "human", "human")
@@ -1569,8 +1667,18 @@ class ExecutorTestCase(HandsFixture):
         self.assertIn("fault: worker rejected at launch", row["probe_note"])
         self.assertEqual(pulse.agent_row(self.con, "aurora")["jobs_failed"], 0)
         self.assertIn("keys=-", self.hands("probe").stdout.decode(), "the job directory and its key were cleaned")
+        # WU-016: the fault scheduled a recheck, and a shallow probe - even a human's - does not return the machine
+        self.assertEqual(row["backoff_minutes"], 15)
+        self.assertTrue(pulse.login_drained(row))
+        ok, note = pulse.probe_executor(self.con, "hands", actor=pulse.HUMAN_AGENT, now=NOW)
+        self.assertTrue(ok, note)
+        self.assertEqual(pulse.executor_row(self.con, "hands")["status"], "drained", "logged_in=yes is not a working login")
+        # one real copilot call that answers is what returns it
+        pulse.set_setting(self.con, "runner_cmd", self.worker_script("echo ok", "copilot-ok.sh"), "human")
+        ok, note = pulse.login_check(self.con, "hands", actor="runner", now=NOW)
+        self.assertTrue(ok, note)
+        self.assertEqual(pulse.executor_row(self.con, "hands")["status"], "active")
         # a launch rejection that is not about the login stays the runner's ordinary error: charged, hands kept
-        pulse.probe_executor(self.con, "hands", actor=pulse.HUMAN_AGENT, now=NOW)
         badflag = self.worker_script('echo "error: option --max-ai-credits argument 5 is invalid" >&2\nexit 1', "badflag.sh")
         run, _ = pulse.work_once(self.con, "aurora", worker_cmd=badflag, now=NOW, executor="hands")
         self.assertEqual(run["status"], "error")

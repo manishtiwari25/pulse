@@ -109,6 +109,28 @@ Option 2, with these rules.
   alter, or migrate an existing store when `PULSE_JOB` is set or the running
   script lives under `PULSE_HOME` (a clone); it reads an up-to-date store as
   before and fails with a plain message otherwise.
+- **D8 - The check belongs to the base.** When a branch changes a file that
+  defines the project's check - `Makefile`, `package.json`, `pyproject.toml`
+  and the other build or test configuration files, a top-level `*.config.*`,
+  or any path the verify command names - the landing check runs with the
+  default branch's version of those files; a variant never vouches for
+  itself. Added on 2026-09-06 after the first landing in project-light: a
+  worker's Makefile that echoed "skipping tests" instead of failing landed
+  because it had made its own check green; the landing was reverted by
+  commit.
+- **D9 - Some paths no landing accepts.** A branch that changes the
+  constitution, the evaluators, `STOP`, or `.github/workflows/` (CI is
+  infrastructure), and for `pulse/*` branches any worker owner path, is
+  refused: its patch is kept, the job ends `failed` (it is not redone - the
+  change itself is the problem), the branch is removed, and a `land.refused`
+  event says why. So is a branch whose only change is `PULSE_RESULT.md`. A
+  committed `PULSE_RESULT.md` on an otherwise sound branch is dropped in one
+  more commit before the check runs. Added on 2026-09-06 after a 2026-09-05
+  branch landed a CI workflow on the brain's main; reverted by commit.
+- **D10 - Two requeues, then the job fails.** A job whose branch could not
+  land (conflict or red check) is requeued at most twice; the third failure
+  ends it `failed` with its patch kept (`job.abandoned`), so a check that
+  cannot pass on this machine never becomes a loop that spends credits.
 
 ## Consequences
 

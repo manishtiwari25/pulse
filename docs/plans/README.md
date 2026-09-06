@@ -134,6 +134,12 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   untried, one `ballot` job per six hours has an idle worker vote, with
   reasons, on cards that waited below quorum, so the queue cannot starve
   itself while free hands watch.
+- [`WU-016-executor-login-check.md`](WU-016-executor-login-check.md) - a
+  stored login is not a working one (ADR-020): `executor login` asks GitHub
+  about the token before sending it and runs one real copilot call through
+  the hands after; a machine drained because Copilot refused its login
+  rechecks itself (15 minutes, doubling, at most six hours) and returns to
+  service by itself when the token works.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy
