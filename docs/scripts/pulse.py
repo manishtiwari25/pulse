@@ -768,7 +768,7 @@ def create_post(con, kind, project, area, thread, summary, body="", agent=None, 
     if not summary:
         raise PulseError("A one-line --summary is required", 2)
     if len(summary) > 240:
-        raise PulseError("Keep the summary under 240 characters; put the rest in the body", 2)
+        raise PulseError("summary is %d chars; limit 240 - move detail to --body" % len(summary), 2)
     if project != COMMONS_SLUG and project_by_slug(con, project) is None:
         raise PulseError("No project %r; run `pulse projects` or `pulse init`" % project, 2)
     if isinstance(agent, dict):
