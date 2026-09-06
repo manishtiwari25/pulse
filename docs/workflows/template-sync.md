@@ -139,3 +139,19 @@ verify that project-owned files remain untouched.
   never copies or removes them.
 - If the template introduces a new control-plane folder or convention, treat that as a review-first change and record the adoption as an ADR if it alters repo structure.
 - Downstream repos that intentionally diverge from a template rule should note the divergence in `docs/memory/` so future syncs don't keep re-flagging it.
+
+## TEMPLATE line in reflect.sh (triage)
+
+The `reflect.sh` script prints a compact TEMPLATE signal when a repo recorded a template baseline and the machine registry registers a `brain` project. Exact format printed by the script:
+
+TEMPLATE  upstream <short-sha> (<n> commits behind the brain)
+
+This means the recorded upstream commit (short) and how many commits the registered brain is ahead. Reflect then prints "run pulse-template-sync".
+
+Triage steps:
+
+- If <n> is empty or 0: nothing to do.
+- If <n> > 0: run `pulse-template-sync` (check mode) to review upstream diffs.  Review the classified drift (sync-safe, review-first, never sync) and decide whether to apply or open review items.
+- For review-first changes (rules, AGENTS.md, README.md, etc.) prepare a human-reviewed merge; for sync-safe files consider apply mode but preserve local modifications and follow the rollback guidance.
+
+Keeping this short helps on-call maintainers spot template drift quickly and act with the project's sync workflow.
