@@ -95,6 +95,8 @@ directly, without reconstructing this work from chat history.
 
 List the existing commands or manual checks to run.
 
+- Walk every Edge Cases line of the feature spec against the code before ticking Acceptance Criteria.
+
 ## Closure
 
 - [ ] Set `status: Done` and `delivered: YYYY-MM-DD` in the frontmatter.
