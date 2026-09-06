@@ -1598,7 +1598,7 @@ DENIED_TOOLS = ("shell(git push)", "shell(git remote)", "shell(gh:*)")
 RESULT_FILE = "PULSE_RESULT.md"
 # Paths a worker's commits may never touch: the owner's gates and the runner's own CI surface.
 # A landed branch that changed them would put an owner decision in a worker's hands.
-OWNER_PATHS = ("docs/evolution/constitution.md", "docs/evolution/evaluators.md", "docs/evolution/STOP", ".github/")
+OWNER_PATHS = ("docs/evolution/constitution.md", "docs/evolution/evaluators.md", "docs/evolution/STOP", "docs/decisions/", ".github/")
 
 
 def owner_paths_touched(clone, base):
