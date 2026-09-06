@@ -148,6 +148,21 @@
   never written to argv, an event, a post, or a log. Apply when: an agent must
   place a secret a human handed it. Source: ADR-021 Amendment 1,
   `docs/scripts/pulse.py` `executor_login`.
+- `2026-09-06` - A headless render check drives one browser over the DevTools
+  protocol (Node 22 has a `WebSocket` client; Edge or Chrome opens the port
+  with `--remote-debugging-port=0` and writes it to `DevToolsActivePort`):
+  `Emulation.setEmulatedMedia` picks `prefers-color-scheme` and reduced
+  motion per view, `Runtime`/`Log` events count console errors and CSP
+  violations, a `Runtime.evaluate` probe reads computed colours, and
+  `Page.captureScreenshot` gives the pixels - 68 renders in about 2.5
+  minutes. One-shot `--headless --screenshot` runs never exit on this Edge
+  (macOS also lacks `timeout`), and the OS dark appearance leaks into
+  `prefers-color-scheme`, so both schemes render dark. Compare two trees by
+  computed colours and by the palette of
+  colours covering 400+ pixels; byte-identical screenshots fail on relative
+  time text alone (a tree-against-itself control shows the same noise). Apply
+  when: measuring P4 or any light/dark render for the dashboard. Source:
+  archive rows A-007 and A-008.
 
 ## Populate When
 
