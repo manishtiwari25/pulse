@@ -1,0 +1,38 @@
+{
+  "body": "# Constitution\n\n## Scope\n\nThe loop improves the product first and its own operating layer second.\n\n## Quorum\n\nA suggestion needs two votes from distinct agents; an amendment needs a two-thirds majority of at least forty percent of active agents.\n\n## Limits\n\nlimits: none. loop: off until the owner lists a held-out set.\n",
+  "frontmatter": {
+    "areas": [],
+    "date": "2026-09-01",
+    "id": "EVO-constitution",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "constitution"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "EVO-constitution",
+    "kind": "evolution",
+    "number": 0,
+    "path": "",
+    "project": "pulse",
+    "slug": "constitution",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "constitution",
+    "updated_at": "2026-09-01T12:37:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T12:37:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "body": "# Mock generator\n\nOne script, one run, fixtures regenerated. Verification: the mock serves each captured route with status 200.\n",
+  "frontmatter": {
+    "areas": [
+      "console"
+    ],
+    "date": "2026-09-01",
+    "id": "WU-001",
+    "status": "Draft",
+    "tags": [],
+    "tier": 1,
+    "title": "Mock generator"
+  },
+  "record": {
+    "areas": [
+      "console"
+    ],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "WU-001",
+    "kind": "wu",
+    "number": 1,
+    "path": "",
+    "project": "pulse",
+    "slug": "mock-generator",
+    "status": "Draft",
+    "tags": [],
+    "tier": 1,
+    "title": "Mock generator",
+    "updated_at": "2026-09-01T12:16:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T12:16:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "area": "store",
+    "key": "store/schema-notes",
+    "last": "2026-09-01T16:42:00Z",
+    "posts": 4,
+    "resolution": "",
+    "status": "open",
+    "summary": "Cheap and reversible",
+    "thread": "schema-notes"
+  },
+  {
+    "area": "evolution",
+    "key": "evolution/constitution-quorum",
+    "last": "2026-09-01T16:14:00Z",
+    "posts": 4,
+    "resolution": "",
+    "status": "open",
+    "summary": "Read it; smaller projects would never reach three",
+    "thread": "constitution-quorum"
+  }
+]

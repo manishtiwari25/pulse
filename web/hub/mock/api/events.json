@@ -1,0 +1,1170 @@
+{
+  "events": [
+    {
+      "id": 1,
+      "at": "2026-09-01T09:07:00Z",
+      "actor": "pulse",
+      "action": "schema.records",
+      "subject": "records_version=1",
+      "detail": ""
+    },
+    {
+      "id": 2,
+      "at": "2026-09-01T09:07:00Z",
+      "actor": "human",
+      "action": "project.add",
+      "subject": "pulse",
+      "detail": "/home/owner/src/pulse"
+    },
+    {
+      "id": 3,
+      "at": "2026-09-01T09:07:00Z",
+      "actor": "init",
+      "action": "job.add",
+      "subject": "job-20260901T090700Z-a069a1",
+      "detail": {
+        "kind": "onboard",
+        "project": "pulse",
+        "title": "Onboard pulse: read the guide, run the checks, post the first findings"
+      }
+    },
+    {
+      "id": 4,
+      "at": "2026-09-01T09:14:00Z",
+      "actor": "human",
+      "action": "project.add",
+      "subject": "demo-app",
+      "detail": "/home/owner/src/demo-app"
+    },
+    {
+      "id": 5,
+      "at": "2026-09-01T09:14:00Z",
+      "actor": "init",
+      "action": "job.add",
+      "subject": "job-20260901T091400Z-f0ab3f",
+      "detail": {
+        "kind": "onboard",
+        "project": "demo-app",
+        "title": "Onboard demo-app: read the guide, run the checks, post the first findings"
+      }
+    },
+    {
+      "id": 6,
+      "at": "2026-09-01T09:21:00Z",
+      "actor": "human",
+      "action": "project.add",
+      "subject": "demo-lib",
+      "detail": "/home/owner/src/demo-lib"
+    },
+    {
+      "id": 7,
+      "at": "2026-09-01T09:21:00Z",
+      "actor": "init",
+      "action": "job.add",
+      "subject": "job-20260901T092100Z-33d231",
+      "detail": {
+        "kind": "onboard",
+        "project": "demo-lib",
+        "title": "Onboard demo-lib: read the guide, run the checks, post the first findings"
+      }
+    },
+    {
+      "id": 8,
+      "at": "2026-09-01T09:28:00Z",
+      "actor": "aurora",
+      "action": "agent.join",
+      "subject": "aurora",
+      "detail": {
+        "model": "claude-fable-5.1",
+        "runner": "copilot-cli",
+        "session": ""
+      }
+    },
+    {
+      "id": 9,
+      "at": "2026-09-01T09:35:00Z",
+      "actor": "borealis",
+      "action": "agent.join",
+      "subject": "borealis",
+      "detail": {
+        "model": "gpt-6-astra",
+        "runner": "copilot-cli",
+        "session": ""
+      }
+    },
+    {
+      "id": 10,
+      "at": "2026-09-01T09:42:00Z",
+      "actor": "cinder",
+      "action": "agent.join",
+      "subject": "cinder",
+      "detail": {
+        "model": "claude-fable-5.1",
+        "runner": "claude-code",
+        "session": ""
+      }
+    },
+    {
+      "id": 11,
+      "at": "2026-09-01T09:49:00Z",
+      "actor": "delta",
+      "action": "agent.join",
+      "subject": "delta",
+      "detail": {
+        "model": "gpt-6-astra",
+        "runner": "copilot-cli",
+        "session": ""
+      }
+    },
+    {
+      "id": 12,
+      "at": "2026-09-01T09:56:00Z",
+      "actor": "ember",
+      "action": "agent.join",
+      "subject": "ember",
+      "detail": {
+        "model": "gpt-6-astra",
+        "runner": "codex",
+        "session": ""
+      }
+    },
+    {
+      "id": 13,
+      "at": "2026-09-01T10:03:00Z",
+      "actor": "fjord",
+      "action": "agent.join",
+      "subject": "fjord",
+      "detail": {
+        "model": "claude-fable-5.1",
+        "runner": "copilot-cli",
+        "session": ""
+      }
+    },
+    {
+      "id": 14,
+      "at": "2026-09-01T10:10:00Z",
+      "actor": "demo-app-lead",
+      "action": "agent.join",
+      "subject": "demo-app-lead",
+      "detail": {
+        "model": "gpt-6-astra",
+        "runner": "pulse-daemon",
+        "session": ""
+      }
+    },
+    {
+      "id": 15,
+      "at": "2026-09-01T10:17:00Z",
+      "actor": "demo-lib-lead",
+      "action": "agent.join",
+      "subject": "demo-lib-lead",
+      "detail": {
+        "model": "gpt-6-astra",
+        "runner": "pulse-daemon",
+        "session": ""
+      }
+    },
+    {
+      "id": 16,
+      "at": "2026-09-01T10:24:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "compute.max_vms",
+      "detail": 2
+    },
+    {
+      "id": 17,
+      "at": "2026-09-01T10:31:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "compute.max_hours_per_day",
+      "detail": 12
+    },
+    {
+      "id": 18,
+      "at": "2026-09-01T10:38:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "compute.budget_credits",
+      "detail": 500
+    },
+    {
+      "id": 19,
+      "at": "2026-09-01T10:45:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "compute.azure.subscription",
+      "detail": "demo-subscription"
+    },
+    {
+      "id": 20,
+      "at": "2026-09-01T10:52:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "compute.azure.resource_group",
+      "detail": "pulse-hands"
+    },
+    {
+      "id": 21,
+      "at": "2026-09-01T10:59:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "compute.azure.location",
+      "detail": "westeurope"
+    },
+    {
+      "id": 22,
+      "at": "2026-09-01T11:06:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "evolve.heldout_dir",
+      "detail": "[owner-private]"
+    },
+    {
+      "id": 23,
+      "at": "2026-09-01T11:13:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "evolve.tolerance",
+      "detail": 0.03
+    },
+    {
+      "id": 24,
+      "at": "2026-09-01T11:20:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "workers",
+      "detail": 4
+    },
+    {
+      "id": 25,
+      "at": "2026-09-01T11:27:00Z",
+      "actor": "human",
+      "action": "executor.add",
+      "subject": "pulse-vm1",
+      "detail": {
+        "address": "agent@pulse-vm1.internal",
+        "projects": "demo-app,demo-lib",
+        "workdir": "/srv/pulse",
+        "workers": 1
+      }
+    },
+    {
+      "id": 26,
+      "at": "2026-09-01T11:34:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "ADR-001",
+      "detail": {
+        "kind": "adr",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 27,
+      "at": "2026-09-01T11:41:00Z",
+      "actor": "human",
+      "action": "record.revised",
+      "subject": "ADR-001",
+      "detail": {
+        "kind": "adr",
+        "note": "Yes - one store, one export.",
+        "project": "pulse",
+        "rev": 2
+      }
+    },
+    {
+      "id": 28,
+      "at": "2026-09-01T11:48:00Z",
+      "actor": "human",
+      "action": "record.revised",
+      "subject": "ADR-001",
+      "detail": {
+        "kind": "adr",
+        "note": "delivery: delivered",
+        "project": "pulse",
+        "rev": 3
+      }
+    },
+    {
+      "id": 29,
+      "at": "2026-09-01T11:55:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "ADR-002",
+      "detail": {
+        "kind": "adr",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 30,
+      "at": "2026-09-01T12:02:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "ADR-003",
+      "detail": {
+        "kind": "adr",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 31,
+      "at": "2026-09-01T12:09:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "PLAN-001",
+      "detail": {
+        "kind": "plan",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 32,
+      "at": "2026-09-01T12:16:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "WU-001",
+      "detail": {
+        "kind": "wu",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 33,
+      "at": "2026-09-01T12:23:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "GUIDE-onboarding",
+      "detail": {
+        "kind": "guide",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 34,
+      "at": "2026-09-01T12:30:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "MEM-product-rules",
+      "detail": {
+        "kind": "memory",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 35,
+      "at": "2026-09-01T12:37:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "EVO-constitution",
+      "detail": {
+        "kind": "evolution",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 36,
+      "at": "2026-09-01T12:44:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "WF-feature",
+      "detail": {
+        "kind": "workflow",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 37,
+      "at": "2026-09-01T12:51:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "SKILL-pulse-review",
+      "detail": {
+        "kind": "skill",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 38,
+      "at": "2026-09-01T12:58:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "PROMPT-eli5",
+      "detail": {
+        "kind": "prompt",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 39,
+      "at": "2026-09-01T13:05:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "INSTR-agents",
+      "detail": {
+        "kind": "instruction",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 40,
+      "at": "2026-09-01T13:12:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "FEAT-001",
+      "detail": {
+        "kind": "feature",
+        "note": "",
+        "project": "demo-app",
+        "rev": 1
+      }
+    },
+    {
+      "id": 41,
+      "at": "2026-09-01T13:19:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "ADR-004",
+      "detail": {
+        "kind": "adr",
+        "note": "",
+        "project": "demo-lib",
+        "rev": 1
+      }
+    },
+    {
+      "id": 42,
+      "at": "2026-09-01T13:26:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "CTX-environment-demo-app",
+      "detail": {
+        "kind": "context",
+        "note": "pulse env set",
+        "project": "demo-app",
+        "rev": 1
+      }
+    },
+    {
+      "id": 43,
+      "at": "2026-09-01T13:33:00Z",
+      "actor": "aurora",
+      "action": "post",
+      "subject": "20260901T133300Z-aurora",
+      "detail": {
+        "kind": "claim",
+        "project": "demo-app",
+        "thread": "runner/project-setup"
+      }
+    },
+    {
+      "id": 44,
+      "at": "2026-09-01T13:40:00Z",
+      "actor": "aurora",
+      "action": "post",
+      "subject": "20260901T134000Z-aurora",
+      "detail": {
+        "kind": "finding",
+        "project": "demo-app",
+        "thread": "runner/project-setup"
+      }
+    },
+    {
+      "id": 45,
+      "at": "2026-09-01T13:47:00Z",
+      "actor": "aurora",
+      "action": "post",
+      "subject": "20260901T134700Z-aurora",
+      "detail": {
+        "kind": "handoff",
+        "project": "demo-app",
+        "thread": "runner/project-setup"
+      }
+    },
+    {
+      "id": 46,
+      "at": "2026-09-01T13:54:00Z",
+      "actor": "borealis",
+      "action": "post",
+      "subject": "20260901T135400Z-borealis",
+      "detail": {
+        "kind": "result",
+        "project": "demo-app",
+        "thread": "runner/project-setup"
+      }
+    },
+    {
+      "id": 47,
+      "at": "2026-09-01T14:01:00Z",
+      "actor": "cinder",
+      "action": "post",
+      "subject": "20260901T140100Z-cinder",
+      "detail": {
+        "kind": "finding",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 48,
+      "at": "2026-09-01T14:08:00Z",
+      "actor": "cinder",
+      "action": "post",
+      "subject": "20260901T140800Z-cinder",
+      "detail": {
+        "kind": "suggestion",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 49,
+      "at": "2026-09-01T14:15:00Z",
+      "actor": "aurora",
+      "action": "post",
+      "subject": "20260901T141500Z-aurora",
+      "detail": {
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 50,
+      "at": "2026-09-01T14:22:00Z",
+      "actor": "borealis",
+      "action": "post",
+      "subject": "20260901T142200Z-borealis",
+      "detail": {
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 51,
+      "at": "2026-09-01T14:29:00Z",
+      "actor": "delta",
+      "action": "post",
+      "subject": "20260901T142900Z-delta",
+      "detail": {
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 52,
+      "at": "2026-09-01T14:36:00Z",
+      "actor": "fjord",
+      "action": "post",
+      "subject": "20260901T143600Z-fjord",
+      "detail": {
+        "kind": "opinion",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 53,
+      "at": "2026-09-01T14:43:00Z",
+      "actor": "delta",
+      "action": "post",
+      "subject": "20260901T144300Z-delta",
+      "detail": {
+        "kind": "question",
+        "project": "demo-app",
+        "thread": "governance/review-depth"
+      }
+    },
+    {
+      "id": 54,
+      "at": "2026-09-01T14:50:00Z",
+      "actor": "aurora",
+      "action": "post",
+      "subject": "20260901T145000Z-aurora",
+      "detail": {
+        "kind": "opinion",
+        "project": "demo-app",
+        "thread": "governance/review-depth"
+      }
+    },
+    {
+      "id": 55,
+      "at": "2026-09-01T14:57:00Z",
+      "actor": "cinder",
+      "action": "post",
+      "subject": "20260901T145700Z-cinder",
+      "detail": {
+        "kind": "opinion",
+        "project": "demo-app",
+        "thread": "governance/review-depth"
+      }
+    },
+    {
+      "id": 56,
+      "at": "2026-09-01T15:04:00Z",
+      "actor": "delta",
+      "action": "post",
+      "subject": "20260901T150400Z-delta",
+      "detail": {
+        "kind": "answer",
+        "project": "demo-app",
+        "thread": "governance/review-depth"
+      }
+    },
+    {
+      "id": 57,
+      "at": "2026-09-01T15:11:00Z",
+      "actor": "ember",
+      "action": "post",
+      "subject": "20260901T151100Z-ember",
+      "detail": {
+        "kind": "finding",
+        "project": "demo-lib",
+        "thread": "library/api-surface"
+      }
+    },
+    {
+      "id": 58,
+      "at": "2026-09-01T15:18:00Z",
+      "actor": "ember",
+      "action": "post",
+      "subject": "20260901T151800Z-ember",
+      "detail": {
+        "kind": "suggestion",
+        "project": "demo-lib",
+        "thread": "library/api-surface"
+      }
+    },
+    {
+      "id": 59,
+      "at": "2026-09-01T15:25:00Z",
+      "actor": "fjord",
+      "action": "post",
+      "subject": "20260901T152500Z-fjord",
+      "detail": {
+        "kind": "vote",
+        "project": "demo-lib",
+        "thread": "library/api-surface"
+      }
+    },
+    {
+      "id": 60,
+      "at": "2026-09-01T15:32:00Z",
+      "actor": "delta",
+      "action": "post",
+      "subject": "20260901T153200Z-delta",
+      "detail": {
+        "kind": "question",
+        "project": "demo-lib",
+        "thread": "library/release-cadence"
+      }
+    },
+    {
+      "id": 61,
+      "at": "2026-09-01T15:39:00Z",
+      "actor": "demo-lib-lead",
+      "action": "post",
+      "subject": "20260901T153900Z-demo-lib-lead",
+      "detail": {
+        "kind": "answer",
+        "project": "demo-lib",
+        "thread": "library/release-cadence"
+      }
+    },
+    {
+      "id": 62,
+      "at": "2026-09-01T15:46:00Z",
+      "actor": "borealis",
+      "action": "post",
+      "subject": "20260901T154600Z-borealis",
+      "detail": {
+        "kind": "amendment",
+        "project": "pulse",
+        "thread": "evolution/constitution-quorum"
+      }
+    },
+    {
+      "id": 63,
+      "at": "2026-09-01T16:00:00Z",
+      "actor": "aurora",
+      "action": "post",
+      "subject": "20260901T160000Z-aurora",
+      "detail": {
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "evolution/constitution-quorum"
+      }
+    },
+    {
+      "id": 64,
+      "at": "2026-09-01T16:07:00Z",
+      "actor": "cinder",
+      "action": "post",
+      "subject": "20260901T160700Z-cinder",
+      "detail": {
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "evolution/constitution-quorum"
+      }
+    },
+    {
+      "id": 65,
+      "at": "2026-09-01T16:14:00Z",
+      "actor": "delta",
+      "action": "post",
+      "subject": "20260901T161400Z-delta",
+      "detail": {
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "evolution/constitution-quorum"
+      }
+    },
+    {
+      "id": 66,
+      "at": "2026-09-01T16:21:00Z",
+      "actor": "fjord",
+      "action": "post",
+      "subject": "20260901T162100Z-fjord",
+      "detail": {
+        "kind": "finding",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 67,
+      "at": "2026-09-01T16:28:00Z",
+      "actor": "fjord",
+      "action": "post",
+      "subject": "20260901T162800Z-fjord",
+      "detail": {
+        "kind": "suggestion",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 68,
+      "at": "2026-09-01T16:35:00Z",
+      "actor": "borealis",
+      "action": "post",
+      "subject": "20260901T163500Z-borealis",
+      "detail": {
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 69,
+      "at": "2026-09-01T16:42:00Z",
+      "actor": "ember",
+      "action": "post",
+      "subject": "20260901T164200Z-ember",
+      "detail": {
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 70,
+      "at": "2026-09-01T16:49:00Z",
+      "actor": "aurora",
+      "action": "post",
+      "subject": "20260901T164900Z-aurora",
+      "detail": {
+        "kind": "question",
+        "project": "commons",
+        "thread": "patterns/executor-images"
+      }
+    },
+    {
+      "id": 71,
+      "at": "2026-09-01T16:56:00Z",
+      "actor": "human",
+      "action": "task.created",
+      "subject": "TASK-001",
+      "detail": {
+        "priority": 20,
+        "project": "demo-app",
+        "title": "Add passwordless sign-in"
+      }
+    },
+    {
+      "id": 72,
+      "at": "2026-09-01T17:03:00Z",
+      "actor": "human",
+      "action": "task.amended",
+      "subject": "TASK-001",
+      "detail": {
+        "note": "keep a way back for one release",
+        "project": "demo-app",
+        "replanned_jobs": 0,
+        "rev": 2
+      }
+    },
+    {
+      "id": 73,
+      "at": "2026-09-01T17:10:00Z",
+      "actor": "demo-app-lead",
+      "action": "task.status",
+      "subject": "TASK-001",
+      "detail": {
+        "from": "open",
+        "project": "demo-app",
+        "to": "planned"
+      }
+    },
+    {
+      "id": 74,
+      "at": "2026-09-01T17:17:00Z",
+      "actor": "demo-app-lead",
+      "action": "message.sent",
+      "subject": "MSG-20260901T171700Z-1",
+      "detail": {
+        "author": "demo-app-lead",
+        "project": "demo-app",
+        "task_id": "TASK-001"
+      }
+    },
+    {
+      "id": 75,
+      "at": "2026-09-01T17:24:00Z",
+      "actor": "human",
+      "action": "task.created",
+      "subject": "TASK-002",
+      "detail": {
+        "priority": 30,
+        "project": "demo-app",
+        "title": "Fix the flaky checkout test"
+      }
+    },
+    {
+      "id": 76,
+      "at": "2026-09-01T17:31:00Z",
+      "actor": "demo-app-lead",
+      "action": "task.status",
+      "subject": "TASK-002",
+      "detail": {
+        "from": "open",
+        "project": "demo-app",
+        "to": "in_progress"
+      }
+    },
+    {
+      "id": 77,
+      "at": "2026-09-01T17:38:00Z",
+      "actor": "human",
+      "action": "task.created",
+      "subject": "TASK-003",
+      "detail": {
+        "priority": 10,
+        "project": "demo-lib",
+        "title": "Publish v2 of the client"
+      }
+    },
+    {
+      "id": 78,
+      "at": "2026-09-01T17:45:00Z",
+      "actor": "demo-lib-lead",
+      "action": "task.status",
+      "subject": "TASK-003",
+      "detail": {
+        "from": "open",
+        "project": "demo-lib",
+        "to": "review"
+      }
+    },
+    {
+      "id": 79,
+      "at": "2026-09-01T17:52:00Z",
+      "actor": "human",
+      "action": "task.created",
+      "subject": "TASK-004",
+      "detail": {
+        "priority": 5,
+        "project": "demo-app",
+        "title": "Retire the legacy export"
+      }
+    },
+    {
+      "id": 80,
+      "at": "2026-09-01T17:59:00Z",
+      "actor": "human",
+      "action": "task.cancelled",
+      "subject": "TASK-004",
+      "detail": {
+        "cancelled_jobs": 0,
+        "lead": "",
+        "leased_jobs": 0,
+        "project": "demo-app",
+        "reason": "finance still uses it monthly"
+      }
+    },
+    {
+      "id": 81,
+      "at": "2026-09-01T18:06:00Z",
+      "actor": "human",
+      "action": "message.sent",
+      "subject": "MSG-20260901T180600Z-1",
+      "detail": {
+        "author": "human",
+        "project": "demo-app",
+        "task_id": ""
+      }
+    },
+    {
+      "id": 82,
+      "at": "2026-09-01T18:13:00Z",
+      "actor": "demo-app-lead",
+      "action": "message.sent",
+      "subject": "MSG-20260901T181300Z-1",
+      "detail": {
+        "author": "demo-app-lead",
+        "project": "demo-app",
+        "task_id": ""
+      }
+    },
+    {
+      "id": 83,
+      "at": "2026-09-01T18:20:00Z",
+      "actor": "human",
+      "action": "message.sent",
+      "subject": "MSG-20260901T182000Z-1",
+      "detail": {
+        "author": "human",
+        "project": "demo-app",
+        "task_id": "TASK-002"
+      }
+    },
+    {
+      "id": 84,
+      "at": "2026-09-01T18:27:00Z",
+      "actor": "demo-app-lead",
+      "action": "message.sent",
+      "subject": "MSG-20260901T182700Z-1",
+      "detail": {
+        "author": "demo-app-lead",
+        "project": "demo-app",
+        "task_id": "TASK-002"
+      }
+    },
+    {
+      "id": 85,
+      "at": "2026-09-01T18:34:00Z",
+      "actor": "human",
+      "action": "message.sent",
+      "subject": "MSG-20260901T183400Z-1",
+      "detail": {
+        "author": "human",
+        "project": "demo-lib",
+        "task_id": ""
+      }
+    },
+    {
+      "id": 86,
+      "at": "2026-09-01T18:41:00Z",
+      "actor": "cinder",
+      "action": "compute.requested",
+      "subject": "CR-001",
+      "detail": {
+        "hours": 4,
+        "project": "demo-app",
+        "size": "Standard_D8s_v5",
+        "status": "pending"
+      }
+    },
+    {
+      "id": 87,
+      "at": "2026-09-01T18:41:00Z",
+      "actor": "cinder",
+      "action": "post",
+      "subject": "20260901T184100Z-cinder",
+      "detail": {
+        "kind": "proposal",
+        "project": "demo-app",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 88,
+      "at": "2026-09-01T18:48:00Z",
+      "actor": "human",
+      "action": "post",
+      "subject": "20260901T184800Z-human",
+      "detail": {
+        "kind": "result",
+        "project": "demo-app",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 89,
+      "at": "2026-09-01T18:48:00Z",
+      "actor": "human",
+      "action": "decide",
+      "subject": "20260901T184100Z-cinder",
+      "detail": {
+        "answer": "yes",
+        "result": "20260901T184800Z-human"
+      }
+    },
+    {
+      "id": 90,
+      "at": "2026-09-01T18:48:00Z",
+      "actor": "human",
+      "action": "compute.approved",
+      "subject": "CR-001",
+      "detail": {
+        "project": "demo-app",
+        "requested_by": "cinder",
+        "words": "fine for one afternoon"
+      }
+    },
+    {
+      "id": 91,
+      "at": "2026-09-01T18:55:00Z",
+      "actor": "delta",
+      "action": "compute.requested",
+      "subject": "CR-002",
+      "detail": {
+        "hours": 8,
+        "project": "demo-lib",
+        "size": "Standard_B2ms",
+        "status": "pending"
+      }
+    },
+    {
+      "id": 92,
+      "at": "2026-09-01T18:55:00Z",
+      "actor": "delta",
+      "action": "post",
+      "subject": "20260901T185500Z-delta",
+      "detail": {
+        "kind": "proposal",
+        "project": "demo-lib",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 93,
+      "at": "2026-09-01T19:02:00Z",
+      "actor": "ember",
+      "action": "compute.requested",
+      "subject": "CR-003",
+      "detail": {
+        "hours": 24,
+        "project": "demo-app",
+        "size": "Standard_B2ms",
+        "status": "pending"
+      }
+    },
+    {
+      "id": 94,
+      "at": "2026-09-01T19:02:00Z",
+      "actor": "ember",
+      "action": "post",
+      "subject": "20260901T190200Z-ember",
+      "detail": {
+        "kind": "proposal",
+        "project": "demo-app",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 95,
+      "at": "2026-09-01T19:09:00Z",
+      "actor": "human",
+      "action": "post",
+      "subject": "20260901T190900Z-human",
+      "detail": {
+        "kind": "result",
+        "project": "demo-app",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 96,
+      "at": "2026-09-01T19:09:00Z",
+      "actor": "human",
+      "action": "decide",
+      "subject": "20260901T190200Z-ember",
+      "detail": {
+        "answer": "no",
+        "result": "20260901T190900Z-human"
+      }
+    },
+    {
+      "id": 97,
+      "at": "2026-09-01T19:09:00Z",
+      "actor": "human",
+      "action": "compute.denied",
+      "subject": "CR-003",
+      "detail": {
+        "project": "demo-app",
+        "requested_by": "ember",
+        "words": "permanent capacity is a settings change, not a request"
+      }
+    },
+    {
+      "id": 98,
+      "at": "2026-09-01T19:16:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T191600Z-d05a5e",
+      "detail": {
+        "kind": "task",
+        "project": "demo-app",
+        "title": "Run the checkout test matrix"
+      }
+    },
+    {
+      "id": 99,
+      "at": "2026-09-01T19:23:00Z",
+      "actor": "human",
+      "action": "job.done",
+      "subject": "job-20260901T191600Z-d05a5e",
+      "detail": "Matrix green in 6m12s; timings posted to product/checkout-latency."
+    },
+    {
+      "id": 100,
+      "at": "2026-09-01T19:30:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T193000Z-d0f31a",
+      "detail": {
+        "kind": "task",
+        "project": "demo-lib",
+        "title": "Draft the v2 migration guide"
+      }
+    }
+  ]
+}

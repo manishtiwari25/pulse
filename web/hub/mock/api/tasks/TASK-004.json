@@ -1,0 +1,28 @@
+{
+  "jobs": [],
+  "messages": [],
+  "revisions": [
+    {
+      "at": "2026-09-01T17:52:00Z",
+      "author": "human",
+      "brief": "Remove the CSV export nobody uses.",
+      "note": "",
+      "rev": 1,
+      "title": "Retire the legacy export"
+    }
+  ],
+  "task": {
+    "brief": "Remove the CSV export nobody uses.",
+    "created_at": "2026-09-01T17:52:00Z",
+    "created_by": "human",
+    "current_rev": 1,
+    "id": "TASK-004",
+    "job_id": "",
+    "lead": "",
+    "priority": 5,
+    "project": "demo-app",
+    "status": "cancelled",
+    "title": "Retire the legacy export",
+    "updated_at": "2026-09-01T17:59:00Z"
+  }
+}

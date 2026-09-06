@@ -1,0 +1,38 @@
+{
+  "body": "# Feature workflow\n\nSpecify, decide, plan, implement, verify, land, learn - at the smallest tier that fits.\n",
+  "frontmatter": {
+    "areas": [],
+    "date": "2026-09-01",
+    "id": "WF-feature",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "feature"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "WF-feature",
+    "kind": "workflow",
+    "number": 0,
+    "path": "",
+    "project": "pulse",
+    "slug": "feature",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "feature",
+    "updated_at": "2026-09-01T12:44:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T12:44:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

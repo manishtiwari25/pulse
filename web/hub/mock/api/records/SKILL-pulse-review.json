@@ -1,0 +1,38 @@
+{
+  "body": "# pulse-review\n\nReview a change against the requested behavior, the store's decisions and plans, verification evidence and rollback readiness.\n",
+  "frontmatter": {
+    "areas": [],
+    "date": "2026-09-01",
+    "id": "SKILL-pulse-review",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "pulse review"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "SKILL-pulse-review",
+    "kind": "skill",
+    "number": 0,
+    "path": "",
+    "project": "pulse",
+    "slug": "pulse-review",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "pulse review",
+    "updated_at": "2026-09-01T12:51:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T12:51:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

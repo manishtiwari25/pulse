@@ -1,0 +1,28 @@
+{
+  "jobs": [],
+  "messages": [],
+  "revisions": [
+    {
+      "at": "2026-09-01T17:38:00Z",
+      "author": "human",
+      "brief": "Tag v2.0.0 from main once the migration guide is in the README.",
+      "note": "",
+      "rev": 1,
+      "title": "Publish v2 of the client"
+    }
+  ],
+  "task": {
+    "brief": "Tag v2.0.0 from main once the migration guide is in the README.",
+    "created_at": "2026-09-01T17:38:00Z",
+    "created_by": "human",
+    "current_rev": 1,
+    "id": "TASK-003",
+    "job_id": "",
+    "lead": "",
+    "priority": 10,
+    "project": "demo-lib",
+    "status": "review",
+    "title": "Publish v2 of the client",
+    "updated_at": "2026-09-01T17:45:00Z"
+  }
+}

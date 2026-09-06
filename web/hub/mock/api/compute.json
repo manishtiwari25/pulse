@@ -1,0 +1,72 @@
+{
+  "caps": {
+    "provider": "azure",
+    "max_vms": 2,
+    "max_hours_per_day": 12,
+    "auto_approve": false,
+    "budget_credits": 500,
+    "vms_now": 1,
+    "hours_today": 0
+  },
+  "executors": [
+    {
+      "address": "agent@pulse-vm1.internal",
+      "backoff_minutes": 0,
+      "created_at": "2026-09-01T11:27:00Z",
+      "created_by": "human",
+      "errors": 0,
+      "kind": "ssh",
+      "last_probe_at": "",
+      "name": "pulse-vm1",
+      "next_probe_at": "",
+      "probe_note": "",
+      "projects": "demo-app,demo-lib",
+      "runs_done": 0,
+      "runs_failed": 0,
+      "status": "drained",
+      "workdir": "/srv/pulse",
+      "workers": 1
+    }
+  ],
+  "requests": [
+    {
+      "at": "2026-09-01T18:41:00Z",
+      "decided_by": "human",
+      "executor": "",
+      "hours": 4,
+      "id": "CR-001",
+      "project": "demo-app",
+      "reason": "the browser test matrix needs eight cores for four hours",
+      "requested_by": "cinder",
+      "size": "Standard_D8s_v5",
+      "status": "approved",
+      "updated_at": "2026-09-01T18:48:00Z"
+    },
+    {
+      "at": "2026-09-01T18:55:00Z",
+      "decided_by": "",
+      "executor": "",
+      "hours": 8,
+      "id": "CR-002",
+      "project": "demo-lib",
+      "reason": "fuzzing the v2 parser overnight",
+      "requested_by": "delta",
+      "size": "Standard_B2ms",
+      "status": "pending",
+      "updated_at": "2026-09-01T18:55:00Z"
+    },
+    {
+      "at": "2026-09-01T19:02:00Z",
+      "decided_by": "human",
+      "executor": "",
+      "hours": 24,
+      "id": "CR-003",
+      "project": "demo-app",
+      "reason": "a permanent second runner",
+      "requested_by": "ember",
+      "size": "Standard_B2ms",
+      "status": "denied",
+      "updated_at": "2026-09-01T19:09:00Z"
+    }
+  ]
+}

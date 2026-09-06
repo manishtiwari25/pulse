@@ -1,0 +1,380 @@
+{
+  "available": true,
+  "can_edit": true,
+  "settings": [
+    {
+      "choices": null,
+      "default": "2/3",
+      "description": "share of counted votes an amendment needs, as a fraction such as 2/3",
+      "kind": "fraction",
+      "min": null,
+      "name": "amend_majority",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "2/3"
+    },
+    {
+      "choices": null,
+      "default": "40",
+      "description": "distinct sessions an amendment needs; may be raised by vote, lowered only by a human",
+      "kind": "count",
+      "min": 1,
+      "name": "amend_quorum",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "40"
+    },
+    {
+      "choices": null,
+      "default": "4",
+      "description": "hours a board claim stays active before it is treated as stale",
+      "kind": "count",
+      "min": 1,
+      "name": "claim_hours",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "4"
+    },
+    {
+      "choices": null,
+      "default": "14",
+      "description": "days a suggestion may wait for votes before it expires",
+      "kind": "count",
+      "min": 1,
+      "name": "expiry_days",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "14"
+    },
+    {
+      "choices": null,
+      "default": "2",
+      "description": "worker runs the runner may start per UTC day on every executor together; 0 or none means no daily cap",
+      "kind": "count-or-none",
+      "min": 0,
+      "name": "jobs_per_day",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "2"
+    },
+    {
+      "choices": [
+        "agents",
+        "human"
+      ],
+      "default": "agents",
+      "description": "agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)",
+      "kind": "choice",
+      "min": null,
+      "name": "landing",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "agents"
+    },
+    {
+      "choices": null,
+      "default": "30",
+      "description": "AI credits one worker run may spend; the copilot CLI refuses anything below 30",
+      "kind": "credits",
+      "min": 30,
+      "name": "max_ai_credits",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "30"
+    },
+    {
+      "choices": null,
+      "default": "10",
+      "description": "wall-clock minutes one worker run may take before the runner stops it",
+      "kind": "count",
+      "min": 0,
+      "name": "minutes_per_job",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "10"
+    },
+    {
+      "choices": null,
+      "default": "1",
+      "description": "leased jobs one project may have in flight at once; 1 is one at a time",
+      "kind": "count",
+      "min": 1,
+      "name": "parallel_per_project",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "1"
+    },
+    {
+      "choices": null,
+      "default": "14",
+      "description": "days without useful output after which an agent is pruned (its history stays)",
+      "kind": "count",
+      "min": 1,
+      "name": "prune_after_days",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "14"
+    },
+    {
+      "choices": null,
+      "default": "2",
+      "description": "distinct voters a suggestion needs before it is eligible for the queue",
+      "kind": "count",
+      "min": 1,
+      "name": "quorum",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "2"
+    },
+    {
+      "choices": null,
+      "default": "copilot",
+      "description": "the worker program the runner starts in each clone (copilot, or a path to a stand-in)",
+      "kind": "command",
+      "min": null,
+      "name": "runner_cmd",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "copilot"
+    },
+    {
+      "choices": null,
+      "default": "30",
+      "description": "days after which an untouched thread counts as stale",
+      "kind": "count",
+      "min": 1,
+      "name": "stale_days",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "30"
+    },
+    {
+      "choices": [
+        "0",
+        "1"
+      ],
+      "default": "0",
+      "description": "the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)",
+      "kind": "switch",
+      "min": null,
+      "name": "stop",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "0"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "the model the worker runs with; empty means the runner's default",
+      "kind": "text",
+      "min": null,
+      "name": "worker_model",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": ""
+    },
+    {
+      "choices": null,
+      "default": "1",
+      "description": "parallel slots on this machine (the local executor); 0 keeps it idle while remote hands exist",
+      "kind": "count",
+      "min": 0,
+      "name": "workers",
+      "secret": false,
+      "updated_at": "2026-09-01T11:20:00Z",
+      "updated_by": "human",
+      "value": "4"
+    },
+    {
+      "choices": [
+        "0",
+        "1"
+      ],
+      "default": "0",
+      "description": "1: requests under the caps are approved without the owner; 0: every request becomes a proposal",
+      "kind": "switch",
+      "min": null,
+      "name": "compute.auto_approve",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "0"
+    },
+    {
+      "choices": null,
+      "default": "Ubuntu2404",
+      "description": "VM image alias or URN, e.g. Ubuntu2404",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.azure.image",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "Ubuntu2404"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "Azure region, e.g. westeurope",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.azure.location",
+      "secret": false,
+      "updated_at": "2026-09-01T10:59:00Z",
+      "updated_by": "human",
+      "value": "westeurope"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "Azure resource group that holds the provisioned hands",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.azure.resource_group",
+      "secret": false,
+      "updated_at": "2026-09-01T10:52:00Z",
+      "updated_by": "human",
+      "value": "pulse-hands"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "Azure subscription id or name the runner provisions in (auth is az login on this machine)",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.azure.subscription",
+      "secret": false,
+      "updated_at": "2026-09-01T10:45:00Z",
+      "updated_by": "human",
+      "value": "demo-subscription"
+    },
+    {
+      "choices": null,
+      "default": "Standard_B2ms",
+      "description": "VM size for a provisioned hand, e.g. Standard_B2ms",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.azure.vm_size",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "Standard_B2ms"
+    },
+    {
+      "choices": null,
+      "default": "0",
+      "description": "AI credits the provisioned hands may spend per UTC day together; 0 means no extra budget",
+      "kind": "count",
+      "min": 0,
+      "name": "compute.budget_credits",
+      "secret": false,
+      "updated_at": "2026-09-01T10:38:00Z",
+      "updated_by": "human",
+      "value": "500"
+    },
+    {
+      "choices": null,
+      "default": "0",
+      "description": "machine-hours agents may consume per UTC day across provisioned hands; 0 means none",
+      "kind": "count",
+      "min": 0,
+      "name": "compute.max_hours_per_day",
+      "secret": false,
+      "updated_at": "2026-09-01T10:31:00Z",
+      "updated_by": "human",
+      "value": "12"
+    },
+    {
+      "choices": null,
+      "default": "0",
+      "description": "provisioned machines that may exist at once; 0 means agents cannot get compute",
+      "kind": "count",
+      "min": 0,
+      "name": "compute.max_vms",
+      "secret": false,
+      "updated_at": "2026-09-01T10:24:00Z",
+      "updated_by": "human",
+      "value": "2"
+    },
+    {
+      "choices": [
+        "azure"
+      ],
+      "default": "azure",
+      "description": "where agents get more machines from; azure today, more providers later",
+      "kind": "choice",
+      "min": null,
+      "name": "compute.provider",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "azure"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "owner-private directory outside every repository holding held-out fixtures; never quoted to agents",
+      "kind": "identifier",
+      "min": null,
+      "name": "evolve.heldout_dir",
+      "secret": true,
+      "updated_at": "2026-09-01T11:06:00Z",
+      "updated_by": "human",
+      "value": "[owner-private]"
+    },
+    {
+      "choices": null,
+      "default": "none",
+      "description": "none, or a budget such as cycles=20,hours=48 after which the loop stops by itself",
+      "kind": "text",
+      "min": null,
+      "name": "evolve.limits",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "none"
+    },
+    {
+      "choices": [
+        "0",
+        "1"
+      ],
+      "default": "0",
+      "description": "1: pulse evolve cycle may run experiments; 0: the loop is off (STOP is the stop setting)",
+      "kind": "switch",
+      "min": null,
+      "name": "evolve.loop",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "0"
+    },
+    {
+      "choices": null,
+      "default": "0.02",
+      "description": "score improvement a variant needs over the baseline to be kept, a share between 0 and 1 such as 0.02",
+      "kind": "decimal",
+      "min": null,
+      "name": "evolve.tolerance",
+      "secret": false,
+      "updated_at": "2026-09-01T11:13:00Z",
+      "updated_by": "human",
+      "value": "0.03"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+[
+  {
+    "area": "product",
+    "key": "product/checkout-latency",
+    "last": "2026-09-01T14:36:00Z",
+    "posts": 6,
+    "resolution": "",
+    "status": "open",
+    "summary": "Measure with the cache warm and cold",
+    "thread": "checkout-latency"
+  },
+  {
+    "area": "runner",
+    "key": "runner/compute",
+    "last": "2026-09-01T19:09:00Z",
+    "posts": 4,
+    "resolution": "declined",
+    "status": "closed",
+    "summary": "declined: compute request CR-003: Standard_B2ms for 24h - a permanent second runner",
+    "thread": "compute"
+  },
+  {
+    "area": "governance",
+    "key": "governance/review-depth",
+    "last": "2026-09-01T15:04:00Z",
+    "posts": 4,
+    "resolution": "agreed",
+    "status": "closed",
+    "summary": "Agreed: second reviewer for checkout and billing",
+    "thread": "review-depth"
+  },
+  {
+    "area": "runner",
+    "key": "runner/project-setup",
+    "last": "2026-09-01T13:54:00Z",
+    "posts": 4,
+    "resolution": "proceeded",
+    "status": "closed",
+    "summary": "Browser bundle cached in the executor image; matrix green",
+    "thread": "project-setup"
+  }
+]

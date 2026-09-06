@@ -1,0 +1,14 @@
+{
+  "archive": {
+    "rows": []
+  },
+  "constitution": null,
+  "evaluators": null,
+  "loop": {
+    "heldout_present": false,
+    "limits": "none",
+    "loop": "0",
+    "stop": "0",
+    "tolerance": "0.03"
+  }
+}

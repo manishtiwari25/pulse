@@ -1,0 +1,43 @@
+{
+  "body": "# Version the client API with a v2 package\n\n## Decision\n\nBreaking changes ship under `v2/`; `v1` stays importable for two releases.\n",
+  "frontmatter": {
+    "areas": [
+      "api"
+    ],
+    "date": "2026-09-01",
+    "delivery": "not started",
+    "id": "ADR-004",
+    "status": "Proposed",
+    "tags": [],
+    "tier": 2,
+    "title": "Version the client API with a v2 package"
+  },
+  "record": {
+    "areas": [
+      "api"
+    ],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "not started",
+    "id": "ADR-004",
+    "kind": "adr",
+    "number": 4,
+    "path": "",
+    "project": "demo-lib",
+    "slug": "version-the-client-api-with-a-v2-package",
+    "status": "Proposed",
+    "tags": [],
+    "tier": 2,
+    "title": "Version the client API with a v2 package",
+    "updated_at": "2026-09-01T13:19:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T13:19:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

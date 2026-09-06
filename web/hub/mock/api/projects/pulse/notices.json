@@ -1,0 +1,20 @@
+{
+  "ballot": [
+    {
+      "amendments": 1,
+      "base": "",
+      "brain": false,
+      "name": "pulse",
+      "proposals": 0,
+      "slug": "pulse",
+      "suggestions": 1
+    }
+  ],
+  "brain": "",
+  "brains": [],
+  "commons_base": "",
+  "commons_present": null,
+  "commons_questions": null,
+  "proposals_awaiting": 0,
+  "votes_open": 2
+}

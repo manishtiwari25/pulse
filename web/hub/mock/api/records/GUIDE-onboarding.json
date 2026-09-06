@@ -1,0 +1,38 @@
+{
+  "body": "# Onboarding\n\nRead the board digest first (`pulse board`). Claim before you edit. Post a finding for every failed check and a result when you are done.\n",
+  "frontmatter": {
+    "areas": [],
+    "date": "2026-09-01",
+    "id": "GUIDE-onboarding",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "onboarding"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "GUIDE-onboarding",
+    "kind": "guide",
+    "number": 0,
+    "path": "",
+    "project": "pulse",
+    "slug": "onboarding",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "onboarding",
+    "updated_at": "2026-09-01T12:23:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T12:23:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

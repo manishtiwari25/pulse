@@ -1,0 +1,45 @@
+{
+  "jobs": [],
+  "messages": [
+    {
+      "at": "2026-09-01T18:20:00Z",
+      "author": "human",
+      "body": "Is the flake in the test or in the page?",
+      "id": "MSG-20260901T182000Z-1",
+      "project": "demo-app",
+      "task_id": "TASK-002"
+    },
+    {
+      "at": "2026-09-01T18:27:00Z",
+      "author": "demo-app-lead",
+      "body": "In the test: it reads the total before the price lookup resolves. Fix is one await.",
+      "id": "MSG-20260901T182700Z-1",
+      "project": "demo-app",
+      "task_id": "TASK-002"
+    }
+  ],
+  "revisions": [
+    {
+      "at": "2026-09-01T17:24:00Z",
+      "author": "human",
+      "brief": "`checkout renders totals` fails one run in five on the executor. Make it deterministic.",
+      "note": "",
+      "rev": 1,
+      "title": "Fix the flaky checkout test"
+    }
+  ],
+  "task": {
+    "brief": "`checkout renders totals` fails one run in five on the executor. Make it deterministic.",
+    "created_at": "2026-09-01T17:24:00Z",
+    "created_by": "human",
+    "current_rev": 1,
+    "id": "TASK-002",
+    "job_id": "",
+    "lead": "",
+    "priority": 30,
+    "project": "demo-app",
+    "status": "in_progress",
+    "title": "Fix the flaky checkout test",
+    "updated_at": "2026-09-01T17:31:00Z"
+  }
+}

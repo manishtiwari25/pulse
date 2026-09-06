@@ -1,0 +1,62 @@
+{
+  "available": true,
+  "capacity": "",
+  "daemon": {
+    "state": "never started",
+    "text": "never started"
+  },
+  "executors": [
+    {
+      "address": "",
+      "free": 4,
+      "kind": "local",
+      "last_probe_at": "",
+      "name": "local",
+      "probe_note": "this machine",
+      "projects": "*",
+      "running": 0,
+      "status": "active",
+      "workers": 4
+    },
+    {
+      "address": "agent@pulse-vm1.internal",
+      "free": 0,
+      "kind": "ssh",
+      "last_probe_at": "",
+      "name": "pulse-vm1",
+      "probe_note": "",
+      "projects": "demo-app,demo-lib",
+      "running": 0,
+      "status": "drained",
+      "workers": 1
+    }
+  ],
+  "hands": {
+    "any_project": true,
+    "executors": 2,
+    "executors_active": 1,
+    "free": 4,
+    "slots": 4
+  },
+  "jobs": {
+    "blocked": 0,
+    "cap": 2,
+    "leased": 0,
+    "queued": 5,
+    "running": 0,
+    "runs_today": 0
+  },
+  "now": "2026-09-07T09:00:00Z",
+  "runner": {
+    "allowed": true,
+    "reason": ""
+  },
+  "workers": {
+    "busy": 0,
+    "idle": 0,
+    "idle_names": [],
+    "pool": 0,
+    "prune_after_days": 14,
+    "target": 3
+  }
+}

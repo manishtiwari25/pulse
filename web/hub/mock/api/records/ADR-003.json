@@ -1,0 +1,43 @@
+{
+  "body": "# The console is the owner's only surface\n\n## Context\n\nThe owner should never need the CLI.\n\n## Decision\n\nDraft: every owner action has a console route.\n",
+  "frontmatter": {
+    "areas": [
+      "console"
+    ],
+    "date": "2026-09-01",
+    "delivery": "not started",
+    "id": "ADR-003",
+    "status": "Draft",
+    "tags": [],
+    "tier": 2,
+    "title": "The console is the owner's only surface"
+  },
+  "record": {
+    "areas": [
+      "console"
+    ],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "not started",
+    "id": "ADR-003",
+    "kind": "adr",
+    "number": 3,
+    "path": "",
+    "project": "pulse",
+    "slug": "the-console-is-the-owner-s-only-surface",
+    "status": "Draft",
+    "tags": [],
+    "tier": 2,
+    "title": "The console is the owner's only surface",
+    "updated_at": "2026-09-01T12:02:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T12:02:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

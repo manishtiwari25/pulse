@@ -1,0 +1,42 @@
+[
+  {
+    "address": "",
+    "backoff_minutes": 0,
+    "created_at": "",
+    "created_by": "",
+    "errors": 0,
+    "free": 4,
+    "kind": "local",
+    "last_probe_at": "",
+    "name": "local",
+    "next_probe_at": "",
+    "probe_note": "this machine",
+    "projects": "*",
+    "running": 0,
+    "runs_done": 0,
+    "runs_failed": 0,
+    "status": "active",
+    "workdir": "",
+    "workers": 4
+  },
+  {
+    "address": "agent@pulse-vm1.internal",
+    "backoff_minutes": 0,
+    "created_at": "2026-09-01T11:27:00Z",
+    "created_by": "human",
+    "errors": 0,
+    "free": 0,
+    "kind": "ssh",
+    "last_probe_at": "",
+    "name": "pulse-vm1",
+    "next_probe_at": "",
+    "probe_note": "",
+    "projects": "demo-app,demo-lib",
+    "running": 0,
+    "runs_done": 0,
+    "runs_failed": 0,
+    "status": "drained",
+    "workdir": "/srv/pulse",
+    "workers": 1
+  }
+]

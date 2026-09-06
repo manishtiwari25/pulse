@@ -1,0 +1,20 @@
+{
+  "ballot": [
+    {
+      "amendments": 0,
+      "base": "",
+      "brain": false,
+      "name": "demo-app",
+      "proposals": 1,
+      "slug": "demo-app",
+      "suggestions": 1
+    }
+  ],
+  "brain": "",
+  "brains": [],
+  "commons_base": "",
+  "commons_present": null,
+  "commons_questions": null,
+  "proposals_awaiting": 1,
+  "votes_open": 1
+}

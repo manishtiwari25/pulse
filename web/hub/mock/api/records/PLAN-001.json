@@ -1,0 +1,42 @@
+{
+  "body": "# Console fixtures from the hub\n\n## Steps\n\n1. Seed a throwaway store.\n2. Capture every route the console reads.\n3. Check no private string leaks.\n\n## Acceptance\n\n`npm run dev:mock` renders every page from the fixtures.\n",
+  "frontmatter": {
+    "areas": [
+      "console"
+    ],
+    "date": "2026-09-01",
+    "id": "PLAN-001",
+    "status": "Draft",
+    "tags": [],
+    "tier": 2,
+    "title": "Console fixtures from the hub"
+  },
+  "record": {
+    "areas": [
+      "console"
+    ],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "PLAN-001",
+    "kind": "plan",
+    "number": 1,
+    "path": "",
+    "project": "pulse",
+    "slug": "console-fixtures-from-the-hub",
+    "status": "Draft",
+    "tags": [],
+    "tier": 2,
+    "title": "Console fixtures from the hub",
+    "updated_at": "2026-09-01T12:09:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T12:09:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

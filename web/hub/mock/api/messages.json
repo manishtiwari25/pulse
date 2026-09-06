@@ -1,0 +1,52 @@
+{
+  "messages": [
+    {
+      "at": "2026-09-01T17:17:00Z",
+      "author": "demo-app-lead",
+      "body": "Planned as three jobs: the mail sender, the link endpoint and the flag. First job starts on the next loop.",
+      "id": "MSG-20260901T171700Z-1",
+      "project": "demo-app",
+      "task_id": "TASK-001"
+    },
+    {
+      "at": "2026-09-01T18:06:00Z",
+      "author": "human",
+      "body": "How is the sign-in work going? I would like a preview by Friday.",
+      "id": "MSG-20260901T180600Z-1",
+      "project": "demo-app",
+      "task_id": null
+    },
+    {
+      "at": "2026-09-01T18:13:00Z",
+      "author": "demo-app-lead",
+      "body": "The mail sender landed; the link endpoint is in review. A preview on Thursday is realistic.",
+      "id": "MSG-20260901T181300Z-1",
+      "project": "demo-app",
+      "task_id": null
+    },
+    {
+      "at": "2026-09-01T18:20:00Z",
+      "author": "human",
+      "body": "Is the flake in the test or in the page?",
+      "id": "MSG-20260901T182000Z-1",
+      "project": "demo-app",
+      "task_id": "TASK-002"
+    },
+    {
+      "at": "2026-09-01T18:27:00Z",
+      "author": "demo-app-lead",
+      "body": "In the test: it reads the total before the price lookup resolves. Fix is one await.",
+      "id": "MSG-20260901T182700Z-1",
+      "project": "demo-app",
+      "task_id": "TASK-002"
+    },
+    {
+      "at": "2026-09-01T18:34:00Z",
+      "author": "human",
+      "body": "Ship v2 when the guide is done; no rush.",
+      "id": "MSG-20260901T183400Z-1",
+      "project": "demo-lib",
+      "task_id": null
+    }
+  ]
+}
