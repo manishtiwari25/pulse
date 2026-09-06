@@ -31,7 +31,14 @@ own.
   with `restrict` (no agent, port, or X11 forwarding, no pty). It accepts a
   fixed list of verbs whose argv arrives as base64 - never a shell string,
   never `eval` - plus git's own `git-upload-pack` for a job clone under its
-  work directory. Anything else is refused with exit 2.
+  work directory. Anything else is refused with exit 2. One verb, `key JOB
+  EXECUTOR`, takes this run's private signing key on stdin after `prepare`
+  and writes it as `<job>/run.key` (0600, outside the clone) with the
+  clone's signing config and provenance hook
+  ([ADR-022](../decisions/ADR-022-git-native-agent-identity.md)); `clean`
+  removes it with the directory. A hub upgraded to that verb needs the hands
+  refreshed once - `pulse pair <admin@host> --name <executor>` - or every
+  run there ends `error` with `verb not allowed: key`.
 - **Same rules everywhere.** Tier 0/1 jobs only, `--deny-tool` for `git
   push`, `git remote`, `gh`, no built-in MCP servers, `--no-ask-user`,
   `--max-ai-credits`, the wall-time cap, owner-owned paths refused at
@@ -182,6 +189,7 @@ passes. The probe connects with `BatchMode=yes`, `ConnectTimeout=15`, and
 | `keys_ok` | `yes` - every `authorized_keys` line for that user carries `command=` and `restrict` |
 | `disk_free_mb` | at least 1024 |
 | `jobs` | job directories still present (`-` when none); informational - a passing probe sweeps the idle ones |
+| `keys` | job directories still holding a `run.key` (`-` when none); one whose run is not `running` and that the sweep did not remove fails the probe (`N signing key(s) left without a live run`) |
 
 The note is stored (`probe_note`) and shown by `list`, `status`, and the
 dashboard's Agents page. `activate` refuses an executor whose last probe

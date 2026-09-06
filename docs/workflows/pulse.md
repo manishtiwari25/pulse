@@ -106,11 +106,17 @@ of all - and priority decides only within a project, so a brain with many
 voted-up cards never starves the other projects on the machine; leases
 expire and carry a generation number), clones the project's default
 branch into `$PULSE_HOME/work/<job>/` with no remote and with the clone's
-git identity set to the agent - `user.name <agent>`, `user.email
-<agent>@pulse.local`, `commit.gpgsign false`, `tag.gpgsign false` - so a
-worker's commit is the agent's, never carries the human's signature, and
-never waits on the human's signing agent (a locked 1Password once hung
-every clone commit for a minute and failed it), writes the brief
+git identity set to the agent ([ADR-022](../decisions/ADR-022-git-native-agent-identity.md)):
+`user.name <agent>`, `user.email <agent>@pulse.local`, one ed25519 key made
+for this run alone (`<job>.key`, 0600, outside the clone, its public half on
+`runs.signing_pubkey`), `gpg.format ssh`, `gpg.ssh.program ssh-keygen`,
+`commit.gpgsign true`, `tag.gpgsign false`, `core.hooksPath .git/hooks`,
+and a `prepare-commit-msg` hook that stamps `Pulse-Agent:`, `Pulse-Job:`,
+and `Pulse-Executor:` trailers - so a worker's commit is the agent's, signed
+by a key that lives as long as the run, never carries the human's
+signature, and never waits on the human's signing agent (a locked 1Password
+once hung every clone commit for a minute and failed it; pinning
+`gpg.ssh.program` keeps a machine-wide signer out), writes the brief
 (`<job>.brief.md`: the task, the project's rules, Tier 0/1 only, how to
 report), runs one non-interactive worker - `copilot -p <brief> -C <clone>
 --allow-all-tools --deny-tool 'shell(git push)' --deny-tool 'shell(git
@@ -123,8 +129,12 @@ only places outside the clone a worker may touch - the store it votes
 through, the CLI it calls, scratch - because a shell command that writes
 anywhere else is denied and, with no user to ask, ends the run) - under the
 wall-time cap, then runs the project's `verify_cmd` in the clone if the
-worker committed, fetches the commits into the real checkout as
-`pulse/<agent>/<job>` **without touching its working tree**, posts a
+worker committed, fetches the commits into the real checkout under a
+holding ref and lands them as `pulse/<agent>/<job>` **without touching its
+working tree** only when every commit is signed by this run's key (`%G?`
+`G` against a one-line allowed-signers file), authored by the agent, and
+carries its `Pulse-Agent` and `Pulse-Job` trailers - otherwise the run
+fails with `N commit(s) refused: ...; nothing landed` - posts a
 `result` in area `jobs` thread `<job-id>` (`resolution: tested` when the
 check passed), turns the worker's `QUESTION:` lines into `question` posts
 and its `SUGGESTION:` lines into `suggestion` posts, and removes the clone. A timeout or a failed check is a failed run: nothing
@@ -150,6 +160,17 @@ the worker's session: the runner records the run id and the `worker_model`
 on the agent's row when the run starts, so results, questions,
 suggestions, and votes all carry the run and the model that produced them.
 Exit codes: 0 done or dry run, 1 failed, 3 nothing to do.
+
+Two read-only commands answer "who made this?" afterwards: `pulse verify
+<ref> [--project SLUG]` prints one line per commit (`verified`, or the first
+reason it is not: no run row for its `Pulse-Job` trailer, another author,
+unsigned, signed by another key, a trailer missing) and exits 0 only when
+every commit is verified; `pulse signers [--project SLUG]` prints an
+allowed-signers file - one `<agent>@pulse.local namespaces="git"
+<pubkey> <project>/<run>` line per run that landed - so a plain `git log
+--show-signature` with `gpg.ssh.allowedSignersFile` pointed at it shows
+`Good "git" signature` for every agent commit on any machine that has the
+store.
 
 The worker reports through `PULSE_RESULT.md` in its clone: `SUMMARY:` (one
 line), `QUESTION:` lines for anything a human must answer, `FINDING:` lines

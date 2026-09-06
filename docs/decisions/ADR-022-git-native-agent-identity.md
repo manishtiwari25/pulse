@@ -1,10 +1,10 @@
 ---
 id: ADR-022
 title: Git-Native Agent Identity - Every Agent Commit Names Its Agent, Carries Its Job, and Is Signed by a Key That Lives Only for That Run
-status: Proposed
+status: Accepted
 date: 2026-09-06
-delivery: not started
-delivered:
+delivery: delivered
+delivered: 2026-09-06
 areas: [agents, governance, security]
 tags: [adr, agents, runner, git, identity, signing]
 ---
@@ -218,24 +218,30 @@ scores, in the sense of `docs/evolution/evaluators.md`.
 - Hosts show agents' commits as "Unverified" (unknown key). That is honest:
   the host cannot verify them, the maintainer can. Anyone who wants a host
   badge for the *human's* merges already has it from the human's own key.
-- A worker that runs `git commit --no-verify` skips the hook; the hub then
-  refuses the commit for its missing trailers, so the run fails rather than
-  landing unlabelled work. That is the intended outcome, but it is a failed
-  run, not a repaired one.
+- A worker that points `core.hooksPath` elsewhere (`git -c
+  core.hooksPath=/nonexistent commit`) skips the hook; the hub then refuses
+  the commit for its missing trailers, so the run fails rather than landing
+  unlabelled work. That is the intended outcome, but it is a failed run, not
+  a repaired one. (`git commit --no-verify` is not a bypass: it skips only
+  `pre-commit` and `commit-msg`, and `prepare-commit-msg` still stamps the
+  trailers.)
 - One more verb on the hands and one more column in the store; a migration.
 
 ## Follow-Up
 
-- [ ] Human approval of this ADR (`status: Accepted`), then a Tier 1 work
-      unit under it: `pulse.py` (key per run, clone config, hook, landing
+- [x] Human approval of this ADR (`status: Accepted`, 2026-09-06 by
+      `pulse decide`), then a Tier 1 work unit under it, [WU-013](../plans/WU-013-git-native-agent-identity.md): `pulse.py` (key per run, clone config, hook, landing
       check, `runs.signing_pubkey`, `pulse verify`, `pulse signers`),
       `pulse-hands.sh` (`key` verb, `clean`, probe), tests for the signed,
       impersonated, and unsigned cases on both executors.
-- [ ] Update `docs/context/pulse-store.md` (the new column and commands) and
-      the worker brief line about signing.
-- [ ] Refresh paired machines with `pulse pair` once delivered.
-- [ ] Record the `gpg.ssh.program` pin as a memory pattern.
-- [ ] Update `delivery:` and `delivered:` when the work unit closes.
+- [x] Update `docs/context/pulse-store.md` (the new column and commands) and
+      the worker brief line about signing (2026-09-06, WU-013).
+- [ ] Refresh paired machines with `pulse pair` once delivered (`pulse-vm1`:
+      see WU-013's closure line).
+- [x] Record the `gpg.ssh.program` pin as a memory pattern
+      (`docs/memory/patterns.md`, 2026-09-06).
+- [x] Update `delivery:` and `delivered:` when the work unit closes
+      (`delivered`, 2026-09-06).
 
 ## Delivery
 
@@ -247,4 +253,4 @@ decision has been built:
 - `delivered` - the plan or last work unit closed; set `delivered: YYYY-MM-DD`.
 - `retired` - the decision is superseded, deprecated, or abandoned.
 
-Built by: no work unit yet; one is created when the ADR is accepted.
+Built by: [WU-013](../plans/WU-013-git-native-agent-identity.md).

@@ -25,7 +25,7 @@
 | [ADR-019](ADR-019-agent-first-pulse-store-and-runner.md) | Agent-First PULSE - One SQL Store, One `pulse` Command, and a Machine Where Agents Work and Earn Their Place | Accepted | 2026-09-05 | partially delivered (slices 1-2, 2026-09-05; slice 3 accepted as ADR-020) |
 | [ADR-020](ADR-020-remote-executors.md) | Scale Hands, Not Brains - Remote Executors Over SSH for the PULSE Runner | Accepted (`pulse decide` yes, 2026-09-05) | 2026-09-05 | partially delivered (slice 1: executors, `pulse-hands`, votes from a distance, 2026-09-05; slice 2: the first VM exists and is enrolled, 2026-09-06, awaiting its copilot login) |
 | [ADR-021](ADR-021-top-down-onboarding.md) | Top-Down PULSE - One Command Onboards a Project, One Command Pairs a Machine, the Daemon Stays the One Supervisor | Accepted | 2026-09-06 | partially delivered |
-| [ADR-022](ADR-022-git-native-agent-identity.md) | Git-Native Agent Identity - Every Agent Commit Names Its Agent, Carries Its Job, and Is Signed by a Key That Lives Only for That Run | Proposed | 2026-09-06 | not started |
+| [ADR-022](ADR-022-git-native-agent-identity.md) | Git-Native Agent Identity - Every Agent Commit Names Its Agent, Carries Its Job, and Is Signed by a Key That Lives Only for That Run | Accepted | 2026-09-06 | delivered |
 | [ADR-023](ADR-023-frontend-stack-for-the-hub.md) | A Proper Frontend Stack for the Hub - Vite, TypeScript, the React API on Preact, Tailwind, and Radix, Built to Three Fixed Files the Read-Only Python Hub Serves | Proposed | 2026-09-06 | not started |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable

@@ -118,6 +118,12 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
 - [`WU-012-standby-hands-on-mission-control.md`](WU-012-standby-hands-on-mission-control.md) -
   Mission control shows the agents' machine (ADR-016): hands in standby, the
   worker pool, the daemon, and the queue, from a new `/api/v1/runner` route.
+- [`WU-013-git-native-agent-identity.md`](WU-013-git-native-agent-identity.md) -
+  every agent commit is the agent's (ADR-022): one ed25519 key per run, signed
+  commits with `Pulse-Agent`/`Pulse-Job`/`Pulse-Executor` trailers, a hub
+  that lands only what the run's key signed, `pulse verify` and
+  `pulse signers`, the hands' `key` verb, and `runs.signing_pubkey`
+  (schema 3).
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy

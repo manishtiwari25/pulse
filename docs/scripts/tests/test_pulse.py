@@ -113,6 +113,14 @@ class StoreFixture(unittest.TestCase):
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
         return str(script)
 
+    def signature_status(self, ref, agent, pubkey):
+        """git's %G? for the commit at `ref` under a one-line allowed-signers file for `pubkey` (ADR-022)."""
+        signers = self.tmp / ("signers-%s" % agent)
+        signers.write_text('%s@pulse.local namespaces="git" %s\n' % (agent, pubkey), encoding="utf-8")
+        out = subprocess.run(["git", "-C", str(self.repo), "-c", "gpg.ssh.program=ssh-keygen", "-c", "gpg.ssh.allowedSignersFile=%s" % signers,
+                              "log", "-1", "--format=%G?", ref], capture_output=True, text=True)
+        return out.stdout.strip()
+
 
 class StoreTestCase(StoreFixture):
     # -- store and projects -------------------------------------------------
@@ -336,7 +344,7 @@ class StoreTestCase(StoreFixture):
         pulse.join_agent(self.con, "aurora", "r", "m")
         worker = self.worker_script(
             'echo "changed by $PULSE_AGENT" >> README.md\n'
-            'git -c user.name=w -c user.email=w@x -c commit.gpgsign=false commit -qam "worker change"\n'
+            'git commit -qam "worker change"\n'
             'printf "SUMMARY: appended one line\\nFINDING: the README was short\\n" > PULSE_RESULT.md')
         before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
@@ -350,7 +358,16 @@ class StoreTestCase(StoreFixture):
         self.assertEqual(git(self.repo, "rev-parse", "--verify", "refs/heads/%s" % branch).returncode, 0)
         self.assertIn("changed by aurora", git(self.repo, "show", "%s:README.md" % branch).stdout)
         self.assertFalse((self.home / "work" / run["job_id"]).exists(), "clone removed")
+        self.assertFalse((self.home / "work" / ("%s.key" % run["job_id"])).exists(), "the run's private key is removed with it")
         self.assertTrue(Path(run["log"]).is_file())
+        # ADR-022: the commit is the agent's, signed by this run's key, and says which job and hands made it
+        self.assertTrue(run["signing_pubkey"].startswith("ssh-ed25519 "), run["signing_pubkey"])
+        self.assertEqual(self.signature_status(branch, "aurora", run["signing_pubkey"]), "G")
+        body = git(self.repo, "log", "-1", "--format=%an <%ae>%n%(trailers)", branch).stdout
+        self.assertIn("aurora <aurora@pulse.local>", body)
+        self.assertIn("Pulse-Agent: aurora", body)
+        self.assertIn("Pulse-Job: %s" % run["job_id"], body)
+        self.assertIn("Pulse-Executor: local", body)
         results = self.con.execute("SELECT * FROM posts WHERE kind = 'result'").fetchall()
         self.assertEqual(len(results), 1)
         self.assertIn("appended one line", results[0]["summary"])
@@ -365,7 +382,7 @@ class StoreTestCase(StoreFixture):
         worker = self.worker_script(
             'echo "changed by $PULSE_AGENT" >> README.md\n'
             'printf "SUMMARY: appended and committed the result file too\\n" > PULSE_RESULT.md\n'
-            'git add -A && git -c user.name=w -c user.email=w@x -c commit.gpgsign=false commit -qm "worker change"')
+            'git add -A && git commit -qm "worker change"')
         run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
         self.assertIsNotNone(run, reason)
         self.assertEqual(run["status"], "done", run["summary"])
@@ -381,7 +398,7 @@ class StoreTestCase(StoreFixture):
             'mkdir -p docs/evolution .github/workflows\n'
             'echo "baseline: B-999" > docs/evolution/evaluators.md\n'
             'echo "on: push" > .github/workflows/ci.yml\n'
-            'git add -A && git -c user.name=w -c user.email=w@x -c commit.gpgsign=false commit -qm "owner files"\n'
+            'git add -A && git commit -qm "owner files"\n'
             'printf "SUMMARY: edited the gates\\n" > PULSE_RESULT.md')
         run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
         self.assertIsNotNone(run, reason)
@@ -397,7 +414,7 @@ class StoreTestCase(StoreFixture):
         self.con.execute("UPDATE projects SET verify_cmd = 'false' WHERE slug = 'proj'")
         worker = self.worker_script(
             'echo broken >> README.md\n'
-            'git -c user.name=w -c user.email=w@x -c commit.gpgsign=false commit -qam "bad change"')
+            'git commit -qam "bad change"')
         run, _ = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
         self.assertEqual(run["status"], "failed")
         self.assertEqual(run["branch"], "")
@@ -603,7 +620,7 @@ class StoreTestCase(StoreFixture):
         store = str(self.home / "pulse.sqlite")
         worker = self.worker_script(
             'echo late >> README.md\n'
-            'git -c user.name=w -c user.email=w@x -c commit.gpgsign=false commit -qam "late change"\n'
+            'git commit -qam "late change"\n'
             'python3 -c "import sqlite3; c = sqlite3.connect(%r); '
             'c.execute(\\"UPDATE jobs SET generation = generation + 1, lease_agent = \'cinder\' WHERE id = ?\\", (%r,)); c.commit()"\n'
             'printf "SUMMARY: too late\\n" > PULSE_RESULT.md' % (store, job["id"]))
@@ -703,22 +720,85 @@ class StoreTestCase(StoreFixture):
         self.assertEqual(pulse.parse_suggestion_line("evolution/thread: make C2 explicit"), ("", "", "make C2 explicit"))
         self.assertEqual(pulse.parse_suggestion_line("area/thread: make C2 explicit"), ("", "", "make C2 explicit"))
 
-    def test_a_clone_commit_is_the_agents_and_unsigned_whatever_the_machine_signs_with(self):
+    def test_a_clone_commit_is_the_agents_signed_by_the_runs_key_whatever_the_machine_signs_with(self):
         pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
         worker = self.worker_script(
-            'git config --get commit.gpgsign > sign.txt\n'
+            'printf "%s %s %s" "$(git config --get commit.gpgsign)" "$(git config --get gpg.ssh.program)" "$(git config --get core.hooksPath)" > sign.txt\n'
             'echo "changed by $PULSE_AGENT" >> README.md\n'
             'git commit -qam "plain commit, no -c flags"\n'
             'printf "SUMMARY: signing=%s\\n" "$(cat sign.txt)" > PULSE_RESULT.md')
         run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
         self.assertIsNotNone(run, reason)
         self.assertEqual(run["status"], "done", run["summary"])
-        self.assertIn("signing=false", run["summary"])
+        # every knob the signature depends on is pinned in the clone: a machine-wide signer or hooks dir never takes over
+        self.assertIn("signing=true ssh-keygen %s" % (self.home / "work" / run["job_id"] / ".git" / "hooks"), run["summary"])
         branch = run["branch"]
         self.assertTrue(branch, "the plain commit landed")
         who = git(self.repo, "log", "-1", "--format=%an <%ae>", branch).stdout.strip()
         self.assertEqual(who, "aurora <aurora@pulse.local>", "the commit is the agent's, not the human's")
-        self.assertEqual(git(self.repo, "cat-file", "-p", branch).stdout.count("gpgsig"), 0, "unsigned")
+        self.assertEqual(self.signature_status(branch, "aurora", run["signing_pubkey"]), "G")
+
+    # -- ADR-022: the hub lands only what this run's key signed, as this agent, for this job ------------------
+
+    def refused_run(self, worker_body):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        worker = self.worker_script(worker_body + '\nprintf "SUMMARY: tried\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "failed", run["summary"])
+        self.assertEqual(run["branch"], "")
+        self.assertEqual(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "", "nothing landed")
+        self.assertEqual(git(self.repo, "for-each-ref", "refs/pulse/").stdout.strip(), "", "no holding ref left behind")
+        self.assertIn("nothing landed", run["summary"])
+        return run
+
+    def test_work_refuses_a_commit_by_another_author(self):
+        run = self.refused_run('echo x >> README.md\ngit -c user.name=w -c user.email=w@x commit -qam "as someone else"')
+        self.assertIn("is authored by w <w@x>, not aurora", run["summary"])
+
+    def test_work_refuses_an_unsigned_commit(self):
+        run = self.refused_run('echo x >> README.md\ngit commit --no-gpg-sign -qam "unsigned"')
+        self.assertIn("is not signed", run["summary"])
+
+    def test_work_refuses_a_commit_signed_by_another_key(self):
+        run = self.refused_run('ssh-keygen -q -t ed25519 -N "" -f "$PULSE_CLONE/../other.key"\necho x >> README.md\n'
+                               'git -c user.signingkey="$PULSE_CLONE/../other.key" commit -qam "other key"\nrm -f "$PULSE_CLONE/../other.key"*')
+        self.assertIn("is signed by a key that is not this run's", run["summary"])
+
+    def test_work_refuses_a_commit_made_without_the_provenance_hook(self):
+        # `--no-verify` skips pre-commit and commit-msg only; prepare-commit-msg still stamps the trailers, so the
+        # one way around the hook is to point core.hooksPath elsewhere - and that commit lands nothing.
+        run = self.refused_run('echo y >> README.md\ngit -c core.hooksPath=/nonexistent commit -qam "no trailers"')
+        self.assertIn("lacks its Pulse-Agent trailer", run["summary"])
+        self.assertIn("lacks its Pulse-Job trailer", run["summary"])
+        pulse.add_job(self.con, "proj", "task", "a second run", tier=0)
+        worker = self.worker_script('echo x >> README.md\ngit commit --no-verify -qam "still stamped"\nprintf "SUMMARY: ok\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertEqual(run["status"], "done", run["summary"])
+        self.assertIn("Pulse-Job: %s" % run["job_id"], git(self.repo, "log", "-1", "--format=%(trailers)", run["branch"]).stdout)
+
+    def test_verify_and_signers_read_a_landed_commit_back_to_its_run(self):
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        worker = self.worker_script('echo x >> README.md\ngit commit -qam "signed work"\nprintf "SUMMARY: x\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertEqual(run["status"], "done", run["summary"])
+        code, out, err = run_cli("verify", run["branch"], "--project", "proj")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("verdict   verified: signed by the key of run %s, authored by aurora, job %s on local" % (run["id"], run["job_id"]), out)
+        self.assertIn("Pulse-Executor: local", out)
+        code, out, err = run_cli("verify", "main", "--project", "proj")
+        self.assertEqual(code, 1, "the human's own commit is not a worker's")
+        self.assertIn("no Pulse-Job trailer", out)
+        code, out, err = run_cli("signers", "--project", "proj")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.strip(), 'aurora@pulse.local namespaces="git" %s proj/%s' % (run["signing_pubkey"], run["id"]))
+        # the printed file is what git needs to show the signature as good on any checkout
+        signers = self.tmp / "signers"
+        signers.write_text(out, encoding="utf-8")
+        status = subprocess.run(["git", "-C", str(self.repo), "-c", "gpg.ssh.program=ssh-keygen", "-c", "gpg.ssh.allowedSignersFile=%s" % signers,
+                                 "log", "-1", "--format=%G?", run["branch"]], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(status, "G")
+        self.assertNotIn("PRIVATE", json.dumps([dict(r) for r in self.con.execute("SELECT * FROM runs")]), "no private key in the store")
 
     def test_a_run_is_the_workers_session_and_its_posts_carry_the_model(self):
         pulse.join_agent(self.con, "aurora", "copilot", "", kind="worker")
@@ -833,7 +913,7 @@ class StoreTestCase(StoreFixture):
         first = pulse.plan_jobs(self.con, "proj", now=NOW)
         self.assertEqual([j["source"] for j in first], ["suggestion:%s" % card["id"]])
         worker = self.worker_script(
-            'printf "trimmed\n" >> README.md && git add README.md && git -c user.name=w -c user.email=w@x commit -qm trim\n'
+            'printf "trimmed\n" >> README.md && git add README.md && git commit -qm trim\n'
             'printf "SUMMARY: trimmed the README\n" > PULSE_RESULT.md')
         run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
         self.assertIsNotNone(run, reason)
@@ -1141,6 +1221,74 @@ class HandsFixture(StoreFixture):
 class ExecutorTestCase(HandsFixture):
     """PLAN-020 slice 1: a remote executor over ssh, driven end to end through the shim and pulse-hands.sh."""
 
+    def hands(self, *args, stdin=b"", cwd=None):
+        return subprocess.run(["bash", str(HANDS_SH), *args], input=stdin, capture_output=True, cwd=cwd or str(self.tmp),
+                              env=dict(os.environ, PULSE_HANDS_WORKDIR=str(self.remote)))
+
+    def test_the_key_verb_takes_only_a_private_key_and_only_after_prepare(self):
+        # ADR-022 §2: the hands accept the run's key once the clone exists, refuse anything that is not a key.
+        bundle = self.tmp / "b.bundle"
+        git(self.repo, "bundle", "create", "-q", str(bundle), "main")
+        out = self.hands("key", "j1", "hands", stdin=b"-----BEGIN OPENSSH PRIVATE KEY-----\nx\n-----END OPENSSH PRIVATE KEY-----\n")
+        self.assertEqual(out.returncode, 2)
+        self.assertIn(b"no clone for job j1", out.stderr)
+        out = self.hands("prepare", "j1", "main", "aurora", stdin=bundle.read_bytes())
+        self.assertEqual(out.returncode, 0, out.stderr)
+        out = self.hands("key", "j1", "hands", stdin=b"not a key\n")
+        self.assertEqual(out.returncode, 2)
+        self.assertIn(b"not an openssh private key", out.stderr)
+        self.assertFalse((self.remote / "j1" / "run.key").exists(), "a refused key is not kept")
+        out = self.hands("key", "j1", "bad name!", stdin=b"-----BEGIN OPENSSH PRIVATE KEY-----\n")
+        self.assertIn(b"bad executor name", out.stderr)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(self.tmp / "k")], check=True, capture_output=True)
+        out = self.hands("key", "j1", "hands", stdin=(self.tmp / "k").read_bytes())
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), b"keyed")
+        key = self.remote / "j1" / "run.key"
+        self.assertEqual(stat.S_IMODE(key.stat().st_mode), 0o600)
+        clone = self.remote / "j1" / "clone"
+        cfg = {k: subprocess.run(["git", "-C", str(clone), "config", "--get", k], capture_output=True, text=True).stdout.strip()
+               for k in ("commit.gpgsign", "gpg.format", "gpg.ssh.program", "user.signingkey", "core.hooksPath")}
+        self.assertEqual(cfg, {"commit.gpgsign": "true", "gpg.format": "ssh", "gpg.ssh.program": "ssh-keygen",
+                               "user.signingkey": str(key), "core.hooksPath": str(clone / ".git" / "hooks")})
+        hook = (clone / ".git" / "hooks" / "prepare-commit-msg").read_text()
+        self.assertIn("--trailer 'Pulse-Agent: aurora' --trailer 'Pulse-Job: j1' --trailer 'Pulse-Executor: hands'", hook)
+        # the probe names the job directory that holds a key; clean removes both
+        self.assertIn("keys=j1", self.hands("probe").stdout.decode())
+        self.assertEqual(self.hands("clean", "j1").returncode, 0)
+        self.assertFalse(key.exists())
+        self.assertIn("keys=-", self.hands("probe").stdout.decode())
+
+    def test_a_remote_commit_by_another_author_lands_nothing(self):
+        self.add_hands()
+        pulse.join_agent(self.con, "aurora", "r", "m", kind="worker")
+        worker = self.worker_script('echo x >> README.md\ngit -c user.name=w -c user.email=w@x commit -qam "as someone else"\n'
+                                    'printf "SUMMARY: tried\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "failed", run["summary"])
+        self.assertIn("is authored by w <w@x>, not aurora", run["summary"])
+        self.assertEqual(git(self.repo, "branch", "--list", "pulse/*").stdout.strip(), "", "nothing landed")
+        self.assertEqual(git(self.repo, "for-each-ref", "refs/pulse/").stdout.strip(), "")
+        self.assertEqual(sorted(p.name for p in self.remote.iterdir()), [], "the hands are clean after a refusal too")
+
+    def test_a_probe_reports_a_signing_key_that_outlived_its_run(self):
+        row = self.add_hands()
+        # a key in a job directory the sweep could not remove (clean fails) is a problem the human sees
+        (self.remote / "job-old").mkdir()
+        (self.remote / "job-old" / "run.key").write_text("stale", encoding="utf-8")
+        os.environ["PULSE_SHIM_FAIL_VERB"] = "clean"
+        try:
+            ok, note = pulse.probe_executor(self.con, "hands", now=NOW)
+        finally:
+            os.environ.pop("PULSE_SHIM_FAIL_VERB", None)
+        self.assertFalse(ok, note)
+        self.assertIn("1 signing key(s) left without a live run: job-old", note)
+        # once the sweep can clean it, the probe is ok again and the key is gone
+        ok, note = pulse.probe_executor(self.con, "hands", now=NOW)
+        self.assertTrue(ok, note)
+        self.assertFalse((self.remote / "job-old").exists())
+
     def test_prepare_verifies_the_bundle_with_a_git_that_needs_a_repository(self):
         # git 2.43 (Ubuntu 24.04) refuses `git bundle verify` outside a repository; the forced command starts
         # in the hands' home, which is none, so every remote job used to die at prepare with "does not verify".
@@ -1249,12 +1397,22 @@ class ExecutorTestCase(HandsFixture):
         self.assertIn("changed by aurora", git(self.repo, "show", "%s:README.md" % branch).stdout)
         self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), before, "the real checkout is untouched")
         self.assertEqual(git(self.repo, "status", "--porcelain").stdout, "")
-        # the clone was committed as the agent, unsigned
-        self.assertIn("aurora <aurora@pulse.local>", git(self.repo, "log", "-1", "--format=%an <%ae>", branch).stdout)
-        # nothing left on either side
+        # the clone was committed as the agent, signed by this run's key, stamped with the job and the hands (ADR-022)
+        body = git(self.repo, "log", "-1", "--format=%an <%ae>%n%(trailers)", branch).stdout
+        self.assertIn("aurora <aurora@pulse.local>", body)
+        self.assertIn("Pulse-Agent: aurora", body)
+        self.assertIn("Pulse-Job: %s" % run["job_id"], body)
+        self.assertIn("Pulse-Executor: hands", body)
+        self.assertEqual(self.signature_status(branch, "aurora", run["signing_pubkey"]), "G")
+        # nothing left on either side: job directory and its run.key on the hands, bundle and key on the hub
         self.assertEqual(sorted(p.name for p in self.remote.iterdir()), [], "the hands' job directory is removed")
         self.assertFalse((self.home / "work" / ("%s.bundle" % run["job_id"])).exists(), "the bundle is removed")
+        self.assertFalse((self.home / "work" / ("%s.key" % run["job_id"])).exists(), "the hub's private key is removed")
         self.assertFalse((self.home / "work" / run["job_id"]).exists())
+        shim_log = (self.tmp / "shim.log").read_text()
+        key_call = base64.b64encode(b"".join(a.encode() + b"\0" for a in ("key", run["job_id"], "hands"))).decode()
+        self.assertEqual(shim_log.count(key_call), 1, "the key crossed once, over the forced command, on stdin")
+        self.assertNotIn("PRIVATE KEY", shim_log)
         # the hub pulled over ssh; the hands never learned the checkout path
         shim_log = (self.tmp / "shim.log").read_text()
         self.assertIn("git-upload-pack '%s/%s/clone'" % (self.remote, run["job_id"]), shim_log)
@@ -1424,13 +1582,16 @@ class ExecutorTestCase(HandsFixture):
         self.con.execute("ALTER TABLE runs DROP COLUMN executor")
         self.con.close()
         self.con = pulse.connect()
-        self.assertEqual(self.con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()["value"], "2")
-        self.assertIn("executor", {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")})
+        self.assertEqual(self.con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()["value"], str(pulse.SCHEMA_VERSION))
+        cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
+        self.assertIn("executor", cols)
+        self.assertIn("signing_pubkey", cols, "ADR-022: the run row carries the public half of its key")
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM executors").fetchone()[0], 0)
-        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM events WHERE action = 'schema.upgrade'").fetchone()[0], 1)
+        self.assertEqual([r["subject"] for r in self.con.execute("SELECT subject FROM events WHERE action = 'schema.upgrade' ORDER BY seq")],
+                         ["2", "3"], "one upgrade event per version climbed")
         self.con.close()
         self.con = pulse.connect()  # idempotent
-        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM events WHERE action = 'schema.upgrade'").fetchone()[0], 1)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM events WHERE action = 'schema.upgrade'").fetchone()[0], 2)
 
     def test_the_command_channel_is_argv_not_a_shell_string(self):
         row = {"address": "pulse@hands.example:2222"}

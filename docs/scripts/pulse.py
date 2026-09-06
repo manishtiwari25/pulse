@@ -30,7 +30,7 @@ import tempfile
 import time
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 STORE_NAME = "pulse.sqlite"
 COMMONS_SLUG = "commons"
 HUMAN_AGENT = "human"
@@ -358,7 +358,8 @@ CREATE TABLE IF NOT EXISTS runs (
     log TEXT NOT NULL DEFAULT '',
     verify TEXT NOT NULL DEFAULT '',
     mode TEXT NOT NULL DEFAULT 'real',
-    executor TEXT NOT NULL DEFAULT 'local'
+    executor TEXT NOT NULL DEFAULT 'local',
+    signing_pubkey TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS executors (
     name TEXT PRIMARY KEY,
@@ -459,6 +460,12 @@ def migrate_schema(con, have):
             con.execute("ALTER TABLE runs ADD COLUMN executor TEXT NOT NULL DEFAULT 'local'")
         con.execute("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
         event(con, "migrate", "schema.upgrade", "2", {"from": have, "added": ["executors", "runs.executor"]})
+    if have < 3:
+        cols = {r["name"] for r in con.execute("PRAGMA table_info(runs)")}
+        if "signing_pubkey" not in cols:
+            con.execute("ALTER TABLE runs ADD COLUMN signing_pubkey TEXT NOT NULL DEFAULT ''")
+        con.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
+        event(con, "migrate", "schema.upgrade", "3", {"from": have, "added": ["runs.signing_pubkey"]})
 
 
 def event(con, actor, action, subject="", detail=""):
@@ -1638,7 +1645,10 @@ def write_brief(job, project, agent, clone, minutes, ballot=None, remote=False):
     w("3. Never push, never add remotes, never call gh, never touch credentials, never install packages.")
     w("4. Verify with the project's own checks%s before committing." % (" (`%s`)" % project["verify_cmd"] if project["verify_cmd"] else ""))
     w("5. Commit small with plain `git commit`: the clone is already configured with your name (%s), your" % agent)
-    w("   address (%s@pulse.local), and no commit signing - never sign as anyone else." % agent)
+    w("   address (%s@pulse.local), this run's own signing key, and a hook that adds Pulse-Agent/Pulse-Job/" % agent)
+    w("   Pulse-Executor trailers (ADR-022). Never change those knobs and never use `--no-verify`, `--no-gpg-sign`,")
+    w("   `--author`, or `-c user.*`: the runner verifies every commit against this run's key before it lands and")
+    w("   refuses the rest - never sign as anyone else.")
     w("6. Finish within %d minutes. Write %s at the clone root (do not commit it) with:" % (minutes, RESULT_FILE))
     w("   - `SUMMARY:` one line saying what changed and what you measured")
     w("   - `QUESTION:` one line when you stopped for a Tier 2 decision or a hard stop (optional)")
@@ -2139,7 +2149,16 @@ def probe_executor(con, name, actor="runner", now=None):
         if ok:
             # A job directory left behind (a hub that died mid-job, a lost run) is removed when no run is on it.
             swept = sweep_executor_jobs(con, row, fields.get("jobs", "-"))
-            fields["jobs"] = fields.get("jobs", "-") if not swept else "swept:%d" % swept
+            fields["jobs"] = fields.get("jobs", "-") if not swept else "swept:%d" % len(swept)
+            # A run's signing key may exist only while its run is live (ADR-022 §2); one that outlived the sweep is a problem.
+            stale_keys = []
+            for job_id in [k for k in fields.get("keys", "-").split(",") if k and k != "-" and JOB_DIR_RE.match(k)]:
+                live = con.execute("SELECT 1 FROM runs WHERE job_id = ? AND executor = ? AND status = 'running'", (job_id, name)).fetchone()
+                if not live and job_id not in swept:
+                    stale_keys.append(job_id)
+            if stale_keys:
+                problems.append("%d signing key(s) left without a live run: %s" % (len(stale_keys), ", ".join(stale_keys)))
+                ok = False
         note = "ok: " + " ".join("%s=%s" % kv for kv in sorted(fields.items()) if kv[0] != "hands") if ok else "; ".join(problems)
     except ExecutorUnreachable as exc:
         note = "unreachable: %s" % exc
@@ -2158,8 +2177,8 @@ JOB_DIR_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def sweep_executor_jobs(con, row, jobs):
-    """Remove job directories the hands still hold for jobs no run is working on. Returns how many."""
-    swept = 0
+    """Remove job directories the hands still hold for jobs no run is working on. Returns the job ids removed."""
+    swept = []
     for job_id in [j for j in (jobs or "").split(",") if j and j != "-"]:
         if not JOB_DIR_RE.match(job_id):
             continue
@@ -2171,7 +2190,7 @@ def sweep_executor_jobs(con, row, jobs):
         except ExecutorUnreachable:
             break
         if rc == 0:
-            swept += 1
+            swept.append(job_id)
             event(con, "runner", "executor.sweep", row["name"], {"job": job_id})
     return swept
 
@@ -2802,6 +2821,111 @@ def reprobe_due(con, interval=300, now=None):
     return back
 
 
+def agent_email(agent):
+    return "%s@pulse.local" % agent
+
+
+def make_run_key(path, agent, run_id):
+    """An ed25519 key that exists for one run (ADR-022): the private half at `path` (0600, removed with the run),
+    the public half returned for the run row. It can only sign; it is never an access credential."""
+    path = Path(path)
+    pub_path = Path(str(path) + ".pub")
+    for stale in (path, pub_path):
+        if stale.exists():
+            stale.unlink()
+    try:
+        out = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "%s %s" % (agent, run_id), "-f", str(path)],
+                             capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        raise PulseError("ssh-keygen is not installed; the runner needs it to give each run its signing key (ADR-022)")
+    if out.returncode != 0:
+        raise PulseError("cannot make the run's signing key: %s" % out.stderr.strip())
+    os.chmod(path, 0o600)
+    return " ".join(pub_path.read_text(encoding="utf-8").split()[:2])
+
+
+def remove_run_key(path):
+    for p in (Path(path), Path(str(path) + ".pub")):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+PROVENANCE_TRAILERS = ("Pulse-Agent", "Pulse-Job", "Pulse-Executor")
+
+
+def provenance_hook(agent, job_id, executor):
+    """The clone-local prepare-commit-msg hook: every commit of the run carries who, which job, which hands.
+    `--if-exists doNothing` leaves a trailer the worker wrote itself alone; Co-authored-by is untouched."""
+    trailers = " ".join("--trailer %s" % shlex.quote("%s: %s" % (k, v))
+                        for k, v in zip(PROVENANCE_TRAILERS, (agent, job_id, executor)))
+    return ("#!/bin/sh\n"
+            "# pulse: provenance trailers for every commit of this run (ADR-022). Local to this clone, never committed.\n"
+            "exec git interpret-trailers --in-place --if-exists doNothing %s \"$1\"\n" % trailers)
+
+
+def configure_clone_identity(clone, agent, key_path, hook_text):
+    """A clone commit is the agent's, signed by this run's key, annotated by this clone's hook - whatever the
+    machine's global git configuration says. Every knob the signature depends on is pinned at clone level:
+    a machine-wide gpg.ssh.program (a password manager's signer) or core.hooksPath would otherwise take over."""
+    clone = Path(clone)
+    hooks = clone / ".git" / "hooks"
+    for key, value in (("user.name", agent), ("user.email", agent_email(agent)),
+                       ("gpg.format", "ssh"), ("gpg.ssh.program", "ssh-keygen"),
+                       ("user.signingkey", str(key_path)), ("commit.gpgsign", "true"), ("tag.gpgsign", "false"),
+                       ("core.hooksPath", str(hooks))):
+        git(clone, "config", key, value, check=True)
+    hooks.mkdir(parents=True, exist_ok=True)
+    hook = hooks / "prepare-commit-msg"
+    hook.write_text(hook_text, encoding="utf-8")
+    hook.chmod(0o755)
+
+
+def landing_problems(root, base, ref, agent, job_id, pubkey, signers_path):
+    """ADR-022 §3: every commit between the base and the fetched ref must be signed by this run's key (G under a
+    one-line allowed-signers file), authored by the leased agent, and carry matching Pulse-Agent and Pulse-Job
+    trailers. Returns the plain reasons that refuse a landing; an empty list lands."""
+    signers_path = Path(signers_path)
+    signers_path.write_text('%s namespaces="git" %s\n' % (agent_email(agent), pubkey), encoding="utf-8")
+    fmt = "%H%x1f%G?%x1f%an%x1f%ae%x1f%(trailers:key=Pulse-Agent,valueonly,separator=%x1d)%x1f%(trailers:key=Pulse-Job,valueonly,separator=%x1d)%x1e"
+    try:
+        out = git(root, "-c", "gpg.ssh.program=ssh-keygen", "-c", "gpg.ssh.allowedSignersFile=%s" % signers_path,
+                  "log", "--format=%s" % fmt, "%s..%s" % (base, ref), timeout=120)
+    finally:
+        try:
+            signers_path.unlink()
+        except OSError:
+            pass
+    if out.returncode != 0:
+        return ["could not read the fetched commits: %s" % out.stderr.strip()]
+    problems = []
+    for record in out.stdout.split("\x1e"):
+        record = record.strip()
+        if not record:
+            continue
+        fields = (record.split("\x1f") + [""] * 6)[:6]
+        sha, status, an, ae, t_agent, t_job = [f.strip() for f in fields]
+        short = sha[:12]
+        if status != "G":
+            why = {"N": "is not signed", "U": "is signed by a key that is not this run's", "B": "has a bad signature",
+                   "E": "has a signature that cannot be checked"}.get(status, "has signature status %s" % status)
+            problems.append("commit %s %s" % (short, why))
+        if (an, ae) != (agent, agent_email(agent)):
+            problems.append("commit %s is authored by %s <%s>, not %s" % (short, an, ae, agent))
+        agents = [v.strip() for v in t_agent.split("\x1d") if v.strip()]
+        jobs = [v.strip() for v in t_job.split("\x1d") if v.strip()]
+        if not agents:
+            problems.append("commit %s lacks its Pulse-Agent trailer" % short)
+        elif agents != [agent]:
+            problems.append("commit %s names %s in its Pulse-Agent trailer, not %s" % (short, ", ".join(agents), agent))
+        if not jobs:
+            problems.append("commit %s lacks its Pulse-Job trailer" % short)
+        elif jobs != [job_id]:
+            problems.append("commit %s names job %s in its Pulse-Job trailer, not %s" % (short, ", ".join(jobs), job_id))
+    return problems
+
+
 class LocalExecutor:
     """This machine: the clone lives under PULSE_HOME/work and every step is a subprocess here."""
 
@@ -2812,6 +2936,8 @@ class LocalExecutor:
         self.name = row["name"]
         self.root = Path(project["path"])
         self.clone = home_dir / "work" / job["id"]
+        # This run's signing key (ADR-022): made by the hub, outside the clone, removed with the run.
+        self.key_path = home_dir / "work" / ("%s.key" % job["id"])
         self.started = False
 
     def worker_dirs(self):
@@ -2833,11 +2959,9 @@ class LocalExecutor:
         if out.returncode != 0:
             raise PulseError("clone failed: %s" % out.stderr.strip())
         git(self.clone, "remote", "remove", "origin")
-        # A clone commit is the agent's, never the human's: the agent's name and address and no
-        # signature, so a worker never borrows the human's key or waits on the human's signing agent.
-        for key, value in (("user.name", self.agent), ("user.email", "%s@pulse.local" % self.agent),
-                           ("commit.gpgsign", "false"), ("tag.gpgsign", "false")):
-            git(self.clone, "config", key, value)
+        # A clone commit is the agent's, never the human's: the agent's name and address, this run's own key,
+        # and the provenance hook (ADR-022) - a worker never borrows the human's key or the machine's signer.
+        configure_clone_identity(self.clone, self.agent, self.key_path, provenance_hook(self.agent, self.job["id"], self.name))
         return git(self.clone, "rev-parse", "HEAD", check=True).stdout.strip()
 
     def write_brief(self, text):
@@ -2891,6 +3015,7 @@ class LocalExecutor:
     def cleanup(self):
         if self.clone.exists():
             shutil.rmtree(self.clone, ignore_errors=True)
+        remove_run_key(self.key_path)
 
 
 class SshExecutor(LocalExecutor):
@@ -2929,6 +3054,13 @@ class SshExecutor(LocalExecutor):
         base = out.strip().split()[-1] if out.strip() else ""
         if not re.match(r"^[0-9a-f]{40,64}$", base):
             raise PulseError("remote prepare on %s returned no base commit: %r" % (self.name, out[-200:]))
+        # The run's private key crosses the wire once, over the same forced command, and can only sign (ADR-022 §2).
+        rc, out, err = self.call(["key", self.job["id"], self.name], stdin=self.key_path.read_bytes())
+        if rc != 0:
+            reason = " ".join((err or out).split())[-300:]
+            if "verb not allowed" in reason:
+                reason += " - the hands predate ADR-022; refresh them with `pulse pair <admin@host> --name %s`" % self.name
+            raise PulseError("remote key failed on %s (exit %d): %s" % (self.name, rc, reason))
         return base
 
     def write_brief(self, text):
@@ -2996,6 +3128,7 @@ class SshExecutor(LocalExecutor):
                 self.bundle.unlink()
         except OSError:
             pass
+        remove_run_key(self.key_path)
         try:
             self.call(["clean", self.job["id"]], timeout=120)
         except ExecutorUnreachable as exc:
@@ -3049,7 +3182,10 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
     parsed = parse_result_text(None)
     ballot = []
     transport_error = False
+    pubkey = ""
     try:
+        pubkey = make_run_key(ex.key_path, agent, run_id)
+        con.execute("UPDATE runs SET signing_pubkey = ? WHERE id = ?", (pubkey, run_id))
         base = ex.prepare()
         try:
             # Suggestions only: a vote on an amendment carries a text hash and a Read: line, which a VOTE: line cannot.
@@ -3136,19 +3272,30 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
                             summary = "branch %s already exists in %s; nothing landed" % (branch, root)
                             branch = ""
                         else:
-                            # The hub pulls; the executor never pushes and never learns where the checkout is.
+                            # The hub pulls to a holding ref; the executor never pushes and never learns where the
+                            # checkout is. The branch exists only once every commit proves it is this run's (ADR-022).
+                            holding = "refs/pulse/landing/%s" % job["id"]
                             fetched = subprocess.run(["git", "-C", str(root), "fetch", "-q", "--no-tags", ex.fetch_source(),
-                                                      "HEAD:refs/heads/%s" % branch], capture_output=True, text=True,
+                                                      "+HEAD:%s" % holding], capture_output=True, text=True,
                                                      timeout=300, env=ex.fetch_env())
-                            log.append("$ git fetch <%s clone> HEAD:refs/heads/%s\n%s" % (ex.name, branch, fetched.stderr))
+                            log.append("$ git fetch <%s clone> HEAD:%s\n%s" % (ex.name, holding, fetched.stderr))
                             if fetched.returncode != 0:
                                 status, branch = "failed", ""
                                 summary = "could not land the branch: %s" % fetched.stderr.strip()
                             else:
-                                status = "done"
-                                summary = parsed["summary"] or "%d commit(s) landed on %s" % (commits, branch)
-                                if verify_note:
-                                    summary += " (%s)" % verify_note
+                                problems = landing_problems(root, base, holding, agent, job["id"], pubkey,
+                                                            work_dir / ("%s.signers" % job["id"]))
+                                if problems:
+                                    status, branch = "failed", ""
+                                    summary = "%d commit(s) refused: %s; nothing landed" % (commits, "; ".join(problems[:3]))
+                                    log.append("identity check (ADR-022):\n%s" % "\n".join(problems))
+                                else:
+                                    git(root, "update-ref", "refs/heads/%s" % branch, holding, check=True)
+                                    status = "done"
+                                    summary = parsed["summary"] or "%d commit(s) landed on %s" % (commits, branch)
+                                    if verify_note:
+                                        summary += " (%s)" % verify_note
+                                git(root, "update-ref", "-d", holding)
     except ExecutorUnreachable as exc:
         # The hands did not answer. Before the worker started nothing was spent: the runner's error, requeued.
         # After it started the work is lost with the connection: the agent's failed run, cap spent.
@@ -4229,6 +4376,13 @@ def build_parser():
     s = sub.add_parser("hash", help="the text_hash of an amendment's proposed text")
     s.add_argument("post_id")
 
+    s = sub.add_parser("verify", help="verify a commit's signature and trailers against the run that made it (ADR-022)")
+    s.add_argument("ref")
+    s.add_argument("--project")
+
+    s = sub.add_parser("signers", help="an allowed-signers file for every run's key, for git log --show-signature")
+    s.add_argument("--project")
+
     sub.add_parser("projects", help="registered projects")
 
     s = sub.add_parser("jobs", help="the runner's queue")
@@ -4324,6 +4478,65 @@ def build_parser():
     s = sub.add_parser("events", help="the append-only event log")
     s.add_argument("--limit", type=int, default=40)
     return p
+
+
+def signers_lines(con, project=None):
+    """An allowed-signers file for every run the store knows (ADR-022 §4): one line per run with a key, so
+    `git -c gpg.ssh.allowedSignersFile=<file> log --show-signature` verifies agents' commits on any checkout."""
+    sql = "SELECT agent, signing_pubkey, id, job_id, project FROM runs WHERE signing_pubkey != ''"
+    args = []
+    if project:
+        sql += " AND project = ?"
+        args.append(project)
+    sql += " ORDER BY started_at"
+    return ['%s namespaces="git" %s %s/%s' % (agent_email(r["agent"]), r["signing_pubkey"], r["project"], r["id"])
+            for r in con.execute(sql, args)]
+
+
+def verify_commit(con, project, ref):
+    """Read a commit's Pulse-Job trailer back to its run and verify the signature against that run's stored key
+    (ADR-022 §4). Read-only. Returns (verified, lines)."""
+    root = Path(project["path"])
+    sha = git(root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % ref)
+    if sha.returncode != 0:
+        raise PulseError("no commit %r in %s" % (ref, root), 2)
+    sha = sha.stdout.strip()
+    fmt = "%an%x1f%ae%x1f%(trailers:key=Pulse-Agent,valueonly,separator=%x1d)%x1f%(trailers:key=Pulse-Job,valueonly,separator=%x1d)%x1f%(trailers:key=Pulse-Executor,valueonly,separator=%x1d)"
+    out = git(root, "log", "-1", "--format=%s" % fmt, sha, check=True).stdout
+    an, ae, t_agent, t_job, t_exec = [f.strip().replace("\x1d", ", ") for f in (out.split("\x1f") + [""] * 5)[:5]]
+    lines = ["commit    %s" % sha, "author    %s <%s>" % (an, ae),
+             "trailers  Pulse-Agent: %s  Pulse-Job: %s  Pulse-Executor: %s" % (t_agent or "-", t_job or "-", t_exec or "-")]
+    if not t_job:
+        lines.append("verdict   NOT verified: no Pulse-Job trailer - not a PULSE worker commit (a human's, or made before ADR-022)")
+        return False, lines
+    runs = con.execute("SELECT * FROM runs WHERE job_id = ? AND signing_pubkey != '' ORDER BY started_at DESC", (t_job,)).fetchall()
+    if not runs:
+        lines.append("verdict   NOT verified: the store has no run with a key for job %s" % t_job)
+        return False, lines
+    signers = pulse_home() / "work" / ("verify-%s.signers" % sha[:12])
+    signers.parent.mkdir(parents=True, exist_ok=True)
+    verdict = None
+    try:
+        for run in runs:
+            signers.write_text('%s namespaces="git" %s\n' % (agent_email(run["agent"]), run["signing_pubkey"]), encoding="utf-8")
+            status = git(root, "-c", "gpg.ssh.program=ssh-keygen", "-c", "gpg.ssh.allowedSignersFile=%s" % signers,
+                         "log", "-1", "--format=%G?", sha).stdout.strip()
+            lines.append("run       %s  agent %s  executor %s  status %s  started %s  signature %s" % (
+                run["id"], run["agent"], run["executor"], run["status"], run["started_at"], status or "?"))
+            if status == "G" and (an, ae) == (run["agent"], agent_email(run["agent"])) and t_agent == run["agent"]:
+                verdict = run
+                break
+    finally:
+        try:
+            signers.unlink()
+        except OSError:
+            pass
+    if verdict is None:
+        lines.append("verdict   NOT verified: no run of job %s signed this commit with its key as its agent" % t_job)
+        return False, lines
+    lines.append("verdict   verified: signed by the key of run %s, authored by %s, job %s on %s" % (
+        verdict["id"], verdict["agent"], t_job, verdict["executor"]))
+    return True, lines
 
 
 def print_jobs(con, project=None, include_finished=False):
@@ -4477,6 +4690,17 @@ def main(argv=None):
             if block is None:
                 raise PulseError("No fenced block under '## Proposed text' in %s" % args.post_id)
             print(block_hash(block))
+            return 0
+        if args.cmd == "verify":
+            ok, lines = verify_commit(con, current_project(con, args.project), args.ref)
+            print("\n".join(lines))
+            return 0 if ok else 1
+        if args.cmd == "signers":
+            lines = signers_lines(con, project=args.project)
+            if not lines:
+                print("# no run has a signing key yet (ADR-022); runs made before it carry none", file=sys.stderr)
+            for line in lines:
+                print(line)
             return 0
         if args.cmd == "projects":
             for p in project_rows(con, include_inactive=True):

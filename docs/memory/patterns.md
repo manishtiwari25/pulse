@@ -163,6 +163,21 @@
   time text alone (a tree-against-itself control shows the same noise). Apply
   when: measuring P4 or any light/dark render for the dashboard. Source:
   archive rows A-007 and A-008.
+- `2026-09-06` - A clone an agent commits in pins its whole signing path at
+  clone level, never trusting the machine: `gpg.format ssh`,
+  `gpg.ssh.program ssh-keygen` (the maintainer's global config points it at a
+  password manager's signer, which would sign - or hang - as the human),
+  `user.signingkey <per-run key outside the clone>`, `commit.gpgsign true`,
+  `core.hooksPath .git/hooks` (a global hooks directory would otherwise
+  replace the provenance hook). Verification on the hub pins the same two
+  with `-c` and a one-line `gpg.ssh.allowedSignersFile`. `git commit
+  --no-verify` skips only `pre-commit` and `commit-msg`, so a
+  `prepare-commit-msg` hook still stamps trailers; the real bypass is
+  `-c core.hooksPath=...`, which landing refuses for the missing trailers.
+  Apply when: a runner or worker creates commits on a machine it does not
+  own, or a test needs a commit that bypasses a hook. Source: ADR-022,
+  WU-013, `docs/scripts/pulse.py` `configure_clone_identity` and
+  `landing_problems`.
 
 ## Populate When
 

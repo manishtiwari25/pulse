@@ -13,9 +13,12 @@
 # or runs `copilot login` here once).
 #
 # Verbs (one call each, from pulse.py's SshExecutor):
-#   probe                          describe this machine: hands=ok user= workdir= git= copilot= logged_in= remotes= keys_ok= disk_free_mb=
+#   probe                          describe this machine: hands=ok user= workdir= git= copilot= logged_in= remotes= keys_ok= disk_free_mb= jobs= keys=
 #   prepare JOB BRANCH AGENT       stdin: a git bundle; clones it into WORKDIR/JOB/clone, drops the remote, sets the agent's
-#                                  identity and no signing; prints the base commit
+#                                  identity and no signing yet; prints the base commit
+#   key JOB EXECUTOR               stdin: this run's private ssh signing key (ADR-022); written to WORKDIR/JOB/run.key (0600),
+#                                  the clone signs every commit with it and a clone-local hook adds the Pulse-Agent/
+#                                  Pulse-Job/Pulse-Executor trailers; the key can only sign and leaves with `clean`
 #   brief JOB                      stdin: the brief; written to WORKDIR/JOB/brief.md
 #   run JOB MINUTES [K=V ...] -- CMD ...   run the worker in the clone with those env keys under a MINUTES timeout
 #                                  (exit 124 when it ran out); only PULSE_* and GIT_TERMINAL_PROMPT keys, only copilot
@@ -131,8 +134,15 @@ verb_probe() {
     j="$(basename "$d")"
     jobs="${jobs:+$jobs,}$j"
   done
-  printf 'hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s remotes=%s keys_ok=%s disk_free_mb=%s jobs=%s\n' \
-    "$(id -un)" "$WORKDIR" "$gitv" "$copv" "$logged_in" "$remotes" "$keys_ok" "$free_mb" "${jobs:--}"
+  # Job directories still holding a run's signing key: the hub checks each against its live runs (ADR-022).
+  local keys=""
+  for d in "$WORKDIR"/*/; do
+    [ -f "${d}run.key" ] || continue
+    j="$(basename "$d")"
+    keys="${keys:+$keys,}$j"
+  done
+  printf 'hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s remotes=%s keys_ok=%s disk_free_mb=%s jobs=%s keys=%s\n' \
+    "$(id -un)" "$WORKDIR" "$gitv" "$copv" "$logged_in" "$remotes" "$keys_ok" "$free_mb" "${jobs:--}" "${keys:--}"
 }
 
 verb_prepare() {
@@ -161,6 +171,41 @@ verb_prepare() {
   git -C "$dir/clone" config commit.gpgsign false
   git -C "$dir/clone" config tag.gpgsign false
   git -C "$dir/clone" rev-parse HEAD
+}
+
+verb_key() {
+  # ADR-022: the hub made this key for this run alone. It lands next to the clone, never inside it, readable by
+  # this user only; the clone pins every knob the signature depends on so no machine-wide signer or hooks
+  # directory can take over, and the hook stamps who, which job, which hands on every commit.
+  local job="$1" executor="$2" dir clone key hooks agent
+  [[ "$executor" =~ ^[A-Za-z0-9._-]+$ ]] || die "bad executor name"
+  dir="$(job_dir "$job")"
+  clone="$(clone_dir "$job")"
+  key="$dir/run.key"
+  umask 077
+  cat > "$key"
+  chmod 600 "$key"
+  if ! grep -q -- '-----BEGIN OPENSSH PRIVATE KEY-----' "$key" 2>/dev/null; then
+    rm -f "$key"
+    die "not an openssh private key"
+  fi
+  agent="$(git -C "$clone" config user.name)"
+  [[ "$agent" =~ ^[A-Za-z0-9._-]+$ ]] || die "the clone has no agent identity (prepare first)"
+  hooks="$clone/.git/hooks"
+  git -C "$clone" config gpg.format ssh
+  git -C "$clone" config gpg.ssh.program ssh-keygen
+  git -C "$clone" config user.signingkey "$key"
+  git -C "$clone" config commit.gpgsign true
+  git -C "$clone" config tag.gpgsign false
+  git -C "$clone" config core.hooksPath "$hooks"
+  mkdir -p "$hooks"
+  {
+    printf '#!/bin/sh\n'
+    printf '# pulse: provenance trailers for every commit of this run (ADR-022). Local to this clone, never committed.\n'
+    printf "exec git interpret-trailers --in-place --if-exists doNothing --trailer 'Pulse-Agent: %s' --trailer 'Pulse-Job: %s' --trailer 'Pulse-Executor: %s' \"\$1\"\n" "$agent" "$job" "$executor"
+  } > "$hooks/prepare-commit-msg"
+  chmod 755 "$hooks/prepare-commit-msg"
+  echo keyed
 }
 
 verb_brief() {
@@ -271,6 +316,7 @@ main() {
   case "$verb" in
     probe)        verb_probe ;;
     prepare)      [ $# -eq 3 ] || die "prepare JOB BRANCH AGENT"; verb_prepare "$@" ;;
+    key)          [ $# -eq 2 ] || die "key JOB EXECUTOR"; verb_key "$@" ;;
     brief)        [ $# -eq 1 ] || die "brief JOB"; verb_brief "$@" ;;
     run)          [ $# -ge 4 ] || die "run JOB MINUTES [K=V ...] -- CMD ..."; verb_run "$@" ;;
     result)       [ $# -eq 1 ] || die "result JOB"; verb_result "$@" ;;
