@@ -1611,6 +1611,24 @@ class RunnableCloneTestCase(StoreFixture):
         self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {})
         self.assertEqual(self.con.execute("SELECT count(*) FROM posts WHERE thread = 'tools-wanted'").fetchone()[0], 0)
 
+    def test_a_check_that_cannot_start_on_the_machine_marks_it_unfit_and_requeues_the_job(self):
+        self.con.execute("UPDATE projects SET verify_cmd = ?, brain = 1 WHERE slug = 'proj'", ("%s test" % self.MISSING,))
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script('echo "changed by $PULSE_AGENT" >> README.md && git commit -qam "c" && printf "SUMMARY: ok\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "failed", run["summary"])
+        self.assertIn("the check could not start on local: `%s` is not installed there" % self.MISSING, run["summary"])
+        self.assertEqual(run["branch"], "", "unverified commits never land")
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual((job["status"], job["attempts"]), ("queued", 1), "back to the queue for a machine that can judge it; the attempt counts")
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {"proj": self.MISSING})
+        finding = self.con.execute("SELECT * FROM posts WHERE kind = 'finding' AND thread = 'tools-wanted'").fetchone()
+        self.assertTrue(finding["summary"].startswith("local lacks %s for proj" % self.MISSING), finding["summary"])
+        self.assertEqual(pulse.check_tool_missing("make test", 127, "bash: line 1: make: command not found"), "make")
+        self.assertEqual(pulse.check_tool_missing("make test", 2, "make: *** No rule to make target 'test'"), "", "a failing check is the branch's")
+        self.assertEqual(pulse.check_tool_missing("CI=1 ./scripts/check.sh", 127, "check.sh: No such file or directory"), "check.sh")
+
     def test_landing_installs_in_the_worktree_and_defers_when_it_cannot(self):
         self.use_rule("fake-tool")
         marker = self.tmp / "installs"

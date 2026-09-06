@@ -82,7 +82,12 @@ the tests 4.8 s. Installing is cheap next to a ten-minute worker.
    install line from `TOOL_HINTS`.
 3. The brief tells the worker the runner already ran the install and which
    command, so it uses `uv run`, `corepack pnpm`, `npm exec` as they are and
-   never touches a lockfile.
+   never touches a lockfile. When the project's *check* cannot start on the
+   machine after the worker ran (`make: command not found`,
+   `check_tool_missing`), the run fails as before - unverified commits never
+   land - but the machine is marked unfit for the project with the check's
+   own program, the job goes back to the queue (attempt counted) for a
+   machine that can judge it, and the `finding` names that tool too.
 4. `take_job` subtracts the executor's unfit projects from what it may
    lease; with nothing left to serve it returns the reason
    (`executor X lacks uv for project-light (install it, then pulse executor
@@ -105,7 +110,8 @@ the tests 4.8 s. Installing is cheap next to a ten-minute worker.
    it (local and through the hands); a missing tool marking only that
    project unfit, returning the attempt, posting one finding a day, expiring
    after `UNFIT_HOURS`, and a human probe clearing it while the daemon's
-   does not; a non-tool setup failure as a plain runner error; the landing
+   does not; a non-tool setup failure as a plain runner error; a check that
+   cannot start marking the machine unfit and requeuing the job; the landing
    worktree installed, deferred while the tool is broken, landed after.
 
 ## Acceptance Criteria
@@ -123,7 +129,7 @@ the tests 4.8 s. Installing is cheap next to a ten-minute worker.
 ## Verification
 
 - `cd docs/scripts/tests && python3 -m unittest test_pulse.RunnableCloneTestCase test_pulse.RunnableCloneRemoteTestCase`
-- The full suite above (258 tests, 1 skip on 2026-09-06).
+- The full suite above (259 tests, 1 skip on 2026-09-06).
 - On this machine: the daemon (`pulse start`) takes an amistio job, the run
   log shows `# setup from pnpm-lock.yaml`, and its branch verifies; a
   project-light job on `pulse-vm1` ends `error` within a minute with

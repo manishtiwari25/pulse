@@ -1768,6 +1768,24 @@ def missing_tool(setup_cmd, rc, output):
     return ""
 
 
+def check_tool_missing(verify_cmd, rc, output):
+    """The check's own program when the project's check could not start on the machine (`make: command not
+    found`), or "". Unlike a failing check, this says nothing about the branch: the machine lacks the tool."""
+    try:
+        tokens = shlex.split(verify_cmd or "")
+    except ValueError:
+        tokens = (verify_cmd or "").split()
+    tokens = [t for t in tokens if t and "=" not in t and t not in ("env", "exec", "nice", "time")]
+    if not tokens:
+        return ""
+    tool = Path(tokens[0]).name
+    text = output or ""
+    if re.search(r"(^|[\s:'`])%s: (command )?not found" % re.escape(tool), text, re.M) or \
+       re.search(r"%s: No such file or directory" % re.escape(tool), text):
+        return tool
+    return tool if rc == 127 and not text.strip() else ""
+
+
 def unfit_marks(con):
     row = con.execute("SELECT value FROM meta WHERE key = 'unfit'").fetchone()
     try:
@@ -3819,6 +3837,7 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
                     if ex.drop_committed_result_file():
                         commits += 1
                         log.append("%s was committed by the worker; removed with one more commit" % RESULT_FILE)
+                    check_tool = ""
                     if project["verify_cmd"]:
                         rc, vout = ex.verify(project["verify_cmd"], minutes)
                         if rc is None:
@@ -3826,8 +3845,16 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
                         else:
                             verify_note = "verify exit %d" % rc
                             ok = rc == 0
+                            check_tool = "" if ok else check_tool_missing(project["verify_cmd"], rc, vout)
                         log.append("$ %s\n%s" % (project["verify_cmd"], vout[-40000:]))
-                    if not ok:
+                    if check_tool:
+                        # The check could not even start here (WU-021): unverified commits never land, and the
+                        # machine is kept off this project so the next job is not spent the same way.
+                        status = "failed"
+                        summary = "%d commit(s) but the check could not start on %s: `%s` is not installed there (%s); nothing landed" % (
+                            commits, ex.name, check_tool, verify_note)
+                        unfit = ExecutorUnfit(summary, check_tool, project["slug"])
+                    elif not ok:
                         status = "failed"
                         summary = "%d commit(s) but %s; nothing landed" % (commits, verify_note)
                     elif not renew_lease(con, job["id"], agent, job["generation"], 5):
@@ -3916,6 +3943,10 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
         # The machine, not the runner or the agent, failed: the job goes back with its attempt returned.
         job_status = "queued"
         con.execute("UPDATE jobs SET attempts = MAX(attempts - 1, 0) WHERE id = ?", (job["id"],))
+    elif status == "failed" and unfit is not None and commits and job["attempts"] < MAX_ATTEMPTS:
+        # The check could not start on this machine: the work is lost, but the job deserves a machine that can
+        # judge it - back to the queue, the attempt counted, the project kept off this machine meanwhile.
+        job_status = "queued"
     elif status == "error":
         # The runner, not the agent, failed: the job goes back to the queue until its attempts run out.
         job_status = "queued" if job["attempts"] < MAX_ATTEMPTS else "failed"

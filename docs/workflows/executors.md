@@ -282,7 +282,10 @@ your act:
   `command not found`; the run is an `error`, the job goes back to the queue
   with its attempt returned, and the machine is marked *unfit for that
   project only* (`meta.unfit`) for 24 hours - it keeps serving every other
-  project and is never drained for this. `pulse status` shows `pulse-vm1
+  project and is never drained for this. The same mark follows a check that
+  cannot start after the worker ran (`make: command not found`): that run
+  fails - unverified commits never land - and the job returns to the queue
+  for a machine that can judge it. `pulse status` shows `pulse-vm1
   active (0/1 busy); lacks uv for project-light`, and once a day per machine
   and tool the daemon posts one `finding` on the brain's board, area
   `runner`, thread `tools-wanted`, with the install line. Data for you, never
