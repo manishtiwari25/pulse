@@ -50,7 +50,7 @@ and the embedded legacy page deleted.
 
 ### Step 1 - The owner's edits (human commit, on acceptance)
 
-- [ ] `test_pulse_dashboard_guards.py`: replace the bundle-literal
+- [x] `test_pulse_dashboard_guards.py`: replace the bundle-literal
       `innerHTML`/`outerHTML`/`insertAdjacentHTML` check with the source
       rule over `docs/scripts/dashboard/src/**` and `index.html`; keep
       `eval(`, `new Function`, `document.write` on the bundle; keep the URL
@@ -58,13 +58,14 @@ and the embedded legacy page deleted.
       on the source; everything else unchanged. The agent prepares this
       diff as a patch file in the session workspace and quotes it in the
       board proposal; the human applies and commits it.
-- [ ] Constitution: class `dashboard (product)` paths gain
+- [x] Constitution: class `dashboard (product)` paths gain
       `docs/scripts/dashboard/src/**`, `docs/scripts/dashboard/index.html`,
       `vite.config.ts`, `tsconfig*.json`, `eslint.config.js`,
       `package.json`; `package-lock.json` and `dist/**` are generated
       outputs of the build step, listed as such.
-- [ ] Evaluators: P2 and P6 as ADR-023 §5; note that a new P6 baseline is
-      recorded at phase B.
+- [x] Evaluators: P2 and P6 as ADR-023 §5; note that a new P6 baseline is
+      recorded at phase B. (Landed as one commit after the human's yes,
+      revertable alone; see the ADR Follow-Up.)
 
 ### Phase A - Scaffold and parity (agent, standing autonomy inside ADR-023 once Accepted)
 

@@ -36,8 +36,11 @@ MODULE = SCRIPTS / "pulse-dashboard.py"
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
        "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 PAYLOAD = "<script>alert(1)</script><img src=x onerror=\"alert(2)\"> & \"quotes\" 'single'"
-FORBIDDEN_JS = (b"innerHTML", b"outerHTML", b"insertAdjacentHTML", b"eval(", b"new Function", b"document.write")
-SVG_NS = b"http://www.w3.org/2000/svg"
+FORBIDDEN_JS = (b"eval(", b"new Function", b"document.write")  # on the served bundle; the framework runtime owns its innerHTML string
+FORBIDDEN_SRC = ("dangerouslySetInnerHTML", "innerHTML", "outerHTML", "insertAdjacentHTML", "eval(", "new Function", "document.write",
+                 "http://", "https://")  # on our source, where markup insertion and outside reach would be decided (ADR-023 §3)
+W3C_NS = (b"http://www.w3.org/2000/svg", b"http://www.w3.org/1999/xhtml", b"http://www.w3.org/1998/Math/MathML", b"http://www.w3.org/XML/1998/namespace")
+UI_SRC = MODULE.parent / "dashboard"
 
 
 def load_module():
@@ -152,9 +155,18 @@ class ServerGuards(unittest.TestCase):
         status, _, js = request(self.url, "/app.js")
         self.assertEqual(status, 200)
         for bad in FORBIDDEN_JS:
-            self.assertNotIn(bad, js, "the page only ever inserts text: %r" % bad)
+            self.assertNotIn(bad, js, "the bundle never evaluates text as code: %r" % bad)
         self.assertNotIn(b"https://", js)
-        self.assertNotIn(b"http://", js.replace(SVG_NS, b""), "the SVG namespace is the only http literal; never fetched")
+        stripped = js
+        for ns in W3C_NS:
+            stripped = stripped.replace(ns, b"")
+        self.assertNotIn(b"http://", stripped, "W3C namespace strings are the only http literals; never fetched")
+        if UI_SRC.is_dir():  # ADR-023: the decision to insert markup or reach outside can only be made in our source
+            for path in sorted(list((UI_SRC / "src").rglob("*")) + [UI_SRC / "index.html"]):
+                if path.is_file() and path.suffix in (".ts", ".tsx", ".js", ".jsx", ".css", ".html"):
+                    text = path.read_text(encoding="utf-8")
+                    for bad in FORBIDDEN_SRC:
+                        self.assertNotIn(bad, text, "%s: the page only ever inserts text and never reaches outside: %r" % (path.relative_to(UI_SRC), bad))
         self.assertNotIn(b"XMLHttpRequest", js.replace(b"fetch(", b""), "reads go through fetch to same-origin routes")
         status, headers, css = request(self.url, "/app.css")
         self.assertEqual(status, 200)
