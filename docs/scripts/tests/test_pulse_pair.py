@@ -19,7 +19,7 @@ from pathlib import Path
 import test_pulse as tp
 
 NOW = "2026-09-10T12:00:00Z"
-APPLY_SCRIPT_SHA256 = "c511f242366c42cfbedaf7456ce765f7aea33fb7a451fa1c45fbdd072040a403"
+APPLY_SCRIPT_SHA256 = "1f8b7f5a7da2f2555ef18732b0c333b398c5708b447610d540ceac28d369107b"
 
 
 PAIR_SSH_SHIM = r"""#!/bin/bash

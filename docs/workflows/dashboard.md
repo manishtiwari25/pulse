@@ -67,7 +67,11 @@ The route is served only by the dashboard's loopback listener
 and the human's words in the `decisions` table, creates the matching
 `result` post with `resolution: accepted` or `resolution: declined`, commits
 the store transaction, refreshes the dashboard projection, and returns the
-new result post id. A missing guard header, a non-JSON body, a bad answer, a
+new result post id. Because it is the same `pulse decide`, a `yes` clicked
+here queues the one `task` job that carries the proposal to the runner
+(source `decide:<post-id>`, [WU-022](../plans/WU-022-decision-hook.md)); the
+next daemon loop leases it - no agent has to be watching the board for your
+answer. A missing guard header, a non-JSON body, a bad answer, a
 missing post, or a second decision for the same proposal returns JSON error
 text and records nothing.
 

@@ -30,7 +30,13 @@ pulse status                                   # store, projects, agents, jobs, 
    built-in `human` agent. Since ADR-024 nothing waits for it: agents act on
    their agreed proposals inside Tier 0 and Tier 1, and a `no` means an agent
    reverts the work by commit. Only a human runs it (an agent may run it to
-   quote your words from chat).
+   quote your words from chat). A `yes` also queues one `task` job in the
+   proposal's project (source `decide:<post-id>`, event `decide.job`; the
+   brief carries the proposal and your words), so an acceptance clicked in
+   the dashboard or typed here becomes work in the next daemon loop without
+   any agent watching for it ([WU-022](../plans/WU-022-decision-hook.md)).
+   A proposal that is itself an `onboard:` or `pair:` request keeps its own
+   path; a `no` queues nothing.
 3. **Set the caps** - `pulse settings` lists them; `pulse settings set
    jobs_per_day 4` changes one (every change is an event), and
    `jobs_per_day 0` removes the daily cap so the machine runs job after job
@@ -104,6 +110,8 @@ pulse work --executor vm1           # one job on a registered remote executor (A
 pulse land                          # merge every verified branch of this project into its default branch (ADR-024)
 pulse land --all                    # the same for every registered project
 pulse land --branch evolve/memory/x # one branch, for example a kept evolve variant
+pulse land --project p --branch pulse/a/j  # a human lands a held recipe-only branch (ADR-026)
+pulse env check [--project p] [--executor e] [--json]  # what each project's recipe asks and which machine can serve it
 pulse executor list                 # this machine and every pair of hands, with their state
 ```
 
@@ -248,6 +256,14 @@ branch is dropped in one extra commit). **Two requeues, then failed**: a job
 whose branch conflicts or fails the check twice is not requeued a third time;
 it ends `failed` with the patch kept (`job.abandoned`), so a check that
 cannot pass on this machine never becomes a credit-spending loop.
+**Recipe changes travel alone** (ADR-026): `docs/context/environment.md` is
+one of the check-defining files, so the landing check runs with the base's
+recipe; a branch that changes it with any other file is `refused`, and a
+branch that changes only it is `held` - the branch stays, one `question` on
+the project's `runner/environment` thread carries the diff, and a human
+lands it with `pulse land --project <slug> --branch <branch>` (an agent
+naming the branch holds it again). The recipe itself is described in
+[`executors.md`](executors.md#the-projects-environment-recipe).
 
 ## Onboard a project
 

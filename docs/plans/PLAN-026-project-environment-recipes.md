@@ -1,7 +1,7 @@
 ---
 id: PLAN-026
 title: Project Environment Recipes - Deliver ADR-026 in Three Slices
-status: Draft
+status: In Progress
 tier: 2
 date: 2026-09-06
 delivered:
@@ -17,9 +17,10 @@ user's permissions, installs tools that persist there, and changes how the
 runner lands one class of file: dependencies and security posture, which no
 ADR covered. Decision:
 [ADR-026](../decisions/ADR-026-project-environment-recipes.md). Behaviour:
-[FEAT-016](../features/016-project-environment-recipes.md). Nothing below
-starts before the human's `pulse decide ... yes` on the deliberation's
-agreed answer (thread `runner/environment`).
+[FEAT-016](../features/016-project-environment-recipes.md). The human's
+`pulse decide ... yes` on the deliberation's agreed answer (thread
+`runner/environment`, result `20260906T171842Z-human`) opened the work on
+2026-09-06; each slice is Tier 1 inside ADR-026's boundary.
 
 ## Goal
 
@@ -85,14 +86,14 @@ force from slice 1 (a held branch), not from slice 3.
 
 ### Slice 1 - the recipe, the local installer, the hold, `pulse env check`
 
-- [ ] `docs/context/_template-environment.md`: frontmatter `recipe: 1`,
+- [x] `docs/context/_template-environment.md`: frontmatter `recipe: 1`,
       `tools: []`, `setup: []`, `env: {}`, `services: []`,
       `suggested_check:` with commented examples, and prose explaining each
       key, the secret rule, that `suggested_check:` is advice for
       `verify_cmd`, and - in so many words - that a non-empty `services:`
       blocks every executor until a services decision exists. One line in
       `docs/context/README.md`.
-- [ ] `pulse.py`: `RECIPE_PATH = "docs/context/environment.md"`,
+- [x] `pulse.py`: `RECIPE_PATH = "docs/context/environment.md"`,
       `parse_recipe(text) -> Recipe | RecipeError` (frontmatter only, exact
       key set, `recipe == 1`, `tools` as `name@version` matching the argv
       pattern of ADR-026 rule 1 with exact pins and `<= 12` entries, `setup`
@@ -102,7 +103,7 @@ force from slice 1 (a held branch), not from slice 3.
       `services` a list, `suggested_check` a string). Errors name the key
       and never echo an `env` value. `read_recipe(root, rev)` reads the file
       at the base commit with `git show rev:path` (absent -> `None`).
-- [ ] `run_job`: after `ex.prepare()`, `recipe = read_recipe(clone, base)`;
+- [x] `run_job`: after `ex.prepare()`, `recipe = read_recipe(clone, base)`;
       invalid -> the job errors before the worker with the message, and
       `recipe_invalid_finding(con, slug)` posts one `finding` a day on
       `runner/environment`; `services` non-empty -> `ExecutorUnfit(reason=
@@ -112,48 +113,48 @@ force from slice 1 (a held branch), not from slice 3.
       exports; an explicit empty list runs nothing); `env:` exported for the
       check (`verify` string prefix) and for the worker on the **local**
       executor (subprocess env).
-- [ ] Local `mise` path: `tools_install_command(recipe)` -> `mise install`
+- [x] Local `mise` path: `tools_install_command(recipe)` -> `mise install`
       with one argv element per pin, only the missing ones, under the setup
       cap; `mise_exec_argv(recipe)` -> `["mise", "exec", pin, ..., "--"]`
       prefixed to setup, worker, and check argv on the local executor;
       `mise` missing with a non-empty `tools:` -> `ExecutorUnfit(reason=
       "mise")` and the `tools-wanted` finding names the one install line; a
       pin that fails to install -> `ExecutorUnfit(reason="tool:<name>")`.
-- [ ] Remote gate: a recipe with non-empty `tools:` or `env:` makes every
+- [x] Remote gate: a recipe with non-empty `tools:` or `env:` makes every
       **remote** executor unfit with reason `hands outdated` until slice 2's
       probe reports the new verbs - checked in `take_job` before placement,
       never after a partial run. `setup:` alone still runs remotely through
       the existing `verify` string.
-- [ ] `write_brief(..., recipe=...)`: rule 3 names the recipe's setup lines,
+- [x] `write_brief(..., recipe=...)`: rule 3 names the recipe's setup lines,
       pins, and env names (not values) so the worker knows what already ran;
       the brief also states *recipe changes travel alone*.
-- [ ] `CHECK_FILES += (RECIPE_PATH,)`: a branch that changes the recipe runs
+- [x] `CHECK_FILES += (RECIPE_PATH,)`: a branch that changes the recipe runs
       its landing check with the base's version (WU-021 rule, extended).
       `land_branch` reads the base recipe for the worktree setup.
-- [ ] The hold: `HUMAN_LANDED_PATHS = (RECIPE_PATH,)`; in `land_branch`, a
+- [x] The hold: `HUMAN_LANDED_PATHS = (RECIPE_PATH,)`; in `land_branch`, a
       branch touching one and any other file is refused like a
       `LAND_REFUSED_PATHS` hit (`result`: *recipe changes travel alone*); a
       recipe-only branch returns `("held", note)`, stays, and posts one
       `question` on `runner/environment` naming it (once per branch); the
       human lands it with `pulse land --project P --branch B` or a hand
       merge. `land_pending` skips held branches.
-- [ ] `cmd_onboard`: scaffold `docs/context/environment.md` from the template
+- [x] `cmd_onboard`: scaffold `docs/context/environment.md` from the template
       only when absent, printed with `git status --short`, never staged;
       `queue_onboarding_job`'s brief gains the recipe paragraph of ADR-026
       rule 2 (including *commit the recipe on its own*).
-- [ ] `pair_apply_script` and `cloud-init.yaml`: install one pinned `mise`
+- [x] `pair_apply_script` and `cloud-init.yaml`: install one pinned `mise`
       release for the `pulse` user with its checksum verified (fail the
       pairing step loudly on mismatch); `pair_inspect_script` reports
       `mise=` so `pulse pair` on an already paired machine adds it
       (idempotent, like the hands hash refresh).
-- [ ] `pulse env check [--project P] [--executor E] [--json]`: read-only;
+- [x] `pulse env check [--project P] [--executor E] [--json]`: read-only;
       recipe at the default branch; local executor's tools from
       `shutil.which` and `mise ls`; remote executors read `hands outdated -
       re-run pulse pair` (slice 2 fills the table); `suggested_check:`
       beside `verify_cmd`; the `services` warning; exit 1 when any executor
       is unfit for the project. `executors_line` and `pulse status` read
       `lacks uv`, `lacks mise`, `needs services`, `hands outdated`.
-- [ ] Tests (`RecipeTestCase`): parser accepts the example, refuses unknown
+- [x] Tests (`RecipeTestCase`): parser accepts the example, refuses unknown
       keys, `latest`, 13 tools, a pin with a space or `;`, a `GITHUB_TOKEN`
       name, `API_KEY_NAME`, a 40-char value, a `postgres://u:p@h/db` value,
       an `eyJ...` JWT, a multi-line value, `recipe: 2`; `run_job` prefers
@@ -167,11 +168,29 @@ force from slice 1 (a held branch), not from slice 3.
       `onboard` scaffolds once and never overwrites; the brief carries
       setup lines, pins, env names, and the travel-alone rule; `env check`
       output and exit code; `pair` scripts contain the pinned `mise` line.
-- [ ] Docs: `docs/workflows/executors.md` (the recipe paragraph under "What
+- [x] Docs: `docs/workflows/executors.md` (the recipe paragraph under "What
       a machine needs installed"; `mise`; what stays `apt-get`),
       `docs/workflows/pulse.md` (run, landing, `env check`),
       `docs/context/pulse-store.md` (`unfit` reasons `tool:<name>`,
       `services`, `mise`, `hands outdated`), `cloud-init.yaml` header.
+
+
+Slice 1 delivered 2026-09-06 (brain `main`; `RecipeTestCase` and
+`RecipeRemoteTestCase`, 14 tests). Deviations from the lines above, each
+smaller than planned: the template leaves `setup:` commented out rather
+than `setup: []`, so a fresh scaffold keeps the WU-021 lockfile heuristic
+until an owner writes the list (an explicit `setup: []` still runs
+nothing); `mise install` receives every pin (mise itself skips installed
+ones) instead of a `mise ls` diff; `pulse env check` looks at the local
+machine live with `shutil.which` (mise when the recipe pins tools, the
+heuristic's program otherwise) and at remote hands through the store's
+marks and the recipe (`hands outdated` until slice 2's probe); `land
+--branch` lands a held branch only for the human (no `PULSE_AGENT`), an
+agent naming it holds it again; each worker on the local executor also
+receives `COPILOT_SUBAGENT_MAX_CONCURRENT=256` and
+`COPILOT_SUBAGENT_MAX_DEPTH=128` (`WORKER_ENV`), and the hands set the
+same two for theirs - the maintainer's request that every worker may fan
+out as far as the CLI allows.
 
 ### Slice 2 - remote parity: the hands learn the recipe
 

@@ -1,9 +1,10 @@
 ---
 id: ADR-026
 title: Project Environment Recipes - Every Onboarded Project Tells the Machines What It Needs, Agents Write the Recipe, a Human Lands It Until the Class Earns Autonomy
-status: Proposed
+status: Accepted
+accepted: 2026-09-06
 date: 2026-09-06
-delivery: not started
+delivery: partially delivered
 delivered:
 areas: [runner, agents, dependencies, security]
 tags: [adr, runner, executors, environment, tools, onboarding, dependencies, security, agent-first]
@@ -316,7 +317,12 @@ three, all taken - `check:` renamed `suggested_check:`, the `services`
 block stated in the template and the status line, and the plan reordered so
 the parser, the scaffold, the local `mise` path, and `pulse env check` land
 first and the dashboard and measurement last. The convener's `answer`
-(`resolution: agreed`) carries the one proposal the human decides on.
+(`resolution: agreed`, `20260906T171408Z-fable-scale-09051203`) carried the
+one proposal; the human accepted it from the dashboard's decide route at
+17:18 UTC on 2026-09-06 (result `20260906T171842Z-human`). That yes was also
+the moment the store showed a gap - nothing turned a recorded decision into
+work until an agent happened to look - which WU-022 closed the same hour: a
+yes now queues one job in the proposal's project.
 
 ## Consequences
 

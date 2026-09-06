@@ -4,8 +4,10 @@
 # Rendered by azure-provision.sh, which replaces the two placeholders below:
 #   __HUB_PUBKEY__    the hub's ssh public key (one line), bound to the forced command
 #   __PULSE_HANDS__   the contents of docs/scripts/hosted/pulse-hands.sh, base64 encoded
-# The machine gets git, python3, Node.js 22 with the copilot CLI, a single-purpose user `pulse`
-# whose only key runs pulse-hands, and nothing that can push: no remote, no repository credential.
+# The machine gets git, python3, Node.js 22 with the copilot CLI, a pinned mise release under the
+# `pulse` user's ~/.local/bin (checksum-verified; it installs the tool pins a project's
+# docs/context/environment.md names, ADR-026), a single-purpose user `pulse` whose only key runs
+# pulse-hands, and nothing that can push: no remote, no repository credential.
 # The human still places the login from the hub with
 # `pulse executor login <name> --admin <admin>@<ip> --with-token`, or runs
 # `ssh -t <admin>@<ip> sudo -iu pulse copilot login` here.
@@ -54,6 +56,24 @@ runcmd:
   - apt-get update
   - apt-get install -y nodejs
   - npm install -g @github/copilot
+  # mise, pinned and checksum-verified, for the tool pins a recipe names (ADR-026). Keep the version and
+  # sums equal to MISE_VERSION / MISE_SHA256 in docs/scripts/pulse.py; a mismatch installs nothing.
+  - |
+    set -e
+    case "$(uname -m)" in
+      x86_64) arch=x64; sum=c98423c8470d6dc416d9f7036d0646d8ef5ae92ad9186907f8fcc84cbe7db4ea ;;
+      aarch64) arch=arm64; sum=0ef0a778eaa8599f3e90a8a0979c9fc3f79922cafb5fa6d39f366d974da33bba ;;
+      *) exit 0 ;;
+    esac
+    tmp="$(mktemp)"
+    curl -fsSL -o "$tmp" "https://github.com/jdx/mise/releases/download/v2026.9.1/mise-v2026.9.1-linux-$arch"
+    if [ "$(sha256sum "$tmp" | awk '{print $1}')" = "$sum" ]; then
+      install -d -m 0755 -o pulse -g pulse /home/pulse/.local /home/pulse/.local/bin
+      install -m 0755 -o pulse -g pulse "$tmp" /home/pulse/.local/bin/mise
+    else
+      echo "mise checksum mismatch; not installed" >&2
+    fi
+    rm -f "$tmp"
   # The work directory the forced command roots every path in.
   - mkdir -p /srv/pulse
   - chown pulse:pulse /srv/pulse

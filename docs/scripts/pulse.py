@@ -1583,7 +1583,12 @@ def queue_onboarding_job(con, slug, created_by="init"):
     return add_job(con, slug, "onboard", "Onboard %s: read AGENTS.md, run the checks, post the first findings" % slug,
                    "Read the project's AGENTS.md, docs/context/, docs/memory/, and open decisions. Run its checks. Write FINDING: lines "
                    "for what the next agent would rediscover and SUMMARY: with the project's state. Change nothing unless a check "
-                   "proves a Tier 0 fix.", tier=0, priority=20, source="onboard:%s" % slug, created_by=created_by)
+                   "proves a Tier 0 fix. Then fill the environment recipe, docs/context/environment.md (ADR-026), from what you "
+                   "observed: the exact tool pins a fresh machine needs (`name@version`), the setup lines that make a clean clone "
+                   "runnable, the plain variables the check needs (names and values that are not secrets), and any running "
+                   "service the project cannot do without. Commit the recipe alone, in a commit that touches nothing else; a "
+                   "human lands it. Never write a token, password, or key into it.",
+                   tier=0, priority=20, source="onboard:%s" % slug, created_by=created_by)
 
 
 # --------------------------------------------------------------------------- #
@@ -1877,22 +1882,404 @@ def tools_wanted(con, brain, executor, tool, project, now, actor="daemon"):
     if brain is None:
         return None
     thread = "tools-wanted"
-    needle = "%s lacks %s" % (executor, tool)
+    needle = "%s %s" % (executor, unfit_phrase(tool))
     if con.execute("SELECT 1 FROM posts WHERE project = ? AND kind = 'finding' AND area = 'runner' AND thread = ? "
                    "AND date LIKE ? AND summary LIKE ?", (brain["slug"], thread, now[:10] + "%", needle + "%")).fetchone():
         return None
-    hint = TOOL_HINTS.get(tool, "install %s on the machine" % tool)
-    summary = trunc("%s for %s: its jobs run elsewhere until the tool is installed and `pulse executor probe %s` passes"
-                    % (needle, project, executor), 230)
-    body = ("Setting up a clone of %s on executor `%s` failed because `%s` is not installed there (WU-021). The runner "
-            "installs what the project's lockfile pins before a worker starts; without the tool it cannot, so %s jobs "
-            "go to other slots for %d hours and again after that until a probe passes.\n\nOn %s, as the executor user "
-            "unless the line says sudo:\n\n    %s\n\nthen on the hub: `pulse executor probe %s`. The human owns the machine; "
-            "this post is a measurement, not a request to act.\n" % (project, executor, tool, project, UNFIT_HOURS, executor, hint, executor))
+    hint = tool_hint(tool)
+    if tool == RECIPE_UNFIT_SERVICES:
+        summary = trunc("%s for %s: its recipe lists running services no machine starts; jobs wait until an owner clears the list"
+                        % (needle, project), 230)
+        why = ("The environment recipe of %s (`%s`, ADR-026) lists `services:`. The runner starts no databases, brokers, or "
+               "other services, so the project is off every machine until the list is empty." % (project, RECIPE_PATH))
+    elif tool == RECIPE_UNFIT_HANDS:
+        summary = trunc("%s for %s: its recipe pins tools or env the remote hands cannot take yet; jobs run on the hub meanwhile"
+                        % (needle, project), 230)
+        why = ("The environment recipe of %s (`%s`, ADR-026) pins tools or sets env, and the hands on `%s` have no verb for "
+               "that yet; the project runs where they can be honoured until the hands are refreshed." % (project, RECIPE_PATH, executor))
+    else:
+        summary = trunc("%s for %s: its jobs run elsewhere until the tool is installed and `pulse executor probe %s` passes"
+                        % (needle, project, executor), 230)
+        why = ("Setting up a clone of %s on executor `%s` failed because `%s` is not installed there (WU-021%s). The runner "
+               "installs what the project pins before a worker starts; without the tool it cannot."
+               % (project, executor, tool[5:] if tool.startswith("tool:") else tool, ", ADR-026" if tool.startswith("tool:") or tool == RECIPE_UNFIT_MISE else ""))
+    body = ("%s So %s jobs go to other slots for %d hours and again after that until a probe passes.\n\nOn %s, as the "
+            "executor user unless the line says sudo:\n\n    %s\n\nthen on the hub: `pulse executor probe %s`. The human owns "
+            "the machine; this post is a measurement, not a request to act.\n" % (why, project, UNFIT_HOURS, executor, hint, executor))
     post = create_post(con, "finding", brain["slug"], "runner", thread, summary, body, agent=actor, check_agent=False, date=now)
     event(con, actor, "capacity.tools-wanted", brain["slug"], {"executor": executor, "tool": tool, "project": project, "post": post["id"]})
     return post
 
+
+# --------------------------------------------------------------------------- #
+# Environment recipes (ADR-026): docs/context/environment.md, read at the base commit
+# --------------------------------------------------------------------------- #
+
+RECIPE_PATH = "docs/context/environment.md"
+RECIPE_TEMPLATE = "_template-environment.md"
+RECIPE_KEYS = ("recipe", "tools", "setup", "env", "services", "suggested_check")
+RECIPE_MAX_TOOLS = 12
+RECIPE_TOOL_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]*@[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+RECIPE_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+# A variable whose name says "secret" never belongs in a file the runner exports and briefs name.
+RECIPE_SECRET_NAME_RE = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|_KEY$|_KEY_|CREDENTIAL|PRIVATE")
+# Values shaped like credentials: long opaque strings, PEM blocks, URL user:pass, JWTs, and well-known key prefixes.
+RECIPE_SECRET_VALUE_RES = (
+    re.compile(r"-----BEGIN"),
+    re.compile(r"://[^/\s:@]+:[^@\s]+@"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{12,}"),
+    re.compile(r"\b(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{8,}"),
+)
+# A long opaque run is a credential unless the value is plainly a path or a URL (PATH-like lists, module paths).
+RECIPE_LONG_RUN_RE = re.compile(r"[A-Za-z0-9+/_=-]{40,}")
+RECIPE_PATHLIKE_RE = re.compile(r"^(/|\./|\.\./|~|\$|[A-Za-z][A-Za-z0-9+.-]*://[^@\s]*$)")
+# Reasons a machine cannot serve a project that are not a missing program (they still travel as unfit marks).
+RECIPE_UNFIT_SERVICES = "services"
+RECIPE_UNFIT_HANDS = "hands outdated"
+RECIPE_UNFIT_MISE = "mise"
+# The mise release `pulse pair` and cloud-init install on a remote machine, verified against its published checksum
+# (https://github.com/jdx/mise/releases/download/<version>/SHASUMS256.txt). Bump both together.
+MISE_VERSION = "v2026.9.1"
+MISE_SHA256 = {
+    "x86_64": "c98423c8470d6dc416d9f7036d0646d8ef5ae92ad9186907f8fcc84cbe7db4ea",
+    "aarch64": "0ef0a778eaa8599f3e90a8a0979c9fc3f79922cafb5fa6d39f366d974da33bba",
+}
+TOOL_HINTS.update({
+    RECIPE_UNFIT_MISE: "curl https://mise.run | sh   (installs ~/.local/bin/mise; `pulse pair` puts a pinned, checksummed release on remote hands)",
+    RECIPE_UNFIT_SERVICES: "the recipe lists `services:`; provide them another way and empty the list - the runner starts no services",
+    RECIPE_UNFIT_HANDS: "the recipe pins tools or env, which these hands cannot take yet; refresh them with `pulse pair <admin@host> --name <executor>` once the hub's hands support it",
+})
+
+
+def _recipe_scalar(raw, problems, where):
+    """One YAML-ish scalar: quoted (single or double, no escapes but \\\" and \\\\) or bare with a trailing comment
+    stripped. Anything the subset does not cover is a problem, never a guess."""
+    text = raw.strip()
+    if not text:
+        return ""
+    if text[0] in "\"'":
+        quote = text[0]
+        end = None
+        i = 1
+        while i < len(text):
+            if text[i] == "\\" and quote == '"' and i + 1 < len(text):
+                i += 2
+                continue
+            if text[i] == quote:
+                end = i
+                break
+            i += 1
+        if end is None:
+            problems.append("%s: unterminated quote" % where)
+            return ""
+        rest = text[end + 1:].strip()
+        if rest and not rest.startswith("#"):
+            problems.append("%s: text after the closing quote" % where)
+        value = text[1:end]
+        return value.replace('\\"', '"').replace("\\\\", "\\") if quote == '"' else value
+    if " #" in text:
+        text = text.split(" #", 1)[0].rstrip()
+    if text[0] in "&*!|>%@`":
+        problems.append("%s: YAML feature not allowed in a recipe (%s)" % (where, text[0]))
+        return ""
+    return text
+
+
+def secret_shaped(value):
+    """True when an env value looks like a credential: a PEM block, user:pass in a URL, a JWT, a known key prefix,
+    or a long opaque run that is not a path or URL."""
+    if any(rx.search(value) for rx in RECIPE_SECRET_VALUE_RES):
+        return True
+    return bool(RECIPE_LONG_RUN_RE.search(value)) and not RECIPE_PATHLIKE_RE.match(value.strip())
+
+
+def parse_recipe(text):
+    """The recipe's frontmatter as a dict, plus the list of problems that make it invalid (empty when valid).
+    A strict subset of YAML: `key: scalar`, `key: []`, `key: {}`, block lists of scalars, and one level of
+    `NAME: value` under `env`. Unknown keys, wrong shapes, duplicate keys, and secret-shaped env are problems."""
+    problems = []
+    lines = (text or "").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, ["no frontmatter: the file must start with a `---` line"]
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if end is None:
+        return {}, ["frontmatter never closes (a second `---` line is missing)"]
+    recipe = {}
+    i = 1
+    while i < end:
+        line = lines[i]
+        i += 1
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line[0] in " \t":
+            problems.append("line %d: unexpected indentation" % (i))
+            continue
+        if ":" not in line:
+            problems.append("line %d: expected `key: value`" % (i))
+            continue
+        key, _sep, rest = line.partition(":")
+        key = key.strip()
+        if key not in RECIPE_KEYS:
+            problems.append("line %d: unknown key `%s` (allowed: %s)" % (i, key, ", ".join(RECIPE_KEYS)))
+            continue
+        if key in recipe:
+            problems.append("line %d: `%s` given twice" % (i, key))
+            continue
+        rest = rest.strip()
+        if rest.startswith("#"):
+            rest = ""
+        elif rest[:1] not in "\"'" and " #" in rest:
+            rest = rest.split(" #", 1)[0].rstrip()
+        # Block content: the indented lines that follow.
+        block = []
+        while i < end and (not lines[i].strip() or lines[i][0] in " \t"):
+            if lines[i].strip() and not lines[i].strip().startswith("#"):
+                block.append((i + 1, lines[i]))
+            i += 1
+        where = "`%s`" % key
+        if key == "recipe":
+            if block:
+                problems.append("%s: must be `recipe: 1` on one line" % where)
+            value = _recipe_scalar(rest, problems, where)
+            if value != "1":
+                problems.append("%s: only version 1 is known (got %r)" % (where, value))
+            recipe[key] = value
+        elif key == "suggested_check":
+            if block:
+                problems.append("%s: one line only" % where)
+            recipe[key] = _recipe_scalar(rest, problems, where)
+        elif key == "env":
+            mapping = {}
+            if rest and rest != "{}":
+                problems.append("%s: write `env:` with `NAME: value` lines under it, or `env: {}`" % where)
+            for num, item in block:
+                body = item.strip()
+                if body.startswith("- "):
+                    problems.append("line %d: env takes `NAME: value` lines, not a list" % num)
+                    continue
+                name, sep, value = body.partition(":")
+                name = name.strip()
+                if not sep or not RECIPE_ENV_NAME_RE.match(name):
+                    problems.append("line %d: env name must match %s" % (num, RECIPE_ENV_NAME_RE.pattern))
+                    continue
+                if name in mapping:
+                    problems.append("line %d: env `%s` given twice" % (num, name))
+                    continue
+                mapping[name] = _recipe_scalar(value, problems, "env `%s`" % name)
+            recipe[key] = mapping
+        else:
+            items = []
+            if rest and rest != "[]":
+                problems.append("%s: write `%s:` with `- item` lines under it, or `%s: []`" % (where, key, key))
+            elif rest == "[]" and block:
+                problems.append("%s: `[]` and items cannot both be given" % where)
+            for num, item in block:
+                body = item.strip()
+                if not body.startswith("- "):
+                    problems.append("line %d: %s takes `- item` lines" % (num, key))
+                    continue
+                value = _recipe_scalar(body[2:], problems, "line %d" % num)
+                if value:
+                    items.append(value)
+            recipe[key] = items
+    if "recipe" not in recipe:
+        problems.append("`recipe: 1` is required")
+    tools = recipe.get("tools", [])
+    if len(tools) > RECIPE_MAX_TOOLS:
+        problems.append("`tools`: at most %d pins" % RECIPE_MAX_TOOLS)
+    for pin in tools:
+        if not RECIPE_TOOL_RE.match(pin):
+            problems.append("`tools`: `%s` is not an exact `name@version` pin" % pin)
+    for name, value in (recipe.get("env") or {}).items():
+        if RECIPE_SECRET_NAME_RE.search(name):
+            problems.append("env `%s`: the name says secret; secrets never live in the recipe" % name)
+        elif "\n" in value or "\r" in value:
+            problems.append("env `%s`: one line only" % name)
+        elif secret_shaped(value):
+            problems.append("env `%s`: the value is shaped like a credential; secrets never live in the recipe" % name)
+    for line in recipe.get("setup", []):
+        if "\n" in line:
+            problems.append("`setup`: one shell line per item")
+    return recipe, problems
+
+
+def read_recipe(root, rev):
+    """(recipe, problems) for docs/context/environment.md at commit `rev` of the checkout at `root`, or
+    (None, []) when the commit has no recipe. The base commit's recipe is the one that counts: a branch that
+    changes it travels alone and waits for a human landing."""
+    shown = git(root, "show", "%s:%s" % (rev, RECIPE_PATH), timeout=30)
+    if shown.returncode != 0:
+        return None, []
+    return parse_recipe(shown.stdout)
+
+
+def recipe_summary(recipe):
+    """One line naming what a recipe asks for, values of env never included."""
+    if not recipe:
+        return "no recipe"
+    parts = []
+    if recipe.get("tools"):
+        parts.append("tools %s" % ", ".join(recipe["tools"]))
+    if "setup" in recipe:
+        parts.append("%d setup line(s)" % len(recipe["setup"]))
+    if recipe.get("env"):
+        parts.append("env %s" % ", ".join(sorted(recipe["env"])))
+    if recipe.get("services"):
+        parts.append("services %s" % ", ".join(recipe["services"]))
+    return "; ".join(parts) or "recipe with nothing to install"
+
+
+def recipe_env_exports(recipe):
+    """`export A=1 B=2;` for the recipe's env, quoted for the shell, or ""."""
+    env = (recipe or {}).get("env") or {}
+    if not env:
+        return ""
+    return "export " + " ".join("%s=%s" % (k, shlex.quote(v)) for k, v in sorted(env.items())) + "; "
+
+
+def recipe_block(recipe, remote):
+    """Why a machine cannot serve a project with this (valid) recipe before anything runs: `services` when the
+    recipe lists running services (no machine starts them), `hands outdated` when a remote pair of hands would
+    have to take tool pins or env it has no verb for yet, else ""."""
+    if not recipe:
+        return ""
+    if recipe.get("services"):
+        return RECIPE_UNFIT_SERVICES
+    if remote and (recipe.get("tools") or recipe.get("env")):
+        return RECIPE_UNFIT_HANDS
+    return ""
+
+
+def mise_env(clone):
+    """The environment mise runs with: no prompts, and the clone's own mise/.tool-versions files ignored - only
+    the recipe's pins count, an untrusted tree never chooses tools."""
+    return {"MISE_YES": "1", "MISE_IGNORED_CONFIG_PATHS": str(clone)}
+
+
+def mise_exec_argv(pins):
+    """The argv prefix that runs a command with the recipe's pins on PATH, or [] without pins."""
+    return ["mise", "exec"] + list(pins) + ["--"] if pins else []
+
+
+def mise_wrap_shell(pins, cmd, clone):
+    """A shell command string run under the recipe's pins: argv built with shlex, never string-pasted."""
+    if not pins or not cmd:
+        return cmd
+    exports = " ".join("%s=%s" % (k, shlex.quote(v)) for k, v in sorted(mise_env(clone).items()))
+    return "export %s; %s" % (exports, shlex.join(mise_exec_argv(pins) + ["sh", "-c", cmd]))
+
+
+def mise_install_command(pins, clone):
+    exports = " ".join("%s=%s" % (k, shlex.quote(v)) for k, v in sorted(mise_env(clone).items()))
+    return "export %s; %s" % (exports, shlex.join(["mise", "install"] + list(pins)))
+
+
+def mise_failed_pin(pins, output):
+    """The pin a failed `mise install` names in its output, else the first pin."""
+    text = output or ""
+    for pin in pins:
+        name = pin.split("@", 1)[0]
+        if re.search(r"(^|[\s`'\"])%s([\s@`'\":]|$)" % re.escape(name), text, re.M):
+            return pin
+    return pins[0] if pins else ""
+
+
+def project_setup(root, rev, recipe=None, clone=None):
+    """(shell command, files, shown) that make a clone of commit `rev` runnable: the recipe's `setup` lines when
+    the recipe has the key (an empty list runs nothing), else the lockfile heuristic (WU-021). Env from the
+    recipe is exported first; with tool pins the whole chain runs under `mise exec`. `shown` is the plain
+    command text for briefs and logs, exports and wrapping left out."""
+    if recipe is None or "setup" not in recipe:
+        cmd, files = setup_command(root, rev)
+        shown = cmd.split("; ", 1)[-1] if cmd else ""
+        if cmd and recipe and recipe.get("env"):
+            cmd = recipe_env_exports(recipe) + cmd
+    else:
+        files = [RECIPE_PATH]
+        lines = [line for line in recipe["setup"] if line.strip()]
+        if not lines:
+            return "", files, ""
+        exports = " ".join("%s=%s" % kv for kv in SETUP_ENV)
+        shown = " && ".join(lines)
+        cmd = "export %s; %s%s" % (exports, recipe_env_exports(recipe), shown)
+    if cmd and recipe and recipe.get("tools") and clone is not None:
+        cmd = mise_wrap_shell(recipe["tools"], cmd, clone)
+    return cmd, files, shown
+
+
+def unfit_phrase(tool):
+    """How a status line says the machine cannot serve a project: `lacks uv`, `lacks node@22`, `needs services`,
+    `hands outdated`."""
+    if tool == RECIPE_UNFIT_SERVICES:
+        return "needs services"
+    if tool == RECIPE_UNFIT_HANDS:
+        return RECIPE_UNFIT_HANDS
+    return "lacks %s" % (tool[5:] if tool.startswith("tool:") else tool)
+
+
+def tool_hint(tool):
+    if tool.startswith("tool:"):
+        return "as the executor user: `mise install %s`, then `pulse executor probe <executor>`; a pin mise cannot build here is the recipe's to change" % tool[5:]
+    return TOOL_HINTS.get(tool, "install %s on the machine" % tool)
+
+
+def recipe_finding(con, project, why, base, now, actor="runner"):
+    """Once a day per project, one `finding` on the project's runner/environment thread: the recipe at the base
+    commit is invalid and every job errors before a worker starts until an owner fixes it (ADR-026)."""
+    thread = "environment"
+    needle = "invalid environment recipe"
+    if con.execute("SELECT 1 FROM posts WHERE project = ? AND kind = 'finding' AND area = 'runner' AND thread = ? "
+                   "AND date LIKE ? AND summary LIKE ?", (project["slug"], thread, now[:10] + "%", needle + "%")).fetchone():
+        return None
+    summary = trunc("%s at %s: jobs error before a worker starts until it is fixed (%s)" % (needle, base[:12], "; ".join(why)[:120]), 230)
+    body = ("`%s` at the base commit %s does not parse as a recipe (ADR-026), so the runner cannot know what a "
+            "clone needs and starts no worker for %s:\n\n%s\n\nThe file is the project's; whoever fixes it commits "
+            "it alone, and the branch waits for a human landing.\n" % (RECIPE_PATH, base[:12], project["slug"],
+                                                                     "\n".join("- %s" % p for p in why)))
+    try:
+        post = create_post(con, "finding", project["slug"], "runner", thread, summary, body, agent=actor, check_agent=False, date=now)
+    except PulseError:
+        return None
+    event(con, actor, "env.invalid", project["slug"], {"base": base, "problems": why[:6], "post": post["id"]})
+    return post
+
+
+def recipe_at_head(project):
+    """(recipe, problems) at the tip of the project's default branch in the real checkout - what the next job's
+    base will carry, for placement and status; None when the checkout is missing or has no recipe."""
+    root = Path(project["path"])
+    if not (root / ".git").exists():
+        return None, []
+    default = project["default_branch"] or "main"
+    return read_recipe(root, "refs/heads/%s" % default)
+
+
+def recipe_blocks(con, executor, projects=None):
+    """{project: reason} for the projects whose current recipe keeps them off `executor` before placement: a
+    `services` list (every machine) or tool pins and env on remote hands that cannot take them yet."""
+    remote = executor != LOCAL_EXECUTOR
+    out = {}
+    rows = con.execute("SELECT * FROM projects WHERE status = 'active'").fetchall()
+    for row in rows:
+        if projects is not None and row["slug"] not in projects:
+            continue
+        recipe, problems = recipe_at_head(dict(row))
+        if recipe is None or problems:
+            continue
+        why = recipe_block(recipe, remote)
+        if why:
+            out[row["slug"]] = why
+    return out
+
+
+
+# The copilot CLI caps how many sub-agents one worker may run at once and how deep they nest (defaults 32 and 4).
+# A worker on the agents' machine gets the CLI's maximum of both, so a fleet inside one job is bounded by the
+# job's minutes and credits alone; pulse-hands exports the same two for remote runs (its env allowlist takes
+# only PULSE_* keys from the hub, so old hands keep working).
+WORKER_ENV = (("COPILOT_SUBAGENT_MAX_CONCURRENT", "256"), ("COPILOT_SUBAGENT_MAX_DEPTH", "128"))
 
 # A worker that exits non-zero this quickly with nothing to show never took a model turn
 # (a rejected flag, a missing login): the runner's error, not the agent's, and not a run
@@ -1928,11 +2315,12 @@ def daily_cap(con):
         return int(DEFAULT_SETTINGS["jobs_per_day"])
 
 
-def write_brief(job, project, agent, clone, minutes, ballot=None, remote=False, setup=""):
+def write_brief(job, project, agent, clone, minutes, ballot=None, remote=False, setup="", recipe=None):
     """The worker's whole world in one file. `ballot` is the list of cards the agent may vote on, rendered in so a
     worker with no store (a remote executor, ADR-020) can answer with `VOTE:` lines; `remote` drops the CLI paths;
     `setup` names the install command the runner already ran in the clone (WU-021), so the worker knows the
-    dependencies are there and never installs anything itself."""
+    dependencies are there and never installs anything itself; `recipe` is the project's environment recipe at
+    the base commit (ADR-026), whose pins, setup, and variable names the brief states - values never."""
     brief = []
     w = brief.append
     w("# PULSE job %s for %s (agent %s)" % (job["id"], project["slug"], agent))
@@ -1959,9 +2347,20 @@ def write_brief(job, project, agent, clone, minutes, ballot=None, remote=False, 
     w("   privacy, migrations, dependencies, deploy, publish, security posture, or a surface no ADR covers)")
     w("   or crosses a hard stop, stop and explain that in %s instead of doing it." % RESULT_FILE)
     w("3. Never push, never add remotes, never call gh, never touch credentials, never install packages.")
-    if setup:
-        w("   The runner already installed the dependencies the lockfile pins (it ran `%s`); use them as they are" % setup.split("; ", 1)[-1])
+    if setup and recipe is not None and "setup" in recipe:
+        w("   The runner already ran the environment recipe's setup in this clone (`%s`); use what it installed as it is" % setup)
+        w("   and never change a lockfile - dependencies are Tier 2.")
+    elif setup:
+        w("   The runner already installed the dependencies the lockfile pins (it ran `%s`); use them as they are" % setup)
         w("   (`uv run`, `corepack pnpm`, `npm exec` and the like) and never change a lockfile - dependencies are Tier 2.")
+    if recipe and recipe.get("tools"):
+        w("   The tools %s pins (%s) are installed with mise and on your PATH through `mise exec`; use those versions." % (
+            RECIPE_PATH, ", ".join(recipe["tools"])))
+    if recipe and recipe.get("env"):
+        w("   The recipe's variables are set for you: %s." % ", ".join(sorted(recipe["env"])))
+    w("   `%s` is the project's environment recipe (ADR-026)%s: a change to it travels alone - one commit that touches" % (
+        RECIPE_PATH, "" if recipe is not None else ", not written yet"))
+    w("   nothing else - and waits for a human landing; it never holds a secret, a token, or a password.")
     w("4. Verify with the project's own checks%s before committing." % (" (`%s`)" % project["verify_cmd"] if project["verify_cmd"] else ""))
     w("5. Commit small with plain `git commit`: the clone is already configured with your name (%s), your" % agent)
     w("   address (%s@pulse.local), this run's own signing key, and a hook that adds Pulse-Agent/Pulse-Job/" % agent)
@@ -2940,6 +3339,11 @@ if command -v apt-get >/dev/null 2>&1; then echo apt=yes; else echo apt=no; fi
 if command -v copilot >/dev/null 2>&1; then echo copilot=present; else echo copilot=missing; fi
 if command -v node >/dev/null 2>&1; then echo node=present; else echo node=missing; fi
 if command -v git >/dev/null 2>&1; then echo git=present; else echo git=missing; fi
+if su -s /bin/sh pulse -c 'command -v mise >/dev/null 2>&1 || test -x "$HOME/.local/bin/mise"' >/dev/null 2>&1; then
+  printf 'mise=%%s\n' "$(su -s /bin/sh pulse -c 'PATH="$HOME/.local/bin:$PATH" mise version 2>/dev/null' | awk '{print $1}' | head -1)"
+else
+  echo mise=missing
+fi
 if su -s /bin/sh pulse -c 'test "$(git config --global --get commit.gpgsign 2>/dev/null)" = false && test "$(git config --global --get core.askPass 2>/dev/null)" = ""' >/dev/null 2>&1; then
   echo gitconfig=ok
 else
@@ -3020,7 +3424,7 @@ fi
 sudo -u pulse -H git config --global commit.gpgsign false
 sudo -u pulse -H git config --global core.askPass ""
 step gitconfig done
-%sinstall -d -m 0755 -o root -g root /etc/ssh/sshd_config.d
+%s%sinstall -d -m 0755 -o root -g root /etc/ssh/sshd_config.d
 cat > "$DROPIN.tmp" <<'PULSE_DROPIN_EOF'
 %sPULSE_DROPIN_EOF
 dropin_changed=0
@@ -3054,7 +3458,41 @@ else
   step sshd_reload skipped
 fi
 """ % (shlex.quote(name), shlex.quote(workdir), shlex.quote(auth_line), shlex.quote(PAIR_DROPIN_PATH),
-       hands_source_text.rstrip("\n"), install_block, dropin)
+       hands_source_text.rstrip("\n"), install_block, mise_install_block(), dropin)
+
+
+def mise_install_block(user="pulse", home_var="$home"):
+    """Shell that puts the pinned mise release under the executor user's ~/.local/bin, verified against the
+    published checksum for the machine's architecture (ADR-026); idempotent, and a checksum mismatch installs
+    nothing. `mise` is what installs a recipe's tool pins; nothing here runs as root but the copy."""
+    return """
+mise_dst="%(home)s/.local/bin/mise"
+if [ -x "$mise_dst" ] && [ "$(sudo -u %(user)s -H "$mise_dst" version 2>/dev/null | awk '{print $1}' | head -1)" = "%(bare)s" ]; then
+  step mise kept
+else
+  case "$(uname -m)" in
+    x86_64) mise_arch=x64; mise_sum=%(x86)s ;;
+    aarch64|arm64) mise_arch=arm64; mise_sum=%(arm)s ;;
+    *) mise_arch=""; mise_sum="" ;;
+  esac
+  if [ -z "$mise_arch" ]; then
+    step mise skipped
+  else
+    mise_tmp="$(mktemp)"
+    if curl -fsSL -o "$mise_tmp" "https://github.com/jdx/mise/releases/download/%(version)s/mise-%(version)s-linux-$mise_arch" &&
+       [ "$(sha256sum "$mise_tmp" | awk '{print $1}')" = "$mise_sum" ]; then
+      install -d -m 0755 -o %(user)s -g %(user)s "%(home)s/.local" "%(home)s/.local/bin"
+      install -m 0755 -o %(user)s -g %(user)s "$mise_tmp" "$mise_dst"
+      rm -f "$mise_tmp"
+      step mise done
+    else
+      rm -f "$mise_tmp"
+      step mise failed
+    fi
+  fi
+fi
+""" % {"home": home_var, "user": user, "bare": MISE_VERSION.lstrip("v"), "x86": MISE_SHA256["x86_64"], "arm": MISE_SHA256["aarch64"],
+       "version": MISE_VERSION}
 
 
 def pair_undo_script(name, workdir):
@@ -3764,7 +4202,38 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
         pubkey = make_run_key(ex.key_path, agent, run_id)
         con.execute("UPDATE runs SET signing_pubkey = ? WHERE id = ?", (pubkey, run_id))
         base = ex.prepare()
-        setup_cmd, setup_files = setup_command(root, base)
+        # The environment recipe at the base commit (ADR-026) says what this clone needs; a recipe that does not
+        # parse stops the job before anything is spent, and one finding a day tells the owner.
+        recipe, recipe_problems = read_recipe(root, base)
+        if recipe_problems:
+            recipe_finding(con, project, recipe_problems, base, now, actor=agent)
+            raise PulseError("%s at %s is not a valid recipe (%s); the job runs again once it is fixed"
+                             % (RECIPE_PATH, base[:12], "; ".join(recipe_problems[:3])))
+        blocked = recipe_block(recipe, ex.remote)
+        if blocked == RECIPE_UNFIT_SERVICES:
+            raise ExecutorUnfit("%s lists services (%s) that no machine starts; %s waits until an owner clears the list"
+                                % (RECIPE_PATH, ", ".join(recipe["services"][:4]), project["slug"]), blocked, project["slug"])
+        if blocked == RECIPE_UNFIT_HANDS:
+            raise ExecutorUnfit("%s pins tools or env that the hands on %s cannot take yet; %s jobs run on the hub until "
+                                "the hands are refreshed" % (RECIPE_PATH, ex.name, project["slug"]), blocked, project["slug"])
+        pins = list((recipe or {}).get("tools") or [])
+        if pins and not dry_run:
+            # Exact tool pins install through mise, user-local, before setup; the clone's own mise files are ignored.
+            rc, mout = ex.verify(mise_install_command(pins, clone), max(minutes, SETUP_MINUTES))
+            log.append("$ mise install %s  # tools from %s\n%s" % (" ".join(pins), RECIPE_PATH, (mout or "")[-20000:]))
+            if rc is None:
+                raise PulseError("mise install on %s timed out after %d minutes (%s); the job goes back to the queue"
+                                 % (ex.name, max(minutes, SETUP_MINUTES), ", ".join(pins)))
+            if rc != 0:
+                tail = " ".join((mout or "").split())[-300:] or "no output"
+                if rc == 127 or re.search(r"mise: (command )?not found|mise: No such file or directory", mout or ""):
+                    raise ExecutorUnfit("%s pins tools but `mise` is not installed on %s (%s); %s jobs run elsewhere until it is "
+                                        "and `pulse executor probe %s` passes" % (RECIPE_PATH, ex.name, tail, project["slug"], ex.name),
+                                        RECIPE_UNFIT_MISE, project["slug"])
+                failed = mise_failed_pin(pins, mout)
+                raise ExecutorUnfit("mise could not install %s on %s (%s); %s jobs run elsewhere until it can and `pulse executor "
+                                    "probe %s` passes" % (failed, ex.name, tail, project["slug"], ex.name), "tool:%s" % failed, project["slug"])
+        setup_cmd, setup_files, setup_shown = project_setup(root, base, recipe, clone)
         if setup_cmd and not dry_run:
             # The clone must be runnable before a worker spends a minute in it (WU-021): install exactly what the
             # base commit's lockfile pins, on the executor, with its own cap; the worker never installs anything.
@@ -3790,7 +4259,7 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
                     item["body"] = (post_row(con, item["id"]) or {}).get("body", "")
         except Exception as exc:  # the ballot is a courtesy to the worker, never a reason to fail the run
             log.append("ballot unavailable: %r" % (exc,))
-        brief_text = write_brief(job, project, agent, clone, minutes, ballot=ballot, remote=ex.remote, setup=setup_cmd)
+        brief_text = write_brief(job, project, agent, clone, minutes, ballot=ballot, remote=ex.remote, setup=setup_shown, recipe=recipe)
         brief_path = work_dir / ("%s.brief.md" % job["id"])
         brief_path.write_text(brief_text, encoding="utf-8")
         remote_brief = ex.write_brief(brief_text)
@@ -3806,6 +4275,13 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
             if not ex.remote:
                 # The worker votes through the same store this runner uses, wherever it lives.
                 env.update({"PULSE_CLI": str(Path(__file__).resolve()), "PULSE_HOME": str(home_dir)})
+                env.update(WORKER_ENV)
+                # The recipe's plain variables and tool pins reach the worker the way they reached setup (ADR-026);
+                # remote hands take neither yet, and a recipe that needs them never gets this far on them.
+                env.update((recipe or {}).get("env") or {})
+                if pins:
+                    env.update(mise_env(clone))
+                    cmd = mise_exec_argv(pins) + cmd
             log.append("$ %s" % " ".join(shlex.quote(c) if c != brief_text else "<brief>" for c in cmd))
             outcome = ex.run_worker(cmd, env, minutes)
             exit_code = outcome["exit_code"]
@@ -3866,7 +4342,10 @@ def run_job(con, job, agent, dry_run=False, worker_cmd=None, home=None, now=None
                         log.append("%s was committed by the worker; removed with one more commit" % RESULT_FILE)
                     check_tool = ""
                     if project["verify_cmd"]:
-                        rc, vout = ex.verify(project["verify_cmd"], minutes)
+                        check_cmd = recipe_env_exports(recipe) + project["verify_cmd"]
+                        if pins:
+                            check_cmd = mise_wrap_shell(pins, check_cmd, clone)
+                        rc, vout = ex.verify(check_cmd, minutes)
                         if rc is None:
                             verify_note, ok = "verify timed out", False
                         else:
@@ -4075,17 +4554,25 @@ def take_job(con, agent, project=None, job_id=None, dry_run=False, now=None, exe
     if project and projects is not None and project not in projects:
         return None, exrow, "executor %s does not serve %s (projects %s)" % (exrow["name"], project, exrow["projects"])
     unfit = unfit_projects(con, exrow["name"], now)
+    # A recipe that lists services, or pins tools and env for hands that cannot take them, keeps the project off
+    # the machine before any job is spent on it (ADR-026); the marks a failed setup left do the same (WU-021).
+    for slug, why in recipe_blocks(con, exrow["name"], None if project is None else [project]).items():
+        unfit.setdefault(slug, why)
     if unfit:
         # A tool the project needs is missing on this machine (WU-021): its jobs go to other slots for now.
         if project and project in unfit:
+            if unfit[project] in (RECIPE_UNFIT_SERVICES, RECIPE_UNFIT_HANDS):
+                return None, exrow, "executor %s %s for %s (%s)" % (exrow["name"], unfit_phrase(unfit[project]), project, tool_hint(unfit[project]))
             return None, exrow, "executor %s lacks %s for %s (install it, then `pulse executor probe %s`)" % (
                 exrow["name"], unfit[project], project, exrow["name"])
         if projects is None:
             projects = [r["slug"] for r in con.execute("SELECT slug FROM projects WHERE status = 'active'").fetchall()]
         projects = [p for p in projects if p not in unfit]
         if not projects:
-            return None, exrow, "executor %s lacks %s (install it, then `pulse executor probe %s`)" % (
-                exrow["name"], ", ".join(sorted(set(unfit.values()))), exrow["name"])
+            reasons = "; ".join("%s for %s" % (unfit_phrase(why), slug) for slug, why in sorted(unfit.items()))
+            first = unfit[sorted(unfit)[0]]
+            hint = tool_hint(first) if first in (RECIPE_UNFIT_SERVICES, RECIPE_UNFIT_HANDS) else "install it, then `pulse executor probe %s`" % exrow["name"]
+            return None, exrow, "executor %s %s (%s)" % (exrow["name"], reasons, hint)
     job = lease_job(con, agent, project=project, job_id=job_id, now=now, projects=projects)
     if job is None:
         return None, exrow, "no queued job" + (" for %s" % project if project else "") + (" on %s" % exrow["name"] if exrow["name"] != LOCAL_EXECUTOR else "")
@@ -4114,12 +4601,14 @@ LANDED_BRANCH_PREFIXES = ("pulse/", "evolve/")
 LAND_REQUEUE_LIMIT = 2
 # No branch lands these, whoever cut it: the loop's constitution and evaluators, the kill switch, CI (infrastructure).
 LAND_REFUSED_PATHS = ("docs/evolution/constitution.md", "docs/evolution/evaluators.md", "docs/evolution/STOP", ".github/workflows/")
+# Paths only a human lands (ADR-026): a branch that changes one travels alone and is held until a human names it.
+HUMAN_LANDED_PATHS = (RECIPE_PATH,)
 # Files that define the project's check itself. When a branch changes one, the landing check runs with the default
 # branch's version: the check belongs to the base, a variant cannot vouch for itself (project-light, 2026-09-06: a
 # Makefile that echoed "skipping tests" instead of failing landed because it made its own check green).
 CHECK_FILES = ("Makefile", "GNUmakefile", "makefile", "package.json", "pyproject.toml", "setup.cfg", "setup.py", "tox.ini",
                "pytest.ini", "noxfile.py", "conftest.py", "Justfile", "justfile", "Taskfile.yml", "Taskfile.yaml", "Rakefile"
-               ) + SETUP_LOCKFILES  # a branch never changes what the check installs (WU-021): dependencies are Tier 2
+               ) + SETUP_LOCKFILES + (RECIPE_PATH,)  # a branch never changes what the check installs (WU-021, ADR-026)
 CHECK_CONFIG_RE = re.compile(r"^[^/]+\.config\.(js|cjs|mjs|ts|json)$")
 
 
@@ -4227,6 +4716,34 @@ def requeue_job(con, job, actor, why, patch_path=None):
     return "queued"
 
 
+def hold_recipe_branch(con, project, root, base, branch, actor, job, now=None):
+    """A branch that changes docs/context/environment.md and nothing else waits for a human landing (ADR-026,
+    slice 1): the branch stays, one `question` per branch tells the owner what changed and the exact command,
+    and the job keeps its branch so `pulse land --project <slug> --branch <branch>` finds it."""
+    now = now or utc_now()
+    slug = project["slug"]
+    recipe, problems = read_recipe(root, branch)
+    diff = git(root, "diff", "%s..%s" % (base, branch), "--", RECIPE_PATH, timeout=60).stdout
+    command = "pulse land --project %s --branch %s" % (slug, branch)
+    existing = con.execute("SELECT id FROM posts WHERE project = ? AND kind = 'question' AND area = 'runner' AND thread = 'environment' "
+                           "AND summary LIKE ?", (slug, "%" + branch + "%")).fetchone()
+    if existing is None:
+        state = "invalid: %s" % "; ".join(problems[:3]) if problems else recipe_summary(recipe)
+        summary = trunc("Recipe branch %s waits for a human landing (%s)" % (branch, state), 230)
+        body = ("`%s` changed alone on `%s`%s (ADR-026). The runner lands no recipe change by itself in this slice: "
+                "read the diff, then land it with\n\n    %s\n\nor delete the branch (`git branch -D %s`) to drop it.%s\n\n"
+                "```diff\n%s\n```\n" % (RECIPE_PATH, branch, " for job %s" % job["id"] if job else "", command, branch,
+                                        "\n\nThe branch's recipe does not parse:\n%s" % "\n".join("- %s" % p for p in problems) if problems else "",
+                                        diff.strip()[:3000] or "(no diff text)"))
+        try:
+            post = create_post(con, "question", slug, "runner", "environment", summary, body, agent=actor, check_agent=False, date=now)
+            post_id = post["id"]
+        except PulseError:
+            post_id = ""
+        event(con, actor, "env.held", branch, {"project": slug, "job": job["id"] if job else "", "post": post_id, "valid": not problems})
+    return "held", "%s changes %s alone; it waits for a human: %s" % (branch, RECIPE_PATH, command)
+
+
 def refuse_branch(con, root, base, branch, actor, job, home_dir, slug, why):
     """A branch that must not land: its patch is kept, the job ends failed, the branch goes."""
     patch = save_branch_patch(root, base, branch, home_dir, slug)
@@ -4238,10 +4755,11 @@ def refuse_branch(con, root, base, branch, actor, job, home_dir, slug, why):
     return "refused", "%s not landed: %s; %s; patch at %s" % (branch, why, "job %s failed" % job["id"] if job else "branch removed", patch)
 
 
-def land_branch(con, project, branch, actor, job=None, home=None, verify=True, now=None):
+def land_branch(con, project, branch, actor, job=None, home=None, verify=True, now=None, by_hand=False):
     """Land one branch on the project's default branch. Returns (state, note) with state one of
     landed, merged (already contained), deferred (checkout busy or moved; try again later), conflict,
-    failed-verify, locked, missing, off (setting landing != agents), stopped."""
+    failed-verify, locked, missing, off (setting landing != agents), stopped, held (the branch changes the
+    environment recipe alone and waits for a human who names it: `by_hand`, ADR-026)."""
     now = now or utc_now()
     root = Path(project["path"])
     default = project["default_branch"] or "main"
@@ -4269,6 +4787,14 @@ def land_branch(con, project, branch, actor, job=None, home=None, verify=True, n
                              "it changes %s, which no landing accepts" % ", ".join(refused[:4]))
     if not files or (files == [RESULT_FILE]):
         return refuse_branch(con, root, base, branch, actor, job, home_dir, project["slug"], "it changes nothing but %s" % RESULT_FILE)
+    human_landed = [f for f in files if f in HUMAN_LANDED_PATHS]
+    if human_landed:
+        others = [f for f in files if f not in HUMAN_LANDED_PATHS and f != RESULT_FILE]
+        if others:
+            return refuse_branch(con, root, base, branch, actor, job, home_dir, project["slug"],
+                                 "recipe changes travel alone: %s changed with %s" % (", ".join(human_landed), ", ".join(others[:3])))
+        if not by_hand:
+            return hold_recipe_branch(con, project, root, base, branch, actor, job, now)
     on_default, clean = checkout_state(root, default)
     if not on_default:
         return "deferred", "the checkout of %s is not on %s" % (root, default)
@@ -4312,7 +4838,9 @@ def land_branch(con, project, branch, actor, job=None, home=None, verify=True, n
             guarded = check_definition_files(project["verify_cmd"], files, root)
             if guarded:
                 run_base_check_files(worktree, before, guarded)
-            setup_cmd, setup_files = setup_command(root, before)
+            base_recipe, base_problems = read_recipe(root, before)
+            base_recipe = None if base_problems else base_recipe
+            setup_cmd, setup_files, _shown = project_setup(root, before, base_recipe, worktree)
             if setup_cmd:
                 # The worktree is as bare as a clone (WU-021): install what the default branch's lockfile pins before
                 # the check. A setup failure says nothing about the branch, so the branch stays and lands later.
@@ -4400,6 +4928,24 @@ def land_pending(con, project, actor="daemon", home=None, now=None, verify=True,
         out.append((state, note))
         if state in ("deferred", "locked", "stopped"):
             break
+    return out
+
+
+def held_landings(con, slug, root=None):
+    """The waiting branches of a project that change the environment recipe alone, from the store's `env.held`
+    events, newest first, only those that still exist in the checkout at `root` when given: what
+    `pulse env check` lists for the human."""
+    rows = con.execute("SELECT subject FROM events WHERE action = 'env.held' AND json_extract(detail, '$.project') = ? "
+                       "ORDER BY seq DESC", (slug,)).fetchall()
+    seen, out = set(), []
+    for row in rows:
+        branch = row["subject"]
+        if branch in seen:
+            continue
+        seen.add(branch)
+        if root is not None and git(Path(root), "rev-parse", "--verify", "--quiet", "refs/heads/%s" % branch, timeout=10).returncode != 0:
+            continue
+        out.append(branch)
     return out
 
 
@@ -4580,6 +5126,22 @@ def plan_jobs(con, slug, now=None, created_by="daemon"):
     return created
 
 
+def scaffold_recipe(root, scaffolded=None):
+    """Write docs/context/environment.md from the template when the project has none (ADR-026): project-owned,
+    never staged, filled by the onboarding agent from observation. Returns the line `pulse onboard` prints."""
+    dest = Path(root) / RECIPE_PATH
+    if dest.exists():
+        return "%s already present, untouched" % RECIPE_PATH
+    template = Path(__file__).resolve().parent.parent / "context" / RECIPE_TEMPLATE
+    if not template.is_file():
+        return "%s absent and the template docs/context/%s is missing here; write the recipe by hand" % (RECIPE_PATH, RECIPE_TEMPLATE)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    if scaffolded is not None:
+        scaffolded.append(RECIPE_PATH)
+    return "scaffolded %s from the template - project-owned, not staged; the onboarding agent fills it, a human lands it" % RECIPE_PATH
+
+
 def onboard_project(con, path, name=None, remote=None, brain=False, verify_cmd="", actor="", now=None, home=None):
     """`pulse onboard` (ADR-021 section 1): `init`, the loop's scaffold when docs/evolution/ is entirely absent (a
     partial folder refuses before any write), the first `reflect` job now (source onboard-reflect:<slug>, priority
@@ -4655,6 +5217,8 @@ def onboard_project(con, path, name=None, remote=None, brain=False, verify_cmd="
         else:
             status_lines = ["git status --short docs/evolution failed: %s" % out.stderr.strip()]
 
+    recipe_note = scaffold_recipe(root, scaffolded)
+
     reflect_existing = con.execute("SELECT * FROM jobs WHERE project = ? AND kind = 'reflect' ORDER BY created_at, id LIMIT 1",
                                    (project["slug"],)).fetchone()
     reflect_job, reflect_new = None, False
@@ -4683,6 +5247,7 @@ def onboard_project(con, path, name=None, remote=None, brain=False, verify_cmd="
         lines.extend(status_lines)
     else:
         lines.append("docs/evolution/ already present, untouched")
+    lines.append(recipe_note)
     lines.extend([
         "What stays human:",
         "1. record the baseline - run the project's own check (%s) and add a B- row in docs/evolution/evaluators.md, commit"
@@ -5344,13 +5909,109 @@ def status_text(con):
     return "\n".join(out) + "\n"
 
 
+def env_check(con, project=None, executor=None, now=None):
+    """Read-only (ADR-026): for each project, the recipe at the tip of its default branch (valid or why not, and
+    what it asks for), the branches that changed the recipe alone and wait for a human, and per executor whether
+    the machine can serve the project now and why not. Never installs, never marks."""
+    now = now or utc_now()
+    rows = [current_project(con, project)] if project else [dict(r) for r in con.execute("SELECT * FROM projects WHERE status = 'active' ORDER BY slug")]
+    exrows = [r for r in executor_rows(con) if executor is None or r["name"] == executor]
+    if executor is not None and not exrows:
+        raise PulseError("No executor %s (pulse executor list)" % executor, 2)
+    marks = {r["name"]: unfit_projects(con, r["name"], now) for r in exrows}
+    report = {"projects": [], "unfit": []}
+    for proj in rows:
+        recipe, problems = recipe_at_head(proj)
+        entry = {"project": proj["slug"], "path": proj["path"], "recipe": RECIPE_PATH if recipe is not None else "",
+                 "valid": recipe is not None and not problems, "problems": problems,
+                 "tools": (recipe or {}).get("tools") or [], "setup": (recipe or {}).get("setup") if recipe and "setup" in recipe else None,
+                 "env": sorted((recipe or {}).get("env") or {}), "services": (recipe or {}).get("services") or [],
+                 "suggested_check": (recipe or {}).get("suggested_check") or "", "verify_cmd": proj["verify_cmd"] or "",
+                 "held": held_landings(con, proj["slug"], proj["path"]), "executors": []}
+        for ex in exrows:
+            why = marks[ex["name"]].get(proj["slug"], "")
+            if not why and recipe is not None and not problems:
+                why = recipe_block(recipe, ex["name"] != LOCAL_EXECUTOR)
+            if not why and ex["name"] == LOCAL_EXECUTOR:
+                why = local_tools_missing(proj, recipe if not problems else None)
+            if not why and ex["status"] != "active":
+                why = "executor %s" % ex["status"]
+            if not why and ex["projects"] != "*" and proj["slug"] not in ex["projects"].split(","):
+                why = "not served (projects %s)" % ex["projects"]
+            machine = why.startswith(("executor ", "not served"))
+            entry["executors"].append({"executor": ex["name"], "fit": not why, "why": why,
+                                       "phrase": why if machine or not why else unfit_phrase(why),
+                                       "hint": "" if machine or not why else tool_hint(why)})
+            if why and not why.startswith("executor ") and not why.startswith("not served"):
+                report["unfit"].append({"project": proj["slug"], "executor": ex["name"], "why": why})
+        report["projects"].append(entry)
+    return report
+
+
+def local_tools_missing(project, recipe):
+    """What this machine lacks for the project right now, looked at live and installing nothing: `mise` when the
+    recipe pins tools, else the program the lockfile heuristic would call (`uv`, `npm`, ...) when the recipe
+    leaves setup to it. "" when nothing is missing or the checkout cannot be read."""
+    root = Path(project["path"])
+    if not (root / ".git").exists():
+        return ""
+    if recipe and recipe.get("tools") and shutil.which("mise") is None:
+        return RECIPE_UNFIT_MISE
+    if recipe is not None and "setup" in recipe:
+        return ""
+    default = project["default_branch"] or "main"
+    listed = git(root, "ls-tree", "--name-only", "refs/heads/%s" % default, timeout=30)
+    names = set(listed.stdout.split("\n")) if listed.returncode == 0 else set()
+    seen = set()
+    for group, lockfile, _command, tool in SETUP_RULES:
+        if lockfile in names and group not in seen:
+            seen.add(group)
+            if shutil.which(tool) is None:
+                return tool
+    return ""
+
+
+def env_check_text(report):
+    out = []
+    for entry in report["projects"]:
+        if not entry["recipe"]:
+            out.append("%-16s no %s (the lockfile heuristic runs; `pulse onboard` scaffolds the template)" % (entry["project"], RECIPE_PATH))
+        elif not entry["valid"]:
+            out.append("%-16s INVALID %s: %s" % (entry["project"], RECIPE_PATH, "; ".join(entry["problems"][:4])))
+        else:
+            asks = []
+            if entry["tools"]:
+                asks.append("tools %s" % ", ".join(entry["tools"]))
+            asks.append("setup: heuristic" if entry["setup"] is None else "setup: %d line(s)" % len(entry["setup"]))
+            if entry["env"]:
+                asks.append("env %s" % ", ".join(entry["env"]))
+            if entry["services"]:
+                asks.append("services %s" % ", ".join(entry["services"]))
+            out.append("%-16s recipe ok; %s" % (entry["project"], "; ".join(asks)))
+            if entry["suggested_check"] and entry["suggested_check"] != entry["verify_cmd"]:
+                out.append("%-16s suggested_check `%s` (the store's verify command `%s` decides)" % ("", entry["suggested_check"], entry["verify_cmd"] or "-"))
+        for ex in entry["executors"]:
+            if ex["fit"]:
+                out.append("%-16s   %-14s fit" % ("", ex["executor"]))
+            else:
+                out.append("%-16s   %-14s %s%s" % ("", ex["executor"], ex["phrase"], "  -  %s" % ex["hint"] if ex["hint"] else ""))
+        for branch in entry["held"]:
+            out.append("%-16s   held: %s changes %s alone; land it with `pulse land --project %s --branch %s`" % (
+                "", branch, RECIPE_PATH, entry["project"], branch))
+    if not report["projects"]:
+        out.append("no active project")
+    return "\n".join(out) + "\n"
+
+
 def executors_line(con, now=None):
     parts = []
     for row in executor_rows(con):
         part = "%s %s (%d/%d busy)" % (row["name"], row["status"], executor_running(con, row["name"], now), int(row["workers"]))
         unfit = unfit_projects(con, row["name"], now)
+        for slug, why in recipe_blocks(con, row["name"]).items():
+            unfit.setdefault(slug, why)
         if unfit:
-            part += "; lacks " + ", ".join("%s for %s" % (tool, project) for project, tool in sorted(unfit.items()))
+            part += "; " + ", ".join("%s for %s" % (unfit_phrase(tool), project) for project, tool in sorted(unfit.items()))
         parts.append(part)
     return ", ".join(parts)
 
@@ -5638,6 +6299,12 @@ def build_parser():
     s.add_argument("--amend-majority")
 
     sub.add_parser("status", help="one screen: store, projects, agents, jobs, runner")
+    s = sub.add_parser("env", help="environment recipes (ADR-026): `env check` reads docs/context/environment.md per project and says which machine can serve it")
+    s.add_argument("action", choices=("check",))
+    s.add_argument("--project", help="one project; default: every active project")
+    s.add_argument("--executor", help="one executor; default: every executor")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--now")
     s = sub.add_parser("events", help="the append-only event log")
     s.add_argument("--limit", type=int, default=40)
     return p
@@ -5909,7 +6576,7 @@ def main(argv=None):
                     row = con.execute("SELECT * FROM jobs WHERE project = ? AND branch = ? ORDER BY finished_at DESC",
                                       (proj["slug"], args.branch)).fetchone()
                     results = [land_branch(con, proj, args.branch, actor, job=dict(row) if row else None, home=home,
-                                           verify=not args.no_verify)]
+                                           verify=not args.no_verify, by_hand=actor == HUMAN_AGENT)]
                 else:
                     results = land_pending(con, proj, actor=actor, home=home, verify=not args.no_verify, limit=args.limit, force=True)
                 if not results:
@@ -6030,6 +6697,13 @@ def main(argv=None):
         if args.cmd == "status":
             print(status_text(con), end="")
             return 0
+        if args.cmd == "env":
+            report = env_check(con, project=args.project, executor=args.executor, now=args.now)
+            if args.json:
+                print(json.dumps(report, indent=2, sort_keys=True))
+            else:
+                print(env_check_text(report), end="")
+            return 1 if report["unfit"] else 0
         if args.cmd == "events":
             for r in con.execute("SELECT * FROM events ORDER BY seq DESC LIMIT ?", (args.limit,)):
                 print("%s %-8d %-18s %-16s %-40s %s" % (r["at"], r["seq"], r["action"], trunc(r["actor"], 16), trunc(r["subject"], 40), trunc(r["detail"], 80)))

@@ -307,8 +307,69 @@ your act:
   is not retried every few minutes); the project's next job may run there
   again.
 - **The provisioning template** (`docs/scripts/hosted/`) installs git,
-  Python 3, Node 22, and the Copilot CLI. Add `make` and `uv` to a new
-  machine when a Python project is on the hub.
+  Python 3, Node 22, the Copilot CLI, and a pinned `mise` (the version and
+  checksum live in `pulse.py`; `pulse pair` installs the same one and its
+  inspect step prints `mise=<version|missing>`). Add `make` and `uv` to a
+  new machine when a Python project is on the hub and its recipe does not
+  pin them.
+
+## The project's environment recipe
+
+A project says what its clones need in one file at the root of its own
+tree, `docs/context/environment.md`
+([ADR-026](../decisions/ADR-026-project-environment-recipes.md),
+[PLAN-026](../plans/PLAN-026-project-environment-recipes.md), template
+`docs/context/_template-environment.md`). `pulse onboard` scaffolds it once
+and never overwrites it; the onboarding job's brief asks the agent to fill
+it from the checkout and commit it alone. The runner reads it **at the base
+commit of the job**, so a branch cannot change what its own check runs with.
+
+- **`tools`** - up to twelve exact `name@version` pins (`node@22.1.0`,
+  `uv@0.8.3`; never `latest`). Before setup the runner runs
+  `mise install <pins>` with `MISE_YES=1` and the clone's own mise files
+  ignored, then wraps setup, worker, and check in `mise exec <pins> --`.
+  No `mise` on the machine → the machine is unfit for the project (`lacks
+  mise`); a pin mise cannot install → `lacks <pin>`, with a `finding` on
+  `runner/tools-wanted` as for any missing tool. Pins wait for **hands that
+  can take them**: remote hands from before this change are `hands
+  outdated` for a project with `tools` or `env` until `pulse pair` refreshes
+  them; the hub itself takes pins from the first run.
+- **`setup`** - the exact commands for the clone. Present, it replaces the
+  lockfile heuristic above; `setup: []` runs nothing on purpose; absent, the
+  heuristic decides as before. The runner runs it non-interactively, joined
+  with `&&`, before the worker and before every check.
+- **`env`** - names and plain values exported for setup, worker, and check
+  (`CI: "1"`, a path, a feature flag). Names that look like secrets
+  (`TOKEN`, `SECRET`, `PASSWORD`, `_KEY`, `CREDENTIAL`, `PRIVATE`) and values
+  shaped like one (a key block, `://user:pass@`, a JWT, an opaque forty-char
+  run) make the recipe **invalid**; a secret's home is the machine's
+  keychain, never this file. Briefs, findings, and `pulse env check` print
+  variable *names*, never values.
+- **`services`** - anything the clone would need running beside it
+  (`postgres`, `redis`). A non-empty list keeps the project off every
+  machine before a job is spent (`needs services`) until a later slice
+  provides them or the owner empties the list.
+- **`suggested_check`** - what the owner would run; the store's
+  `verify_cmd` still decides, and `pulse env check` shows both side by side.
+
+An **invalid recipe** ends every job for the project as an `error` before a
+worker starts (the job returns to the queue, one `finding` a day on the
+project's `runner/environment` thread names the problem, event
+`env.invalid`) until an owner fixes it. A branch that **changes the recipe
+travels alone**: with any other file it is refused (`recipe changes travel
+alone`); alone, agent landing holds it (`held`), one `question` on
+`runner/environment` carries the diff, and only a human lands it with
+`pulse land --project <slug> --branch <branch>` (with no `PULSE_AGENT` set;
+an agent naming the branch is still held). The landing check runs with the
+base's recipe, exactly like a lockfile change.
+
+`pulse env check [--project P] [--executor E] [--json]` reads it all
+without installing or marking anything: the recipe at the tip of each
+default branch (valid, or `INVALID` with the problems), the held branches
+that wait for you, and per machine whether it can serve the project now
+(`lacks mise`, `lacks <pin>`, `needs services`, `hands outdated`, or the
+lockfile heuristic's program missing on this machine). Exit `1` when any
+machine is unfit, so a shell can gate on it.
 
 ## Watch, drain, remove
 

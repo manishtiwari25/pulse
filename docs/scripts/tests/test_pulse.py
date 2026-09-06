@@ -2374,10 +2374,6 @@ class ExecutorTestCase(HandsFixture):
         self.assertIn("under", res.stderr)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RunnableCloneRemoteTestCase(HandsFixture):
     """WU-021 over ssh: the setup runs through the hands' `verify` verb; a machine that lacks a tool stays active
     for its other projects and takes the project back after a human probe."""
@@ -2457,3 +2453,471 @@ class RunnableCloneRemoteTestCase(HandsFixture):
         job2, _, why = pulse.take_job(self.con, "aurora", now=NOW, executor="hands")
         self.assertIsNotNone(job2, why)
         self.assertEqual(job2["id"], run["job_id"], "the same job is taken there again")
+
+
+class RecipeTestCase(StoreFixture):
+    """ADR-026 slice 1: the environment recipe at docs/context/environment.md, read at the base commit, decides
+    what a clone needs; the local machine installs pins with mise; recipe changes travel alone and wait for a
+    human landing; `pulse env check` reads it all without touching anything."""
+
+    MISSING = "definitely-missing-tool-xyz"
+    TEMPLATE = (Path(__file__).resolve().parent.parent.parent / "context" / "_template-environment.md")
+
+    def setUp(self):
+        super().setUp()
+        self._rules = pulse.SETUP_RULES
+        self._path = os.environ.get("PATH", "")
+        self.tools = self.tmp / "tools"
+        self.tools.mkdir()
+        os.environ["PATH"] = "%s:%s" % (self.tools, self._path)
+        self.mise_log = self.tmp / "mise.log"
+
+    def tearDown(self):
+        pulse.SETUP_RULES = self._rules
+        os.environ["PATH"] = self._path
+        super().tearDown()
+
+    def tool(self, name, body):
+        script = self.tools / name
+        script.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+        script.chmod(0o755)
+        return script
+
+    def bare_path(self):
+        """A PATH with the fake tools, git, and the system shells only - never a real mise, wherever this runs."""
+        dirs = [str(self.tools)]
+        for name in ("git", "sh", "env"):
+            found = shutil.which(name, path=self._path)
+            if found and str(Path(found).parent) not in dirs:
+                dirs.append(str(Path(found).parent))
+        for system in ("/usr/bin", "/bin"):
+            if system not in dirs:
+                dirs.append(system)
+        return ":".join(dirs)
+
+    def fake_mise(self, fail_pin=""):
+        """A stand-in mise: `install` logs its argv (and fails on `fail_pin`), `exec` runs the command after `--`
+        with MISE_WRAPPED=1 so setup, check, and worker can prove they ran under it."""
+        return self.tool("mise",
+                         'case "$1" in\n'
+                         '  install) shift; echo "install $*" >> %s; env | grep "^MISE_" | sort >> %s;\n'
+                         '           for p in "$@"; do [ "$p" = "%s" ] && { echo "mise ERROR failed to install %s"; exit 1; }; done; exit 0 ;;\n'
+                         '  exec) shift; while [ "$1" != "--" ]; do shift; done; shift; MISE_WRAPPED=1; export MISE_WRAPPED; exec "$@" ;;\n'
+                         '  version) echo 2026.9.1 ;;\n'
+                         'esac' % (shlex.quote(str(self.mise_log)), shlex.quote(str(self.mise_log)), fail_pin, fail_pin))
+
+    def commit_recipe(self, text, repo=None, message="recipe"):
+        repo = repo or self.repo
+        path = repo / pulse.RECIPE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", message)
+        return git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    def commit_lockfile(self, name="fake.lock"):
+        (self.repo / name).write_text("pinned\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "add %s" % name)
+
+    def use_rule(self, tool):
+        pulse.SETUP_RULES = (("fake", "fake.lock", "%s install" % tool, tool),)
+
+    def set_verify(self, cmd):
+        self.con.execute("UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'", (cmd,))
+
+    def recipe(self, **keys):
+        lines = ["---", "recipe: 1"]
+        for key in ("tools", "setup", "services"):
+            if key in keys:
+                lines.append("%s: []" % key if not keys[key] else "%s:" % key)
+                lines += ["  - %s" % item for item in keys[key]]
+        if "env" in keys:
+            lines.append("env: {}" if not keys["env"] else "env:")
+            lines += ["  %s: %s" % kv for kv in keys["env"].items()]
+        if "suggested_check" in keys:
+            lines.append("suggested_check: %s" % keys["suggested_check"])
+        return "\n".join(lines + ["---", "", "# Environment", ""])
+
+    # -- the parser --------------------------------------------------------
+
+    def test_parser_accepts_the_template_and_refuses_what_the_decision_names(self):
+        recipe, problems = pulse.parse_recipe(self.TEMPLATE.read_text(encoding="utf-8"))
+        self.assertEqual(problems, [], "the shipped template is a valid recipe")
+        self.assertEqual(recipe["recipe"], "1")
+        self.assertEqual(recipe["tools"], [])
+        self.assertNotIn("setup", recipe, "the template leaves setup to the lockfile heuristic")
+        self.assertEqual(recipe["env"], {})
+        self.assertEqual(recipe["services"], [])
+        good, problems = pulse.parse_recipe(self.recipe(tools=["node@22.1.0", "uv@0.8.3"], setup=["uv sync --frozen", "'npm ci'"],
+                                                        env={"CI": '"1"', "APP_HOME": "/opt/app/some/very/long/path/that/goes/on/and/on/and/on"},
+                                                        services=[], suggested_check="make test"))
+        self.assertEqual(problems, [])
+        self.assertEqual(good["tools"], ["node@22.1.0", "uv@0.8.3"])
+        self.assertEqual(good["setup"], ["uv sync --frozen", "npm ci"])
+        self.assertEqual(good["env"], {"CI": "1", "APP_HOME": "/opt/app/some/very/long/path/that/goes/on/and/on/and/on"})
+        self.assertEqual(good["suggested_check"], "make test")
+        spaced, problems = pulse.parse_recipe(self.recipe(env={"CFLAGS": '"-O2 -g"', "PLAIN": "a b c"}))
+        self.assertEqual((problems, spaced["env"]), ([], {"CFLAGS": "-O2 -g", "PLAIN": "a b c"}), "values with spaces are allowed")
+        self.assertEqual(pulse.recipe_env_exports(spaced), "export CFLAGS='-O2 -g' PLAIN='a b c'; ", "and reach the shell as one word each")
+        secret_value = "hunter2" + "x" * 40
+        refused = {
+            "unknown key": "---\nrecipe: 1\ncolor: blue\n---\n",
+            "latest": self.recipe(tools=["node@latest"]).replace("node@latest", "node"),
+            "13 tools": self.recipe(tools=["t%d@1.0" % i for i in range(13)]),
+            "pin with a space": self.recipe(tools=["node@22 1"]),
+            "pin with ;": self.recipe(tools=["node@22;rm"]),
+            "GITHUB_TOKEN name": self.recipe(env={"GITHUB_TOKEN": "abc"}),
+            "API_KEY_NAME name": self.recipe(env={"API_KEY_NAME": "abc"}),
+            "40-char value": self.recipe(env={"OPAQUE": secret_value}),
+            "url credentials": self.recipe(env={"DATABASE": "postgres://user:hunter2@db/app"}),
+            "jwt": self.recipe(env={"SESSION": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz"}),
+            "multi-line value": "---\nrecipe: 1\nenv:\n  GREETING: hello\n    world\n---\n",
+            "recipe: 2": "---\nrecipe: 2\n---\n",
+            "no frontmatter": "# Environment\n",
+            "lowercase env": self.recipe(env={"greeting": "hi"}),
+            "setup as scalar": "---\nrecipe: 1\nsetup: make\n---\n",
+            "anchor": "---\nrecipe: 1\nsuggested_check: &x make\n---\n",
+        }
+        for label, text in refused.items():
+            recipe, problems = pulse.parse_recipe(text)
+            self.assertTrue(problems, "%s should be refused: %r" % (label, recipe))
+            joined = " ".join(problems)
+            self.assertNotIn("hunter2", joined, "%s: a problem echoed an env value" % label)
+            self.assertNotIn(secret_value, joined)
+        self.assertIn("`tools`: `node` is not an exact `name@version` pin", pulse.parse_recipe(refused["latest"])[1])
+        self.assertTrue(any("GITHUB_TOKEN" in p and "secret" in p for p in pulse.parse_recipe(refused["GITHUB_TOKEN name"])[1]))
+        self.assertTrue(any("at most 12" in p for p in pulse.parse_recipe(refused["13 tools"])[1]))
+
+    def test_read_recipe_reads_the_named_commit_and_absent_means_none(self):
+        self.assertEqual(pulse.read_recipe(self.repo, "HEAD"), (None, []))
+        first = self.commit_recipe(self.recipe(tools=["node@22.1.0"]))
+        self.commit_recipe(self.recipe(tools=["node@23.0.0"]), message="bump")
+        self.assertEqual(pulse.read_recipe(self.repo, first)[0]["tools"], ["node@22.1.0"], "the base commit's recipe, not the tip's")
+        self.assertEqual(pulse.read_recipe(self.repo, "HEAD")[0]["tools"], ["node@23.0.0"])
+        self.commit_recipe("---\nrecipe: 2\n---\n", message="broken")
+        recipe, problems = pulse.read_recipe(self.repo, "HEAD")
+        self.assertTrue(problems)
+
+    # -- run_job --------------------------------------------------------------
+
+    def test_setup_from_the_recipe_replaces_the_heuristic_and_env_reaches_setup_check_and_worker(self):
+        self.use_rule("fake-tool")
+        self.tool("fake-tool", 'touch .heuristic-ran')
+        self.commit_lockfile()
+        self.commit_recipe(self.recipe(setup=['test -n "$GREETING" && touch .recipe-setup'], env={"GREETING": "quiet-value-7"}))
+        self.set_verify('test -n "$GREETING" && test -f .recipe-setup')
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script(
+            'test -f .recipe-setup || { echo "recipe setup did not run" >&2; exit 1; }\n'
+            'test ! -f .heuristic-ran || { echo "the heuristic ran although the recipe has setup:" >&2; exit 1; }\n'
+            'test "$GREETING" = quiet-value-7 || { echo "env did not reach the worker" >&2; exit 1; }\n'
+            'test "$COPILOT_SUBAGENT_MAX_CONCURRENT" = 256 || { echo "no sub-agent cap in the worker env" >&2; exit 1; }\n'
+            'test "$COPILOT_SUBAGENT_MAX_DEPTH" = 128 || { echo "no sub-agent depth in the worker env" >&2; exit 1; }\n'
+            'grep -q "touch .recipe-setup" "$PULSE_BRIEF" || { echo "the brief does not name the setup" >&2; exit 1; }\n'
+            'grep -q "variables are set for you: GREETING" "$PULSE_BRIEF" || { echo "the brief does not name the env" >&2; exit 1; }\n'
+            'grep -q "quiet-value-7" "$PULSE_BRIEF" && { echo "the brief echoed an env value" >&2; exit 1; }\n'
+            'grep -q "travels alone" "$PULSE_BRIEF" || { echo "the brief lacks the travel-alone rule" >&2; exit 1; }\n'
+            'echo "changed by $PULSE_AGENT" >> README.md && git commit -qam "worker change"\n'
+            'printf "SUMMARY: ran inside the recipe\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"] + "\n" + Path(run["log"]).read_text(encoding="utf-8"))
+        log = Path(run["log"]).read_text(encoding="utf-8")
+        self.assertIn("# setup from %s" % pulse.RECIPE_PATH, log)
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {})
+
+    def test_an_empty_setup_list_runs_nothing_and_keeps_a_lockfile_project_off_no_machine(self):
+        self.use_rule(self.MISSING)
+        self.commit_lockfile()
+        self.commit_recipe(self.recipe(setup=[]))
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script('echo x >> README.md && git commit -qam "c" && printf "SUMMARY: ok\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"])
+        self.assertNotIn("# setup from", Path(run["log"]).read_text(encoding="utf-8"))
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {}, "nothing ran, so nothing was missing")
+
+    def test_tool_pins_install_through_mise_and_wrap_setup_check_and_worker(self):
+        self.fake_mise()
+        self.commit_recipe(self.recipe(tools=["node@22.1.0", "uv@0.8.3"], setup=['test "$MISE_WRAPPED" = 1 && touch .setup-under-mise']))
+        self.set_verify('test "$MISE_WRAPPED" = 1 && test -f .setup-under-mise')
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script(
+            'test "$MISE_WRAPPED" = 1 || { echo "the worker did not run under mise exec" >&2; exit 1; }\n'
+            'test "$MISE_YES" = 1 || { echo "MISE_YES unset" >&2; exit 1; }\n'
+            'test "$MISE_IGNORED_CONFIG_PATHS" = "$PULSE_CLONE" || { echo "the clone\'s own mise files are not ignored" >&2; exit 1; }\n'
+            'grep -q "node@22.1.0, uv@0.8.3" "$PULSE_BRIEF" || { echo "the brief does not name the pins" >&2; exit 1; }\n'
+            'echo x >> README.md && git commit -qam "c" && printf "SUMMARY: ok\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"] + "\n" + Path(run["log"]).read_text(encoding="utf-8"))
+        mise_log = self.mise_log.read_text(encoding="utf-8")
+        self.assertIn("install node@22.1.0 uv@0.8.3", mise_log, "one argv element per pin")
+        self.assertIn("MISE_YES=1", mise_log)
+        self.assertIn("MISE_IGNORED_CONFIG_PATHS=", mise_log)
+        self.assertIn("$ mise install node@22.1.0 uv@0.8.3  # tools from %s" % pulse.RECIPE_PATH, Path(run["log"]).read_text(encoding="utf-8"))
+
+    def test_missing_mise_and_a_failing_pin_keep_the_project_off_this_machine_with_one_finding_each(self):
+        self.con.execute("UPDATE projects SET brain = 1 WHERE slug = 'proj'")
+        self.commit_recipe(self.recipe(tools=["node@22.1.0"]))
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        worker = self.worker_script('printf "SUMMARY: never runs\\n" > PULSE_RESULT.md')
+        with unittest.mock.patch.dict(os.environ, {"PATH": self.bare_path()}):
+            run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("`mise` is not installed", run["summary"])
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {"proj": pulse.RECIPE_UNFIT_MISE})
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual((job["status"], job["attempts"]), ("queued", 0), "the machine failed, not the agent")
+        finding = self.con.execute("SELECT * FROM posts WHERE kind = 'finding' AND thread = 'tools-wanted'").fetchone()
+        self.assertTrue(finding["summary"].startswith("local lacks mise for proj"), finding["summary"])
+        self.assertIn("mise.run", finding["body"])
+        _, _, why = pulse.take_job(self.con, "aurora", project="proj", now=NOW)
+        self.assertIn("lacks mise for proj", why)
+        self.assertIn("lacks mise for proj", pulse.executors_line(self.con, NOW))
+        # a human probe of the local machine is not a thing; the mark expires, and mise is there now but one pin fails
+        pulse.clear_unfit(self.con, pulse.LOCAL_EXECUTOR)
+        self.fake_mise(fail_pin="node@22.1.0")
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("mise could not install node@22.1.0", run["summary"])
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {"proj": "tool:node@22.1.0"})
+        findings = self.con.execute("SELECT summary, body FROM posts WHERE kind = 'finding' AND thread = 'tools-wanted' ORDER BY id").fetchall()
+        self.assertEqual(len(findings), 2)
+        self.assertTrue(findings[1]["summary"].startswith("local lacks node@22.1.0 for proj"), findings[1]["summary"])
+        self.assertIn("mise install node@22.1.0", findings[1]["body"])
+        self.assertIn("lacks node@22.1.0 for proj", pulse.executors_line(self.con, NOW))
+
+    def test_an_invalid_recipe_errors_before_the_worker_and_posts_one_finding_a_day(self):
+        self.commit_recipe("---\nrecipe: 1\nenv:\n  GITHUB_TOKEN: ghp_notreallyatoken12345678\n---\n")
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        marker = self.tmp / "worker-ran"
+        worker = self.worker_script('touch %s; printf "SUMMARY: never\\n" > PULSE_RESULT.md' % shlex.quote(str(marker)))
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("is not a valid recipe", run["summary"])
+        self.assertIn("GITHUB_TOKEN", run["summary"])
+        self.assertNotIn("ghp_", run["summary"], "the value is never echoed")
+        self.assertFalse(marker.exists(), "no worker started")
+        findings = self.con.execute("SELECT * FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'environment' AND project = 'proj'").fetchall()
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0]["summary"].startswith("invalid environment recipe"), findings[0]["summary"])
+        self.assertNotIn("ghp_", findings[0]["body"])
+        job = self.con.execute("SELECT * FROM jobs WHERE id = ?", (run["job_id"],)).fetchone()
+        self.assertEqual(job["status"], "queued", "a runner error; the job waits for the fix")
+        run2, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW)
+        self.assertIsNotNone(run2, reason)
+        self.assertEqual(run2["status"], "error")
+        self.assertEqual(self.con.execute("SELECT count(*) FROM posts WHERE kind = 'finding' AND thread = 'environment'").fetchone()[0], 1,
+                         "one finding a day, not one per attempt")
+        self.assertEqual(self.con.execute("SELECT count(*) FROM events WHERE action = 'env.invalid'").fetchone()[0], 1)
+
+    def test_services_keep_the_project_off_every_machine_before_placement(self):
+        self.commit_recipe(self.recipe(services=["postgres", "redis"]))
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        self.assertEqual(pulse.recipe_blocks(self.con, pulse.LOCAL_EXECUTOR), {"proj": pulse.RECIPE_UNFIT_SERVICES})
+        job, exrow, why = pulse.take_job(self.con, "aurora", project="proj", now=NOW)
+        self.assertIsNone(job)
+        self.assertIn("needs services for proj", why)
+        job, exrow, why = pulse.take_job(self.con, "aurora", now=NOW)
+        self.assertIsNone(job)
+        self.assertIn("needs services", why)
+        self.assertIn("needs services for proj", pulse.executors_line(self.con, NOW))
+        # a job that reaches run_job anyway (leased before the recipe landed) ends the same way, with the mark
+        leased = pulse.lease_job(self.con, "aurora", project="proj", now=NOW)
+        self.assertIsNotNone(leased)
+        worker = self.worker_script('printf "SUMMARY: never runs\\n" > PULSE_RESULT.md')
+        run = pulse.run_job(self.con, leased, "aurora", worker_cmd=worker, now=NOW)
+        self.assertEqual(run["status"], "error", run["summary"])
+        self.assertIn("lists services (postgres, redis)", run["summary"])
+        self.assertEqual(pulse.unfit_projects(self.con, pulse.LOCAL_EXECUTOR, NOW), {"proj": pulse.RECIPE_UNFIT_SERVICES})
+        code, out, err = run_cli("env", "check", "--now", NOW)
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("services postgres, redis", out)
+        self.assertIn("needs services", out)
+        # an empty list clears it without any mark to expire
+        self.commit_recipe(self.recipe(services=[]), message="services provided elsewhere")
+        pulse.clear_unfit(self.con, pulse.LOCAL_EXECUTOR)
+        self.assertEqual(pulse.recipe_blocks(self.con, pulse.LOCAL_EXECUTOR), {})
+        code, out, err = run_cli("env", "check", "--now", NOW)
+        self.assertEqual(code, 0, out + err)
+
+    # -- landing ----------------------------------------------------------------
+
+    def branch_with(self, name, files, message="change"):
+        """A branch off main with the given {path: text} written and committed, main left where it was."""
+        git(self.repo, "checkout", "-q", "-b", name)
+        for path, text in files.items():
+            (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / path).write_text(text, encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", message)
+        git(self.repo, "checkout", "-q", "main")
+        return name
+
+    def test_a_recipe_branch_travels_alone_and_waits_for_a_human_landing(self):
+        self.commit_recipe(self.recipe(tools=[]))
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        project = pulse.project_by_slug(self.con, "proj")
+        mixed = self.branch_with("pulse/aurora/job-mixed", {pulse.RECIPE_PATH: self.recipe(tools=["node@22.1.0"]), "README.md": "more\n"})
+        state, note = pulse.land_branch(self.con, project, mixed, "daemon", now=NOW)
+        self.assertEqual(state, "refused", note)
+        self.assertIn("recipe changes travel alone", note)
+        self.assertNotEqual(git(self.repo, "rev-parse", "--verify", "--quiet", "refs/heads/%s" % mixed).returncode, 0, "a refused branch goes")
+        alone = self.branch_with("pulse/aurora/job-recipe", {pulse.RECIPE_PATH: self.recipe(tools=["node@22.1.0"])})
+        job, _ = pulse.add_job(self.con, "proj", "task", "fill the recipe", created_by="human")
+        self.con.execute("UPDATE jobs SET status = 'done', branch = ? WHERE id = ?", (alone, job["id"]))
+        state, note = pulse.land_branch(self.con, project, alone, "daemon", job=dict(self.con.execute("SELECT * FROM jobs WHERE id = ?", (job["id"],)).fetchone()), now=NOW)
+        self.assertEqual(state, "held", note)
+        self.assertIn("pulse land --project proj --branch %s" % alone, note)
+        self.assertEqual(git(self.repo, "rev-parse", "--verify", "--quiet", "refs/heads/%s" % alone).returncode, 0, "a held branch stays")
+        self.assertEqual(git(self.repo, "rev-parse", "main").stdout, git(self.repo, "rev-parse", "HEAD").stdout, "main did not move")
+        questions = self.con.execute("SELECT * FROM posts WHERE kind = 'question' AND area = 'runner' AND thread = 'environment'").fetchall()
+        self.assertEqual(len(questions), 1)
+        self.assertIn(alone, questions[0]["summary"])
+        self.assertIn("tools node@22.1.0", questions[0]["summary"])
+        self.assertIn("+  - node@22.1.0", questions[0]["body"], "the question carries the diff")
+        self.assertEqual(self.con.execute("SELECT branch, status FROM jobs WHERE id = ?", (job["id"],)).fetchone()[0], alone, "the job keeps its branch")
+        # the daemon's landing pass holds it again without a second question, and lands nothing
+        self.con.execute("UPDATE settings SET value = 'agents' WHERE name = 'landing'")
+        results = pulse.land_pending(self.con, project, actor="daemon", now=NOW)
+        self.assertEqual([s for s, _ in results], ["held"])
+        self.assertEqual(self.con.execute("SELECT count(*) FROM posts WHERE kind = 'question' AND thread = 'environment'").fetchone()[0], 1)
+        self.assertEqual(pulse.held_landings(self.con, "proj", self.repo), [alone])
+        code, out, err = run_cli("env", "check", "--project", "proj", "--now", NOW)
+        self.assertIn("held: %s" % alone, out)
+        # an agent naming the branch is still held; the human naming it (no PULSE_AGENT) lands it
+        with unittest.mock.patch.dict(os.environ, {"PULSE_AGENT": "aurora"}):
+            code, out, err = run_cli("land", "--project", "proj", "--branch", alone)
+        self.assertIn("held", out, "an agent cannot name a recipe branch into landing")
+        self.assertEqual(self.con.execute("SELECT count(*) FROM posts WHERE kind = 'question' AND thread = 'environment'").fetchone()[0], 1)
+        self.assertNotIn("PULSE_AGENT", os.environ)
+        code, out, err = run_cli("land", "--project", "proj", "--branch", alone)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("landed", out)
+        self.assertIn("check run with main's %s" % pulse.RECIPE_PATH, out)
+        self.assertEqual(pulse.read_recipe(self.repo, "main")[0]["tools"], ["node@22.1.0"])
+        self.assertEqual(self.con.execute("SELECT count(*) FROM events WHERE action = 'env.held'").fetchone()[0], 1,
+                         "one event with the one question; the daemon's later passes hold quietly")
+        self.assertEqual(pulse.held_landings(self.con, "proj", self.repo), [], "landed branches leave the held list")
+
+    def test_the_landing_check_runs_with_the_base_recipe_when_the_branch_changed_it(self):
+        self.commit_recipe(self.recipe(setup=["touch .base-setup"]))
+        self.set_verify("test -f .base-setup && test ! -f .branch-setup")
+        project = pulse.project_by_slug(self.con, "proj")
+        alone = self.branch_with("pulse/aurora/job-r2", {pulse.RECIPE_PATH: self.recipe(setup=["touch .branch-setup"])})
+        state, note = pulse.land_branch(self.con, project, alone, pulse.HUMAN_AGENT, now=NOW, by_hand=True)
+        self.assertEqual(state, "landed", note)
+        self.assertIn("check run with main's %s" % pulse.RECIPE_PATH, note)
+        self.assertEqual(pulse.read_recipe(self.repo, "main")[0]["setup"], ["touch .branch-setup"], "the merge keeps the branch's recipe")
+
+    # -- onboarding, env check, pair ---------------------------------------------
+
+    def test_onboard_scaffolds_the_recipe_once_and_the_brief_asks_the_agent_to_fill_it(self):
+        other = make_repo(self.tmp, "other")
+        code, out, err = run_cli("onboard", str(other), "--verify", "true")
+        self.assertEqual(code, 0, err)
+        dest = other / pulse.RECIPE_PATH
+        self.assertTrue(dest.is_file())
+        self.assertEqual(dest.read_text(encoding="utf-8"), self.TEMPLATE.read_text(encoding="utf-8"))
+        self.assertIn("scaffolded %s" % pulse.RECIPE_PATH, out)
+        self.assertIn("?? docs/", git(other, "status", "--short").stdout, "never staged")
+        dest.write_text(self.recipe(tools=["go@1.24.0"]), encoding="utf-8")
+        code, out, err = run_cli("onboard", str(other), "--verify", "true")
+        self.assertEqual(code, 0, err)
+        self.assertIn("%s already present, untouched" % pulse.RECIPE_PATH, out)
+        self.assertEqual(pulse.parse_recipe(dest.read_text(encoding="utf-8"))[0]["tools"], ["go@1.24.0"], "never overwritten")
+        brief = self.con.execute("SELECT brief FROM jobs WHERE project = 'other' AND kind = 'onboard'").fetchone()[0]
+        self.assertIn(pulse.RECIPE_PATH, brief)
+        self.assertIn("Commit the recipe alone", brief)
+        self.assertIn("Never write a token", brief)
+        scaffolded = [json.loads(r["detail"])["scaffolded"] for r in self.con.execute("SELECT detail FROM events WHERE action = 'project.onboard' AND subject = 'other' ORDER BY seq")]
+        self.assertIn(pulse.RECIPE_PATH, scaffolded[0])
+        self.assertNotIn(pulse.RECIPE_PATH, scaffolded[1])
+
+    def test_env_check_reports_recipes_machines_and_exits_one_when_a_machine_is_unfit(self):
+        code, out, err = run_cli("env", "check", "--now", NOW)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("no %s" % pulse.RECIPE_PATH, out)
+        self.commit_recipe(self.recipe(tools=["node@22.1.0"], env={"GREETING": "hello"}, suggested_check="make test"))
+        with unittest.mock.patch.dict(os.environ, {"PATH": self.bare_path()}):
+            code, out, err = run_cli("env", "check", "--project", "proj", "--now", NOW)
+        self.assertEqual(code, 1, "no mise on this PATH: the local machine is unfit\n" + out + err)
+        self.assertIn("recipe ok; tools node@22.1.0; setup: heuristic; env GREETING", out)
+        self.assertNotIn("hello", out, "values never shown")
+        self.assertIn("suggested_check `make test` (the store's verify command `true` decides)", out)
+        self.assertIn("lacks mise", out)
+        self.fake_mise()
+        code, out, err = run_cli("env", "check", "--project", "proj", "--json", "--now", NOW)
+        self.assertEqual(code, 0, out + err)
+        report = json.loads(out)
+        self.assertEqual(report["unfit"], [])
+        self.assertEqual(report["projects"][0]["env"], ["GREETING"])
+        self.assertEqual(report["projects"][0]["executors"][0], {"executor": "local", "fit": True, "why": "", "phrase": "", "hint": ""})
+        self.commit_recipe("---\nrecipe: 3\n---\n", message="broken")
+        code, out, err = run_cli("env", "check", "--project", "proj", "--now", NOW)
+        self.assertIn("INVALID %s" % pulse.RECIPE_PATH, out)
+        code, out, err = run_cli("env", "check", "--executor", "nowhere")
+        self.assertNotEqual(code, 0)
+        self.assertIn("No executor nowhere", err)
+
+    def test_pair_scripts_and_cloud_init_carry_the_same_pinned_mise(self):
+        apply = pulse.pair_apply_script("hands-2", "/srv/pulse", "ssh-ed25519 AAAATEST pulse-hub", "#!/bin/sh\necho hands\n", False)
+        for needle in (pulse.MISE_VERSION, pulse.MISE_SHA256["x86_64"], pulse.MISE_SHA256["aarch64"], "sha256sum", "step mise failed"):
+            self.assertIn(needle, apply)
+        inspect = pulse.pair_inspect_script("/srv/pulse")
+        self.assertIn("mise=missing", inspect)
+        cloud_init = (Path(__file__).resolve().parent.parent / "hosted" / "cloud-init.yaml").read_text(encoding="utf-8")
+        for needle in (pulse.MISE_VERSION, pulse.MISE_SHA256["x86_64"], pulse.MISE_SHA256["aarch64"]):
+            self.assertIn(needle, cloud_init, "cloud-init and pulse pair install the same release")
+        hands = HANDS_SH.read_text(encoding="utf-8")
+        for key, value in pulse.WORKER_ENV:
+            self.assertIn("%s=\"${%s:-%s}\"" % (key, key, value), hands, "the hands give a worker the same sub-agent caps as the hub")
+        self.assertRegex(pulse.MISE_SHA256["x86_64"], r"^[0-9a-f]{64}$")
+
+
+class RecipeRemoteTestCase(HandsFixture):
+    """ADR-026 slice 1 on remote hands: pins and env wait for hands that can take them; setup alone still runs."""
+
+    def test_remote_hands_are_unfit_hands_outdated_for_pins_or_env_before_placement(self):
+        self.add_hands()
+        pulse.join_agent(self.con, "aurora", "r", "m")
+        path = self.repo / pulse.RECIPE_PATH
+        path.parent.mkdir(parents=True)
+        path.write_text("---\nrecipe: 1\ntools:\n  - node@22.1.0\n---\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "recipe with pins")
+        self.assertEqual(pulse.recipe_blocks(self.con, "hands"), {"proj": pulse.RECIPE_UNFIT_HANDS})
+        self.assertEqual(pulse.recipe_blocks(self.con, pulse.LOCAL_EXECUTOR), {}, "the hub itself can take pins")
+        job, exrow, why = pulse.take_job(self.con, "aurora", now=NOW, executor="hands")
+        self.assertIsNone(job)
+        self.assertIn("hands outdated for proj", why)
+        self.assertIn("pulse pair", why)
+        self.assertIn("hands outdated for proj", pulse.executors_line(self.con, NOW))
+        code, out, err = run_cli("env", "check", "--project", "proj", "--executor", "hands", "--now", NOW)
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("hands outdated", out)
+        self.assertIn("pulse pair", out)
+        path.write_text("---\nrecipe: 1\nenv:\n  GREETING: hello\n---\n", encoding="utf-8")
+        git(self.repo, "commit", "-qam", "recipe with env")
+        self.assertEqual(pulse.recipe_blocks(self.con, "hands"), {"proj": pulse.RECIPE_UNFIT_HANDS})
+        # setup alone runs on the hands through the verify string
+        path.write_text("---\nrecipe: 1\nsetup:\n  - touch .remote-setup\n---\n", encoding="utf-8")
+        git(self.repo, "commit", "-qam", "recipe with setup only")
+        self.assertEqual(pulse.recipe_blocks(self.con, "hands"), {})
+        self.con.execute("UPDATE projects SET verify_cmd = 'test -f .remote-setup' WHERE slug = 'proj'")
+        worker = self.worker_script('test -f .remote-setup || { echo "setup did not run on the hands" >&2; exit 1; }\n'
+                                    'echo x >> README.md && git commit -qam "c" && printf "SUMMARY: ok\\n" > PULSE_RESULT.md')
+        run, reason = pulse.work_once(self.con, "aurora", worker_cmd=worker, now=NOW, executor="hands")
+        self.assertIsNotNone(run, reason)
+        self.assertEqual(run["status"], "done", run["summary"] + "\n" + Path(run["log"]).read_text(encoding="utf-8"))
+        self.assertIn("# setup from %s" % pulse.RECIPE_PATH, Path(run["log"]).read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

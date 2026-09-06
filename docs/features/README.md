@@ -65,7 +65,7 @@
   view at the same hash route, three fixed files under the unchanged CSP,
   `app.js` within 150 KB gzipped.
 - [`016-project-environment-recipes.md`](016-project-environment-recipes.md) -
-  project environment recipes (ADR-026, Proposed 2026-09-06): every onboarded
+  project environment recipes (ADR-026, Accepted 2026-09-06): every onboarded
   project carries `docs/context/environment.md` - pinned tools, setup lines,
   non-secret env, declared services, a suggested check - written by the
   onboarding agent, read by the runner at the base commit, installed

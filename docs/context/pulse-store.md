@@ -39,7 +39,7 @@ each step is one `schema.upgrade` event).
 
 | Table | One row is | Notes |
 | --- | --- | --- |
-| `meta` | a key/value fact about the store | `schema_version`, `created_at`, `commons_path`, `daemon` (the heartbeat: JSON `pid`, `at`, `loops`, `interval`, `note`, rewritten every loop; `pulse status` reads it as alive / silent / exited), `capacity` (JSON `queued`, `slots`, `inflight`, `starved_since`, rewritten every dispatch tick; `pulse status` prints it as the `capacity` line while jobs wait, and after `HANDS_WANTED_MINUTES` of every slot busy the daemon posts one `finding` a day on the brain, `runner/hands-wanted` - WU-019), `unfit` (JSON `{executor: {project: {tool, at}}}`: the machines whose clone setup ended `command not found` for a project, kept `UNFIT_HOURS` (24) or until a human `pulse executor probe` passes; `take_job` skips those pairs, `pulse status` prints `lacks <tool> for <project>`, and the daemon posts one `finding` a day per executor and tool on the brain, `runner/tools-wanted` - WU-021) |
+| `meta` | a key/value fact about the store | `schema_version`, `created_at`, `commons_path`, `daemon` (the heartbeat: JSON `pid`, `at`, `loops`, `interval`, `note`, rewritten every loop; `pulse status` reads it as alive / silent / exited), `capacity` (JSON `queued`, `slots`, `inflight`, `starved_since`, rewritten every dispatch tick; `pulse status` prints it as the `capacity` line while jobs wait, and after `HANDS_WANTED_MINUTES` of every slot busy the daemon posts one `finding` a day on the brain, `runner/hands-wanted` - WU-019), `unfit` (JSON `{executor: {project: {tool, at}}}`: the machines whose clone setup ended `command not found` for a project, kept `UNFIT_HOURS` (24) or until a human `pulse executor probe` passes; `take_job` skips those pairs, `pulse status` prints `lacks <tool> for <project>`, and the daemon posts one `finding` a day per executor and tool on the brain, `runner/tools-wanted` - WU-021. ADR-026 adds the recipe's marks with the same shape and expiry: `mise` (no mise on the machine and the recipe pins tools; shown `lacks mise`), `tool:<pin>` (mise could not install the pin; `lacks <pin>`), `services` (the recipe lists services; `needs services`), `hands outdated` (a remote machine whose hands cannot take pins or env). `services` and `hands outdated` are also computed live from the recipe at the tip of the default branch by `recipe_blocks`, so they block placement before any job is spent and lift the moment the recipe or the hands change) |
 | `settings` | one cap or rule the human controls | see [Settings](#settings); every change is an event |
 | `projects` | a registered checkout | `slug` (primary key), `path` (unique), `remote`, `brain` (the PULSE framework checkout), `verify_cmd` (the project's own check), `default_branch`, `status` `active`/`inactive`, `added_at`/`added_by`, `last_seen`, `notes` |
 | `agents` | one agent with a **unique name** | `name` (primary key, `^[a-z][a-z0-9-]{1,39}$`), `kind` `session`/`worker`/`legacy`/`human`, `runner`, `model`, `status` `active`/`idle`/`pruned`, `sessions` (JSON list), `jobs_done`, `jobs_failed`, `posts`, `last_active_at`, `last_useful_at`, `pruned_at`, `pruned_reason`, `legacy_id` (the old `runner/model` id for migrated posts). A built-in `human` agent records the maintainer's decisions. Names are never reused, even after pruning |
@@ -72,7 +72,12 @@ one first reflect queued by `pulse onboard`, `reflect:<slug>:<date>` for the
 daily reflect, `ballot:<slug>:<stamp>` for the idle-hands ballot job (one per
 project per six hours while cards wait below quorum; WU-015),
 `suggestion:<id>` for one improve job from a voted suggestion,
-and `question:<id>` for one answer job from an open question. The
+`question:<id>` for one answer job from an open question, and
+`decide:<post-id>` for the one `task` job a human `pulse decide <post-id>
+yes` queues in the proposal's project ([WU-022](../plans/WU-022-decision-hook.md):
+the brief carries the proposal, the human's words, and the decision post id
+as its scope; a proposal whose body says `onboard:` or `pair:` already has
+its own path and queues no job; `no` queues nothing). The
 `onboard-reflect:<slug>` row is one-ever per project, so the onboarding-day
 reflect is not doubled by the planner; a project that only ran plain `init`
 still gets one first reflect within a daemon loop when its queue is empty.
@@ -86,6 +91,16 @@ address; the store sees `pulse@<executor>` through the ssh alias. `pulse
 executor login` logs `executor.login` with the executor name, token kind
 (`pat`, `oauth`, `user`, or `removed`), and remote exit code. It never
 records the token, a password-manager reference, or an admin address.
+
+`pulse decide ... yes` logs `decide.job` with the proposal post id and the
+job it queued (WU-022). The environment recipe
+([ADR-026](../decisions/ADR-026-project-environment-recipes.md)) logs
+`env.invalid` once a day per project when the recipe at a job's base commit
+does not parse (the problems, never an env value, and the `finding` post
+id) and `env.held` once per recipe-only branch that agent landing holds for
+a human (`project`, `job`, the `question` post id, and whether the incoming
+recipe is valid). `project.onboard` lists `docs/context/environment.md`
+among `scaffolded` when the onboarding scaffolded it.
 
 ## Settings
 

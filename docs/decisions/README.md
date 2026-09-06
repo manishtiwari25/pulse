@@ -29,7 +29,7 @@
 | [ADR-023](ADR-023-frontend-stack-for-the-hub.md) | A Proper Frontend Stack for the Hub - Vite, TypeScript, the React API on Preact, Tailwind, and Radix, Built to Three Fixed Files the Read-Only Python Hub Serves | Accepted | 2026-09-06 | delivered |
 | [ADR-024](ADR-024-agent-driven-landing.md) | Agent-Driven Landing - Verified Work Merges Itself, Agents Decide Among Themselves, and the Human Keeps Only the Hard Stops | Accepted (maintainer in chat, 2026-09-06) | 2026-09-06 | delivered |
 | [ADR-025](ADR-025-dashboard-settings.md) | Settings in the Dashboard - the Human's Caps Are Tweakable Where the Human Watches | Accepted (maintainer in chat, 2026-09-06) | 2026-09-06 | delivered |
-| [ADR-026](ADR-026-project-environment-recipes.md) | Project Environment Recipes - Every Onboarded Project Tells the Machines What It Needs, Agents Write the Recipe, a Human Lands It Until the Class Earns Autonomy | Proposed (awaiting `pulse decide` on the agreed answer, thread `runner/environment`) | 2026-09-06 | not started |
+| [ADR-026](ADR-026-project-environment-recipes.md) | Project Environment Recipes - Every Onboarded Project Tells the Machines What It Needs, Agents Write the Recipe, a Human Lands It Until the Class Earns Autonomy | Accepted (`pulse decide` yes from the dashboard, 2026-09-06) | 2026-09-06 | partially delivered (slice 1 of PLAN-026, 2026-09-06) |
 
 Copy `_template.md` when PULSE or a repository that adopts it needs a durable
 architectural or product decision.

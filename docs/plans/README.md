@@ -69,7 +69,7 @@
   Tier 2 plan for ADR-021 (In Progress): `pulse onboard`, `pulse pair`, the
   first reflect queued at once, and the dashboard's Flywheel view.
 - [`PLAN-026-project-environment-recipes.md`](PLAN-026-project-environment-recipes.md) -
-  the Tier 2 plan for ADR-026 (Draft, awaiting the human's `pulse decide`):
+  the Tier 2 plan for ADR-026 (In Progress; accepted 2026-09-06):
   three slices - the recipe file `docs/context/environment.md` parsed at the
   base commit and run instead of the lockfile heuristic, `mise` as the one
   bounded user-local installer with a `tools` hands verb and `pulse env
@@ -174,6 +174,13 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   the tool loses only that project for a day (or until the human probes it)
   and one `finding` a day (`runner/tools-wanted`) prints the install line;
   lockfiles join the check-defining files (ADR-019, ADR-020, ADR-024).
+- [`WU-022-decision-hook.md`](WU-022-decision-hook.md) - a human's
+  `pulse decide <id> yes`, typed or clicked in the dashboard, queues one
+  `task` job in the proposal's project (source `decide:<id>`, event
+  `decide.job`) with the proposal and the human's words as its brief, so an
+  acceptance becomes work in the next daemon loop without an agent watching
+  the board; `no`, the commons, and `pair:`/`onboard:` proposals queue
+  nothing.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy

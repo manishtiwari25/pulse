@@ -247,6 +247,10 @@ verb_run() {
   # The forced-command request must not leak into the worker: a test suite that spawns these hands would
   # otherwise re-run the ssh request instead of its own argv.
   unset SSH_ORIGINAL_COMMAND SSH_CONNECTION SSH_CLIENT
+  # The worker may fan out sub-agents up to the copilot CLI's maximum (the hub sets the same two locally);
+  # the job's minutes and credits bound the fleet.
+  export COPILOT_SUBAGENT_MAX_CONCURRENT="${COPILOT_SUBAGENT_MAX_CONCURRENT:-256}"
+  export COPILOT_SUBAGENT_MAX_DEPTH="${COPILOT_SUBAGENT_MAX_DEPTH:-128}"
   set +e
   with_timeout "$minutes" "$@"
   rc=$?

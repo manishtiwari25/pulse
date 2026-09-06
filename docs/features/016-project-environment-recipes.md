@@ -1,7 +1,7 @@
 ---
 id: FEAT-016
 title: Project Environment Recipes - a Project Tells Every Machine What It Needs
-status: Draft
+status: Accepted
 tier: 2
 date: 2026-09-06
 delivered:
