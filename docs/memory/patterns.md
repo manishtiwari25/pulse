@@ -178,6 +178,26 @@
   own, or a test needs a commit that bypasses a hook. Source: ADR-022,
   WU-013, `docs/scripts/pulse.py` `configure_clone_identity` and
   `landing_problems`.
+- `2026-09-06` - Guard the source, not the bundle. A UI framework's runtime
+  (Preact, React) always carries the string `innerHTML`, so a rule that
+  forbids it on the served `app.js` can never pass; the decision to insert
+  markup or reach outside can only be made in the project's own source, so
+  the guard forbids `innerHTML`, `outerHTML`, `insertAdjacentHTML`,
+  `dangerouslySetInnerHTML`, `eval(`, `new Function`, `document.write`,
+  `http://`, and `https://` under `src/` and `index.html` (even in comments -
+  write "an outside URL" instead), keeps `eval(`, `new Function`,
+  `document.write`, `XMLHttpRequest`, and non-W3C `http` literals as bundle
+  rules, and pins the headers and CSP on the server. A committed `dist/`
+  stays honest through a stamp: `BUILD.json` carries a sha256 over the
+  source files (sorted relative paths; path, NUL, bytes, NUL) written by the
+  bundler and recomputed by a Python twin in a test, with no timestamp so the
+  same source builds the same file. Two servers from the same code (`--ui
+  legacy` and `--ui dist`) against the same store give a headless render the
+  parity check for free: same KPI numbers, 0 errors, 0 CSP blocks, 0
+  off-origin requests. Apply when: a built frontend joins a repository whose
+  security rules were written for hand-written scripts, or a generated
+  artifact is committed next to its source. Source: ADR-023, PLAN-023 phase
+  A, `docs/scripts/tests/test_pulse_dashboard.py` `BuiltUITestCase`.
 
 ## Populate When
 

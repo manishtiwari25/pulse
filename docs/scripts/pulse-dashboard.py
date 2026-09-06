@@ -2141,23 +2141,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.server.state.ensure_fresh(force=True)
         self._json(200, {"ok": True, "result_post": result["id"], "post_id": post_id, "answer": answer})
 
+    def _page(self, mode, base, hub, missing=""):
+        """The one HTML page: the built one when the server loaded it (ADR-023), else the embedded page."""
+        ui = getattr(self.server, "ui", None)
+        return (ui.page if ui is not None else page)(mode, base, hub, missing)
+
     def do_GET(self):
         path = unquote(urlsplit(self.path).path)
+        ui = getattr(self.server, "ui", None)
         try:
             if path == "/app.css":
-                return self._send(200, APP_CSS, "text/css; charset=utf-8")
+                return self._send(200, ui.app_css if ui is not None else APP_CSS, "text/css; charset=utf-8")
             if path == "/app.js":
-                return self._send(200, APP_JS, "application/javascript; charset=utf-8")
+                return self._send(200, ui.app_js if ui is not None else APP_JS, "application/javascript; charset=utf-8")
             hub = getattr(self.server, "hub", None)
             if hub is None:
                 if path in ("/", "/index.html"):
-                    return self._send(200, page("project", "", False), "text/html; charset=utf-8")
+                    return self._send(200, self._page("project", "", False), "text/html; charset=utf-8")
                 if path.startswith("/api/v1/"):
                     return self._project_api(self.server.state, path[len("/api/v1/"):])
                 return self._json(404, {"error": "not found"})
             # Hub mode: the organization at /, each project under its own prefix.
             if path in ("/", "/index.html"):
-                return self._send(200, page("org", "", True), "text/html; charset=utf-8")
+                return self._send(200, self._page("org", "", True), "text/html; charset=utf-8")
             if path.startswith("/api/v1/"):
                 return self._org_api(hub, path[len("/api/v1/"):])
             m = PROJECT_URL_RE.match(path)
@@ -2175,11 +2181,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     why, status = "no such project", 404
                 if rest in ("/", "/index.html"):
                     # A human at a bad URL gets the organization page with the reason on it.
-                    return self._send(status, page("org", "", True, missing=slug), "text/html; charset=utf-8")
+                    return self._send(status, self._page("org", "", True, missing=slug), "text/html; charset=utf-8")
                 return self._json(status, {"error": why, "slug": slug})
             if rest in ("/", "/index.html"):
                 mode = "commons" if slug == COMMONS_SLUG else "project"
-                return self._send(200, page(mode, base_for(slug), True), "text/html; charset=utf-8")
+                return self._send(200, self._page(mode, base_for(slug), True), "text/html; charset=utf-8")
             if rest.startswith("/api/v1/"):
                 return self._project_api(state, rest[len("/api/v1/"):])
             return self._json(404, {"error": "not found"})
@@ -2253,20 +2259,126 @@ class Handler(http.server.BaseHTTPRequestHandler):
 PROJECT_URL_RE = re.compile(r"^/(p/([a-z0-9][a-z0-9-]{0,62})|commons)(/.*)?$")
 
 
-def page(mode, base, hub, missing=""):
-    """The one HTML page; mode, base, hub, and missing are fixed-vocabulary or
-    regex-validated slug values, never user text."""
-    return (INDEX_HTML.replace("__MODE__", mode).replace("__BASE__", base)
+def fill_page(template, mode, base, hub, missing=""):
+    """Substitute the four placeholders; mode, base, hub, and missing are
+    fixed-vocabulary or regex-validated slug values, never user text."""
+    return (template.replace("__MODE__", mode).replace("__BASE__", base)
             .replace("__HUB__", "1" if hub else "0").replace("__MISSING__", missing))
+
+
+def page(mode, base, hub, missing=""):
+    """The embedded page (the legacy UI until phase B of PLAN-023 removes it)."""
+    return fill_page(INDEX_HTML, mode, base, hub, missing)
+
+
+# --------------------------------------------------------------------------- #
+# The built page (ADR-023): three files Vite wrote into docs/scripts/dashboard/dist,
+# read once at start and served at the same routes with the same headers.
+# --------------------------------------------------------------------------- #
+
+UI_SOURCE_DIR = HERE / "dashboard"
+UI_DIR = UI_SOURCE_DIR / "dist"
+UI_FILES = ("index.html", "app.js", "app.css")
+UI_BUILD_SCHEMA = "pulse-hub-build/1"
+# Twin of HASHED_FILES in vite.config.ts: the hash in BUILD.json covers these plus every file under src/.
+UI_HASHED_FILES = ("index.html", "package.json", "package-lock.json", "tsconfig.json", "vite.config.ts", "eslint.config.js")
+UI_PLACEHOLDERS = ("__MODE__", "__BASE__", "__HUB__", "__MISSING__")
+UI_CHOICES = ("auto", "legacy", "dist")
+
+
+class BuiltUI:
+    """The built page in memory: the index template with its placeholders, the bundle, the stylesheet, and BUILD.json."""
+
+    def __init__(self, index_html, app_js, app_css, build, path):
+        self.index_html = index_html
+        self.app_js = app_js
+        self.app_css = app_css
+        self.build = build
+        self.path = path
+
+    def page(self, mode, base, hub, missing=""):
+        return fill_page(self.index_html, mode, base, hub, missing)
+
+    @property
+    def source_hash(self):
+        return str(self.build.get("source_hash", ""))
+
+    def tool(self, name):
+        tools = self.build.get("tools")
+        return str(tools.get(name, "?")) if isinstance(tools, dict) else "?"
+
+
+def ui_source_hash(root):
+    """sha256 over the files that make dist/, in the exact form vite.config.ts hashes them: sorted by
+    relative posix path; per file the path bytes, a NUL, the file bytes, a NUL. Equal to BUILD.json's
+    source_hash when dist/ was built from this source; different when someone edited src/ and did not build."""
+    root = Path(root)
+    files = [root / name for name in UI_HASHED_FILES if (root / name).is_file()]
+    src = root / "src"
+    if src.is_dir():
+        files.extend(p for p in src.rglob("*") if p.is_file())
+    digest = hashlib.sha256()
+    for path in sorted(files, key=lambda p: p.relative_to(root).as_posix()):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def load_built_ui(dist_dir=UI_DIR):
+    """Read the built page once. Returns (BuiltUI, "ok") or (None, why) when the build is absent or incomplete."""
+    dist_dir = Path(dist_dir)
+    missing = [name for name in UI_FILES + ("BUILD.json",) if not (dist_dir / name).is_file()]
+    if missing:
+        return None, "missing " + ", ".join(missing)
+    try:
+        build = json.loads((dist_dir / "BUILD.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, "BUILD.json does not parse: %s" % exc
+    if not isinstance(build, dict) or build.get("schema") != UI_BUILD_SCHEMA:
+        return None, "BUILD.json schema is not %s" % UI_BUILD_SCHEMA
+    try:
+        index_html = (dist_dir / "index.html").read_text(encoding="utf-8")
+        app_js = (dist_dir / "app.js").read_bytes()
+        app_css = (dist_dir / "app.css").read_bytes()
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, "unreadable: %s" % exc
+    lacking = [ph for ph in UI_PLACEHOLDERS if ph not in index_html]
+    if lacking:
+        return None, "index.html lacks " + ", ".join(lacking)
+    return BuiltUI(index_html, app_js, app_css, build, dist_dir), "ok"
+
+
+def select_ui(choice="auto", dist_dir=UI_DIR, source_dir=UI_SOURCE_DIR):
+    """Decide which page the server hands out. `auto` serves the build when it is complete and the embedded
+    page otherwise; `legacy` always serves the embedded page; `dist` refuses to start without a complete build.
+    Returns (BuiltUI or None, one line for the start log)."""
+    if choice not in UI_CHOICES:
+        raise DashboardError("--ui must be one of %s" % ", ".join(UI_CHOICES))
+    if choice == "legacy":
+        return None, "UI:         embedded page (--ui legacy)"
+    ui, why = load_built_ui(dist_dir)
+    if ui is None:
+        if choice == "dist":
+            raise DashboardError("--ui dist: %s has no complete build (%s); run `npm ci && npm run build` in %s"
+                                 % (dist_dir, why, source_dir))
+        return None, "UI:         embedded page (%s: %s)" % (dist_dir, why)
+    note = ""
+    source_dir = Path(source_dir)
+    if (source_dir / "src").is_dir() and ui_source_hash(source_dir) != ui.source_hash:
+        note = "; STALE: built from other source, run `npm run build` in %s" % source_dir
+    return ui, "UI:         %s (vite %s, preact %s%s)" % (dist_dir, ui.tool("vite"), ui.tool("preact"), note)
 
 
 class DashboardServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, state=None, port=0, verbose=False, hub=None):
+    def __init__(self, state=None, port=0, verbose=False, hub=None, ui=None):
         self.state = state
         self.hub = hub
+        self.ui = ui
         self.verbose = verbose
         super().__init__(("127.0.0.1", port), Handler)
 
@@ -3971,10 +4083,12 @@ def cmd_serve(args):
                            max_age_seconds=args.max_age_seconds, last=args.last)
     state.ensure_fresh(force=True)
     entry = maybe_register(args, repo)
-    server = DashboardServer(state, port=args.port, verbose=args.verbose)
+    ui, ui_line = select_ui(getattr(args, "ui", "auto"))
+    server = DashboardServer(state, port=args.port, verbose=args.verbose, ui=ui)
     print("PULSE dashboard for %s" % repo)
     print("Serving on %s (127.0.0.1 only; one write: POST /api/v1/decide; Ctrl-C to stop)" % server.url)
     print("Projection: %s" % state.db_path)
+    print(ui_line)
     if entry:
         print("Registered as /p/%s/ for the hub (pulse-dashboard.py hub)" % entry["slug"])
     if args.open:
@@ -3996,10 +4110,12 @@ def cmd_hub(args):
         brain_entry = register_project(home, repo, git(repo, "config", "--get", "remote.origin.url"), brain=True)
     hub = HubState(home, state_home(args.state_dir), refresh_seconds=args.refresh_seconds,
                    max_age_seconds=args.max_age_seconds, last=args.last)
-    server = DashboardServer(None, port=args.port, verbose=args.verbose, hub=hub)
+    ui, ui_line = select_ui(getattr(args, "ui", "auto"))
+    server = DashboardServer(None, port=args.port, verbose=args.verbose, hub=hub, ui=ui)
     print("PULSE organization hub")
     print("Serving on %s (127.0.0.1 only; one write: POST /api/v1/decide; Ctrl-C to stop)" % server.url)
     print("Registry:   %s" % (home / REGISTRY_NAME))
+    print(ui_line)
     if brain_entry:
         print("Brain:      /p/%s/" % brain_entry["slug"])
     for slug, e, st, err in hub.each():
@@ -4114,6 +4230,12 @@ def build_parser():
         sp.add_argument("--brain", action="store_true",
                         help="mark this checkout as the one machine-local PULSE brain project")
 
+    def add_ui_opt(sp):
+        sp.add_argument("--ui", choices=UI_CHOICES, default="auto",
+                        help="which page to serve: auto (the build in docs/scripts/dashboard/dist when complete, "
+                             "else the embedded page), legacy (always the embedded page), dist (refuse to start "
+                             "without a complete build); ADR-023")
+
     sp = sub.add_parser("index", help="build or refresh the SQLite projection")
     add_repo(sp)
     add_register_opt(sp)
@@ -4135,6 +4257,7 @@ def build_parser():
                     help="rebuild at least this often so claim expiry stays current")
     sp.add_argument("--last", type=int, default=5, help="recent variant rows to keep in the loop summary")
     sp.add_argument("--verbose", action="store_true", help="log requests to stderr")
+    add_ui_opt(sp)
     sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("hub", help="serve the organization: every registered project plus the commons")
@@ -4149,6 +4272,7 @@ def build_parser():
                     help="rebuild each projection at least this often so claim expiry stays current")
     sp.add_argument("--last", type=int, default=5, help="recent variant rows to keep in each loop summary")
     sp.add_argument("--verbose", action="store_true", help="log requests to stderr")
+    add_ui_opt(sp)
     sp.set_defaults(func=cmd_hub)
 
     sp = sub.add_parser("register", help="add a checkout to the hub's project registry")

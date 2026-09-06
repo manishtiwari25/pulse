@@ -134,11 +134,11 @@ handed to another runner.
 
 ## Acceptance Criteria
 
-- [ ] Every route above renders with the same data as the legacy page for
+- [x] Every route above renders with the same data as the legacy page for
       the same store (checked by the P4 renderer's text capture).
-- [ ] Mission control shows the status line, the KPI row, the machine
+- [x] Mission control shows the status line, the KPI row, the machine
       panel, working/testing/shipped, and the notices strip.
-- [ ] Guards green; P4 0 errors / 0 CSP violations / 0 off-origin requests;
+- [x] Guards green; P4 0 errors / 0 CSP violations / 0 off-origin requests;
       bundle within budget; no serious axe issue.
 - [ ] The maintainer has looked at the hub on 8765 in both themes and said
       it looks right.

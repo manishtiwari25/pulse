@@ -121,6 +121,59 @@ docs/scripts/board.sh --json                              # board snapshot alone
 docs/scripts/evolution-report.sh --json                   # loop snapshot alone (pulse-evolution-snapshot/1)
 ```
 
+## The page - built once, served as three files (ADR-023)
+
+The page a human sees is a small Preact + Tailwind application in
+`docs/scripts/dashboard/` (Vite 7, TypeScript strict, Radix primitives,
+ESLint). It is **built once** into three fixed files -
+`dist/index.html`, `dist/app.js`, `dist/app.css` - plus a `dist/BUILD.json`
+stamp, and those files are committed, so a human still runs the hub with
+Python alone: the server reads `dist/` at start and serves the three files
+at the same routes, with the same Content-Security-Policy and headers, as
+the embedded page it replaces. Nothing else under `dist/` or `src/` is ever
+served; no route was added.
+
+```bash
+cd docs/scripts/dashboard
+npm ci                 # exact versions from package-lock.json
+npm run lint           # eslint src --max-warnings 0
+npm run build          # tsc --noEmit, then vite build -> dist/
+```
+
+- **Which page is served.** `--ui auto` (default) serves the build when
+  `dist/` is complete (three files and a parseable `BUILD.json`), else the
+  embedded page; `--ui legacy` always serves the embedded page - the
+  one-command rollback while phase A of PLAN-023 lasts; `--ui dist` refuses
+  to start without a complete build. The start log prints a `UI:` line
+  saying which one, the toolchain versions from the stamp, and `STALE` when
+  the stamp does not match the source.
+- **The stamp.** `BUILD.json` carries `source_hash`, a sha256 over
+  `index.html`, `package.json`, `package-lock.json`, `tsconfig.json`,
+  `vite.config.ts`, `eslint.config.js`, and every file under `src/` (sorted
+  relative paths; per file the path, NUL, bytes, NUL). `ui_source_hash()` in
+  `pulse-dashboard.py` is the Python twin; the test
+  `BuiltUITestCase.test_dist_is_complete_and_matches_the_source_by_hash`
+  fails when someone edits `src/` and does not rebuild and commit `dist/`.
+  The stamp has no timestamp, so the same source builds the same file.
+- **Budget.** `app.js` at most 150 KB gzip, `app.css` at most 20 KB gzip
+  (ADR-023 §5, evaluator P6); the tests enforce it.
+- **Rules the source keeps.** No `innerHTML`, `outerHTML`,
+  `insertAdjacentHTML`, `dangerouslySetInnerHTML`, `eval(`,
+  `new Function`, `document.write`, and no `http://` or `https://` literal
+  anywhere under `src/` or in `index.html` - every value the page shows is a
+  JSX text node built from JSON, and the page never reaches outside the hub's
+  origin. The owner's guard (`test_pulse_dashboard_guards.py`) checks the
+  same on the served files; `BuiltUITestCase` is the editable twin the loop
+  measures. Writing one of those words even in a comment fails both.
+- **Same numbers.** The A8 render (headless browser, both pages from the
+  same store, light and dark, 820 and 1400 px) compares every KPI on the
+  built page with the embedded page's and counts console errors, CSP blocks,
+  and off-origin requests; the acceptance line is 0 / 0 / 0 and identical
+  numbers.
+- **What never changes.** The JSON routes, the projection, the store, the
+  read-only rule, the one write (`POST /api/v1/decide`, loopback only), and
+  the CSP. The frontend is a presentation layer over the same data.
+
 ## The organization hub - every project on this machine
 
 The picture the maintainer asked for: one page that shows every project's
@@ -276,6 +329,7 @@ a new Tier 2 decision (authentication, privacy, synchronization, recovery).
 python3 -m unittest discover -s docs/scripts/tests -p 'test_*dashboard*.py'
 docs/scripts/board.sh --json | python3 -m json.tool > /dev/null
 docs/scripts/evolution-report.sh --json | python3 -m json.tool > /dev/null
+(cd docs/scripts/dashboard && npm ci && npm run lint && npm run build)   # after any change under src/
 ```
 
 Before changing `board.sh` or `evolution-report.sh`, prove the text output a
@@ -306,6 +360,10 @@ commons is ever written.
 
 ## Rollback
 
+Restoring the embedded page without a code change is
+`python3 docs/scripts/pulse-dashboard.py hub --ui legacy` (phase A of
+PLAN-023); removing the built page is an inverse patch of
+`docs/scripts/dashboard/` and the `--ui` code in `pulse-dashboard.py`.
 Removing the dashboard is a normal inverse patch of `docs/scripts/pulse-dashboard.py`,
 `docs/scripts/tests/`, this workflow, and the `--records` and `--json` flags
 in the two reports; their text and TSV output is unchanged by those flags.

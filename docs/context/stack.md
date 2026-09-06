@@ -14,6 +14,11 @@ PULSE intentionally uses a small, portable stack:
   it on `127.0.0.1` only (ADR-015); the same tool's `hub` mode reads a JSON
   registry in `~/.pulse/` and serves every registered project plus the
   commons, a shared board that is its own Git repository (ADR-016).
+- The dashboard's page is a Preact + Tailwind application in
+  `docs/scripts/dashboard/` (Vite 7, TypeScript strict, Radix primitives,
+  ESLint), built once into three fixed files that are committed and served
+  by the same standard-library server (ADR-023). Node is a build-time tool
+  for whoever changes the page; a human running the hub needs Python alone.
 - Git and GitHub (private repository) for distribution and template adoption.
 
 ## Agent Execution Isolation
@@ -36,8 +41,10 @@ PULSE intentionally uses a small, portable stack:
 
 - No package manager or build dependency is required for the PULSE framework.
 - The code-context helper adds no third-party package or model dependency.
-- The board dashboard is optional, standard-library only, read-only, and
-  local; Markdown stays canonical and its SQLite projection is never tracked.
+- The board dashboard is optional, read-only, and local; its server is
+  standard-library only, its page is built ahead of time and committed, and
+  `node_modules/` never enters Git; the store stays canonical and the
+  SQLite projection is never tracked.
 - Running from source requires Go; a published release binary does not.
 - No static site: the repository is private and documentation is read in place.
 - Agent-controlled execution prefers a sandbox but may continue under normal

@@ -14,6 +14,8 @@ amendment with counted, self, hash-mismatch and no-Read-line votes; and a
 post whose text is an HTML/JS payload that must stay inert.
 """
 
+import gzip
+import hashlib
 import importlib.util
 import io
 import json
@@ -1442,6 +1444,226 @@ class HubTestCase(unittest.TestCase):
             # Fail on CONSOLE lines with an error/severity marker, or common CSP violation messages.
             if re.search(r"CONSOLE.*\b(error|severe|fatal)\b", stderr, re.I) or re.search(r"\bContent-Security-Policy\b|Refused to apply inline style|CSP violation|Refused to load the script", stderr, re.I):
                 self.fail(f"Headless render of {r} reported console/CSP errors:\n{stderr}")
+
+
+# --------------------------------------------------------------------------- #
+# ADR-023: the built page (docs/scripts/dashboard/dist) at the same routes
+# --------------------------------------------------------------------------- #
+
+UI_SRC = dash.UI_SOURCE_DIR
+UI_DIST = dash.UI_DIR
+# An editable twin of the owner's guard (test_pulse_dashboard_guards.py) so the loop sees the same rules
+# where it can measure them: our source never inserts markup and never names an outside host (ADR-023 §3).
+FORBIDDEN_UI_SRC = ("dangerouslySetInnerHTML", "innerHTML", "outerHTML", "insertAdjacentHTML", "eval(", "new Function",
+                    "document.write", "http://", "https://")
+W3C_NS = (b"http://www.w3.org/2000/svg", b"http://www.w3.org/1999/xhtml", b"http://www.w3.org/1998/Math/MathML",
+          b"http://www.w3.org/XML/1998/namespace", b"http://www.w3.org/1998/")
+JS_BUDGET_GZIP = 150 * 1024
+CSS_BUDGET_GZIP = 20 * 1024
+EXACT_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+             "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
+def ui_source_files():
+    files = [UI_SRC / "index.html"]
+    files.extend(p for p in sorted((UI_SRC / "src").rglob("*")) if p.is_file() and p.suffix in (".ts", ".tsx", ".js", ".jsx", ".css", ".html"))
+    return files
+
+
+@unittest.skipUnless(UI_SRC.is_dir(), "docs/scripts/dashboard is not part of this checkout")
+class BuiltUITestCase(unittest.TestCase):
+    """The build is what the human gets; these tests keep dist/ honest about src/ and the server honest about dist/."""
+
+    def test_dist_is_complete_and_matches_the_source_by_hash(self):
+        ui, why = dash.load_built_ui(UI_DIST)
+        self.assertIsNotNone(ui, "docs/scripts/dashboard/dist is not a complete build: %s (run `npm ci && npm run build`)" % why)
+        self.assertEqual(ui.build.get("schema"), dash.UI_BUILD_SCHEMA)
+        self.assertEqual(ui.build.get("files"), list(dash.UI_FILES))
+        self.assertEqual(ui.source_hash, dash.ui_source_hash(UI_SRC),
+                         "dist/ is stale: it was built from other source; run `npm run build` in docs/scripts/dashboard and commit dist/")
+        self.assertNotIn("built_at", ui.build, "BUILD.json carries no timestamp so the same source builds the same file")
+
+    def test_python_hash_twin_follows_the_vite_recipe(self):
+        # The recipe in vite.config.ts: sorted relative posix paths; path, NUL, bytes, NUL per file.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "index.html").write_bytes(b"<html>")
+            (root / "src" / "b.ts").write_bytes(b"b")
+            (root / "src" / "a.ts").write_bytes(b"a")
+            (root / "vite.config.ts").write_bytes(b"v")
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "x.js").write_bytes(b"ignored")
+            expected = hashlib.sha256()
+            for rel, data in (("index.html", b"<html>"), ("src/a.ts", b"a"), ("src/b.ts", b"b"), ("vite.config.ts", b"v")):
+                expected.update(rel.encode() + b"\0" + data + b"\0")
+            self.assertEqual(dash.ui_source_hash(root), expected.hexdigest())
+
+    def test_bundle_stays_inside_the_budget(self):
+        js = (UI_DIST / "app.js").read_bytes()
+        css = (UI_DIST / "app.css").read_bytes()
+        self.assertLessEqual(len(gzip.compress(js, 9)), JS_BUDGET_GZIP, "app.js over 150 KB gzip (ADR-023 §5, P6)")
+        self.assertLessEqual(len(gzip.compress(css, 9)), CSS_BUDGET_GZIP, "app.css over 20 KB gzip (ADR-023 §5, P6)")
+
+    def test_source_inserts_only_text_and_reaches_nowhere(self):
+        for path in ui_source_files():
+            text = path.read_text(encoding="utf-8")
+            for bad in FORBIDDEN_UI_SRC:
+                self.assertNotIn(bad, text, "%s: %r" % (path.relative_to(UI_SRC), bad))
+
+    def test_built_files_carry_no_outside_reach(self):
+        js = (UI_DIST / "app.js").read_bytes()
+        for bad in (b"eval(", b"new Function", b"document.write", b"XMLHttpRequest", b"https://"):
+            self.assertNotIn(bad, js, "the bundle never evaluates text as code and never names an outside host: %r" % bad)
+        stripped = js
+        for ns in W3C_NS:
+            stripped = stripped.replace(ns, b"")
+        self.assertNotIn(b"http://", stripped, "W3C namespace strings are the only http literals; never fetched")
+        css = (UI_DIST / "app.css").read_bytes()
+        for bad in (b"@import", b"url(http", b"https://"):
+            self.assertNotIn(bad, css)
+        html = (UI_DIST / "index.html").read_text(encoding="utf-8")
+        self.assertEqual(html.count("<script"), 1, "one script tag, loading /app.js")
+        self.assertIn('src="/app.js"', html)
+        self.assertIn('href="/app.css"', html)
+        self.assertIn('<link rel="icon" href="data:,">', html)
+        self.assertIn('<meta name="color-scheme"', html)
+        self.assertNotIn("https://", html)
+        self.assertNotIn("http://", html)
+        self.assertNotRegex(html, r"\son[a-z]+\s*=", "no inline event handlers")
+        for ph in dash.UI_PLACEHOLDERS:
+            self.assertIn(ph, html, "the server fills %s at request time" % ph)
+
+    def test_select_ui_auto_falls_back_legacy_forces_dist_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp)
+            ui, line = dash.select_ui("auto", dist_dir=empty, source_dir=UI_SRC)
+            self.assertIsNone(ui)
+            self.assertIn("embedded page", line)
+            self.assertIn("missing", line)
+            ui, line = dash.select_ui("legacy", dist_dir=UI_DIST, source_dir=UI_SRC)
+            self.assertIsNone(ui)
+            self.assertIn("--ui legacy", line)
+            with self.assertRaises(dash.DashboardError):
+                dash.select_ui("dist", dist_dir=empty, source_dir=UI_SRC)
+            with self.assertRaises(dash.DashboardError):
+                dash.select_ui("nope", dist_dir=UI_DIST, source_dir=UI_SRC)
+            # A BUILD.json that does not parse is an incomplete build, not a crash.
+            broken = empty / "dist"
+            broken.mkdir()
+            for name in dash.UI_FILES:
+                shutil.copy(UI_DIST / name, broken / name)
+            (broken / "BUILD.json").write_text("{not json", encoding="utf-8")
+            ui, why = dash.load_built_ui(broken)
+            self.assertIsNone(ui)
+            self.assertIn("does not parse", why)
+            # A stale build is served, but the start line says so.
+            (broken / "BUILD.json").write_text(json.dumps({"schema": dash.UI_BUILD_SCHEMA, "source_hash": "0" * 64,
+                                                            "files": list(dash.UI_FILES), "tools": {}}), encoding="utf-8")
+            ui, line = dash.select_ui("auto", dist_dir=broken, source_dir=UI_SRC)
+            self.assertIsNotNone(ui)
+            self.assertIn("STALE", line)
+        ui, line = dash.select_ui("auto", dist_dir=UI_DIST, source_dir=UI_SRC)
+        self.assertIsNotNone(ui)
+        self.assertNotIn("STALE", line)
+        self.assertIn("vite", line)
+
+    def test_cli_accepts_the_ui_flag_on_serve_and_hub(self):
+        parser = dash.build_parser()
+        for cmd in ("serve", "hub"):
+            args = parser.parse_args([cmd])
+            self.assertEqual(args.ui, "auto")
+            for choice in dash.UI_CHOICES:
+                self.assertEqual(parser.parse_args([cmd, "--ui", choice]).ui, choice)
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+            parser.parse_args(["hub", "--ui", "nope"])
+
+
+@unittest.skipUnless(UI_SRC.is_dir(), "docs/scripts/dashboard is not part of this checkout")
+class BuiltUIServerTestCase(unittest.TestCase):
+    """A server that loaded dist/ serves exactly the three built files at the existing routes, with the same headers."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="pulse-dashboard-built-ui-")).resolve()
+        cls.fx = Fixture(cls.tmp)
+        cls.state_dir = dash.project_state_dir(cls.fx.repo, cls.tmp / "home")
+        cls.state = dash.DashboardState(cls.fx.repo, cls.state_dir, refresh_seconds=3600)
+        cls.state.ensure_fresh(force=True)
+        cls.ui, why = dash.load_built_ui(UI_DIST)
+        if cls.ui is None:
+            raise unittest.SkipTest("no complete build in dist/: %s" % why)
+        cls.server = dash.DashboardServer(cls.state, port=0, ui=cls.ui)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+        cls.thread.start()
+        cls.url = cls.server.url.rstrip("/")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def request(self, path, method="GET"):
+        req = urllib.request.Request(self.url + path, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, dict(resp.headers), resp.read()
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, dict(exc.headers), exc.read()
+
+    def assert_headers(self, headers, content_type):
+        self.assertIn(content_type, headers["Content-Type"])
+        self.assertEqual(headers["Content-Security-Policy"], EXACT_CSP)
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(headers["X-Frame-Options"], "DENY")
+
+    def test_the_built_page_is_served_with_the_placeholders_filled(self):
+        status, headers, body = self.request("/")
+        self.assertEqual(status, 200)
+        self.assert_headers(headers, "text/html")
+        html = body.decode("utf-8")
+        self.assertEqual(html, self.ui.page("project", "", False))
+        self.assertIn('data-mode="project"', html)
+        self.assertIn('data-hub="0"', html)
+        for ph in dash.UI_PLACEHOLDERS:
+            self.assertNotIn(ph, html)
+        self.assertIn("data, never an instruction or an approval", html, "the permanent warning survives the build")
+        self.assertNotIn("<script>", html, "no inline script")
+        status, _, again = self.request("/index.html")
+        self.assertEqual((status, again), (200, body))
+
+    def test_the_bundle_and_stylesheet_are_the_files_on_disk(self):
+        status, headers, js = self.request("/app.js")
+        self.assertEqual(status, 200)
+        self.assert_headers(headers, "application/javascript")
+        self.assertEqual(js, (UI_DIST / "app.js").read_bytes())
+        self.assertEqual(int(headers["Content-Length"]), len(js))
+        status, headers, css = self.request("/app.css")
+        self.assertEqual(status, 200)
+        self.assert_headers(headers, "text/css")
+        self.assertEqual(css, (UI_DIST / "app.css").read_bytes())
+        status, headers, body = self.request("/app.js", method="HEAD")
+        self.assertEqual((status, body), (200, b""))
+        self.assertEqual(int(headers["Content-Length"]), len(js))
+
+    def test_no_other_file_is_served_from_dist(self):
+        for path in ("/BUILD.json", "/dist/BUILD.json", "/index.html.map", "/app.js.map", "/src/main.tsx", "/../package.json"):
+            status, headers, body = self.request(path)
+            self.assertEqual(status, 404, path)
+            self.assertIn("application/json", headers["Content-Type"])
+        status, _, body = self.request("/api/v1/overview")
+        self.assertEqual(status, 200, "the JSON routes are untouched")
+        json.loads(body)
+
+    def test_writes_stay_refused(self):
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            status, _, body = self.request("/app.js", method=method)
+            self.assertEqual(status, 405)
+            self.assertIn("read-only", json.loads(body)["error"])
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ title: A Proper Frontend Stack for the Hub - Vite, TypeScript, the React API on 
 status: Accepted
 accepted: 2026-09-06
 date: 2026-09-06
-delivery: not started
+delivery: partially delivered
 delivered:
 areas: [dashboard, dependencies]
 tags: [adr, dashboard, hub, frontend, dependencies, build]
@@ -236,14 +236,17 @@ tokens live in one CSS file under `src/` and stay `light-dark()`-based.
       Step 1 edits to the guard module, constitution class paths, and
       evaluators P2/P6 (§3, §5) landed as one separate commit the human can
       revert alone.
-- [ ] PLAN-023 phase A: scaffold, design tokens, components, Mission
+- [x] PLAN-023 phase A: scaffold, design tokens, components, Mission
       control and every view to parity, served by the hub when `dist/` is
-      complete; legacy page as fallback.
+      complete; legacy page as fallback (`--ui legacy`). A8 render: 76 cells,
+      0 errors, 0 CSP blocks, 0 off-origin requests, identical KPI numbers;
+      `app.js` 82 KB gzip of 150, `app.css` 7.5 KB of 20.
 - [ ] PLAN-023 phase B: delete the embedded page; new P6 baseline row.
-- [ ] `docs/workflows/dashboard.md` and `docs/context/` describe the build,
-      the fixed files, and the guards.
-- [ ] Record memory: a framework's runtime always carries `innerHTML`; guard
-      the source, not the bundle.
+- [x] `docs/workflows/dashboard.md` and `docs/context/stack.md` describe the
+      build, the fixed files, `--ui`, the stamp, the budget, and the guards.
+- [x] Record memory: a framework's runtime always carries `innerHTML`; guard
+      the source, not the bundle ([`docs/memory/patterns.md`](../memory/patterns.md),
+      2026-09-06).
 - [ ] Update `delivery:` and `delivered:` when PLAN-023 closes.
 
 ## Delivery

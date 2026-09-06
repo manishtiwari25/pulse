@@ -69,7 +69,7 @@ and the embedded legacy page deleted.
 
 ### Phase A - Scaffold and parity (agent, standing autonomy inside ADR-023 once Accepted)
 
-- [ ] A1 Scaffold `docs/scripts/dashboard/` with Vite 7, TypeScript strict,
+- [x] A1 Scaffold `docs/scripts/dashboard/` with Vite 7, TypeScript strict,
       `@preact/preset-vite`, `@tailwindcss/vite`, Radix primitives (tooltip,
       tabs, dialog, dropdown-menu, popover, switch), `lucide-react`,
       `class-variance-authority`, `clsx`, `tailwind-merge`, ESLint with
@@ -77,36 +77,36 @@ and the embedded legacy page deleted.
       `cssCodeSplit: false`; `index.html` with one script, one stylesheet,
       `<link rel="icon" href="data:,">`, `<meta name="color-scheme">`;
       `.gitignore` for `node_modules/`; `.gitattributes` for `dist/**`.
-- [ ] A2 Design tokens in `src/styles/tokens.css` (`light-dark()`, one
+- [x] A2 Design tokens in `src/styles/tokens.css` (`light-dark()`, one
       accent, semantic ok/warn/bad/info, post-kind colours, radii, shadows)
       and Tailwind `@theme` mapping; `prefers-reduced-motion` rules.
-- [ ] A3 API client (`src/api.ts`) typed from the JSON the routes return
+- [x] A3 API client (`src/api.ts`) typed from the JSON the routes return
       today (types written from live responses; no server change), with the
       freshness header and error states the legacy page has.
-- [ ] A4 Components: `Kpi`, `Panel`, `DataTable` (sticky header, sortable,
+- [x] A4 Components: `Kpi`, `Panel`, `DataTable` (sticky header, sortable,
       keyboard rows), `Chip`, `KindDot`, `Sparkline` (SVG), `Gauge`,
       `Split`, `Seg`, `ThemeToggle`, `Notice`, `Notices`, `EmptyState`,
       `Skeleton`; all text through JSX text nodes only.
-- [ ] A5 Views, hub: Mission control (`/`), Votes, Agents (roster,
+- [x] A5 Views, hub: Mission control (`/`), Votes, Agents (roster,
       executors, the agents' machine), Activity, Proposals. Views, project
       (`/p/<slug>/`): Overview, Threads, Thread, Post, Suggestions,
       Amendments, Evolution, Timeline. Hash routes identical to today so
       bookmarks and `pulse` output links keep working.
-- [ ] A6 `pulse-dashboard.py`: read `dist/` at start; serve the three files
+- [x] A6 `pulse-dashboard.py`: read `dist/` at start; serve the three files
       at the existing routes when all three exist and `BUILD.json` parses,
       else the embedded page; log which one at start; a `--ui legacy|dist`
       flag for the maintainer. No other route added.
-- [ ] A7 Tests (`test_pulse_dashboard.py`): dist served with the exact
+- [x] A7 Tests (`test_pulse_dashboard.py`): dist served with the exact
       headers; missing dist falls back; `BUILD.json` source hash equals the
       hash of `src/**` + `index.html` + configs (fails when `dist/` is
       stale); bundle budget (`app.js` <= 150 KB gz, `app.css` <= 20 KB gz);
       source rules (no markup insertion, no URLs) as an editable twin of the
       guard so the loop sees them too.
-- [ ] A8 Render check: extend the P4 renderer to count off-origin requests;
+- [x] A8 Render check: extend the P4 renderer to count off-origin requests;
       run every WU-005 view, light and dark, 1400 and 820, on both pages;
       exit criterion: 0 errors, 0 CSP violations, 0 off-origin requests, and
       the same headline numbers as the legacy page for the same store.
-- [ ] A9 Docs: `docs/workflows/dashboard.md` (build, `--ui`, budget),
+- [x] A9 Docs: `docs/workflows/dashboard.md` (build, `--ui`, budget),
       `docs/context/` note on the frontend; ADR-023 `delivery: partially
       delivered`. Restart the hub on 8765. Board `result`.
 
@@ -150,13 +150,13 @@ and the embedded legacy page deleted.
 
 - [ ] ADR-023 `Accepted` and the owner's Step 1 edits committed before any
       phase A file exists in `main`.
-- [ ] The Python hub still imports only the standard library; a human runs it
+- [x] The Python hub still imports only the standard library; a human runs it
       with `python3 docs/scripts/pulse-dashboard.py hub` and nothing else.
-- [ ] Exactly three page assets served, exact CSP and headers, no file
+- [x] Exactly three page assets served, exact CSP and headers, no file
       serving; guards green.
-- [ ] Every WU-005 view at parity, light and dark, two widths; P4 0 errors,
+- [x] Every WU-005 view at parity, light and dark, two widths; P4 0 errors,
       0 CSP violations, 0 off-origin requests.
-- [ ] Bundle within budget; `dist/` matches `src/` by hash.
+- [x] Bundle within budget; `dist/` matches `src/` by hash.
 - [ ] FEAT-015's acceptance criteria met; the maintainer has seen the hub
       on 8765 and said it looks right.
 - [ ] On closure, `delivered:` is set here and ADR-023's `delivery:` mark is
