@@ -6,7 +6,9 @@
 #   __PULSE_HANDS__   the contents of docs/scripts/hosted/pulse-hands.sh, base64 encoded
 # The machine gets git, python3, Node.js 22 with the copilot CLI, a single-purpose user `pulse`
 # whose only key runs pulse-hands, and nothing that can push: no remote, no repository credential.
-# The human still logs the CLI in once:  ssh -t <admin>@<ip> sudo -iu pulse copilot login
+# The human still places the login from the hub with
+# `pulse executor login <name> --admin <admin>@<ip> --with-token`, or runs
+# `ssh -t <admin>@<ip> sudo -iu pulse copilot login` here.
 
 package_update: true
 package_upgrade: true
@@ -61,4 +63,4 @@ runcmd:
   - sudo -u pulse git config --global core.askPass ""
   - systemctl restart ssh || systemctl restart sshd
 
-final_message: "pulse-hands ready after $UPTIME seconds; log the copilot CLI in as user pulse, then run pulse executor add on the hub"
+final_message: "pulse-hands ready after $UPTIME seconds; place the copilot CLI login from the hub with pulse executor login, or log in as user pulse here; then run pulse executor add on the hub"

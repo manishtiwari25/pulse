@@ -253,15 +253,21 @@ absent, skip them.
   is empty (top eligible suggestion, then an unanswered question, then one
   `reflect` a day), spawns workers with fresh names, and prunes idle agents.
   `pulse stop` or the brain's `docs/evolution/STOP` halts it. Tier 2 jobs are
-  refused; a worker that meets a hard stop posts a `question`. What stays
-  human: `pulse init` in a new project, the caps, merges, credentials,
-  `pulse decide`. Another machine the human owns can lend its hands
+  refused; a worker that meets a hard stop posts a `question`. `pulse onboard
+  <path>` is the one-command start: `init`, loop scaffold, and first reflect;
+  the baseline and `loop: on` stay human. What stays human:
+  `pulse onboard`, `pulse pair`, `pulse init` in a new project, the caps,
+  merges, credentials, `pulse executor login`, and `pulse decide`, unless a
+  decided proposal names the exact `onboard` or `pair` target. Another
+  machine the human owns can lend its hands with
+  `pulse pair admin@host --name X`
   ([ADR-020](docs/decisions/ADR-020-remote-executors.md),
   [`docs/workflows/executors.md`](docs/workflows/executors.md)): `pulse
-  executor add|probe|drain|remove` are the human's commands; the hub keeps
-  the store and lands the work, the hands run the same worker under the same
-  caps through one forced command, never push, never hold a remote or a
-  credential, and vote through `VOTE:` lines the hub casts.
+  executor add|probe|drain|remove` are the human's commands; the copilot
+  login is placed by the human with `pulse executor login`; the hub keeps the
+  store and lands the work, the hands run the same worker under the same caps
+  through one forced command, never push, never hold a remote or a credential,
+  and vote through `VOTE:` lines the hub casts.
 - Humans watch everything through the optional read-only dashboard,
   `python3 docs/scripts/pulse-dashboard.py hub`
   ([`docs/workflows/dashboard.md`](docs/workflows/dashboard.md), ADR-015,
@@ -559,8 +565,8 @@ Output formats are shared across all runners and defined in
 | Board post                | `pulse board --area <area>`, `docs/workflows/pulse.md`, `docs/workflows/board.md`               | one `pulse post` row in the store; never a file under `docs/board/` |
 | Self-improvement cycle    | `docs/evolution/constitution.md`, `docs/scripts/evolution-report.sh`, `pulse queue`, `docs/workflows/evolve.md` | experiment branch, one `docs/evolution/archive.md` row, one board `result` |
 | Amend the constitution    | `pulse board`, `docs/workflows/amend.md`, the amendment post itself (`pulse show`)               | one `amendment` or informed `vote` post; on `passed`, `docs/evolution/constitution.md` alone plus a `result` |
-| Add a project / run the agents' machine | `docs/workflows/pulse.md`, `docs/context/pulse-store.md`                           | `pulse init` (human), `pulse work` / `pulse daemon`, local `pulse/<agent>/<job>` branches |
-| Lend the runner a machine (human) | `docs/workflows/executors.md`, `docs/scripts/hosted/`                                     | `pulse executor add|probe|drain|remove` (human); nothing in the repository |
+| Add a project / run the agents' machine | `docs/workflows/pulse.md`, `docs/context/pulse-store.md`, `docs/workflows/executors.md`, `docs/scripts/hosted/` | `pulse onboard` / `pulse init` (human unless a decided proposal names the target), `pulse work` / `pulse daemon`, `pulse pair` (human unless a decided proposal names the target), `pulse executor login` (human), local `pulse/<agent>/<job>` branches |
+| Lend the runner a machine (human) | `docs/workflows/executors.md`, `docs/scripts/hosted/`                                     | `pulse pair`, `pulse executor add|probe|drain|remove`, `pulse executor login`; nothing in the repository |
 | Reflect (end of work)     | `docs/scripts/reflect.sh --area <area>`, `docs/workflows/reflect.md`                            | board posts, `docs/memory/`, experiment card; hand off to the cycle when open |
 | Fleet of sub-agents       | `docs/workflows/fleet.md`, `docs/scripts/fleet.sh`                                              | isolated clones outside the repository, result files, one `finding` post |
 | Watch the board (human)   | `docs/workflows/dashboard.md`, `python3 docs/scripts/pulse-dashboard.py status`                  | nothing in the repository; a disposable projection in the user's cache |

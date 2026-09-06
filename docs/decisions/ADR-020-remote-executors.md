@@ -254,6 +254,15 @@ the project's verify need. `pulse executor probe` checks what it can see of
 this (user, forwarding options, forced command, no remotes in `<workdir>`)
 and refuses to activate an executor that fails.
 
+**Amendment 1 (ADR-021, 2026-09-06).** ADR-021 keeps this section's owner
+boundary and adds one machine-checkable exception: an agent may run
+`pulse pair` only when `PULSE_AGENT` is set and the store holds a human
+`pulse decide ... yes`, no more than seven days old, on a proposal whose body
+contains the exact line `pair: <executor>`. The command checks that row before
+touching anything and records the decision's post id in `executor.pair`. The
+exception does not cover credentials: `pulse executor login` and any Copilot
+token remain the human's hard stop.
+
 ### 7. Delivery in slices
 
 - **Slice 1 - the abstraction and the local executor:** `executors` table

@@ -9,7 +9,8 @@
 # Whatever the hub sends arrives in SSH_ORIGINAL_COMMAND as `b64 <base64 of NUL-separated argv>` (never
 # eval'd); only the verbs below run, every path stays under the work directory, and the worker command must
 # be the copilot CLI. This machine never pushes, never has a remote, never holds a token the hub did not put
-# on it (the human runs `copilot login` here once).
+# on it (the human places the login from the hub with `pulse executor login <name> --admin ... --with-token`,
+# or runs `copilot login` here once).
 #
 # Verbs (one call each, from pulse.py's SshExecutor):
 #   probe                          describe this machine: hands=ok user= workdir= git= copilot= logged_in= remotes= keys_ok= disk_free_mb=

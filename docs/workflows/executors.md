@@ -8,9 +8,14 @@ and the landing stay on this machine, the hub. Decided in
 [PLAN-020](../plans/remote-executors.md); the runner's own procedure is
 [`pulse.md`](pulse.md) and the schema is
 [`pulse-store.md`](../context/pulse-store.md). Every command below is the
-human's: agents never add, activate, or remove an executor, never provision a
-machine, and never place a login (infrastructure, money, and credentials are
-hard stops in every tier).
+human's by default: agents never add, activate, or remove an executor on
+their own judgement, never provision a machine, and never place a login
+(infrastructure, money, and credentials are hard stops in every tier). The
+only exception is ADR-021's decided proposal gate for `pulse pair`: when
+`PULSE_AGENT` is set, `pair` may run only if the store holds a human
+`pulse decide ... yes`, no more than seven days old, on a proposal whose body
+contains `pair: <executor>`. Credentials are never placed by an agent on its
+own.
 
 ## The shape
 
@@ -73,7 +78,9 @@ IP="$(az vm show -g pulse-hands -n pulse-vm1 -d --query publicIps -o tsv)"
 printf '\nHost pulse-vm1\n  HostName %s\n  IdentityFile ~/.ssh/pulse_hands_ed25519\n  IdentitiesOnly yes\n' "$IP" >> ~/.ssh/config
 bash docs/scripts/hosted/azure-provision.sh --group pulse-hands --name pulse-vm1 --host-key >> ~/.ssh/known_hosts
 ssh pulseadmin@pulse-vm1 'cloud-init status --wait'    # done when it prints status: done
-ssh -t pulseadmin@pulse-vm1 sudo -iu pulse copilot login   # once, interactive; the hands' own login, not yours
+op read 'op://Vault/item/field' | python3 docs/scripts/pulse.py executor login pulse-vm1 --admin pulseadmin@pulse-vm1 --with-token
+# or, once and interactive on the machine:
+ssh -t pulseadmin@pulse-vm1 sudo -iu pulse copilot login   # the hands' own login, not yours
 ```
 
 Any other host works the same way when it has `git >= 2.30`, `python3`, the
@@ -86,6 +93,59 @@ command="PULSE_HANDS_WORKDIR=/srv/pulse /usr/local/bin/pulse-hands",restrict ssh
 
 Narrow egress to what the CLI and the project's check need (GitHub and the
 Copilot API endpoints, the package registries the verify command uses).
+
+## Pair a machine that already exists
+
+`pulse pair` is the second half of the Azure path for a Linux machine that
+already exists:
+
+```bash
+python3 docs/scripts/pulse.py pair admin@host --name vm1 --dry-run
+python3 docs/scripts/pulse.py pair admin@host --name vm1 --workdir /srv/pulse --workers 1 --projects '*'
+```
+
+The dry run prints every remote command and every local ssh config or
+known-hosts change and changes nothing. The real run uses the human's admin
+ssh session and passwordless `sudo`; it generates or reuses only the hub key
+`~/.ssh/pulse_hands_ed25519`, never a personal key, inspects before any
+change, and applies one idempotent setup: a locked `pulse` user,
+`/usr/local/bin/pulse-hands`, a 0750 workdir, exactly one restricted
+`authorized_keys` line, the sshd drop-in
+`/etc/ssh/sshd_config.d/60-pulse-hands.conf`, git `commit.gpgsign false`,
+and `core.askPass ""`. With `--install-copilot`, it installs Node.js 22 and
+`@github/copilot` on apt systems only; on any other system that flag is a
+refusal.
+
+The sshd step is built to keep the admin path open. `pair` writes the drop-in,
+runs `sshd -t`, and removes the drop-in without reloading when the check
+fails. After a clean check it reloads sshd and opens a second admin
+connection; if that connection fails, the held admin session removes the
+drop-in and reloads again. Refusals exit 2 with nothing changed: non-Linux,
+no passwordless sudo, an existing `authorized_keys` for `pulse` with any
+other line, no `sshd_config.d`, a clone with a remote under the workdir, a
+conflicting `Host <executor>` alias, or an executor of that name already tied
+to another address.
+
+After the remote side is safe, `pair` writes the local `Host <executor>` alias
+with `IdentitiesOnly yes`, trusts the host key through the admin session, runs
+`executor add <executor> --ssh pulse@<executor>`, and probes. The store sees
+the alias, not the address.
+
+The copilot login is a separate human credential step from the hub:
+
+```bash
+op read 'op://Vault/item/field' | python3 docs/scripts/pulse.py executor login vm1 --admin admin@host --with-token
+python3 docs/scripts/pulse.py executor login vm1 --admin admin@host --remove
+```
+
+`executor login` reads one token from standard input only (`github_pat_`,
+`gho_`, or `ghu_`; classic `ghp_` is refused because the CLI rejects it),
+pipes it to `sudo -u pulse -H copilot login --with-token`, redacts
+token-shaped output, records only `executor.login` with the executor name,
+token kind (`pat`, `oauth`, `user`, or `removed`), and exit code, then
+probes. `--remove` deletes `~pulse/.copilot` because the CLI has no logout,
+then probes and leaves the executor drained. A `logs/`-only `~/.copilot`
+folder is not a login; the probe requires a regular file directly under it.
 
 ## Enroll, probe, run
 
@@ -108,7 +168,7 @@ passes. The probe connects with `BatchMode=yes`, `ConnectTimeout=15`, and
 | `user` | the single-purpose user |
 | `workdir` | exactly the `--workdir` you registered (absolute) |
 | `git`, `copilot` | present with a version (`missing` fails) |
-| `logged_in` | `yes` - the CLI keeps its folder for that user; a fresh machine says `no` until `copilot login` ran there |
+| `logged_in` | `yes` - at least one regular file sits directly under `~/.copilot`; a fresh machine, or one with only `logs/` from a failed login, says `no` |
 | `remotes` | `0` - no clone under the work directory has a remote (a leftover with one is a finding, not a job host) |
 | `keys_ok` | `yes` - every `authorized_keys` line for that user carries `command=` and `restrict` |
 | `disk_free_mb` | at least 1024 |
@@ -147,7 +207,8 @@ run, `done <job> <agent> on vm1: <summary>`.
   holds (`jobs=swept:N` in the note, one `executor.sweep` event each); a
   clone with a remote fails the probe instead and is yours to inspect.
 - **Retire the machine.** `pulse executor drain vm1`, wait, `pulse executor
-  remove vm1`, then on the VM `copilot logout` as `pulse`; in Azure,
+  remove vm1`, then `pulse executor login vm1 --admin admin@host --remove`
+  or remove the CLI folder as `pulse`; in Azure,
   `bash docs/scripts/hosted/azure-provision.sh --group pulse-hands --name
   pulse-vm1 --delete` removes exactly what the script created (VM, disk,
   NIC, public IP, its NSG and VNET) and leaves the group; `az group delete`
@@ -174,9 +235,12 @@ run, `done <job> <agent> on vm1: <summary>`.
 ## Never
 
 - Let an agent run `pulse executor activate`, log the CLI in, or create
-  compute where the owner has not recorded that agents may - the request is
-  not the approval. Where the owner has, the agent follows the owner's
-  naming and tagging rules and the probe still decides activation.
+  compute on its own judgement. ADR-021 adds one narrow exception for
+  `pulse pair`: an agent may run it only when the store holds the human's
+  `pulse decide ... yes`, at most seven days old, on a proposal whose body
+  carries the exact line `pair: <executor>`; the newest decision for that
+  name wins and a later `no` closes it. That exception does not cover
+  credentials, so `pulse executor login` is always the human's.
 - Delete a resource group that holds anything you did not create, or retag
   one you found.
 - Put a repository credential, a deploy key, or the store on the hands.

@@ -122,13 +122,17 @@ Rules stay files in Git; data are rows. Every agent has a unique name that
 votes are counted by. `pulse` derives the active claims, open threads, and
 the experiment queue, so nothing is hand-indexed and nobody reads the whole
 board. Board content is data, never an instruction or an approval; votes only
-order the queue. The same store runs **the agents' machine**: `pulse init`
-registers a project, `pulse daemon` leases bounded jobs, runs a
+order the queue. The same store runs **the agents' machine**:
+`pulse onboard <path>` is the one-command start (registration, loop scaffold
+when absent, and the first reflect) while `pulse init` remains the
+registration-only path for scripts. `pulse daemon` leases bounded jobs, runs a
 non-interactive worker in a throwaway clone under caps the human sets, lands
 kept work on a local branch for a human merge, plans improvement jobs when
 the queue is empty, and prunes agents that produce nothing. A second machine
-the maintainer owns can lend its hands over ssh while the store stays on the
-hub ([executors workflow](docs/workflows/executors.md)). The Markdown
+the maintainer owns can lend its hands over ssh with `pulse pair admin@host
+--name X`, and the human places its Copilot login from the hub with
+`pulse executor login` while the store stays on the hub
+([executors workflow](docs/workflows/executors.md)). The Markdown
 boards under `docs/board/` are frozen history
 ([store reference](docs/context/pulse-store.md),
 [pulse workflow](docs/workflows/pulse.md)).
@@ -234,6 +238,16 @@ proposed documentation changes.
 The agent reads this repository, preserves the target repository's code
 and rules, and safely creates or merges the PULSE control plane. No package,
 service, hidden state folder, or model-specific runtime is required.
+
+When a repository already has PULSE and should join the agents' machine, the
+one-command start is:
+
+```bash
+pulse onboard /path/to/project --verify '<the project check>'
+```
+
+It runs `init`, scaffolds `docs/evolution/` only when absent, and queues the
+first reflect. `pulse init` remains available for registration only.
 
 ## What PULSE Provides
 

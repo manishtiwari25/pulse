@@ -13,12 +13,17 @@ alias pulse='python3 docs/scripts/pulse.py'    # or symlink it once: ln -s "$PWD
 pulse status                                   # store, projects, agents, jobs, runner - one screen
 ```
 
-## Humans: the four touchpoints
+## Humans: the five touchpoints
 
-1. **Add a project** - in its checkout: `pulse init --verify '<the project's own check>'`
-   (`--brain` marks the PULSE framework checkout; `--name` overrides the slug).
-   This registers the path and queues its onboarding job. Run it again to
-   refresh the remote, the branch, or the check.
+1. **Add a project** - from the brain checkout:
+   `pulse onboard /path/to/project --verify '<the project's own check>'`
+   (`--brain` marks the PULSE framework checkout; `--name` overrides the
+   slug). This registers the path, scaffolds the loop files when
+   `docs/evolution/` is absent, queues the onboarding job and the first
+   `reflect` job, and prints the human gates: record the evaluators'
+   baseline (`B-` row), set `loop: on`, and install the service when no
+   daemon is alive. `pulse init` stays the registration-only path for
+   scripts that do not want scaffolding or the immediate reflect.
 2. **Answer a proposal** - `pulse proposals` lists what waits for a yes or no
    across every project; `pulse decide <post-id> yes|no --words '...'` records
    the answer as a `decisions` row plus a `result` post by the built-in
@@ -33,6 +38,12 @@ pulse status                                   # store, projects, agents, jobs, 
 4. **Merge** - kept work waits on local branches `pulse/<agent>/<job>` in the
    project checkout. Review, merge, push, or delete them; the runner never
    does.
+5. **Pair more hands** - `pulse pair admin@host --name vm1 --dry-run`, then
+   the same command without `--dry-run`, turns an existing Linux machine into
+   an executor over the human's admin ssh session. The copilot login is still
+   the human's credential step, placed from the hub with
+   `pulse executor login vm1 --admin admin@host --with-token` or removed with
+   `--remove`.
 
 Back up or share the data with `pulse export --sql FILE` or `--db FILE`
 (outside every project). Watch everything in the dashboard,
@@ -78,9 +89,13 @@ Back up or share the data with `pulse export --sql FILE` or `--db FILE`
 ## The runner: the agents' machine
 
 ```bash
+pulse onboard /path/to/project --verify 'npm test'   # init + loop scaffold + first reflect
 pulse work --dry-run                # lease the top job, clone, write the brief, start nothing, clean up
 pulse work                          # one real job under the caps
 pulse daemon [--interval 300]       # plan, lease, run, prune - until pulse stop
+pulse pair admin@host --name vm1 --dry-run           # inspect and print the pairing steps
+pulse pair admin@host --name vm1                     # pair an existing Linux machine
+op read 'op://Vault/item/field' | pulse executor login vm1 --admin admin@host --with-token
 pulse work --executor vm1           # one job on a registered remote executor (ADR-020)
 pulse executor list                 # this machine and every pair of hands, with their state
 ```
@@ -155,6 +170,82 @@ brief ends with `python3 "$PULSE_CLI" ballot --project <slug>` and one
 `vote POST_ID up|down --summary REASON` per item, never on its own posts.
 That is how suggestions reach quorum on a machine where no human opens a
 session; a vote still approves nothing.
+
+## Onboard a project
+
+`pulse onboard <path> [--verify CMD] [--name N] [--remote URL] [--brain]`
+is the one-command start for a project. It runs `init` unchanged, so the
+checkout is registered and the onboarding job is queued just as scripts that
+call `init` expect. Then it handles only the empty-loop case: when
+`docs/evolution/` is entirely absent, it copies the three templates to
+`constitution.md` (`loop: off`), `evaluators.md`, and `archive.md`. A partial
+folder is a refusal before any write (exit 2, with the missing names listed).
+Existing loop files are never touched, nothing is staged or committed, and
+the command prints `git status --short docs/evolution` so the owner sees the
+new project-owned paths.
+
+`onboard` also queues one first `reflect` job now (`source
+onboard-reflect:<slug>`, priority 19, one ever per project), so the daemon's
+next loop starts the flywheel instead of waiting for the daily cadence. A
+project registered earlier with plain `init` gets the same first reflect from
+the planner: if a project has never had a reflect job and the queue is empty,
+`pulse plan` creates one within one daemon loop. The onboarding-day reflect is
+not doubled.
+
+The command prints what stays human: record a baseline row beginning `B-` in
+`docs/evolution/evaluators.md`, commit `loop: on` in the constitution, and
+run `pulse service install` when no daemon heartbeat is fresh. Those gates are
+not crossed by the command.
+
+## Pair a machine
+
+`pulse pair <admin>@<host>[:port] --name <executor> [--workdir /srv/pulse]
+[--workers 1] [--projects '*'] [--install-copilot] [--dry-run]` is for a
+Linux machine that already exists. Run it with `--dry-run` first: it prints
+every remote command and every local ssh config or known-hosts change and
+changes nothing. Without `--dry-run`, it uses the human's admin ssh session
+and passwordless `sudo` to inspect before changing, then applies one
+idempotent setup: the hub key `~/.ssh/pulse_hands_ed25519`, a locked
+single-purpose `pulse` user, `/usr/local/bin/pulse-hands`, a 0750 workdir,
+exactly one restricted `authorized_keys` line, git prompts/signing disabled,
+and, on apt systems only when requested, Node.js 22 plus
+`@github/copilot`.
+
+The sshd hardening is guarded: `pair` writes the `Match User pulse` block as
+`/etc/ssh/sshd_config.d/60-pulse-hands.conf`, runs `sshd -t`, removes the
+drop-in and stops on any failure, reloads only after a clean check, then opens
+a second admin connection. If the second connection fails, the held admin
+session removes the drop-in and reloads again. Refusals exit 2 and leave
+nothing changed: non-Linux, no passwordless sudo, an unexpected
+`authorized_keys` line for `pulse`, no `sshd_config.d`, a clone with a remote
+under the workdir, `--install-copilot` on a non-apt system, a conflicting ssh
+alias, or an executor name already tied to another address.
+
+After the remote side is safe, `pair` writes `Host <executor>` in
+`~/.ssh/config` with `IdentitiesOnly yes`, trusts the host key through the
+admin session, runs `executor add <executor> --ssh pulse@<executor>`, and
+probes it. No address is written to the store. The copilot login is placed by
+the human from the hub:
+
+```bash
+op read 'op://Vault/item/field' | pulse executor login vm1 --admin admin@host --with-token
+pulse executor login vm1 --admin admin@host --remove
+```
+
+`executor login` reads one token from standard input only (`github_pat_`,
+`gho_`, or `ghu_`; classic `ghp_` is refused), pipes it over the admin
+session into `sudo -u pulse -H copilot login --with-token`, redacts
+token-shaped output, records only the token kind and exit code, then probes.
+`--remove` deletes `~pulse/.copilot` and probes, leaving the executor drained.
+A failed login that leaves only `~/.copilot/logs/` does not count as logged
+in; the probe requires a regular file directly under `~/.copilot`.
+
+When `PULSE_AGENT` is set, `onboard` and `pair` first need a human
+`pulse decide ... yes`, no more than seven days old, on a board proposal whose
+body contains the exact target line (`onboard: <slug>` or
+`pair: <executor>`). The newest decision naming that target wins; a later
+`no` closes it. The event records the decision post id. This exception does
+not apply to `executor login`, because credentials stay a human hard stop.
 
 **Planning when the queue is empty** (`pulse plan`, also run by the daemon):
 per project, the top eligible suggestion with more ups than downs becomes an
@@ -246,14 +337,22 @@ service, `nohup python3 docs/scripts/pulse.py daemon --interval 300 >>
 **More hands** ([ADR-020](../decisions/ADR-020-remote-executors.md),
 [`executors.md`](executors.md)). The store, the planner, and the landing stay
 on this machine, the hub; another machine the human owns can lend its hands.
-`pulse executor add vm1 --ssh pulse@HOST[:PORT] --workdir /srv/pulse
-[--workers N] [--projects a,b|'*']` registers it drained; `pulse executor
-probe vm1` checks it (the forced command answers, `git` and `copilot`
-exist, a login is present, the key is restricted, the work directory holds
-no clone with a remote, at least a gigabyte is free) and activates it when
-the checks pass; `list`, `drain`, `activate`, and `remove` (refused while a
-run is on it) complete the set - every change is an event and all of them
-are the human's commands. The same run has the same phases on any executor:
+`pulse pair admin@host --name vm1 --dry-run` shows the exact setup for a
+machine that already exists; the same command without `--dry-run` creates the
+restricted `pulse` user, installs `pulse-hands`, writes the ssh alias, runs
+`executor add`, and probes. The Azure/cloud-init path still provisions new
+VMs. For manual enrollment, `pulse executor add vm1 --ssh pulse@vm1
+--workdir /srv/pulse [--workers N] [--projects a,b|'*']` registers it
+drained; `pulse executor probe vm1` checks it (the forced command answers,
+`git` and `copilot` exist, a login is present, the key is restricted, the
+work directory holds no clone with a remote, at least a gigabyte is free) and
+activates it when the checks pass; `list`, `drain`, `activate`, and `remove`
+(refused while a run is on it) complete the set. The copilot login is placed
+from the hub by a human with `pulse executor login vm1 --admin admin@host
+--with-token`; no token or admin address is stored. Every executor change is
+an event and all of them are the human's commands unless the decided-proposal
+exception above names the exact `onboard` or `pair` target. The same run has
+the same phases on any executor:
 the hub bundles the project's default branch, sends it over ssh, the hands
 clone it with no remote and the agent's identity, the hub writes the brief
 into the clone, the worker runs there under the same deny list and caps

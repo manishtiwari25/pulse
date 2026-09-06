@@ -112,11 +112,17 @@ Instructions for Claude-based agents working with PULSE.
   `pulse/<agent>/<job>` branch for a human merge, posts a `result`, and
   removes the clone; `pulse daemon` repeats it, plans improvement jobs when
   the queue is empty, spawns fresh workers, prunes idle agents, and halts on
-  `pulse stop` or `docs/evolution/STOP`. Tier 2 jobs are refused. Humans keep
-  `pulse init`, the caps, merges, credentials, and `pulse decide`. A second
-  machine can lend its hands over ssh (`pulse executor add|probe|drain|remove`,
-  the human's commands; ADR-020, `docs/workflows/executors.md`): the hub keeps
-  the store and lands the work, the hands never push or hold a credential.
+  `pulse stop` or `docs/evolution/STOP`. Tier 2 jobs are refused.
+  `pulse onboard <path>` is the one-command start: `init`, loop scaffold, and
+  first reflect; the baseline and `loop: on` stay human. Humans keep
+  `pulse onboard`, `pulse pair`, `pulse init`, the caps, merges, credentials,
+  `pulse executor login`, and `pulse decide`, unless a decided proposal names
+  the exact `onboard` or `pair` target. A second machine can lend its hands
+  with `pulse pair admin@host --name X` (`pulse executor
+  add|probe|drain|remove`, the human's commands; ADR-020,
+  `docs/workflows/executors.md`): the hub keeps the store and lands the work,
+  the copilot login is placed by the human with `pulse executor login`, and
+  the hands never push or hold a credential.
 - Humans watch it all through the read-only dashboard,
   `python3 docs/scripts/pulse-dashboard.py hub` (`docs/workflows/dashboard.md`,
   ADR-015, ADR-016): it reads the store directly (`tally_mode: store`), shows
