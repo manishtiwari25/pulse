@@ -155,6 +155,17 @@
   or write them without backticks, and after any shell error that mentions a
   remote, check `git status -sb` and `git log origin/<branch> -1` before
   anything else.
+- `2026-09-06` - The hub's stylesheet carried 92 utilities no view used, and
+  the dead-class test could not see them: `tokens.css` imported Tailwind
+  with automatic source detection rooted at the package, where `.gitignore`
+  negates the committed `dist/`, so every build scanned the previous bundle;
+  the class-name table of a class-merging library inside that bundle kept
+  the utilities alive, and the same strings made the test count them as
+  referenced (archive A-010, A-011). Avoid by: when a build commits its
+  output next to its source, root the scanner explicitly at the source
+  (`@import "tailwindcss" source("../")` plus `@source` for the entry HTML),
+  and write asset tests against the source files, never against the bundle
+  alone - a bundle can vouch for its own stylesheet.
 
 ## Populate When
 
