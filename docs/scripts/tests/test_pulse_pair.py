@@ -19,7 +19,7 @@ from pathlib import Path
 import test_pulse as tp
 
 NOW = "2026-09-10T12:00:00Z"
-APPLY_SCRIPT_SHA256 = "33a6a77fba8ba5e36d4501abbabe8605bb91a9ddba0c74e52a5cc33ec0ecebe2"
+APPLY_SCRIPT_SHA256 = "5b52cbdda35398980623a1cafcf2fdbc42b04eb2fafe087ac6156acd07627517"
 
 
 PAIR_SSH_SHIM = r"""#!/bin/bash
@@ -87,8 +87,12 @@ if grep -q '/usr/local/bin/pulse-hands.tmp' "$ADMIN_STDIN"; then
   fi
   exit "$rc"
 fi
-if grep -q 'rm -f "$DROPIN"' "$ADMIN_STDIN"; then
-  echo "step=dropin result=removed"
+if grep -q '60-pulse-hands.conf.prev' "$ADMIN_STDIN"; then
+  echo "step=dropin-prev result=removed"
+  exit 0
+fi
+if grep -q 'restored-or-removed' "$ADMIN_STDIN"; then
+  echo "step=dropin result=restored-or-removed"
   exit 0
 fi
 if [ "${PAIR_FAKE_SUDO_PASSWORD:-}" = "1" ]; then
@@ -174,6 +178,13 @@ class PairFixture(tp.HandsFixture):
     def admin_scripts(self):
         return sorted(self.admin_stdin.glob("*.sh"), key=lambda p: int(p.stem))
 
+    def script_containing(self, needle):
+        for path in self.admin_scripts():
+            text = path.read_text(encoding="utf-8")
+            if needle in text:
+                return text
+        self.fail("no saved admin stdin script contains %r" % needle)
+
     def assert_no_local_pair_state(self):
         self.assertFalse((self.fake_home / ".ssh" / "pulse_hands_ed25519").exists())
         self.assertFalse((self.fake_home / ".ssh" / "config").exists())
@@ -198,8 +209,8 @@ class PairCommandTest(PairFixture):
         self.assertEqual(code, 0, err)
         for text in (
             "inspection:", "remote script (would run as root via sudo -n sh -s):",
-            "undo script (the exact inverse):", "Host hands-2", "known_hosts:",
-            "executor add hands-2", "probe hands-2",
+            "undo script (the exact inverse):", "commit script (after successful admin re-check):",
+            "Host hands-2", "known_hosts:", "executor add hands-2", "probe hands-2",
         ):
             self.assertIn(text, out)
         self.assert_no_local_pair_state()
@@ -270,6 +281,9 @@ class PairCommandTest(PairFixture):
         code, out, err = self.run_pair_for_probe()
         self.assertEqual(code, 1, out + err)
         self.assertIn("sshd -t failed", out + err)
+        apply = self.script_containing("/usr/local/bin/pulse-hands.tmp")
+        self.assertIn('cp -p "$DROPIN" "$DROPIN.prev"', apply)
+        self.assertIn('mv -f "$DROPIN.prev" "$DROPIN"', apply)
         self.assertFalse((self.fake_home / ".ssh" / "config").exists())
         self.assertIsNone(tp.pulse.executor_row(self.con, "hands-2"))
 
@@ -278,8 +292,9 @@ class PairCommandTest(PairFixture):
         code, out, err = self.run_pair_for_probe()
         self.assertEqual(code, 1, out + err)
         self.assertIn("admin path failed after reload", out)
-        last = self.admin_scripts()[-1].read_text(encoding="utf-8")
-        self.assertIn("rm -f \"$DROPIN\"", last)
+        undo = self.script_containing("restored-or-removed")
+        self.assertIn('mv -f "$DROPIN.prev" "$DROPIN"', undo)
+        self.assertIn('rm -f "$DROPIN"', undo)
         self.assertFalse((self.fake_home / ".ssh" / "config").exists())
         self.assertIsNone(tp.pulse.executor_row(self.con, "hands-2"))
 
@@ -303,8 +318,11 @@ class PairCommandTest(PairFixture):
         self.assertNotIn("AAAATESTPAIR", detail)
         log = self.admin_log.read_text(encoding="utf-8")
         self.assertIn("ControlMaster=yes", log)
+        self.assertIn("pulse-pair-commit", log)
         self.assertIn("-O exit", log)
         self.assertNotIn("pulse@box.example", log)
+        commit = self.script_containing("dropin-prev")
+        self.assertIn("60-pulse-hands.conf.prev", commit)
 
         code, out, err = self.run_pair_for_probe()
         self.assertEqual(code, 0, out + err)

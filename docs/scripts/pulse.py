@@ -2420,6 +2420,11 @@ if [ -f "$DROPIN" ] && cmp -s "$DROPIN.tmp" "$DROPIN"; then
   rm -f "$DROPIN.tmp"
   step dropin kept
 else
+  if [ -f "$DROPIN" ]; then
+    cp -p "$DROPIN" "$DROPIN.prev"
+  else
+    rm -f "$DROPIN.prev"
+  fi
   install -m 0644 -o root -g root "$DROPIN.tmp" "$DROPIN"
   rm -f "$DROPIN.tmp"
   dropin_changed=1
@@ -2428,7 +2433,11 @@ fi
 if [ "$dropin_changed" = "1" ]; then
   if ! sshd_out="$(sshd -t 2>&1)"; then
     printf 'sshd -t failed: %%s\\n' "$sshd_out" >&2
-    rm -f "$DROPIN"
+    if [ -f "$DROPIN.prev" ]; then
+      mv -f "$DROPIN.prev" "$DROPIN"
+    else
+      rm -f "$DROPIN"
+    fi
     exit 3
   fi
   systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd
@@ -2444,9 +2453,21 @@ def pair_undo_script(name, workdir):
     return """#!/bin/sh
 set -eu
 DROPIN=%s
-rm -f "$DROPIN"
+if [ -f "$DROPIN.prev" ]; then
+  mv -f "$DROPIN.prev" "$DROPIN"
+else
+  rm -f "$DROPIN"
+fi
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd
-printf 'step=dropin result=removed\\n'
+printf 'step=dropin result=restored-or-removed\\n'
+""" % shlex.quote(PAIR_DROPIN_PATH)
+
+
+def pair_commit_script():
+    return """#!/bin/sh
+set -eu
+rm -f %s.prev
+printf 'step=dropin-prev result=removed\\n'
 """ % shlex.quote(PAIR_DROPIN_PATH)
 
 
@@ -2613,6 +2634,7 @@ def pair_executor(con, admin_address, name, workdir="/srv/pulse", workers=1, pro
     inspect_script = pair_inspect_script(workdir, pubkey=pubkey, hands_hash=sha256_text(hands), dropin_hash=sha256_text(dropin))
     apply_script = pair_apply_script(name, workdir, pubkey, hands, install_copilot)
     undo_script = pair_undo_script(name, workdir)
+    commit_script = pair_commit_script()
     try:
         rc, out, err = admin_ssh_run(admin_address, "sudo -n sh -s", stdin=inspect_script.encode("utf-8"), timeout=120)
     except ExecutorUnreachable as exc:
@@ -2630,12 +2652,14 @@ def pair_executor(con, admin_address, name, workdir="/srv/pulse", workers=1, pro
     if refusal:
         lines += refusal
         raise PulseError("\n".join(lines), 2)
-    scripts = {"inspect": inspect_script, "apply": apply_script, "undo": undo_script}
+    scripts = {"inspect": inspect_script, "apply": apply_script, "undo": undo_script, "commit": commit_script}
     if dry_run:
         lines.append("remote script (would run as root via sudo -n sh -s):")
         lines.append(apply_script.rstrip("\n"))
         lines.append("undo script (the exact inverse):")
         lines.append(undo_script.rstrip("\n"))
+        lines.append("commit script (after successful admin re-check):")
+        lines.append(commit_script.rstrip("\n"))
         lines.append("local changes that would be made:")
         if not key_path.exists():
             lines.append("  generate %s" % key_path)
@@ -2654,7 +2678,7 @@ def pair_executor(con, admin_address, name, workdir="/srv/pulse", workers=1, pro
         key_path, pubkey = pair_ensure_hub_key(hub_home, False, lines)
         inspect_script = pair_inspect_script(workdir, pubkey=pubkey, hands_hash=sha256_text(hands), dropin_hash=sha256_text(dropin))
         apply_script = pair_apply_script(name, workdir, pubkey, hands, install_copilot)
-        scripts = {"inspect": inspect_script, "apply": apply_script, "undo": undo_script}
+        scripts = {"inspect": inspect_script, "apply": apply_script, "undo": undo_script, "commit": commit_script}
     sock_dir = Path(tempfile.mkdtemp(prefix="pulse-pair-"))
     sock = str(sock_dir / "cm")
     steps, remote_ok = {}, False
@@ -2691,6 +2715,14 @@ def pair_executor(con, admin_address, name, workdir="/srv/pulse", workers=1, pro
                 lines.append(pair_tail(check_err or check_out))
             return {"ok": False, "lines": lines, "inspection": inspection, "scripts": scripts,
                     "changed": changed, "decision": decision}
+        commit_rc, commit_out, commit_err = admin_ssh_run(admin_address, "sudo -n sh -s # pulse-pair-commit",
+                                                          stdin=commit_script.encode("utf-8"),
+                                                          timeout=60, control_path=sock)
+        if commit_rc != 0:
+            lines.append("remote commit cleanup failed: %s" % (pair_tail(commit_err or commit_out) or "exit %d" % commit_rc))
+            return {"ok": False, "lines": lines, "inspection": inspection, "scripts": scripts,
+                    "changed": changed, "decision": decision}
+        lines += [line for line in commit_out.splitlines() if line.startswith("step=")]
         remote_ok = True
     finally:
         pair_close_control_master(admin_address, sock)
