@@ -672,6 +672,22 @@ class AssetTestCase(unittest.TestCase):
         dead = [c for c in classes if c not in text and not any(c.startswith(p) for p in prefixes)]
         self.assertEqual(dead, [], "CSS classes no view uses: %s" % ", ".join(dead))
 
+    def test_every_css_class_comes_from_the_source_not_from_a_previous_build(self):
+        # Tailwind generates a utility for every candidate it finds in the files it scans. Rooted at the
+        # package it also scanned the committed dist/, so the previous bundle's strings (a class-merging
+        # library's table of Tailwind names) kept 92 utilities alive that no view uses - and the same
+        # strings made the test above count them as referenced. The source is the only legitimate origin.
+        source_dir = dash.UI_SOURCE_DIR / "src"
+        if not source_dir.is_dir():
+            self.skipTest("no page source under %s" % dash.UI_SOURCE_DIR)
+        source = "".join(p.read_text(encoding="utf-8") for p in sorted(source_dir.rglob("*"))
+                         if p.suffix in (".ts", ".tsx", ".css"))
+        source += (dash.UI_SOURCE_DIR / "index.html").read_text(encoding="utf-8")
+        prefixes = set(re.findall(r"""['"]([a-zA-Z][\w-]*-)['"]\s*\+""", source))
+        classes = sorted({self.css_unescape(c) for c in re.findall(r"\.((?:[a-zA-Z_-]|\\.)(?:[\w-]|\\.)*)", self.css)})
+        foreign = [c for c in classes if c not in source and not any(c.startswith(p) for p in prefixes)]
+        self.assertEqual(foreign, [], "CSS classes the source never mentions: %s" % ", ".join(foreign))
+
     def test_every_design_token_is_declared_once(self):
         # Our tokens and Tailwind's theme both land in :root-scoped rules; a name declared twice there is either
         # the light set copied into a second rule or a token that collides with Tailwind's own namespace.
