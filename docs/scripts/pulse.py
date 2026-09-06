@@ -1443,6 +1443,13 @@ def agent_gate(con, marker, actor, now=None):
     return found["post_id"]
 
 
+def queue_onboarding_job(con, slug, created_by="init"):
+    return add_job(con, slug, "onboard", "Onboard %s: read AGENTS.md, run the checks, post the first findings" % slug,
+                   "Read the project's AGENTS.md, docs/context/, docs/memory/, and open decisions. Run its checks. Write FINDING: lines "
+                   "for what the next agent would rediscover and SUMMARY: with the project's state. Change nothing unless a check "
+                   "proves a Tier 0 fix.", tier=0, priority=20, source="onboard:%s" % slug, created_by=created_by)
+
+
 # --------------------------------------------------------------------------- #
 # Jobs and leases
 # --------------------------------------------------------------------------- #
@@ -2684,8 +2691,11 @@ def plan_jobs(con, slug, now=None, created_by="daemon"):
                 created.append(job)
     if not created:
         source = "reflect:%s:%s" % (slug, now[:10])
-        done_today = con.execute("SELECT 1 FROM jobs WHERE source = ?", (source,)).fetchone()
-        if not done_today:
+        ever = con.execute("SELECT 1 FROM jobs WHERE project = ? AND kind = 'reflect'", (slug,)).fetchone()
+        done_today = con.execute("SELECT 1 FROM jobs WHERE project = ? AND kind = 'reflect' AND "
+                                 "(source = ? OR (source = ? AND created_at LIKE ?))",
+                                 (slug, source, "onboard-reflect:%s" % slug, "%s%%" % now[:10])).fetchone()
+        if not ever or not done_today:
             brief = ("Run the project's own checks (tests, lint, links, `git diff --check`), read docs/memory/ and the open ADRs' "
                      "acceptance criteria, and fix one Tier 0 thing you can prove with the checks (a flaky test, a broken link, a "
                      "stale doc, a lint finding). Record every other signal as FINDING: lines so the runner posts them.")
@@ -2700,8 +2710,116 @@ def onboard_project(con, path, name=None, remote=None, brain=False, verify_cmd="
     """`pulse onboard` (ADR-021 section 1): `init`, the loop's scaffold when docs/evolution/ is entirely absent (a
     partial folder refuses before any write), the first `reflect` job now (source onboard-reflect:<slug>, priority
     19), the human gates printed, one `project.onboard` event. Returns {"project": dict, "created": bool,
-    "scaffolded": [str], "jobs": [dict], "lines": [str]}. PLAN-021 step 1 fills this in."""
-    raise PulseError("pulse onboard is not implemented yet (PLAN-021 step 1)", 2)
+    "scaffolded": [str], "jobs": [dict], "lines": [str], "decision": str}."""
+    root = Path(path).expanduser().resolve()
+    if not root.is_dir():
+        raise PulseError("Not a directory: %s" % root, 2)
+    existing = con.execute("SELECT * FROM projects WHERE path = ?", (str(root),)).fetchone()
+    if existing:
+        slug = existing["slug"]
+    else:
+        base = slugify(name or root.name)
+        if base == COMMONS_SLUG:
+            base = "%s-project" % base
+        slug = unique_slug(con, base)
+    decision = agent_gate(con, "onboard: %s" % slug, actor, now)
+
+    evolution = root / "docs" / "evolution"
+    expected = ("constitution.md", "evaluators.md", "archive.md")
+    will_scaffold = False
+    if evolution.exists():
+        if not evolution.is_dir():
+            raise PulseError("%s exists but is not a directory" % evolution, 2)
+        missing = [name for name in expected if not (evolution / name).is_file()]
+        if missing:
+            raise PulseError("docs/evolution/ is partial; missing %s. A half-filled loop folder is the owner's to finish"
+                             % ", ".join(missing), 2)
+    else:
+        will_scaffold = True
+
+    project, created = add_project(con, path, name=name, remote=remote, brain=brain, verify_cmd=verify_cmd, actor=actor)
+    onboarding_job, onboarding_new = queue_onboarding_job(con, project["slug"], created_by="init")
+
+    scaffolded = []
+    status_lines = []
+    if will_scaffold:
+        template_dir = Path(__file__).resolve().parent.parent / "evolution"
+        mapping = {
+            "constitution.md": "_template-constitution.md",
+            "evaluators.md": "_template-evaluators.md",
+            "archive.md": "_template-archive.md",
+        }
+        for dest_name in expected:
+            template = template_dir / mapping[dest_name]
+            if not template.is_file():
+                raise PulseError("Missing evolution template: %s" % mapping[dest_name], 2)
+        evolution.mkdir(parents=True, exist_ok=False)
+        for dest_name in expected:
+            dest = evolution / dest_name
+            if dest.exists():
+                raise PulseError("Refusing to overwrite %s" % dest, 2)
+            text = (template_dir / mapping[dest_name]).read_text(encoding="utf-8")
+            if dest_name == "constitution.md":
+                lines = text.splitlines()
+                if lines and lines[0].strip() == "---":
+                    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+                    if end is not None:
+                        replaced = False
+                        for i in range(1, end):
+                            if re.match(r"^loop\s*:", lines[i]):
+                                lines[i] = "loop: off"
+                                replaced = True
+                                break
+                        if not replaced:
+                            lines.insert(end, "loop: off")
+                        text = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+            dest.write_text(text, encoding="utf-8")
+            scaffolded.append("docs/evolution/%s" % dest_name)
+        out = git(root, "status", "--short", "docs/evolution", timeout=10)
+        if out.returncode == 0:
+            status_lines = [line for line in out.stdout.splitlines() if line]
+        else:
+            status_lines = ["git status --short docs/evolution failed: %s" % out.stderr.strip()]
+
+    reflect_existing = con.execute("SELECT * FROM jobs WHERE project = ? AND kind = 'reflect' ORDER BY created_at, id LIMIT 1",
+                                   (project["slug"],)).fetchone()
+    reflect_job, reflect_new = None, False
+    if reflect_existing:
+        reflect_job = dict(reflect_existing)
+    else:
+        reflect_brief = ("First reflect after onboarding: read the onboarding findings and the new evolution files, run the project's "
+                         "own checks, and turn each useful signal into one-variable suggestion cards. Do not flip loop gates; record "
+                         "human-only baseline or loop-on work as FINDING: lines.")
+        reflect_job, reflect_new = add_job(con, project["slug"], "reflect",
+                                           "First reflect: turn the onboarding findings into one-variable suggestion cards",
+                                           reflect_brief, tier=0, priority=19,
+                                           source="onboard-reflect:%s" % project["slug"], created_by=actor or "onboard")
+
+    event(con, actor or HUMAN_AGENT, "project.onboard", project["slug"],
+          {"created": created, "scaffolded": scaffolded, "decision": decision})
+
+    lines = [
+        "%s project %s at %s%s" % ("registered" if created else "refreshed", project["slug"], project["path"],
+                                   " (brain)" if project["brain"] else ""),
+        "%s onboarding job %s" % ("queued" if onboarding_new else "already queued", onboarding_job["id"]),
+        "queued first reflect job %s" % reflect_job["id"] if reflect_new else "first reflect already exists %s" % reflect_job["id"],
+    ]
+    if will_scaffold:
+        lines.append("scaffolded docs/evolution/: constitution.md (loop: off), evaluators.md, archive.md - project-owned, not staged")
+        lines.extend(status_lines)
+    else:
+        lines.append("docs/evolution/ already present, untouched")
+    lines.extend([
+        "What stays human:",
+        "1. record the baseline - run the project's own check (%s) and add a B- row in docs/evolution/evaluators.md, commit"
+        % (verify_cmd or "the verify command you choose"),
+        "2. set loop: on in docs/evolution/constitution.md, commit",
+    ])
+    if not daemon_status(con, now).startswith("alive "):
+        lines.append("3. keep the daemon alive with `pulse service install`")
+    lines.append("store: %s" % store_path(home))
+    return {"project": project, "created": created, "scaffolded": scaffolded,
+            "jobs": [onboarding_job, reflect_job], "lines": lines, "decision": decision}
 
 
 def pick_worker(con, agent=None, exclude=()):
@@ -3523,10 +3641,7 @@ def main(argv=None):
             con = connect(home, create=True)
             proj, created = add_project(con, args.path, name=args.name, remote=args.remote, brain=args.brain,
                                         verify_cmd=args.verify, actor=args.agent or os.environ.get("PULSE_AGENT", "") or HUMAN_AGENT)
-            job, new = add_job(con, proj["slug"], "onboard", "Onboard %s: read AGENTS.md, run the checks, post the first findings" % proj["slug"],
-                               "Read the project's AGENTS.md, docs/context/, docs/memory/, and open decisions. Run its checks. Write FINDING: lines "
-                               "for what the next agent would rediscover and SUMMARY: with the project's state. Change nothing unless a check "
-                               "proves a Tier 0 fix.", tier=0, priority=20, source="onboard:%s" % proj["slug"], created_by="init")
+            job, new = queue_onboarding_job(con, proj["slug"], created_by="init")
             print("%s project %s at %s%s" % ("registered" if created else "refreshed", proj["slug"], proj["path"], " (brain)" if proj["brain"] else ""))
             print("%s onboarding job %s" % ("queued" if new else "already queued", job["id"]))
             print("store: %s" % store_path(home))
