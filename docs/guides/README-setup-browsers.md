@@ -1,17 +1,26 @@
-Playwright browsers setup for local smoke tests
+# Headless browser for the dashboard smoke test
 
-CI sets PLAYWRIGHT_BROWSERS_PATH to a cache directory and pre-installs browsers for smoke tests. Local developers can mirror that behavior by running the Makefile helper below which provisions browsers into a repository-local cache and prints the environment variable to set.
+`docs/scripts/tests/test_pulse_dashboard.py::test_headless_browser_smoke`
+renders every dashboard view in a headless Chromium and fails on console
+errors or CSP violations. It is optional: when no browser is found the test
+**skips**, and the rest of the suite is unaffected. There is no CI for this
+repository; the check that judges a landing is the local
+`python3 -m unittest discover -s docs/scripts/tests`.
 
-Usage:
+The test looks, in order, for `chromium`, `google-chrome`,
+`chrome-headless-shell`, `chrome`, or `chromium-browser` on `PATH`, then for
+an executable whose name contains `chrome` or `chromium` anywhere under
+`PLAYWRIGHT_BROWSERS_PATH`.
 
-  make setup-browsers
+To run it locally, either install a Chromium/Chrome that is on your `PATH`,
+or download Playwright's build into a directory of your choice and point the
+variable at it:
 
-This will:
+```bash
+export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/pulse-browsers"
+npx playwright install chromium
+python3 -m unittest docs.scripts.tests.test_pulse_dashboard -k headless
+```
 
-- Run `npx playwright install` with PLAYWRIGHT_BROWSERS_PATH set to `./.playwright-browsers`.
-- Print instructions for exporting PLAYWRIGHT_BROWSERS_PATH so local smoke tests see the same binaries as CI.
-
-Notes:
-
-- This does not modify CI or any remote configuration.
-- npm and npx must be available locally. Do not run this in CI; CI already provisions browsers as part of the job.
+Nothing installs a browser by itself, and nothing in the repository depends
+on one being present.

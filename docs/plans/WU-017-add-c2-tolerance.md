@@ -1,5 +1,5 @@
 ---
-id: WU-008
+id: WU-017
 title: Add C2 tolerance or use per-fixture medians for C2 pass rule
 status: Draft
 tier: 1
@@ -79,7 +79,7 @@ noise so that genuine improvements are not discarded by statistical flukes.
 ## Rollback Plan
 
 - **Baseline:** HEAD at the start of this work unit; affected files are
-  docs/plans/WU-008-add-c2-tolerance.md (this file) and potentially
+  docs/plans/WU-017-add-c2-tolerance.md (this file) and potentially
   docs/evolution/evaluators.md if owner approves.
 - **Trigger:** If tests or evolution checks fail, abort and revert any
   evaluator edits.

@@ -4,8 +4,8 @@ title: Agent-Driven Landing - Verified Work Merges Itself, Agents Decide Among T
 status: Accepted
 accepted: 2026-09-06
 date: 2026-09-06
-delivery: partially delivered
-delivered:
+delivery: delivered
+delivered: 2026-09-06
 areas: [runner, governance, evolution]
 tags: [adr, runner, landing, autonomy, governance, evolution]
 ---

@@ -1,5 +1,5 @@
 ---
-id: WU-20260905
+id: WU-018
 title: Raise "Runs per fixture" to 5 (proposal)
 status: Draft
 tier: 1
@@ -67,7 +67,7 @@ None to user-facing interfaces.
 ## Verification
 
 - Run `python3 -m unittest discover -s docs/scripts/tests` to ensure repository checks still pass.
-- Owner runs: `docs/scripts/evolution-measure.py run --label WU-20260905 --rev <tree> --held-out <private store>` and reviews fixture_runs and score changes.
+- Owner runs: `docs/scripts/evolution-measure.py run --label WU-018 --rev <tree> --held-out <private store>` and reviews fixture_runs and score changes.
 
 ## Closure
 

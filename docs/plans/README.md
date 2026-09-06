@@ -140,6 +140,11 @@ Copy `_template.md` when a Tier 2 task needs an explicit plan.
   the hands after; a machine drained because Copilot refused its login
   rechecks itself (15 minutes, doubling, at most six hours) and returns to
   service by itself when the token works.
+- [`WU-017-add-c2-tolerance.md`](WU-017-add-c2-tolerance.md) and
+  [`WU-018-raise-runs-per-fixture.md`](WU-018-raise-runs-per-fixture.md) -
+  two Draft proposals written by workers on 2026-09-05 about the evaluators'
+  C2 pass rule and runs per fixture; `docs/evolution/evaluators.md` is
+  owner-owned, so both wait for the owner and change nothing until then.
 
 A Tier 1 change - behavior an Accepted ADR already allows - uses one work
 unit instead of a separate plan, feature spec, and prompt. Copy
