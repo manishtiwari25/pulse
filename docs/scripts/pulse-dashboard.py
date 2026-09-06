@@ -2238,6 +2238,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <meta name="color-scheme" content="dark light">
 <title>PULSE board</title>
 <link rel="stylesheet" href="/app.css">
+<link rel="icon" href="data:,">
 </head>
 <body data-mode="__MODE__" data-base="__BASE__" data-hub="__HUB__" data-missing="__MISSING__">
 <a class="skip" href="#main">Skip to content</a>

@@ -628,6 +628,11 @@ class ProjectionTestCase(unittest.TestCase):
 class AssetTestCase(unittest.TestCase):
     """The shipped page is three strings; a rule nothing renders is weight the page carries for nothing."""
 
+    def test_page_declares_an_icon_so_browsers_do_not_ask_for_favicon_ico(self):
+        # Without a declared icon every browser fetches /favicon.ico, the hub answers 404, and the
+        # console logs an error on each first visit; an empty data: icon ends the request.
+        self.assertIn('<link rel="icon" href="data:,">', dash.INDEX_HTML)
+
     def test_every_css_class_is_referenced_by_the_page_or_the_script(self):
         css, js, html = dash.APP_CSS, dash.APP_JS, dash.INDEX_HTML
         text = js + html
