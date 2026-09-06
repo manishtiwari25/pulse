@@ -2152,13 +2152,574 @@ def sweep_executor_jobs(con, row, jobs):
     return swept
 
 
+PAIR_DROPIN_PATH = "/etc/ssh/sshd_config.d/60-pulse-hands.conf"
+
+
+def pair_dropin_text():
+    return "\n".join([
+        "# The hands' user gets exactly what its authorized_keys line allows and nothing else.",
+        "Match User pulse",
+        "    PasswordAuthentication no",
+        "    AllowAgentForwarding no",
+        "    AllowTcpForwarding no",
+        "    X11Forwarding no",
+        "    PermitTTY no",
+        "    PermitTunnel no",
+        "",
+    ])
+
+
+def pair_authorized_key_line(workdir, pubkey):
+    return 'command="PULSE_HANDS_WORKDIR=%s /usr/local/bin/pulse-hands",restrict %s' % (workdir, pubkey.strip())
+
+
+def pair_hands_source():
+    return (Path(__file__).resolve().parent / "hosted" / "pulse-hands.sh").read_text(encoding="utf-8")
+
+
+def pair_parse_inspection(text):
+    fields, hostkeys = parse_probe(text), []
+    for line in (text or "").splitlines():
+        if line.startswith("hostkey "):
+            hostkeys.append(line[len("hostkey "):].strip())
+    fields["hostkeys"] = hostkeys
+    return fields
+
+
+def pair_tail(text, n=500):
+    return " ".join((text or "").split())[-n:]
+
+
+def pair_refuse(message):
+    raise PulseError(message, 2)
+
+
+def pair_validate(name, admin_address, workdir, workers):
+    name = slugify(name)
+    if not name or name in (LOCAL_EXECUTOR, "x") or not valid_name(name):
+        pair_refuse("Executor name must be lowercase words with dashes and not %r" % LOCAL_EXECUTOR)
+    user, host, port = parse_ssh_address(admin_address)
+    workdir = (workdir or "").strip().rstrip("/") or "/"
+    if not workdir.startswith("/") or ".." in Path(workdir).parts:
+        pair_refuse("--workdir must be an absolute path on the executor (e.g. /srv/pulse)")
+    try:
+        workers = int(workers)
+    except (TypeError, ValueError):
+        pair_refuse("--workers must be at least 1")
+    if workers < 1:
+        pair_refuse("--workers must be at least 1")
+    return name, user, host, port, workdir, workers
+
+
+def pair_ssh_config_blocks(text):
+    blocks, current = [], None
+    for line in (text or "").splitlines():
+        words = line.strip().split()
+        if words and words[0].lower() == "host":
+            if current:
+                blocks.append(current)
+            current = {"names": words[1:], "hostname": ""}
+            continue
+        if current and len(words) >= 2 and words[0].lower() == "hostname":
+            current["hostname"] = words[1]
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def pair_alias_state(config_text, name):
+    for block in pair_ssh_config_blocks(config_text):
+        if name in block["names"]:
+            return block
+    return None
+
+
+def pair_host_block(name, host, port):
+    return "\n".join([
+        "Host %s" % name,
+        "    HostName %s" % host,
+        "    Port %d" % int(port),
+        "    User pulse",
+        "    IdentityFile ~/.ssh/pulse_hands_ed25519",
+        "    IdentitiesOnly yes",
+        "",
+    ])
+
+
+def pair_known_host_prefix(host, port):
+    return host if int(port) == 22 else "[%s]:%d" % (host, int(port))
+
+
+def pair_manual_dropin_lines():
+    return ["manual sshd Match block for %s:" % PAIR_DROPIN_PATH] + pair_dropin_text().rstrip("\n").splitlines()
+
+
+def pair_manual_copilot_lines():
+    return [
+        "manual copilot install steps for this machine:",
+        "  mkdir -p /etc/apt/keyrings",
+        "  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg",
+        '  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list',
+        "  apt-get update",
+        "  apt-get install -y nodejs",
+        "  npm install -g @github/copilot",
+    ]
+
+
+def pair_inspect_script(workdir, pubkey="", hands_hash="", dropin_hash=""):
+    """Read-only remote inspection for `pulse pair`. It prints key=value lines and never changes the machine."""
+    return """#!/bin/sh
+set -u
+WORKDIR=%s
+PUBKEY=%s
+HANDS_HASH=%s
+DROPIN_HASH=%s
+DROPIN=%s
+printf 'uname=%%s\\n' "$(uname -s 2>/dev/null || echo unknown)"
+if sudo -n true 2>/dev/null; then echo sudo=yes; else echo sudo=no; fi
+if getent passwd pulse >/dev/null 2>&1; then echo user=present; else echo user=absent; fi
+if [ -f /usr/local/bin/pulse-hands ]; then
+  if [ -n "$HANDS_HASH" ] && command -v sha256sum >/dev/null 2>&1 && [ "$(sha256sum /usr/local/bin/pulse-hands | awk '{print $1}')" = "$HANDS_HASH" ]; then
+    echo hands=present
+  else
+    echo hands=differs
+  fi
+else
+  echo hands=absent
+fi
+if [ -d "$WORKDIR" ]; then
+  echo workdir=present
+  if command -v stat >/dev/null 2>&1; then
+    owner="$(stat -c '%%U:%%G:%%a' "$WORKDIR" 2>/dev/null || ls -ld "$WORKDIR" | awk '{print $3 ":" $4}')"
+  else
+    owner="$(ls -ld "$WORKDIR" | awk '{print $3 ":" $4}')"
+  fi
+  printf 'workdir_owner=%%s\\n' "$owner"
+else
+  echo workdir=absent
+  echo workdir_owner=
+fi
+auth=absent
+auth_lines=0
+home="$(getent passwd pulse 2>/dev/null | awk -F: '{print $6}')"
+ak="$home/.ssh/authorized_keys"
+if [ -n "$home" ] && [ -f "$ak" ]; then
+  auth_lines="$(wc -l < "$ak" | tr -d ' ')"
+  if [ "$auth_lines" = "1" ] && grep -F "$PUBKEY" "$ak" >/dev/null 2>&1; then auth=ours; else auth=other; fi
+fi
+printf 'authorized_keys=%%s\\n' "$auth"
+printf 'authorized_keys_lines=%%s\\n' "$auth_lines"
+if [ -f "$DROPIN" ]; then
+  if [ -n "$DROPIN_HASH" ] && command -v sha256sum >/dev/null 2>&1 && [ "$(sha256sum "$DROPIN" | awk '{print $1}')" = "$DROPIN_HASH" ]; then
+    echo dropin=present
+  else
+    echo dropin=differs
+  fi
+else
+  echo dropin=absent
+fi
+if [ -d /etc/ssh/sshd_config.d ] && grep -E '^[[:space:]]*Include[[:space:]].*sshd_config\\.d/\\*\\.conf' /etc/ssh/sshd_config >/dev/null 2>&1; then
+  echo dropin_dir=yes
+else
+  echo dropin_dir=no
+fi
+remotes=0
+if [ -d "$WORKDIR" ]; then
+  remotes="$(find "$WORKDIR" -mindepth 2 -maxdepth 3 -type d -name .git 2>/dev/null | while read d; do git --git-dir="$d" remote 2>/dev/null | grep -q . && echo x; done | wc -l | tr -d ' ')"
+fi
+printf 'remotes=%%s\\n' "$remotes"
+if command -v apt-get >/dev/null 2>&1; then echo apt=yes; else echo apt=no; fi
+if command -v copilot >/dev/null 2>&1; then echo copilot=present; else echo copilot=missing; fi
+if command -v node >/dev/null 2>&1; then echo node=present; else echo node=missing; fi
+if command -v git >/dev/null 2>&1; then echo git=present; else echo git=missing; fi
+if su -s /bin/sh pulse -c 'test "$(git config --global --get commit.gpgsign 2>/dev/null)" = false && test "$(git config --global --get core.askPass 2>/dev/null)" = ""' >/dev/null 2>&1; then
+  echo gitconfig=ok
+else
+  echo gitconfig=missing
+fi
+echo hostkeys=
+for key in /etc/ssh/ssh_host_*_key.pub; do
+  [ -f "$key" ] || continue
+  printf 'hostkey %%s\\n' "$(cat "$key")"
+done
+""" % (shlex.quote(workdir), shlex.quote(pubkey), shlex.quote(hands_hash), shlex.quote(dropin_hash), shlex.quote(PAIR_DROPIN_PATH))
+
+
+def pair_apply_script(name, workdir, pubkey, hands_source_text, install_copilot):
+    """Idempotent root script sent on stdin to the admin session."""
+    dropin = pair_dropin_text()
+    auth_line = pair_authorized_key_line(workdir, pubkey)
+    install_block = """
+if command -v copilot >/dev/null 2>&1; then
+  step copilot kept
+else
+  mkdir -p /etc/apt/keyrings
+  if [ ! -f /etc/apt/keyrings/nodesource.gpg ]; then
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+  fi
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+  apt-get update
+  apt-get install -y nodejs
+  npm install -g @github/copilot
+  step copilot done
+fi
+""" if install_copilot else "step copilot skipped\n"
+    return """#!/bin/sh
+set -eu
+NAME=%s
+WORKDIR=%s
+AUTH_LINE=%s
+DROPIN=%s
+step() { printf 'step=%%s result=%%s\\n' "$1" "$2"; }
+if getent passwd pulse >/dev/null 2>&1; then
+  step user kept
+else
+  useradd -m -s /bin/bash pulse
+  passwd -l pulse >/dev/null 2>&1 || true
+  step user done
+fi
+home="$(getent passwd pulse | awk -F: '{print $6}')"
+cat > /usr/local/bin/pulse-hands.tmp <<'PULSE_HANDS_EOF'
+%s
+PULSE_HANDS_EOF
+if [ -f /usr/local/bin/pulse-hands ] && cmp -s /usr/local/bin/pulse-hands.tmp /usr/local/bin/pulse-hands; then
+  rm -f /usr/local/bin/pulse-hands.tmp
+  step hands kept
+else
+  install -m 0755 -o root -g root /usr/local/bin/pulse-hands.tmp /usr/local/bin/pulse-hands
+  rm -f /usr/local/bin/pulse-hands.tmp
+  step hands done
+fi
+if [ -d "$WORKDIR" ]; then
+  chown pulse:pulse "$WORKDIR"
+  chmod 0750 "$WORKDIR"
+  step workdir kept
+else
+  install -d -m 0750 -o pulse -g pulse "$WORKDIR"
+  step workdir done
+fi
+install -d -m 0700 -o pulse -g pulse "$home/.ssh"
+tmp_auth="$home/.ssh/authorized_keys.tmp"
+printf '%%s\\n' "$AUTH_LINE" > "$tmp_auth"
+if [ -f "$home/.ssh/authorized_keys" ] && cmp -s "$tmp_auth" "$home/.ssh/authorized_keys"; then
+  rm -f "$tmp_auth"
+  step authorized_keys kept
+else
+  install -m 0600 -o pulse -g pulse "$tmp_auth" "$home/.ssh/authorized_keys"
+  rm -f "$tmp_auth"
+  step authorized_keys done
+fi
+sudo -u pulse -H git config --global commit.gpgsign false
+sudo -u pulse -H git config --global core.askPass ""
+step gitconfig done
+%sinstall -d -m 0755 -o root -g root /etc/ssh/sshd_config.d
+cat > "$DROPIN.tmp" <<'PULSE_DROPIN_EOF'
+%sPULSE_DROPIN_EOF
+dropin_changed=0
+if [ -f "$DROPIN" ] && cmp -s "$DROPIN.tmp" "$DROPIN"; then
+  rm -f "$DROPIN.tmp"
+  step dropin kept
+else
+  install -m 0644 -o root -g root "$DROPIN.tmp" "$DROPIN"
+  rm -f "$DROPIN.tmp"
+  dropin_changed=1
+  step dropin done
+fi
+if [ "$dropin_changed" = "1" ]; then
+  if ! sshd_out="$(sshd -t 2>&1)"; then
+    printf 'sshd -t failed: %%s\\n' "$sshd_out" >&2
+    rm -f "$DROPIN"
+    exit 3
+  fi
+  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd
+  step sshd_reload done
+else
+  step sshd_reload skipped
+fi
+""" % (shlex.quote(name), shlex.quote(workdir), shlex.quote(auth_line), shlex.quote(PAIR_DROPIN_PATH),
+       hands_source_text.rstrip("\n"), install_block, dropin)
+
+
+def pair_undo_script(name, workdir):
+    return """#!/bin/sh
+set -eu
+DROPIN=%s
+rm -f "$DROPIN"
+systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd
+printf 'step=dropin result=removed\\n'
+""" % shlex.quote(PAIR_DROPIN_PATH)
+
+
+def pair_step_results(text):
+    steps = {}
+    for line in (text or "").splitlines():
+        m = re.match(r"^step=([A-Za-z0-9_-]+)[ \t]+result=([A-Za-z0-9_-]+)", line.strip())
+        if m:
+            steps[m.group(1)] = m.group(2)
+    return steps
+
+
+def pair_ensure_hub_key(hub_home, dry_run, lines):
+    ssh_dir = hub_home / ".ssh"
+    key = ssh_dir / "pulse_hands_ed25519"
+    pub = key.with_suffix(key.suffix + ".pub")
+    if not key.exists():
+        if dry_run:
+            lines.append("would generate hub key: %s" % key)
+            return key, "ssh-ed25519 DRYRUN pulse-hub"
+        ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(ssh_dir, 0o700)
+        except OSError:
+            pass
+        proc = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "pulse-hub", "-f", str(key)],
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise PulseError("ssh-keygen failed: %s" % pair_tail(proc.stderr or proc.stdout), 1)
+        try:
+            os.chmod(key, 0o600)
+        except OSError:
+            pass
+        lines.append("generated hub key: %s" % key)
+    if not pub.exists():
+        raise PulseError("Missing public key beside %s" % key, 1)
+    return key, pub.read_text(encoding="utf-8").strip().splitlines()[0]
+
+
+def pair_inspection_pubkey(hub_home, dry_run, lines):
+    ssh_dir = hub_home / ".ssh"
+    key = ssh_dir / "pulse_hands_ed25519"
+    pub = key.with_suffix(key.suffix + ".pub")
+    if key.exists() and pub.exists():
+        return key, pub.read_text(encoding="utf-8").strip().splitlines()[0], True
+    if dry_run:
+        lines.append("would generate hub key: %s" % key)
+    return key, "ssh-ed25519 PULSEPAIRINSPECTIONONLY pulse-hub", False
+
+
+def pair_check_alias(hub_home, name, host):
+    config = hub_home / ".ssh" / "config"
+    text = config.read_text(encoding="utf-8") if config.exists() else ""
+    block = pair_alias_state(text, name)
+    if block:
+        target = block.get("hostname") or name
+        if target != host:
+            pair_refuse("alias %s already points elsewhere" % name)
+    return config, text, block
+
+
+def pair_write_alias(config, text, block, name, host, port):
+    if block:
+        return False
+    config.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(config.parent, 0o700)
+    except OSError:
+        pass
+    prefix = "" if not text else ("\n" if text.endswith("\n") else "\n\n")
+    with config.open("a", encoding="utf-8") as f:
+        f.write(prefix + pair_host_block(name, host, port))
+    try:
+        os.chmod(config, 0o600)
+    except OSError:
+        pass
+    return True
+
+
+def pair_write_known_hosts(hub_home, host, port, hostkeys):
+    if not hostkeys:
+        return 0
+    path = hub_home / ".ssh" / "known_hosts"
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    prefix = pair_known_host_prefix(host, port)
+    added = 0
+    with path.open("a", encoding="utf-8") as f:
+        for hk in hostkeys:
+            line = "%s %s" % (prefix, hk.strip())
+            if hk.strip() and line not in existing.splitlines():
+                f.write(line + "\n")
+                added += 1
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return added
+
+
+def pair_open_control_master(admin_address, control_path, timeout=60):
+    user, host, port = parse_ssh_address(admin_address)
+    cmd = ["ssh", *SSH_OPTIONS, "-o", "ControlMaster=yes", "-o", "ControlPersist=120",
+           "-o", "ControlPath=%s" % control_path, "-p", str(port), "%s@%s" % (user, host), "true"]
+    try:
+        return subprocess.run(cmd, input=b"", capture_output=True, timeout=timeout)
+    except FileNotFoundError:
+        raise ExecutorUnreachable("ssh is not installed on this machine")
+    except subprocess.TimeoutExpired:
+        raise ExecutorUnreachable("ssh control master timed out after %ss" % timeout)
+
+
+def pair_close_control_master(admin_address, control_path):
+    user, host, port = parse_ssh_address(admin_address)
+    cmd = ["ssh", "-O", "exit", "-o", "ControlPath=%s" % control_path, "-p", str(port), "%s@%s" % (user, host)]
+    try:
+        subprocess.run(cmd, input=b"", capture_output=True, timeout=30)
+    except Exception:
+        pass
+
+
+def pair_inspection_summary(inspection):
+    keys = ("uname", "sudo", "user", "hands", "workdir", "workdir_owner", "authorized_keys",
+            "authorized_keys_lines", "dropin", "dropin_dir", "remotes", "apt", "copilot", "node", "git", "gitconfig")
+    return ["inspection:"] + ["  %s=%s" % (k, inspection.get(k, "")) for k in keys]
+
+
+def pair_refusals_from_inspection(inspection, install_copilot):
+    if inspection.get("uname") != "Linux":
+        return ["remote uname is %s, not Linux" % (inspection.get("uname") or "unknown")]
+    if inspection.get("sudo") != "yes":
+        return ["sudo without a password is required"]
+    if inspection.get("authorized_keys") == "other":
+        return ["pulse authorized_keys has other content"]
+    if inspection.get("dropin_dir") == "no":
+        return ["this sshd does not include sshd_config.d - the manual Match block is printed"] + pair_manual_dropin_lines()
+    try:
+        if int(inspection.get("remotes", "0")) > 0:
+            return ["%s clone(s) with git remotes exist under the workdir" % inspection.get("remotes")]
+    except ValueError:
+        return ["remote remotes count is not readable: %s" % inspection.get("remotes")]
+    if install_copilot and inspection.get("apt") != "yes":
+        return ["--install-copilot needs apt on the remote machine"] + pair_manual_copilot_lines()
+    return []
+
+
 def pair_executor(con, admin_address, name, workdir="/srv/pulse", workers=1, projects="*", install_copilot=False,
                   dry_run=False, actor=HUMAN_AGENT, now=None, home_dir=None):
     """`pulse pair` (ADR-021 section 2): turn an existing Linux machine into a pair of hands over the admin session -
     hub key, inspection before any change, one idempotent apply script, the sshd drop-in guarded by `sshd -t` and a
     second admin connection, the ~/.ssh/config alias and host key, `executor add`, `probe`, one `executor.pair` event.
     Returns {"ok": bool, "lines": [str], ...}. PLAN-021 step 3 fills this in."""
-    raise PulseError("pulse pair is not implemented yet (PLAN-021 step 3)", 2)
+    name, _admin_user, host, port, workdir, workers = pair_validate(name, admin_address, workdir, workers)
+    decision = agent_gate(con, "pair: %s" % name, actor, now)
+    existing = executor_row(con, name)
+    if existing is not None and existing["address"] != "pulse@%s" % name:
+        pair_refuse("executor %s exists with another address" % name)
+    hub_home = Path(home_dir).expanduser() if home_dir else Path.home()
+    lines, changed = ["pairing executor %s" % name], []
+    key_path, pubkey, key_ready = pair_inspection_pubkey(hub_home, dry_run, lines)
+    config, config_text, alias_block = pair_check_alias(hub_home, name, host)
+    hands = pair_hands_source()
+    dropin = pair_dropin_text()
+    inspect_script = pair_inspect_script(workdir, pubkey=pubkey, hands_hash=sha256_text(hands), dropin_hash=sha256_text(dropin))
+    apply_script = pair_apply_script(name, workdir, pubkey, hands, install_copilot)
+    undo_script = pair_undo_script(name, workdir)
+    try:
+        rc, out, err = admin_ssh_run(admin_address, "sudo -n sh -s", stdin=inspect_script.encode("utf-8"), timeout=120)
+    except ExecutorUnreachable as exc:
+        pair_refuse("inspection failed: %s" % exc)
+    if rc != 0:
+        tail = pair_tail(err or out)
+        if "password" in tail.lower():
+            pair_refuse("sudo without a password is required")
+        pair_refuse("inspection failed: %s" % (tail or "exit %d" % rc))
+    inspection = pair_parse_inspection(out)
+    lines += pair_inspection_summary(inspection)
+    if inspection.get("copilot") == "missing" and not install_copilot:
+        lines.append("hint: copilot is missing; the final probe may leave this executor drained until a human installs or logs it in")
+    refusal = pair_refusals_from_inspection(inspection, install_copilot)
+    if refusal:
+        lines += refusal
+        raise PulseError("\n".join(lines), 2)
+    scripts = {"inspect": inspect_script, "apply": apply_script, "undo": undo_script}
+    if dry_run:
+        lines.append("remote script (would run as root via sudo -n sh -s):")
+        lines.append(apply_script.rstrip("\n"))
+        lines.append("undo script (the exact inverse):")
+        lines.append(undo_script.rstrip("\n"))
+        lines.append("local changes that would be made:")
+        if not key_path.exists():
+            lines.append("  generate %s" % key_path)
+        if alias_block:
+            lines.append("  keep existing Host %s block" % name)
+        else:
+            lines.append(pair_host_block(name, host, port).rstrip("\n"))
+        for hk in inspection.get("hostkeys", []):
+            lines.append("  known_hosts: %s %s" % (pair_known_host_prefix(host, port), hk))
+        lines.append("  executor add %s --ssh pulse@%s --workdir %s --workers %d --projects %s" %
+                     (name, name, workdir, workers, normalize_projects(projects)))
+        lines.append("  probe %s" % name)
+        return {"ok": True, "lines": lines, "inspection": inspection, "scripts": scripts,
+                "changed": [], "decision": decision}
+    if not key_ready:
+        key_path, pubkey = pair_ensure_hub_key(hub_home, False, lines)
+        inspect_script = pair_inspect_script(workdir, pubkey=pubkey, hands_hash=sha256_text(hands), dropin_hash=sha256_text(dropin))
+        apply_script = pair_apply_script(name, workdir, pubkey, hands, install_copilot)
+        scripts = {"inspect": inspect_script, "apply": apply_script, "undo": undo_script}
+    sock_dir = Path(tempfile.mkdtemp(prefix="pulse-pair-"))
+    sock = str(sock_dir / "cm")
+    steps, remote_ok = {}, False
+    try:
+        master = pair_open_control_master(admin_address, sock)
+        if master.returncode != 0:
+            lines.append("admin control master failed: %s" % pair_tail((master.stderr or b"") + (master.stdout or b"")))
+            return {"ok": False, "lines": lines, "inspection": inspection, "scripts": scripts,
+                    "changed": changed, "decision": decision}
+        rc, out, err = admin_ssh_run(admin_address, "sudo -n sh -s", stdin=apply_script.encode("utf-8"),
+                                     timeout=600, control_path=sock)
+        steps = pair_step_results(out)
+        lines += [line for line in out.splitlines() if line.startswith("step=")]
+        if rc == 3:
+            lines.append("sshd -t failed; drop-in was removed and ssh was not reloaded: %s" % pair_tail(err or out))
+            return {"ok": False, "lines": lines, "inspection": inspection, "scripts": scripts,
+                    "changed": changed, "decision": decision}
+        if rc != 0:
+            lines.append("remote apply failed after steps %s: %s" % (", ".join(sorted(k for k, v in steps.items() if v == "done")) or "none",
+                                                                     pair_tail(err or out) or "exit %d" % rc))
+            return {"ok": False, "lines": lines, "inspection": inspection, "scripts": scripts,
+                    "changed": changed, "decision": decision}
+        try:
+            check_rc, check_out, check_err = admin_ssh_run(admin_address, "true", timeout=60)
+        except ExecutorUnreachable as exc:
+            check_rc, check_out, check_err = 255, "", str(exc)
+        if check_rc != 0:
+            try:
+                admin_ssh_run(admin_address, "sudo -n sh -s", stdin=undo_script.encode("utf-8"), timeout=120, control_path=sock)
+            except ExecutorUnreachable:
+                pass
+            lines.append("admin path failed after reload; drop-in removed and sshd reloaded through the held session")
+            if check_err or check_out:
+                lines.append(pair_tail(check_err or check_out))
+            return {"ok": False, "lines": lines, "inspection": inspection, "scripts": scripts,
+                    "changed": changed, "decision": decision}
+        remote_ok = True
+    finally:
+        pair_close_control_master(admin_address, sock)
+        shutil.rmtree(sock_dir, ignore_errors=True)
+    if not remote_ok:
+        return {"ok": False, "lines": lines, "inspection": inspection, "scripts": scripts,
+                "changed": changed, "decision": decision}
+    if pair_write_alias(config, config_text, alias_block, name, host, port):
+        changed.append("ssh-config")
+        lines.append("wrote Host %s alias for the executor" % name)
+    added_hosts = pair_write_known_hosts(hub_home, host, port, inspection.get("hostkeys", []))
+    if added_hosts:
+        changed.append("known-hosts")
+        lines.append("trusted %d host key line(s) from the admin session" % added_hosts)
+    if existing is None:
+        add_executor(con, name, "pulse@%s" % name, workdir, workers=workers, projects=projects, created_by=actor, now=now)
+        changed.append("executor")
+        lines.append("added executor %s with alias-only address" % name)
+    else:
+        lines.append("kept existing executor %s" % name)
+    probe_ok, note = probe_executor(con, name, actor=actor, now=now)
+    if probe_ok:
+        lines.append("%s: ok, active: %s" % (name, note))
+    else:
+        lines.append("%s: paired; probe drained it: %s" % (name, note))
+    event(con, actor, "executor.pair", name, {"decision": decision, "steps": steps, "probe_ok": probe_ok,
+                                              "workdir": workdir, "install_copilot": bool(install_copilot)})
+    return {"ok": True, "lines": lines, "inspection": inspection, "scripts": scripts,
+            "changed": changed, "decision": decision}
 
 
 def reprobe_due(con, interval=300, now=None):
