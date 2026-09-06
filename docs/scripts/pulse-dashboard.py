@@ -2262,43 +2262,25 @@ INDEX_HTML = """<!DOCTYPE html>
 
 """
 
-APP_CSS = r"""/* PULSE dashboard - design tokens. Dark by default; light follows the OS or the header toggle. */
+APP_CSS = r"""/* PULSE dashboard - design tokens. Dark by default; light follows the OS or the header toggle.
+   Every color is declared once as light-dark(light, dark); the three rules below only pick the scheme. */
 :root {
-  --bg: #0b0f17; --bg-2: #0e131c; --panel: #131923; --panel-2: #192130; --panel-hover: #1b2433;
-  --line: #222c3b; --line-2: #2d3949; --fg: #e8ecf3; --muted: #8d99ad; --dim: #66738a;
-  --accent: #6ea8fe; --accent-2: #a78bfa; --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --info: #38bdf8;
-  --chip: #1c2534; --chip-fg: #c6cfdd; --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 24px -12px rgba(0,0,0,.6);
-  --grid: #1f2937; --tip-bg: #0b1018; --tip-fg: #e8ecf3;
-  --k-claim: #f59e0b; --k-handoff: #a78bfa; --k-finding: #38bdf8; --k-question: #f472b6; --k-answer: #34d399;
-  --k-suggestion: #6ea8fe; --k-opinion: #c084fc; --k-vote: #fbbf24; --k-amendment: #fb7185; --k-result: #22c55e; --k-none: #64748b;
-  --s1: #6ea8fe; --s2: #34d399; --s3: #fbbf24; --s4: #f472b6; --s5: #a78bfa; --s6: #38bdf8; --s7: #fb923c; --s8: #22c55e;
+  --bg: light-dark(#f4f6fa, #0b0f17); --bg-2: light-dark(#eef1f6, #0e131c); --panel: light-dark(#ffffff, #131923); --panel-2: light-dark(#f5f7fb, #192130); --panel-hover: light-dark(#f0f3f8, #1b2433);
+  --line: light-dark(#e2e7ef, #222c3b); --line-2: light-dark(#cfd7e3, #2d3949); --fg: light-dark(#0f172a, #e8ecf3); --muted: light-dark(#5b6678, #8d99ad); --dim: light-dark(#8a94a6, #66738a);
+  --accent: light-dark(#2563eb, #6ea8fe); --accent-2: light-dark(#7c3aed, #a78bfa); --ok: light-dark(#059669, #34d399); --warn: light-dark(#b45309, #fbbf24); --bad: light-dark(#dc2626, #f87171); --info: light-dark(#0284c7, #38bdf8);
+  --chip: light-dark(#eef2f7, #1c2534); --chip-fg: light-dark(#334155, #c6cfdd); --grid: light-dark(#e5e9f0, #1f2937); --tip-bg: light-dark(#0f172a, #0b1018); --tip-fg: light-dark(#f8fafc, #e8ecf3);
+  --k-claim: light-dark(#d97706, #f59e0b); --k-handoff: light-dark(#7c3aed, #a78bfa); --k-finding: light-dark(#0284c7, #38bdf8); --k-question: light-dark(#db2777, #f472b6); --k-answer: light-dark(#059669, #34d399);
+  --k-suggestion: light-dark(#2563eb, #6ea8fe); --k-opinion: light-dark(#9333ea, #c084fc); --k-vote: light-dark(#ca8a04, #fbbf24); --k-amendment: light-dark(#e11d48, #fb7185); --k-result: light-dark(#16a34a, #22c55e); --k-none: #64748b;
+  --s1: light-dark(#2563eb, #6ea8fe); --s2: light-dark(#059669, #34d399); --s3: light-dark(#ca8a04, #fbbf24); --s4: light-dark(#db2777, #f472b6);
+  --s5: light-dark(#7c3aed, #a78bfa); --s6: light-dark(#0284c7, #38bdf8); --s7: light-dark(#ea580c, #fb923c); --s8: light-dark(#16a34a, #22c55e);
   --radius: 12px; --radius-s: 8px; --gap: 14px;
+  --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 24px -12px rgba(0,0,0,.6);
   color-scheme: dark;
 }
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: #f4f6fa; --bg-2: #eef1f6; --panel: #ffffff; --panel-2: #f5f7fb; --panel-hover: #f0f3f8;
-    --line: #e2e7ef; --line-2: #cfd7e3; --fg: #0f172a; --muted: #5b6678; --dim: #8a94a6;
-    --accent: #2563eb; --accent-2: #7c3aed; --ok: #059669; --warn: #b45309; --bad: #dc2626; --info: #0284c7;
-    --chip: #eef2f7; --chip-fg: #334155; --shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px -14px rgba(15,23,42,.25);
-    --grid: #e5e9f0; --tip-bg: #0f172a; --tip-fg: #f8fafc;
-    --k-claim: #d97706; --k-handoff: #7c3aed; --k-finding: #0284c7; --k-question: #db2777; --k-answer: #059669;
-    --k-suggestion: #2563eb; --k-opinion: #9333ea; --k-vote: #ca8a04; --k-amendment: #e11d48; --k-result: #16a34a; --k-none: #64748b;
-    --s1: #2563eb; --s2: #059669; --s3: #ca8a04; --s4: #db2777; --s5: #7c3aed; --s6: #0284c7; --s7: #ea580c; --s8: #16a34a;
-    color-scheme: light;
-  }
+  :root:not([data-theme="dark"]) { --shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px -14px rgba(15,23,42,.25); color-scheme: light; }
 }
-:root[data-theme="light"] {
-  --bg: #f4f6fa; --bg-2: #eef1f6; --panel: #ffffff; --panel-2: #f5f7fb; --panel-hover: #f0f3f8;
-  --line: #e2e7ef; --line-2: #cfd7e3; --fg: #0f172a; --muted: #5b6678; --dim: #8a94a6;
-  --accent: #2563eb; --accent-2: #7c3aed; --ok: #059669; --warn: #b45309; --bad: #dc2626; --info: #0284c7;
-  --chip: #eef2f7; --chip-fg: #334155; --shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px -14px rgba(15,23,42,.25);
-  --grid: #e5e9f0; --tip-bg: #0f172a; --tip-fg: #f8fafc;
-  --k-claim: #d97706; --k-handoff: #7c3aed; --k-finding: #0284c7; --k-question: #db2777; --k-answer: #059669;
-  --k-suggestion: #2563eb; --k-opinion: #9333ea; --k-vote: #ca8a04; --k-amendment: #e11d48; --k-result: #16a34a; --k-none: #64748b;
-  --s1: #2563eb; --s2: #059669; --s3: #ca8a04; --s4: #db2777; --s5: #7c3aed; --s6: #0284c7; --s7: #ea580c; --s8: #16a34a;
-  color-scheme: light;
-}
+:root[data-theme="light"] { --shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px -14px rgba(15,23,42,.25); color-scheme: light; }
 
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;

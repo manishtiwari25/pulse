@@ -637,6 +637,15 @@ class AssetTestCase(unittest.TestCase):
         dead = [c for c in classes if c not in text and not any(c.startswith(p) for p in prefixes)]
         self.assertEqual(dead, [], "CSS classes no view uses: %s" % ", ".join(dead))
 
+    def test_every_design_token_is_declared_once(self):
+        css = dash.APP_CSS
+        # Colors carry both themes in one light-dark() value, so a token written twice is the light set
+        # copied into a second rule; --shadow is a shadow list, not a color, and may follow the scheme.
+        names = re.findall(r"(--[\w-]+)\s*:", css)
+        repeated = sorted(n for n in set(names) if names.count(n) > 1 and n != "--shadow")
+        self.assertEqual(repeated, [], "design tokens declared more than once: %s" % ", ".join(repeated))
+        self.assertIn("light-dark(", css, "themes share one token block")
+
 
 class ServerTestCase(unittest.TestCase):
     @classmethod
