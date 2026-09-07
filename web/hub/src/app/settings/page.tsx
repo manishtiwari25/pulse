@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
-import { ErrorNotice, Notice, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Input } from "@/components/ui/input";
+import { EmptyState, ErrorNotice, Notice, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
 import { Mono } from "@/components/pulse/who";
 import { SettingRow } from "@/components/settings/setting-row";
 import type { Setting, SettingsPayload } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
 
 interface Group {
   id: string;
@@ -90,8 +92,45 @@ const SWITCH_LABELS: Record<string, { on: string; off: string }> = {
   "evolve.loop": { on: "on - cycles run back to back", off: "off - the loop waits" },
 };
 
+// The sticky stack above the content: 48px app bar + the title row and the
+// section pills. Anchored sections scroll to sit just under it.
+const ANCHOR = "scroll-mt-32";
+const PILL = "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 hover:bg-muted";
+
+function GroupRows({ g, rows, canEdit }: { g: Group; rows: Setting[]; canEdit: boolean }) {
+  const row = (s: Setting) => <SettingRow key={s.name} s={s} canEdit={canEdit} labels={SWITCH_LABELS[s.name]} />;
+  const clusters = g.clusters;
+  if (!clusters) return <div className="divide-y">{rows.map(row)}</div>;
+  const loose = rows.filter((s) => !clusters.some((c) => c.keys.includes(s.name)));
+  return (
+    <>
+      {clusters.map((c) => {
+        const inCluster = rows.filter((s) => c.keys.includes(s.name));
+        if (!inCluster.length) return null;
+        return (
+          <div key={c.title} className="border-t first:border-t-0">
+            <h3 className="px-4 pt-2.5 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{c.title}</h3>
+            <div className="divide-y">{inCluster.map(row)}</div>
+          </div>
+        );
+      })}
+      {loose.length ? <div className="divide-y border-t first:border-t-0">{loose.map(row)}</div> : null}
+    </>
+  );
+}
+
 export default function SettingsPage() {
   const q = useApi<SettingsPayload>("settings", { refresh: 30000 });
+  const [find, setFind] = useState("");
+  const jumped = useRef(false);
+  useEffect(() => {
+    // The sections exist only once settings arrive, so the browser's own
+    // #hash jump on load finds nothing; do it once here.
+    if (jumped.current || !q.data) return;
+    jumped.current = true;
+    const id = window.location.hash.slice(1);
+    if (id) document.getElementById(id)?.scrollIntoView();
+  }, [q.data]);
   const groups = useMemo(() => {
     const all = q.data ? withExtraDefaults(q.data.settings) : [];
     const used = new Set<string>();
@@ -123,49 +162,82 @@ export default function SettingsPage() {
   if (!q.data) return <SkeletonPage rows={4} />;
   const d = q.data;
   const stop = d.settings.find((s) => s.name === "stop");
+  const stopped = stop?.value === "1";
+  const needle = find.trim().toLowerCase();
+  const match = (s: Setting) => !needle || s.name.toLowerCase().includes(needle) || s.description.toLowerCase().includes(needle);
+  // The kill switch has its own card at the top, so it leaves the runner cluster.
+  const killShown = !!stop && match(stop);
+  const base = groups.map(({ g, rows }) => ({ g, rows: stop ? rows.filter((s) => s.name !== "stop") : rows }));
+  const total = base.reduce((n, x) => n + x.rows.length, 0) + (stop ? 1 : 0);
+  const shown = base.map(({ g, rows }) => ({ g, all: rows.length, rows: rows.filter(match) })).filter((x) => x.rows.length);
+  const hit = new Set(shown.map((x) => x.g.id));
+  const matched = shown.reduce((n, x) => n + x.rows.length, 0) + (killShown ? 1 : 0);
   return (
     <>
-      <PageTitle sub={<>The owner&apos;s caps, as the store holds them. Every change is recorded with who made it; the daemon reads them on its next loop. Same keys as <Mono>pulse setting set</Mono>.</>}>Settings</PageTitle>
-      {!d.available ? <Notice tone="warn">The settings store is not available on this hub - it runs read-only.</Notice> : null}
-      {d.available && !d.can_edit ? <Notice tone="info">This hub is read-only for settings. Change them on the owner&apos;s machine.</Notice> : null}
-      {stop?.value === "1" ? <Notice tone="bad">STOP is on: the daemon runs nothing until you turn it off below.</Notice> : null}
-      <nav aria-label="Sections" className="mb-4 flex flex-wrap gap-1.5 text-xs">
-        {groups.map(({ g }) => (
-          <a key={g.id} href={"#" + g.id} className="rounded-full border px-2.5 py-1 hover:bg-muted">
-            {g.title}
-          </a>
-        ))}
-      </nav>
-      <div className="grid gap-4">
-        {groups.map(({ g, rows }) => (
-          <section key={g.id} id={g.id} className="scroll-mt-16">
-            <Panel title={g.title} actions={<span className="max-w-md text-right anywhere">{g.blurb}</span>}>
-              {g.clusters ? (
+      <PageTitle
+        sub={<>The owner&apos;s caps, as the store holds them. Every change is recorded with who made it; the daemon reads them on its next loop. Same keys as <Mono>pulse setting set</Mono>.</>}
+        actions={
+          <>
+            {needle ? <span className="tnum whitespace-nowrap text-xs text-muted-foreground">{matched} of {total}</span> : null}
+            <Input
+              value={find}
+              onChange={(e) => setFind(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setFind("");
+              }}
+              placeholder="find a setting…"
+              aria-label="Find a setting"
+              className="h-7 w-36 sm:w-56"
+            />
+          </>
+        }
+        bar={
+          <nav aria-label="Sections" className="flex items-center gap-1.5 text-xs">
+            {stop ? (
+              <a href="#stop" className={cn(PILL, stopped && "border-bad/40 text-bad", !killShown && "pointer-events-none opacity-40")} aria-disabled={!killShown || undefined}>
+                <span className={cn("size-1.5 rounded-full", stopped ? "bg-bad" : "bg-ok")} aria-hidden />
+                Kill switch
+              </a>
+            ) : null}
+            {groups.map(({ g }) => (
+              <a key={g.id} href={"#" + g.id} className={cn(PILL, !hit.has(g.id) && "pointer-events-none opacity-40")} aria-disabled={!hit.has(g.id) || undefined}>
+                {g.title}
+              </a>
+            ))}
+          </nav>
+        }
+      >
+        Settings
+      </PageTitle>
+      {!d.available ? <Notice tone="warn" className="mb-3">The settings store is not available on this hub - it runs read-only.</Notice> : null}
+      {d.available && !d.can_edit ? <Notice tone="info" className="mb-3">This hub is read-only for settings. Change them on the owner&apos;s machine.</Notice> : null}
+      {stopped ? <Notice tone="bad" className="mb-3">STOP is on: the daemon runs nothing until you turn it off below.</Notice> : null}
+      <div className="grid gap-3">
+        {killShown && stop ? (
+          <section id="stop" className={ANCHOR}>
+            <Panel dense className={cn(stopped && "bg-bad/5 ring-bad/40")}>
+              <SettingRow s={stop} canEdit={d.can_edit} labels={SWITCH_LABELS.stop} title="Kill switch" />
+            </Panel>
+          </section>
+        ) : null}
+        {shown.map(({ g, rows, all }) => (
+          <section key={g.id} id={g.id} className={ANCHOR}>
+            <Panel
+              dense
+              title={
                 <>
-                  {g.clusters.map((c) => {
-                    const inCluster = rows.filter((s) => c.keys.includes(s.name));
-                    if (!inCluster.length) return null;
-                    return (
-                      <div key={c.title}>
-                        <h3 className="px-3 pt-3 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{c.title}</h3>
-                        {inCluster.map((s) => (
-                          <SettingRow key={s.name} s={s} canEdit={d.can_edit} labels={SWITCH_LABELS[s.name]} />
-                        ))}
-                      </div>
-                    );
-                  })}
-                  {rows
-                    .filter((s) => !g.clusters!.some((c) => c.keys.includes(s.name)))
-                    .map((s) => (
-                      <SettingRow key={s.name} s={s} canEdit={d.can_edit} labels={SWITCH_LABELS[s.name]} />
-                    ))}
+                  {g.title}
+                  {needle ? <span className="tnum ml-2 font-normal text-muted-foreground">{rows.length} of {all}</span> : null}
+                  <span className="mt-0.5 block text-[12px] font-normal leading-snug tracking-normal text-muted-foreground anywhere">{g.blurb}</span>
                 </>
-              ) : (
-                rows.map((s) => <SettingRow key={s.name} s={s} canEdit={d.can_edit} labels={SWITCH_LABELS[s.name]} />)
-              )}
+              }
+              contentClassName="pb-1"
+            >
+              <GroupRows g={g} rows={rows} canEdit={d.can_edit} />
             </Panel>
           </section>
         ))}
+        {needle && !matched ? <EmptyState>No setting matches &ldquo;{find.trim()}&rdquo; - try part of a key such as quorum or azure.</EmptyState> : null}
       </div>
     </>
   );

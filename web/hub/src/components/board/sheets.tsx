@@ -3,14 +3,15 @@
 import Link from "next/link";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Separator } from "@/components/ui/separator";
-import { DataTable, type Column } from "@/components/pulse/data-table";
+import { type Column } from "@/components/pulse/data-table";
+import { CardGrid, ItemCard, ItemCardBody, ItemCardHeader, ItemCardTitle } from "@/components/pulse/item-card";
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState, ErrorNotice, Kv, Panel, SkeletonRows } from "@/components/pulse/panel";
 import { KindBadge, Mono, PostLink, Provenance, StatusBadge, ThreadLink, ToneBadge, VoteBadge, When, Who } from "@/components/pulse/who";
 import { hrefs } from "@/lib/nav";
 import { enc, projectPath, type PostDetail, type PostRef, type ThreadDetail, type ThreadRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
-import { num, statusTone } from "@/lib/format";
+import { num, plural, statusTone } from "@/lib/format";
 
 export const THREAD_COLUMNS = (slug: string): Column<ThreadRow>[] => [
   { key: "thread", label: "thread", sort: (t) => t.key, render: (t) => <ThreadLink slug={slug} k={t.key} /> },
@@ -21,33 +22,78 @@ export const THREAD_COLUMNS = (slug: string): Column<ThreadRow>[] => [
   { key: "summary", label: "latest summary", render: (t) => <span className="anywhere">{t.summary}</span> },
 ];
 
-const POST_COLUMNS = (slug: string): Column<PostRef>[] => [
-  { key: "when", label: "when", nowrap: true, sort: (p) => p.date, render: (p) => <When d={p.date} /> },
-  { key: "kind", label: "kind", sort: (p) => p.kind || "", render: (p) => <KindBadge kind={p.kind} /> },
-  { key: "agent", label: "agent", render: (p) => <Who row={p} compact /> },
-  {
-    key: "post",
-    label: "post",
-    render: (p) => (
-      <span className="inline-flex flex-wrap items-center gap-1.5">
-        <PostLink slug={slug} id={p.id} label={p.summary} />
-        <Provenance ok={p.provenance_ok} missing={p.provenance_missing} />
-        {p.vote ? <VoteBadge vote={p.vote} /> : null}
-        {p.resolution ? <ToneBadge tone={statusTone(p.resolution)}>{"resolution: " + p.resolution}</ToneBadge> : null}
-        {p.on_post ? (
-          <span className="text-xs text-muted-foreground">
-            on <PostLink slug={slug} id={p.on_post} />
-          </span>
-        ) : null}
-      </span>
-    ),
-  },
-];
+// One thread as a card: status, area and resolution up top, the key as the
+// title, the latest summary as the body. Opens the thread sheet through
+// `onOpen`; without it the card is a plain link to the thread.
+export function ThreadCard({ t, slug, onOpen, active }: { t: ThreadRow; slug: string; onOpen?: (key: string) => void; active?: boolean }) {
+  const open = onOpen ? () => onOpen(t.key) : undefined;
+  return (
+    <ItemCard onOpen={open} href={open ? undefined : hrefs.thread(slug, t.key)} active={active} ariaLabel={t.key}>
+      <ItemCardHeader
+        right={
+          <>
+            <span className="tnum">{plural(t.posts, "post")}</span>
+            <When d={t.last} />
+          </>
+        }
+      >
+        <StatusBadge status={t.status} />
+        {t.area ? <ToneBadge tone="neutral">{t.area}</ToneBadge> : null}
+        {t.resolution ? <ToneBadge tone={statusTone(t.resolution)}>{t.resolution}</ToneBadge> : null}
+      </ItemCardHeader>
+      <ItemCardTitle chevron className="font-mono text-[13px]">
+        {t.key}
+      </ItemCardTitle>
+      {t.summary ? <ItemCardBody clamp={2}>{t.summary}</ItemCardBody> : null}
+    </ItemCard>
+  );
+}
+
+export function ThreadCards({ rows, slug, onOpen, activeKey, cols = 2, empty }: { rows: ThreadRow[]; slug: string; onOpen?: (key: string) => void; activeKey?: string | null; cols?: 1 | 2 | 3; empty?: React.ReactNode }) {
+  if (!rows.length) return <EmptyState>{empty ?? "No thread here."}</EmptyState>;
+  return (
+    <CardGrid cols={cols}>
+      {rows.map((t) => (
+        <ThreadCard key={t.key} t={t} slug={slug} onOpen={onOpen} active={activeKey === t.key} />
+      ))}
+    </CardGrid>
+  );
+}
+
+// Posts inside a sheet - a thread's posts, or the answers to one post - as a
+// vertical list in the API's order. The author stays visible at every width
+// and the thread key is not repeated: the sheet header already names it.
+function PostList({ rows, slug }: { rows: PostRef[]; slug: string }) {
+  return (
+    <ul className="divide-y">
+      {rows.map((p) => (
+        <li key={p.id} className="grid gap-1 py-2.5 first:pt-0 last:pb-0">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <Who row={p} compact />
+            <KindBadge kind={p.kind} />
+            {p.vote ? <VoteBadge vote={p.vote} /> : null}
+            {p.resolution ? <ToneBadge tone={statusTone(p.resolution)}>{"resolution: " + p.resolution}</ToneBadge> : null}
+            <Provenance ok={p.provenance_ok} missing={p.provenance_missing} />
+            <When d={p.date} className="ml-auto text-muted-foreground" />
+          </div>
+          <p className="text-[13px] leading-snug anywhere">
+            <PostLink slug={slug} id={p.id} label={p.summary} />
+          </p>
+          {p.on_post ? (
+            <p className="text-xs text-muted-foreground">
+              on <PostLink slug={slug} id={p.on_post} />
+            </p>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 export function ThreadSheet({ slug, threadKey, onClose }: { slug: string; threadKey: string | null; onClose: () => void }) {
   return (
     <Sheet open={!!threadKey} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-3xl">
+      <SheetContent side="right" className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
         {threadKey ? <ThreadBody slug={slug} k={threadKey} /> : null}
       </SheetContent>
     </Sheet>
@@ -96,7 +142,7 @@ function ThreadBody({ slug, k }: { slug: string; k: string }) {
         <SheetDescription className="anywhere">{t.summary}</SheetDescription>
       </SheetHeader>
       <div className="px-4 pb-4">
-        <DataTable columns={POST_COLUMNS(slug)} rows={data.posts} rowKey={(p) => p.id} dense caption="Posts in this thread" />
+        <Panel title={"Posts (" + num(data.posts.length) + ")"}>{data.posts.length ? <PostList rows={data.posts} slug={slug} /> : <EmptyState>No posts in this thread yet.</EmptyState>}</Panel>
       </div>
     </>
   );
@@ -105,20 +151,12 @@ function ThreadBody({ slug, k }: { slug: string; k: string }) {
 export function PostSheet({ slug, postId, onClose }: { slug: string; postId: string | null; onClose: () => void }) {
   return (
     <Sheet open={!!postId} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-3xl">
+      <SheetContent side="right" className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
         {postId ? <PostBody slug={slug} id={postId} /> : null}
       </SheetContent>
     </Sheet>
   );
 }
-
-const RESPONSE_COLUMNS = (slug: string): Column<PostRef>[] => [
-  { key: "when", label: "when", nowrap: true, sort: (r) => r.date, render: (r) => <When d={r.date} /> },
-  { key: "kind", label: "kind", render: (r) => <KindBadge kind={r.kind} /> },
-  { key: "agent", label: "agent", render: (r) => <Who row={r} compact /> },
-  { key: "vote", label: "vote", render: (r) => (r.vote ? <VoteBadge vote={r.vote} /> : "") },
-  { key: "summary", label: "summary", render: (r) => <PostLink slug={slug} id={r.id} label={r.summary} /> },
-];
 
 function PostBody({ slug, id }: { slug: string; id: string }) {
   const { data: p, error, reload } = useApi<PostDetail>(projectPath(slug, "posts/" + enc(id)));
@@ -174,7 +212,7 @@ function PostBody({ slug, id }: { slug: string; id: string }) {
         <Panel title="Frontmatter">
           <Kv rows={Object.entries(fm).map(([k, v]) => [k, k === "on" && v ? <PostLink key={k} slug={slug} id={String(v)} /> : <Mono key={k}>{String(v)}</Mono>])} />
         </Panel>
-        <Panel title={"Responses (" + p.responses.length + ")"}>{p.responses.length ? <DataTable columns={RESPONSE_COLUMNS(slug)} rows={p.responses} rowKey={(r) => r.id} dense /> : <EmptyState>No answers, opinions, votes, or results refer to this post.</EmptyState>}</Panel>
+        <Panel title={"Responses (" + num(p.responses.length) + ")"}>{p.responses.length ? <PostList rows={p.responses} slug={slug} /> : <EmptyState>No answers, opinions, votes, or results refer to this post.</EmptyState>}</Panel>
         <Separator />
         <details className="text-xs">
           <summary className="cursor-pointer text-muted-foreground hover:text-foreground">source</summary>

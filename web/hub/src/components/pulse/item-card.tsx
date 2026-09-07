@@ -1,0 +1,179 @@
+"use client";
+
+import Link from "next/link";
+import { createContext, useContext } from "react";
+import { ChevronRightIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+// Card primitives for the lists the owner reads most (tasks, requests,
+// threads, agents, records). One card = one thing with its badges, a title,
+// a line or two of context and its actions in reach - no horizontal scroll
+// to find a button in the last column of a table.
+
+const COLS = {
+  1: "grid-cols-1",
+  2: "grid-cols-1 md:grid-cols-2",
+  3: "grid-cols-1 md:grid-cols-2 xl:grid-cols-3",
+  4: "grid-cols-1 sm:grid-cols-2 xl:grid-cols-4",
+} as const;
+
+export function CardGrid({ children, cols = 2, className }: { children: React.ReactNode; cols?: keyof typeof COLS; className?: string }) {
+  return <div className={cn("grid gap-3", COLS[cols], className)}>{children}</div>;
+}
+
+// A click that starts on a control inside the card (a link, a button, a menu
+// item rendered through a portal) belongs to that control, not to the card.
+const CONTROL = "a,button,input,select,textarea,summary,[role=button],[role=menuitem],[role=option]";
+function opensCard(e: React.MouseEvent<HTMLElement>) {
+  const target = e.target as HTMLElement;
+  if (!e.currentTarget.contains(target)) return false;
+  const hit = target.closest(CONTROL);
+  return !hit || hit === e.currentTarget;
+}
+
+// A card that can be opened. With `href` it is a link - use it only when the
+// card holds no links or buttons of its own (nested anchors are invalid HTML).
+// With `onOpen` the card's title (ItemCardTitle) becomes its real button for
+// keyboard and assistive tech, and the surface adds a pointer shortcut that
+// ignores clicks on inner controls, so those stay proper controls of their own.
+const OpenContext = createContext<{ open: () => void; label?: string } | null>(null);
+
+export function ItemCard({ children, href, onOpen, active, highlight, className, ariaLabel }: { children: React.ReactNode; href?: string; onOpen?: () => void; active?: boolean; highlight?: boolean; className?: string; ariaLabel?: string }) {
+  const cls = cn(
+    "group/item relative flex flex-col gap-2 rounded-lg border bg-card p-3.5 text-left shadow-xs transition-colors",
+    (href || onOpen) && "cursor-pointer hover:bg-muted/40",
+    href && !onOpen && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    onOpen && "has-[[data-open]:focus-visible]:ring-2 has-[[data-open]:focus-visible]:ring-ring",
+    highlight && "border-primary/40",
+    active && "ring-2 ring-ring",
+    className,
+  );
+  if (href && !onOpen)
+    return (
+      <Link href={href} className={cls} aria-label={ariaLabel}>
+        {children}
+      </Link>
+    );
+  if (onOpen)
+    return (
+      <OpenContext.Provider value={{ open: onOpen, label: ariaLabel }}>
+        <article
+          className={cls}
+          onClick={(e) => {
+            if (opensCard(e)) onOpen();
+          }}
+        >
+          {children}
+        </article>
+      </OpenContext.Provider>
+    );
+  return (
+    <article className={cls} aria-label={ariaLabel}>
+      {children}
+    </article>
+  );
+}
+
+// Top line: badges on the left, the quiet meta (who, when) on the right.
+export function ItemCardHeader({ children, right, className }: { children: React.ReactNode; right?: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", className)}>
+      {children}
+      {right ? <span className="ml-auto flex items-center gap-2 text-muted-foreground">{right}</span> : null}
+    </div>
+  );
+}
+
+// Inside an openable card the title is the button that opens it.
+export function ItemCardTitle({ children, className, chevron }: { children: React.ReactNode; className?: string; chevron?: boolean }) {
+  const ctx = useContext(OpenContext);
+  const inner = (
+    <>
+      <span className="min-w-0 flex-1">{children}</span>
+      {chevron ? <ChevronRightIcon className="mt-0.5 size-4 shrink-0 opacity-40 transition-transform group-hover/item:translate-x-0.5" /> : null}
+    </>
+  );
+  return (
+    <h3 className={cn("text-[14px] font-semibold leading-snug anywhere", className)}>
+      {ctx ? (
+        <button
+          type="button"
+          data-open
+          aria-label={ctx.label}
+          className="flex w-full items-start gap-2 text-left focus-visible:outline-none"
+          onClick={(e) => {
+            e.stopPropagation();
+            ctx.open();
+          }}
+        >
+          {inner}
+        </button>
+      ) : (
+        <span className="flex items-start gap-2">{inner}</span>
+      )}
+    </h3>
+  );
+}
+
+export function ItemCardBody({ children, className, clamp = 2 }: { children: React.ReactNode; className?: string; clamp?: 0 | 1 | 2 | 3 | 5 }) {
+  return <div className={cn("text-[13px] leading-relaxed text-muted-foreground anywhere", clamp === 1 && "line-clamp-1", clamp === 2 && "line-clamp-2", clamp === 3 && "line-clamp-3", clamp === 5 && "line-clamp-5", className)}>{children}</div>;
+}
+
+// Small facts in a row: "3 posts · quorum 2 · expires in 4 d".
+export function ItemCardMeta({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground", className)}>{children}</div>;
+}
+
+// Bottom line with the card's buttons. Clicks here never open the card.
+export function ItemCardActions({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div
+      className={cn("mt-auto flex flex-wrap items-center gap-2 pt-1", className)}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// A compact fact tile for the inside of a card (used by project cards).
+export function Fact({ n, label, tone, className }: { n: React.ReactNode; label: string; tone?: "ok" | "warn" | "bad" | "accent" | "info"; className?: string }) {
+  return (
+    <div className={cn("rounded-md bg-muted/40 px-1 py-1.5 text-center", className)}>
+      <div className={cn("tnum text-[15px] font-semibold leading-none", tone === "ok" && "text-ok", tone === "warn" && "text-warn", tone === "bad" && "text-bad", tone === "accent" && "text-accent-2", tone === "info" && "text-info")}>{n}</div>
+      <div className="mt-1 text-[10.5px] uppercase tracking-wide text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
+// Section heading for a card group: title, count, and an optional link.
+export function SectionHeading({ children, count, action, className }: { children: React.ReactNode; count?: number | string; action?: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("mb-2 flex items-center justify-between gap-2", className)}>
+      <h2 className="flex items-center gap-2 text-sm font-semibold">
+        {children}
+        {count !== undefined && count !== "" ? <span className="tnum rounded-full bg-muted px-1.5 text-[11px] font-medium text-muted-foreground">{count}</span> : null}
+      </h2>
+      {action ? <div className="text-xs text-muted-foreground">{action}</div> : null}
+    </div>
+  );
+}
+
+// Strip Markdown down to a one-paragraph excerpt for a card body.
+export function excerpt(md: string, max = 220): string {
+  const text = (md || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_~>]+/g, "")
+    .replace(/^\s*[-+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > max ? text.slice(0, max).replace(/\s+\S*$/, "") + "\u2026" : text;
+}

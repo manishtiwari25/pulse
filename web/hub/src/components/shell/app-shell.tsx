@@ -90,7 +90,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-1.5 focus:text-primary-foreground">
         Skip to content
       </a>
-      <header className="sticky top-0 z-40 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+      <header className="sticky top-0 z-40 h-12 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
         <div className="mx-auto flex h-12 max-w-[1560px] items-center gap-2 px-3 sm:px-4">
           <Link href="/" className="mr-1 flex items-center gap-2 font-semibold tracking-tight" aria-label="PULSE hub">
             <span className="inline-flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
@@ -120,24 +120,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <ThemeToggle />
           </div>
         </div>
-        <nav aria-label="Primary (compact)" className="flex gap-0.5 overflow-x-auto border-t px-2 py-1 md:hidden">
-          {NAV.map((n) => {
-            const active = n.match(pathname);
-            return (
-              <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined} className={cn("inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground", active && "bg-muted text-foreground")}>
-                <n.icon className="size-3.5" />
-                {n.label}
-              </Link>
-            );
-          })}
-        </nav>
       </header>
-      <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1560px] flex-1 px-3 py-4 outline-none sm:px-4">
+      <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1560px] flex-1 px-3 pt-0 pb-20 outline-none sm:px-4 md:pb-4">
         {children}
       </main>
-      <footer className="border-t px-4 py-3 text-center text-xs text-muted-foreground">
+      <footer className="hidden border-t px-4 py-3 text-center text-xs text-muted-foreground md:block">
         PULSE hub · 127.0.0.1 only · the owner writes here: tasks, messages, decisions, settings, compute; agents write with the CLI.
       </footer>
+      {/* On phones the primary nav sits at the thumb, not in a second header row. */}
+      <nav aria-label="Primary (compact)" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+        {NAV.map((n) => {
+          const active = n.match(pathname);
+          return (
+            <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined} className={cn("flex h-14 flex-col items-center justify-center gap-1 text-[10.5px] font-medium text-muted-foreground", active && "text-foreground")}>
+              <span className={cn("inline-flex h-6 w-10 items-center justify-center rounded-full", active && "bg-muted")}>
+                <n.icon className="size-4" />
+              </span>
+              {n.label}
+            </Link>
+          );
+        })}
+      </nav>
     </>
   );
 }

@@ -5,21 +5,23 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { ActivityChart } from "@/components/pulse/charts";
 import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow } from "@/components/pulse/cards";
 import { DataTable } from "@/components/pulse/data-table";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { Markdown } from "@/components/pulse/markdown";
 import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
+import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Check, Mono, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
-import { THREAD_COLUMNS } from "@/components/board/sheets";
+import { THREAD_COLUMNS, ThreadCards } from "@/components/board/sheets";
 import { ChatPane } from "@/components/chat/chat-pane";
+import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { TASK_COLUMNS } from "@/components/tasks/task-sheet";
 import { RECORD_COLUMNS } from "@/components/records/records";
 import { hrefs } from "@/lib/nav";
-import { num, plural } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { num, plural, statusTone } from "@/lib/format";
 import { projectPath, TASK_STATUSES, type Amendment, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type ProjectInfo, type Proposal, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
 
@@ -28,6 +30,28 @@ function Wait<T>({ q, rows = 5, children }: { q: Loaded<T>; rows?: number; child
   if (q.data === undefined) return <SkeletonRows n={rows} />;
   return <>{children(q.data)}</>;
 }
+
+// A one-of filter as a row of chips: every choice is visible and one tap
+// away, which a Select is not on a phone. Counts ride along when known.
+function Chips({ label, value, onChange, options, className }: { label: string; value: string; onChange: (v: string) => void; options: { id: string; label: string; n?: number }[]; className?: string }) {
+  return (
+    <div role="group" aria-label={label} className={cn("flex flex-wrap items-center gap-1", className)}>
+      {options.map((o) => {
+        const on = o.id === value;
+        return (
+          <Button key={o.id} size="sm" variant={on ? "default" : "outline"} aria-pressed={on} onClick={() => onChange(o.id)} className="h-7 rounded-full px-2.5">
+            {o.label}
+            {o.n !== undefined ? <span className={cn("tnum text-[11px]", on ? "opacity-75" : "text-muted-foreground")}>{num(o.n)}</span> : null}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+const byNewest = <T,>(d: (x: T) => string) => (a: T, b: T) => (d(a) < d(b) ? 1 : d(a) > d(b) ? -1 : 0);
+const isActiveTask = (x: Task) => x.status !== "done" && x.status !== "cancelled";
+const NONE: never[] = [];
 
 // ----- overview -----------------------------------------------------------
 
@@ -60,18 +84,20 @@ export function OverviewTab({ slug }: { slug: string }) {
               </Notice>
             ) : null}
             <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-              <div className="grid gap-4">
+              <div className="grid gap-4 content-start">
                 {tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={180} /> : null}
-                <Panel title="Open threads" actions={<Link href={hrefs.project(slug, "threads")} className="hover:underline">all</Link>} dense>
-                  {o.open_threads.length ? <DataTable columns={THREAD_COLUMNS(slug)} rows={o.open_threads.slice(0, 10)} rowKey={(t) => t.key} dense initialSort="last" /> : <EmptyState className="m-3">No open thread. Threads open when an agent posts a claim, question or suggestion.</EmptyState>}
+                <Panel title={o.open_threads.length ? "Open threads (" + num(o.threads_open) + ")" : "Open threads"} actions={<Link href={hrefs.project(slug, "threads")} className="hover:underline">all</Link>} dense>
+                  {o.open_threads.length ? <OpenThreads rows={o.open_threads} slug={slug} limit={6} /> : <p className="px-4 py-3 text-[12.5px] text-muted-foreground">No open thread. Threads open when an agent posts a claim, question or suggestion.</p>}
                 </Panel>
-                <Panel title="Recent posts" dense>
-                  <FeedList rows={o.recent_posts} slug={slug} limit={12} />
+                <Panel title="Recent posts" actions={<Link href={hrefs.project(slug, "timeline")} className="hover:underline">all</Link>}>
+                  <FeedList rows={o.recent_posts} slug={slug} limit={8} />
                 </Panel>
               </div>
               <div className="grid gap-4 content-start">
                 <LiveFeed project={slug} limit={30} height={360} />
-                <WorkingNow claims={o.active_claims} slug={slug} />
+                <Panel title={o.active_claims.length ? "Working now (" + num(o.active_claims.length) + ")" : "Working now"} dense={!o.active_claims.length}>
+                  {o.active_claims.length ? <WorkingNow claims={o.active_claims} slug={slug} /> : <p className="px-4 py-2.5 text-[12.5px] text-muted-foreground">Nobody holds a claim right now - a claim is an agent saying &quot;I am on this thread&quot; for a few hours.</p>}
+                </Panel>
                 {o.stale_claims.length ? (
                   <Panel title={"Stale claims (" + o.stale_claims.length + ")"}>
                     <ul className="grid gap-1 text-[12.5px]">
@@ -104,9 +130,9 @@ export function OverviewTab({ slug }: { slug: string }) {
                 </Panel>
                 <Panel title="Agents on this board" dense>
                   {o.agents.length ? (
-                    <ul className="divide-y text-[12.5px]">
-                      {o.agents.map((a) => (
-                        <li key={(a.agent || "") + (a.name || "")} className="flex items-center gap-2 px-3 py-1.5">
+                    <ul className="grid text-[12.5px] sm:grid-cols-2">
+                      {o.agents.map((a, i) => (
+                        <li key={[a.agent, a.name, a.session, a.runner, a.model, i].join("|")} className="flex items-center gap-2 border-t px-3 py-1.5 first:border-t-0 sm:odd:border-r sm:nth-[-n+2]:border-t-0">
                           <Who row={a} compact />
                           <span className="ml-auto tnum text-muted-foreground">{plural(a.posts, "post")}</span>
                           <When d={a.last} className="text-muted-foreground" />
@@ -114,7 +140,7 @@ export function OverviewTab({ slug }: { slug: string }) {
                       ))}
                     </ul>
                   ) : (
-                    <EmptyState className="m-3">No agent has posted here yet.</EmptyState>
+                    <p className="px-4 py-2.5 text-[12.5px] text-muted-foreground">No agent has posted here yet.</p>
                   )}
                 </Panel>
               </div>
@@ -126,56 +152,83 @@ export function OverviewTab({ slug }: { slug: string }) {
   );
 }
 
+// The overview's digest of open threads: one row each, newest first, the
+// whole row a link into the thread. Cards live on the Threads tab.
+function OpenThreads({ rows, slug, limit }: { rows: ThreadRow[]; slug: string; limit: number }) {
+  const list = [...rows].sort(byNewest((t) => t.last)).slice(0, limit);
+  return (
+    <ul className="divide-y">
+      {list.map((t) => (
+        <li key={t.key}>
+          <Link href={hrefs.thread(slug, t.key)} className="block px-4 py-2 transition-colors hover:bg-muted/40">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <StatusBadge status={t.status} />
+              <Mono className="font-semibold">{t.key}</Mono>
+              {t.resolution ? <ToneBadge tone={statusTone(t.resolution)}>{t.resolution}</ToneBadge> : null}
+              <span className="ml-auto flex items-center gap-2 text-muted-foreground">
+                <span className="tnum">{plural(t.posts, "post")}</span>
+                <When d={t.last} />
+              </span>
+            </div>
+            {t.summary ? <p className="mt-0.5 line-clamp-1 text-[12.5px] text-muted-foreground anywhere">{t.summary}</p> : null}
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // ----- tasks ----------------------------------------------------------------
 
-export function TasksTab({ slug, onOpen }: { slug: string; onOpen: (id: string) => void }) {
+export function TasksTab({ slug, onOpen, activeId }: { slug: string; onOpen: (id: string) => void; activeId?: string | null }) {
   const q = useApi<TasksPayload>("tasks?project=" + encodeURIComponent(slug), { refresh: 10000 });
   const [status, setStatus] = useState("active");
   const [text, setText] = useState("");
+  const [view, setView] = useViewMode("project-tasks");
+  const all = q.data?.tasks ?? NONE;
   const rows = useMemo(() => {
-    const all = q.data?.tasks ?? [];
     const t = text.trim().toLowerCase();
-    return all.filter((x) => (status === "all" ? true : status === "active" ? x.status !== "done" && x.status !== "cancelled" : x.status === status)).filter((x) => !t || x.title.toLowerCase().includes(t) || x.id.toLowerCase().includes(t) || (x.brief || "").toLowerCase().includes(t));
-  }, [q.data, status, text]);
+    return all
+      .filter((x) => (status === "all" ? true : status === "active" ? isActiveTask(x) : x.status === status))
+      .filter((x) => !t || x.title.toLowerCase().includes(t) || x.id.toLowerCase().includes(t) || (x.brief || "").toLowerCase().includes(t))
+      .sort(byNewest((x) => x.updated_at));
+  }, [all, status, text]);
+  const chips = [
+    { id: "active", label: "active", n: all.filter(isActiveTask).length },
+    { id: "all", label: "all", n: all.length },
+    ...TASK_STATUSES.map((s) => ({ id: s, label: s.replace("_", " "), n: all.filter((x) => x.status === s).length })).filter((c) => c.n || c.id === status),
+  ];
   return (
     <div>
-      <Toolbar>
+      <Toolbar className="mb-2">
         <NewTaskButton project={slug} onCreated={(t: Task) => onOpen(t.id)} />
-        <Select value={status} onValueChange={setStatus}>
-          <SelectTrigger aria-label="Status" className="h-8 w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="active">active</SelectItem>
-            <SelectItem value="all">all</SelectItem>
-            {TASK_STATUSES.map((s) => (
-              <SelectItem key={s} value={s}>
-                {s.replace("_", " ")}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Input aria-label="Filter tasks" placeholder="filter…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-56" />
-        <Count>{q.data ? plural(rows.length, "task") : ""}</Count>
+        <Input aria-label="Filter tasks" placeholder="filter…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-44 sm:w-56" />
+        <span className="ml-auto flex items-center gap-2">
+          <Count>{q.data ? plural(rows.length, "task") : ""}</Count>
+          <ViewToggle value={view} onChange={setView} />
+        </span>
       </Toolbar>
+      <Chips label="Status" value={status} onChange={setStatus} options={chips} className="mb-3" />
       <Wait q={q}>
-        {() =>
-          rows.length ? (
-            <div className="rounded-lg border bg-card">
-              <DataTable columns={TASK_COLUMNS(false)} rows={rows} rowKey={(t) => t.id} onRow={(t) => onOpen(t.id)} initialSort="updated" />
-            </div>
-          ) : (
-            <EmptyState>
-              {status === "active" && !text ? (
-                <>
-                  No open task for <b>{slug}</b>. Click <b>New task</b>, write what you want in Markdown, and the runner wakes <Mono>{slug}-lead</Mono> to plan it into jobs. Its questions and progress land in the Chat tab.
-                </>
-              ) : (
-                "Nothing matches this filter."
-              )}
-            </EmptyState>
-          )
-        }
+        {() => {
+          const empty =
+            status === "active" && !text ? (
+              <>
+                No open task for <b>{slug}</b>. Click <b>New task</b>, write what you want in Markdown, and the runner wakes <Mono>{slug}-lead</Mono> to plan it into jobs. Its questions and progress land in the Chat tab.
+              </>
+            ) : (
+              "Nothing matches this filter."
+            );
+          if (view === "table")
+            return rows.length ? (
+              <div className="rounded-lg border bg-card">
+                <DataTable columns={TASK_COLUMNS(false)} rows={rows} rowKey={(t) => t.id} onRow={(t) => onOpen(t.id)} initialSort="updated" />
+              </div>
+            ) : (
+              <EmptyState>{empty}</EmptyState>
+            );
+          return <TaskCards tasks={rows} onOpen={(t) => onOpen(t.id)} activeId={activeId} empty={empty} />;
+        }}
       </Wait>
     </div>
   );
@@ -221,55 +274,61 @@ export function ChatTab({ slug, taskId, onPickTask }: { slug: string; taskId: st
 
 // ----- threads --------------------------------------------------------------
 
-export function ThreadsTab({ slug, onOpen }: { slug: string; onOpen: (key: string) => void }) {
+export function ThreadsTab({ slug, onOpen, activeKey }: { slug: string; onOpen: (key: string) => void; activeKey?: string | null }) {
   const q = useApi<ThreadRow[]>(projectPath(slug, "threads"));
   const [status, setStatus] = useState("all");
   const [area, setArea] = useState("all");
   const [text, setText] = useState("");
-  const areas = useMemo(() => Array.from(new Set((q.data ?? []).map((t) => t.area))).sort(), [q.data]);
+  const [view, setView] = useViewMode("project-threads");
+  const all = q.data ?? NONE;
+  const areas = useMemo(() => Array.from(new Set(all.map((t) => t.area))).sort(), [all]);
   const rows = useMemo(() => {
     const t = text.trim().toLowerCase();
-    return (q.data ?? []).filter((x) => (status === "all" || x.status === status) && (area === "all" || x.area === area) && (!t || x.key.toLowerCase().includes(t) || x.summary.toLowerCase().includes(t)));
-  }, [q.data, status, area, text]);
+    return all.filter((x) => (status === "all" || x.status === status) && (area === "all" || x.area === area) && (!t || x.key.toLowerCase().includes(t) || x.summary.toLowerCase().includes(t))).sort(byNewest((x) => x.last));
+  }, [all, status, area, text]);
+  const chips = [
+    { id: "all", label: "all", n: all.length },
+    { id: "open", label: "open", n: all.filter((x) => x.status === "open").length },
+    { id: "closed", label: "closed", n: all.filter((x) => x.status === "closed").length },
+  ];
   return (
     <div>
-      <Toolbar>
-        <Select value={status} onValueChange={setStatus}>
-          <SelectTrigger aria-label="Status" className="h-8 w-32">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">all</SelectItem>
-            <SelectItem value="open">open</SelectItem>
-            <SelectItem value="closed">closed</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select value={area} onValueChange={setArea}>
-          <SelectTrigger aria-label="Area" className="h-8 w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">all areas</SelectItem>
-            {areas.map((a) => (
-              <SelectItem key={a} value={a}>
-                {a}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Input aria-label="Filter threads" placeholder="filter…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-56" />
-        <Count>{q.data ? plural(rows.length, "thread") : ""}</Count>
+      <Toolbar className="mb-2">
+        <Chips label="Status" value={status} onChange={setStatus} options={chips} />
+        {areas.length > 1 ? (
+          <Select value={area} onValueChange={setArea}>
+            <SelectTrigger aria-label="Area" className="h-8 w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">all areas</SelectItem>
+              {areas.map((a) => (
+                <SelectItem key={a} value={a}>
+                  {a}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : null}
+        <Input aria-label="Filter threads" placeholder="filter…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-44 sm:w-56" />
+        <span className="ml-auto flex items-center gap-2">
+          <Count>{q.data ? plural(rows.length, "thread") : ""}</Count>
+          <ViewToggle value={view} onChange={setView} />
+        </span>
       </Toolbar>
       <Wait q={q} rows={8}>
-        {() =>
-          rows.length ? (
-            <div className="rounded-lg border bg-card">
-              <DataTable columns={THREAD_COLUMNS(slug)} rows={rows} rowKey={(t) => t.key} onRow={(t) => onOpen(t.key)} initialSort="last" />
-            </div>
-          ) : (
-            <EmptyState>{q.data?.length ? "Nothing matches this filter." : "No threads yet. Agents open threads when they claim work, ask, or suggest."}</EmptyState>
-          )
-        }
+        {() => {
+          const empty = all.length ? "Nothing matches this filter." : "No threads yet. Agents open threads when they claim work, ask, or suggest.";
+          if (view === "table")
+            return rows.length ? (
+              <div className="rounded-lg border bg-card">
+                <DataTable columns={THREAD_COLUMNS(slug)} rows={rows} rowKey={(t) => t.key} onRow={(t) => onOpen(t.key)} initialSort="last" />
+              </div>
+            ) : (
+              <EmptyState>{empty}</EmptyState>
+            );
+          return <ThreadCards rows={rows} slug={slug} onOpen={onOpen} activeKey={activeKey} empty={empty} />;
+        }}
       </Wait>
     </div>
   );
@@ -288,12 +347,15 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
         return (
           <div>
             <Toolbar>
-              <Button size="sm" variant={show === "awaiting" ? "default" : "outline"} onClick={() => setShow("awaiting")}>
-                Awaiting <Badge variant="secondary" className="ml-1">{awaiting}</Badge>
-              </Button>
-              <Button size="sm" variant={show === "all" ? "default" : "outline"} onClick={() => setShow("all")}>
-                All <Badge variant="secondary" className="ml-1">{all.length}</Badge>
-              </Button>
+              <Chips
+                label="Show"
+                value={show}
+                onChange={(v) => setShow(v === "all" ? "all" : "awaiting")}
+                options={[
+                  { id: "awaiting", label: "awaiting you", n: awaiting },
+                  { id: "all", label: "all", n: all.length },
+                ]}
+              />
               {!canDecide ? <ToneBadge tone="warn">deciding is off on this hub</ToneBadge> : null}
             </Toolbar>
             {rows.length ? (
@@ -327,19 +389,7 @@ export function SuggestionsTab({ slug }: { slug: string }) {
         return (
           <div>
             <Toolbar>
-              <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger aria-label="Status" className="h-8 w-44">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">all statuses</SelectItem>
-                  {statuses.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {s}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Chips label="Status" value={status} onChange={setStatus} options={[{ id: "all", label: "all", n: all.length }, ...statuses.map((s) => ({ id: s, label: s, n: all.filter((x) => x.status === s).length }))]} />
               <span className="text-xs text-muted-foreground">quorum {num(quorum)} · higher score runs sooner</span>
               <Count>{plural(rows.length, "suggestion")}</Count>
             </Toolbar>

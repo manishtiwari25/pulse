@@ -42,7 +42,7 @@ const JOB_COLUMNS: Column<TaskJob>[] = [
 export function TaskSheet({ id, slug, onClose }: { id: string | null; slug?: string; onClose: () => void }) {
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="flex w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+      <SheetContent side="right" className="flex flex-col gap-0 overflow-hidden p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
         {id ? <TaskBody id={id} slug={slug} /> : null}
       </SheetContent>
     </Sheet>
@@ -79,7 +79,7 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
   return (
     <>
       <SheetHeader className="border-b px-4 py-3">
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <div className="flex flex-wrap items-center gap-1.5 pr-8 text-xs">
           <Mono className="font-semibold">{t.id}</Mono>
           <StatusBadge status={t.status} />
           <ToneBadge tone="neutral">{prioLabel(t.priority) + " priority"}</ToneBadge>

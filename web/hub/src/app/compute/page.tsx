@@ -4,18 +4,25 @@ import Link from "next/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ExecutorRow, MachinePanel } from "@/components/pulse/cards";
-import { CapsPanel, ComputeTable } from "@/components/compute/compute";
+import { CapsPanel, ComputeRequestCard } from "@/components/compute/compute";
+import { CardGrid, SectionHeading } from "@/components/pulse/item-card";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
 import { Mono } from "@/components/pulse/who";
 import { hrefs } from "@/lib/nav";
-import { num, plural } from "@/lib/format";
-import type { Compute, Runner } from "@/lib/api";
+import { num } from "@/lib/format";
+import type { Compute, ComputeRequest, Executor, Runner } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+
+type Show = "pending" | "all";
+
+// Pending requests first (they need the owner), newest first within each group.
+const rank = (r: ComputeRequest) => (r.status === "pending" ? 0 : 1);
+const byUrgency = (a: ComputeRequest, b: ComputeRequest) => rank(a) - rank(b) || (b.at || "").localeCompare(a.at || "");
 
 export default function ComputePage() {
   const q = useApi<Compute>("compute", { refresh: 10000 });
   const runner = useApi<Runner>("runner");
-  const [show, setShow] = useState<"pending" | "all">("pending");
+  const [show, setShow] = useState<Show>("pending");
   if (q.error && !q.data)
     return (
       <>
@@ -27,11 +34,31 @@ export default function ComputePage() {
   const c = q.data;
   const pending = c.requests.filter((r) => r.status === "pending");
   const live = c.requests.filter((r) => r.status === "approved" || r.status === "provisioning" || r.status === "ready");
-  const rows = show === "pending" ? pending : c.requests;
-  const executors = c.executors?.length ? c.executors : (runner.data?.executors ?? []);
+  const rows = [...(show === "pending" ? pending : c.requests)].sort(byUrgency);
+  // The compute route returns the raw executor rows; the runner adds the live
+  // running / free counts (and the local machine), so prefer it once loaded.
+  const executors: Executor[] = runner.data?.executors?.length ? runner.data.executors : (c.executors ?? []).map((e) => ({ ...e, running: e.running ?? 0, free: e.free ?? 0 }));
+  const active = executors.filter((e) => e.status === "active").length;
+  const chips: { id: Show; label: string; n: number }[] = [
+    { id: "pending", label: "pending", n: pending.length },
+    { id: "all", label: "all", n: c.requests.length },
+  ];
   return (
     <>
-      <PageTitle sub="Agents ask for machines; you approve or deny within the caps. Approved requests become executors the daemon runs jobs on.">Compute</PageTitle>
+      <PageTitle
+        sub="Agents ask for machines; you approve or deny within the caps. Approved requests become executors the daemon runs jobs on."
+        bar={
+          <div role="group" aria-label="Which requests" className="inline-flex rounded-lg border bg-background p-0.5">
+            {chips.map((ch) => (
+              <Button key={ch.id} size="xs" variant={show === ch.id ? "secondary" : "ghost"} aria-pressed={show === ch.id} onClick={() => setShow(ch.id)}>
+                {ch.label} <span className="tnum opacity-70">({num(ch.n)})</span>
+              </Button>
+            ))}
+          </div>
+        }
+      >
+        Compute
+      </PageTitle>
       <KpiGrid>
         <Kpi n={pending.length} label="to decide" tone={pending.length ? "warn" : "neutral"} sub="pending requests" />
         <Kpi n={live.length} label="live" sub="approved / provisioning / ready" tone={live.length ? "ok" : "neutral"} />
@@ -39,28 +66,20 @@ export default function ComputePage() {
         <Kpi n={num(c.caps.hours_today) + " / " + num(c.caps.max_hours_per_day)} label="hours today" sub="used / cap" tone={c.caps.hours_today >= c.caps.max_hours_per_day && c.caps.max_hours_per_day > 0 ? "bad" : "neutral"} />
         <Kpi n={c.caps.budget_credits} label="budget" sub="credits" />
         <Kpi n={c.caps.provider || "none"} label="provider" sub={c.caps.auto_approve === true || c.caps.auto_approve === 1 ? "auto-approve on" : "manual approval"} href={hrefs.settings("compute")} />
-        <Kpi n={executors.length} label="executors" sub={plural(executors.filter((e) => e.status === "ready" || e.status === "online").length, "ready")} />
+        <Kpi n={executors.length} label="executors" sub={num(active) + " active"} tone={active ? "ok" : "neutral"} />
         <Kpi n={c.requests.length} label="requests" sub="all time" />
       </KpiGrid>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
-        <Panel
-          title="Requests"
-          actions={
-            <div className="flex gap-1">
-              <Button size="xs" variant={show === "pending" ? "default" : "ghost"} onClick={() => setShow("pending")}>
-                pending ({pending.length})
-              </Button>
-              <Button size="xs" variant={show === "all" ? "default" : "ghost"} onClick={() => setShow("all")}>
-                all ({c.requests.length})
-              </Button>
-            </div>
-          }
-          dense
-        >
+        <section aria-label="Requests">
+          <SectionHeading count={rows.length}>Requests</SectionHeading>
           {rows.length ? (
-            <ComputeTable rows={rows} />
+            <CardGrid cols={2}>
+              {rows.map((r) => (
+                <ComputeRequestCard key={r.id} r={r} />
+              ))}
+            </CardGrid>
           ) : (
-            <EmptyState className="m-3">
+            <EmptyState>
               {show === "pending" ? (
                 <>
                   Nothing to decide. When an agent runs <Mono>pulse compute request</Mono> the request shows here and on the hub with Approve / Deny.
@@ -70,14 +89,14 @@ export default function ComputePage() {
               )}
             </EmptyState>
           )}
-        </Panel>
+        </section>
         <div className="grid gap-4 content-start">
           <Panel title="Caps" actions={<Link href={hrefs.settings("compute")} className="hover:underline">edit</Link>}>
             <CapsPanel caps={c.caps} />
           </Panel>
           <Panel title="Executors" dense>
             {executors.length ? (
-              <ul className="divide-y">
+              <ul className="grid gap-1.5 p-3">
                 {executors.map((e) => (
                   <ExecutorRow key={e.name} e={e} />
                 ))}

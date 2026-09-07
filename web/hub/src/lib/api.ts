@@ -311,8 +311,9 @@ export interface Executor {
   runs_failed?: number;
   created_at?: string;
   created_by?: string;
-  running: number;
-  free: number;
+  // Only the runner route reports live occupancy; the compute route omits it.
+  running?: number;
+  free?: number;
 }
 
 export interface Runner {

@@ -1,16 +1,20 @@
 "use client";
 
 import Link from "next/link";
+import { CheckIcon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
 import { MachinePanel, ProjectCard, ProposalCard, WorkingNow } from "@/components/pulse/cards";
+import { ComputeDecide } from "@/components/compute/compute";
+import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { LiveFeed } from "@/components/pulse/live-feed";
-import { EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
-import { Mono, ProjectLink, StatusBadge, When } from "@/components/pulse/who";
+import { ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
+import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num, plural } from "@/lib/format";
-import { allProjects, type Compute, type Org, type Runner, type Task, type TasksPayload, type Timeline } from "@/lib/api";
+import { allProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type Runner, type TasksPayload, type Timeline } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 export default function HubPage() {
@@ -35,9 +39,13 @@ export default function HubPage() {
   const projects = allProjects(o);
   const awaiting = o.proposals.filter((p) => p.status === "awaiting");
   const openTasks = (tasks.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled");
+  const recent = [...openTasks].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, 6);
   const pendingCompute = (compute.data?.requests ?? []).filter((r) => r.status === "pending");
+  const inbox = awaiting.length + pendingCompute.length;
+  const computeDown = !!compute.error && !compute.data;
   const attention = projects.filter((p) => p.error || p.missing || p.stop_present || !p.board_present);
   const r = runner.data;
+  const daemonOn = !!r && (r.daemon.state === "running" || r.daemon.state === "alive");
   const sparkFor = (slug: string): number[] | undefined => {
     const s = tl.data?.series?.find((x) => x.slug === slug);
     return s ? lastDays(s, 14) : undefined;
@@ -48,8 +56,12 @@ export default function HubPage() {
       <PageTitle
         sub={
           <>
-            {plural(o.totals.projects, "project")} {o.totals.brain ? <>· framework brain <Mono>{o.totals.brain}</Mono></> : null} · tally <Mono>{o.tally_mode}</Mono> · store <Mono>{o.store || o.registry}</Mono>
-            {o.binary_version ? <> · pulse <Mono>{o.binary_version}</Mono></> : null}
+            {plural(o.totals.projects, "project")} {o.totals.brain ? <>· framework brain <Mono>{o.totals.brain}</Mono></> : null} · tally <Mono>{o.tally_mode}</Mono>
+            <span className="max-sm:hidden">
+              {" · store "}
+              <Mono>{o.store || o.registry}</Mono>
+              {o.binary_version ? <> · pulse <Mono>{o.binary_version}</Mono></> : null}
+            </span>
           </>
         }
         actions={
@@ -64,76 +76,81 @@ export default function HubPage() {
         Hub
       </PageTitle>
 
+      {/* The inbox: everything that waits for the owner's yes or no, buttons in reach, before anything else. */}
+      {inbox ? (
+        <section id="for-you" className="mb-4" aria-label="For you">
+          <SectionHeading count={inbox} action={computeDown ? <span className="text-warn">compute requests could not be loaded</span> : <span>waiting for your yes or no</span>}>
+            For you
+          </SectionHeading>
+          <CardGrid cols={2}>
+            {awaiting.map((p) => (
+              <ProposalCard key={p.id} r={p} slug={p.slug || o.totals.brain} canDecide={o.can_decide} />
+            ))}
+            {pendingCompute.map((cr) => (
+              <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
+            ))}
+          </CardGrid>
+        </section>
+      ) : (
+        <p id="for-you" className="mb-4 flex items-center gap-1.5 text-[13px] text-muted-foreground">
+          <CheckIcon className="size-3.5 shrink-0 text-ok" aria-hidden />
+          <span>{computeDown ? "No proposal waits for you - compute requests could not be loaded (" + compute.error + ")." : compute.data ? "Nothing waits for you right now." : "No proposal waits for you - checking compute requests…"}</span>
+        </p>
+      )}
+
       <KpiGrid>
-        <Kpi n={awaiting.length} label="for you" sub="proposals waiting" tone={awaiting.length ? "ok" : "neutral"} href={awaiting.length ? "#for-you" : undefined} />
+        <Kpi n={inbox} label="for you" sub={inbox ? [awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
         <Kpi n={openTasks.length} label="open tasks" sub={tasks.data ? plural(openTasks.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.tasks()} />
         <Kpi n={pendingCompute.length} label="compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
         <Kpi n={o.totals.agents_active} label="agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
         <Kpi n={o.totals.votes_open} label="in vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} />
         <Kpi n={o.totals.questions_open} label="open questions" sub="across the boards" />
         <Kpi n={o.totals.posts_24h} label="posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
-        <Kpi n={r ? (r.daemon.state || "off") : "…"} label="daemon" sub={r ? (r.runner?.allowed === false ? r.runner.reason : num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued") : "loading"} tone={r ? (r.daemon.state === "running" || r.daemon.state === "alive" ? "ok" : "warn") : "neutral"} href={hrefs.agents()} />
+        <Kpi n={r ? (daemonOn ? "on" : "off") : "…"} label="daemon" sub={r ? (r.runner?.allowed === false ? r.runner.reason : (r.daemon.state || "off") + " · " + num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued") : "loading"} tone={r ? (daemonOn ? "ok" : "warn") : "neutral"} href={hrefs.agents()} />
       </KpiGrid>
 
-      {awaiting.length ? (
-        <section id="for-you" className="mb-4">
-          <h2 className="mb-2 text-sm font-semibold">For you - {plural(awaiting.length, "proposal")} waiting for a yes or no</h2>
-          <div className="grid gap-3 lg:grid-cols-2">
-            {awaiting.map((p) => (
-              <ProposalCard key={p.id} r={p} slug={p.slug || o.totals.brain} canDecide={o.can_decide} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-        <div className="grid gap-4">
-          <section>
-            <h2 className="mb-2 text-sm font-semibold">Projects</h2>
-            <div className="grid gap-3 md:grid-cols-2">
+        <div className="grid content-start gap-4">
+          <section aria-label="Projects">
+            <SectionHeading count={projects.length}>Projects</SectionHeading>
+            <CardGrid cols={2}>
               {projects.map((p) => (
                 <ProjectCard key={p.slug} p={p} spark={sparkFor(p.slug)} />
               ))}
-            </div>
+            </CardGrid>
           </section>
-          {tl.data ? <ActivityChart tl={tl.data} bys={["total", "project", "kind"]} /> : null}
-          <Panel title="Recent tasks" actions={<Link href={hrefs.tasks()} className="hover:underline">all</Link>} dense>
+          <section aria-label="Open tasks">
+            <SectionHeading
+              count={tasks.data ? openTasks.length : undefined}
+              action={
+                <Link href={hrefs.tasks()} className="hover:underline">
+                  all
+                </Link>
+              }
+            >
+              Open tasks
+            </SectionHeading>
             {tasks.data ? (
-              openTasks.length ? (
-                <ul className="divide-y">
-                  {openTasks
-                    .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
-                    .slice(0, 8)
-                    .map((t: Task) => (
-                      <li key={t.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-[13px]">
-                        <Link href={hrefs.task(t.project, t.id)} className="font-mono text-xs hover:underline">
-                          {t.id}
-                        </Link>
-                        <Link href={hrefs.task(t.project, t.id)} className="min-w-0 flex-1 truncate font-medium hover:underline">
-                          {t.title}
-                        </Link>
-                        <StatusBadge status={t.status} />
-                        <ProjectLink slug={t.project} className="text-xs" />
-                        <When d={t.updated_at} className="text-xs" />
-                      </li>
-                    ))}
-                </ul>
-              ) : (
-                <EmptyState className="m-3">No open tasks. Give the first one with New task - the project&apos;s lead breaks it into jobs and reports back in its chat.</EmptyState>
-              )
+              // onOpen (not href): the card carries a project link and quick actions, which must not sit inside an anchor.
+              <TaskCards tasks={recent} showProject compact cols={2} empty="No open tasks. Give the first one with New task - the project's lead breaks it into jobs and reports back in its chat." />
             ) : tasks.error ? (
-              <div className="p-3">
-                <ErrorNotice error={tasks.error} onRetry={() => void tasks.reload()} />
-              </div>
+              <ErrorNotice error={tasks.error} onRetry={() => void tasks.reload()} />
             ) : (
-              <div className="p-3 text-xs text-muted-foreground">Loading…</div>
+              <SkeletonRows n={2} />
             )}
-          </Panel>
+          </section>
+          {tl.data ? <ActivityChart tl={tl.data} bys={["total", "project", "kind"]} height={180} /> : null}
         </div>
-        <div className="grid gap-4 content-start">
-          <LiveFeed limit={40} height={420} />
+        <div className="grid content-start gap-4">
+          <LiveFeed limit={40} height={320} />
           <MachinePanel r={r} />
-          <WorkingNow claims={o.active_claims} />
+          {o.active_claims.length ? (
+            <Panel title="Working now" actions={<span className="tnum">{plural(o.active_claims.length, "claim")}</span>}>
+              <WorkingNow claims={o.active_claims} />
+            </Panel>
+          ) : (
+            <WorkingNow claims={o.active_claims} />
+          )}
           {attention.length ? (
             <Panel title="Needs attention">
               <ul className="grid gap-1.5 text-[13px]">
@@ -149,5 +166,51 @@ export default function HubPage() {
         </div>
       </div>
     </>
+  );
+}
+
+// One pending compute request as an inbox card: who asks for what, for how
+// long and why, with Approve / Deny in reach (ComputeDecide confirms each).
+function ComputeInboxCard({ r, caps }: { r: ComputeRequest; caps?: ComputeCaps }) {
+  return (
+    <ItemCard highlight ariaLabel={"Compute request " + r.id}>
+      <ItemCardHeader
+        right={
+          <>
+            <Who row={{ agent: r.requested_by }} compact />
+            <When d={r.at} />
+          </>
+        }
+      >
+        <Mono className="font-semibold">{r.id}</Mono>
+        <StatusBadge status={r.status} />
+        <ToneBadge tone="info">compute</ToneBadge>
+        <ProjectLink slug={r.project} className="text-xs" />
+      </ItemCardHeader>
+      <ItemCardTitle>
+        {r.requested_by + " asks for "}
+        <Mono>{r.size}</Mono>
+        {" for " + plural(r.hours, "hour")}
+      </ItemCardTitle>
+      <ItemCardBody clamp={3}>{r.reason}</ItemCardBody>
+      {caps ? (
+        <ItemCardMeta>
+          <span className="tnum">{num(caps.vms_now) + " of " + num(caps.max_vms) + " VMs up"}</span>
+          <span className="tnum">{num(caps.hours_today) + " of " + num(caps.max_hours_per_day) + " h today"}</span>
+          <span className="tnum">{"budget " + num(caps.budget_credits) + " credits"}</span>
+          {caps.provider ? <Mono>{caps.provider}</Mono> : null}
+        </ItemCardMeta>
+      ) : null}
+      <ItemCardActions>
+        <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
+          <Link href={hrefs.compute()}>
+            all requests <ExternalLinkIcon />
+          </Link>
+        </Button>
+        <span className="ml-auto shrink-0">
+          <ComputeDecide r={r} />
+        </span>
+      </ItemCardActions>
+    </ItemCard>
   );
 }

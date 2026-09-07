@@ -9,16 +9,25 @@ import { cn } from "@/lib/utils";
 import { num } from "@/lib/format";
 import type { Tone } from "@/lib/format";
 
-export function PageTitle({ children, sub, crumb, actions, className }: { children: React.ReactNode; sub?: React.ReactNode; crumb?: React.ReactNode; actions?: React.ReactNode; className?: string }) {
+// The page header sticks under the app bar so the page's actions (New task,
+// Approve, filters…) are reachable without scrolling back up. The title row
+// is one compact line; `sub` and `below` scroll away with the content.
+// `bar` renders a second sticky row (tabs, filters) inside the same block.
+export function PageTitle({ children, sub, crumb, actions, bar, className }: { children: React.ReactNode; sub?: React.ReactNode; crumb?: React.ReactNode; actions?: React.ReactNode; bar?: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("mb-4 flex flex-wrap items-end justify-between gap-2", className)}>
-      <div className="min-w-0">
-        {crumb ? <div className="mb-0.5 text-xs text-muted-foreground">{crumb}</div> : null}
-        <h1 className="text-xl font-semibold tracking-tight anywhere">{children}</h1>
-        {sub ? <p className="mt-0.5 text-sm text-muted-foreground anywhere">{sub}</p> : null}
+    <>
+      <div className={cn("sticky top-12 z-30 -mx-3 border-b bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:-mx-4 sm:px-4", className)}>
+        <div className="flex min-h-11 items-center justify-between gap-3 py-1.5">
+          <div className="flex min-w-0 items-baseline gap-2">
+            {crumb ? <div className="hidden shrink-0 text-xs text-muted-foreground sm:block">{crumb}</div> : null}
+            <h1 className="min-w-0 truncate text-base font-semibold tracking-tight sm:text-lg">{children}</h1>
+          </div>
+          {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+        </div>
+        {bar ? <div className="-mx-3 -mt-1 overflow-x-auto px-3 pt-1 pb-1.5 [scrollbar-width:none] sm:-mx-4 sm:px-4 [&::-webkit-scrollbar]:hidden">{bar}</div> : null}
       </div>
-      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
-    </div>
+      {sub ? <p className="mt-3 mb-4 max-w-4xl text-[13px] leading-snug text-muted-foreground anywhere">{sub}</p> : <div className="mb-4" aria-hidden />}
+    </>
   );
 }
 
@@ -114,18 +123,23 @@ const KPI_TONE: Record<Tone, string> = {
   accent: "text-accent-2",
 };
 
+// One compact stat: number and label on a line, an optional quiet second
+// line. Half the height of a card so eight of them fit in one row and the
+// content that matters (proposals, tasks) stays above the fold.
 export function Kpi({ n, label, sub, href, tone = "neutral", spark }: { n: number | string; label: string; sub?: React.ReactNode; href?: string; tone?: Tone; spark?: React.ReactNode }) {
   const body = (
     <>
-      <div className="flex items-start justify-between gap-2">
-        <div className={cn("tnum text-2xl font-semibold leading-none tracking-tight", KPI_TONE[tone])}>{typeof n === "number" ? num(n) : n}</div>
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className={cn("tnum shrink-0 text-lg font-semibold leading-none tracking-tight", KPI_TONE[tone])}>{typeof n === "number" ? num(n) : n}</span>
+          <span className="truncate text-xs font-medium">{label}</span>
+        </div>
         {spark}
       </div>
-      <div className="mt-1.5 text-xs font-medium">{label}</div>
-      {sub ? <div className="mt-0.5 truncate text-[11.5px] text-muted-foreground">{sub}</div> : <div className="mt-0.5 h-[15px]" />}
+      {sub ? <div className="mt-1 truncate text-[11px] leading-tight text-muted-foreground">{sub}</div> : null}
     </>
   );
-  const cls = "block rounded-lg border bg-card px-3.5 py-3 shadow-xs transition-colors";
+  const cls = "block min-w-[9.5rem] shrink-0 snap-start rounded-lg border bg-card px-3 py-2 shadow-xs transition-colors sm:min-w-0";
   return href ? (
     <Link href={href} className={cn(cls, "hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring")}>
       {body}
@@ -135,8 +149,9 @@ export function Kpi({ n, label, sub, href, tone = "neutral", spark }: { n: numbe
   );
 }
 
-export function KpiGrid({ children }: { children: React.ReactNode }) {
-  return <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">{children}</div>;
+// A single strip of stats: one scrollable row on phones, a grid from sm up.
+export function KpiGrid({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={cn("-mx-3 mb-4 flex snap-x gap-2 overflow-x-auto px-3 pb-0.5 [scrollbar-width:none] sm:mx-0 sm:grid sm:grid-cols-4 sm:overflow-visible sm:px-0 xl:grid-cols-8 [&::-webkit-scrollbar]:hidden", className)}>{children}</div>;
 }
 
 export function Toolbar({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -144,7 +159,7 @@ export function Toolbar({ children, className }: { children: React.ReactNode; cl
 }
 
 export function Count({ children }: { children: React.ReactNode }) {
-  return <span className="ml-auto text-xs text-muted-foreground tnum">{children}</span>;
+  return <span className="ml-auto whitespace-nowrap text-xs text-muted-foreground tnum">{children}</span>;
 }
 
 export function Kv({ rows, className }: { rows: [React.ReactNode, React.ReactNode][]; className?: string }) {

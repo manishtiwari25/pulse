@@ -6,6 +6,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import type { Column } from "@/components/pulse/data-table";
+import { CardGrid, ItemCard, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState, ErrorNotice, Kv, Panel, SkeletonRows } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When } from "@/components/pulse/who";
@@ -53,10 +54,73 @@ export const RECORD_COLUMNS = (showProject: boolean): Column<RecordRow>[] => [
   { key: "rev", label: "rev", align: "right", hide: "md", sort: (r) => r.current_rev, render: (r) => "r" + r.current_rev },
 ];
 
+const MAX_TAGS = 4;
+
+// One record as a library card: what it is (kind, status, tier), its id and
+// title, and the small facts a reader scans for (areas, tags, delivery).
+// Opens the record on click; a plain link when no onOpen is given.
+export function RecordCard({ r, showProject, onOpen, active }: { r: RecordRow; showProject?: boolean; onOpen?: (r: RecordRow) => void; active?: boolean }) {
+  const open = onOpen ? () => onOpen(r) : undefined;
+  const areas = r.areas || [];
+  const tags = r.tags || [];
+  return (
+    <ItemCard onOpen={open} href={open ? undefined : hrefs.record(r.id, r.project)} active={active} ariaLabel={r.id + " " + r.title}>
+      <ItemCardHeader
+        right={
+          <>
+            <When d={r.updated_at || r.date} />
+            <span className="tnum">{"r" + r.current_rev}</span>
+          </>
+        }
+      >
+        <RecordKindBadge kind={r.kind} />
+        <StatusBadge status={r.status} />
+        {r.tier !== null && r.tier !== undefined ? <ToneBadge tone="neutral">{"T" + r.tier}</ToneBadge> : null}
+        {showProject ? (
+          // A link card cannot nest another link, so the project is plain text there.
+          open ? <ProjectLink slug={r.project} className="text-xs" /> : <Mono className="text-xs">{r.project}</Mono>
+        ) : null}
+      </ItemCardHeader>
+      <ItemCardTitle chevron={!!open}>
+        <Mono className="mr-2 text-muted-foreground">{r.id}</Mono>
+        {r.title}
+      </ItemCardTitle>
+      {areas.length || tags.length || r.delivery ? (
+        <ItemCardMeta>
+          {areas.length ? <span>{areas.join(", ")}</span> : null}
+          {tags.length ? (
+            <span className="flex flex-wrap items-center gap-1">
+              {tags.slice(0, MAX_TAGS).map((t) => (
+                <ToneBadge key={t} tone="neutral" className="h-4 px-1 text-[10.5px] font-normal">
+                  {t}
+                </ToneBadge>
+              ))}
+              {tags.length > MAX_TAGS ? <span className="tnum">{"+" + (tags.length - MAX_TAGS)}</span> : null}
+            </span>
+          ) : null}
+          {r.delivery ? <ToneBadge tone={r.delivered ? "ok" : "neutral"}>{r.delivery + (r.delivered ? " · " + r.delivered : "")}</ToneBadge> : null}
+        </ItemCardMeta>
+      ) : null}
+    </ItemCard>
+  );
+}
+
+export function RecordCards({ rows, showProject, onOpen, activeId, cols = 3 }: { rows: RecordRow[]; showProject?: boolean; onOpen?: (r: RecordRow) => void; activeId?: string | null; cols?: 1 | 2 | 3 | 4 }) {
+  if (!rows.length) return null;
+  return (
+    <CardGrid cols={cols}>
+      {rows.map((r) => (
+        <RecordCard key={r.project + "/" + r.id} r={r} showProject={showProject} onOpen={onOpen} active={activeId === r.id} />
+      ))}
+    </CardGrid>
+  );
+}
+
 export function RecordSheet({ id, project, onClose }: { id: string | null; project?: string; onClose: () => void }) {
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-4xl">
+      {/* The Sheet sizes itself with data-[side] variants, so the override must use the same ones. */}
+      <SheetContent side="right" className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-4xl">
         {id ? <RecordBody id={id} project={project} /> : null}
       </SheetContent>
     </Sheet>

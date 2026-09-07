@@ -9,6 +9,7 @@ import { Progress } from "@/components/ui/progress";
 import { ConfirmDialog } from "./confirm";
 import { Sparkline } from "./charts";
 import { EmptyState, Kv, Panel } from "./panel";
+import { Fact, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
 import { KindBadge, Mono, PostLink, ProjectLink, Provenance, StatusBadge, ThreadLink, ToneBadge, VoteBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
 import { expiresAt, num, plural, statusTone, untilText } from "@/lib/format";
@@ -18,10 +19,22 @@ import { useNow } from "@/lib/use-api";
 
 // ----- project card ------------------------------------------------------
 
+type FactTone = "ok" | "warn" | "accent";
+const FACT_TONE: Record<FactTone, string> = { ok: "text-ok", warn: "text-warn", accent: "text-accent-2" };
+
 export function ProjectCard({ p, spark }: { p: ProjectCardData; spark?: number[] }) {
   const attention = p.proposals_awaiting > 0;
+  const inVote = p.suggestions_needing_votes + p.amendments_open;
+  const facts: { n: number; label: string; tone?: FactTone }[] = [
+    { n: p.proposals_awaiting, label: "for you", tone: p.proposals_awaiting ? "ok" : undefined },
+    { n: p.claims_active, label: "working", tone: p.claims_active ? "ok" : undefined },
+    { n: p.threads_open, label: "threads" },
+    { n: p.suggestions_eligible, label: "eligible", tone: p.suggestions_eligible ? "accent" : undefined },
+    { n: inVote, label: "in vote", tone: inVote ? "warn" : undefined },
+    { n: p.posts_24h, label: "posts/24h" },
+  ];
   return (
-    <Link href={hrefs.project(p.slug)} className={cn("group block rounded-lg border bg-card p-3.5 shadow-xs transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring", attention && "border-primary/40")}>
+    <ItemCard href={hrefs.project(p.slug)} highlight={attention} ariaLabel={"Project " + p.slug}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -31,43 +44,39 @@ export function ProjectCard({ p, spark }: { p: ProjectCardData; spark?: number[]
             {!p.present ? <Badge variant="destructive">missing on disk</Badge> : null}
             {p.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
           </div>
-          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+          <div className="truncate text-xs text-muted-foreground">
             {p.branch ? <Mono>{p.branch}</Mono> : null}
             {p.head ? <Mono className="ml-1.5 text-muted-foreground">{p.head}</Mono> : null}
             {p.dirty ? <span className="ml-1.5 text-warn">dirty</span> : null}
           </div>
         </div>
-        <div className="flex items-center gap-2 text-muted-foreground">
+        <div className="flex shrink-0 items-center gap-2 text-muted-foreground">
           {spark?.length ? <Sparkline values={spark} w={72} h={20} /> : null}
-          <ChevronRightIcon className="size-4 opacity-40 transition-transform group-hover:translate-x-0.5" />
+          <ChevronRightIcon className="size-4 opacity-40 transition-transform group-hover/item:translate-x-0.5" />
         </div>
       </div>
-      {p.error ? <p className="mt-2 text-xs text-bad anywhere">{p.error}</p> : null}
-      <dl className="mt-3 grid grid-cols-3 gap-2 text-center sm:grid-cols-6">
-        <Stat n={p.proposals_awaiting} label="for you" tone={p.proposals_awaiting ? "ok" : undefined} />
-        <Stat n={p.claims_active} label="working" tone={p.claims_active ? "ok" : undefined} />
-        <Stat n={p.threads_open} label="threads" />
-        <Stat n={p.suggestions_eligible} label="eligible" tone={p.suggestions_eligible ? "accent" : undefined} />
-        <Stat n={p.suggestions_needing_votes + p.amendments_open} label="in vote" tone={p.suggestions_needing_votes + p.amendments_open ? "warn" : undefined} />
-        <Stat n={p.posts_24h} label="posts/24h" />
-      </dl>
+      {p.error ? <p className="text-xs text-bad anywhere">{p.error}</p> : null}
+      {/* Tiles from sm up; one quiet line on phones so four cards fit a screen. */}
+      <div className="hidden grid-cols-6 gap-1.5 sm:grid">
+        {facts.map((f) => (
+          <Fact key={f.label} n={num(f.n)} label={f.label} tone={f.tone} />
+        ))}
+      </div>
+      <ItemCardMeta className="sm:hidden">
+        {facts.map((f) => (
+          <span key={f.label}>
+            <b className={cn("tnum font-semibold text-foreground", f.tone && FACT_TONE[f.tone])}>{num(f.n)}</b> {f.label}
+          </span>
+        ))}
+      </ItemCardMeta>
       {p.last_post ? (
-        <p className="mt-3 truncate text-xs text-muted-foreground">
+        <p className="truncate text-xs text-muted-foreground">
           <KindBadge kind={p.last_post.kind} /> <span className="ml-1">{p.last_post.summary}</span>
         </p>
       ) : (
-        <p className="mt-3 text-xs text-muted-foreground">{p.board_present ? "No posts yet." : "No board yet - pulse init registers this checkout."}</p>
+        <p className="text-xs text-muted-foreground">{p.board_present ? "No posts yet." : "No board yet - pulse init registers this checkout."}</p>
       )}
-    </Link>
-  );
-}
-
-function Stat({ n, label, tone }: { n: number; label: string; tone?: "ok" | "warn" | "accent" }) {
-  return (
-    <div className="rounded-md bg-muted/40 px-1 py-1.5">
-      <dd className={cn("tnum text-[15px] font-semibold leading-none", tone === "ok" && "text-ok", tone === "warn" && "text-warn", tone === "accent" && "text-accent-2")}>{num(n)}</dd>
-      <dt className="mt-1 text-[10.5px] uppercase tracking-wide text-muted-foreground">{label}</dt>
-    </div>
+    </ItemCard>
   );
 }
 
@@ -78,54 +87,58 @@ export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug:
   const awaiting = r.status === "awaiting";
   const [expanded, setExpanded] = useState(false);
   const long = (r.proposal_text || "").length > 420;
+  const s = r.slug || slug;
   return (
-    <article className={cn("rounded-lg border bg-card p-3.5 shadow-xs", awaiting && "border-primary/40")} aria-labelledby={"prop-" + r.id}>
-      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+    <ItemCard highlight={awaiting} ariaLabel={"Proposal: " + r.summary}>
+      <ItemCardHeader
+        right={
+          <>
+            <Who row={r} compact />
+            <When d={r.date} />
+          </>
+        }
+      >
         <StatusBadge status={r.status} />
         {r.slug && r.slug !== slug ? <ProjectLink slug={r.slug} /> : null}
-        <ThreadLink slug={r.slug || slug} k={r.thread_key} />
-        <span className="ml-auto flex items-center gap-2 text-muted-foreground">
-          <Who row={r} compact />
-          <When d={r.date} />
-        </span>
-      </div>
-      <h3 id={"prop-" + r.id} className="mt-2 text-[14px] font-semibold leading-snug anywhere">
-        {r.summary}
-      </h3>
+        <ThreadLink slug={s} k={r.thread_key} />
+      </ItemCardHeader>
+      <ItemCardTitle>{r.summary}</ItemCardTitle>
       {r.proposal_text ? (
-        <div className="mt-2 text-[13px] leading-relaxed text-muted-foreground anywhere">
+        <ItemCardBody clamp={0}>
           <p className={cn(!expanded && long && "line-clamp-5")}>{r.proposal_text}</p>
           {long ? (
             <button type="button" className="mt-1 text-xs underline underline-offset-2 hover:text-foreground" onClick={() => setExpanded((e) => !e)}>
               {expanded ? "less" : "read the whole proposal"}
             </button>
           ) : null}
-        </div>
+        </ItemCardBody>
       ) : null}
       {!awaiting && r.decided_id ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          decided <When d={r.decided_date} /> {r.decided_agent ? "by " + r.decided_agent : ""} {"·"} <PostLink slug={r.slug || slug} id={r.decided_id} label={r.decided_summary || "the decision post"} />
-        </p>
+        <ItemCardMeta>
+          <span>
+            decided <When d={r.decided_date} /> {r.decided_agent ? "by " + r.decided_agent : ""} {"·"} <PostLink slug={s} id={r.decided_id} label={r.decided_summary || "the decision post"} />
+          </span>
+        </ItemCardMeta>
       ) : null}
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button asChild variant="ghost" size="sm">
-          <Link href={hrefs.post(r.slug || slug, r.id)}>
+      <ItemCardActions>
+        <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
+          <Link href={hrefs.post(s, r.id)}>
             open the post <ExternalLinkIcon />
           </Link>
         </Button>
         {awaiting && canDecide && r.can_decide !== false ? (
-          <span className="ml-auto flex gap-2">
-            <Button size="sm" variant="outline" className="text-bad" onClick={() => setOpen("no")}>
+          <span className="ml-auto flex shrink-0 gap-2">
+            <Button size="sm" variant="outline" className="text-bad" onClick={() => setOpen("no")} aria-label={"No to: " + r.summary}>
               <XIcon /> No
             </Button>
-            <Button size="sm" onClick={() => setOpen("yes")}>
+            <Button size="sm" onClick={() => setOpen("yes")} aria-label={"Yes to: " + r.summary}>
               <CheckIcon /> Yes
             </Button>
           </span>
         ) : awaiting ? (
           <span className="ml-auto text-xs text-muted-foreground">read-only: open the hub on the machine that runs it to decide</span>
         ) : null}
-      </div>
+      </ItemCardActions>
       <ConfirmDialog
         open={open !== null}
         onOpenChange={(o) => !o && setOpen(null)}
@@ -137,7 +150,7 @@ export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug:
         success={open === "yes" ? "Decided yes - the board records your answer; a job is queued when the proposal asks for work." : "Decided no - the board records your answer."}
         onConfirm={(words) => writes.decide(r.id, open === "yes" ? "yes" : "no", words)}
       />
-    </article>
+    </ItemCard>
   );
 }
 
@@ -250,7 +263,7 @@ export function FeedList({ rows, slug, limit }: { rows: PostRef[]; slug?: string
 
 export function WorkingNow({ claims, slug }: { claims: Claim[]; slug?: string }) {
   const now = useNow();
-  if (!claims.length) return <EmptyState>Nobody holds a claim right now. A claim is an agent saying &quot;I am on this thread&quot; for a few hours.</EmptyState>;
+  if (!claims.length) return <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground anywhere">Nobody holds a claim right now - a claim is an agent saying &quot;I am on this thread&quot; for a few hours.</p>;
   return (
     <ul className="divide-y">
       {claims.map((c) => {
@@ -326,7 +339,7 @@ export function ExecutorRow({ e }: { e: Executor }) {
       <span className="font-medium">{e.name}</span>
       <ToneBadge tone="neutral">{e.kind}</ToneBadge>
       <StatusBadge status={e.status} />
-      <span className="ml-auto tnum text-muted-foreground">{e.running + " running · " + e.free + " free of " + e.workers}</span>
+      <span className="ml-auto tnum text-muted-foreground">{(e.running ?? 0) + " running · " + (e.free ?? 0) + " free of " + e.workers}</span>
     </li>
   );
 }
