@@ -128,6 +128,7 @@ func TestOpenMissingStore(t *testing.T) {
 }
 
 func TestWorkerGuardSkipsRecords(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
 	home := t.TempDir()
 	s := openTemp(t, Options{Home: home, Create: true, SkipRecords: true})
 	if tableExists(t, s, "records") {
@@ -188,6 +189,7 @@ func TestWorkerGuardExecutable(t *testing.T) {
 }
 
 func TestSchemaVersionChecks(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
 	for _, tc := range []struct{ version, want string }{
 		{"4", "Store schema 4 is newer than this tool (3); update pulse"},
 		{"2", "Store schema 2 is older than this tool (3); run `python3 legacy/pulse.py status` once to migrate it"},
@@ -206,6 +208,7 @@ func TestSchemaVersionChecks(t *testing.T) {
 }
 
 func TestCreateRefusesGitCheckout(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
 	dir := t.TempDir()
 	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
 		t.Skipf("git init: %v %s", err, out)
@@ -221,6 +224,7 @@ func TestCreateRefusesGitCheckout(t *testing.T) {
 }
 
 func TestNow(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
 	t.Setenv("PULSE_NOW", "")
 	s := openTemp(t, Options{Create: true})
 	if got := s.Now(); len(got) != 20 || got[19] != 'Z' || got[10] != 'T' {
@@ -237,6 +241,7 @@ func TestNow(t *testing.T) {
 }
 
 func TestEventAndPyJSON(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
 	s := openTemp(t, Options{Create: true, Now: "2026-09-06T10:00:00Z"})
 	if err := s.Event("tester", "unit.test", "subject", map[string]any{"z": 1, "a": []string{"x", "y"}, "m": map[string]any{"k": true, "n": nil}}); err != nil {
 		t.Fatal(err)
@@ -280,6 +285,7 @@ func TestEventAndPyJSON(t *testing.T) {
 }
 
 func TestSettings(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
 	s := openTemp(t, Options{Create: true, Now: "2026-09-06T10:00:00Z"})
 	if got := s.Setting("quorum", ""); got != "2" {
 		t.Fatalf("quorum = %q", got)
@@ -340,6 +346,7 @@ func TestSettings(t *testing.T) {
 }
 
 func TestProjectsAndAgents(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
 	s := openTemp(t, Options{Create: true, Now: "2026-09-06T10:00:00Z"})
 	root := t.TempDir()
 	sub := filepath.Join(root, "a", "b")
@@ -573,6 +580,7 @@ func TestEnsureRecordsUpgrades(t *testing.T) {
 }
 
 func TestDecimalSetting(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
 	s := openTemp(t, Options{Create: true, Now: "2026-09-06T10:00:00Z"})
 	for in, want := range map[string]string{"0.05": "0.05", " .5 ": "0.5", "0": "0", "1e-3": "0.001", "1": "1"} {
 		if err := s.SetSetting("human", "evolve.tolerance", in); err != nil {
@@ -601,6 +609,7 @@ func TestDecimalSetting(t *testing.T) {
 }
 
 func TestOnEventPublishesAfterCommit(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
 	s := openTemp(t, Options{Create: true})
 	var mu sync.Mutex
 	var got []EventRecord
