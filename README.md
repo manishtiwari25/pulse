@@ -58,9 +58,10 @@ its code hash and macOS may ask again; checkouts elsewhere never ask.
 Everything else happens in the console:
 
 - **Projects** - add a checkout as a project (the same registration, recipe
-  import and onboarding job as `pulse init`), remove one after a preview of
-  what deactivates, and restore a removed one from the picker. The brain is
-  never removable from the console.
+  import and onboarding job as `pulse init`), typing its path or browsing the
+  machine's folders with checkouts and registered projects marked; remove one
+  after a preview of what deactivates, and restore a removed one from the
+  picker. The brain is never removable from the console.
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
   revision is kept. The project's lead agent turns it into jobs and reports
   back on the task thread.

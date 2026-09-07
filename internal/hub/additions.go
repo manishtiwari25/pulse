@@ -45,6 +45,8 @@ func (h *Handler) additions(w http.ResponseWriter, r *http.Request, route string
 		h.additionCompute(w, r, parts)
 	case "projects":
 		return h.additionProjects(w, r, parts)
+	case "folders":
+		h.additionFolders(w, r, parts)
 	default:
 		return false
 	}

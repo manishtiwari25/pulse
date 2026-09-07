@@ -387,6 +387,27 @@ export interface RemovePreview {
   executors: string[] | null;
 }
 
+// One level of the machine's folders, for the Add project picker (WU-023).
+// Directories only, hidden entries skipped; the hub marks git checkouts and
+// the projects already registered on those paths.
+export interface FolderEntry {
+  name: string;
+  path: string;
+  checkout: boolean;
+  registered: string;
+}
+
+export interface FoldersPayload {
+  path: string;
+  parent: string;
+  home: string;
+  roots: { label: string; path: string }[];
+  checkout: boolean;
+  registered: string;
+  entries: FolderEntry[];
+  truncated: boolean;
+}
+
 export interface Runner {
   available: boolean;
   now?: string;

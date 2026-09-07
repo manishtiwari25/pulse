@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Loader2Icon, PlusIcon, RotateCcwIcon, Trash2Icon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowUpIcon, ChevronRightIcon, FolderIcon, FolderSearchIcon, GitBranchIcon, HomeIcon, Loader2Icon, PlusIcon, RotateCcwIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -13,7 +14,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { showApiError } from "@/components/pulse/confirm";
 import { Notice } from "@/components/pulse/panel";
 import { Mono } from "@/components/pulse/who";
-import { errorText, writes, type InitResult, type RemovePreview } from "@/lib/api";
+import { api, enc, errorText, writes, type FoldersPayload, type InitResult, type RemovePreview } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
@@ -46,6 +47,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
   const [name, setName] = useState("");
   const [verify, setVerify] = useState("");
   const [busy, setBusy] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const trimmed = path.trim();
   const valid = trimmed.length > 0 && pathLooksAbsolute(trimmed);
 
@@ -61,6 +63,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
       setPath("");
       setName("");
       setVerify("");
+      setBrowsing(false);
       onRegistered?.(r);
     } catch (e) {
       toast.dismiss(id);
@@ -82,19 +85,35 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
         <div className="grid gap-3">
           <div className="grid gap-1.5">
             <Label htmlFor="ap-path">Checkout path</Label>
-            <Input
-              id="ap-path"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              placeholder="/Users/you/src/my-app"
-              className="font-mono text-[12.5px]"
-              autoFocus
-              spellCheck={false}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && valid && !busy) void submit();
-              }}
-            />
-            <p className="text-xs text-muted-foreground">An absolute path to a git checkout on this machine. ~ is allowed.</p>
+            <div className="flex gap-2">
+              <Input
+                id="ap-path"
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="/Users/you/src/my-app"
+                className="min-w-0 flex-1 font-mono text-[12.5px]"
+                autoFocus
+                spellCheck={false}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && valid && !busy) void submit();
+                }}
+              />
+              <Button type="button" variant={browsing ? "secondary" : "outline"} onClick={() => setBrowsing((b) => !b)} aria-pressed={browsing} aria-controls="ap-browser">
+                <FolderSearchIcon /> Browse
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">An absolute path to a git checkout on this machine. ~ is allowed, or browse the machine.</p>
+            {browsing ? (
+              <FolderBrowser
+                id="ap-browser"
+                start={valid ? trimmed : ""}
+                onPick={(p) => {
+                  setPath(p);
+                  setBrowsing(false);
+                }}
+                onClose={() => setBrowsing(false)}
+              />
+            ) : null}
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5">
@@ -140,6 +159,154 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ----- folder browser -----------------------------------------------------
+
+// The machine's folders, one level at a time, from the hub (WU-023). A row
+// opens a folder; a checkout's "Use" fills the path field; the footer lets the
+// owner take the folder they are in, with a warning when it is not a checkout.
+function FolderBrowser({ id, start, onPick, onClose }: { id?: string; start: string; onPick: (path: string) => void; onClose: () => void }) {
+  const [cursor, setCursor] = useState(start);
+  const [data, setData] = useState<FoldersPayload | undefined>();
+  const [error, setError] = useState<{ what: string; why: string } | null>(null);
+  // The cursor the last answer was for; while it lags the cursor, we are loading.
+  const [answered, setAnswered] = useState<string | null>(null);
+  const seq = useRef(0);
+  const loading = answered !== cursor;
+
+  useEffect(() => {
+    const n = ++seq.current;
+    api<FoldersPayload>("folders" + (cursor ? "?path=" + enc(cursor) : ""))
+      .then((d) => {
+        if (seq.current !== n) return;
+        setData(d);
+        setError(null);
+        setAnswered(cursor);
+      })
+      .catch((e: unknown) => {
+        if (seq.current !== n) return;
+        const t = errorText(e);
+        setError({ what: t.error, why: t.why });
+        setAnswered(cursor);
+      });
+  }, [cursor]);
+
+  const here = data?.path ?? cursor;
+  const segments = here.split("/").filter(Boolean);
+  const crumbPath = (i: number) => "/" + segments.slice(0, i + 1).join("/");
+
+  return (
+    <div id={id} className="grid gap-2 rounded-md border bg-muted/20 p-2" aria-label="Folder browser">
+      <div className="flex flex-wrap items-center gap-1">
+        {data?.roots.map((r) => (
+          <Button key={r.path} type="button" size="xs" variant={here === r.path ? "secondary" : "ghost"} onClick={() => setCursor(r.path)} title={r.path}>
+            {r.label === "Home" ? <HomeIcon /> : <FolderIcon />} {r.label}
+          </Button>
+        ))}
+        <span className="flex-1" />
+        <Button type="button" size="xs" variant="ghost" onClick={() => data?.parent && setCursor(data.parent)} disabled={!data?.parent || loading} title="Up one level">
+          <ArrowUpIcon /> Up
+        </Button>
+        <Button type="button" size="xs" variant="ghost" onClick={onClose} aria-label="Close the folder browser">
+          <XIcon />
+        </Button>
+      </div>
+
+      <nav aria-label="Current folder" className="flex items-center gap-0.5 overflow-x-auto whitespace-nowrap font-mono text-[11.5px] text-muted-foreground">
+        <button type="button" className="rounded px-1 hover:bg-muted hover:text-foreground" onClick={() => setCursor("/")}>
+          /
+        </button>
+        {segments.map((seg, i) => (
+          <span key={crumbPath(i)} className="flex items-center gap-0.5">
+            {i > 0 ? <ChevronRightIcon className="size-3 shrink-0 opacity-60" /> : null}
+            <button type="button" className={cn("rounded px-1 hover:bg-muted hover:text-foreground", i === segments.length - 1 && "text-foreground")} onClick={() => setCursor(crumbPath(i))}>
+              {seg}
+            </button>
+          </span>
+        ))}
+      </nav>
+
+      <div className="max-h-44 overflow-y-auto rounded-md border bg-background">
+        {error ? (
+          <div className="p-2">
+            <Notice tone="warn">
+              <div className="text-[12.5px] font-medium">{error.what}</div>
+              {error.why ? <div className="text-xs text-muted-foreground">{error.why}</div> : null}
+              <div className="mt-1.5 flex gap-1.5">
+                <Button type="button" size="xs" variant="outline" onClick={() => setCursor(data?.home || "~")}>
+                  <HomeIcon /> Home
+                </Button>
+              </div>
+            </Notice>
+          </div>
+        ) : loading && !data ? (
+          <ul className="divide-y">
+            {[0, 1, 2, 3].map((i) => (
+              <li key={i} className="flex items-center gap-2 px-2 py-1.5">
+                <Skeleton className="size-4 rounded" />
+                <Skeleton className="h-3.5 w-28" />
+              </li>
+            ))}
+          </ul>
+        ) : data && data.entries.length === 0 ? (
+          <p className="px-3 py-4 text-center text-xs text-muted-foreground">No folders here.</p>
+        ) : (
+          <ul className={cn("divide-y", loading && "opacity-60")}>
+            {data?.entries.map((e) => (
+              <li key={e.path} className="flex items-center gap-1.5 pr-1.5">
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-[12.5px] hover:bg-muted/60"
+                  onClick={() => setCursor(e.path)}
+                  onDoubleClick={() => e.checkout && onPick(e.path)}
+                  title={e.path}
+                >
+                  {e.checkout ? <GitBranchIcon className="size-4 shrink-0 text-ok" /> : <FolderIcon className="size-4 shrink-0 text-muted-foreground" />}
+                  <span className="truncate">{e.name}</span>
+                  {e.registered ? (
+                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                      registered · {e.registered}
+                    </Badge>
+                  ) : e.checkout ? (
+                    <Badge variant="outline" className="h-4 px-1.5 text-[10px] text-ok">
+                      git
+                    </Badge>
+                  ) : null}
+                  <ChevronRightIcon className="ml-auto size-3.5 shrink-0 opacity-40" />
+                </button>
+                {e.checkout && !e.registered ? (
+                  <Button type="button" size="xs" variant="outline" onClick={() => onPick(e.path)}>
+                    Use
+                  </Button>
+                ) : null}
+              </li>
+            ))}
+            {data?.truncated ? <li className="px-2 py-1.5 text-xs text-muted-foreground">Showing the first {data.entries.length} folders.</li> : null}
+          </ul>
+        )}
+      </div>
+
+      {data && !error ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+            {data.registered ? (
+              <>
+                Already registered as <Mono>{data.registered}</Mono>; using it refreshes that project.
+              </>
+            ) : data.checkout ? (
+              "This folder is a git checkout."
+            ) : (
+              "Not a git checkout - the hub will refuse it; open a folder with a repository."
+            )}
+          </span>
+          <Button type="button" size="sm" variant={data.checkout ? "default" : "outline"} onClick={() => onPick(data.path)} disabled={!data.path}>
+            {data.checkout ? <GitBranchIcon /> : <FolderIcon />} Use this folder
+          </Button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

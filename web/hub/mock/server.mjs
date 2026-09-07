@@ -53,6 +53,44 @@ function emit(actor, action, subject, detail) {
 
 // ----- helpers -----------------------------------------------------------
 
+// The folder picker's fake machine (WU-023): a small tree under /home/owner
+// where the fixture projects live, one unregistered checkout, one plain folder.
+const HOME = "/home/owner";
+const TREE = {
+  "/": ["home", "tmp", "usr"],
+  "/home": ["owner"],
+  "/home/owner": ["Documents", "Downloads", "src"],
+  "/home/owner/Documents": [],
+  "/home/owner/Downloads": [],
+  "/home/owner/src": ["demo-app", "demo-lib", "experiments", "old-site", "pulse", "scratch"],
+  "/home/owner/src/demo-app": ["cmd", "internal", "web"],
+  "/home/owner/src/demo-lib": ["pkg"],
+  "/home/owner/src/pulse": ["cmd", "docs", "internal", "web"],
+  "/home/owner/src/old-site": ["public"],
+  "/home/owner/src/experiments": ["spike-a"],
+  "/home/owner/src/experiments/spike-a": [],
+  "/home/owner/src/scratch": [],
+  "/tmp": [],
+  "/usr": ["local"],
+  "/usr/local": [],
+};
+const CHECKOUTS = new Set(["/home/owner/src/demo-app", "/home/owner/src/demo-lib", "/home/owner/src/pulse", "/home/owner/src/old-site", "/home/owner/src/experiments/spike-a"]);
+function folders(raw) {
+  let path = raw.trim();
+  if (path === "" ) path = HOME + "/src";
+  if (path === "~" || path.startsWith("~/")) path = HOME + path.slice(1);
+  path = path.replace(/\/+$/, "") || "/";
+  const children = TREE[path];
+  if (!children) return { error: "No folder " + path };
+  const registered = (p) => state.projects.find((x) => x.path === p)?.slug || "";
+  const parent = path === "/" ? "" : path.slice(0, path.lastIndexOf("/")) || "/";
+  const entries = children.map((name) => {
+    const full = path === "/" ? "/" + name : path + "/" + name;
+    return { name, path: full, checkout: CHECKOUTS.has(full), registered: registered(full) };
+  });
+  return { path, parent, home: HOME, roots: [{ label: "Home", path: HOME }, { label: "src", path: HOME + "/src" }], checkout: CHECKOUTS.has(path), registered: registered(path), entries, truncated: false };
+}
+
 function send(res, code, body, headers = {}) {
   const text = typeof body === "string" ? body : JSON.stringify(body);
   res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*", ...headers });
@@ -373,6 +411,11 @@ async function handle(req, res) {
   }
   if (segs[0] === "compute" && segs.length === 1) return send(res, 200, state.compute);
   if (segs[0] === "projects" && segs.length === 1) return send(res, 200, { projects: state.projects, brain: state.projects.find((p) => p.brain)?.slug || "" });
+  if (segs[0] === "folders" && segs.length === 1) {
+    const f = folders(q.get("path") || "");
+    if (f.error) return fail(res, 404, f.error, "nothing exists at that path in the mock tree", "go up one level");
+    return send(res, 200, f);
+  }
   if (segs[0] === "settings" && segs.length === 1) return send(res, 200, { ...state.settings, settings: state.settings.settings.map(maskSetting) });
   if (segs[0] === "proposals" && segs.length === 1) return send(res, 200, state.proposals);
   if (segs[0] === "org") {
