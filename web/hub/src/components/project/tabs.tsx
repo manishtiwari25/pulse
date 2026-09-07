@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { ActivityChart } from "@/components/pulse/charts";
 import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow } from "@/components/pulse/cards";
 import { DataTable } from "@/components/pulse/data-table";
-import { SelfImprovementPanel } from "@/components/pulse/evolve";
+import { DocRev, SeededMarker, SelfImprovementPanel } from "@/components/pulse/evolve";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { Markdown } from "@/components/pulse/markdown";
 import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
@@ -476,9 +476,16 @@ export function EvolutionTab({ slug }: { slug: string }) {
         // The gates and fixtures (ADR-029) show whenever the hub reports them, set up or not: they are what the owner asked about.
         const fixtures = e.fixtures ?? [];
         const gated = e.gates !== undefined || !!e.gates_error || fixtures.length > 0;
+        // The loop's records (ADR-030): onboarding seeds them from the template; a project the seed did not reach is seeded from the terminal.
+        const docs = { constitution: e.constitution ?? null, evaluators: e.evaluators ?? null };
+        const docKpi = (doc: Evolution["constitution"]) => ({
+          n: doc ? "r" + num(doc.record.current_rev) : "missing",
+          tone: (doc && !doc.seeded ? "ok" : "warn") as "ok" | "warn",
+          sub: doc ? (doc.seeded ? "seeded · make it yours" : doc.seeded_from ? "edited copy of the template" : "your own text") : "seed it, or write your own",
+        });
         const empty = (
           <EmptyState>
-            Evolution is not set up for <b>{slug}</b>. An agent writes the <Mono>EVO-constitution</Mono> and <Mono>EVO-evaluators</Mono> records through <Mono>pulse-reflect</Mono>; once both are in the store and you turn <Mono>evolve.loop</Mono> on in{" "}
+            Evolution is not set up for <b>{slug}</b>. Onboarding seeds the <Mono>EVO-constitution</Mono> and <Mono>EVO-evaluators</Mono> records from the template (<Mono>{"pulse evolve seed --project " + slug}</Mono> does it for a project registered earlier); once both are in the store and you turn <Mono>evolve.loop</Mono> on in{" "}
             <Link href={hrefs.settings("evolve")} className="underline">
               Settings
             </Link>
@@ -488,7 +495,7 @@ export function EvolutionTab({ slug }: { slug: string }) {
         if (!present && !gated) return empty;
         return (
           <div className="grid gap-4">
-            {gated ? <SelfImprovementPanel gates={e.gates} error={e.gates_error} fixtures={fixtures} /> : null}
+            {gated ? <SelfImprovementPanel gates={e.gates} error={e.gates_error} fixtures={fixtures} docs={docs} /> : null}
             {!present ? (
               empty
             ) : (
@@ -499,14 +506,14 @@ export function EvolutionTab({ slug }: { slug: string }) {
                   <Kpi n={loop.tolerance || "—"} label="tolerance" sub="allowed regression" />
                   <Kpi n={loop.limits || "none"} label="limits" />
                   <Kpi n={loop.heldout_present ? "present" : "absent"} label="held-out evaluators" tone={loop.heldout_present ? "ok" : "warn"} sub="owner-private; path never shown" />
-                  <Kpi n={e.constitution ? "indexed" : "missing"} label="constitution" tone={e.constitution ? "ok" : "warn"} />
-                  <Kpi n={e.evaluators ? "indexed" : "missing"} label="evaluators" tone={e.evaluators ? "ok" : "warn"} />
+                  <Kpi {...docKpi(e.constitution)} label="constitution" />
+                  <Kpi {...docKpi(e.evaluators)} label="evaluators" />
                   <Kpi n={last ? last.at.slice(0, 10) : "—"} label="last cycle" sub={last ? (kept(last) ? "kept" : "discarded") : undefined} />
                 </KpiGrid>
                 {stopped ? <Notice tone="bad">STOP is set - the loop halts until you clear it in Settings.</Notice> : null}
                 {!e.constitution || !e.evaluators ? (
                   <Notice tone="warn">
-                    {[!e.constitution ? "EVO-constitution" : "", !e.evaluators ? "EVO-evaluators" : ""].filter(Boolean).join(" and ")} not in the store yet - the loop refuses to run without both. Ask the lead to write them (pulse-reflect does).
+                    {[!e.constitution ? "EVO-constitution" : "", !e.evaluators ? "EVO-evaluators" : ""].filter(Boolean).join(" and ")} not in the store yet - the loop refuses to run without both. Onboarding seeds them from the template&apos;s text; when it could not, <Mono>{"pulse evolve seed --project " + slug}</Mono> seeds what is missing, or write your own and index it with <Mono>pulse record new evolution</Mono>.
                   </Notice>
                 ) : null}
                 <Panel title="Archive - measured cycles" actions={<span>{plural(rows.length, "cycle")}</span>} dense>
@@ -530,11 +537,25 @@ export function EvolutionTab({ slug }: { slug: string }) {
                   )}
                 </Panel>
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <Panel title="Constitution" actions={e.constitution ? <Link href={hrefs.record(e.constitution.record.id, slug)} className="hover:underline">{e.constitution.record.id}</Link> : undefined}>
-                    {e.constitution ? <Markdown source={e.constitution.body} className="max-h-[50vh] overflow-y-auto" /> : <EmptyState>Not indexed yet.</EmptyState>}
+                  <Panel title="Constitution" actions={e.constitution ? <DocRev doc={e.constitution} slug={slug} /> : undefined}>
+                    {e.constitution ? (
+                      <>
+                        <SeededMarker doc={e.constitution} className="mb-3" />
+                        <Markdown source={e.constitution.body} className="max-h-[50vh] overflow-y-auto" />
+                      </>
+                    ) : (
+                      <EmptyState>Not indexed yet. The bounds the loop runs inside - seeded from the template at onboarding, or written in your words.</EmptyState>
+                    )}
                   </Panel>
-                  <Panel title="Evaluators" actions={e.evaluators ? <Link href={hrefs.record(e.evaluators.record.id, slug)} className="hover:underline">{e.evaluators.record.id}</Link> : undefined}>
-                    {e.evaluators ? <Markdown source={e.evaluators.body} className="max-h-[50vh] overflow-y-auto" /> : <EmptyState>Not indexed yet. The held-out set stays on your machine; only the checks agents may see are described here.</EmptyState>}
+                  <Panel title="Evaluators" actions={e.evaluators ? <DocRev doc={e.evaluators} slug={slug} /> : undefined}>
+                    {e.evaluators ? (
+                      <>
+                        <SeededMarker doc={e.evaluators} className="mb-3" />
+                        <Markdown source={e.evaluators.body} className="max-h-[50vh] overflow-y-auto" />
+                      </>
+                    ) : (
+                      <EmptyState>Not indexed yet. The held-out set stays on your machine; only the checks agents may see are described here.</EmptyState>
+                    )}
                   </Panel>
                 </div>
                 {e.archive?.record && e.archive.body ? (
@@ -624,7 +645,7 @@ export function EnvTab({ slug }: { slug: string }) {
           {recs.error && !recs.data ? <ErrorNotice error={recs.error} onRetry={() => void recs.reload()} /> : recs.data === undefined ? <SkeletonRows n={4} /> : env ? <EnvBody id={env.id} slug={slug} /> : <EmptyState>No CTX-environment record. Agents write one from <Mono>docs/context/environment.md</Mono> the first time they run in this checkout.</EmptyState>}
         </Panel>
         <Panel title={c.data?.record ? "Constitution · " + c.data.record.id : "Constitution"} actions={c.data?.record ? <Link href={hrefs.record(c.data.record.id, slug)} className="hover:underline">open record</Link> : null}>
-          {c.error && !c.data && !noRecord(c.error) ? <ErrorNotice error={c.error} onRetry={() => void c.reload()} /> : c.data === undefined && !c.error ? <SkeletonRows n={4} /> : c.data?.body ? <Markdown source={c.data.body} className="max-h-[60vh] overflow-y-auto" /> : <EmptyState>No constitution yet. It is the <Mono>EVO-constitution</Mono> record - the boundary every agent runs inside; the lead writes it through <Mono>pulse-reflect</Mono>.</EmptyState>}
+          {c.error && !c.data && !noRecord(c.error) ? <ErrorNotice error={c.error} onRetry={() => void c.reload()} /> : c.data === undefined && !c.error ? <SkeletonRows n={4} /> : c.data?.body ? <Markdown source={c.data.body} className="max-h-[60vh] overflow-y-auto" /> : <EmptyState>No constitution yet. It is the <Mono>EVO-constitution</Mono> record - the boundary every agent runs inside; onboarding seeds it from the template, <Mono>{"pulse evolve seed --project " + slug}</Mono> does when it could not.</EmptyState>}
         </Panel>
       </div>
       <Panel title="Records of this project" actions={<Link href={hrefs.records({ project: slug })} className="hover:underline">browse</Link>} dense>

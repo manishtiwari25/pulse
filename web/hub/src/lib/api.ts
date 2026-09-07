@@ -224,11 +224,28 @@ export interface Timeline {
 // hub that ships with this console sends them, an older one does not.
 export type EvolveLevel = "A" | "B" | "C" | "D" | "";
 
+// One of the loop's two records as a project row reports it (ADR-030).
+// Onboarding seeds a copy of the template's text unless the project already
+// has the record; `seeded` stays true until someone edits that copy, so the
+// console can say "still the template's text - make it yours". `seeded_from`
+// names where the copy started (`amistio-template/TPL-evolution-constitution@r1`)
+// and keeps naming it after edits; it is "" for the brain or an own file.
+export interface EvolveRecordRef {
+  id: string; // EVO-constitution-<slug>, or EVO-constitution for the brain / an imported own file
+  rev: number; // current revision
+  seeded: boolean; // the body is still the seeded copy of the template's text
+  seeded_from: string; // template record and revision the copy started from; "" when none
+}
+
 export interface EvolveGate {
   fixtures_enabled: number; // enabled public fixtures
   baseline: boolean; // a kept runner experiment recorded the baseline
   evolve_level: EvolveLevel; // highest self-improvement level allowed right now; "" on error
   evolve_next: string; // the exact next human step as a command, or "none"
+  // ADR-030: null when the project has no such record, undefined when the
+  // hub predates the field (so the console shows nothing rather than "no constitution").
+  constitution?: EvolveRecordRef | null;
+  evaluators?: EvolveRecordRef | null;
 }
 
 export interface ProjectCardData extends Partial<EvolveGate> {
@@ -265,13 +282,38 @@ export interface ProjectCardData extends Partial<EvolveGate> {
 
 // The gate fields of a project, from whichever payload carries them: the
 // org row first, the registry row (GET /projects) second. Null when neither
-// does, so the console shows nothing rather than a wrong "0 fixtures".
+// does, so the console shows nothing rather than a wrong "0 fixtures". The
+// record refs (ADR-030) travel on GET /projects; they are read from either
+// row, so an org row that lacks them does not hide the registry's.
 export function evolveGate(p: Partial<EvolveGate> | undefined | null, reg?: Partial<EvolveGate> | null): EvolveGate | null {
   for (const src of [p, reg]) {
-    if (src && typeof src.evolve_level === "string" && typeof src.fixtures_enabled === "number")
-      return { fixtures_enabled: src.fixtures_enabled, baseline: src.baseline === true, evolve_level: src.evolve_level, evolve_next: src.evolve_next || "" };
+    if (src && typeof src.evolve_level === "string" && typeof src.fixtures_enabled === "number") {
+      const g: EvolveGate = { fixtures_enabled: src.fixtures_enabled, baseline: src.baseline === true, evolve_level: src.evolve_level, evolve_next: src.evolve_next || "" };
+      const other = src === p ? reg : p;
+      const con = firstRef(src.constitution, other?.constitution);
+      const eva = firstRef(src.evaluators, other?.evaluators);
+      if (con !== undefined) g.constitution = con;
+      if (eva !== undefined) g.evaluators = eva;
+      return g;
+    }
   }
   return null;
+}
+
+// The first source that says anything about the record - null ("none") counts as an answer.
+function firstRef(a: unknown, b: unknown): EvolveRecordRef | null | undefined {
+  const r = recordRef(a);
+  return r !== undefined ? r : recordRef(b);
+}
+
+// A record ref as the hub sent it: the object, null for "no such record",
+// undefined when the field is absent or malformed (an older hub).
+function recordRef(v: unknown): EvolveRecordRef | null | undefined {
+  if (v === null) return null;
+  if (typeof v !== "object" || v === undefined) return undefined;
+  const r = v as Partial<EvolveRecordRef>;
+  if (typeof r.id !== "string" || !r.id) return undefined;
+  return { id: r.id, rev: typeof r.rev === "number" ? r.rev : 0, seeded: r.seeded === true, seeded_from: typeof r.seeded_from === "string" ? r.seeded_from : "" };
 }
 
 export interface Totals {
@@ -354,7 +396,7 @@ export interface Executor {
 // ----- project lifecycle (ADR-027) --------------------------------------
 // GET /projects lists every registered checkout, inactive ones included; the
 // org payload only carries the active ones. Rows may carry the ADR-029 gate
-// fields too (see EvolveGate).
+// fields and the ADR-030 record refs too (see EvolveGate).
 export interface RegisteredProject extends Partial<EvolveGate> {
   slug: string;
   name: string;
@@ -601,6 +643,10 @@ export interface PostDetail extends PostRef {
 export interface EvolutionDoc {
   record: RecordRow;
   body: string; // Markdown
+  // ADR-030: whether the body is still the seeded copy of the template's
+  // text and where that copy started (see EvolveRecordRef). Absent on an older hub.
+  seeded?: boolean;
+  seeded_from?: string;
 }
 
 export interface EvolutionArchiveRow {

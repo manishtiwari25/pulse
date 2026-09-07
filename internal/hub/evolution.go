@@ -35,7 +35,8 @@ func (h *Handler) evolution(project string) (map[string]any, error) {
 			archive["record"] = additionRecord(*head)
 			archive["body"] = revision.Body
 		} else {
-			result[record.Slug] = object("record body", additionRecord(*head), revision.Body)
+			seeded, from := seededRecord(head, revision)
+			result[record.Slug] = object("record body seeded seeded_from", additionRecord(*head), revision.Body, seeded, from)
 		}
 	}
 	var hasArchive int
@@ -88,6 +89,14 @@ func (h *Handler) evolution(project string) (map[string]any, error) {
 		redactEvolutionPath(result, heldout)
 	}
 	return result, nil
+}
+
+// seededRecord reports whether a record is still the text ADR-030 seeded -
+// its first revision, marked seeded_from - and that mark
+// (brain/TPL-evolution-constitution@r1, "" when the record was never seeded).
+func seededRecord(head *store.Record, revision *store.Revision) (bool, string) {
+	from := str(revision.Frontmatter["seeded_from"])
+	return head.CurrentRev == 1 && from != "", from
 }
 
 // evolutionGates is evolve status as a generic document so the private-path

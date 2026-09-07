@@ -15,6 +15,7 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/records"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -188,6 +189,9 @@ func runEvolve(c *cli.Context, _ *flag.FlagSet, args []string) error {
 	if sub == "fixture" {
 		return commandError(runFixture(c, args), "evolve fixture")
 	}
+	if sub == "seed" {
+		return commandError(runSeed(c, args), "evolve seed")
+	}
 	if sub == "score" {
 		return commandError(runScore(c, args), "evolve score")
 	}
@@ -205,7 +209,7 @@ func runEvolve(c *cli.Context, _ *flag.FlagSet, args []string) error {
 		fs.BoolVar(&once, "once", false, "finish at most one experiment")
 	case "status", "report", "gates", "archive", "setup":
 	default:
-		return inputError("Unknown evolve subcommand", "choose status, fixture, setup, measure, archive, cycle or score", "pulse help evolve")
+		return inputError("Unknown evolve subcommand", "choose status, fixture, seed, setup, measure, archive, cycle or score", "pulse help evolve")
 	}
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
@@ -419,23 +423,9 @@ func seedCommand(s *store.Store, c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	slugs := []string{}
-	if c.Project != "" {
-		p, err := validProject(s, c.Project)
-		if err != nil {
-			return err
-		}
-		slugs = append(slugs, p.Slug)
-	} else {
-		projects, err := s.Projects(true)
-		if err != nil {
-			return err
-		}
-		for _, p := range projects {
-			if p.Slug != store.CommonsSlug {
-				slugs = append(slugs, p.Slug)
-			}
-		}
+	slugs, err := seedTargets(s, c.Project)
+	if err != nil {
+		return err
 	}
 	type seeded struct {
 		Project string `json:"project"`
@@ -460,6 +450,93 @@ func seedCommand(s *store.Store, c *cli.Context) error {
 		c.Println("No registered project to seed.")
 	}
 	return nil
+}
+
+// seedTargets is the selected project, or every active project but the commons.
+func seedTargets(s *store.Store, project string) ([]string, error) {
+	if project != "" {
+		p, err := validProject(s, project)
+		if err != nil {
+			return nil, err
+		}
+		return []string{p.Slug}, nil
+	}
+	projects, err := s.Projects(true)
+	if err != nil {
+		return nil, err
+	}
+	slugs := []string{}
+	for _, p := range projects {
+		if p.Slug != store.CommonsSlug {
+			slugs = append(slugs, p.Slug)
+		}
+	}
+	return slugs, nil
+}
+
+// runSeed is pulse evolve seed [--project P]: the loop's records (ADR-030),
+// then the starter fixtures (ADR-029), for the selected project or every
+// active project but the commons. What exists is kept, so repeating it is safe.
+func runSeed(c *cli.Context, args []string) error {
+	c, fs := commandFlags(c, "evolve seed")
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return inputError("Wrong seed arguments", "seed takes flags only", "pulse help evolve")
+	}
+	return withStore(c, false, func(s *store.Store) error {
+		actor, err := callingActor(s, c)
+		if err != nil {
+			return err
+		}
+		slugs, err := seedTargets(s, c.Project)
+		if err != nil {
+			return err
+		}
+		type seeded struct {
+			records.SeedSummary
+			Added int `json:"added"`
+		}
+		results, total := []seeded{}, 0
+		for _, slug := range slugs {
+			summary, err := records.SeedLoopRecords(s, slug, actor)
+			if err != nil {
+				return err
+			}
+			n, err := SeedStarterFixtures(s, slug, actor)
+			if err != nil {
+				return err
+			}
+			results = append(results, seeded{summary, n})
+			total += n
+		}
+		if c.JSON {
+			return cli.WriteJSON(c.Out, map[string]any{"seeded": results, "added": total, "starter": len(starterSet)})
+		}
+		for _, r := range results {
+			c.Printf("%s: %s, %s, %d starter fixture(s) added; %d in the set\n", r.Project,
+				seedWords("constitution", r.Constitution), seedWords("evaluators", r.Evaluators), r.Added, len(starterSet))
+		}
+		if len(results) == 0 {
+			c.Println("No registered project to seed.")
+		}
+		return nil
+	})
+}
+
+// seedWords is one record's result as pulse evolve seed prints it: "kept
+// (ID rN)", "copied from TPL-evolution-constitution@r1", "imported from
+// docs/evolution/constitution.md@abc1234" or, for the brain, "absent (ID;
+// the brain's records arrive by import)".
+func seedWords(slug string, r records.SeedResult) string {
+	switch r.Action {
+	case "kept":
+		return fmt.Sprintf("%s kept (%s r%d)", slug, r.ID, r.Rev)
+	case "absent":
+		return fmt.Sprintf("%s absent (%s; the brain's records arrive by import)", slug, r.ID)
+	}
+	return fmt.Sprintf("%s %s from %s", slug, r.Action, r.Source)
 }
 
 // runScore is pulse evolve score NAME (score.go). The score is the result,

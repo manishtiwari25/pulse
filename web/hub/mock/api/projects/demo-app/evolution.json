@@ -3,14 +3,14 @@
     "rows": []
   },
   "constitution": {
-    "body": "# Constitution\n\n## Scope\n\nThe loop improves the product first and its own operating layer second.\n\n## Quorum\n\nA suggestion needs two votes from distinct agents.\n\n## Limits\n\nlimits: none. loop: off until the owner turns it on.\n",
+    "body": "# Constitution\n\n## Scope\n\nThe loop improves demo-app's product first - the web app its users see - and its own operating layer second. No experiment touches the billing module.\n\n## Quorum\n\nA suggestion needs two votes from distinct agents; a product change needs the lead's vote among them.\n\n## Limits\n\nlimits: 4 cycles a day. loop: off until the baseline is recorded and the owner turns it on.\n",
     "record": {
       "areas": [],
-      "current_rev": 1,
+      "current_rev": 3,
       "date": "2026-09-01",
       "delivered": "",
       "delivery": "",
-      "id": "EVO-constitution",
+      "id": "EVO-constitution-demo-app",
       "kind": "evolution",
       "number": 0,
       "path": "",
@@ -20,8 +20,10 @@
       "tags": [],
       "tier": 0,
       "title": "constitution",
-      "updated_at": "2026-09-01T12:37:00Z"
-    }
+      "updated_at": "2026-09-05T15:12:00Z"
+    },
+    "seeded": false,
+    "seeded_from": "amistio-template/TPL-evolution-constitution@r1"
   },
   "evaluators": {
     "body": "# Evaluators\n\n## Public checks\n\nThe six starter fixtures: each asks for one small, ordinary change and scores the result against the project's own checks (build, tests, lint, a reviewer's read). Three runs per fixture; the mean is the score.\n\n## Held-out\n\nThe owner keeps a held-out set outside this checkout. Agents never see its path.\n",
@@ -31,7 +33,7 @@
       "date": "2026-09-01",
       "delivered": "",
       "delivery": "",
-      "id": "EVO-evaluators",
+      "id": "EVO-evaluators-demo-app",
       "kind": "evolution",
       "number": 0,
       "path": "",
@@ -42,7 +44,9 @@
       "tier": 0,
       "title": "evaluators",
       "updated_at": "2026-09-01T12:37:00Z"
-    }
+    },
+    "seeded": true,
+    "seeded_from": "amistio-template/TPL-evolution-evaluators@r1"
   },
   "fixtures": [
     {

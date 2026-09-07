@@ -37,7 +37,9 @@
       "tier": 0,
       "title": "constitution",
       "updated_at": "2026-09-01T12:37:00Z"
-    }
+    },
+    "seeded": false,
+    "seeded_from": ""
   },
   "evaluators": {
     "body": "# Evaluators\n\n## Public checks\n\nThe six starter fixtures: each asks for one small, ordinary change and scores the result against the project's own checks (build, tests, lint, a reviewer's read). Three runs per fixture; the mean is the score.\n\n## Held-out\n\nThe owner keeps a held-out set outside this checkout. Agents never see its path.\n",
@@ -58,7 +60,9 @@
       "tier": 0,
       "title": "evaluators",
       "updated_at": "2026-09-01T12:37:00Z"
-    }
+    },
+    "seeded": false,
+    "seeded_from": ""
   },
   "fixtures": [
     {

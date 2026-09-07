@@ -265,10 +265,10 @@ func Status(s *store.Store, project string) (*LoopStatus, error) {
 		status.Reason, status.NextHumanStep = "STOP is engaged; observe and record only", "pulse start"
 	case !status.Constitution:
 		status.Reason, status.NextHumanStep = "constitution record is missing or empty",
-			"pulse record new evolution --project "+project+" --title Constitution --body-file FILE"
+			"pulse evolve seed --project "+project+"  (template copy), or pulse record new evolution --project "+project+" --title Constitution --body-file FILE"
 	case !status.Evaluators:
 		status.Reason, status.NextHumanStep = "evaluators record is missing or empty",
-			"pulse record new evolution --project "+project+" --title Evaluators --body-file FILE"
+			"pulse evolve seed --project "+project+"  (template copy), or pulse record new evolution --project "+project+" --title Evaluators --body-file FILE"
 	case status.PublicFixtures == 0:
 		status.Reason, status.NextHumanStep = "no enabled public fixtures",
 			"pulse evolve fixture seed --project "+project+"  (starter set), or pulse evolve fixture add --project "+project+" --name N --request FILE --scorer CMD"

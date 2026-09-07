@@ -29,8 +29,8 @@ async function init() {
   state.proposals = await loadJson("proposals.json");
   state.events = (await loadJson("events.json")).events;
   const org = await loadJson("org.json");
-  // The registry rows mirror the org rows' self-improvement gates (ADR-029) so either payload can feed the console.
-  const gate = (p) => ({ fixtures_enabled: p.fixtures_enabled ?? 0, baseline: p.baseline === true, evolve_level: p.evolve_level ?? "", evolve_next: p.evolve_next ?? "none" });
+  // The registry rows mirror the org rows' self-improvement gates (ADR-029) and the loop's record refs (ADR-030) so either payload can feed the console.
+  const gate = (p) => ({ fixtures_enabled: p.fixtures_enabled ?? 0, baseline: p.baseline === true, evolve_level: p.evolve_level ?? "", evolve_next: p.evolve_next ?? "none", constitution: p.constitution ?? null, evaluators: p.evaluators ?? null });
   state.projects = org.projects
     .filter((p) => p.kind !== "commons")
     .map((p) => ({ slug: p.slug, name: p.slug, path: p.path, remote: p.remote || "", brain: !!p.brain, status: "active", verify_cmd: "", default_branch: "main", added_at: "2026-09-01T09:00:00Z", added_by: "human", last_seen: "2026-09-07T09:00:00Z", present: p.present !== false, ...gate(p) }));
@@ -335,8 +335,9 @@ async function handle(req, res) {
         const base = (body.name || path.split("/").filter(Boolean).pop() || "project").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
         let slug = base;
         for (let n = 2; state.projects.some((x) => x.slug === slug); n++) slug = base + "-" + n;
-        // Onboarding seeds the starter set (ADR-029); the constitution is the owner's first step.
-        p = { slug, name: body.name || slug, path, remote: "", brain: false, status: "active", verify_cmd: body.verify || "", default_branch: "main", added_at: now(), added_by: "human", last_seen: now(), present: true, fixtures_enabled: 6, baseline: false, evolve_level: "B", evolve_next: "pulse record new evolution --project " + slug + " --title Constitution --body-file FILE" };
+        // Onboarding seeds the starter set (ADR-029) and the loop's records from the template (ADR-030); recording the baseline is the owner's first step.
+        const seeded = (what) => ({ id: "EVO-" + what + "-" + slug, rev: 1, seeded: true, seeded_from: "amistio-template/TPL-evolution-" + what + "@r1" });
+        p = { slug, name: body.name || slug, path, remote: "", brain: false, status: "active", verify_cmd: body.verify || "", default_branch: "main", added_at: now(), added_by: "human", last_seen: now(), present: true, fixtures_enabled: 6, baseline: false, evolve_level: "C", evolve_next: "pulse job add --project " + slug + " --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE'", constitution: seeded("constitution"), evaluators: seeded("evaluators") };
         state.projects.push(p);
       } else {
         p.status = "active";
@@ -452,9 +453,9 @@ async function handle(req, res) {
   if (segs[0] === "org") {
     const org = await fixture("org");
     // The real hub lists active projects only; mirror removals made in memory.
-    // The self-improvement gates (ADR-029) travel on GET /projects in the real hub, so the org rows drop them here
+    // The self-improvement gates (ADR-029) and record refs (ADR-030) travel on GET /projects in the real hub, so the org rows drop them here
     // even though org.json seeds them: the console must merge the registry row like it does in production.
-    const GATE_FIELDS = ["fixtures_enabled", "baseline", "evolve_level", "evolve_next"];
+    const GATE_FIELDS = ["fixtures_enabled", "baseline", "evolve_level", "evolve_next", "constitution", "evaluators"];
     const projects = org.projects
       .filter((p) => p.kind === "commons" || state.projects.some((x) => x.slug === p.slug && x.status === "active"))
       .map((p) => Object.fromEntries(Object.entries(p).filter(([k]) => !GATE_FIELDS.includes(k))));

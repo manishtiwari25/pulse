@@ -1,9 +1,11 @@
 package evolve
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/board"
+	"github.com/manishtiwari25/pulse/internal/records"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -43,10 +45,12 @@ var starterSet = []starterFixture{
 
 func init() { board.OnProjectCreated = seedOnCreate }
 
-// seedOnCreate gives a project registered for the first time the starter set.
-// Registration is already durable, so a failure is recorded beside it as
-// evolution.fixture.seed_failed and never blocks it; pulse evolve fixture seed
-// repeats the attempt.
+// seedOnCreate gives a project registered for the first time the loop's
+// records (ADR-030), then the starter set (ADR-029). Registration is already
+// durable, so a failure is recorded beside it as evolution.records.seed_failed
+// or evolution.fixture.seed_failed and never blocks it; pulse evolve seed
+// repeats both attempts. The brain's records are what every copy starts
+// from: they arrive with its own import, never by seeding.
 func seedOnCreate(s *store.Store, p *store.Project, actor string) error {
 	if p == nil || p.Slug == store.CommonsSlug {
 		return nil
@@ -54,10 +58,16 @@ func seedOnCreate(s *store.Store, p *store.Project, actor string) error {
 	if actor == "" {
 		actor = store.HumanAgent
 	}
-	if _, err := SeedStarterFixtures(s, p.Slug, actor); err != nil {
-		return s.Event(actor, "evolution.fixture.seed_failed", p.Slug, map[string]any{"project": p.Slug, "error": err.Error()})
+	var failures error
+	if !p.Brain {
+		if _, err := records.SeedLoopRecords(s, p.Slug, actor); err != nil {
+			failures = s.Event(actor, "evolution.records.seed_failed", p.Slug, map[string]any{"project": p.Slug, "error": err.Error()})
+		}
 	}
-	return nil
+	if _, err := SeedStarterFixtures(s, p.Slug, actor); err != nil {
+		failures = errors.Join(failures, s.Event(actor, "evolution.fixture.seed_failed", p.Slug, map[string]any{"project": p.Slug, "error": err.Error()}))
+	}
+	return failures
 }
 
 // IsStarter reports whether a fixture name belongs to the seeded starter set.

@@ -11,13 +11,15 @@ import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
 import { num, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import type { EvolveFixture, EvolveGate, EvolveGates, EvolveLevel } from "@/lib/api";
+import type { EvolutionDoc, EvolveFixture, EvolveGate, EvolveGates, EvolveLevel, EvolveRecordRef } from "@/lib/api";
 
-// The self-improvement surfaces (ADR-029). A project's loop opens only with
-// enabled public fixtures and a recorded baseline; the console shows both,
-// lists the fixtures and names the one human step that opens the next gate
-// as a command to copy. Nothing here starts a measurement or edits a
-// fixture - those stay in the terminal on purpose.
+// The self-improvement surfaces (ADR-029, ADR-030). A project's loop opens
+// only with enabled public fixtures and a recorded baseline; the console
+// shows both, lists the fixtures and names the one human step that opens the
+// next gate as a command to copy. The loop's two records (constitution,
+// evaluators) are seeded at onboarding from the template's text; the console
+// shows their revision and whether they are still that text. Nothing here
+// starts a measurement or edits a record - those stay in the terminal on purpose.
 
 const LEVELS = "A observe · B record · C rehearse · D evolve";
 const LEVEL_TITLE = "highest self-improvement level allowed right now (" + LEVELS + ")";
@@ -86,10 +88,45 @@ export function LevelBadge({ level, className }: { level: EvolveLevel | string; 
   );
 }
 
+// `amistio-template/TPL-evolution-constitution@r1` reads as its record name.
+export const seedName = (from: string) => from.split("/").pop() || from;
+// The one way a record's text changes: the owner amends it in a terminal.
+export const amendCommand = (id: string) => "pulse record amend " + id + " --body-file FILE";
+
+const seededTitle = (from: string) => "still the template's text" + (from ? " (seeded from " + from + ")" : "") + " - edit it to make it yours";
+const ownTitle = (r: EvolveRecordRef, what: string) => "the " + r.id + " record, revision " + num(r.rev) + (r.seeded_from ? " - started as a copy of " + r.seeded_from + ", edited since" : " - " + what + " in your own words");
+
+// The constitution as one chip (ADR-030): its revision, and whether the text is
+// still the seeded copy. Nothing when the hub does not report the record.
+export function RecordChip({ r, what, className }: { r: EvolveRecordRef | null | undefined; what: "constitution" | "evaluators"; className?: string }) {
+  if (r === undefined) return null;
+  if (r === null)
+    return (
+      <ToneBadge tone="warn" title={"no " + what + " record - " + (what === "constitution" ? "the loop has no bounds to read" : "the loop has no checks to read") + "; seed it or write your own"} className={className}>
+        {"no " + what}
+      </ToneBadge>
+    );
+  if (r.seeded)
+    return (
+      <ToneBadge tone="warn" title={seededTitle(r.seeded_from)} className={className}>
+        {what + " r" + num(r.rev) + " · seeded"}
+      </ToneBadge>
+    );
+  return (
+    <ToneBadge tone="ok" title={ownTitle(r, what)} className={className}>
+      {what + " r" + num(r.rev)}
+    </ToneBadge>
+  );
+}
+
 // One line under a project card's tiles: how far the loop may go and why.
+// The constitution leads (it is the first gate); the evaluators only speak
+// up when they alone are missing - one seed fills both - so the line stays short.
 export function EvolveBadges({ g, className }: { g: EvolveGate; className?: string }) {
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", className)}>
+      <RecordChip r={g.constitution} what="constitution" />
+      {g.evaluators === null && g.constitution ? <RecordChip r={null} what="evaluators" /> : null}
       <ToneBadge tone={g.fixtures_enabled ? "ok" : "neutral"} className={g.fixtures_enabled ? undefined : "text-muted-foreground"} title="enabled public fixtures - the checks agents may see; every experiment is measured against them">
         {plural(g.fixtures_enabled, "fixture")}
       </ToneBadge>
@@ -101,21 +138,26 @@ export function EvolveBadges({ g, className }: { g: EvolveGate; className?: stri
   );
 }
 
-function GateFlag({ on, label, title }: { on: boolean; label: string; title?: string }) {
+// A gate as a flag: open or not. With the record's doc (ADR-030) the flag
+// carries its revision, and a seeded copy says so instead of a plain check.
+function GateFlag({ on, label, title, doc }: { on: boolean; label: string; title?: string; doc?: EvolutionDoc | null }) {
+  const rev = doc?.record.current_rev;
+  const seeded = on && !!doc?.seeded;
   return (
-    <ToneBadge tone={on ? "ok" : "warn"} title={title}>
+    <ToneBadge tone={!on || seeded ? "warn" : "ok"} title={seeded ? seededTitle(doc?.seeded_from ?? "") : title}>
       {on ? <CheckIcon className="size-3" aria-label="yes" /> : <XIcon className="size-3" aria-label="no" />}
-      {label}
+      {label + (on && rev ? " r" + num(rev) : "") + (seeded ? " · seeded" : "")}
     </ToneBadge>
   );
 }
 
 // ----- the inbox card ----------------------------------------------------------
 
-export type GateKind = "baseline" | "seed" | "constitution";
+export type GateKind = "baseline" | "seed" | "constitution" | "records";
 
 export interface GateStep {
   kind: GateKind;
+  label: string; // the short "what is missing" badge
   slug: string;
   level: EvolveLevel;
   title: string;
@@ -123,22 +165,43 @@ export interface GateStep {
   command: string;
 }
 
-const GATE_LABEL: Record<GateKind, string> = { baseline: "no baseline", seed: "no fixtures", constitution: "no constitution" };
+const GATE_LABEL: Record<GateKind, string> = { baseline: "no baseline", seed: "no fixtures", constitution: "no constitution", records: "records missing" };
 
 const baselineCommand = (slug: string) => "pulse job add --project " + slug + " --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE'";
+
+// Which of the loop's two records a project lacks: what the row says first
+// (null is "none"), the title the seed command names when the row is silent.
+function missingRecords(g: EvolveGate, next: string): string[] {
+  const fromRow = [g.constitution === null ? "constitution" : "", g.evaluators === null ? "evaluators" : ""].filter(Boolean);
+  return fromRow.length ? fromRow : [/--title Evaluators\b/.test(next) ? "evaluators" : "constitution"];
+}
 
 // Which human step, if any, a project waits for. One card per project: the
 // hub's `evolve_next` names the step; the fixtures/baseline pair is the gate
 // ADR-029 is about, so it gets its card whenever fixtures exist and no
-// baseline does.
+// baseline does. A project the record seed did not reach (ADR-030) gets the
+// seeding step; an older hub still names `pulse record new evolution`.
 export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
   if (!g) return null;
   const next = g.evolve_next.trim();
   const base = { slug, level: g.evolve_level };
+  if (next.startsWith("pulse evolve seed")) {
+    const missing = missingRecords(g, next);
+    const one = missing.length === 1 ? missing[0] : undefined;
+    return {
+      ...base,
+      kind: "records",
+      label: one ? "no " + one : GATE_LABEL.records,
+      title: "Seed the loop's records for " + slug,
+      body: "The loop reads its bounds from the constitution and evaluators records. Onboarding seeds a copy of the template's text; this project has " + (one ? "no " + one + " record" : "neither") + " yet, so seed it with the command below and make the text yours from the Evolution tab.",
+      command: next,
+    };
+  }
   if (next.startsWith("pulse record new evolution"))
     return {
       ...base,
       kind: "constitution",
+      label: GATE_LABEL.constitution,
       title: "Give " + slug + " a constitution",
       body: "The loop reads its bounds from the constitution record and stays at level B (record only) without one. Write it in your words, then index it with the command below.",
       command: next,
@@ -147,6 +210,7 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
     return {
       ...base,
       kind: "seed",
+      label: GATE_LABEL.seed,
       title: "Seed the starter fixtures for " + slug,
       body: "No enabled public fixture yet, so nothing can be measured. The starter set gives the loop six small checks to begin with; your own fixtures can join them later.",
       command: next,
@@ -155,6 +219,7 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
     return {
       ...base,
       kind: "baseline",
+      label: GATE_LABEL.baseline,
       title: "Record the baseline for " + slug,
       body: (g.fixtures_enabled === 1 ? "One public fixture is ready" : num(g.fixtures_enabled) + " public fixtures are ready") + "; the loop stays closed until a kept experiment records the baseline. This runs real agent runs (3 per fixture) - queue it when you are ready.",
       command: next.startsWith("pulse job add") ? next : baselineCommand(slug),
@@ -169,7 +234,7 @@ export function GateCard({ step }: { step: GateStep }) {
     <ItemCard highlight ariaLabel={step.title}>
       <ItemCardHeader right={<LevelBadge level={step.level} />}>
         <ToneBadge tone="accent">self-improvement</ToneBadge>
-        <ToneBadge tone="warn">{GATE_LABEL[step.kind]}</ToneBadge>
+        <ToneBadge tone="warn">{step.label}</ToneBadge>
         <ProjectLink slug={step.slug} className="text-xs" />
       </ItemCardHeader>
       <ItemCardTitle>{step.title}</ItemCardTitle>
@@ -195,8 +260,9 @@ const score = (n: number) => (Number.isFinite(n) ? n.toFixed(3).replace(/\.?0+$/
 
 // Level, reason and next step, every gate as a badge, then the fixtures.
 // `gates` null means the hub could not evaluate them: the error shows, the
-// fixtures still list.
-export function SelfImprovementPanel({ gates, error, fixtures, className }: { gates: EvolveGates | null | undefined; error?: string; fixtures: EvolveFixture[]; className?: string }) {
+// fixtures still list. `docs` (the constitution and evaluators as the
+// evolution payload carries them) lets the record flags show revision and seed state.
+export function SelfImprovementPanel({ gates, error, fixtures, docs, className }: { gates: EvolveGates | null | undefined; error?: string; fixtures: EvolveFixture[]; docs?: { constitution: EvolutionDoc | null; evaluators: EvolutionDoc | null }; className?: string }) {
   const next = (gates?.next_human_step ?? "").trim();
   const waits = !!next && next !== "none";
   const h = gates?.heldout;
@@ -213,8 +279,8 @@ export function SelfImprovementPanel({ gates, error, fixtures, className }: { ga
             <ToneBadge tone={gates.loop ? "ok" : "neutral"} dot title="evolve.loop - whether cycles may run back to back">
               {gates.loop ? "loop on" : "loop off"}
             </ToneBadge>
-            <GateFlag on={gates.constitution} label="constitution" title="the EVO-constitution record is in the store" />
-            <GateFlag on={gates.evaluators} label="evaluators" title="the EVO-evaluators record is in the store" />
+            <GateFlag on={gates.constitution} label="constitution" title="the EVO-constitution record is in the store" doc={docs?.constitution} />
+            <GateFlag on={gates.evaluators} label="evaluators" title="the EVO-evaluators record is in the store" doc={docs?.evaluators} />
             <ToneBadge tone={gates.public_fixtures ? "ok" : "warn"} title="enabled public fixtures - the checks agents may see">
               {plural(gates.public_fixtures, "fixture")}
             </ToneBadge>
@@ -261,6 +327,52 @@ export function SelfImprovementPanel({ gates, error, fixtures, className }: { ga
       )}
       <FixtureList fixtures={fixtures} className="mt-4" />
     </Panel>
+  );
+}
+
+// ----- the record's provenance (ADR-030) --------------------------------------
+
+// The revision and id of a constitution or evaluators record, for a panel's
+// header: `r1 · seeded` warns that the text is still the template's.
+export function DocRev({ doc, slug }: { doc: EvolutionDoc; slug: string }) {
+  const r = doc.record;
+  return (
+    <>
+      <span className="tnum" title={doc.seeded ? seededTitle(doc.seeded_from ?? "") : doc.seeded_from ? "started as a copy of " + doc.seeded_from + ", edited since" : "revision " + num(r.current_rev)}>
+        {"r" + num(r.current_rev) + (doc.seeded ? " · seeded" : "")}
+      </span>
+      <Link href={hrefs.record(r.id, slug)} className="hover:underline">
+        {r.id}
+      </Link>
+    </>
+  );
+}
+
+// Where a record's text came from, when it is still the seeded copy: the
+// template record it was copied from, the record it lives in, and the one
+// command that makes the text the owner's. Nothing when the text is theirs already.
+export function SeededMarker({ doc, className }: { doc: EvolutionDoc; className?: string }) {
+  if (!doc.seeded) return null;
+  const from = doc.seeded_from ?? "";
+  return (
+    <Notice tone="warn" className={cn("text-xs", className)}>
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+        <ToneBadge tone="warn">seeded</ToneBadge>
+        <span>
+          {from ? (
+            <span title={from}>
+              {"seeded from "}
+              <Mono>{seedName(from)}</Mono>
+            </span>
+          ) : (
+            "the template's text"
+          )}
+          {" · edit it to make it yours"}
+        </span>
+      </div>
+      <CommandBox command={amendCommand(doc.record.id)} copy className="mt-1.5 bg-background/60" />
+      <p className="mt-1 text-[11.5px] text-muted-foreground">Yours to run in a terminal on the hub machine with your text in FILE. The console shows the record and never edits it; the copy sets loop off, no baseline and no product scope until you do.</p>
+    </Notice>
   );
 }
 

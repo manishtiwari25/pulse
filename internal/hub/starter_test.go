@@ -8,6 +8,7 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/evolve"
+	"github.com/manishtiwari25/pulse/internal/records"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -162,14 +163,14 @@ func TestProjectRowsCarryTheLoopPosition(t *testing.T) {
 		t.Fatalf("project rows: %#v", result)
 	}
 	for _, row := range rows {
-		for _, key := range []string{"fixtures_enabled", "baseline", "evolve_level", "evolve_next"} {
+		for _, key := range []string{"fixtures_enabled", "baseline", "evolve_level", "evolve_next", "constitution", "evaluators"} {
 			if _, ok := row[key]; !ok {
 				t.Fatalf("row %s lacks %s: %v", row["slug"], key, sortedKeys(row))
 			}
 		}
 	}
 	if seeded["fixtures_enabled"] != float64(6) || seeded["baseline"] != false || seeded["evolve_level"] != "B" ||
-		!strings.Contains(seeded["evolve_next"].(string), "record new") {
+		!strings.Contains(seeded["evolve_next"].(string), "record new") || seeded["constitution"] != nil || seeded["evaluators"] != nil {
 		t.Fatalf("seeded row: %#v", seeded)
 	}
 	if raw["fixtures_enabled"] != float64(0) || raw["baseline"] != false || raw["evolve_level"] != "B" || raw["evolve_next"] == "" {
@@ -195,5 +196,110 @@ func TestProjectRowsCarryTheLoopPosition(t *testing.T) {
 				t.Fatalf("inactive row: %#v", row)
 			}
 		}
+	}
+}
+
+// templateStore is a store whose brain holds the template-owned records a
+// registration copies (ADR-030): the project registered after it is seeded.
+func templateStore(t *testing.T) (*store.Store, string) {
+	t.Helper()
+	s := additionsStore(t, false)
+	if _, err := board.AddProject(s, lifecycleRepo(t), "Brain", "", true, "", "human", "brain"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"constitution", "evaluators"} {
+		title := "<Project> Evolution " + strings.ToUpper(name[:1]) + name[1:]
+		rec := store.Record{ID: "TPL-evolution-" + name, Project: "brain", Kind: "template", Slug: "evolution-" + name, Title: title, Status: "Active",
+			Path: "docs/evolution/_template-" + name + ".md", Origin: "markdown:docs/evolution/_template-" + name + ".md@0000000"}
+		if _, err := s.PutRecord(rec, map[string]any{"id": strings.ToUpper(name), "title": title, "status": "Active", "loop": "off"},
+			"# "+title+"\n\nThe <Project> loop.\n", "human", "import"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := board.AddProject(s, lifecycleRepo(t), "Lamplit Labs", "", false, "", "alice", "lamplitlabs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, p.Slug
+}
+
+func TestProjectRowsAndEvolutionTellSeededRecordsApart(t *testing.T) {
+	s, slug := templateStore(t)
+	additionsProject(t, s, "raw")
+	h := New(s, nil)
+	loopRecord := func(row map[string]any, name string) map[string]any {
+		t.Helper()
+		value, ok := row[name].(map[string]any)
+		if !ok {
+			t.Fatalf("%s of %v is not an object: %#v", name, row["slug"], row[name])
+		}
+		if !reflect.DeepEqual(sortedKeys(value), []string{"id", "rev", "seeded", "seeded_from"}) {
+			t.Fatalf("%s keys: %v", name, sortedKeys(value))
+		}
+		return value
+	}
+	_, result := additionsRequest(t, h, "GET", "/api/v1/projects", "")
+	rows := map[string]map[string]any{}
+	for _, item := range result["projects"].([]any) {
+		row := item.(map[string]any)
+		rows[row["slug"].(string)] = row
+	}
+	constitution := loopRecord(rows[slug], "constitution")
+	if constitution["id"] != "EVO-constitution-lamplitlabs" || constitution["rev"] != float64(1) || constitution["seeded"] != true ||
+		constitution["seeded_from"] != "brain/TPL-evolution-constitution@r1" {
+		t.Fatalf("seeded constitution: %#v", constitution)
+	}
+	if evaluators := loopRecord(rows[slug], "evaluators"); evaluators["id"] != "EVO-evaluators-lamplitlabs" || evaluators["seeded"] != true ||
+		evaluators["seeded_from"] != "brain/TPL-evolution-evaluators@r1" {
+		t.Fatalf("seeded evaluators: %#v", evaluators)
+	}
+	if rows["raw"]["constitution"] != nil || rows["raw"]["evaluators"] != nil || rows["brain"]["constitution"] != nil {
+		t.Fatalf("records invented for a project without them: %#v %#v", rows["raw"], rows["brain"])
+	}
+	if next := rows[slug]["evolve_next"].(string); strings.Contains(next, "evolve seed") || strings.Contains(next, "record new") {
+		t.Fatalf("a seeded project is still told to write its constitution: %q", next)
+	}
+	status, data := additionsRequest(t, h, "GET", "/api/v1/projects/"+slug+"/evolution", "")
+	if status != 200 {
+		t.Fatalf("evolution: %d %#v", status, data)
+	}
+	assertEvolutionShape(t, data)
+	doc := data["constitution"].(map[string]any)
+	if doc["seeded"] != true || doc["seeded_from"] != "brain/TPL-evolution-constitution@r1" ||
+		!strings.Contains(doc["body"].(string), "The Lamplit Labs loop.") {
+		t.Fatalf("evolution constitution: %#v", doc)
+	}
+	if doc := data["evaluators"].(map[string]any); doc["seeded"] != true || doc["seeded_from"] != "brain/TPL-evolution-evaluators@r1" {
+		t.Fatalf("evolution evaluators: %#v", doc)
+	}
+	// The owner's first edit makes the record theirs: still marked where it
+	// came from, no longer the seeded text.
+	if _, err := records.Amend(s, "EVO-constitution-lamplitlabs", "# Ours\n\nShaped by the owner.\n", "human", "shaped"); err != nil {
+		t.Fatal(err)
+	}
+	_, result = additionsRequest(t, h, "GET", "/api/v1/projects", "")
+	for _, item := range result["projects"].([]any) {
+		row := item.(map[string]any)
+		if row["slug"] != slug {
+			continue
+		}
+		constitution, evaluators := loopRecord(row, "constitution"), loopRecord(row, "evaluators")
+		if constitution["rev"] != float64(2) || constitution["seeded"] != false || constitution["seeded_from"] != "brain/TPL-evolution-constitution@r1" ||
+			evaluators["seeded"] != true {
+			t.Fatalf("rows after the owner's edit: %#v %#v", constitution, evaluators)
+		}
+	}
+	_, data = additionsRequest(t, h, "GET", "/api/v1/projects/"+slug+"/evolution", "")
+	if doc := data["constitution"].(map[string]any); doc["seeded"] != false || doc["seeded_from"] != "brain/TPL-evolution-constitution@r1" {
+		t.Fatalf("evolution constitution after the owner's edit: %#v", doc)
+	}
+	// A hand-written record was never seeded: no mark, not seeded.
+	additionsRecord(t, s, "EVO-constitution-raw", "raw", "evolution", "constitution", "# Raw\n")
+	data, err := h.evolution("raw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc := data["constitution"].(map[string]any); doc["seeded"] != false || doc["seeded_from"] != "" {
+		t.Fatalf("hand-written constitution: %#v", doc)
 	}
 }

@@ -22,14 +22,14 @@
     "level": "B",
     "limits": "none",
     "loop": false,
-    "next_human_step": "pulse record new evolution --project demo-lib --title Constitution --body-file FILE",
+    "next_human_step": "pulse evolve seed --project demo-lib  (template copy), or pulse record new evolution --project demo-lib --title Constitution --body-file FILE",
     "product_scope": {
       "allowed": false,
       "reason": "no baseline yet - product changes need a measured baseline first"
     },
     "project": "demo-lib",
     "public_fixtures": 0,
-    "reason": "no constitution record - the loop has no bounds to read, so it can record but not rehearse",
+    "reason": "no constitution record - onboarding could not seed it, so the loop has no bounds to read and can record but not rehearse",
     "signal": {
       "kept": 0,
       "rate": 0,

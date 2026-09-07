@@ -77,15 +77,35 @@ func (h *Handler) additionProjectList(w http.ResponseWriter, r *http.Request) {
 }
 
 // projectGates is the loop's position for one project row (ADR-029), read
-// the way evolve status reads it. A project the loop cannot describe (removed,
-// or a store without the loop's tables) reports the zero values.
+// the way evolve status reads it, with the loop's two records (ADR-030): id,
+// revision and whether the text is still the seeded copy, or null when the
+// record is absent. A project the loop cannot describe (removed, or a store
+// without the loop's tables) reports the zero values for the gates.
 func projectGates(s *store.Store, slug string) map[string]any {
+	gates := map[string]any{"fixtures_enabled": 0, "baseline": false, "evolve_level": "", "evolve_next": "",
+		"constitution": loopRecordSummary(s, slug, "constitution"), "evaluators": loopRecordSummary(s, slug, "evaluators")}
 	status, err := evolve.Status(s, slug)
 	if err != nil {
-		return map[string]any{"fixtures_enabled": 0, "baseline": false, "evolve_level": "", "evolve_next": ""}
+		return gates
 	}
-	return map[string]any{"fixtures_enabled": status.PublicFixtures, "baseline": status.Baseline != nil,
-		"evolve_level": status.Level, "evolve_next": status.NextHumanStep}
+	gates["fixtures_enabled"], gates["baseline"] = status.PublicFixtures, status.Baseline != nil
+	gates["evolve_level"], gates["evolve_next"] = status.Level, status.NextHumanStep
+	return gates
+}
+
+// loopRecordSummary is {id, rev, seeded, seeded_from} for the project's
+// evolution record with that slug, or nil.
+func loopRecordSummary(s *store.Store, slug, name string) any {
+	rows, err := s.ListRecords(store.RecordFilter{Project: slug, Kind: "evolution", Slug: name})
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	head, revision, err := s.GetRecord(rows[0].ID, 0)
+	if err != nil {
+		return nil
+	}
+	seeded, from := seededRecord(head, revision)
+	return object("id rev seeded seeded_from", head.ID, head.CurrentRev, seeded, from)
 }
 
 func (h *Handler) additionProjectRegister(w http.ResponseWriter, r *http.Request) {

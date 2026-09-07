@@ -92,7 +92,9 @@ type onboardOpts struct {
 
 // onboardProject is onboard_project() under D-L: register (init), queue the onboarding job whose brief asks
 // for the environment recipe as a record, queue the first reflect, print what stays human. No files are
-// written into the checkout: the loop's constitution and evaluators are records the human fills.
+// written into the checkout: the loop's constitution and evaluators are records, seeded at registration
+// (ADR-030: the checkout's committed docs/evolution files indexed, else the template's text copied) and
+// reported here as the store holds them afterwards.
 func onboardProject(s *store.Store, path, now string, o onboardOpts) ([]string, error) {
 	root, err := filepath.Abs(expandUser(path))
 	if err != nil {
@@ -188,8 +190,9 @@ func onboardProject(s *store.Store, path, now string, o onboardOpts) ([]string, 
 	if fileExists(evolution) {
 		lines = append(lines, "docs/evolution/ already present, untouched")
 	} else {
-		lines = append(lines, "no docs/evolution/ scaffold: the loop's constitution and evaluators live as records (`pulse record new`)")
+		lines = append(lines, "no docs/evolution/ scaffold written: the loop's constitution and evaluators live as records")
 	}
+	lines = append(lines, loopRecordLine(s, project.str("slug"), "constitution"), loopRecordLine(s, project.str("slug"), "evaluators"))
 	if _, found := recipeText(s, project.str("slug")); found {
 		lines = append(lines, "environment recipe present (CTX-environment), untouched")
 	} else if fileExists(filepath.Join(root, recipePath)) {
@@ -228,4 +231,30 @@ func starterCount(s *store.Store, slug string) int {
 		}
 	}
 	return n
+}
+
+// loopRecordLine describes one of the loop's records as the store holds it:
+// still the seeded copy (first revision marked seeded_from), the checkout's
+// file as indexed, present with its revision, or absent with the command
+// that seeds it.
+func loopRecordLine(s *store.Store, slug, name string) string {
+	rows, err := s.ListRecords(store.RecordFilter{Project: slug, Kind: "evolution", Slug: name})
+	if err != nil || len(rows) == 0 {
+		return fmt.Sprintf("%s: absent: pulse evolve seed --project %s", name, slug)
+	}
+	rec := rows[0]
+	if rec.CurrentRev == 1 {
+		if _, rev, err := s.GetRecord(rec.ID, 0); err == nil {
+			if from, _ := rev.Frontmatter["seeded_from"].(string); from != "" {
+				return fmt.Sprintf("%s: copied from %s (%s)", name, from[strings.LastIndex(from, "/")+1:], rec.ID)
+			}
+		}
+		if origin, imported := strings.CutPrefix(rec.Origin, "markdown:"); imported {
+			if at := strings.LastIndex(origin, "@"); at >= 0 {
+				origin = origin[:at]
+			}
+			return fmt.Sprintf("%s: imported from %s (%s)", name, origin, rec.ID)
+		}
+	}
+	return fmt.Sprintf("%s: present (%s r%d)", name, rec.ID, rec.CurrentRev)
 }

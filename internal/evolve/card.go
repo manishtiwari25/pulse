@@ -173,12 +173,24 @@ func immutablePaths(body string) []string {
 	return out
 }
 
+// scopeHeading accepts the template's "## Editable scope by stage" as well as
+// the bare "## Editable scope"; a qualifier after the name is part of the
+// heading, not another section.
+func scopeHeading(line string) bool {
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+	if len(rest) < len("Editable scope") || !strings.EqualFold(rest[:len("Editable scope")], "Editable scope") {
+		return false
+	}
+	rest = rest[len("Editable scope"):]
+	return rest == "" || rest[0] == ' '
+}
+
 func editablePath(body, file string, product bool) bool {
 	inside := false
 	pathsColumn, stageColumn := -1, -1
 	for _, line := range strings.Split(body, "\n") {
 		if strings.HasPrefix(line, "## ") {
-			inside = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "## ")), "Editable scope")
+			inside = scopeHeading(line)
 			continue
 		}
 		if !inside || !strings.HasPrefix(strings.TrimSpace(line), "|") {

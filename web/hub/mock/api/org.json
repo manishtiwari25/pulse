@@ -111,8 +111,20 @@
       "built_at": "2026-09-07T09:00:00Z",
       "can_decide": true,
       "claims_active": 0,
+      "constitution": {
+        "id": "EVO-constitution-demo-app",
+        "rev": 3,
+        "seeded": false,
+        "seeded_from": "amistio-template/TPL-evolution-constitution@r1"
+      },
       "dirty": false,
       "error": "",
+      "evaluators": {
+        "id": "EVO-evaluators-demo-app",
+        "rev": 1,
+        "seeded": true,
+        "seeded_from": "amistio-template/TPL-evolution-evaluators@r1"
+      },
       "evolution_present": true,
       "evolve_level": "C",
       "evolve_next": "pulse job add --project demo-app --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE'",
@@ -158,11 +170,13 @@
       "built_at": "2026-09-07T09:00:00Z",
       "can_decide": true,
       "claims_active": 0,
+      "constitution": null,
       "dirty": false,
       "error": "",
+      "evaluators": null,
       "evolution_present": false,
       "evolve_level": "B",
-      "evolve_next": "pulse record new evolution --project demo-lib --title Constitution --body-file FILE",
+      "evolve_next": "pulse evolve seed --project demo-lib  (template copy), or pulse record new evolution --project demo-lib --title Constitution --body-file FILE",
       "fixtures_enabled": 0,
       "head": "70cf3c8",
       "kind": "project",
@@ -205,8 +219,20 @@
       "built_at": "2026-09-07T09:00:00Z",
       "can_decide": true,
       "claims_active": 0,
+      "constitution": {
+        "id": "EVO-constitution",
+        "rev": 1,
+        "seeded": false,
+        "seeded_from": ""
+      },
       "dirty": false,
       "error": "",
+      "evaluators": {
+        "id": "EVO-evaluators",
+        "rev": 1,
+        "seeded": false,
+        "seeded_from": ""
+      },
       "evolution_present": true,
       "evolve_level": "D",
       "evolve_next": "none",
@@ -252,8 +278,20 @@
       "built_at": "2026-09-07T09:00:00Z",
       "can_decide": true,
       "claims_active": 0,
+      "constitution": {
+        "id": "EVO-constitution-demo-cli",
+        "rev": 1,
+        "seeded": true,
+        "seeded_from": "amistio-template/TPL-evolution-constitution@r1"
+      },
       "dirty": false,
       "error": "",
+      "evaluators": {
+        "id": "EVO-evaluators-demo-cli",
+        "rev": 1,
+        "seeded": true,
+        "seeded_from": "amistio-template/TPL-evolution-evaluators@r1"
+      },
       "evolution_present": true,
       "evolve_level": "B",
       "evolve_next": "pulse evolve fixture seed --project demo-cli  (starter set), or pulse evolve fixture add --project demo-cli --name N --request FILE --scorer CMD",

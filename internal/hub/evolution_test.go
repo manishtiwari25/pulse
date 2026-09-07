@@ -29,13 +29,20 @@ func assertEvolutionShape(t *testing.T, data map[string]any) {
 		t.Fatalf("incorrect evolution document keys: %v", keys)
 	}
 	assertEvolutionFixtures(t, data["fixtures"])
+	// ADR-030: a record document says whether its text is still the seeded copy.
 	for _, key := range []string{"constitution", "evaluators"} {
 		if data[key] == nil {
 			continue
 		}
 		record, ok := data[key].(map[string]any)
-		if !ok || !reflect.DeepEqual(sortedKeys(record), []string{"body", "record"}) {
-			t.Fatalf("%s is not a record/body document: %#v", key, data[key])
+		if !ok || !reflect.DeepEqual(sortedKeys(record), []string{"body", "record", "seeded", "seeded_from"}) {
+			t.Fatalf("%s is not a record/body/seeded document: %#v", key, data[key])
+		}
+		if _, ok := record["seeded"].(bool); !ok {
+			t.Fatalf("%s.seeded must be boolean: %#v", key, record["seeded"])
+		}
+		if _, ok := record["seeded_from"].(string); !ok {
+			t.Fatalf("%s.seeded_from must be a string: %#v", key, record["seeded_from"])
 		}
 	}
 	archive, ok := data["archive"].(map[string]any)

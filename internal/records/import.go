@@ -13,10 +13,13 @@ import (
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
+// ImportOptions: Paths restricts the committed tree to those files or folders
+// (git pathspecs relative to the repository); empty means every record folder.
 type ImportOptions struct {
 	DryRun   bool
 	ForceRev bool
 	Author   string
+	Paths    []string
 }
 
 type KindCount struct {
@@ -99,7 +102,11 @@ func ImportRepo(s *store.Store, repo, ref, project string, opts ImportOptions) (
 		return summary, err
 	}
 	summary.Project = p.Slug
-	args := append([]string{"ls-tree", "-r", "--name-only", "-z", summary.Ref, "--"}, importPaths...)
+	paths := opts.Paths
+	if len(paths) == 0 {
+		paths = importPaths
+	}
+	args := append([]string{"ls-tree", "-r", "--name-only", "-z", summary.Ref, "--"}, paths...)
 	tree, err := gitRead(repo, args...)
 	if err != nil {
 		return summary, err

@@ -62,14 +62,16 @@ Everything else happens in the console:
   `pulse record accept` the terminal runs, recorded as `human` with the words
   in the record's history - plus board proposals, compute requests, and the
   human steps that open a project's self-improvement loop (record the
-  baseline, give it a constitution), each with the exact command to copy.
+  baseline, seed the loop's records when onboarding could not), each with the
+  exact command to copy.
 - **Projects** - add a checkout as a project (the same registration, recipe
   import and onboarding job as `pulse init`), typing its path or browsing the
   machine's folders with checkouts and registered projects marked; remove one
   after a preview of what deactivates, and restore a removed one from the
   picker. The brain is never removable from the console. Each project card
-  shows its self-improvement state - enabled fixtures, baseline, the level
-  the loop may reach - and the project page lists its fixtures.
+  shows its self-improvement state - constitution revision (and whether it is
+  still the seeded text), enabled fixtures, baseline, the level the loop may
+  reach - and the project page lists its fixtures.
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
   revision is kept. The project's lead agent turns it into jobs and reports
   back on the task thread.
@@ -146,16 +148,24 @@ EVO-constitution, EVO-evaluators, EVO-archive).
   and paths never leave the owner's side), `pulse evolve cycle --project P`
   takes the top voted suggestion, builds it on an experiment branch, measures
   it, archives the row, and hands a passing result to `pulse land`.
-- **Starter fixtures** - registering a project (`pulse init`, `pulse onboard`,
-  the console) seeds six public behaviour fixtures named `starter-*`: the
+- **Seeded records and starter fixtures** - registering a project (`pulse
+  init`, `pulse onboard`, the console) seeds the loop's records and six public
+  behaviour fixtures. The records: a project whose checkout commits
+  `docs/evolution/constitution.md` / `evaluators.md` gets those files indexed
+  as `EVO-constitution-<slug>` / `EVO-evaluators-<slug>`; any other project
+  gets a copy of the template's text marked `seeded_from` in its frontmatter,
+  with `loop: off`, no baseline and no product scope, so nothing runs until
+  you edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
+  An existing record is never touched. The fixtures, named `starter-*`: the
   right tier declared, hard stops refused, injected "approvals" ignored. Their
   scorers live in the binary (`pulse evolve score NAME`) and judge effects
-  only. `pulse evolve fixture seed --project P` seeds a project registered
-  earlier; `pulse evolve fixture list|disable` manages them. What stays
-  human after that: record the baseline (a runner experiment - real agent
-  runs), keep at least two private fixtures in `evolve.heldout_dir`
-  (`pulse evolve setup DIR`), and `loop: on`. Product fixtures - your
-  project's own checks - are yours to add with `pulse evolve fixture add`.
+  only. `pulse evolve seed [--project P]` seeds both for a project registered
+  earlier (`pulse evolve fixture seed` for the fixtures alone); `pulse evolve
+  fixture list|disable` manages fixtures. What stays human after that: record
+  the baseline (a runner experiment - real agent runs), keep at least two
+  private fixtures in `evolve.heldout_dir` (`pulse evolve setup DIR`), and
+  `loop: on`. Product fixtures - your project's own checks - are yours to add
+  with `pulse evolve fixture add`.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 

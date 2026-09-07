@@ -1,0 +1,40 @@
+{
+  "body": "# Evaluators\n\n## Public checks\n\nThe six starter fixtures: each asks for one small, ordinary change and scores the result against the project's own checks (build, tests, lint, a reviewer's read). Three runs per fixture; the mean is the score.\n\n## Held-out\n\nThe owner keeps a held-out set outside this checkout. Agents never see its path.\n",
+  "frontmatter": {
+    "areas": [],
+    "date": "2026-09-01",
+    "id": "EVO-evaluators-demo-app",
+    "seeded_by": "pulse onboard",
+    "seeded_from": "amistio-template/TPL-evolution-evaluators@r1",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "evaluators"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "EVO-evaluators-demo-app",
+    "kind": "evolution",
+    "number": 0,
+    "path": "",
+    "project": "demo-app",
+    "slug": "evaluators",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "evaluators",
+    "updated_at": "2026-09-01T12:37:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T12:37:00Z",
+      "author": "pulse",
+      "note": "seeded from the template at onboarding",
+      "rev": 1
+    }
+  ]
+}
