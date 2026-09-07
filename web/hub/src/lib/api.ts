@@ -809,7 +809,14 @@ export interface EventsPayload {
 
 // ----- writes (one CLI command each; every one logs the same event) -------
 
+// The human gates in the console (ADR-028): a Proposed ADR is accepted,
+// declined or deferred with the owner's words; the hub records them as the
+// revision note, author `human`, suffixed "(via console)".
+export type RecordDecision = "accept" | "Rejected" | "Deferred";
+
 export const writes = {
+  acceptRecord: (id: string, words: string) => post<{ record: RecordRow }>("records/" + enc(id) + "/accept", { words }),
+  setRecordStatus: (id: string, status: "Rejected" | "Deferred", words: string) => post<{ record: RecordRow }>("records/" + enc(id) + "/status", { status, words }),
   // `id` is the contract field; `post_id` is what the Python hub read - the Go hub accepts both.
   decide: (id: string, answer: "yes" | "no", words: string) => post<{ ok?: boolean; decided?: unknown }>("decide", { id, post_id: id, answer, words }),
   setSetting: (name: string, value: string) => post<{ ok?: boolean; setting?: Setting }>("settings", { name, value }),

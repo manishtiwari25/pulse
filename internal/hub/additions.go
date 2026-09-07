@@ -564,6 +564,10 @@ func additionRecord(rec store.Record) map[string]any {
 }
 
 func (h *Handler) additionRecords(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) == 3 {
+		h.additionRecordDecision(w, r, parts[1], parts[2])
+		return
+	}
 	if len(parts) > 2 {
 		additionNotFound(w)
 		return

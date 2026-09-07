@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { CheckIcon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
@@ -12,11 +13,13 @@ import { LiveFeed } from "@/components/pulse/live-feed";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { AddProjectButton } from "@/components/project/project-dialogs";
+import { awaitsDecision, ProposedRecordCard } from "@/components/records/decide-record";
+import { RecordSheet } from "@/components/records/records";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num, plural } from "@/lib/format";
-import { registeredProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type Runner, type TasksPayload, type Timeline } from "@/lib/api";
+import { registeredProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type RecordRow, type RecordsPayload, type Runner, type TasksPayload, type Timeline } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 export default function HubPage() {
@@ -26,6 +29,9 @@ export default function HubPage() {
   const runner = useApi<Runner>("runner");
   const tasks = useApi<TasksPayload>("tasks");
   const compute = useApi<Compute>("compute", { refresh: 30000 });
+  // Proposed ADRs across every project: the decisions that wait for the owner (ADR-028).
+  const proposed = useApi<RecordsPayload>("records?kind=adr&status=Proposed", { refresh: 60000 });
+  const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
 
   if (org.error && !org.data)
     return (
@@ -46,8 +52,13 @@ export default function HubPage() {
   const openTasks = (tasks.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled");
   const recent = [...openTasks].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, 6);
   const pendingCompute = (compute.data?.requests ?? []).filter((r) => r.status === "pending");
-  const inbox = awaiting.length + pendingCompute.length;
+  const adrs = (proposed.data?.records ?? []).filter(awaitsDecision);
+  const inbox = adrs.length + awaiting.length + pendingCompute.length;
   const computeDown = !!compute.error && !compute.data;
+  const decisionsDown = !!proposed.error && !proposed.data;
+  const down = [decisionsDown ? "decisions could not be loaded" : "", computeDown ? "compute requests could not be loaded" : ""].filter(Boolean);
+  const downWhy = [decisionsDown ? "decisions could not be loaded (" + proposed.error + ")" : "", computeDown ? "compute requests could not be loaded (" + compute.error + ")" : ""].filter(Boolean);
+  const checking = [!proposed.data && !decisionsDown ? "decisions" : "", !compute.data && !computeDown ? "compute requests" : ""].filter(Boolean);
   const attention = projects.filter((p) => p.error || p.missing || p.stop_present || !p.board_present);
   const r = runner.data;
   const daemonOn = !!r && (r.daemon.state === "running" || r.daemon.state === "alive");
@@ -81,13 +92,16 @@ export default function HubPage() {
         Hub
       </PageTitle>
 
-      {/* The inbox: everything that waits for the owner's yes or no, buttons in reach, before anything else. */}
+      {/* The inbox: everything that waits for the owner's yes or no, buttons in reach, before anything else. Decisions first, then proposals, then compute. */}
       {inbox ? (
         <section id="for-you" className="mb-4" aria-label="For you">
-          <SectionHeading count={inbox} action={computeDown ? <span className="text-warn">compute requests could not be loaded</span> : <span>waiting for your yes or no</span>}>
+          <SectionHeading count={inbox} action={down.length ? <span className="text-warn">{down.join(" · ")}</span> : <span>waiting for your yes or no</span>}>
             For you
           </SectionHeading>
           <CardGrid cols={2}>
+            {adrs.map((r) => (
+              <ProposedRecordCard key={r.project + "/" + r.id} r={r} onOpen={setOpenRecord} />
+            ))}
             {awaiting.map((p) => (
               <ProposalCard key={p.id} r={p} slug={p.slug || o.totals.brain} canDecide={o.can_decide} />
             ))}
@@ -99,12 +113,12 @@ export default function HubPage() {
       ) : (
         <p id="for-you" className="mb-4 flex items-center gap-1.5 text-[13px] text-muted-foreground">
           <CheckIcon className="size-3.5 shrink-0 text-ok" aria-hidden />
-          <span>{computeDown ? "No proposal waits for you - compute requests could not be loaded (" + compute.error + ")." : compute.data ? "Nothing waits for you right now." : "No proposal waits for you - checking compute requests…"}</span>
+          <span>{downWhy.length ? "No proposal waits for you - " + downWhy.join("; ") + "." : checking.length ? "No proposal waits for you - checking " + checking.join(" and ") + "…" : "Nothing waits for you right now."}</span>
         </p>
       )}
 
       <KpiGrid>
-        <Kpi n={inbox} label="for you" sub={inbox ? [awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
+        <Kpi n={inbox} label="for you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
         <Kpi n={openTasks.length} label="open tasks" sub={tasks.data ? plural(openTasks.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.tasks()} />
         <Kpi n={pendingCompute.length} label="compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
         <Kpi n={o.totals.agents_active} label="agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
@@ -184,6 +198,8 @@ export default function HubPage() {
           ) : null}
         </div>
       </div>
+      {/* Read on an inbox card opens the record here; its header carries the same three answers. */}
+      <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />
     </>
   );
 }

@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { hrefs } from "@/lib/nav";
 import { useApi, useEventStream } from "@/lib/use-api";
-import { COMMONS_HINT, type Org } from "@/lib/api";
+import { COMMONS_HINT, type Org, type RecordsPayload } from "@/lib/api";
 import { CommandPalette } from "./command-palette";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -45,6 +45,10 @@ function ProjectSwitcher() {
   const pathname = usePathname();
   const current = pathname.startsWith("/project") ? params.get("slug") || "" : "";
   const { data } = useApi<Org>("org", { refresh: 30000 });
+  // Proposed ADRs count as "for you" next to the awaiting proposals (ADR-028).
+  const proposed = useApi<RecordsPayload>("records?kind=adr&status=Proposed", { refresh: 60000 });
+  const decisions = new Map<string, number>();
+  for (const r of proposed.data?.records ?? []) if (r.kind === "adr" && r.status === "Proposed") decisions.set(r.project, (decisions.get(r.project) || 0) + 1);
   const projects = data?.projects ?? [];
   const commons = data?.commons;
   return (
@@ -59,18 +63,21 @@ function ProjectSwitcher() {
       <DropdownMenuContent align="start" className="w-72">
         <DropdownMenuLabel>Projects on this machine</DropdownMenuLabel>
         {projects.length === 0 ? <div className="px-2 py-1.5 text-xs text-muted-foreground">{data ? "No project is registered yet: run pulse init in a checkout." : "Loading…"}</div> : null}
-        {projects.map((p) => (
-          <DropdownMenuItem key={p.slug} asChild>
-            <Link href={hrefs.project(p.slug)} className="flex items-center justify-between gap-2">
-              <span className="truncate">{p.slug}</span>
-              <span className="flex items-center gap-1">
-                {p.brain ? <Badge variant="secondary">framework</Badge> : null}
-                {p.proposals_awaiting ? <Badge>{p.proposals_awaiting} for you</Badge> : null}
-                {!p.present ? <Badge variant="destructive">missing</Badge> : null}
-              </span>
-            </Link>
-          </DropdownMenuItem>
-        ))}
+        {projects.map((p) => {
+          const forYou = p.proposals_awaiting + (decisions.get(p.slug) || 0);
+          return (
+            <DropdownMenuItem key={p.slug} asChild>
+              <Link href={hrefs.project(p.slug)} className="flex items-center justify-between gap-2">
+                <span className="truncate">{p.slug}</span>
+                <span className="flex items-center gap-1">
+                  {p.brain ? <Badge variant="secondary">framework</Badge> : null}
+                  {forYou ? <Badge>{forYou} for you</Badge> : null}
+                  {!p.present ? <Badge variant="destructive">missing</Badge> : null}
+                </span>
+              </Link>
+            </DropdownMenuItem>
+          );
+        })}
         {commons ? (
           <>
             <DropdownMenuSeparator />

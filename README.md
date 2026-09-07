@@ -57,6 +57,10 @@ its code hash and macOS may ask again; checkouts elsewhere never ask.
 
 Everything else happens in the console:
 
+- **For you** - everything waiting on the owner in one place: proposed
+  decisions (ADRs) to accept, defer or decline with your own words - the same
+  `pulse record accept` the terminal runs, recorded as `human` with the words
+  in the record's history - plus board proposals and compute requests.
 - **Projects** - add a checkout as a project (the same registration, recipe
   import and onboarding job as `pulse init`), typing its path or browsing the
   machine's folders with checkouts and registered projects marked; remove one
@@ -114,7 +118,8 @@ pulse record list adr --project my-app
 pulse record show ADR-019
 pulse record new adr --project my-app --title "Rate limiting" --body-file adr.md
 pulse record amend ADR-019 --body-file adr-v2.md --note "added rollback"
-pulse record accept ADR-019 && pulse record deliver ADR-019
+pulse record accept ADR-019 --words 'Approved because ...'   # or Accept in the console's For you inbox
+pulse record deliver ADR-019 delivered
 pulse record lead-time --project my-app       # proposed-to-delivered days
 pulse migrate --records --repo . --ref HEAD    # import a repository's committed Markdown records once
 pulse export --db ~/pulse-backup.sqlite        # a copy outside every project

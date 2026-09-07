@@ -10,6 +10,7 @@ import { CardGrid, ItemCard, ItemCardHeader, ItemCardMeta, ItemCardTitle } from 
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState, ErrorNotice, Kv, Panel, SkeletonRows } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When } from "@/components/pulse/who";
+import { awaitsDecision, RecordDecisionButtons } from "@/components/records/decide-record";
 import { hrefs } from "@/lib/nav";
 import { enc, type RecordDetail, type RecordRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -162,12 +163,18 @@ export function RecordBody({ id, project }: { id: string; project?: string }) {
   return (
     <>
       <SheetHeader>
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        {/* pr-8 keeps the row clear of the sheet's close button; the decision buttons (Proposed ADRs only) sit at its end and wrap under the badges on phones. */}
+        <div className="flex flex-wrap items-center gap-1.5 pr-8 text-xs">
           <RecordKindBadge kind={r.kind} />
           <StatusBadge status={r.status} />
           {r.tier !== null && r.tier !== undefined ? <ToneBadge tone="neutral">{"Tier " + r.tier}</ToneBadge> : null}
           {r.delivery ? <ToneBadge tone={r.delivered ? "ok" : "neutral"}>{"delivery: " + r.delivery + (r.delivered ? " · " + r.delivered : "")}</ToneBadge> : null}
           <ProjectLink slug={r.project} />
+          {awaitsDecision(r) ? (
+            <span className="ml-auto">
+              <RecordDecisionButtons record={r} size="xs" />
+            </span>
+          ) : null}
         </div>
         <SheetTitle className="text-base leading-snug anywhere">
           <Mono className="mr-2 text-muted-foreground">{r.id}</Mono>

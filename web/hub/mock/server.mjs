@@ -19,7 +19,7 @@ const now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
 // ----- in-memory state for writes ----------------------------------------
 
-const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, seq: 5000 };
+const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, records: {}, seq: 5000 };
 const loadJson = async (rel) => JSON.parse(await readFile(join(root, rel), "utf8"));
 async function init() {
   state.tasks = (await loadJson("tasks.json")).tasks;
@@ -75,6 +75,12 @@ const TREE = {
   "/usr/local": [],
 };
 const CHECKOUTS = new Set(["/home/owner/src/demo-app", "/home/owner/src/demo-lib", "/home/owner/src/pulse", "/home/owner/src/old-site", "/home/owner/src/experiments/spike-a"]);
+// A record row with the console's decisions applied (ADR-028).
+function recordView(r) {
+  const o = state.records[r.id];
+  return o ? { ...r, status: o.status, current_rev: r.current_rev + o.revisions.length, updated_at: now() } : r;
+}
+
 function folders(raw) {
   let path = raw.trim();
   if (path === "" ) path = HOME + "/src";
@@ -389,7 +395,28 @@ async function handle(req, res) {
       }
       return send(res, 200, preview);
     }
-    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/remove|restore, compute/executors/<name>/remove");
+    // The human gates (ADR-028): accept, decline or defer a Proposed ADR with words.
+    if (segs[0] === "records" && segs.length === 3 && (segs[2] === "accept" || segs[2] === "status")) {
+      const all = (await fixture("records")).records;
+      const base = all.find((r) => r.id === segs[1]);
+      if (!base) return fail(res, 404, "No record " + segs[1], "nothing by that id is indexed", "pulse record list");
+      const words = String(body.words || "").trim();
+      if (!words) return fail(res, 400, "Your words are required", "A decision is recorded with the reason in the owner's words.", "Say why in a sentence.");
+      let status = "Accepted";
+      if (segs[2] === "accept") {
+        if (base.kind !== "adr") return fail(res, 400, "Cannot accept " + base.id, "only ADRs use human acceptance", "pulse record status " + base.id + " Accepted");
+      } else {
+        const want = String(body.status || "").toLowerCase();
+        if (want !== "rejected" && want !== "deferred") return fail(res, 400, "The console declines or defers", "Only Rejected and Deferred are set here; acceptance is its own action and every other status stays in the terminal.", "Use Accept, or pulse record status " + base.id + " STATUS.");
+        status = want === "rejected" ? "Rejected" : "Deferred";
+      }
+      const o = (state.records[base.id] ||= { status: base.status, revisions: [] });
+      o.status = status;
+      o.revisions.push({ rev: base.current_rev + o.revisions.length + 1, author: "human", at: now(), note: (segs[2] === "accept" ? "" : "status: " + status + " - ") + words + " (via console)" });
+      emit("human", "record." + status.toLowerCase(), base.id, { words });
+      return send(res, 200, { record: recordView(base) });
+    }
+    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/remove|restore, compute/executors/<name>/remove, records/<id>/accept|status");
   }
 
   // GET - live state first, fixtures second
@@ -431,7 +458,7 @@ async function handle(req, res) {
     return send(res, 200, { events: state.events.filter((e) => e.id > since && (!p || (e.detail && e.detail.project === p))).slice(0, limit) });
   }
   if (segs[0] === "records" && segs.length === 1) {
-    const all = (await fixture("records")).records;
+    const all = (await fixture("records")).records.map(recordView);
     const p = q.get("project");
     const k = q.get("kind");
     const st = q.get("status");
@@ -440,9 +467,11 @@ async function handle(req, res) {
   if (segs[0] === "records" && segs.length === 2) {
     const d = await fixture("records/" + segs[1]);
     if (!d) return fail(res, 404, "no such record", segs[1] + " is not indexed", "run pulse init in the project checkout");
+    const o = state.records[segs[1]];
+    const view = o ? { ...d, record: recordView(d.record), frontmatter: { ...d.frontmatter, status: o.status }, revisions: [...(d.revisions || []), ...o.revisions] } : d;
     const rev = q.get("rev");
-    if (rev && Number(rev) !== d.record.current_rev) return send(res, 200, { ...d, body: `_(revision r${rev} of ${d.record.id} - the mock keeps only the current body)_\n\n` + d.body });
-    return send(res, 200, d);
+    if (rev && Number(rev) !== view.record.current_rev) return send(res, 200, { ...view, body: `_(revision r${rev} of ${view.record.id} - the mock keeps only the current body)_\n\n` + view.body });
+    return send(res, 200, view);
   }
   if (segs[0] === "constitution") {
     const d = await fixture("constitution");

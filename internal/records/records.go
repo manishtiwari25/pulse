@@ -183,6 +183,14 @@ func Amend(s *store.Store, id, body, author, note string) (*store.Record, error)
 
 // Status preserves the change in both the immutable revision and the head.
 func Status(s *store.Store, id, status, author string) error {
+	return StatusNote(s, id, status, author, "")
+}
+
+// StatusNote is Status with the caller's revision note appended to the
+// default "status: X" - the owner's words when a decision is declined or
+// deferred from the console (ADR-028). The rules are the same: Accepted is
+// refused for every author.
+func StatusNote(s *store.Store, id, status, author, note string) error {
 	status = strings.TrimSpace(status)
 	if status == "" {
 		return inputError("Cannot set record status", "status is empty", "pulse record status "+id+" Draft")
@@ -205,7 +213,11 @@ func Status(s *store.Store, id, status, author string) error {
 		}
 	}
 	rec.Status, rev.Frontmatter["status"] = status, status
-	_, err = s.PutRecord(*rec, rev.Frontmatter, rev.Body, author, "status: "+status)
+	message := "status: " + status
+	if note = strings.TrimSpace(note); note != "" {
+		message += " - " + note
+	}
+	_, err = s.PutRecord(*rec, rev.Frontmatter, rev.Body, author, message)
 	return err
 }
 
