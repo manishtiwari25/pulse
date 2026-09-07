@@ -165,7 +165,7 @@ func runBaseline(s *store.Store, job, project row, agent, now, runID, logPath st
 		log.add("measuring %s of %s with %d enabled public fixture(s) and %d held out; budget %s",
 			def, slug, fixtures, evolve.HeldoutCount(s).Count, budget.Round(time.Minute))
 		var err error
-		scores, err = evolve.Measure(ctx, s, slug, project.str("path"), def, evolve.MeasureOptions{})
+		scores, err = evolve.Measure(ctx, s, slug, project.str("path"), def, evolve.MeasureOptions{Out: log})
 		switch {
 		case err != nil && errors.Is(parent.Err(), context.Canceled):
 			// The daemon is stopping or restarting: no failure, no finding, the job is planned again.

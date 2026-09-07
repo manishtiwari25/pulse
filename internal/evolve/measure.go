@@ -171,7 +171,7 @@ func measure(ctx context.Context, s *store.Store, project, repo, ref string, opt
 			return nil, err
 		}
 		scoreCtx, cancel := context.WithTimeout(ctx, timeout)
-		value, err := scoreClone(scoreCtx, clone, scorerEnv(home, commit), f.scorer)
+		value, reason, err := scoreClone(scoreCtx, clone, scorerEnv(home, commit), f.scorer)
 		cancel()
 		if err != nil {
 			return nil, measurementFailure(ctx, label, "read-only scorer", err)
@@ -180,7 +180,13 @@ func measure(ctx context.Context, s *store.Store, project, repo, ref string, opt
 		total += value * (f.weight / maxWeight)
 		weights += f.weight / maxWeight
 		if opts.Out != nil {
-			fmt.Fprintf(opts.Out, "[%d/%d] %s: %.4f\n", i+1, len(matrix), label, value)
+			// A held-out scorer's words could name what must stay private; only a
+			// public fixture's reason is shown, and never a secret-shaped one.
+			if reason != "" && f.kind != "heldout" && !store.SecretShaped(reason) {
+				fmt.Fprintf(opts.Out, "[%d/%d] %s: %.4f (%s)\n", i+1, len(matrix), label, value, reason)
+			} else {
+				fmt.Fprintf(opts.Out, "[%d/%d] %s: %.4f\n", i+1, len(matrix), label, value)
+			}
 		}
 	}
 	scores.Total = total / weights
@@ -202,34 +208,54 @@ func measurementFailure(ctx context.Context, label, step string, err error) erro
 	return inputError("Measurement failed for "+label, why, "pulse evolve fixture list (owner: review the scorer and runner_cmd)")
 }
 
-func scoreClone(ctx context.Context, clone string, env, scorer []string) (value float64, retErr error) {
+// scoreClone runs the scorer inside the frozen clone and returns its score and
+// the first line it wrote to stderr - a starter scorer's reason for a 0 - cut
+// to one short line. The reason is for the owner's progress output only.
+func scoreClone(ctx context.Context, clone string, env, scorer []string) (value float64, reason string, retErr error) {
 	root, err := os.OpenRoot(clone)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer root.Close()
 	restore, err := freezeTree(root)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer func() { retErr = errors.Join(retErr, restore()) }()
 	before, err := treeFingerprint(root)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	out := &boundedOutput{limit: 64 << 10}
-	runErr := runProcess(ctx, clone, env, scorer, out)
+	stderr := &boundedOutput{limit: 4 << 10}
+	runErr := runProcessTo(ctx, clone, env, scorer, out, stderr)
 	after, err := treeFingerprint(root)
 	if err != nil || before != after {
-		return 0, &ViolationError{Reason: "scorer changed the measured tree"}
+		return 0, "", &ViolationError{Reason: "scorer changed the measured tree"}
 	}
 	if runErr != nil {
-		return 0, runErr
+		return 0, "", runErr
 	}
 	if out.overflow {
-		return 0, errors.New("scorer output exceeds its limit")
+		return 0, "", errors.New("scorer output exceeds its limit")
 	}
-	return parseScore(out.buf.String())
+	value, err = parseScore(out.buf.String())
+	return value, firstLine(stderr.buf.String(), 200), err
+}
+
+// firstLine is the first non-blank line of text, cut to limit characters.
+func firstLine(text string, limit int) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if runes := []rune(line); len(runes) > limit {
+			line = string(runes[:limit-1]) + "…"
+		}
+		return line
+	}
+	return ""
 }
 
 func parseScore(text string) (float64, error) {

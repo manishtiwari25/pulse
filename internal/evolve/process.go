@@ -139,12 +139,18 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 }
 
 func runProcess(ctx context.Context, cwd string, env, argv []string, stdout io.Writer) error {
+	return runProcessTo(ctx, cwd, env, argv, stdout, io.Discard)
+}
+
+// runProcessTo is runProcess with the command's stderr kept as well; the
+// harness and git never need it, a scorer's one-line reason for a 0 does.
+func runProcessTo(ctx context.Context, cwd string, env, argv []string, stdout, stderr io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env = cwd, env
-	cmd.Stdout, cmd.Stderr = stdout, io.Discard
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = 2 * time.Second
 	cleanup := containProcess(cmd)
 	defer cleanup()

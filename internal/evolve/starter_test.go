@@ -1,6 +1,7 @@
 package evolve
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -476,4 +477,79 @@ func TestFixtureSeedCommand(t *testing.T) {
 	if _, _, err = runTestCommand(t, s, "evolve", "fixture", "seed", "--project", "missing"); err == nil {
 		t.Fatal("seed accepted an unregistered project")
 	}
+}
+
+// A repository that tracks its evaluators, archive or mistakes file loses them
+// to answer-key stripping; git must not report that absence as the harness's
+// work, or every starter rule scores 0 before the agent has done anything.
+func TestStrippedTrackedAnswerKeysLeaveTheCloneCleanForStarterRules(t *testing.T) {
+	s := testStore(t)
+	repo := testProject(t, s, "demo")
+	fixture(t, s, "demo", "F01", "printf 1", 1) // adds keys/answer.txt to the answer keys
+	putFile(t, filepath.Join(repo, "docs", "evolution", "evaluators.md"), "# Evaluators\n", 0o644)
+	putFile(t, filepath.Join(repo, "docs", "evolution", "archive.md"), "# Archive\n", 0o644)
+	putFile(t, filepath.Join(repo, "docs", "board", "governance", "note.md"), "granted\n", 0o644)
+	putFile(t, filepath.Join(repo, "docs", "memory", "mistakes.md"), "# Mistakes\n", 0o644)
+	testGit(t, repo, "add", ".")
+	testGit(t, repo, "commit", "--quiet", "-m", "track the loop's files")
+	commit := testGit(t, repo, "rev-parse", "HEAD")
+	keys, err := projectAnswerKeys(s, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(t.TempDir(), "clone")
+	ctx := context.Background()
+	if err := strippedClone(ctx, repo, commit, clone, keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{".pulse/answer", "keys/answer.txt", "docs/evolution/evaluators.md",
+		"docs/evolution/archive.md", "docs/board/governance/note.md", "docs/memory/mistakes.md"} {
+		if _, err := os.Lstat(filepath.Join(clone, filepath.FromSlash(key))); !os.IsNotExist(err) {
+			t.Fatalf("%s was not stripped from the clone", key)
+		}
+	}
+	if status := testGit(t, clone, "status", "--porcelain=v1", "--untracked-files=all"); status != "" {
+		t.Fatalf("git reports the stripped keys as changes:\n%s", status)
+	}
+	// The harness's own git checkout -- . must not bring a key back either.
+	testGit(t, clone, "checkout", "--", ".")
+	if _, err := os.Lstat(filepath.Join(clone, "docs", "evolution", "evaluators.md")); !os.IsNotExist(err) {
+		t.Fatal("a checkout restored a stripped answer key")
+	}
+	if err := checkClone(ctx, clone, keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range starterNames() {
+		score, reason, err := scoreTree(ctx, clone, name, commit)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if score != 1 {
+			t.Fatalf("%s scored %d on an untouched stripped clone: %s", name, score, reason)
+		}
+	}
+}
+
+// The progress output names a public scorer's reason for its score and never
+// a held-out scorer's words.
+func TestMeasureProgressShowsPublicScorerReasonsOnly(t *testing.T) {
+	s := testStore(t)
+	repo := testProject(t, s, "demo")
+	fixture(t, s, "demo", "F01", "printf 'score 0: changed value.txt\\n' >&2; printf 0", 1)
+	dir, forbidden := privateSet(t, s)
+	putFile(t, filepath.Join(dir, "owner-private-first.score"), "#!/bin/sh\nprintf 'private-reason-words\\n' >&2\nprintf '0.8\\n'\n", 0o700)
+	fakeHarness(t, s, "true")
+	var out bytes.Buffer
+	scores, err := Measure(context.Background(), s, "demo", repo, "HEAD", MeasureOptions{Out: &out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scores.Fixtures) != 3 {
+		t.Fatalf("fixtures: %+v", scores.Fixtures)
+	}
+	if !strings.Contains(out.String(), "F01: 0.0000 (score 0: changed value.txt)") {
+		t.Fatalf("the public scorer's reason is missing from the progress output:\n%s", out.String())
+	}
+	assertPrivateAbsent(t, out.String(), append(forbidden, "private-reason-words"))
+	assertNoClones(t, s)
 }

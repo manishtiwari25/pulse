@@ -138,7 +138,40 @@ func strippedClone(ctx context.Context, repo, commit, dest string, keys []string
 			return &ViolationError{Reason: "cannot strip an answer-key path"}
 		}
 	}
+	if err := hideStripped(ctx, dest, keys); err != nil {
+		return err
+	}
 	return checkClone(ctx, dest, keys)
+}
+
+// hideStripped marks the tracked files under the stripped answer-key paths
+// skip-worktree in the clone's index. Git then treats their absence as nothing
+// to report - a scorer's git status stays clean and git checkout -- . does not
+// bring them back - while the measured commit itself is untouched. Without it
+// a repository that tracks its evaluators or archive shows every stripped key
+// as a deleted path, and every starter rule reads that as the harness's work.
+func hideStripped(ctx context.Context, dest string, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	listed, err := gitRaw(ctx, dest, append([]string{"--literal-pathspecs", "ls-files", "-z", "--cached", "--"}, keys...)...)
+	if err != nil {
+		return cloneFailure(ctx, "list the stripped answer-key paths")
+	}
+	paths := []string{}
+	for _, p := range strings.Split(listed, "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	for len(paths) > 0 {
+		n := min(len(paths), 64)
+		if _, err := gitOutput(ctx, dest, append([]string{"update-index", "--skip-worktree", "--"}, paths[:n]...)...); err != nil {
+			return cloneFailure(ctx, "hide the stripped answer-key paths")
+		}
+		paths = paths[n:]
+	}
+	return nil
 }
 
 func cloneFailure(ctx context.Context, step string) error {

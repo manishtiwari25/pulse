@@ -165,7 +165,9 @@ EVO-constitution, EVO-evaluators, EVO-archive).
   the records and at least one enabled fixture exist and `loop: on`, it plans
   a `baseline` job that measures the default branch and archives the score
   (a failure posts a finding and is retried after 24 hours; `pulse job add
-  --kind baseline` queues it by hand). What stays human after that: at least
+  --kind baseline` queues it by hand). The job's run log lists every public
+  fixture's score and, for a 0, the scorer's one-line reason. What stays
+  human after that: at least
   two private fixtures in `evolve.heldout_dir` (`pulse evolve setup DIR`) -
   the owner's proof that the loop is not grading itself. Product fixtures -
   your project's own checks - are yours to add with `pulse evolve fixture

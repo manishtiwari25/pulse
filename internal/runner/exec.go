@@ -46,6 +46,14 @@ func (l *runLog) add(format string, args ...any) {
 
 func (l *runLog) put(line string) { l.lines = append(l.lines, line) }
 
+// Write lets a measurement's progress lines land in the run log.
+func (l *runLog) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		l.put(line)
+	}
+	return len(p), nil
+}
+
 func (l *runLog) text() string {
 	var kept []string
 	for _, x := range l.lines {
