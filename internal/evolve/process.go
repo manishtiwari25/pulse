@@ -156,11 +156,18 @@ func runProcess(ctx context.Context, cwd string, env, argv []string, stdout io.W
 }
 
 func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
+	out, err := gitRaw(ctx, repo, args...)
+	return strings.TrimSpace(out), err
+}
+
+// gitRaw is gitOutput without trimming, for -z output whose first byte may be
+// a significant space.
+func gitRaw(ctx context.Context, repo string, args ...string) (string, error) {
 	out := &boundedOutput{limit: 8 << 20}
 	argv := append([]string{"git", "-c", "core.hooksPath=" + os.DevNull}, args...)
 	err := runProcess(ctx, repo, gitEnv(), argv, out)
 	if out.overflow {
 		return "", errors.New("git output exceeds the diagnostic limit")
 	}
-	return strings.TrimSpace(out.buf.String()), err
+	return out.buf.String(), err
 }

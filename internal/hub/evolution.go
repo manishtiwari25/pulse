@@ -2,11 +2,14 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/evolve"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -65,10 +68,68 @@ func (h *Handler) evolution(project string) (map[string]any, error) {
 	result["loop"] = object("loop limits tolerance stop heldout_present",
 		h.Store.Setting("evolve.loop", ""), h.Store.Setting("evolve.limits", ""),
 		h.Store.Setting("evolve.tolerance", ""), h.Store.Setting("stop", ""), present)
+	// ADR-029: the loop's gates and its fixture names, as evolve status and
+	// fixture list report them. A request or scorer is never projected: the
+	// request is what an agent gets to read, the scorer is the owner's judge.
+	gates, gatesErr := h.evolutionGates(project)
+	result["gates"] = nil
+	if gates != nil {
+		result["gates"] = gates
+	}
+	if gatesErr != "" {
+		result["gates_error"] = gatesErr
+	}
+	fixtures, err := h.evolutionFixtures(project)
+	if err != nil {
+		return nil, err
+	}
+	result["fixtures"] = fixtures
 	if heldout != "" {
 		redactEvolutionPath(result, heldout)
 	}
 	return result, nil
+}
+
+// evolutionGates is evolve status as a generic document so the private-path
+// redaction can walk it; an error becomes a message, never a failed payload.
+func (h *Handler) evolutionGates(project string) (map[string]any, string) {
+	status, err := evolve.Status(h.Store, project)
+	if err != nil {
+		var ce *cli.Error
+		if errors.As(err, &ce) {
+			return nil, ce.What
+		}
+		return nil, err.Error()
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		return nil, err.Error()
+	}
+	gates := map[string]any{}
+	if err := json.Unmarshal(encoded, &gates); err != nil {
+		return nil, err.Error()
+	}
+	return gates, ""
+}
+
+func (h *Handler) evolutionFixtures(project string) ([]map[string]any, error) {
+	rows := []map[string]any{}
+	var hasFixtures int
+	if err := h.Store.DB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='evolution_fixtures'").Scan(&hasFixtures); err != nil {
+		return nil, err
+	}
+	if hasFixtures == 0 {
+		return rows, nil
+	}
+	fixtures, err := evolve.ListFixtures(h.Store, project, false)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fixtures {
+		rows = append(rows, object("name kind enabled weight created_by at starter",
+			f.Name, f.Kind, f.Enabled, f.Weight, f.CreatedBy, f.At, evolve.IsStarter(f.Name)))
+	}
+	return rows, nil
 }
 
 func redactEvolutionPath(value any, private string) {

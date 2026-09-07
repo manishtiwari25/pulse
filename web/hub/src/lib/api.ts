@@ -217,7 +217,21 @@ export interface Timeline {
   series?: (Timeline & { slug: string; kind: string; base: string })[];
 }
 
-export interface ProjectCardData {
+// The self-improvement gates on a project row (ADR-029). The loop for a
+// project opens only with enabled public fixtures and a recorded baseline;
+// the console shows both and names the next human step, never starting a
+// measurement itself. Optional on both the org rows and GET /projects: the
+// hub that ships with this console sends them, an older one does not.
+export type EvolveLevel = "A" | "B" | "C" | "D" | "";
+
+export interface EvolveGate {
+  fixtures_enabled: number; // enabled public fixtures
+  baseline: boolean; // a kept runner experiment recorded the baseline
+  evolve_level: EvolveLevel; // highest self-improvement level allowed right now; "" on error
+  evolve_next: string; // the exact next human step as a command, or "none"
+}
+
+export interface ProjectCardData extends Partial<EvolveGate> {
   slug: string;
   kind: string;
   brain: boolean;
@@ -242,12 +256,22 @@ export interface ProjectCardData {
   evolution_present: boolean;
   loop: string;
   stop_present: boolean;
-  baseline: string;
   last_post: PostRef | null;
   active_claims: Claim[];
   present: boolean;
   missing: boolean;
   error: string;
+}
+
+// The gate fields of a project, from whichever payload carries them: the
+// org row first, the registry row (GET /projects) second. Null when neither
+// does, so the console shows nothing rather than a wrong "0 fixtures".
+export function evolveGate(p: Partial<EvolveGate> | undefined | null, reg?: Partial<EvolveGate> | null): EvolveGate | null {
+  for (const src of [p, reg]) {
+    if (src && typeof src.evolve_level === "string" && typeof src.fixtures_enabled === "number")
+      return { fixtures_enabled: src.fixtures_enabled, baseline: src.baseline === true, evolve_level: src.evolve_level, evolve_next: src.evolve_next || "" };
+  }
+  return null;
 }
 
 export interface Totals {
@@ -329,8 +353,9 @@ export interface Executor {
 
 // ----- project lifecycle (ADR-027) --------------------------------------
 // GET /projects lists every registered checkout, inactive ones included; the
-// org payload only carries the active ones.
-export interface RegisteredProject {
+// org payload only carries the active ones. Rows may carry the ADR-029 gate
+// fields too (see EvolveGate).
+export interface RegisteredProject extends Partial<EvolveGate> {
   slug: string;
   name: string;
   path: string;
@@ -599,6 +624,54 @@ export interface Evolution {
   evaluators: EvolutionDoc | null;
   archive: { record?: RecordRow | null; body?: string; rows: EvolutionArchiveRow[] };
   loop: { loop: string; limits: string; tolerance: string; stop: string; heldout_present: boolean };
+  // ADR-029: the gates the loop checks before it may run, and the fixtures
+  // it measures against. `gates` is null when the hub could not compute
+  // them, with `gates_error` saying why. Both are absent on an older hub.
+  gates?: EvolveGates | null;
+  gates_error?: string;
+  fixtures?: EvolveFixture[] | null;
+}
+
+// Every gate between a project and its self-improvement loop, as the hub
+// evaluates them: the level allowed right now, why, and the one human step
+// that opens the next gate. The held-out set is counted, never named.
+export interface EvolveGates {
+  project: string;
+  stop: boolean;
+  loop: boolean;
+  limits: string;
+  tolerance: number;
+  constitution: boolean;
+  evaluators: boolean;
+  baseline: number | null; // the recorded baseline score, null when none
+  baseline_id?: string;
+  public_fixtures: number;
+  heldout: { count: number; pending: number; problem?: string };
+  kept: number;
+  discarded: number;
+  voted: { tried: number; kept: number; rate: number };
+  signal: { tried: number; kept: number; rate: number };
+  product_scope: { allowed: boolean; reason: string };
+  loop_started_at?: string;
+  cycles: number;
+  hours: number;
+  cap_reached: boolean;
+  limit_problem?: string;
+  level: EvolveLevel | string;
+  reason: string;
+  next_human_step: string; // a command, or "none"
+}
+
+// One fixture as the console may see it: name, kind, state and provenance.
+// The request and scorer text stay in the store on purpose.
+export interface EvolveFixture {
+  name: string;
+  kind: "public" | "signal" | string;
+  enabled: boolean;
+  weight: number;
+  created_by: string;
+  at: string;
+  starter: boolean;
 }
 
 // ----- new routes (API v1 additions) -------------------------------------

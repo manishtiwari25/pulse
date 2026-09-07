@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/manishtiwari25/pulse/internal/evolve"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -196,19 +197,35 @@ func onboardProject(s *store.Store, path, now string, o onboardOpts) ([]string, 
 	} else {
 		lines = append(lines, "no environment recipe yet; the onboarding agent writes it with `pulse env set`, a human reviews it")
 	}
-	check := o.VerifyCmd
-	if check == "" {
-		check = project.str("verify_cmd")
-	}
-	if check == "" {
-		check = "the verify command you choose"
+	starters := starterCount(s, project.str("slug"))
+	if created && starters > 0 {
+		lines = append(lines, fmt.Sprintf("seeded %d starter fixtures (pulse evolve fixture list --project %s)", starters, project.str("slug")))
+	} else if starters == 0 {
+		lines = append(lines, fmt.Sprintf("starter fixtures absent: pulse evolve fixture seed --project %s", project.str("slug")))
 	}
 	lines = append(lines, "What stays human:",
-		fmt.Sprintf("1. record the baseline - run the project's own check (%s) and add a B- row to the evaluators record, commit", check),
-		"2. set loop: on in the constitution record")
+		fmt.Sprintf("1. record the baseline: pulse job add --project %s --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE' (the runner measures the starter fixtures; costs real agent runs)", project.str("slug")),
+		"2. keep at least two private fixtures in evolve.heldout_dir: pulse evolve setup DIR",
+		"3. set loop: on in the constitution record")
 	if !strings.HasPrefix(daemonStatus(s, now), "alive ") {
-		lines = append(lines, "3. keep the daemon alive with `pulse service install`")
+		lines = append(lines, "4. keep the daemon alive with `pulse service install`")
 	}
 	lines = append(lines, "store: "+s.Path)
 	return lines, nil
+}
+
+// starterCount is how many starter fixtures the project carries, enabled or
+// not; -1 when the fixture table cannot be read, so onboarding says nothing.
+func starterCount(s *store.Store, slug string) int {
+	fixtures, err := evolve.ListFixtures(s, slug, false)
+	if err != nil {
+		return -1
+	}
+	n := 0
+	for _, f := range fixtures {
+		if evolve.IsStarter(f.Name) {
+			n++
+		}
+	}
+	return n
 }

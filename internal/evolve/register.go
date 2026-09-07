@@ -6,12 +6,14 @@ func init() {
 	cli.Register(cli.Command{
 		Name: "evolve", Group: "agents", Raw: true, NoStore: true,
 		Summary: "measure, rehearse and run the voted self-improvement loop",
-		Usage: "pulse evolve status|fixture|setup|measure|archive|cycle [flags]\n" +
+		Usage: "pulse evolve status|fixture|setup|measure|archive|cycle|score [flags]\n" +
 			"  fixture add --project P --name N --request FILE|- --scorer CMD [--weight W] [--kind public|signal] [--answer-key PATH...]\n" +
 			"  fixture list|enable|disable [NAME] [--project P] [--json]\n" +
+			"  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n" +
 			"  setup DIR | status [--project P] [--json] | archive [--project P] [--json]\n" +
 			"  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]\n" +
-			"  cycle --project P [--once] [--agent A] [--json]",
+			"  cycle --project P [--once] [--agent A] [--json]\n" +
+			"  score NAME   (starter fixture scorer; run inside the measured clone, prints 1 or 0)",
 		Run: runEvolve,
 	})
 	cli.Register(cli.Command{

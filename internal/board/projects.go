@@ -49,6 +49,13 @@ func realPath(p string) string {
 	return abs
 }
 
+// OnProjectCreated runs after RegisterProject has inserted a new project row
+// and written its project.add event; a refresh never calls it. ADR-029
+// installs the starter-fixture seeder here from internal/evolve, which board
+// cannot import. The registration is durable before the hook runs, so a hook
+// error is recorded as a project.hook_failed event and never fails it.
+var OnProjectCreated func(s *store.Store, p *store.Project, actor string) error
+
 // RegisterProject registers a checkout (or refreshes the registration when
 // its path is known) like pulse.py add_project; created tells which. remote ""
 // means "read remote.origin.url"; the checkout must be a git repository.
@@ -137,7 +144,17 @@ func RegisterProject(s *store.Store, path, name, remote string, brain bool, veri
 		return nil, false, err
 	}
 	p, err := s.Project(slug)
-	return p, created, err
+	if err != nil {
+		return nil, false, err
+	}
+	if created && OnProjectCreated != nil {
+		if hookErr := OnProjectCreated(s, p, actor); hookErr != nil {
+			if err := event(s, actor, "project.hook_failed", slug, map[string]any{"error": hookErr.Error()}); err != nil {
+				return nil, false, err
+			}
+		}
+	}
+	return p, created, nil
 }
 
 // AddProject is RegisterProject without the created flag.

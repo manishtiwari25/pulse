@@ -271,7 +271,7 @@ func Status(s *store.Store, project string) (*LoopStatus, error) {
 			"pulse record new evolution --project "+project+" --title Evaluators --body-file FILE"
 	case status.PublicFixtures == 0:
 		status.Reason, status.NextHumanStep = "no enabled public fixtures",
-			"pulse evolve fixture add --project "+project+" --name N --request FILE --scorer CMD"
+			"pulse evolve fixture seed --project "+project+"  (starter set), or pulse evolve fixture add --project "+project+" --name N --request FILE --scorer CMD"
 	case status.Baseline == nil:
 		status.Reason, status.NextHumanStep = "no kept runner experiment establishes the baseline",
 			"pulse job add --project "+project+" --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE'"

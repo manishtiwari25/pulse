@@ -4,6 +4,7 @@
   "projects": [
     "commons",
     "demo-app",
+    "demo-cli",
     "demo-lib",
     "pulse"
   ],

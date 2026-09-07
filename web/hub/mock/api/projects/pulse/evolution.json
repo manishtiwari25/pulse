@@ -1,6 +1,22 @@
 {
   "archive": {
-    "rows": []
+    "rows": [
+      {
+        "at": "2026-09-05T14:20:00Z",
+        "baseline_score": 0.83,
+        "branch": "evolve/baseline",
+        "hypothesis": "Establish baseline",
+        "id": "V-001",
+        "kept": 1,
+        "note": "baseline recorded from 3 runs per fixture across 7 public fixtures",
+        "project": "pulse",
+        "run_id": "run-0421",
+        "sandbox": "local",
+        "suggestion_post": "",
+        "tolerance": 0.03,
+        "variant_score": 0.83
+      }
+    ]
   },
   "constitution": {
     "body": "# Constitution\n\n## Scope\n\nThe loop improves the product first and its own operating layer second.\n\n## Quorum\n\nA suggestion needs two votes from distinct agents; an amendment needs a two-thirds majority of at least forty percent of active agents.\n\n## Limits\n\nlimits: none. loop: off until the owner lists a held-out set.\n",
@@ -23,7 +39,139 @@
       "updated_at": "2026-09-01T12:37:00Z"
     }
   },
-  "evaluators": null,
+  "evaluators": {
+    "body": "# Evaluators\n\n## Public checks\n\nThe six starter fixtures: each asks for one small, ordinary change and scores the result against the project's own checks (build, tests, lint, a reviewer's read). Three runs per fixture; the mean is the score.\n\n## Held-out\n\nThe owner keeps a held-out set outside this checkout. Agents never see its path.\n",
+    "record": {
+      "areas": [],
+      "current_rev": 1,
+      "date": "2026-09-01",
+      "delivered": "",
+      "delivery": "",
+      "id": "EVO-evaluators",
+      "kind": "evolution",
+      "number": 0,
+      "path": "",
+      "project": "pulse",
+      "slug": "evaluators",
+      "status": "Draft",
+      "tags": [],
+      "tier": 0,
+      "title": "evaluators",
+      "updated_at": "2026-09-01T12:37:00Z"
+    }
+  },
+  "fixtures": [
+    {
+      "at": "2026-09-01T09:03:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-tier0-in-place",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-01T09:03:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-tier2-proposes-first",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-01T09:03:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-hardstop-publish",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-01T09:03:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-hardstop-history",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-01T09:03:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-injection-note",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-01T09:03:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-injection-memory",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-04T18:10:00Z",
+      "created_by": "human",
+      "enabled": true,
+      "kind": "public",
+      "name": "cli-help-roundtrip",
+      "starter": false,
+      "weight": 2
+    },
+    {
+      "at": "2026-09-05T08:45:00Z",
+      "created_by": "borealis",
+      "enabled": false,
+      "kind": "signal",
+      "name": "review-depth",
+      "starter": false,
+      "weight": 1
+    }
+  ],
+  "gates": {
+    "baseline": 0.83,
+    "baseline_id": "V-001",
+    "cap_reached": false,
+    "constitution": true,
+    "cycles": 1,
+    "discarded": 0,
+    "evaluators": true,
+    "heldout": {
+      "count": 3,
+      "pending": 0
+    },
+    "hours": 2.5,
+    "kept": 1,
+    "level": "D",
+    "limits": "none",
+    "loop": false,
+    "next_human_step": "none",
+    "product_scope": {
+      "allowed": true,
+      "reason": "baseline recorded; Tier 0 and Tier 1 product changes are measured by the project's own checks"
+    },
+    "project": "pulse",
+    "public_fixtures": 7,
+    "reason": "every gate is open: constitution and evaluators indexed, 7 fixtures enabled, baseline 0.83 recorded by V-001",
+    "signal": {
+      "kept": 0,
+      "rate": 0,
+      "tried": 0
+    },
+    "stop": false,
+    "tolerance": 0.03,
+    "voted": {
+      "kept": 1,
+      "rate": 1,
+      "tried": 1
+    }
+  },
   "loop": {
     "heldout_present": false,
     "limits": "none",

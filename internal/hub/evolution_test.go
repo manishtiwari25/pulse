@@ -15,9 +15,20 @@ import (
 
 func assertEvolutionShape(t *testing.T, data map[string]any) {
 	t.Helper()
-	if !reflect.DeepEqual(sortedKeys(data), []string{"archive", "constitution", "evaluators", "loop"}) {
-		t.Fatalf("incorrect evolution document keys: %v", sortedKeys(data))
+	// ADR-029 adds gates (evolve status, nil with gates_error when the loop
+	// cannot describe the project) and fixtures (names only, never texts).
+	keys := sortedKeys(data)
+	if _, failed := data["gates_error"]; failed {
+		if data["gates"] != nil {
+			t.Fatalf("gates_error accompanies a non-nil gates document: %#v", data["gates"])
+		}
+		if !reflect.DeepEqual(keys, []string{"archive", "constitution", "evaluators", "fixtures", "gates", "gates_error", "loop"}) {
+			t.Fatalf("incorrect evolution document keys: %v", keys)
+		}
+	} else if !reflect.DeepEqual(keys, []string{"archive", "constitution", "evaluators", "fixtures", "gates", "loop"}) {
+		t.Fatalf("incorrect evolution document keys: %v", keys)
 	}
+	assertEvolutionFixtures(t, data["fixtures"])
 	for _, key := range []string{"constitution", "evaluators"} {
 		if data[key] == nil {
 			continue

@@ -4,6 +4,9 @@
   },
   "constitution": null,
   "evaluators": null,
+  "fixtures": [],
+  "gates": null,
+  "gates_error": "the commons is not a project - it has no checkout and no loop of its own",
   "loop": {
     "heldout_present": false,
     "limits": "none",

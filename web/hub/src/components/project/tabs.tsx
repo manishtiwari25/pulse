@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { ActivityChart } from "@/components/pulse/charts";
 import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow } from "@/components/pulse/cards";
 import { DataTable } from "@/components/pulse/data-table";
+import { SelfImprovementPanel } from "@/components/pulse/evolve";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { Markdown } from "@/components/pulse/markdown";
 import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
@@ -472,67 +473,77 @@ export function EvolutionTab({ slug }: { slug: string }) {
         const stopped = loop.stop === "1";
         const keptN = rows.filter(kept).length;
         const last = rows[0];
-        if (!present)
-          return (
-            <EmptyState>
-              Evolution is not set up for <b>{slug}</b>. An agent writes the <Mono>EVO-constitution</Mono> and <Mono>EVO-evaluators</Mono> records through <Mono>pulse-reflect</Mono>; once both are in the store and you turn <Mono>evolve.loop</Mono> on in{" "}
-              <Link href={hrefs.settings("evolve")} className="underline">
-                Settings
-              </Link>
-              , every measured cycle lands in the archive here.
-            </EmptyState>
-          );
+        // The gates and fixtures (ADR-029) show whenever the hub reports them, set up or not: they are what the owner asked about.
+        const fixtures = e.fixtures ?? [];
+        const gated = e.gates !== undefined || !!e.gates_error || fixtures.length > 0;
+        const empty = (
+          <EmptyState>
+            Evolution is not set up for <b>{slug}</b>. An agent writes the <Mono>EVO-constitution</Mono> and <Mono>EVO-evaluators</Mono> records through <Mono>pulse-reflect</Mono>; once both are in the store and you turn <Mono>evolve.loop</Mono> on in{" "}
+            <Link href={hrefs.settings("evolve")} className="underline">
+              Settings
+            </Link>
+            , every measured cycle lands in the archive here.
+          </EmptyState>
+        );
+        if (!present && !gated) return empty;
         return (
           <div className="grid gap-4">
-            <KpiGrid>
-              <Kpi n={on ? "on" : "off"} label="loop" tone={stopped ? "bad" : on ? "ok" : "neutral"} sub={stopped ? "STOP is set" : undefined} href={hrefs.settings("evolve")} />
-              <Kpi n={rows.length} label="cycles" sub={rows.length ? keptN + " kept · " + (rows.length - keptN) + " discarded" : "none yet"} />
-              <Kpi n={loop.tolerance || "—"} label="tolerance" sub="allowed regression" />
-              <Kpi n={loop.limits || "none"} label="limits" />
-              <Kpi n={loop.heldout_present ? "present" : "absent"} label="held-out evaluators" tone={loop.heldout_present ? "ok" : "warn"} sub="owner-private; path never shown" />
-              <Kpi n={e.constitution ? "indexed" : "missing"} label="constitution" tone={e.constitution ? "ok" : "warn"} />
-              <Kpi n={e.evaluators ? "indexed" : "missing"} label="evaluators" tone={e.evaluators ? "ok" : "warn"} />
-              <Kpi n={last ? last.at.slice(0, 10) : "—"} label="last cycle" sub={last ? (kept(last) ? "kept" : "discarded") : undefined} />
-            </KpiGrid>
-            {stopped ? <Notice tone="bad">STOP is set - the loop halts until you clear it in Settings.</Notice> : null}
-            {!e.constitution || !e.evaluators ? (
-              <Notice tone="warn">
-                {[!e.constitution ? "EVO-constitution" : "", !e.evaluators ? "EVO-evaluators" : ""].filter(Boolean).join(" and ")} not in the store yet - the loop refuses to run without both. Ask the lead to write them (pulse-reflect does).
-              </Notice>
-            ) : null}
-            <Panel title="Archive - measured cycles" actions={<span>{plural(rows.length, "cycle")}</span>} dense>
-              {rows.length ? (
-                <DataTable
-                  dense
-                  rows={rows}
-                  rowKey={(r) => r.id}
-                  columns={[
-                    { key: "at", label: "when", render: (r) => <When d={r.at} /> },
-                    { key: "hypothesis", label: "hypothesis", render: (r) => <span className="anywhere">{r.hypothesis || <Mono>{r.id}</Mono>}</span> },
-                    { key: "score", label: "baseline → variant", align: "right", render: (r) => <Mono>{score(r.baseline_score) + " → " + score(r.variant_score)}</Mono> },
-                    { key: "kept", label: "verdict", render: (r) => <ToneBadge tone={kept(r) ? "ok" : "neutral"}>{kept(r) ? "kept" : "discarded"}</ToneBadge> },
-                    { key: "branch", label: "branch", render: (r) => (r.branch ? <Mono>{r.branch}</Mono> : "") },
-                    { key: "sandbox", label: "sandbox", render: (r) => r.sandbox || "" },
-                    { key: "note", label: "note", render: (r) => <span className="anywhere text-muted-foreground">{r.note}</span> },
-                  ]}
-                />
-              ) : (
-                <EmptyState className="m-3">No measured cycle yet. When the loop is on and both documents are indexed, each experiment branch lands here with its scores and verdict.</EmptyState>
-              )}
-            </Panel>
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Panel title="Constitution" actions={e.constitution ? <Link href={hrefs.record(e.constitution.record.id, slug)} className="hover:underline">{e.constitution.record.id}</Link> : undefined}>
-                {e.constitution ? <Markdown source={e.constitution.body} className="max-h-[50vh] overflow-y-auto" /> : <EmptyState>Not indexed yet.</EmptyState>}
-              </Panel>
-              <Panel title="Evaluators" actions={e.evaluators ? <Link href={hrefs.record(e.evaluators.record.id, slug)} className="hover:underline">{e.evaluators.record.id}</Link> : undefined}>
-                {e.evaluators ? <Markdown source={e.evaluators.body} className="max-h-[50vh] overflow-y-auto" /> : <EmptyState>Not indexed yet. The held-out set stays on your machine; only the checks agents may see are described here.</EmptyState>}
-              </Panel>
-            </div>
-            {e.archive?.record && e.archive.body ? (
-              <Panel title="Historical archive" actions={<Link href={hrefs.record(e.archive.record.id, slug)} className="hover:underline">{e.archive.record.id}</Link>}>
-                <Markdown source={e.archive.body} className="max-h-[50vh] overflow-y-auto" />
-              </Panel>
-            ) : null}
+            {gated ? <SelfImprovementPanel gates={e.gates} error={e.gates_error} fixtures={fixtures} /> : null}
+            {!present ? (
+              empty
+            ) : (
+              <>
+                <KpiGrid>
+                  <Kpi n={on ? "on" : "off"} label="loop" tone={stopped ? "bad" : on ? "ok" : "neutral"} sub={stopped ? "STOP is set" : undefined} href={hrefs.settings("evolve")} />
+                  <Kpi n={rows.length} label="cycles" sub={rows.length ? keptN + " kept · " + (rows.length - keptN) + " discarded" : "none yet"} />
+                  <Kpi n={loop.tolerance || "—"} label="tolerance" sub="allowed regression" />
+                  <Kpi n={loop.limits || "none"} label="limits" />
+                  <Kpi n={loop.heldout_present ? "present" : "absent"} label="held-out evaluators" tone={loop.heldout_present ? "ok" : "warn"} sub="owner-private; path never shown" />
+                  <Kpi n={e.constitution ? "indexed" : "missing"} label="constitution" tone={e.constitution ? "ok" : "warn"} />
+                  <Kpi n={e.evaluators ? "indexed" : "missing"} label="evaluators" tone={e.evaluators ? "ok" : "warn"} />
+                  <Kpi n={last ? last.at.slice(0, 10) : "—"} label="last cycle" sub={last ? (kept(last) ? "kept" : "discarded") : undefined} />
+                </KpiGrid>
+                {stopped ? <Notice tone="bad">STOP is set - the loop halts until you clear it in Settings.</Notice> : null}
+                {!e.constitution || !e.evaluators ? (
+                  <Notice tone="warn">
+                    {[!e.constitution ? "EVO-constitution" : "", !e.evaluators ? "EVO-evaluators" : ""].filter(Boolean).join(" and ")} not in the store yet - the loop refuses to run without both. Ask the lead to write them (pulse-reflect does).
+                  </Notice>
+                ) : null}
+                <Panel title="Archive - measured cycles" actions={<span>{plural(rows.length, "cycle")}</span>} dense>
+                  {rows.length ? (
+                    <DataTable
+                      dense
+                      rows={rows}
+                      rowKey={(r) => r.id}
+                      columns={[
+                        { key: "at", label: "when", render: (r) => <When d={r.at} /> },
+                        { key: "hypothesis", label: "hypothesis", render: (r) => <span className="anywhere">{r.hypothesis || <Mono>{r.id}</Mono>}</span> },
+                        { key: "score", label: "baseline → variant", align: "right", render: (r) => <Mono>{score(r.baseline_score) + " → " + score(r.variant_score)}</Mono> },
+                        { key: "kept", label: "verdict", render: (r) => <ToneBadge tone={kept(r) ? "ok" : "neutral"}>{kept(r) ? "kept" : "discarded"}</ToneBadge> },
+                        { key: "branch", label: "branch", render: (r) => (r.branch ? <Mono>{r.branch}</Mono> : "") },
+                        { key: "sandbox", label: "sandbox", render: (r) => r.sandbox || "" },
+                        { key: "note", label: "note", render: (r) => <span className="anywhere text-muted-foreground">{r.note}</span> },
+                      ]}
+                    />
+                  ) : (
+                    <EmptyState className="m-3">No measured cycle yet. When the loop is on and both documents are indexed, each experiment branch lands here with its scores and verdict.</EmptyState>
+                  )}
+                </Panel>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <Panel title="Constitution" actions={e.constitution ? <Link href={hrefs.record(e.constitution.record.id, slug)} className="hover:underline">{e.constitution.record.id}</Link> : undefined}>
+                    {e.constitution ? <Markdown source={e.constitution.body} className="max-h-[50vh] overflow-y-auto" /> : <EmptyState>Not indexed yet.</EmptyState>}
+                  </Panel>
+                  <Panel title="Evaluators" actions={e.evaluators ? <Link href={hrefs.record(e.evaluators.record.id, slug)} className="hover:underline">{e.evaluators.record.id}</Link> : undefined}>
+                    {e.evaluators ? <Markdown source={e.evaluators.body} className="max-h-[50vh] overflow-y-auto" /> : <EmptyState>Not indexed yet. The held-out set stays on your machine; only the checks agents may see are described here.</EmptyState>}
+                  </Panel>
+                </div>
+                {e.archive?.record && e.archive.body ? (
+                  <Panel title="Historical archive" actions={<Link href={hrefs.record(e.archive.record.id, slug)} className="hover:underline">{e.archive.record.id}</Link>}>
+                    <Markdown source={e.archive.body} className="max-h-[50vh] overflow-y-auto" />
+                  </Panel>
+                ) : null}
+              </>
+            )}
           </div>
         );
       }}

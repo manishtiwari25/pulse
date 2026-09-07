@@ -11,7 +11,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { hrefs } from "@/lib/nav";
 import { useApi, useEventStream } from "@/lib/use-api";
-import { COMMONS_HINT, type Org, type RecordsPayload } from "@/lib/api";
+import { COMMONS_HINT, evolveGate, type Org, type ProjectsPayload, type RecordsPayload } from "@/lib/api";
+import { gateStep } from "@/components/pulse/evolve";
 import { CommandPalette } from "./command-palette";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -47,6 +48,8 @@ function ProjectSwitcher() {
   const { data } = useApi<Org>("org", { refresh: 30000 });
   // Proposed ADRs count as "for you" next to the awaiting proposals (ADR-028).
   const proposed = useApi<RecordsPayload>("records?kind=adr&status=Proposed", { refresh: 60000 });
+  // So does a self-improvement step only the owner can take (ADR-029); the registry row carries the gates when the org row does not.
+  const reg = useApi<ProjectsPayload>("projects", { refresh: 60000 });
   const decisions = new Map<string, number>();
   for (const r of proposed.data?.records ?? []) if (r.kind === "adr" && r.status === "Proposed") decisions.set(r.project, (decisions.get(r.project) || 0) + 1);
   const projects = data?.projects ?? [];
@@ -64,7 +67,8 @@ function ProjectSwitcher() {
         <DropdownMenuLabel>Projects on this machine</DropdownMenuLabel>
         {projects.length === 0 ? <div className="px-2 py-1.5 text-xs text-muted-foreground">{data ? "No project is registered yet: run pulse init in a checkout." : "Loading…"}</div> : null}
         {projects.map((p) => {
-          const forYou = p.proposals_awaiting + (decisions.get(p.slug) || 0);
+          const step = gateStep(p.slug, evolveGate(p, reg.data?.projects?.find((r) => r.slug === p.slug)));
+          const forYou = p.proposals_awaiting + (decisions.get(p.slug) || 0) + (step ? 1 : 0);
           return (
             <DropdownMenuItem key={p.slug} asChild>
               <Link href={hrefs.project(p.slug)} className="flex items-center justify-between gap-2">

@@ -14,19 +14,26 @@ import { KindBadge, Mono, PostLink, ProjectLink, Provenance, StatusBadge, Thread
 import { cn } from "@/lib/utils";
 import { expiresAt, num, plural, statusTone, untilText } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { COMMONS_HINT, writes, type Amendment, type Claim, type Executor, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion } from "@/lib/api";
+import { COMMONS_HINT, evolveGate, writes, type Amendment, type Claim, type EvolveGate, type Executor, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion } from "@/lib/api";
 import { useNow } from "@/lib/use-api";
+import { EvolveBadges, gateStep } from "./evolve";
 
 // ----- project card ------------------------------------------------------
 
 type FactTone = "ok" | "warn" | "accent";
 const FACT_TONE: Record<FactTone, string> = { ok: "text-ok", warn: "text-warn", accent: "text-accent-2" };
 
-export function ProjectCard({ p, spark }: { p: ProjectCardData; spark?: number[] }) {
-  const attention = p.proposals_awaiting > 0;
+// `gate` overrides what the org row says about the self-improvement gates
+// (the hub page merges in the registry row); undefined reads the row itself.
+export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: number[]; gate?: EvolveGate | null }) {
   const inVote = p.suggestions_needing_votes + p.amendments_open;
+  const g = gate === undefined ? evolveGate(p) : gate;
+  // A self-improvement step only the owner can take counts as "for you" like an awaiting proposal (ADR-029).
+  const step = gateStep(p.slug, g);
+  const forYou = p.proposals_awaiting + (step ? 1 : 0);
+  const attention = forYou > 0;
   const facts: { n: number; label: string; tone?: FactTone }[] = [
-    { n: p.proposals_awaiting, label: "for you", tone: p.proposals_awaiting ? "ok" : undefined },
+    { n: forYou, label: "for you", tone: forYou ? "ok" : undefined },
     { n: p.claims_active, label: "working", tone: p.claims_active ? "ok" : undefined },
     { n: p.threads_open, label: "threads" },
     { n: p.suggestions_eligible, label: "eligible", tone: p.suggestions_eligible ? "accent" : undefined },
@@ -68,6 +75,8 @@ export function ProjectCard({ p, spark }: { p: ProjectCardData; spark?: number[]
           </span>
         ))}
       </ItemCardMeta>
+      {/* The self-improvement gates (ADR-029): why the loop runs or waits, in three chips. Hidden when the hub does not report them. */}
+      {g ? <EvolveBadges g={g} /> : null}
       {p.last_post ? (
         <p className="truncate text-xs text-muted-foreground">
           <KindBadge kind={p.last_post.kind} /> <span className="ml-1">{p.last_post.summary}</span>

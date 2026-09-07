@@ -71,6 +71,13 @@ func testProject(t *testing.T, s *store.Store, slug string) string {
 	putFile(t, filepath.Join(repo, "keys", "answer.txt"), "another answer\n", 0o600)
 	testGit(t, repo, "add", ".")
 	testGit(t, repo, "commit", "--quiet", "-m", "temporary fixture")
+	// Registration seeds the starter fixtures, whose scorer is this very
+	// executable: under go test that is the test binary, so a measurement
+	// here would run the suite inside itself. Tests build their own fixture
+	// sets; starter_test.go exercises seeding on purpose.
+	hook := board.OnProjectCreated
+	board.OnProjectCreated = nil
+	defer func() { board.OnProjectCreated = hook }()
 	if _, err := board.AddProject(s, repo, slug, "", false, "this-command-must-not-run", "human", slug); err != nil {
 		t.Fatal(err)
 	}

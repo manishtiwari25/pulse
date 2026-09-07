@@ -5,6 +5,7 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/evolve"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -62,13 +63,29 @@ func (h *Handler) additionProjectList(w http.ResponseWriter, r *http.Request) {
 		if p.Brain {
 			brain = p.Slug
 		}
-		rows = append(rows, map[string]any{
+		row := map[string]any{
 			"slug": p.Slug, "name": p.Name, "path": p.Path, "remote": p.Remote, "brain": p.Brain,
 			"status": p.Status, "verify_cmd": p.VerifyCmd, "default_branch": p.DefaultBranch,
 			"added_at": p.AddedAt, "added_by": p.AddedBy, "last_seen": p.LastSeen, "present": present(p),
-		})
+		}
+		for key, value := range projectGates(h.Store, p.Slug) {
+			row[key] = value
+		}
+		rows = append(rows, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": rows, "brain": brain})
+}
+
+// projectGates is the loop's position for one project row (ADR-029), read
+// the way evolve status reads it. A project the loop cannot describe (removed,
+// or a store without the loop's tables) reports the zero values.
+func projectGates(s *store.Store, slug string) map[string]any {
+	status, err := evolve.Status(s, slug)
+	if err != nil {
+		return map[string]any{"fixtures_enabled": 0, "baseline": false, "evolve_level": "", "evolve_next": ""}
+	}
+	return map[string]any{"fixtures_enabled": status.PublicFixtures, "baseline": status.Baseline != nil,
+		"evolve_level": status.Level, "evolve_next": status.NextHumanStep}
 }
 
 func (h *Handler) additionProjectRegister(w http.ResponseWriter, r *http.Request) {

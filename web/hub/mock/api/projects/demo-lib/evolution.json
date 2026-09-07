@@ -4,6 +4,45 @@
   },
   "constitution": null,
   "evaluators": null,
+  "fixtures": [],
+  "gates": {
+    "baseline": null,
+    "cap_reached": false,
+    "constitution": false,
+    "cycles": 0,
+    "discarded": 0,
+    "evaluators": false,
+    "heldout": {
+      "count": 0,
+      "pending": 0,
+      "problem": "evolve.heldout_dir is not set"
+    },
+    "hours": 0,
+    "kept": 0,
+    "level": "B",
+    "limits": "none",
+    "loop": false,
+    "next_human_step": "pulse record new evolution --project demo-lib --title Constitution --body-file FILE",
+    "product_scope": {
+      "allowed": false,
+      "reason": "no baseline yet - product changes need a measured baseline first"
+    },
+    "project": "demo-lib",
+    "public_fixtures": 0,
+    "reason": "no constitution record - the loop has no bounds to read, so it can record but not rehearse",
+    "signal": {
+      "kept": 0,
+      "rate": 0,
+      "tried": 0
+    },
+    "stop": false,
+    "tolerance": 0.03,
+    "voted": {
+      "kept": 0,
+      "rate": 0,
+      "tried": 0
+    }
+  },
   "loop": {
     "heldout_present": false,
     "limits": "none",

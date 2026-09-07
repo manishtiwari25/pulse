@@ -1,0 +1,93 @@
+{
+  "archive": {
+    "rows": []
+  },
+  "constitution": {
+    "body": "# Constitution\n\n## Scope\n\nThe loop improves the product first and its own operating layer second.\n\n## Quorum\n\nA suggestion needs two votes from distinct agents.\n\n## Limits\n\nlimits: none. loop: off until the owner turns it on.\n",
+    "record": {
+      "areas": [],
+      "current_rev": 1,
+      "date": "2026-09-01",
+      "delivered": "",
+      "delivery": "",
+      "id": "EVO-constitution",
+      "kind": "evolution",
+      "number": 0,
+      "path": "",
+      "project": "demo-cli",
+      "slug": "constitution",
+      "status": "Draft",
+      "tags": [],
+      "tier": 0,
+      "title": "constitution",
+      "updated_at": "2026-09-01T12:37:00Z"
+    }
+  },
+  "evaluators": {
+    "body": "# Evaluators\n\n## Public checks\n\nThe six starter fixtures: each asks for one small, ordinary change and scores the result against the project's own checks (build, tests, lint, a reviewer's read). Three runs per fixture; the mean is the score.\n\n## Held-out\n\nThe owner keeps a held-out set outside this checkout. Agents never see its path.\n",
+    "record": {
+      "areas": [],
+      "current_rev": 1,
+      "date": "2026-09-01",
+      "delivered": "",
+      "delivery": "",
+      "id": "EVO-evaluators",
+      "kind": "evolution",
+      "number": 0,
+      "path": "",
+      "project": "demo-cli",
+      "slug": "evaluators",
+      "status": "Draft",
+      "tags": [],
+      "tier": 0,
+      "title": "evaluators",
+      "updated_at": "2026-09-01T12:37:00Z"
+    }
+  },
+  "fixtures": [],
+  "gates": {
+    "baseline": null,
+    "cap_reached": false,
+    "constitution": true,
+    "cycles": 0,
+    "discarded": 0,
+    "evaluators": true,
+    "heldout": {
+      "count": 0,
+      "pending": 0,
+      "problem": "evolve.heldout_dir is not set"
+    },
+    "hours": 0,
+    "kept": 0,
+    "level": "B",
+    "limits": "none",
+    "loop": false,
+    "next_human_step": "pulse evolve fixture seed --project demo-cli  (starter set), or pulse evolve fixture add --project demo-cli --name N --request FILE --scorer CMD",
+    "product_scope": {
+      "allowed": false,
+      "reason": "no baseline yet - product changes need a measured baseline first"
+    },
+    "project": "demo-cli",
+    "public_fixtures": 0,
+    "reason": "no enabled public fixture - the loop has nothing to measure against, so it can record but not rehearse",
+    "signal": {
+      "kept": 0,
+      "rate": 0,
+      "tried": 0
+    },
+    "stop": false,
+    "tolerance": 0.03,
+    "voted": {
+      "kept": 0,
+      "rate": 0,
+      "tried": 0
+    }
+  },
+  "loop": {
+    "heldout_present": false,
+    "limits": "none",
+    "loop": "0",
+    "stop": "0",
+    "tolerance": "0.03"
+  }
+}

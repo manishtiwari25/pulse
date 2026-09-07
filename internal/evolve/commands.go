@@ -188,6 +188,9 @@ func runEvolve(c *cli.Context, _ *flag.FlagSet, args []string) error {
 	if sub == "fixture" {
 		return commandError(runFixture(c, args), "evolve fixture")
 	}
+	if sub == "score" {
+		return commandError(runScore(c, args), "evolve score")
+	}
 	c, fs := commandFlags(c, "evolve "+sub)
 	var tree, ref string
 	var selected repeatedStrings
@@ -202,7 +205,7 @@ func runEvolve(c *cli.Context, _ *flag.FlagSet, args []string) error {
 		fs.BoolVar(&once, "once", false, "finish at most one experiment")
 	case "status", "report", "gates", "archive", "setup":
 	default:
-		return inputError("Unknown evolve subcommand", "choose status, fixture, setup, measure, archive or cycle", "pulse help evolve")
+		return inputError("Unknown evolve subcommand", "choose status, fixture, setup, measure, archive, cycle or score", "pulse help evolve")
 	}
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
@@ -328,7 +331,7 @@ func runEvolve(c *cli.Context, _ *flag.FlagSet, args []string) error {
 
 func runFixture(c *cli.Context, args []string) error {
 	if len(args) == 0 {
-		return inputError("Fixture command required", "choose add, list, disable or enable", "pulse help evolve")
+		return inputError("Fixture command required", "choose add, list, seed, disable or enable", "pulse help evolve")
 	}
 	sub, args := args[0], args[1:]
 	c, fs := commandFlags(c, "evolve fixture "+sub)
@@ -343,16 +346,16 @@ func runFixture(c *cli.Context, args []string) error {
 		fs.Float64Var(&weight, "weight", 1, "positive score weight")
 		fs.StringVar(&kind, "kind", "public", "public or signal")
 		fs.Var(&keys, "answer-key", "repository-relative answer-key path to strip (repeatable)")
-	case "list", "disable", "enable":
+	case "list", "seed", "disable", "enable":
 	default:
-		return inputError("Unknown fixture command", "choose add, list, disable or enable", "pulse help evolve")
+		return inputError("Unknown fixture command", "choose add, list, seed, disable or enable", "pulse help evolve")
 	}
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	args = fs.Args()
-	if ((sub == "enable" || sub == "disable") && len(args) != 1) || ((sub == "add" || sub == "list") && len(args) != 0) {
-		return inputError("Wrong fixture arguments", "enable/disable take one name; add/list take flags", "pulse help evolve")
+	if ((sub == "enable" || sub == "disable") && len(args) != 1) || ((sub == "add" || sub == "list" || sub == "seed") && len(args) != 0) {
+		return inputError("Wrong fixture arguments", "enable/disable take one name; add/list/seed take flags", "pulse help evolve")
 	}
 	return withStore(c, sub == "list", func(s *store.Store) error {
 		if sub == "list" {
@@ -371,6 +374,9 @@ func runFixture(c *cli.Context, args []string) error {
 				cli.Table(c.Out, c.Color, []string{"PROJECT", "NAME", "KIND", "WEIGHT", "ENABLED"}, rows)
 			}
 			return nil
+		}
+		if sub == "seed" {
+			return seedCommand(s, c)
 		}
 		p, err := currentProject(s, c)
 		if err != nil {
@@ -404,6 +410,82 @@ func runFixture(c *cli.Context, args []string) error {
 		c.Println("Fixture", args[0]+":", sub+"d")
 		return nil
 	})
+}
+
+// seedCommand is pulse evolve fixture seed: the selected project, or every
+// active project but the commons, receives the starter fixtures it lacks.
+func seedCommand(s *store.Store, c *cli.Context) error {
+	actor, err := callingActor(s, c)
+	if err != nil {
+		return err
+	}
+	slugs := []string{}
+	if c.Project != "" {
+		p, err := validProject(s, c.Project)
+		if err != nil {
+			return err
+		}
+		slugs = append(slugs, p.Slug)
+	} else {
+		projects, err := s.Projects(true)
+		if err != nil {
+			return err
+		}
+		for _, p := range projects {
+			if p.Slug != store.CommonsSlug {
+				slugs = append(slugs, p.Slug)
+			}
+		}
+	}
+	type seeded struct {
+		Project string `json:"project"`
+		Added   int    `json:"added"`
+	}
+	results, total := []seeded{}, 0
+	for _, slug := range slugs {
+		n, err := SeedStarterFixtures(s, slug, actor)
+		if err != nil {
+			return err
+		}
+		results = append(results, seeded{slug, n})
+		total += n
+	}
+	if c.JSON {
+		return cli.WriteJSON(c.Out, map[string]any{"seeded": results, "added": total, "starter": len(starterSet)})
+	}
+	for _, r := range results {
+		c.Printf("%s: %d starter fixture(s) added; %d in the set (pulse evolve fixture list --project %s)\n", r.Project, r.Added, len(starterSet), r.Project)
+	}
+	if len(results) == 0 {
+		c.Println("No registered project to seed.")
+	}
+	return nil
+}
+
+// runScore is pulse evolve score NAME (score.go). The score is the result,
+// not ordinary text, so --quiet keeps it; the reason for a 0 goes to stderr.
+func runScore(c *cli.Context, args []string) error {
+	c, fs := commandFlags(c, "evolve score")
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return inputError("Wrong score arguments", "score takes one starter fixture name", "pulse evolve score NAME")
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), stopSignals()...)
+	defer cancel()
+	score, reason, err := scoreTree(ctx, "", fs.Arg(0), os.Getenv("PULSE_MEASURE_COMMIT"))
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		return cli.WriteJSON(c.Out, map[string]any{"name": fs.Arg(0), "score": score, "reason": reason})
+	}
+	fmt.Fprintln(c.Out, score)
+	if reason != "" && !c.Quiet {
+		fmt.Fprintln(c.Err, "score 0:", reason)
+	}
+	return nil
 }
 
 func runFleet(c *cli.Context, _ *flag.FlagSet, args []string) error {

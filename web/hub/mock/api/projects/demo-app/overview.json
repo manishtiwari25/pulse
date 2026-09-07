@@ -73,7 +73,7 @@
     "count_baselines": "0",
     "count_incidents": "0",
     "count_variants": "0",
-    "evolution_present": "0",
+    "evolution_present": "1",
     "hygiene_git": "",
     "last": "5",
     "limits": "none",
@@ -81,7 +81,7 @@
     "loop": "off",
     "missing_files": "[]",
     "product_classes_ok": "0",
-    "product_evaluators_ok": "0",
+    "product_evaluators_ok": "1",
     "product_verdict": "",
     "stop_present": "0"
   },

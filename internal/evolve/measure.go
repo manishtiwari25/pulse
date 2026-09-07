@@ -17,10 +17,37 @@ import (
 
 func init() { Measure = measure }
 
+// executable locates this binary for starter scorers; tests substitute it.
+var executable = os.Executable
+
 type measuredFixture struct {
 	name, kind, request string
 	scorer              []string
 	weight              float64
+}
+
+// pulseScorer reports whether a scorer's first word is pulse.
+func pulseScorer(scorer string) bool {
+	rest, ok := strings.CutPrefix(strings.TrimLeft(scorer, " \t"), "pulse")
+	return ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t')
+}
+
+// selfScorer rewrites a scorer whose first word is pulse so it runs this very
+// executable: a measured clone must not depend on PATH to find the starter
+// scorers, and a differently installed pulse must not judge them. Any other
+// command is the owner's and stays as written.
+func selfScorer(scorer, exe string) string {
+	if !pulseScorer(scorer) {
+		return scorer
+	}
+	rest := strings.TrimPrefix(strings.TrimLeft(scorer, " \t"), "pulse")
+	return "'" + strings.ReplaceAll(exe, "'", `'\''`) + "'" + rest
+}
+
+// scorerEnv is the harness's isolated environment plus the measured commit, so
+// a scorer can tell the tree it judges from wherever the harness moved HEAD.
+func scorerEnv(home, commit string) []string {
+	return append(isolatedEnv(home), "PULSE_MEASURE_COMMIT="+commit)
 }
 
 func measure(ctx context.Context, s *store.Store, project, repo, ref string, opts MeasureOptions) (scores *Scores, retErr error) {
@@ -39,18 +66,28 @@ func measure(ctx context.Context, s *store.Store, project, repo, ref string, opt
 		return nil, privateError("private templates are pending; the owner must fill them before measurement")
 	}
 	matrix := []measuredFixture{}
+	exe := ""
 	for _, f := range fixtures {
 		if !finite(f.Weight) || f.Weight <= 0 || strings.TrimSpace(f.Request) == "" ||
 			store.SecretShaped(f.Request) || store.SecretShaped(f.Scorer) {
 			return nil, inputError("Cannot measure fixture set", "a public fixture has invalid weight or unsafe text", "pulse evolve fixture list --project "+project)
 		}
-		matrix = append(matrix, measuredFixture{f.Name, f.Kind, f.Request, []string{"sh", "-c", f.Scorer}, f.Weight})
+		scorer := f.Scorer
+		if pulseScorer(scorer) {
+			if exe == "" {
+				if exe, err = executable(); err != nil || exe == "" {
+					return nil, inputError("Cannot run measurement", "the pulse executable behind the starter scorers cannot be located", "pulse evolve fixture list --project "+project)
+				}
+			}
+			scorer = selfScorer(scorer, exe)
+		}
+		matrix = append(matrix, measuredFixture{f.Name, f.Kind, f.Request, []string{"sh", "-c", scorer}, f.Weight})
 	}
 	for i, f := range private {
 		matrix = append(matrix, measuredFixture{fmt.Sprintf("H%d", i+1), "heldout", f.request, []string{f.scorer}, 1})
 	}
 	if len(matrix) == 0 {
-		return nil, inputError("No fixtures to measure", "this project has no enabled evaluators", "pulse evolve fixture add --project "+project+" --name N --request FILE --scorer CMD")
+		return nil, inputError("No fixtures to measure", "this project has no enabled evaluators", "pulse evolve fixture seed --project "+project+"  (starter set), or pulse evolve fixture add --project "+project+" --name N --request FILE --scorer CMD")
 	}
 	repo, commit, err := resolveRevision(ctx, repo, ref)
 	if err != nil {
@@ -134,7 +171,7 @@ func measure(ctx context.Context, s *store.Store, project, repo, ref string, opt
 			return nil, err
 		}
 		scoreCtx, cancel := context.WithTimeout(ctx, timeout)
-		value, err := scoreClone(scoreCtx, clone, home, f.scorer)
+		value, err := scoreClone(scoreCtx, clone, scorerEnv(home, commit), f.scorer)
 		cancel()
 		if err != nil {
 			return nil, measurementFailure(ctx, label, "read-only scorer", err)
@@ -165,7 +202,7 @@ func measurementFailure(ctx context.Context, label, step string, err error) erro
 	return inputError("Measurement failed for "+label, why, "pulse evolve fixture list (owner: review the scorer and runner_cmd)")
 }
 
-func scoreClone(ctx context.Context, clone, home string, scorer []string) (value float64, retErr error) {
+func scoreClone(ctx context.Context, clone string, env, scorer []string) (value float64, retErr error) {
 	root, err := os.OpenRoot(clone)
 	if err != nil {
 		return 0, err
@@ -181,7 +218,7 @@ func scoreClone(ctx context.Context, clone, home string, scorer []string) (value
 		return 0, err
 	}
 	out := &boundedOutput{limit: 64 << 10}
-	runErr := runProcess(ctx, clone, isolatedEnv(home), scorer, out)
+	runErr := runProcess(ctx, clone, env, scorer, out)
 	after, err := treeFingerprint(root)
 	if err != nil || before != after {
 		return 0, &ViolationError{Reason: "scorer changed the measured tree"}

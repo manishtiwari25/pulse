@@ -179,7 +179,7 @@ func TestScorerRefusesEscapingSymlink(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(clone, "outside")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := scoreClone(context.Background(), clone, t.TempDir(), []string{"sh", "-c", "printf 1"}); err == nil {
+	if _, err := scoreClone(context.Background(), clone, isolatedEnv(t.TempDir()), []string{"sh", "-c", "printf 1"}); err == nil {
 		t.Fatal("read-only scoring accepted an escaping symlink")
 	}
 	body, err := os.ReadFile(outside)
