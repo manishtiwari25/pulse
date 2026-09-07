@@ -65,6 +65,12 @@ func oracleMessage(stderr string) string {
 
 func openHome(t *testing.T, home string) *store.Store {
 	t.Helper()
+	// Fixture stores and identities are independent of the parent runner.
+	t.Setenv("PULSE_HOME", home)
+	t.Setenv("PULSE_JOB", "")
+	t.Setenv("PULSE_AGENT", "")
+	t.Setenv("PULSE_SESSION", "")
+	t.Setenv("PULSE_PROJECT", "")
 	s, err := store.Open(store.Options{Home: home, Create: true, Now: testNow})
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +83,23 @@ func newHome(t *testing.T) (string, *store.Store) {
 	t.Helper()
 	home := t.TempDir()
 	return home, openHome(t, home)
+}
+
+func TestNewHomeWithRunnerEnvironment(t *testing.T) {
+	t.Setenv("PULSE_HOME", t.TempDir())
+	names := []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"}
+	for _, name := range names {
+		t.Setenv(name, "parent")
+	}
+	home, _ := newHome(t)
+	if got := os.Getenv("PULSE_HOME"); got != home {
+		t.Fatalf("PULSE_HOME = %q, want fixture home %q", got, home)
+	}
+	for _, name := range names {
+		if got := os.Getenv(name); got != "" {
+			t.Errorf("%s = %q, want empty fixture default", name, got)
+		}
+	}
 }
 
 // snapshotHome copies /tmp/pulse-parity/pulse.sqlite into a temp home.
