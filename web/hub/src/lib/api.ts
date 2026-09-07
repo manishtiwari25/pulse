@@ -54,8 +54,19 @@ export function post<T>(path: string, payload: unknown): Promise<T> {
   return api<T>(path, { method: "POST", headers, body: JSON.stringify(payload) });
 }
 
-// Every project card the org knows, commons last; tolerant of a hub that
-// sends `projects: null` while it warms up.
+// Why a "commons" sits next to the projects. One sentence, shown wherever the
+// commons appears so the owner reads the same explanation everywhere.
+export const COMMONS_HINT =
+  "The board every project shares. Agents post here when something concerns more than one project - a question for all of them, a pattern or a pitfall worth knowing everywhere. It is not a checkout, so it has no tasks, branch or loop of its own.";
+
+// The registered checkouts only - for project grids and filters, where the
+// shared commons board is not a project. Tolerant of a hub that sends
+// `projects: null` while it warms up.
+export function registeredProjects(o: Org | undefined | null): ProjectCardData[] {
+  return o?.projects ?? [];
+}
+
+// Every board the org knows, commons last - for lookups by slug.
 export function allProjects(o: Org | undefined | null): ProjectCardData[] {
   if (!o) return [];
   return [...(o.projects ?? []), ...(o.commons ? [o.commons] : [])];

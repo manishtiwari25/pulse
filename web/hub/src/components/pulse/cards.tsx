@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { CheckIcon, ChevronRightIcon, ExternalLinkIcon, ServerIcon, XIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon, ExternalLinkIcon, ServerIcon, UsersIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -14,7 +14,7 @@ import { KindBadge, Mono, PostLink, ProjectLink, Provenance, StatusBadge, Thread
 import { cn } from "@/lib/utils";
 import { expiresAt, num, plural, statusTone, untilText } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { writes, type Amendment, type Claim, type Executor, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion } from "@/lib/api";
+import { COMMONS_HINT, writes, type Amendment, type Claim, type Executor, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion } from "@/lib/api";
 import { useNow } from "@/lib/use-api";
 
 // ----- project card ------------------------------------------------------
@@ -40,7 +40,6 @@ export function ProjectCard({ p, spark }: { p: ProjectCardData; spark?: number[]
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="truncate text-[15px] font-semibold tracking-tight">{p.slug}</span>
             {p.brain ? <Badge variant="secondary">framework</Badge> : null}
-            {p.kind === "commons" ? <Badge variant="outline">commons</Badge> : null}
             {!p.present ? <Badge variant="destructive">missing on disk</Badge> : null}
             {p.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
           </div>
@@ -75,6 +74,59 @@ export function ProjectCard({ p, spark }: { p: ProjectCardData; spark?: number[]
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">{p.board_present ? "No posts yet." : "No board yet - pulse init registers this checkout."}</p>
+      )}
+    </ItemCard>
+  );
+}
+
+// ----- commons card -------------------------------------------------------
+
+// The shared board, kept out of the project grid: it is not a checkout, so it
+// gets its own card that says what it is and what waits on it.
+export function CommonsCard({ c, spark }: { c: ProjectCardData; spark?: number[] }) {
+  const facts: { n: number; label: string; tone?: FactTone }[] = [
+    { n: c.questions_open, label: "open questions", tone: c.questions_open ? "warn" : undefined },
+    { n: c.threads_open, label: "threads" },
+    { n: c.posts_24h, label: "posts/24h" },
+    { n: c.agents, label: "agents" },
+  ];
+  return (
+    <ItemCard href={hrefs.project(c.slug)} ariaLabel="Commons - the board every project shares">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <UsersIcon className="size-4 text-muted-foreground" aria-hidden />
+            <span className="text-[15px] font-semibold tracking-tight">Commons</span>
+            <Badge variant="outline">shared board</Badge>
+            {!c.present ? <Badge variant="secondary">not created yet</Badge> : null}
+          </div>
+          <p className="text-xs text-muted-foreground">{COMMONS_HINT}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2 text-muted-foreground">
+          {spark?.length ? <Sparkline values={spark} w={72} h={20} /> : null}
+          <ChevronRightIcon className="size-4 opacity-40 transition-transform group-hover/item:translate-x-0.5" />
+        </div>
+      </div>
+      {c.present && c.error ? <p className="text-xs text-bad anywhere">{c.error}</p> : null}
+      <div className="hidden grid-cols-4 gap-1.5 sm:grid">
+        {facts.map((f) => (
+          <Fact key={f.label} n={num(f.n)} label={f.label} tone={f.tone} />
+        ))}
+      </div>
+      <ItemCardMeta className="sm:hidden">
+        {facts.map((f) => (
+          <span key={f.label}>
+            <b className={cn("tnum font-semibold text-foreground", f.tone && FACT_TONE[f.tone])}>{num(f.n)}</b> {f.label}
+          </span>
+        ))}
+      </ItemCardMeta>
+      {c.last_post ? (
+        // line-clamp, not truncate: this card sits outside a CardGrid, and a nowrap line would widen the column to the summary's length.
+        <ItemCardBody clamp={1} className="text-xs">
+          <KindBadge kind={c.last_post.kind} /> <span className="ml-1">{c.last_post.summary}</span>
+        </ItemCardBody>
+      ) : (
+        <p className="text-xs text-muted-foreground">{c.present ? "No posts yet." : "The first post that concerns more than one project creates it" + (c.path ? " at " + c.path : "") + "."}</p>
       )}
     </ItemCard>
   );

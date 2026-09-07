@@ -6,14 +6,15 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageTitle, EmptyState, SkeletonPage } from "@/components/pulse/panel";
-import { CardGrid, ItemCard, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
+import { CardGrid, ItemCard, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { KindBadge, Mono, ToneBadge, When } from "@/components/pulse/who";
+import { CommonsCard } from "@/components/pulse/cards";
 import { PostSheet, ThreadSheet } from "@/components/board/sheets";
 import { TaskSheet } from "@/components/tasks/task-sheet";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { AmendmentsTab, ChatTab, EnvTab, EvolutionTab, NoticesTab, OverviewTab, ProposalsTab, SuggestionsTab, TasksTab, ThreadsTab, TimelineTab } from "@/components/project/tabs";
 import { hrefs, isProjectTab, PROJECT_TABS, type ProjectTab } from "@/lib/nav";
-import { allProjects, type Org, type ProjectCardData } from "@/lib/api";
+import { allProjects, COMMONS_HINT, registeredProjects, type Org, type ProjectCardData } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { num, plural } from "@/lib/format";
 
@@ -51,7 +52,8 @@ function ProjectScreen() {
   );
 
   if (!slug) {
-    const projects = allProjects(org.data);
+    const projects = registeredProjects(org.data);
+    const commons = org.data?.commons;
     return (
       <>
         <PageTitle
@@ -69,20 +71,31 @@ function ProjectScreen() {
         </PageTitle>
         {!org.data && org.loading ? (
           <SkeletonPage rows={2} />
-        ) : projects.length ? (
-          <CardGrid cols={3}>
-            {projects.map((p) => (
-              <ProjectPick key={p.slug} p={p} />
-            ))}
-          </CardGrid>
         ) : (
-          <EmptyState>No project registered yet. Run <Mono>pulse init</Mono> in a checkout; the hub lists it here.</EmptyState>
+          <>
+            {projects.length ? (
+              <CardGrid cols={3}>
+                {projects.map((p) => (
+                  <ProjectPick key={p.slug} p={p} />
+                ))}
+              </CardGrid>
+            ) : (
+              <EmptyState>No project registered yet. Run <Mono>pulse init</Mono> in a checkout; the hub lists it here.</EmptyState>
+            )}
+            {commons ? (
+              <section aria-label="Commons" className="mt-4">
+                <SectionHeading action={<span>not a project - the board every project shares</span>}>Commons</SectionHeading>
+                <CommonsCard c={commons} />
+              </section>
+            ) : null}
+          </>
         )}
       </>
     );
   }
 
   const card = allProjects(org.data).find((p) => p.slug === slug);
+  const isCommons = card?.kind === "commons";
   const canDecide = org.data?.can_decide ?? true;
   const counts: Partial<Record<ProjectTab, number>> = card
     ? {
@@ -108,17 +121,22 @@ function ProjectScreen() {
         }
         sub={
           card ? (
-            <>
-              {card.name && card.name !== card.slug ? card.name + " · " : null}
-              <Mono>{card.branch}</Mono> <Mono className="text-muted-foreground">{card.head}</Mono>
-              {card.dirty ? <span className="ml-1 text-warn">dirty</span> : null}
-              {card.path ? <span className="ml-2 text-muted-foreground">{card.path}</span> : null}
-            </>
+            isCommons ? (
+              COMMONS_HINT
+            ) : (
+              <>
+                {card.name && card.name !== card.slug ? card.name + " · " : null}
+                <Mono>{card.branch}</Mono> <Mono className="text-muted-foreground">{card.head}</Mono>
+                {card.dirty ? <span className="ml-1 text-warn">dirty</span> : null}
+                {card.path ? <span className="ml-2 text-muted-foreground">{card.path}</span> : null}
+              </>
+            )
           ) : (
             org.error || "…"
           )
         }
-        actions={<NewTaskButton project={slug} onCreated={(t) => setParams({ tab: "tasks", task: t.id })} />}
+        // The commons has no checkout and no lead, so no task can be given there.
+        actions={isCommons ? undefined : <NewTaskButton project={slug} onCreated={(t) => setParams({ tab: "tasks", task: t.id })} />}
         bar={
           <TabsList variant="line" className="w-max">
             {PROJECT_TABS.map((t) => (
@@ -131,9 +149,9 @@ function ProjectScreen() {
         }
       >
         <span className="inline-flex flex-wrap items-center gap-2">
-          {slug}
+          {isCommons ? "Commons" : slug}
           {card?.brain ? <Badge variant="secondary">framework</Badge> : null}
-          {card?.kind === "commons" ? <Badge variant="outline">commons</Badge> : null}
+          {isCommons ? <Badge variant="outline">shared board</Badge> : null}
           {card?.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
           {card && !card.present ? <Badge variant="destructive">missing on disk</Badge> : null}
         </span>
@@ -167,7 +185,6 @@ function ProjectPick({ p }: { p: ProjectCardData }) {
     <ItemCard href={hrefs.project(p.slug)} highlight={attention} ariaLabel={p.slug}>
       <ItemCardHeader right={p.last_post ? <When d={p.last_post.date} /> : null}>
         {p.brain ? <Badge variant="secondary">framework</Badge> : null}
-        {p.kind === "commons" ? <Badge variant="outline">commons</Badge> : null}
         {p.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
         {!p.present ? <Badge variant="destructive">missing on disk</Badge> : null}
         {p.branch ? <Mono className="text-muted-foreground">{p.branch}</Mono> : null}

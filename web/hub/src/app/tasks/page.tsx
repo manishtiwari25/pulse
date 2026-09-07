@@ -11,7 +11,7 @@ import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { TASK_COLUMNS, TaskSheet } from "@/components/tasks/task-sheet";
-import { allProjects, TASK_STATUSES, type Org, type Task, type TasksPayload } from "@/lib/api";
+import { registeredProjects, TASK_STATUSES, type Org, type Task, type TasksPayload } from "@/lib/api";
 import { plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { useApi } from "@/lib/use-api";
@@ -72,7 +72,7 @@ function TasksScreen() {
   );
   const q = useApi<TasksPayload>("tasks", { refresh: 10000 });
   const org = useApi<Org>("org", { refresh: 60000 });
-  const projects = useMemo(() => (org.data ? allProjects(org.data).map((p) => p.slug) : Array.from(new Set((q.data?.tasks ?? []).map((t) => t.project)))), [org.data, q.data]);
+  const projects = useMemo(() => (org.data ? registeredProjects(org.data).map((p) => p.slug) : Array.from(new Set((q.data?.tasks ?? []).map((t) => t.project)))), [org.data, q.data]);
   const all = useMemo(() => q.data?.tasks ?? [], [q.data]);
   // Counts in the chips and the strip follow the project filter, so they
   // describe the list the owner is looking at rather than the whole org.

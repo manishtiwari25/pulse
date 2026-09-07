@@ -10,7 +10,7 @@ import { Count, EmptyState, ErrorNotice, PageTitle, SkeletonPage, SkeletonRows }
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Mono } from "@/components/pulse/who";
 import { RECORD_COLUMNS, RecordCards, RecordSheet, kindLabel } from "@/components/records/records";
-import { allProjects, RECORD_KINDS, type Org, type RecordsPayload } from "@/lib/api";
+import { registeredProjects, RECORD_KINDS, type Org, type RecordsPayload } from "@/lib/api";
 import { plural } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -51,7 +51,7 @@ function RecordsScreen() {
 
   const q = useApi<RecordsPayload>("records" + (project ? "?project=" + encodeURIComponent(project) : ""), { refresh: 60000 });
   const org = useApi<Org>("org", { refresh: 60000 });
-  const projects = useMemo(() => (org.data ? allProjects(org.data).map((p) => p.slug) : project ? [project] : []), [org.data, project]);
+  const projects = useMemo(() => (org.data ? registeredProjects(org.data).map((p) => p.slug) : project ? [project] : []), [org.data, project]);
   const all = useMemo(() => q.data?.records ?? [], [q.data]);
   const statuses = useMemo(() => Array.from(new Set(all.map((r) => r.status).filter(Boolean))).sort(), [all]);
   const areas = useMemo(() => Array.from(new Set(all.flatMap((r) => r.areas || []))).sort(), [all]);

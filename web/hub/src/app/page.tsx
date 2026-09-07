@@ -4,7 +4,7 @@ import Link from "next/link";
 import { CheckIcon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
-import { MachinePanel, ProjectCard, ProposalCard, WorkingNow } from "@/components/pulse/cards";
+import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow } from "@/components/pulse/cards";
 import { ComputeDecide } from "@/components/compute/compute";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { LiveFeed } from "@/components/pulse/live-feed";
@@ -14,7 +14,7 @@ import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num, plural } from "@/lib/format";
-import { allProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type Runner, type TasksPayload, type Timeline } from "@/lib/api";
+import { registeredProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type Runner, type TasksPayload, type Timeline } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 export default function HubPage() {
@@ -36,7 +36,9 @@ export default function HubPage() {
   if (!org.data) return <SkeletonPage rows={4} />;
 
   const o = org.data;
-  const projects = allProjects(o);
+  // The commons is not a project: it gets its own card below the grid.
+  const projects = registeredProjects(o);
+  const commons = o.commons;
   const awaiting = o.proposals.filter((p) => p.status === "awaiting");
   const openTasks = (tasks.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled");
   const recent = [...openTasks].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, 6);
@@ -110,7 +112,7 @@ export default function HubPage() {
       </KpiGrid>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-        <div className="grid content-start gap-4">
+        <div className="grid min-w-0 grid-cols-1 content-start gap-4">
           <section aria-label="Projects">
             <SectionHeading count={projects.length}>Projects</SectionHeading>
             <CardGrid cols={2}>
@@ -119,6 +121,12 @@ export default function HubPage() {
               ))}
             </CardGrid>
           </section>
+          {commons ? (
+            <section aria-label="Commons">
+              <SectionHeading action={<span>not a project - the board every project shares</span>}>Commons</SectionHeading>
+              <CommonsCard c={commons} spark={sparkFor(commons.slug)} />
+            </section>
+          ) : null}
           <section aria-label="Open tasks">
             <SectionHeading
               count={tasks.data ? openTasks.length : undefined}
@@ -141,7 +149,7 @@ export default function HubPage() {
           </section>
           {tl.data ? <ActivityChart tl={tl.data} bys={["total", "project", "kind"]} height={180} /> : null}
         </div>
-        <div className="grid content-start gap-4">
+        <div className="grid min-w-0 grid-cols-1 content-start gap-4">
           <LiveFeed limit={40} height={320} />
           <MachinePanel r={r} />
           {o.active_claims.length ? (

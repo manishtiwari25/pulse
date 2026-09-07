@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Suspense, useMemo } from "react";
+import { Suspense } from "react";
 import { ActivityIcon, BotIcon, BookOpenIcon, ChevronDownIcon, CircleDotIcon, CpuIcon, HomeIcon, ListTodoIcon, SettingsIcon, WifiIcon, WifiOffIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { hrefs } from "@/lib/nav";
 import { useApi, useEventStream } from "@/lib/use-api";
-import type { Org } from "@/lib/api";
+import { COMMONS_HINT, type Org } from "@/lib/api";
 import { CommandPalette } from "./command-palette";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -45,11 +45,8 @@ function ProjectSwitcher() {
   const pathname = usePathname();
   const current = pathname.startsWith("/project") ? params.get("slug") || "" : "";
   const { data } = useApi<Org>("org", { refresh: 30000 });
-  const projects = useMemo(() => {
-    const list = [...(data?.projects ?? [])];
-    if (data?.commons) list.push(data.commons);
-    return list;
-  }, [data]);
+  const projects = data?.projects ?? [];
+  const commons = data?.commons;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -74,6 +71,21 @@ function ProjectSwitcher() {
             </Link>
           </DropdownMenuItem>
         ))}
+        {commons ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Shared by every project</DropdownMenuLabel>
+            <DropdownMenuItem asChild>
+              <Link href={hrefs.project(commons.slug)} title={COMMONS_HINT} className="flex items-center justify-between gap-2">
+                <span className="truncate">Commons</span>
+                <span className="flex items-center gap-1">
+                  {commons.questions_open ? <Badge variant="outline">{commons.questions_open} open</Badge> : null}
+                  <Badge variant="outline">board</Badge>
+                </span>
+              </Link>
+            </DropdownMenuItem>
+          </>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link href="/">All projects</Link>
