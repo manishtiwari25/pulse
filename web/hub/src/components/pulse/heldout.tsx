@@ -16,7 +16,7 @@ import { Notice } from "./panel";
 import { Mono } from "./who";
 import { writes, type HeldoutFixtureInput, type HeldoutPayload } from "@/lib/api";
 import { invalidate, useApi } from "@/lib/use-api";
-import { num, plural } from "@/lib/format";
+import { andList, num, plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 // The owner's held-out fixtures from the console (ADR-032). One dialog, three
@@ -53,9 +53,11 @@ const refreshAfterWrite = () => invalidate((p) => p === "heldout" || p === "org"
 // The button that opens it sits on a gate card that leaves the inbox the
 // moment the second fixture is written (the gate moves on), so the dialog
 // cannot live inside that card: it would vanish before the done state shows.
-// Closing keeps the slug so the title stays put through the exit animation.
-type Host = { open: boolean; slug: string };
-let host: Host = { open: false, slug: "" };
+// Closing keeps the projects so the text stays put through the exit
+// animation. `projects` are the projects whose loops the set opens: one from
+// a project's panel, every waiting one from the folded inbox card.
+type Host = { open: boolean; projects: string[] };
+let host: Host = { open: false, projects: [] };
 const listeners = new Set<() => void>();
 const subscribeHost = (fn: () => void) => {
   listeners.add(fn);
@@ -67,20 +69,20 @@ const setHost = (next: Host) => {
   host = next;
   listeners.forEach((fn) => fn());
 };
-const closed: Host = { open: false, slug: "" };
+const closed: Host = { open: false, projects: [] };
 
-export const openHeldout = (slug: string) => setHost({ open: true, slug });
+export const openHeldout = (projects: string[]) => setHost({ open: true, projects });
 
 export function HeldoutHost() {
   const h = useSyncExternalStore(subscribeHost, () => host, () => closed);
-  return <HeldoutDialog open={h.open} onOpenChange={(o) => !o && setHost({ open: false, slug: h.slug })} slug={h.slug} />;
+  return <HeldoutDialog open={h.open} onOpenChange={(o) => !o && setHost({ open: false, projects: h.projects })} projects={h.projects} />;
 }
 
 // "Set up here" on the gate card and the step block; the panel's badge row
 // reuses it, labelled for a set that already exists (add one, rewrite one).
-export function HeldoutButton({ slug, size = "sm", variant = "default", className, label = "Set up here", title }: { slug: string; size?: Size; variant?: Variant; className?: string; label?: string; title?: string }) {
+export function HeldoutButton({ projects, size = "sm", variant = "default", className, label = "Set up here", title }: { projects: string[]; size?: Size; variant?: Variant; className?: string; label?: string; title?: string }) {
   return (
-    <Button size={size} variant={variant} className={className} title={title} onClick={() => openHeldout(slug)}>
+    <Button size={size} variant={variant} className={className} title={title} onClick={() => openHeldout(projects)}>
       <LockIcon /> {label}
     </Button>
   );
@@ -88,7 +90,7 @@ export function HeldoutButton({ slug, size = "sm", variant = "default", classNam
 
 type View = "loading" | "unavailable" | "folder" | "fixture" | "done";
 
-export function HeldoutDialog({ open, onOpenChange, slug }: { open: boolean; onOpenChange: (o: boolean) => void; slug: string }) {
+export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean; onOpenChange: (o: boolean) => void; projects: string[] }) {
   const q = useApi<HeldoutPayload>(open ? "heldout" : null, { refresh: 15000 });
   const [busy, setBusy] = useState(false);
   // The folder step. The text lives here and nowhere else: the hub never returns it.
@@ -341,7 +343,7 @@ export function HeldoutDialog({ open, onOpenChange, slug }: { open: boolean; onO
                   <CheckIcon className="mt-0.5 size-4 shrink-0 text-ok" aria-hidden />
                   <div>
                     <div className="font-medium">{plural(d.count, "held-out fixture") + " ready."}</div>
-                    <div className="mt-0.5 text-muted-foreground">{"The loop for " + slug + " opens on the daemon's next tick."}</div>
+                    <div className="mt-0.5 text-muted-foreground">{projects.length > 1 ? "The loops for " + andList(projects) + " open on the daemon's next tick." : "The loop for " + (projects[0] || "this project") + " opens on the daemon's next tick."}</div>
                   </div>
                 </div>
               </Notice>

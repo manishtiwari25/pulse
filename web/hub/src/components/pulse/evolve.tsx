@@ -10,7 +10,7 @@ import { HeldoutButton } from "./heldout";
 import { Notice, Panel } from "./panel";
 import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
-import { fmtDate, num, parseDate, plural, rel } from "@/lib/format";
+import { andList, fmtDate, num, parseDate, plural, rel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { useNow } from "@/lib/use-api";
 import type { EvolutionDoc, EvolveFixture, EvolveGate, EvolveGates, EvolveLevel, EvolveRecordRef } from "@/lib/api";
@@ -281,6 +281,7 @@ export interface GateStep {
   kind: GateKind;
   label: string; // the short "what is missing" badge
   slug: string;
+  slugs?: string[]; // every project one shared step serves, when the inbox folds them (the held-out set is one per machine)
   level: EvolveLevel;
   title: string;
   body: string;
@@ -351,30 +352,53 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
   return null;
 }
 
+// The held-out set is one per machine (evolve.heldout_dir), so when several
+// projects wait for it the inbox shows one card that names them all, not one
+// card per project saying the same thing. Every other step stays per project.
+export function foldSteps(steps: GateStep[]): GateStep[] {
+  const shared = steps.filter((s) => s.kind === "heldout");
+  if (shared.length < 2) return steps;
+  const slugs = shared.map((s) => s.slug);
+  const one: GateStep = {
+    ...shared[0],
+    slugs,
+    body: "The daemon does everything else - it measured each baseline and runs each cycle. Two fixtures only you can see are your proof the loop is not grading itself (ADR-012). Write them here, outside every checkout - the hub writes the files and never reads them back - or with the command; one set serves every project, so the loops for " + andList(slugs) + " open from there.",
+  };
+  const rest = steps.filter((s) => s.kind !== "heldout");
+  const at = steps.indexOf(shared[0]);
+  return [...rest.slice(0, at), one, ...rest.slice(at)];
+}
+
 // One waiting human step as an inbox card: what, where, why, the way to take
 // it, and the way to the project's self-improvement view. The held-out card
 // (ADR-012) says it is the one step that is the owner's and opens the
 // Held-out fixtures dialog (ADR-032), the command kept as the terminal
-// alternative; the rest name what is missing with the command to copy.
+// alternative; the rest name what is missing with the command to copy. A
+// folded held-out card links every project it serves.
 export function GateCard({ step }: { step: GateStep }) {
   const heldout = step.kind === "heldout";
+  const slugs = step.slugs && step.slugs.length > 1 ? step.slugs : [step.slug];
   return (
     <ItemCard highlight ariaLabel={step.title}>
       <ItemCardHeader right={<LevelBadge level={step.level} />}>
         <ToneBadge tone="accent">self-improvement</ToneBadge>
         <ToneBadge tone={heldout ? "ok" : "warn"}>{step.label}</ToneBadge>
-        <ProjectLink slug={step.slug} className="text-xs" />
+        {slugs.length > 1 ? <span className="text-xs text-muted-foreground">{plural(slugs.length, "project")}</span> : <ProjectLink slug={step.slug} className="text-xs" />}
       </ItemCardHeader>
       <ItemCardTitle>{step.title}</ItemCardTitle>
       <ItemCardBody clamp={3}>{step.body}</ItemCardBody>
       {heldout ? <TerminalAlternative command={step.command} /> : <CommandBox command={step.command} />}
       <ItemCardActions>
-        <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
-          <Link href={hrefs.project(step.slug, "evolution")}>
-            self-improvement <ExternalLinkIcon />
-          </Link>
-        </Button>
-        <span className="ml-auto shrink-0">{heldout ? <HeldoutButton slug={step.slug} /> : <CopyButton text={step.command} />}</span>
+        <span className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
+          {slugs.map((slug) => (
+            <Button key={slug} asChild variant="ghost" size="xs" className="text-muted-foreground">
+              <Link href={hrefs.project(slug, "evolution")} title={"self-improvement for " + slug}>
+                {slugs.length > 1 ? slug : "self-improvement"} <ExternalLinkIcon />
+              </Link>
+            </Button>
+          ))}
+        </span>
+        <span className="ml-auto shrink-0">{heldout ? <HeldoutButton projects={slugs} /> : <CopyButton text={step.command} />}</span>
       </ItemCardActions>
     </ItemCard>
   );
@@ -397,7 +421,7 @@ function StepBlock({ step }: { step: GateStep }) {
       {heldout ? (
         <>
           <div className="mt-2">
-            <HeldoutButton slug={step.slug} />
+            <HeldoutButton projects={[step.slug]} />
           </div>
           <TerminalAlternative command={step.command} className="mt-2" />
         </>
@@ -461,7 +485,7 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
               </ToneBadge>
             ) : null}
             {/* The set exists and the gate has moved on: the dialog's done state (add one, rewrite one) stays reachable from here (ADR-032). */}
-            {h && h.count > 0 && step?.kind !== "heldout" ? <HeldoutButton slug={gates.project} size="xs" variant="ghost" label="Add or rewrite…" title="Held-out fixtures: add another or rewrite one - the console never reads them back" className="h-5 px-1.5 text-[11px] text-muted-foreground" /> : null}
+            {h && h.count > 0 && step?.kind !== "heldout" ? <HeldoutButton projects={[gates.project]} size="xs" variant="ghost" label="Add or rewrite…" title="Held-out fixtures: add another or rewrite one - the console never reads them back" className="h-5 px-1.5 text-[11px] text-muted-foreground" /> : null}
             {gates.product_scope ? (
               <ToneBadge tone={gates.product_scope.allowed ? "ok" : "neutral"} title={gates.product_scope.reason || undefined}>
                 {gates.product_scope.allowed ? "product changes allowed" : "operating layer only"}

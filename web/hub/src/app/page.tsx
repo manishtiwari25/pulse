@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
 import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow } from "@/components/pulse/cards";
 import { ComputeDecide } from "@/components/compute/compute";
-import { GateCard, gateStep, type GateStep } from "@/components/pulse/evolve";
+import { GateCard, foldSteps, gateStep, type GateStep } from "@/components/pulse/evolve";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
@@ -58,7 +58,7 @@ export default function HubPage() {
   const adrs = (proposed.data?.records ?? []).filter(awaitsDecision);
   // The gate a project waits at (records, fixtures, the owner's held-out fixtures) is a human step too - it sits in the inbox with a command to copy (ADR-029). The baseline is the daemon's (ADR-031) and never a card.
   const gateOf = (p: ProjectCardData) => evolveGate(p, (reg.data?.projects ?? []).find((r) => r.slug === p.slug));
-  const steps = projects.map((p) => gateStep(p.slug, gateOf(p))).filter((s): s is GateStep => s !== null);
+  const steps = foldSteps(projects.map((p) => gateStep(p.slug, gateOf(p))).filter((s): s is GateStep => s !== null));
   const decisions = adrs.length + awaiting.length + pendingCompute.length;
   const inbox = decisions + steps.length;
   const computeDown = !!compute.error && !compute.data;

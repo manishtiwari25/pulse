@@ -4,6 +4,8 @@ export const KINDS = ["claim", "handoff", "finding", "question", "answer", "sugg
 
 export const num = (n: unknown): string => Number(n || 0).toLocaleString("en-US");
 export const plural = (n: number, word: string): string => num(n) + " " + word + (n === 1 ? "" : "s");
+// "a", "a and b", "a, b and c".
+export const andList = (items: string[]): string => (items.length < 3 ? items.join(" and ") : items.slice(0, -1).join(", ") + " and " + items[items.length - 1]);
 export const fmtDate = (d?: string | null): string => (d || "").replace("T", " ").replace("Z", " UTC");
 
 export function parseDate(d?: string | null): Date | null {
