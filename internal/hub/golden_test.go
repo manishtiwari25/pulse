@@ -203,7 +203,7 @@ func TestGoldenParity(t *testing.T) {
 }
 
 func documentedDifference(slug, route, path string) string {
-	if strings.HasSuffix(path, ".head") || strings.HasSuffix(path, ".dirty") {
+	if strings.HasSuffix(path, ".head") || strings.HasSuffix(path, ".dirty") || strings.HasSuffix(path, ".branch") {
 		return "checkout state: the goldens were captured at another commit with uncommitted changes"
 	}
 	if route == "project" || (slug == "org" && route == "org") {

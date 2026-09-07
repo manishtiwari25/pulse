@@ -43,6 +43,8 @@ func (h *Handler) additions(w http.ResponseWriter, r *http.Request, route string
 		h.additionMessages(w, r, parts)
 	case "compute":
 		h.additionCompute(w, r, parts)
+	case "projects":
+		return h.additionProjects(w, r, parts)
 	default:
 		return false
 	}
@@ -119,7 +121,8 @@ func additionFailure(w http.ResponseWriter, err error) {
 		if command.Code == 2 {
 			code = http.StatusBadRequest
 		}
-		if strings.HasPrefix(command.What, "No task ") || strings.HasPrefix(command.What, "No message ") || strings.HasPrefix(command.What, "No compute request ") {
+		if strings.HasPrefix(command.What, "No task ") || strings.HasPrefix(command.What, "No message ") || strings.HasPrefix(command.What, "No compute request ") ||
+			strings.HasPrefix(command.What, "No project ") || strings.HasPrefix(command.What, "No executor ") {
 			code = http.StatusNotFound
 		}
 		writeError(w, code, command.What, command.Why, command.Fix)
@@ -323,6 +326,10 @@ func (h *Handler) additionMessages(w http.ResponseWriter, r *http.Request, parts
 }
 
 func (h *Handler) additionCompute(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) == 4 && parts[1] == "executors" && parts[3] == "remove" {
+		h.additionExecutorRemove(w, r, parts[2])
+		return
+	}
 	if len(parts) != 1 && (len(parts) != 3 || (parts[2] != "approve" && parts[2] != "deny")) {
 		additionNotFound(w)
 		return

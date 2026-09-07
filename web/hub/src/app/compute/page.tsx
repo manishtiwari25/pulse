@@ -8,6 +8,7 @@ import { CapsPanel, ComputeRequestCard } from "@/components/compute/compute";
 import { CardGrid, SectionHeading } from "@/components/pulse/item-card";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
 import { Mono } from "@/components/pulse/who";
+import { RemoveMenuButton } from "@/components/project/project-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num } from "@/lib/format";
 import type { Compute, ComputeRequest, Executor, Runner } from "@/lib/api";
@@ -98,7 +99,8 @@ export default function ComputePage() {
             {executors.length ? (
               <ul className="grid gap-1.5 p-3">
                 {executors.map((e) => (
-                  <ExecutorRow key={e.name} e={e} />
+                  // The local executor is this machine and a removed row is already gone: neither gets Remove.
+                  <ExecutorRow key={e.name} e={e} action={e.name !== "local" && e.status !== "removed" ? <RemoveMenuButton kind="executor" name={e.name} compact /> : undefined} />
                 ))}
               </ul>
             ) : (

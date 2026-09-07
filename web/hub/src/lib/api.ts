@@ -327,6 +327,66 @@ export interface Executor {
   free?: number;
 }
 
+// ----- project lifecycle (ADR-027) --------------------------------------
+// GET /projects lists every registered checkout, inactive ones included; the
+// org payload only carries the active ones.
+export interface RegisteredProject {
+  slug: string;
+  name: string;
+  path: string;
+  remote: string;
+  brain: boolean;
+  status: "active" | "inactive" | string;
+  verify_cmd: string;
+  default_branch: string;
+  added_at: string;
+  added_by: string;
+  last_seen: string;
+  present: boolean;
+}
+
+export interface ProjectsPayload {
+  projects: RegisteredProject[] | null;
+  brain: string;
+}
+
+export interface RegisterProjectInput {
+  path: string;
+  name?: string;
+  verify?: string;
+}
+
+// What `pulse init` did: the row, whether it was new, the onboarding job it
+// queued (or found queued), and the environment record it imported, if any.
+export interface InitResult {
+  project: RegisteredProject;
+  created: boolean;
+  job: { id: string; project: string; kind: string; title: string; status: string; created_at?: string } | null;
+  job_queued: boolean;
+  environment_record: string;
+  store: string;
+}
+
+export interface RemoveItem {
+  label: string;
+  detail: string;
+}
+
+// What `pulse remove` shows before (dry_run) and records after (applied):
+// what changes, what stays, and the commands that are the human's to run.
+export interface RemovePreview {
+  kind: "project" | "executor" | string;
+  name: string;
+  dry_run: boolean;
+  applied: boolean;
+  changes: RemoveItem[] | null;
+  stays: RemoveItem[] | null;
+  yours: string[] | null;
+  cancelled_jobs: string[] | null;
+  leased_jobs: string[] | null;
+  executors: string[] | null;
+}
+
 export interface Runner {
   available: boolean;
   now?: string;
@@ -738,4 +798,10 @@ export const writes = {
   sendMessage: (project: string, body: string, task_id?: string | null) => post<{ message: Message }>("messages", task_id ? { project, task_id, body } : { project, body }),
   approveCompute: (id: string, words: string) => post<{ request: ComputeRequest }>("compute/" + enc(id) + "/approve", { words }),
   denyCompute: (id: string, words: string) => post<{ request: ComputeRequest }>("compute/" + enc(id) + "/deny", { words }),
+  // Project lifecycle (ADR-027) - the same functions `pulse init` and `pulse remove` run.
+  registerProject: (input: RegisterProjectInput) => post<InitResult>("projects", input),
+  // dry_run:true previews; the hub applies only on an explicit false.
+  removeProject: (slug: string, dryRun: boolean) => post<RemovePreview>("projects/" + enc(slug) + "/remove", { dry_run: dryRun }),
+  restoreProject: (slug: string) => post<InitResult>("projects/" + enc(slug) + "/restore", {}),
+  removeExecutor: (name: string, dryRun: boolean) => post<RemovePreview>("compute/executors/" + enc(name) + "/remove", { dry_run: dryRun }),
 };

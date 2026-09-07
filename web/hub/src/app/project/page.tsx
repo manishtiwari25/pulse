@@ -6,15 +6,16 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageTitle, EmptyState, SkeletonPage } from "@/components/pulse/panel";
-import { CardGrid, ItemCard, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
+import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { KindBadge, Mono, ToneBadge, When } from "@/components/pulse/who";
 import { CommonsCard } from "@/components/pulse/cards";
 import { PostSheet, ThreadSheet } from "@/components/board/sheets";
 import { TaskSheet } from "@/components/tasks/task-sheet";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
+import { AddProjectButton, RemoveMenuButton, RestoreButton } from "@/components/project/project-dialogs";
 import { AmendmentsTab, ChatTab, EnvTab, EvolutionTab, NoticesTab, OverviewTab, ProposalsTab, SuggestionsTab, TasksTab, ThreadsTab, TimelineTab } from "@/components/project/tabs";
 import { hrefs, isProjectTab, PROJECT_TABS, type ProjectTab } from "@/lib/nav";
-import { allProjects, COMMONS_HINT, registeredProjects, type Org, type ProjectCardData } from "@/lib/api";
+import { allProjects, COMMONS_HINT, registeredProjects, type Org, type ProjectCardData, type ProjectsPayload, type RegisteredProject } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { num, plural } from "@/lib/format";
 
@@ -37,6 +38,8 @@ function ProjectScreen() {
   const post = sp.get("post");
   const task = sp.get("task");
   const org = useApi<Org>("org");
+  // The registry (inactive rows included) only matters on the picker.
+  const reg = useApi<ProjectsPayload>(!slug ? "projects" : null, { refresh: false });
 
   const setParams = useCallback(
     (patch: Record<string, string | null | undefined>) => {
@@ -54,6 +57,7 @@ function ProjectScreen() {
   if (!slug) {
     const projects = registeredProjects(org.data);
     const commons = org.data?.commons;
+    const inactive = (reg.data?.projects ?? []).filter((p) => p.status !== "active");
     return (
       <>
         <PageTitle
@@ -66,6 +70,7 @@ function ProjectScreen() {
             </>
           }
           sub="Every checkout the hub knows about. Open one to see its board, tasks and the conversation with its lead."
+          actions={<AddProjectButton size="sm" onRegistered={(r) => setParams({ slug: r.project.slug })} />}
         >
           Pick a project
         </PageTitle>
@@ -80,8 +85,22 @@ function ProjectScreen() {
                 ))}
               </CardGrid>
             ) : (
-              <EmptyState>No project registered yet. Run <Mono>pulse init</Mono> in a checkout; the hub lists it here.</EmptyState>
+              <EmptyState>
+                No project registered yet. Use <span className="font-medium text-foreground">Add project</span> above, or run <Mono>pulse init</Mono> in a checkout; the hub lists it here.
+              </EmptyState>
             )}
+            {inactive.length ? (
+              <section aria-label="Inactive projects" className="mt-4">
+                <SectionHeading count={inactive.length} action={<span>removed from the hub; the rows and history stay</span>}>
+                  Inactive
+                </SectionHeading>
+                <CardGrid cols={3}>
+                  {inactive.map((p) => (
+                    <InactivePick key={p.slug} p={p} onRestored={(slug) => setParams({ slug })} />
+                  ))}
+                </CardGrid>
+              </section>
+            ) : null}
             {commons ? (
               <section aria-label="Commons" className="mt-4">
                 <SectionHeading action={<span>not a project - the board every project shares</span>}>Commons</SectionHeading>
@@ -135,8 +154,17 @@ function ProjectScreen() {
             org.error || "…"
           )
         }
-        // The commons has no checkout and no lead, so no task can be given there.
-        actions={isCommons ? undefined : <NewTaskButton project={slug} onCreated={(t) => setParams({ tab: "tasks", task: t.id })} />}
+        // The commons has no checkout and no lead, so no task can be given
+        // there and nothing to remove; the brain is refused by the hub, so it
+        // gets no Remove control either.
+        actions={
+          isCommons ? undefined : (
+            <div className="flex items-center gap-2">
+              {card?.brain ? null : <RemoveMenuButton kind="project" name={slug} onApplied={() => setParams({ slug: null, tab: null, thread: null, post: null, task: null })} />}
+              <NewTaskButton project={slug} onCreated={(t) => setParams({ tab: "tasks", task: t.id })} />
+            </div>
+          )
+        }
         bar={
           <TabsList variant="line" className="w-max">
             {PROJECT_TABS.map((t) => (
@@ -175,6 +203,29 @@ function ProjectScreen() {
       <PostSheet slug={slug} postId={post} onClose={() => setParams({ post: null })} />
       <TaskSheet id={tab === "chat" ? null : task} slug={slug} onClose={() => setParams({ task: null })} />
     </Tabs>
+  );
+}
+
+// One inactive row: removed from the hub, its history kept, Restore in reach.
+function InactivePick({ p, onRestored }: { p: RegisteredProject; onRestored: (slug: string) => void }) {
+  return (
+    <ItemCard className="opacity-80" ariaLabel={p.slug + " (inactive)"}>
+      <ItemCardHeader right={p.last_seen ? <When d={p.last_seen} /> : null}>
+        <Badge variant="outline">inactive</Badge>
+        {p.brain ? <Badge variant="secondary">framework</Badge> : null}
+        {!p.present ? <Badge variant="destructive">missing on disk</Badge> : null}
+        {p.default_branch ? <Mono className="text-muted-foreground">{p.default_branch}</Mono> : null}
+      </ItemCardHeader>
+      <ItemCardTitle>{p.slug}</ItemCardTitle>
+      {p.name && p.name !== p.slug ? <ItemCardBody clamp={1}>{p.name}</ItemCardBody> : null}
+      <ItemCardMeta>
+        <Mono className="text-muted-foreground">{p.path}</Mono>
+      </ItemCardMeta>
+      <ItemCardActions>
+        <RestoreButton slug={p.slug} onRestored={(r) => onRestored(r.project.slug)} />
+        <span className="text-xs text-muted-foreground">{p.present ? "registers it again at its stored path" : "the hub refuses while the folder is missing"}</span>
+      </ItemCardActions>
+    </ItemCard>
   );
 }
 

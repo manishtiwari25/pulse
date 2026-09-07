@@ -57,6 +57,10 @@ its code hash and macOS may ask again; checkouts elsewhere never ask.
 
 Everything else happens in the console:
 
+- **Projects** - add a checkout as a project (the same registration, recipe
+  import and onboarding job as `pulse init`), remove one after a preview of
+  what deactivates, and restore a removed one from the picker. The brain is
+  never removable from the console.
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
   revision is kept. The project's lead agent turns it into jobs and reports
   back on the task thread.
@@ -66,7 +70,8 @@ Everything else happens in the console:
   amendments wait here for a yes or no; a yes queues one job.
 - **Compute** - agents' requests for more machines (size, hours, why). Approve
   or deny; approved requests are provisioned by the configured provider
-  (Azure today, `compute.provider`) inside the caps you set.
+  (Azure today, `compute.provider`) inside the caps you set. Each executor row
+  offers the same preview-then-remove as `pulse remove executor`.
 - **Settings** - runner caps, board rules, amendment quorum, Azure
   subscription / resource group / VM size, and the self-improvement loop's
   gates. Secret-shaped values are stored but never echoed; the held-out

@@ -19,7 +19,7 @@ const now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
 // ----- in-memory state for writes ----------------------------------------
 
-const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, seq: 5000 };
+const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, seq: 5000 };
 const loadJson = async (rel) => JSON.parse(await readFile(join(root, rel), "utf8"));
 async function init() {
   state.tasks = (await loadJson("tasks.json")).tasks;
@@ -28,6 +28,11 @@ async function init() {
   state.settings = await loadJson("settings.json");
   state.proposals = await loadJson("proposals.json");
   state.events = (await loadJson("events.json")).events;
+  const org = await loadJson("org.json");
+  state.projects = org.projects
+    .filter((p) => p.kind !== "commons")
+    .map((p) => ({ slug: p.slug, name: p.slug, path: p.path, remote: p.remote || "", brain: !!p.brain, status: "active", verify_cmd: "", default_branch: "main", added_at: "2026-09-01T09:00:00Z", added_by: "human", last_seen: "2026-09-07T09:00:00Z", present: p.present !== false }));
+  state.projects.push({ slug: "old-site", name: "old-site", path: "/home/owner/src/old-site", remote: "", brain: false, status: "inactive", verify_cmd: "", default_branch: "main", added_at: "2026-08-20T09:00:00Z", added_by: "human", last_seen: "2026-09-03T09:00:00Z", present: true });
   for (const t of state.tasks) {
     try {
       t._detail = await loadJson(`tasks/${t.id}.json`);
@@ -270,7 +275,83 @@ async function handle(req, res) {
         }, 3000);
       return send(res, 200, { request: r });
     }
-    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny");
+    // project lifecycle (ADR-027): register, remove, restore; executor remove
+    if (segs[0] === "projects" && segs.length === 1) {
+      if ("brain" in body) return fail(res, 400, "The brain is chosen in the terminal", "The console does not move the brain flag.", "Run pulse init PATH --brain.");
+      const path = typeof body.path === "string" ? body.path.trim() : "";
+      if (!path) return fail(res, 400, "Invalid path", "path must be a non-empty string.", "Send a JSON object with a valid path.");
+      if (!path.startsWith("/") && !path.startsWith("~")) return fail(res, 400, "Not a directory: " + path, "the path must be absolute", "pass the checkout's full path");
+      if (/nogit/.test(path)) return fail(res, 400, "Not a git checkout: " + path, "a project is a git repository the runner can clone, branch and land into", "git -C " + path + " init  (or pass the checkout's path)");
+      let p = state.projects.find((x) => x.path === path);
+      const created = !p;
+      if (!p) {
+        const base = (body.name || path.split("/").filter(Boolean).pop() || "project").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
+        let slug = base;
+        for (let n = 2; state.projects.some((x) => x.slug === slug); n++) slug = base + "-" + n;
+        p = { slug, name: body.name || slug, path, remote: "", brain: false, status: "active", verify_cmd: body.verify || "", default_branch: "main", added_at: now(), added_by: "human", last_seen: now(), present: true };
+        state.projects.push(p);
+      } else {
+        p.status = "active";
+        p.last_seen = now();
+        if (body.verify) p.verify_cmd = body.verify;
+      }
+      emit("human", created ? "project.add" : "project.refresh", p.slug, path);
+      const job = { id: "JOB-" + String(state.seq++).slice(-3), project: p.slug, kind: "onboard", title: "Onboard " + p.slug, status: "queued", created_at: now() };
+      return send(res, 200, { project: p, created, job, job_queued: created, environment_record: "", store: "/home/owner/.pulse/pulse.sqlite" });
+    }
+    if (segs[0] === "projects" && segs.length === 3 && (segs[2] === "remove" || segs[2] === "restore")) {
+      const p = state.projects.find((x) => x.slug === segs[1]);
+      if (!p) return fail(res, 404, "No project '" + segs[1] + "'", "only a registered project can be " + (segs[2] === "remove" ? "removed" : "restored"), "pulse projects");
+      if (segs[2] === "restore") {
+        if (p.status === "active") return fail(res, 400, "Project " + p.slug + " is already active", "restore registers an inactive project again", "pulse projects");
+        p.status = "active";
+        p.last_seen = now();
+        emit("human", "project.refresh", p.slug, p.path);
+        const job = { id: "JOB-" + String(state.seq++).slice(-3), project: p.slug, kind: "onboard", title: "Onboard " + p.slug, status: "queued", created_at: now() };
+        return send(res, 200, { project: p, created: false, job, job_queued: true, environment_record: "", store: "/home/owner/.pulse/pulse.sqlite" });
+      }
+      if (p.brain) return fail(res, 400, "Refusing to remove " + p.slug + ": the brain is the framework checkout; deactivate with pulse settings, not remove", "the brain holds the constitution, the guide and the framework's own board", "pulse settings set stop 1  (pauses every runner)");
+      if (p.status !== "active") return fail(res, 400, "Project " + p.slug + " is already " + p.status, "remove deactivates an active project", "pulse init " + p.path + "  (registers it again)");
+      if ("dry_run" in body && typeof body.dry_run !== "boolean") return fail(res, 400, "Invalid dry_run", "dry_run must be true or false.", "Send dry_run:true to preview or dry_run:false to apply.");
+      const dry = body.dry_run !== false;
+      const queued = state.tasks.filter((t) => t.project === p.slug && t.job_id && t.status === "open").map((t) => t.job_id);
+      const executors = state.compute.executors.filter((e) => e.projects !== "*" && e.projects.split(",").includes(p.slug)).map((e) => e.name);
+      const preview = {
+        kind: "project", name: p.slug, dry_run: dry, applied: !dry,
+        changes: [{ label: "project " + p.slug, detail: "status active -> inactive" }, ...(queued.length ? [{ label: queued.length + " queued job" + (queued.length > 1 ? "s" : ""), detail: "-> cancelled" }, ...queued.map((j) => ({ label: "  " + j, detail: "onboarding" }))] : []), ...executors.map((e) => ({ label: "executor " + e, detail: "no longer serves " + p.slug }))],
+        stays: [...(queued.length ? [] : [{ label: "no queued jobs", detail: "nothing to cancel" }]), { label: "posts, runs, events", detail: "kept; the history is the store's" }, { label: "checkout " + p.path, detail: "untouched on disk" }],
+        yours: ["rm -rf " + p.path + "  (only if you want the checkout gone)", "pulse init " + p.path + "  (registers it again)"],
+        cancelled_jobs: queued, leased_jobs: [], executors,
+      };
+      if (!dry) {
+        p.status = "inactive";
+        p.last_seen = now();
+        for (const e of state.compute.executors) if (executors.includes(e.name)) e.projects = e.projects.split(",").filter((x) => x !== p.slug).join(",");
+        emit("human", "project.removed", p.slug, { path: p.path, cancelled: queued });
+      }
+      return send(res, 200, preview);
+    }
+    if (segs[0] === "compute" && segs[1] === "executors" && segs.length === 4 && segs[3] === "remove") {
+      const name = segs[2];
+      if (name === "local") return fail(res, 400, "The local executor is this machine; use `pulse settings set workers N` to size it", "local is not a row in the store", "pulse settings set workers 0");
+      const e = state.compute.executors.find((x) => x.name === name);
+      if (!e) return fail(res, 404, "No executor " + name, "only a registered executor can be removed", "pulse executor list");
+      if (e.status === "removed") return fail(res, 400, "Executor " + name + " was already removed", "its row stays for the runs it made", "pulse executor list");
+      const dry = body.dry_run !== false;
+      const preview = {
+        kind: "executor", name, dry_run: dry, applied: !dry,
+        changes: [{ label: "executor " + name, detail: "status " + e.status + " -> removed" }],
+        stays: [{ label: "runs it made", detail: "kept with its name" }, { label: "the machine " + e.address, detail: "untouched; the hub only forgets it" }],
+        yours: ["ssh " + e.address + " sudo userdel pulse  (only if the machine is yours to clean)"],
+        cancelled_jobs: [], leased_jobs: [], executors: [name],
+      };
+      if (!dry) {
+        e.status = "removed";
+        emit("human", "executor.removed", name, { address: e.address });
+      }
+      return send(res, 200, preview);
+    }
+    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/remove|restore, compute/executors/<name>/remove");
   }
 
   // GET - live state first, fixtures second
@@ -291,11 +372,14 @@ async function handle(req, res) {
     return send(res, 200, { messages: state.messages.filter((m) => (!p || m.project === p) && (!t || m.task_id === t) && (!since || m.at > since)) });
   }
   if (segs[0] === "compute" && segs.length === 1) return send(res, 200, state.compute);
+  if (segs[0] === "projects" && segs.length === 1) return send(res, 200, { projects: state.projects, brain: state.projects.find((p) => p.brain)?.slug || "" });
   if (segs[0] === "settings" && segs.length === 1) return send(res, 200, { ...state.settings, settings: state.settings.settings.map(maskSetting) });
   if (segs[0] === "proposals" && segs.length === 1) return send(res, 200, state.proposals);
   if (segs[0] === "org") {
     const org = await fixture("org");
-    return send(res, 200, { ...org, proposals: state.proposals, generated_at: now() });
+    // The real hub lists active projects only; mirror removals made in memory.
+    const projects = org.projects.filter((p) => p.kind === "commons" || state.projects.some((x) => x.slug === p.slug && x.status === "active"));
+    return send(res, 200, { ...org, projects, proposals: state.proposals, generated_at: now() });
   }
   if (segs[0] === "events" && segs.length === 1) {
     const p = q.get("project");

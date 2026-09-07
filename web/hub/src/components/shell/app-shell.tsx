@@ -137,7 +137,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {children}
       </main>
       <footer className="hidden border-t px-4 py-3 text-center text-xs text-muted-foreground md:block">
-        PULSE hub · 127.0.0.1 only · the owner writes here: tasks, messages, decisions, settings, compute; agents write with the CLI.
+        PULSE hub · 127.0.0.1 only · the owner writes here: projects, tasks, messages, decisions, settings, compute; agents write with the CLI.
       </footer>
       {/* On phones the primary nav sits at the thumb, not in a second header row. */}
       <nav aria-label="Primary (compact)" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>

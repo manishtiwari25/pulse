@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { CheckIcon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
@@ -8,8 +9,9 @@ import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow } from
 import { ComputeDecide } from "@/components/compute/compute";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { LiveFeed } from "@/components/pulse/live-feed";
-import { ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
+import { AddProjectButton } from "@/components/project/project-dialogs";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { hrefs } from "@/lib/nav";
@@ -18,6 +20,7 @@ import { registeredProjects, type Compute, type ComputeCaps, type ComputeRequest
 import { useApi } from "@/lib/use-api";
 
 export default function HubPage() {
+  const router = useRouter();
   const org = useApi<Org>("org");
   const tl = useApi<Timeline>("timeline", { refresh: 60000 });
   const runner = useApi<Runner>("runner");
@@ -114,12 +117,20 @@ export default function HubPage() {
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
         <div className="grid min-w-0 grid-cols-1 content-start gap-4">
           <section aria-label="Projects">
-            <SectionHeading count={projects.length}>Projects</SectionHeading>
-            <CardGrid cols={2}>
-              {projects.map((p) => (
-                <ProjectCard key={p.slug} p={p} spark={sparkFor(p.slug)} />
-              ))}
-            </CardGrid>
+            <SectionHeading count={projects.length} action={<AddProjectButton size="sm" variant="outline" onRegistered={(r) => router.push(hrefs.project(r.project.slug))} />}>
+              Projects
+            </SectionHeading>
+            {projects.length ? (
+              <CardGrid cols={2}>
+                {projects.map((p) => (
+                  <ProjectCard key={p.slug} p={p} spark={sparkFor(p.slug)} />
+                ))}
+              </CardGrid>
+            ) : (
+              <EmptyState>
+                No project registered yet. Add one with the button above or run <Mono>pulse init</Mono> in a checkout.
+              </EmptyState>
+            )}
           </section>
           {commons ? (
             <section aria-label="Commons">

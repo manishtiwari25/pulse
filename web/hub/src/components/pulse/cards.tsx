@@ -384,7 +384,7 @@ export function MachinePanel({ r }: { r: Runner | undefined | null }) {
   );
 }
 
-export function ExecutorRow({ e }: { e: Executor }) {
+export function ExecutorRow({ e, action }: { e: Executor; action?: React.ReactNode }) {
   return (
     <li className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
       <ServerIcon className="size-3.5 text-muted-foreground" />
@@ -392,6 +392,7 @@ export function ExecutorRow({ e }: { e: Executor }) {
       <ToneBadge tone="neutral">{e.kind}</ToneBadge>
       <StatusBadge status={e.status} />
       <span className="ml-auto tnum text-muted-foreground">{(e.running ?? 0) + " running · " + (e.free ?? 0) + " free of " + e.workers}</span>
+      {action ? <span className="-my-1 -mr-1 shrink-0">{action}</span> : null}
     </li>
   );
 }
