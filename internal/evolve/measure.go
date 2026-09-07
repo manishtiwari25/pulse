@@ -45,9 +45,15 @@ func selfScorer(scorer, exe string) string {
 }
 
 // scorerEnv is the harness's isolated environment plus the measured commit, so
-// a scorer can tell the tree it judges from wherever the harness moved HEAD.
-func scorerEnv(home, commit string) []string {
-	return append(isolatedEnv(home), "PULSE_MEASURE_COMMIT="+commit)
+// a scorer can tell the tree it judges from wherever the harness moved HEAD,
+// and the measuring binary, so a private judge the console wrote finds pulse
+// without PATH (ADR-032).
+func scorerEnv(home, commit, exe string) []string {
+	env := append(isolatedEnv(home), "PULSE_MEASURE_COMMIT="+commit)
+	if exe != "" {
+		env = append(env, "PULSE_MEASURE_BINARY="+exe)
+	}
+	return env
 }
 
 func measure(ctx context.Context, s *store.Store, project, repo, ref string, opts MeasureOptions) (scores *Scores, retErr error) {
@@ -65,8 +71,13 @@ func measure(ctx context.Context, s *store.Store, project, repo, ref string, opt
 	if state.Pending != 0 {
 		return nil, privateError("private templates are pending; the owner must fill them before measurement")
 	}
+	// An unlocatable binary only matters to a public pulse scorer; a private
+	// judge falls back to PATH and a private-only set still measures.
+	exe, err := executable()
+	if err != nil {
+		exe = ""
+	}
 	matrix := []measuredFixture{}
-	exe := ""
 	for _, f := range fixtures {
 		if !finite(f.Weight) || f.Weight <= 0 || strings.TrimSpace(f.Request) == "" ||
 			store.SecretShaped(f.Request) || store.SecretShaped(f.Scorer) {
@@ -75,9 +86,7 @@ func measure(ctx context.Context, s *store.Store, project, repo, ref string, opt
 		scorer := f.Scorer
 		if pulseScorer(scorer) {
 			if exe == "" {
-				if exe, err = executable(); err != nil || exe == "" {
-					return nil, inputError("Cannot run measurement", "the pulse executable behind the starter scorers cannot be located", "pulse evolve fixture list --project "+project)
-				}
+				return nil, inputError("Cannot run measurement", "the pulse executable behind the starter scorers cannot be located", "pulse evolve fixture list --project "+project)
 			}
 			scorer = selfScorer(scorer, exe)
 		}
@@ -171,7 +180,7 @@ func measure(ctx context.Context, s *store.Store, project, repo, ref string, opt
 			return nil, err
 		}
 		scoreCtx, cancel := context.WithTimeout(ctx, timeout)
-		value, reason, err := scoreClone(scoreCtx, clone, scorerEnv(home, commit), f.scorer)
+		value, reason, err := scoreClone(scoreCtx, clone, scorerEnv(home, commit, exe), f.scorer)
 		cancel()
 		if err != nil {
 			return nil, measurementFailure(ctx, label, "read-only scorer", err)

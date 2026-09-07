@@ -66,7 +66,7 @@ func TestFoldersListing(t *testing.T) {
 	if got := folderNames(result); len(got) != 4 || got[0] != "alpha" || got[1] != "beta" || got[2] != "linked" || got[3] != "Zeta" {
 		t.Fatalf("entries (folders only, no hidden, case-insensitive order): %v", got)
 	}
-	if result["path"] != root || result["parent"] != filepath.Dir(root) || result["checkout"] != false || result["registered"] != "" {
+	if result["path"] != root || result["parent"] != filepath.Dir(root) || result["checkout"] != false || result["registered"] != "" || result["inside"] != "" {
 		t.Fatalf("listing header: %#v", result)
 	}
 	for _, e := range result["entries"].([]any) {
@@ -89,8 +89,16 @@ func TestFoldersListing(t *testing.T) {
 
 	// The registered checkout itself, and its parent as a quick root.
 	status, result = foldersRequest(t, h, "GET", "/api/v1/folders?path="+repo, "")
-	if status != 200 || result["checkout"] != true || result["registered"] != "my-app" {
+	if status != 200 || result["checkout"] != true || result["registered"] != "my-app" || result["inside"] != "" {
 		t.Fatalf("registered checkout: %d %#v", status, result)
+	}
+	// A folder inside the checkout: no place for held-out fixtures.
+	if err := os.MkdirAll(filepath.Join(repo, "docs", "private"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	status, result = foldersRequest(t, h, "GET", "/api/v1/folders?path="+filepath.Join(repo, "docs", "private"), "")
+	if status != 200 || result["registered"] != "" || result["inside"] != "my-app" {
+		t.Fatalf("inside a registered checkout: %d %#v", status, result)
 	}
 	roots := result["roots"].([]any)
 	home, _ := os.UserHomeDir()

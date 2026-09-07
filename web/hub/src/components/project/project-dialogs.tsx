@@ -165,9 +165,14 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
 // ----- folder browser -----------------------------------------------------
 
 // The machine's folders, one level at a time, from the hub (WU-023). A row
-// opens a folder; a checkout's "Use" fills the path field; the footer lets the
-// owner take the folder they are in, with a warning when it is not a checkout.
-function FolderBrowser({ id, start, onPick, onClose }: { id?: string; start: string; onPick: (path: string) => void; onClose: () => void }) {
+// opens a folder; the footer lets the owner take the folder they are in.
+// Two shapes: `checkout` (Add project) puts "Use" on git checkouts only and
+// warns when the folder is not one; `folder` (the held-out set, ADR-032)
+// puts "Use" on every folder and warns only when the folder is a registered
+// project or sits inside one - the hub refuses those for a private set.
+export type FolderBrowserMode = "checkout" | "folder";
+
+export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }: { id?: string; start: string; mode?: FolderBrowserMode; onPick: (path: string) => void; onClose: () => void }) {
   const [cursor, setCursor] = useState(start);
   const [data, setData] = useState<FoldersPayload | undefined>();
   const [error, setError] = useState<{ what: string; why: string } | null>(null);
@@ -175,6 +180,15 @@ function FolderBrowser({ id, start, onPick, onClose }: { id?: string; start: str
   const [answered, setAnswered] = useState<string | null>(null);
   const seq = useRef(0);
   const loading = answered !== cursor;
+  const folderMode = mode === "folder";
+  // The project a folder belongs to, in folder mode: registered on it, or the
+  // one the current listing sits inside (the hub reports that for the current
+  // path; a child of a project folder is inside it too).
+  const owner = (e: { registered: string }) => e.registered || data?.inside || data?.registered || "";
+  // Whether a row's "Use" is offered: a checkout that is not yet registered
+  // in checkout mode; any folder that is not a project's in folder mode.
+  const usable = (e: { checkout: boolean; registered: string }) => (folderMode ? !owner(e) : e.checkout && !e.registered);
+  const hereOwner = data ? data.registered || data.inside || "" : "";
 
   useEffect(() => {
     const n = ++seq.current;
@@ -260,7 +274,7 @@ function FolderBrowser({ id, start, onPick, onClose }: { id?: string; start: str
                   type="button"
                   className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-[12.5px] hover:bg-muted/60"
                   onClick={() => setCursor(e.path)}
-                  onDoubleClick={() => e.checkout && onPick(e.path)}
+                  onDoubleClick={() => usable(e) && onPick(e.path)}
                   title={e.path}
                 >
                   {e.checkout ? <GitBranchIcon className="size-4 shrink-0 text-ok" /> : <FolderIcon className="size-4 shrink-0 text-muted-foreground" />}
@@ -269,6 +283,10 @@ function FolderBrowser({ id, start, onPick, onClose }: { id?: string; start: str
                     <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
                       registered · {e.registered}
                     </Badge>
+                  ) : folderMode && owner(e) ? (
+                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                      inside · {owner(e)}
+                    </Badge>
                   ) : e.checkout ? (
                     <Badge variant="outline" className="h-4 px-1.5 text-[10px] text-ok">
                       git
@@ -276,7 +294,11 @@ function FolderBrowser({ id, start, onPick, onClose }: { id?: string; start: str
                   ) : null}
                   <ChevronRightIcon className="ml-auto size-3.5 shrink-0 opacity-40" />
                 </button>
-                {e.checkout && !e.registered ? (
+                {folderMode ? (
+                  <Button type="button" size="xs" variant="outline" onClick={() => onPick(e.path)} disabled={!usable(e)} title={usable(e) ? undefined : "a registered project - the hub will refuse it"}>
+                    Use
+                  </Button>
+                ) : usable(e) ? (
                   <Button type="button" size="xs" variant="outline" onClick={() => onPick(e.path)}>
                     Use
                   </Button>
@@ -291,7 +313,19 @@ function FolderBrowser({ id, start, onPick, onClose }: { id?: string; start: str
       {data && !error ? (
         <div className="flex flex-wrap items-center gap-2">
           <span className="min-w-0 flex-1 text-xs text-muted-foreground">
-            {data.registered ? (
+            {folderMode ? (
+              data.registered ? (
+                <>
+                  Registered as <Mono>{data.registered}</Mono> - the hub will refuse it.
+                </>
+              ) : data.inside ? (
+                <>
+                  Inside the project <Mono>{data.inside}</Mono> - the hub will refuse it.
+                </>
+              ) : (
+                "This folder is fine for a private set."
+              )
+            ) : data.registered ? (
               <>
                 Already registered as <Mono>{data.registered}</Mono>; using it refreshes that project.
               </>
@@ -301,9 +335,15 @@ function FolderBrowser({ id, start, onPick, onClose }: { id?: string; start: str
               "Not a git checkout - the hub will refuse it; open a folder with a repository."
             )}
           </span>
-          <Button type="button" size="sm" variant={data.checkout ? "default" : "outline"} onClick={() => onPick(data.path)} disabled={!data.path}>
-            {data.checkout ? <GitBranchIcon /> : <FolderIcon />} Use this folder
-          </Button>
+          {folderMode ? (
+            <Button type="button" size="sm" variant={hereOwner ? "outline" : "default"} onClick={() => onPick(data.path)} disabled={!data.path || !!hereOwner} title={hereOwner ? "a registered project - the hub will refuse it" : undefined}>
+              <FolderIcon /> Use this folder
+            </Button>
+          ) : (
+            <Button type="button" size="sm" variant={data.checkout ? "default" : "outline"} onClick={() => onPick(data.path)} disabled={!data.path}>
+              {data.checkout ? <GitBranchIcon /> : <FolderIcon />} Use this folder
+            </Button>
+          )}
         </div>
       ) : null}
     </div>

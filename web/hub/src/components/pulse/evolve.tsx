@@ -6,6 +6,7 @@ import { CheckIcon, CopyIcon, ExternalLinkIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
+import { HeldoutButton } from "./heldout";
 import { Notice, Panel } from "./panel";
 import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
@@ -14,16 +15,17 @@ import { hrefs } from "@/lib/nav";
 import { useNow } from "@/lib/use-api";
 import type { EvolutionDoc, EvolveFixture, EvolveGate, EvolveGates, EvolveLevel, EvolveRecordRef } from "@/lib/api";
 
-// The self-improvement surfaces (ADR-029, ADR-030, ADR-031). A project's loop
-// opens with enabled public fixtures and a recorded baseline; the console
-// shows both and lists the fixtures. The loop's two records (constitution,
-// evaluators) are seeded at onboarding from the template's text; the console
-// shows their revision and whether they are still that text. The baseline is
-// the daemon's to measure (ADR-031): the console reports where that stands
-// and asks nothing. The one human step left is the owner's two private
-// held-out fixtures (ADR-012), named as such wherever a step is named.
-// Nothing here starts a measurement or edits a record - those stay in the
-// terminal on purpose.
+// The self-improvement surfaces (ADR-029, ADR-030, ADR-031, ADR-032). A
+// project's loop opens with enabled public fixtures and a recorded baseline;
+// the console shows both and lists the fixtures. The loop's two records
+// (constitution, evaluators) are seeded at onboarding from the template's
+// text; the console shows their revision and whether they are still that
+// text. The baseline is the daemon's to measure (ADR-031): the console
+// reports where that stands and asks nothing. The one human step left is the
+// owner's two private held-out fixtures (ADR-012), named as such wherever a
+// step is named - and since ADR-032 taken here too: a dialog has the hub
+// write the two files, never read back, with the command kept as the
+// terminal alternative. Nothing here starts a measurement or edits a record.
 
 const LEVELS = "A observe · B record · C rehearse · D evolve";
 const LEVEL_TITLE = "highest self-improvement level allowed right now (" + LEVELS + ")";
@@ -78,6 +80,17 @@ export function CommandBox({ command, copy, className }: { command: string; copy
     <div className={cn("flex items-start gap-2 rounded-md border bg-muted/40 px-2.5 py-1.5", className)}>
       <code className="min-w-0 flex-1 whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed anywhere">{command}</code>
       {copy ? <CopyButton text={command} size="xs" variant="outline" className="-my-0.5 shrink-0" /> : null}
+    </div>
+  );
+}
+
+// The same step as a command, kept under the console's own button (ADR-032):
+// quieter, still copyable, so the terminal stays the owner's other way.
+function TerminalAlternative({ command, className }: { command: string; className?: string }) {
+  return (
+    <div className={cn("grid gap-1", className)}>
+      <span className="text-[11px] text-muted-foreground">or in a terminal:</span>
+      <CommandBox command={command} copy className="border-dashed bg-transparent text-muted-foreground" />
     </div>
   );
 }
@@ -332,35 +345,36 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
       kind: "heldout",
       label: GATE_LABEL.heldout,
       title: "Your one step: two private held-out fixtures",
-      body: "The daemon does everything else - it measured the baseline and runs each cycle. Two fixtures only you can see are your proof the loop is not grading itself (ADR-012). Write them once, outside the checkout, with the command below; the loop for " + slug + " opens from there.",
+      body: "The daemon does everything else - it measured the baseline and runs each cycle. Two fixtures only you can see are your proof the loop is not grading itself (ADR-012). Write them here, outside every checkout - the hub writes the files and never reads them back - or with the command; the loop for " + slug + " opens from there.",
       command: next,
     };
   return null;
 }
 
-// One waiting human step as an inbox card: what, where, why, the command to
-// copy and the way to the project's self-improvement view. The held-out card
-// (ADR-012) says it is the one step that is the owner's; the rest name what is missing.
+// One waiting human step as an inbox card: what, where, why, the way to take
+// it, and the way to the project's self-improvement view. The held-out card
+// (ADR-012) says it is the one step that is the owner's and opens the
+// Held-out fixtures dialog (ADR-032), the command kept as the terminal
+// alternative; the rest name what is missing with the command to copy.
 export function GateCard({ step }: { step: GateStep }) {
+  const heldout = step.kind === "heldout";
   return (
     <ItemCard highlight ariaLabel={step.title}>
       <ItemCardHeader right={<LevelBadge level={step.level} />}>
         <ToneBadge tone="accent">self-improvement</ToneBadge>
-        <ToneBadge tone={step.kind === "heldout" ? "ok" : "warn"}>{step.label}</ToneBadge>
+        <ToneBadge tone={heldout ? "ok" : "warn"}>{step.label}</ToneBadge>
         <ProjectLink slug={step.slug} className="text-xs" />
       </ItemCardHeader>
       <ItemCardTitle>{step.title}</ItemCardTitle>
       <ItemCardBody clamp={3}>{step.body}</ItemCardBody>
-      <CommandBox command={step.command} />
+      {heldout ? <TerminalAlternative command={step.command} /> : <CommandBox command={step.command} />}
       <ItemCardActions>
         <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
           <Link href={hrefs.project(step.slug, "evolution")}>
             self-improvement <ExternalLinkIcon />
           </Link>
         </Button>
-        <span className="ml-auto shrink-0">
-          <CopyButton text={step.command} />
-        </span>
+        <span className="ml-auto shrink-0">{heldout ? <HeldoutButton slug={step.slug} /> : <CopyButton text={step.command} />}</span>
       </ItemCardActions>
     </ItemCard>
   );
@@ -368,20 +382,35 @@ export function GateCard({ step }: { step: GateStep }) {
 
 // ----- the project's panel -----------------------------------------------------
 
-// The named step (title, why, command) the way the inbox card says it, for
-// the panel's "next human step": the same words in both places.
+// The named step (title, why, the way to take it) the way the inbox card says
+// it, for the panel's "next human step": the same words in both places. The
+// held-out step has its button here too, the command under it.
 function StepBlock({ step }: { step: GateStep }) {
+  const heldout = step.kind === "heldout";
   return (
-    <div className={cn("rounded-md border px-3 py-2.5", step.kind === "heldout" && "border-primary/40 bg-primary/[0.03]")}>
+    <div className={cn("rounded-md border px-3 py-2.5", heldout && "border-primary/40 bg-primary/[0.03]")}>
       <div className="flex flex-wrap items-center gap-1.5">
-        <ToneBadge tone={step.kind === "heldout" ? "ok" : "warn"}>{step.label}</ToneBadge>
+        <ToneBadge tone={heldout ? "ok" : "warn"}>{step.label}</ToneBadge>
         <span className="text-[13px] font-medium leading-snug">{step.title}</span>
       </div>
       <p className="mt-1 text-xs leading-snug text-muted-foreground anywhere">{step.body}</p>
-      <CommandBox command={step.command} copy className="mt-2 bg-background/60" />
+      {heldout ? (
+        <>
+          <div className="mt-2">
+            <HeldoutButton slug={step.slug} />
+          </div>
+          <TerminalAlternative command={step.command} className="mt-2" />
+        </>
+      ) : (
+        <CommandBox command={step.command} copy className="mt-2 bg-background/60" />
+      )}
     </div>
   );
 }
+
+// What the panel says under a named step: the held-out step is taken here or
+// in a terminal (ADR-032); every other step is the owner's to run in a terminal.
+const stepFootnote = (kind: GateKind | null) => (kind === "heldout" ? "Done here or in a terminal; the console writes the two files and never reads them back." : "Yours to run in a terminal on the hub machine. The console names the step and never starts a measurement.");
 
 // Level, reason and next step, every gate as a badge, then the fixtures.
 // `gates` null means the hub could not evaluate them: the error shows, the
@@ -431,6 +460,8 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
                 {"held-out " + num(h.count) + (h.pending ? " · " + num(h.pending) + " pending" : "")}
               </ToneBadge>
             ) : null}
+            {/* The set exists and the gate has moved on: the dialog's done state (add one, rewrite one) stays reachable from here (ADR-032). */}
+            {h && h.count > 0 && step?.kind !== "heldout" ? <HeldoutButton slug={gates.project} size="xs" variant="ghost" label="Add or rewrite…" title="Held-out fixtures: add another or rewrite one - the console never reads them back" className="h-5 px-1.5 text-[11px] text-muted-foreground" /> : null}
             {gates.product_scope ? (
               <ToneBadge tone={gates.product_scope.allowed ? "ok" : "neutral"} title={gates.product_scope.reason || undefined}>
                 {gates.product_scope.allowed ? "product changes allowed" : "operating layer only"}
@@ -451,12 +482,12 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
             {waits && step ? (
               <>
                 <StepBlock step={step} />
-                <p className="mt-1 text-[11.5px] text-muted-foreground">Yours to run in a terminal on the hub machine. The console names the step and never starts a measurement.</p>
+                <p className="mt-1 text-[11.5px] text-muted-foreground">{stepFootnote(step.kind)}</p>
               </>
             ) : waits ? (
               <>
                 <CommandBox command={next} copy />
-                <p className="mt-1 text-[11.5px] text-muted-foreground">Yours to run in a terminal on the hub machine. The console names the step and never starts a measurement.</p>
+                <p className="mt-1 text-[11.5px] text-muted-foreground">{stepFootnote(null)}</p>
               </>
             ) : (
               <>

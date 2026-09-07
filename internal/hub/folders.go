@@ -38,6 +38,7 @@ type folderListing struct {
 	Roots      []folderRoot  `json:"roots"`
 	Checkout   bool          `json:"checkout"`
 	Registered string        `json:"registered"`
+	Inside     string        `json:"inside"`
 	Entries    []folderEntry `json:"entries"`
 	Truncated  bool          `json:"truncated"`
 }
@@ -131,7 +132,7 @@ func (h *Handler) additionFolders(w http.ResponseWriter, r *http.Request, parts 
 		return
 	}
 
-	listing := folderListing{Path: path, Home: home, Roots: roots, Checkout: isCheckout(path), Registered: registered[path], Entries: []folderEntry{}}
+	listing := folderListing{Path: path, Home: home, Roots: roots, Checkout: isCheckout(path), Registered: registered[path], Inside: insideProject(registered, path), Entries: []folderEntry{}}
 	if parent := filepath.Dir(path); parent != path {
 		listing.Parent = parent
 	}
@@ -163,6 +164,19 @@ func (h *Handler) additionFolders(w http.ResponseWriter, r *http.Request, parts 
 		listing.Entries, listing.Truncated = listing.Entries[:folderLimit], true
 	}
 	writeJSON(w, http.StatusOK, listing)
+}
+
+// insideProject is the registered project whose checkout contains path - a
+// held-out folder must not sit there (ADR-032). The checkout itself is
+// Registered, not Inside; nested checkouts resolve to the innermost.
+func insideProject(registered map[string]string, path string) string {
+	inside, depth := "", 0
+	for root, slug := range registered {
+		if root != path && strings.HasPrefix(path, root+string(filepath.Separator)) && len(root) > depth {
+			inside, depth = slug, len(root)
+		}
+	}
+	return inside
 }
 
 // isCheckout reports a .git entry (a directory, or the file a worktree keeps).

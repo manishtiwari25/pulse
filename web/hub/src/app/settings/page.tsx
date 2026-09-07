@@ -52,7 +52,7 @@ const GROUPS: Group[] = [
   {
     id: "evolve",
     title: "Self-improvement loop",
-    blurb: "Bounds on pulse-evolve. The held-out directory is yours alone: agents never see its path.",
+    blurb: "Bounds on pulse-evolve. The held-out directory is yours alone: agents never see its path. The set itself - folder and two fixtures - is created from the Held-out fixtures dialog on a project's Self-improvement panel, or with pulse evolve setup DIR.",
     keys: ["evolve.loop", "evolve.limits", "evolve.tolerance", "evolve.heldout_dir"],
     match: (n) => n.startsWith("evolve."),
   },

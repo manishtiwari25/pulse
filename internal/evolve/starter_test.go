@@ -380,9 +380,15 @@ func TestSelfScorerRewritesOnlyThePulseWord(t *testing.T) {
 			t.Errorf("pulseScorer(%q) disagrees with the rewrite", tc.scorer)
 		}
 	}
-	env := scorerEnv("/tmp/home", "abc123")
-	if !contains(env, "PULSE_MEASURE_COMMIT=abc123") || !contains(env, "PULSE_HOME=/tmp/home") || !contains(env, "PULSE_JOB=measurement") {
-		t.Fatalf("scorer env is missing the measured commit or isolation: %v", env)
+	env := scorerEnv("/tmp/home", "abc123", "/opt/pulse")
+	if !contains(env, "PULSE_MEASURE_COMMIT=abc123") || !contains(env, "PULSE_HOME=/tmp/home") || !contains(env, "PULSE_JOB=measurement") ||
+		!contains(env, "PULSE_MEASURE_BINARY=/opt/pulse") {
+		t.Fatalf("scorer env is missing the measured commit, the binary or isolation: %v", env)
+	}
+	for _, entry := range scorerEnv("/tmp/home", "abc123", "") {
+		if strings.HasPrefix(entry, "PULSE_MEASURE_BINARY=") {
+			t.Fatalf("an unlocatable binary must not be named: %v", entry)
+		}
 	}
 }
 

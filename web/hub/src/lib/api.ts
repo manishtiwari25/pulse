@@ -45,7 +45,9 @@ export function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 // The decide/settings routes kept their explicit intent headers from the
 // Python server (ADR-017, ADR-025); the newer write routes need only JSON.
-const WRITE_HEADERS: Record<string, string> = { decide: "X-Pulse-Decide", settings: "X-Pulse-Settings" };
+// The held-out writes (ADR-032) take the same guard: a `.score` file is a
+// program the daemon runs, so the intent is stated in a header too.
+const WRITE_HEADERS: Record<string, string> = { decide: "X-Pulse-Decide", settings: "X-Pulse-Settings", heldout: "X-Pulse-Heldout" };
 
 export function post<T>(path: string, payload: unknown): Promise<T> {
   const head = path.split("/")[0] ?? "";
@@ -488,9 +490,10 @@ export interface RemovePreview {
   executors: string[] | null;
 }
 
-// One level of the machine's folders, for the Add project picker (WU-023).
-// Directories only, hidden entries skipped; the hub marks git checkouts and
-// the projects already registered on those paths.
+// One level of the machine's folders, for the Add project picker (WU-023)
+// and the held-out folder step (ADR-032). Directories only, hidden entries
+// skipped; the hub marks git checkouts and the projects already registered
+// on those paths.
 export interface FolderEntry {
   name: string;
   path: string;
@@ -505,8 +508,52 @@ export interface FoldersPayload {
   roots: { label: string; path: string }[];
   checkout: boolean;
   registered: string;
+  // ADR-032: the registered project the listed folder sits inside ("" when
+  // none) - a private set may not live there. Absent on an older hub.
+  inside?: string;
   entries: FolderEntry[];
   truncated: boolean;
+}
+
+// ----- the owner's held-out fixtures (ADR-032) -------------------------------
+
+// One of the six built-in effect judges, named for the form; `label` is the
+// plain sentence the owner picks by ("Nothing changed and no commit was made").
+export interface HeldoutJudge {
+  name: string;
+  label: string;
+}
+
+// The private set as counts only: whether evolve.heldout_dir is set, whether
+// the folder exists on this machine, how many fixtures are ready and how
+// many template pairs still wait for text, and one sentence when the set is
+// invalid. The path, the stems and the text never travel (ADR-012).
+export interface HeldoutPayload {
+  configured: boolean;
+  present: boolean;
+  count: number;
+  pending: number;
+  problem?: string;
+  judges: HeldoutJudge[];
+  // On a write: template files the setup created (4 the first time, 0 after).
+  created?: number;
+}
+
+// `pulse evolve setup DIR` from the console: an absolute path or ~, outside
+// every registered checkout and not under ~/.pulse; created 0700 if missing.
+export interface HeldoutSetupInput {
+  dir: string;
+}
+
+// One fixture written by the hub, never read back: the request, and either a
+// built-in judge by name or the owner's own scorer script - exactly one.
+// `slot` rewrites the fixture at that 1-based position; without it the first
+// pending template pair is filled, else a new pair is added.
+export interface HeldoutFixtureInput {
+  request: string;
+  judge?: string;
+  scorer?: string;
+  slot?: number;
 }
 
 export interface Runner {
@@ -995,4 +1042,8 @@ export const writes = {
   removeProject: (slug: string, dryRun: boolean) => post<RemovePreview>("projects/" + enc(slug) + "/remove", { dry_run: dryRun }),
   restoreProject: (slug: string) => post<InitResult>("projects/" + enc(slug) + "/restore", {}),
   removeExecutor: (name: string, dryRun: boolean) => post<RemovePreview>("compute/executors/" + enc(name) + "/remove", { dry_run: dryRun }),
+  // The owner's held-out fixtures (ADR-032): `pulse evolve setup DIR`, then one
+  // write per fixture. The hub answers with counts only and never reads a fixture back.
+  heldoutSetup: (dir: string) => post<HeldoutPayload>("heldout", { dir } satisfies HeldoutSetupInput),
+  heldoutFixture: (input: HeldoutFixtureInput) => post<HeldoutPayload>("heldout/fixtures", input),
 };

@@ -61,8 +61,11 @@ Everything else happens in the console:
   decisions (ADRs) to accept, defer or decline with your own words - the same
   `pulse record accept` the terminal runs, recorded as `human` with the words
   in the record's history - plus board proposals, compute requests, and the
-  one human step that opens a project's self-improvement loop (two private
-  held-out fixtures), each with the exact command to copy.
+  one human step that opens a project's self-improvement loop - two private
+  held-out fixtures - taken right there: a dialog picks a private folder,
+  creates the set and writes each fixture (a request plus a built-in effect
+  judge or your own script); the hub writes the files and never reads them
+  back; the command stays as the terminal alternative.
 - **Projects** - add a checkout as a project (the same registration, recipe
   import and onboarding job as `pulse init`), typing its path or browsing the
   machine's folders with checkouts and registered projects marked; remove one
@@ -168,8 +171,9 @@ EVO-constitution, EVO-evaluators, EVO-archive).
   --kind baseline` queues it by hand). The job's run log lists every public
   fixture's score and, for a 0, the scorer's one-line reason. What stays
   human after that: at least
-  two private fixtures in `evolve.heldout_dir` (`pulse evolve setup DIR`) -
-  the owner's proof that the loop is not grading itself. Product fixtures -
+  two private fixtures in `evolve.heldout_dir` (`pulse evolve setup DIR`, or
+  the console's Held-out fixtures dialog) - the owner's proof that the loop is
+  not grading itself. Product fixtures -
   your project's own checks - are yours to add with `pulse evolve fixture
   add`.
 - **Fleet** prepares isolated worker clones for parallel experiments;
