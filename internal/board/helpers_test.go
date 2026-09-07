@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -17,6 +18,17 @@ import (
 )
 
 const testNow = "2026-09-06T10:00:00Z"
+
+func TestMain(m *testing.M) {
+	// Runner identity must not affect fixture creation or vote/session assertions.
+	for _, name := range []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"} {
+		if err := os.Unsetenv(name); err != nil {
+			fmt.Fprintf(os.Stderr, "clear inherited %s: %v\n", name, err)
+			os.Exit(1)
+		}
+	}
+	os.Exit(m.Run())
+}
 
 // oracleDir is where the Python oracle lives (PULSE_ORACLE_DIR, default /tmp/pulse-oracle).
 func oracleDir() string {

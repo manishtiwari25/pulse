@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,15 @@ import (
 	"sync"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	// Worker-guard tests set PULSE_JOB explicitly; ordinary fixtures must not inherit it.
+	if err := os.Unsetenv("PULSE_JOB"); err != nil {
+		fmt.Fprintf(os.Stderr, "clear inherited PULSE_JOB: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
 
 func openTemp(t *testing.T, o Options) *Store {
 	t.Helper()
