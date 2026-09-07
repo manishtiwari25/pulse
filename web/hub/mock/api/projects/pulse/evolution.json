@@ -2,13 +2,28 @@
   "archive": {
     "rows": [
       {
+        "at": "2026-09-06T10:40:00Z",
+        "baseline_score": 0.83,
+        "branch": "evolve/20260904T161200Z-aurora",
+        "hypothesis": "A shorter reviewer prompt keeps the fixture score while halving review tokens",
+        "id": "V-002",
+        "kept": 1,
+        "note": "kept: +0.02 within tolerance 0.03 across 7 public fixtures",
+        "project": "pulse",
+        "run_id": "run-0457",
+        "sandbox": "local",
+        "suggestion_post": "20260904T161200Z-aurora",
+        "tolerance": 0.03,
+        "variant_score": 0.85
+      },
+      {
         "at": "2026-09-05T14:20:00Z",
         "baseline_score": 0.83,
-        "branch": "evolve/baseline",
-        "hypothesis": "Establish baseline",
+        "branch": "main",
+        "hypothesis": "baseline",
         "id": "V-001",
         "kept": 1,
-        "note": "baseline recorded from 3 runs per fixture across 7 public fixtures",
+        "note": "baseline measurement",
         "project": "pulse",
         "run_id": "run-0421",
         "sandbox": "local",
@@ -139,8 +154,10 @@
     }
   ],
   "gates": {
-    "baseline": 0.83,
-    "baseline_id": "V-001",
+    "baseline": 0.85,
+    "baseline_failed_at": "",
+    "baseline_id": "V-002",
+    "baseline_job": null,
     "cap_reached": false,
     "constitution": true,
     "cycles": 1,
@@ -162,7 +179,7 @@
     },
     "project": "pulse",
     "public_fixtures": 7,
-    "reason": "every gate is open: constitution and evaluators indexed, 7 fixtures enabled, baseline 0.83 recorded by V-001",
+    "reason": "every gate is open: constitution and evaluators indexed, 7 fixtures enabled, baseline 0.85 recorded by V-002",
     "signal": {
       "kept": 0,
       "rate": 0,

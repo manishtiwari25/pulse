@@ -381,7 +381,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 					inflight[d] = true
 					started = append(started, d)
 					go func(d *dispatch) {
-						dctx, cancel := context.WithTimeout(runCtx, runBudget(s))
+						dctx, cancel := context.WithTimeout(runCtx, jobBudget(s, d.job))
 						defer cancel()
 						defer func() {
 							if r := recover(); r != nil {

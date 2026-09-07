@@ -79,17 +79,25 @@ func (h *Handler) additionProjectList(w http.ResponseWriter, r *http.Request) {
 // projectGates is the loop's position for one project row (ADR-029), read
 // the way evolve status reads it, with the loop's two records (ADR-030): id,
 // revision and whether the text is still the seeded copy, or null when the
-// record is absent. A project the loop cannot describe (removed, or a store
-// without the loop's tables) reports the zero values for the gates.
+// record is absent, and the baseline job (ADR-031): baseline_job is {id,
+// status} while the daemon's measurement is queued, leased or blocked, else
+// null; baseline_failed_at is when the newest baseline job failed within the
+// retry window, else "". A project the loop cannot describe (removed, or a
+// store without the loop's tables) reports the zero values for the gates.
 func projectGates(s *store.Store, slug string) map[string]any {
 	gates := map[string]any{"fixtures_enabled": 0, "baseline": false, "evolve_level": "", "evolve_next": "",
-		"constitution": loopRecordSummary(s, slug, "constitution"), "evaluators": loopRecordSummary(s, slug, "evaluators")}
+		"constitution": loopRecordSummary(s, slug, "constitution"), "evaluators": loopRecordSummary(s, slug, "evaluators"),
+		"baseline_job": nil, "baseline_failed_at": ""}
 	status, err := evolve.Status(s, slug)
 	if err != nil {
 		return gates
 	}
 	gates["fixtures_enabled"], gates["baseline"] = status.PublicFixtures, status.Baseline != nil
 	gates["evolve_level"], gates["evolve_next"] = status.Level, status.NextHumanStep
+	if status.BaselineJob != nil {
+		gates["baseline_job"] = object("id status", status.BaselineJob.ID, status.BaselineJob.Status)
+	}
+	gates["baseline_failed_at"] = status.BaselineFailedAt
 	return gates
 }
 

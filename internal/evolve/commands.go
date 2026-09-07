@@ -784,7 +784,10 @@ func printArchive(w io.Writer, color bool, archive []Archived) {
 	rows := [][]string{}
 	for _, a := range archive {
 		decision := "discarded"
-		if a.Kept {
+		switch {
+		case a.Kept && IsBaselineRow(a.Hypothesis, a.SuggestionPost):
+			decision = "baseline"
+		case a.Kept:
 			decision = "kept"
 		}
 		rows = append(rows, []string{a.ID, a.Project, fmt.Sprintf("%.4f", a.BaselineScore), fmt.Sprintf("%.4f", a.VariantScore),

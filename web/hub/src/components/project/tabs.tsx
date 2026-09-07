@@ -23,7 +23,7 @@ import { RECORD_COLUMNS } from "@/components/records/records";
 import { hrefs } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { num, plural, statusTone } from "@/lib/format";
-import { projectPath, TASK_STATUSES, type Amendment, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type ProjectInfo, type Proposal, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
+import { isBaselineRow, projectPath, TASK_STATUSES, type Amendment, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type ProjectInfo, type Proposal, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
 
 function Wait<T>({ q, rows = 5, children }: { q: Loaded<T>; rows?: number; children: (d: T) => React.ReactNode }) {
@@ -467,12 +467,15 @@ export function EvolutionTab({ slug }: { slug: string }) {
     <Wait q={q} rows={8}>
       {(e) => {
         const rows = e.archive?.rows ?? [];
+        // The daemon's baseline (ADR-031) is an archive row like any other; it is a measurement, not a cycle, so the tallies leave it out.
+        const cycles = rows.filter((r) => !isBaselineRow(r));
+        const baselineRow = rows.find(isBaselineRow);
         const loop = e.loop ?? { loop: "", limits: "", tolerance: "", stop: "", heldout_present: false };
         const present = !!(e.constitution || e.evaluators || e.archive?.record || rows.length);
         const on = loop.loop === "1";
         const stopped = loop.stop === "1";
-        const keptN = rows.filter(kept).length;
-        const last = rows[0];
+        const keptN = cycles.filter(kept).length;
+        const last = cycles[0];
         // The gates and fixtures (ADR-029) show whenever the hub reports them, set up or not: they are what the owner asked about.
         const fixtures = e.fixtures ?? [];
         const gated = e.gates !== undefined || !!e.gates_error || fixtures.length > 0;
@@ -502,13 +505,13 @@ export function EvolutionTab({ slug }: { slug: string }) {
               <>
                 <KpiGrid>
                   <Kpi n={on ? "on" : "off"} label="loop" tone={stopped ? "bad" : on ? "ok" : "neutral"} sub={stopped ? "STOP is set" : undefined} href={hrefs.settings("evolve")} />
-                  <Kpi n={rows.length} label="cycles" sub={rows.length ? keptN + " kept · " + (rows.length - keptN) + " discarded" : "none yet"} />
+                  <Kpi n={cycles.length} label="cycles" sub={cycles.length ? keptN + " kept · " + (cycles.length - keptN) + " discarded" : baselineRow ? "none yet · baseline " + score(baselineRow.variant_score) : "none yet"} />
                   <Kpi n={loop.tolerance || "—"} label="tolerance" sub="allowed regression" />
                   <Kpi n={loop.limits || "none"} label="limits" />
                   <Kpi n={loop.heldout_present ? "present" : "absent"} label="held-out evaluators" tone={loop.heldout_present ? "ok" : "warn"} sub="owner-private; path never shown" />
                   <Kpi {...docKpi(e.constitution)} label="constitution" />
                   <Kpi {...docKpi(e.evaluators)} label="evaluators" />
-                  <Kpi n={last ? last.at.slice(0, 10) : "—"} label="last cycle" sub={last ? (kept(last) ? "kept" : "discarded") : undefined} />
+                  <Kpi n={last ? last.at.slice(0, 10) : baselineRow ? baselineRow.at.slice(0, 10) : "—"} label={last || !baselineRow ? "last cycle" : "baseline"} sub={last ? (kept(last) ? "kept" : "discarded") : baselineRow ? "measured by the daemon" : undefined} />
                 </KpiGrid>
                 {stopped ? <Notice tone="bad">STOP is set - the loop halts until you clear it in Settings.</Notice> : null}
                 {!e.constitution || !e.evaluators ? (
@@ -516,7 +519,7 @@ export function EvolutionTab({ slug }: { slug: string }) {
                     {[!e.constitution ? "EVO-constitution" : "", !e.evaluators ? "EVO-evaluators" : ""].filter(Boolean).join(" and ")} not in the store yet - the loop refuses to run without both. Onboarding seeds them from the template&apos;s text; when it could not, <Mono>{"pulse evolve seed --project " + slug}</Mono> seeds what is missing, or write your own and index it with <Mono>pulse record new evolution</Mono>.
                   </Notice>
                 ) : null}
-                <Panel title="Archive - measured cycles" actions={<span>{plural(rows.length, "cycle")}</span>} dense>
+                <Panel title="Archive - measured cycles" actions={<span>{plural(cycles.length, "cycle") + (baselineRow ? " · measured baseline " + score(baselineRow.variant_score) : "")}</span>} dense>
                   {rows.length ? (
                     <DataTable
                       dense
@@ -524,16 +527,28 @@ export function EvolutionTab({ slug }: { slug: string }) {
                       rowKey={(r) => r.id}
                       columns={[
                         { key: "at", label: "when", render: (r) => <When d={r.at} /> },
-                        { key: "hypothesis", label: "hypothesis", render: (r) => <span className="anywhere">{r.hypothesis || <Mono>{r.id}</Mono>}</span> },
-                        { key: "score", label: "baseline → variant", align: "right", render: (r) => <Mono>{score(r.baseline_score) + " → " + score(r.variant_score)}</Mono> },
-                        { key: "kept", label: "verdict", render: (r) => <ToneBadge tone={kept(r) ? "ok" : "neutral"}>{kept(r) ? "kept" : "discarded"}</ToneBadge> },
+                        // The daemon's baseline reads as what it is (ADR-031), never as a kept experiment.
+                        {
+                          key: "hypothesis",
+                          label: "hypothesis",
+                          render: (r) =>
+                            isBaselineRow(r) ? (
+                              <ToneBadge tone="info" title="the daemon measured the default branch as it stood - every variant is scored against this">
+                                Baseline
+                              </ToneBadge>
+                            ) : (
+                              <span className="anywhere">{r.hypothesis || <Mono>{r.id}</Mono>}</span>
+                            ),
+                        },
+                        { key: "score", label: "baseline → variant", align: "right", render: (r) => <Mono>{isBaselineRow(r) ? score(r.variant_score) : score(r.baseline_score) + " → " + score(r.variant_score)}</Mono> },
+                        { key: "kept", label: "verdict", render: (r) => (isBaselineRow(r) ? <ToneBadge tone="neutral">recorded</ToneBadge> : <ToneBadge tone={kept(r) ? "ok" : "neutral"}>{kept(r) ? "kept" : "discarded"}</ToneBadge>) },
                         { key: "branch", label: "branch", render: (r) => (r.branch ? <Mono>{r.branch}</Mono> : "") },
                         { key: "sandbox", label: "sandbox", render: (r) => r.sandbox || "" },
                         { key: "note", label: "note", render: (r) => <span className="anywhere text-muted-foreground">{r.note}</span> },
                       ]}
                     />
                   ) : (
-                    <EmptyState className="m-3">No measured cycle yet. When the loop is on and both documents are indexed, each experiment branch lands here with its scores and verdict.</EmptyState>
+                    <EmptyState className="m-3">No measurement yet. The daemon&apos;s baseline lands here first; with the loop on, each experiment branch follows with its scores and verdict.</EmptyState>
                   )}
                 </Panel>
                 <div className="grid gap-4 lg:grid-cols-2">

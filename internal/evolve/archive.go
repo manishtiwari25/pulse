@@ -56,6 +56,25 @@ func publicScores(in *Scores) (*Scores, error) {
 	return &out, nil
 }
 
+// baselineShape is the one kept row the Keep rule does not govern (ADR-031):
+// the baseline measurement, where the default branch was measured once and
+// written as both baseline and variant. It has the baseline hypothesis, no
+// suggestion post, and identical totals and per-fixture scores; anything
+// else that is kept must still beat its baseline by the tolerance.
+func baselineShape(row ArchiveRow, baseline, variant *Scores) bool {
+	if !IsBaselineRow(row.Hypothesis, row.SuggestionPost) || baseline.Total != variant.Total ||
+		len(baseline.Fixtures) != len(variant.Fixtures) {
+		return false
+	}
+	for i := range baseline.Fixtures {
+		b, v := baseline.Fixtures[i], variant.Fixtures[i]
+		if b.Name != v.Name || b.Kind != v.Kind || b.Score != v.Score || b.Weight != v.Weight {
+			return false
+		}
+	}
+	return true
+}
+
 func archive(s *store.Store, row ArchiveRow) (string, error) {
 	if _, err := validProject(s, row.Project); err != nil {
 		return "", err
@@ -74,7 +93,7 @@ func archive(s *store.Store, row ArchiveRow) (string, error) {
 	if !scoreValue(row.Tolerance) {
 		return "", inputError("Cannot archive experiment", "tolerance must be a finite fraction in [0,1]", "pulse settings set evolve.tolerance 0.02")
 	}
-	if keep, _ := Keep(baseline, variant, row.Tolerance); row.Kept && !keep {
+	if keep, _ := Keep(baseline, variant, row.Tolerance); row.Kept && !keep && !baselineShape(row, baseline, variant) {
 		return "", errors.New("a kept archive row must satisfy the unchanged Keep rule")
 	}
 	if (baseline.Project != "" && baseline.Project != row.Project) || (variant.Project != "" && variant.Project != row.Project) {

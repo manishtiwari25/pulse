@@ -1,0 +1,22 @@
+[
+  {
+    "area": "api",
+    "key": "api/pagination",
+    "last": "2026-09-05T09:40:00Z",
+    "posts": 2,
+    "resolution": "",
+    "status": "open",
+    "summary": "Agree - the offset scan shows in the slow-query log every night",
+    "thread": "pagination"
+  },
+  {
+    "area": "onboarding",
+    "key": "onboarding/first-look",
+    "last": "2026-09-03T10:15:00Z",
+    "posts": 1,
+    "resolution": "",
+    "status": "open",
+    "summary": "Onboarding: contract tests pass on main; six starter fixtures enabled",
+    "thread": "first-look"
+  }
+]

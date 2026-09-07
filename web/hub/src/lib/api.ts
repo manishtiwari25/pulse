@@ -237,15 +237,28 @@ export interface EvolveRecordRef {
   seeded_from: string; // template record and revision the copy started from; "" when none
 }
 
+// The daemon's baseline job for a project (ADR-031): the newest open one,
+// with its queue state. `blocked` waits for a worker or a gate the daemon
+// clears itself; the owner does nothing at this gate.
+export interface BaselineJobRef {
+  id: string;
+  status: "queued" | "leased" | "blocked" | string;
+}
+
 export interface EvolveGate {
   fixtures_enabled: number; // enabled public fixtures
-  baseline: boolean; // a kept runner experiment recorded the baseline
+  baseline: boolean; // the baseline is recorded (the daemon's measurement, or a kept experiment since)
   evolve_level: EvolveLevel; // highest self-improvement level allowed right now; "" on error
-  evolve_next: string; // the exact next human step as a command, or "none"
+  evolve_next: string; // the exact next human step as a command, or "none" (optionally "none - <why>")
   // ADR-030: null when the project has no such record, undefined when the
   // hub predates the field (so the console shows nothing rather than "no constitution").
   constitution?: EvolveRecordRef | null;
   evaluators?: EvolveRecordRef | null;
+  // ADR-031: the daemon records the baseline. The newest open baseline job
+  // (null when none is open), and when the newest one failed within the last
+  // 24 hours - the daemon retries after that - as RFC3339, "" otherwise.
+  baseline_job?: BaselineJobRef | null;
+  baseline_failed_at?: string;
 }
 
 export interface ProjectCardData extends Partial<EvolveGate> {
@@ -283,8 +296,9 @@ export interface ProjectCardData extends Partial<EvolveGate> {
 // The gate fields of a project, from whichever payload carries them: the
 // org row first, the registry row (GET /projects) second. Null when neither
 // does, so the console shows nothing rather than a wrong "0 fixtures". The
-// record refs (ADR-030) travel on GET /projects; they are read from either
-// row, so an org row that lacks them does not hide the registry's.
+// record refs (ADR-030) and the baseline job (ADR-031) travel on GET
+// /projects; they are read from either row, so an org row that lacks them
+// does not hide the registry's.
 export function evolveGate(p: Partial<EvolveGate> | undefined | null, reg?: Partial<EvolveGate> | null): EvolveGate | null {
   for (const src of [p, reg]) {
     if (src && typeof src.evolve_level === "string" && typeof src.fixtures_enabled === "number") {
@@ -294,10 +308,30 @@ export function evolveGate(p: Partial<EvolveGate> | undefined | null, reg?: Part
       const eva = firstRef(src.evaluators, other?.evaluators);
       if (con !== undefined) g.constitution = con;
       if (eva !== undefined) g.evaluators = eva;
+      const job = firstJob(src.baseline_job, other?.baseline_job);
+      if (job !== undefined) g.baseline_job = job;
+      const failed = [src.baseline_failed_at, other?.baseline_failed_at].find((v) => typeof v === "string");
+      if (failed !== undefined) g.baseline_failed_at = failed;
       return g;
     }
   }
   return null;
+}
+
+// The baseline job as the hub sent it (ADR-031): the ref, null for "none
+// open", undefined when the field is absent or malformed (an older hub).
+export function baselineJob(v: unknown): BaselineJobRef | null | undefined {
+  if (v === null) return null;
+  if (typeof v !== "object" || v === undefined) return undefined;
+  const j = v as Partial<BaselineJobRef>;
+  if (typeof j.id !== "string" || !j.id) return undefined;
+  return { id: j.id, status: typeof j.status === "string" ? j.status : "queued" };
+}
+
+// The first source that says anything about the job - null ("none open") counts as an answer.
+function firstJob(a: unknown, b: unknown): BaselineJobRef | null | undefined {
+  const j = baselineJob(a);
+  return j !== undefined ? j : baselineJob(b);
 }
 
 // The first source that says anything about the record - null ("none") counts as an answer.
@@ -649,11 +683,14 @@ export interface EvolutionDoc {
   seeded_from?: string;
 }
 
+// One archived measurement. The daemon's baseline (ADR-031) is a row like
+// any other - hypothesis "baseline", the default branch, equal scores, kept -
+// and the console shows it as the baseline, never as a kept experiment.
 export interface EvolutionArchiveRow {
   id: string;
   project: string;
   suggestion_post: string;
-  hypothesis: string;
+  hypothesis: string; // "baseline" for the daemon's measurement
   branch: string;
   baseline_score: number;
   variant_score: number;
@@ -664,6 +701,9 @@ export interface EvolutionArchiveRow {
   at: string;
   note: string;
 }
+
+// The daemon's baseline measurement rather than an experiment (ADR-031).
+export const isBaselineRow = (r: Pick<EvolutionArchiveRow, "hypothesis">): boolean => r.hypothesis === "baseline";
 
 export interface Evolution {
   constitution: EvolutionDoc | null;
@@ -691,6 +731,10 @@ export interface EvolveGates {
   evaluators: boolean;
   baseline: number | null; // the recorded baseline score, null when none
   baseline_id?: string;
+  // ADR-031: the daemon's baseline job while it measures, and the time of a
+  // failure within the last 24 hours ("" when none) - see EvolveGate.
+  baseline_job?: BaselineJobRef | null;
+  baseline_failed_at?: string;
   public_fixtures: number;
   heldout: { count: number; pending: number; problem?: string };
   kept: number;
@@ -705,7 +749,7 @@ export interface EvolveGates {
   limit_problem?: string;
   level: EvolveLevel | string;
   reason: string;
-  next_human_step: string; // a command, or "none"
+  next_human_step: string; // a command, or "none" - optionally "none - <what the daemon does instead>"
 }
 
 // One fixture as the console may see it: name, kind, state and provenance.

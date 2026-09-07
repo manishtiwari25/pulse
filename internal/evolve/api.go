@@ -5,7 +5,9 @@
 // This file is the contract the runner builds against: the runner's landing
 // for jobs of kind `experiment` calls Measure on the base and on the branch,
 // Keep with the project's evolve.tolerance, then Archive - and lands only a
-// kept variant. Nothing else writes evolution_archive.
+// kept variant. The runner's `baseline` job (ADR-031) calls Measure on the
+// default branch alone and archives one kept row with BaselineHypothesis.
+// Nothing else writes evolution_archive.
 package evolve
 
 import (
@@ -85,8 +87,22 @@ type ArchiveRow struct {
 	Note           string
 }
 
+// BaselineHypothesis marks the archive row the daemon's baseline job writes
+// (ADR-031): the default branch measured once, baseline and variant equal,
+// kept, no suggestion post. Status reads the newest kept row as the baseline,
+// so this row opens the loop for a tree that no experiment has beaten yet; it
+// is not an experiment and counts in no hit rate, budget or cycle.
+const BaselineHypothesis = "baseline"
+
+// IsBaselineRow reports whether an archive row is the baseline measurement,
+// not an experiment: the baseline hypothesis with no suggestion post.
+func IsBaselineRow(hypothesis, suggestionPost string) bool {
+	return hypothesis == BaselineHypothesis && suggestionPost == ""
+}
+
 // Archive writes one evolution_archive row (id B-NNN per project) and logs
-// the event evolution.archived. Only the runner's experiment landing calls it.
+// the event evolution.archived. Only the runner's experiment landing and its
+// baseline job (ADR-031) call it.
 var Archive = func(s *store.Store, row ArchiveRow) (id string, err error) {
 	return "", ErrNotImplemented
 }

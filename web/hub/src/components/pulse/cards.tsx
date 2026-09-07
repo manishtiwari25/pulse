@@ -75,7 +75,7 @@ export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: nu
           </span>
         ))}
       </ItemCardMeta>
-      {/* The self-improvement gates (ADR-029): why the loop runs or waits, in three chips. Hidden when the hub does not report them. */}
+      {/* The self-improvement gates (ADR-029): why the loop runs or waits, in a few chips - the baseline one reports the daemon's progress (ADR-031). Hidden when the hub does not report them. */}
       {g ? <EvolveBadges g={g} /> : null}
       {p.last_post ? (
         <p className="truncate text-xs text-muted-foreground">

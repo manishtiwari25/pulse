@@ -58,31 +58,45 @@ type ProductScope struct {
 	Reason  string `json:"reason"`
 }
 
+// JobRef names the open baseline job of a project (ADR-031): its id and
+// queue status (queued, leased or blocked).
+type JobRef struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+// BaselineRetryHours is how long the daemon waits after a failed baseline
+// measurement before it plans the job again (ADR-031); Status reports the
+// failure for as long.
+const BaselineRetryHours = 24
+
 type LoopStatus struct {
-	Project        string       `json:"project"`
-	Stop           bool         `json:"stop"`
-	Loop           bool         `json:"loop"`
-	Limits         string       `json:"limits"`
-	Tolerance      float64      `json:"tolerance"`
-	Constitution   bool         `json:"constitution"`
-	Evaluators     bool         `json:"evaluators"`
-	Baseline       *float64     `json:"baseline"`
-	BaselineID     string       `json:"baseline_id,omitempty"`
-	PublicFixtures int          `json:"public_fixtures"`
-	Heldout        HeldoutState `json:"heldout"`
-	Kept           int          `json:"kept"`
-	Discarded      int          `json:"discarded"`
-	Voted          HitRate      `json:"voted"`
-	Signal         HitRate      `json:"signal"`
-	ProductScope   ProductScope `json:"product_scope"`
-	LoopStartedAt  string       `json:"loop_started_at,omitempty"`
-	Cycles         int          `json:"cycles"`
-	Hours          float64      `json:"hours"`
-	CapReached     bool         `json:"cap_reached"`
-	LimitProblem   string       `json:"limit_problem,omitempty"`
-	Level          string       `json:"level"`
-	Reason         string       `json:"reason"`
-	NextHumanStep  string       `json:"next_human_step"`
+	Project          string       `json:"project"`
+	Stop             bool         `json:"stop"`
+	Loop             bool         `json:"loop"`
+	Limits           string       `json:"limits"`
+	Tolerance        float64      `json:"tolerance"`
+	Constitution     bool         `json:"constitution"`
+	Evaluators       bool         `json:"evaluators"`
+	Baseline         *float64     `json:"baseline"`
+	BaselineID       string       `json:"baseline_id,omitempty"`
+	BaselineJob      *JobRef      `json:"baseline_job"`       // the open baseline job, or null (ADR-031)
+	BaselineFailedAt string       `json:"baseline_failed_at"` // when the newest baseline job failed within BaselineRetryHours, else ""
+	PublicFixtures   int          `json:"public_fixtures"`
+	Heldout          HeldoutState `json:"heldout"`
+	Kept             int          `json:"kept"`
+	Discarded        int          `json:"discarded"`
+	Voted            HitRate      `json:"voted"`
+	Signal           HitRate      `json:"signal"`
+	ProductScope     ProductScope `json:"product_scope"`
+	LoopStartedAt    string       `json:"loop_started_at,omitempty"`
+	Cycles           int          `json:"cycles"`
+	Hours            float64      `json:"hours"`
+	CapReached       bool         `json:"cap_reached"`
+	LimitProblem     string       `json:"limit_problem,omitempty"`
+	Level            string       `json:"level"`
+	Reason           string       `json:"reason"`
+	NextHumanStep    string       `json:"next_human_step"`
 }
 
 func (status *LoopStatus) onlyBudgetClosed() bool {
@@ -152,6 +166,53 @@ func loopStart(s *store.Store) (string, int64, error) {
 	return start, epoch, rows.Err()
 }
 
+// baselineRowSQL tells the baseline measurement (ADR-031) from an experiment
+// in a query over evolution_archive aliased a; IsBaselineRow is the Go twin.
+const baselineRowSQL = "(a.hypothesis = 'baseline' AND a.suggestion_post = '')"
+
+// OpenBaselineJob is the newest queued, leased or blocked baseline job of a
+// project (ADR-031), or nil: while one exists the daemon plans no other and
+// status says the baseline is being measured.
+func OpenBaselineJob(s *store.Store, project string) (*JobRef, error) {
+	ref := &JobRef{}
+	err := s.DB.QueryRow(`SELECT id, status FROM jobs WHERE project = ? AND kind = 'baseline'
+		AND status IN ('queued', 'leased', 'blocked') ORDER BY created_at DESC, rowid DESC LIMIT 1`, project).Scan(&ref.ID, &ref.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ref, nil
+}
+
+// RecentBaselineFailure is finished_at of a project's newest finished
+// baseline job when that job failed less than BaselineRetryHours before now
+// (ADR-031), else "". The daemon plans no baseline job while it is set, so a
+// failing measurement is retried daily, never in a tight loop; a time it
+// cannot read counts as recent for the same reason.
+func RecentBaselineFailure(s *store.Store, project, now string) (string, error) {
+	var status, finished string
+	err := s.DB.QueryRow(`SELECT status, finished_at FROM jobs WHERE project = ? AND kind = 'baseline'
+		AND finished_at != '' AND status IN ('done', 'failed', 'cancelled')
+		ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1`, project).Scan(&status, &finished)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if status != "failed" {
+		return "", nil
+	}
+	failedAt, err1 := time.Parse(time.RFC3339, finished)
+	at, err2 := time.Parse(time.RFC3339, now)
+	if err1 != nil || err2 != nil || at.Sub(failedAt) < BaselineRetryHours*time.Hour {
+		return finished, nil
+	}
+	return "", nil
+}
+
 func Status(s *store.Store, project string) (*LoopStatus, error) {
 	if _, err := validProject(s, project); err != nil {
 		return nil, err
@@ -190,13 +251,22 @@ func Status(s *store.Store, project string) (*LoopStatus, error) {
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
+	if status.BaselineJob, err = OpenBaselineJob(s, project); err != nil {
+		return nil, err
+	}
+	if status.BaselineFailedAt, err = RecentBaselineFailure(s, project, s.Now()); err != nil {
+		return nil, err
+	}
+	// The baseline row (ADR-031) is a measurement, not an experiment: it is
+	// neither kept nor tried, and it consumes none of the owner's budget.
 	rows, err := s.DB.Query(`SELECT a.kept,
 		CASE WHEN p.kind = 'suggestion' AND EXISTS (
 			SELECT 1 FROM posts v WHERE v.kind = 'vote' AND v.on_post = p.id
 			AND v.vote IN ('up','down') AND v.agent <> p.agent
 			AND (v.session = '' OR p.session = '' OR v.session <> p.session)
 		) THEN 1 ELSE 0 END
-		FROM evolution_archive a LEFT JOIN posts p ON p.id = a.suggestion_post WHERE a.project = ?`, project)
+		FROM evolution_archive a LEFT JOIN posts p ON p.id = a.suggestion_post
+		WHERE a.project = ? AND NOT `+baselineRowSQL, project)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +312,7 @@ func Status(s *store.Store, project string) (*LoopStatus, error) {
 		// Event order disambiguates rows in the same second as the on switch.
 		// Every canonical archive row and its event commit atomically.
 		if err := s.DB.QueryRow(`SELECT COUNT(*) FROM evolution_archive a
-			WHERE a.project = ? AND a.at >= ? AND EXISTS (
+			WHERE a.project = ? AND a.at >= ? AND NOT `+baselineRowSQL+` AND EXISTS (
 				SELECT 1 FROM events e WHERE e.action = 'evolution.archived' AND e.subject = a.id AND e.seq > ?
 				AND CASE WHEN json_valid(e.detail) THEN json_extract(e.detail, '$.project') END = a.project
 			)`, project, status.LoopStartedAt, epoch).Scan(&status.Cycles); err != nil {
@@ -273,13 +343,25 @@ func Status(s *store.Store, project string) (*LoopStatus, error) {
 		status.Reason, status.NextHumanStep = "no enabled public fixtures",
 			"pulse evolve fixture seed --project "+project+"  (starter set), or pulse evolve fixture add --project "+project+" --name N --request FILE --scorer CMD"
 	case status.Baseline == nil:
-		status.Reason, status.NextHumanStep = "no kept runner experiment establishes the baseline",
-			"pulse job add --project "+project+" --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE'"
+		// ADR-031: the daemon records the baseline; the human only waits, or queues the job sooner.
+		switch {
+		case status.BaselineJob != nil:
+			status.Reason = fmt.Sprintf("baseline measuring (job %s, %s)", status.BaselineJob.ID, status.BaselineJob.Status)
+			status.NextHumanStep = "none - the daemon records the baseline (pulse jobs --project " + project + ")"
+		case status.BaselineFailedAt != "":
+			status.Reason = fmt.Sprintf("baseline measurement failed at %s; the daemon retries after %d hours", status.BaselineFailedAt, BaselineRetryHours)
+			status.NextHumanStep = "none - or pulse job add --project " + project + " --kind baseline --title 'Record baseline'"
+		case !status.Loop:
+			status.Reason = "no baseline measured yet; the daemon records it once the loop is on"
+			status.NextHumanStep = "pulse settings set evolve.loop 1  (then the daemon plans the baseline job on its next tick), or pulse job add --project " + project + " --kind baseline --title 'Record baseline'"
+		default:
+			status.Reason, status.NextHumanStep = "no baseline measured yet", "none - the daemon plans the baseline job on its next tick (pulse daemon)"
+		}
 	default:
 		status.Level = "C"
 		switch {
 		case status.Heldout.Problem != "" || status.Heldout.Pending > 0 || status.Heldout.Count < 2:
-			status.Reason, status.NextHumanStep = "at least two complete private fixtures are required", "pulse evolve setup DIR"
+			status.Reason, status.NextHumanStep = "the two private held-out fixtures are the one step the owner is the point of (ADR-012)", "pulse evolve setup DIR"
 		case !status.Loop:
 			status.Reason, status.NextHumanStep = "evolve.loop is off", "pulse settings set evolve.loop 1"
 		case status.LimitProblem != "":

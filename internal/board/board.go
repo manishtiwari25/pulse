@@ -33,9 +33,10 @@ var UsefulKinds = []string{"finding", "answer", "result", "vote", "amendment", "
 
 // JobKinds are the kinds a job may have.
 var JobKinds = []string{"onboard", "task", "improve", "answer", "ballot", "clean", "reflect",
-	// Go additions: experiment (an evolve cycle's one-variable change, D-M)
-	// and lead (a project's owner-facing agent session, D-C)
-	"experiment", "lead"}
+	// Go additions: experiment (an evolve cycle's one-variable change, D-M),
+	// lead (a project's owner-facing agent session, D-C) and baseline
+	// (ADR-031: the daemon measures the default branch and archives the baseline)
+	"experiment", "lead", "baseline"}
 
 // JobEndStates are what `job finish` accepts.
 var JobEndStates = []string{"done", "failed", "cancelled", "blocked", "queued"}

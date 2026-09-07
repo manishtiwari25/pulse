@@ -56,7 +56,7 @@ export default function HubPage() {
   const recent = [...openTasks].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, 6);
   const pendingCompute = (compute.data?.requests ?? []).filter((r) => r.status === "pending");
   const adrs = (proposed.data?.records ?? []).filter(awaitsDecision);
-  // The gate a project waits at (fixtures, baseline, constitution) is a human step too - it sits in the inbox with a command to copy (ADR-029).
+  // The gate a project waits at (records, fixtures, the owner's held-out fixtures) is a human step too - it sits in the inbox with a command to copy (ADR-029). The baseline is the daemon's (ADR-031) and never a card.
   const gateOf = (p: ProjectCardData) => evolveGate(p, (reg.data?.projects ?? []).find((r) => r.slug === p.slug));
   const steps = projects.map((p) => gateStep(p.slug, gateOf(p))).filter((s): s is GateStep => s !== null);
   const decisions = adrs.length + awaiting.length + pendingCompute.length;

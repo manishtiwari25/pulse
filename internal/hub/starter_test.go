@@ -69,13 +69,14 @@ func TestEvolutionGatesAndFixturesNeverExposeTexts(t *testing.T) {
 	}
 	gates := data["gates"].(map[string]any)
 	for _, key := range []string{"project", "stop", "loop", "limits", "tolerance", "constitution", "evaluators", "baseline",
-		"public_fixtures", "heldout", "kept", "discarded", "voted", "signal", "product_scope", "cycles", "hours", "cap_reached",
-		"level", "reason", "next_human_step"} {
+		"baseline_job", "baseline_failed_at", "public_fixtures", "heldout", "kept", "discarded", "voted", "signal", "product_scope",
+		"cycles", "hours", "cap_reached", "level", "reason", "next_human_step"} {
 		if _, ok := gates[key]; !ok {
 			t.Fatalf("gates lacks %s: %v", key, sortedKeys(gates))
 		}
 	}
-	if gates["project"] != slug || gates["public_fixtures"] != float64(6) || gates["level"] != "B" || gates["baseline"] != nil {
+	if gates["project"] != slug || gates["public_fixtures"] != float64(6) || gates["level"] != "B" || gates["baseline"] != nil ||
+		gates["baseline_job"] != nil || gates["baseline_failed_at"] != "" {
 		t.Fatalf("gates: %#v", gates)
 	}
 	rows := assertEvolutionFixtures(t, data["fixtures"])
@@ -163,10 +164,14 @@ func TestProjectRowsCarryTheLoopPosition(t *testing.T) {
 		t.Fatalf("project rows: %#v", result)
 	}
 	for _, row := range rows {
-		for _, key := range []string{"fixtures_enabled", "baseline", "evolve_level", "evolve_next", "constitution", "evaluators"} {
+		for _, key := range []string{"fixtures_enabled", "baseline", "evolve_level", "evolve_next", "constitution", "evaluators",
+			"baseline_job", "baseline_failed_at"} {
 			if _, ok := row[key]; !ok {
 				t.Fatalf("row %s lacks %s: %v", row["slug"], key, sortedKeys(row))
 			}
+		}
+		if row["baseline_job"] != nil || row["baseline_failed_at"] != "" {
+			t.Fatalf("row %s carries a baseline job nobody queued: %#v", row["slug"], row)
 		}
 	}
 	if seeded["fixtures_enabled"] != float64(6) || seeded["baseline"] != false || seeded["evolve_level"] != "B" ||
@@ -196,6 +201,76 @@ func TestProjectRowsCarryTheLoopPosition(t *testing.T) {
 				t.Fatalf("inactive row: %#v", row)
 			}
 		}
+	}
+}
+
+// ADR-031: the project rows and the Evolution tab carry the daemon's baseline
+// job while it is open and the failure that holds the next attempt.
+func TestProjectRowsCarryTheBaselineJob(t *testing.T) {
+	s, slug := templateStore(t)
+	h := New(s, nil)
+	projectRow := func() map[string]any {
+		t.Helper()
+		_, result := additionsRequest(t, h, "GET", "/api/v1/projects", "")
+		for _, item := range result["projects"].([]any) {
+			if row := item.(map[string]any); row["slug"] == slug {
+				return row
+			}
+		}
+		t.Fatalf("no row for %s: %#v", slug, result)
+		return nil
+	}
+	gates := func() map[string]any {
+		t.Helper()
+		status, data := additionsRequest(t, h, "GET", "/api/v1/projects/"+slug+"/evolution", "")
+		if status != 200 {
+			t.Fatalf("evolution: %d %#v", status, data)
+		}
+		assertEvolutionShape(t, data)
+		return data["gates"].(map[string]any)
+	}
+	job, _, err := board.AddJob(s, board.JobInput{Project: slug, Kind: "baseline", Title: "Record baseline", Priority: 20,
+		Source: "baseline:" + slug, CreatedBy: "daemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"id": job.ID, "status": "queued"}
+	if row := projectRow(); !reflect.DeepEqual(row["baseline_job"], want) || row["baseline_failed_at"] != "" || row["baseline"] != false {
+		t.Fatalf("row with a queued baseline job: %#v", row)
+	}
+	if g := gates(); !reflect.DeepEqual(g["baseline_job"], want) || g["baseline_failed_at"] != "" ||
+		!strings.Contains(g["reason"].(string), "baseline measuring (job "+job.ID+", queued)") {
+		t.Fatalf("gates with a queued baseline job: %#v", g)
+	}
+	if _, err := board.FinishJob(s, job.ID, "aurora", "failed", "measurement failed", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if row := projectRow(); row["baseline_job"] != nil || row["baseline_failed_at"] != s.Now() || row["baseline"] != false {
+		t.Fatalf("row after a failed baseline job: %#v", row)
+	}
+	if g := gates(); g["baseline_job"] != nil || g["baseline_failed_at"] != s.Now() || !strings.Contains(g["reason"].(string), "retries after 24 hours") {
+		t.Fatalf("gates after a failed baseline job: %#v", g)
+	}
+	// The raw archive rows keep their hypothesis, so the tab can tell the baseline row from an experiment.
+	scores := &evolve.Scores{Project: slug, Total: 1, Fixtures: []evolve.FixtureScore{{Name: "starter-readme", Kind: "public", Score: 1, Weight: 1}}}
+	id, err := evolve.Archive(s, evolve.ArchiveRow{Project: slug, Hypothesis: evolve.BaselineHypothesis, Branch: "main", Baseline: scores,
+		Variant: scores, Tolerance: .02, Kept: true, RunID: "run-1", Note: "baseline measurement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row := projectRow(); row["baseline"] != true || row["baseline_failed_at"] != s.Now() {
+		t.Fatalf("row after the baseline row: %#v", row)
+	}
+	_, data := additionsRequest(t, h, "GET", "/api/v1/projects/"+slug+"/evolution", "")
+	archive := data["archive"].(map[string]any)["rows"].([]any)
+	if len(archive) != 1 {
+		t.Fatalf("archive rows: %#v", archive)
+	}
+	if arow := archive[0].(map[string]any); arow["id"] != id || arow["hypothesis"] != "baseline" || arow["kept"] != float64(1) {
+		t.Fatalf("archive row: %#v", arow)
+	}
+	if g := data["gates"].(map[string]any); g["baseline"] != float64(1) || g["kept"] != float64(0) || g["cycles"] != float64(0) {
+		t.Fatalf("gates after the baseline row: %#v", g)
 	}
 }
 

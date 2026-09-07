@@ -229,6 +229,10 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 	exec1(s.DB, "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) "+
 		"VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)", runID, job.str("id"), agent, project.str("slug"), now, clone, logPath, mode, ex.name())
 	eventAt(s.DB, now, agent, "run.start", runID, map[string]any{"job": job.str("id"), "mode": mode, "executor": ex.name()})
+	if job.str("kind") == "baseline" {
+		// ADR-031: the runner measures the default branch itself; no clone, brief, worker or landing.
+		return runBaseline(s, job, project, agent, now, runID, logPath, ex, o)
+	}
 	if agent != humanAgent {
 		model := s.Setting("worker_model", "")
 		if o.WorkerCmd != "" {
@@ -758,6 +762,9 @@ func castResultVotes(s *store.Store, slug string, arow *store.Agent, agent, now,
 }
 
 // pickWorker is pick_worker(): the next free worker, rotated; names are never reused.
+// Only workers of the current worker_model are picked or counted toward the pool: runJob
+// joins the worker with that model and joinAgent refuses a name whose recorded model
+// differs, so a worker spawned before the owner changed worker_model would fail every dispatch.
 func pickWorker(s *store.Store, now, agent string, exclude []string) (string, error) {
 	if agent != "" {
 		r, err := resolveAgent(s, agent, true)
@@ -770,16 +777,19 @@ func pickWorker(s *store.Store, now, agent string, exclude []string) (string, er
 	if pool < 1 {
 		pool = 1
 	}
-	active := mustOne(s.DB, "SELECT COUNT(*) AS n FROM agents WHERE status = 'active' AND kind = 'worker'").int("n")
+	runner, model := s.Setting("runner_cmd", ""), s.Setting("worker_model", "")
+	current := "(a.model = '' OR ? = '' OR a.model = ?) "
+	currentArgs := []any{model, model}
+	active := mustOne(s.DB, "SELECT COUNT(*) AS n FROM agents a WHERE a.status = 'active' AND a.kind = 'worker' AND "+current, currentArgs...).int("n")
 	for active < pool {
-		if _, err := spawnAgent(s, s.Setting("runner_cmd", ""), s.Setting("worker_model", ""), "worker"); err != nil {
+		if _, err := spawnAgent(s, runner, model, "worker"); err != nil {
 			return "", err
 		}
 		active++
 	}
-	q := "SELECT a.name FROM agents a WHERE a.status = 'active' AND a.kind = 'worker' AND NOT EXISTS " +
+	q := "SELECT a.name FROM agents a WHERE a.status = 'active' AND a.kind = 'worker' AND " + current + "AND NOT EXISTS " +
 		"(SELECT 1 FROM jobs j WHERE j.status = 'leased' AND j.lease_agent = a.name) "
-	args := []any{}
+	args := append([]any{}, currentArgs...)
 	if len(exclude) > 0 {
 		marks := make([]string, len(exclude))
 		for i, x := range exclude {
@@ -792,7 +802,7 @@ func pickWorker(s *store.Store, now, agent string, exclude []string) (string, er
 	if r := mustOne(s.DB, q, args...); r != nil {
 		return r.str("name"), nil
 	}
-	r, err := spawnAgent(s, s.Setting("runner_cmd", ""), s.Setting("worker_model", ""), "worker")
+	r, err := spawnAgent(s, runner, model, "worker")
 	if err != nil {
 		return "", err
 	}

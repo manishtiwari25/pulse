@@ -4,8 +4,9 @@ package store
 // D-M). Every statement is its own string, all IF NOT EXISTS;
 // store.EnsureRecords executes them after RunnerDDL.
 //
-// evolution_archive holds one row per measured experiment; only the runner's
-// experiment landing writes it (never a shadow run, never a CLI writer).
+// evolution_archive holds one row per measured experiment, plus the baseline
+// row the daemon's baseline job records (ADR-031); only the runner writes it
+// (never a shadow run, never a CLI writer).
 // evolution_fixtures holds the public fixtures; held-out fixtures never enter
 // the store (setting evolve.heldout_dir).
 var EvolveDDL = []string{

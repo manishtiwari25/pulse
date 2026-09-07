@@ -185,8 +185,14 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 	if waiting >= parallelPerProject(s) {
 		return nil, nil
 	}
-	suggestions := suggestionRecords(s, slug, now)
 	project := projectBySlug(s.DB, slug)
+	// ADR-031: a project at the baseline gate gets the baseline job before anything else.
+	if job, isNew, err := planBaseline(s, project, slug, now, createdBy); err != nil {
+		return nil, err
+	} else if isNew {
+		return []row{job}, nil
+	}
+	suggestions := suggestionRecords(s, slug, now)
 	var created []row
 	for _, sg := range suggestions {
 		if sg.Status != "eligible" || sg.Score <= 0 {

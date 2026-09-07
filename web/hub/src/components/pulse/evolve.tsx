@@ -9,20 +9,25 @@ import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, 
 import { Notice, Panel } from "./panel";
 import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
-import { num, plural } from "@/lib/format";
+import { fmtDate, num, parseDate, plural, rel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
+import { useNow } from "@/lib/use-api";
 import type { EvolutionDoc, EvolveFixture, EvolveGate, EvolveGates, EvolveLevel, EvolveRecordRef } from "@/lib/api";
 
-// The self-improvement surfaces (ADR-029, ADR-030). A project's loop opens
-// only with enabled public fixtures and a recorded baseline; the console
-// shows both, lists the fixtures and names the one human step that opens the
-// next gate as a command to copy. The loop's two records (constitution,
+// The self-improvement surfaces (ADR-029, ADR-030, ADR-031). A project's loop
+// opens with enabled public fixtures and a recorded baseline; the console
+// shows both and lists the fixtures. The loop's two records (constitution,
 // evaluators) are seeded at onboarding from the template's text; the console
-// shows their revision and whether they are still that text. Nothing here
-// starts a measurement or edits a record - those stay in the terminal on purpose.
+// shows their revision and whether they are still that text. The baseline is
+// the daemon's to measure (ADR-031): the console reports where that stands
+// and asks nothing. The one human step left is the owner's two private
+// held-out fixtures (ADR-012), named as such wherever a step is named.
+// Nothing here starts a measurement or edits a record - those stay in the
+// terminal on purpose.
 
 const LEVELS = "A observe · B record · C rehearse · D evolve";
 const LEVEL_TITLE = "highest self-improvement level allowed right now (" + LEVELS + ")";
+const score = (n: number) => (Number.isFinite(n) ? n.toFixed(3).replace(/\.?0+$/, "") : "—");
 
 // ----- copy ------------------------------------------------------------------
 
@@ -122,6 +127,7 @@ export function RecordChip({ r, what, className }: { r: EvolveRecordRef | null |
 // One line under a project card's tiles: how far the loop may go and why.
 // The constitution leads (it is the first gate); the evaluators only speak
 // up when they alone are missing - one seed fills both - so the line stays short.
+// The baseline chip reports the daemon's progress (ADR-031), never a step.
 export function EvolveBadges({ g, className }: { g: EvolveGate; className?: string }) {
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", className)}>
@@ -130,12 +136,113 @@ export function EvolveBadges({ g, className }: { g: EvolveGate; className?: stri
       <ToneBadge tone={g.fixtures_enabled ? "ok" : "neutral"} className={g.fixtures_enabled ? undefined : "text-muted-foreground"} title="enabled public fixtures - the checks agents may see; every experiment is measured against them">
         {plural(g.fixtures_enabled, "fixture")}
       </ToneBadge>
-      <ToneBadge tone={g.baseline ? "ok" : "warn"} title={g.baseline ? "a kept experiment recorded the baseline" : "no kept experiment has recorded the baseline yet - the loop stays closed"}>
-        {g.baseline ? "baseline" : "no baseline"}
-      </ToneBadge>
+      <BaselineChip g={g} />
       <LevelBadge level={g.evolve_level} />
     </div>
   );
+}
+
+// ----- the baseline (ADR-031) --------------------------------------------------
+
+// A next step that asks nothing of the owner: "none", or "none - <what the
+// daemon does instead>". The part after the dash, when there is one.
+export const noneStep = (next: string): { none: boolean; why: string } => {
+  const m = /^none\b\s*(?:[-–:]\s*)?([^]*)$/.exec(next.trim());
+  return m ? { none: true, why: (m[1] ?? "").trim() } : { none: false, why: "" };
+};
+
+// Where the baseline stands for a project, from the row's gate fields. The
+// daemon measures it (ADR-031): a job in flight, a failure it retries after
+// 24 hours, or - fixtures ready and no step named for the owner - its next
+// tick; with evolve.loop off it waits for the loop instead. An older hub's
+// `pulse job add ... experiment` step counts as the daemon's turn too: the
+// console never asks the owner to queue the baseline.
+export type BaselineState = { kind: "recorded" } | { kind: "measuring"; id: string; status: string } | { kind: "failed"; at: string } | { kind: "waiting"; on: "daemon" | "loop" } | { kind: "none" };
+
+export function baselineState(g: EvolveGate): BaselineState {
+  if (g.baseline) return { kind: "recorded" };
+  if (g.baseline_job) return { kind: "measuring", id: g.baseline_job.id, status: g.baseline_job.status };
+  if (g.baseline_failed_at) return { kind: "failed", at: g.baseline_failed_at };
+  const next = g.evolve_next.trim();
+  if (g.fixtures_enabled > 0 && (next === "" || noneStep(next).none || next.startsWith("pulse job add"))) return { kind: "waiting", on: "daemon" };
+  if (g.fixtures_enabled > 0 && next.startsWith("pulse settings set evolve.loop")) return { kind: "waiting", on: "loop" };
+  return { kind: "none" };
+}
+
+// Hours until the daemon retries a failed baseline: 24 from the failure, never below 0.
+export const retryHours = (failedAt: string, now: number): number => {
+  const t = parseDate(failedAt);
+  return t ? Math.max(0, Math.round(24 - (now - t.getTime()) / 3600000)) : 24;
+};
+
+const baselineJobWord = (status: string) => (status === "leased" ? "measuring" : "queued");
+// A job id already reads as one (`job-2026...`); a bare id gets the word.
+const jobRef = (id: string) => (/^job/i.test(id) ? id : "job " + id);
+
+// The baseline as one quiet chip: recorded (with the score when the panel
+// knows it), measuring, failed and retrying, waiting for the daemon, or not
+// yet - nothing at this gate is the owner's to do, so the chip never warns
+// louder than a failure.
+export function BaselineChip({ g, score: s, recordedBy, className }: { g: EvolveGate; score?: number | null; recordedBy?: string; className?: string }) {
+  const now = useNow();
+  const st = baselineState(g);
+  switch (st.kind) {
+    case "recorded":
+      return (
+        <ToneBadge tone="ok" title={recordedBy ? "recorded by " + recordedBy + " - every variant is measured against it" : "the baseline is recorded - every variant is measured against it"} className={className}>
+          {typeof s === "number" && Number.isFinite(s) ? "baseline " + score(s) : "baseline"}
+        </ToneBadge>
+      );
+    case "measuring":
+      return (
+        <ToneBadge tone="info" dot title={"the daemon's baseline job is " + st.status + " - pulse job show " + st.id} className={className}>
+          {"baseline: " + baselineJobWord(st.status) + " (" + jobRef(st.id) + ")"}
+        </ToneBadge>
+      );
+    case "failed": {
+      const h = retryHours(st.at, now);
+      return (
+        <ToneBadge tone="warn" title={"the daemon's baseline job failed at " + fmtDate(st.at) + "; it retries after 24 hours - nothing for you to do"} className={className}>
+          {"baseline failed " + rel(st.at, now) + "; " + (h ? "retry in " + num(h) + " h" : "retry due")}
+        </ToneBadge>
+      );
+    }
+    case "waiting":
+      return st.on === "loop" ? (
+        <ToneBadge tone="neutral" title="fixtures are ready; the daemon records the baseline once evolve.loop is on (Settings, or pulse settings set evolve.loop 1)" className={cn("text-muted-foreground", className)}>
+          baseline: once the loop is on
+        </ToneBadge>
+      ) : (
+        <ToneBadge tone="neutral" title="fixtures are ready; the daemon plans the baseline job on its next tick (pulse daemon) - nothing for you to do" className={cn("text-muted-foreground", className)}>
+          baseline: waiting for the daemon
+        </ToneBadge>
+      );
+    default:
+      return (
+        <ToneBadge tone="neutral" title="the daemon records the baseline once the loop's records and fixtures are in place" className={cn("text-muted-foreground", className)}>
+          no baseline
+        </ToneBadge>
+      );
+  }
+}
+
+// The project-row view of the loop's status, so the panel derives the same
+// step and chip from the evolution payload as the cards do from a row.
+export function gateOfStatus(s: EvolveGates, docs?: { constitution: EvolutionDoc | null; evaluators: EvolutionDoc | null }): EvolveGate {
+  const ref = (d: EvolutionDoc | null): EvolveRecordRef | null => (d ? { id: d.record.id, rev: d.record.current_rev, seeded: d.seeded === true, seeded_from: d.seeded_from ?? "" } : null);
+  const g: EvolveGate = {
+    fixtures_enabled: s.public_fixtures,
+    baseline: s.baseline !== null && s.baseline !== undefined,
+    evolve_level: s.level === "A" || s.level === "B" || s.level === "C" || s.level === "D" ? s.level : "",
+    evolve_next: s.next_human_step ?? "",
+  };
+  if (s.baseline_job !== undefined) g.baseline_job = s.baseline_job;
+  if (typeof s.baseline_failed_at === "string") g.baseline_failed_at = s.baseline_failed_at;
+  if (docs) {
+    g.constitution = ref(docs.constitution);
+    g.evaluators = ref(docs.evaluators);
+  }
+  return g;
 }
 
 // A gate as a flag: open or not. With the record's doc (ADR-030) the flag
@@ -153,7 +260,9 @@ function GateFlag({ on, label, title, doc }: { on: boolean; label: string; title
 
 // ----- the inbox card ----------------------------------------------------------
 
-export type GateKind = "baseline" | "seed" | "constitution" | "records";
+// The steps only the owner can take. The baseline is not one of them since
+// ADR-031: the daemon measures it, so no gate card ever asks for it.
+export type GateKind = "seed" | "constitution" | "records" | "heldout";
 
 export interface GateStep {
   kind: GateKind;
@@ -165,9 +274,7 @@ export interface GateStep {
   command: string;
 }
 
-const GATE_LABEL: Record<GateKind, string> = { baseline: "no baseline", seed: "no fixtures", constitution: "no constitution", records: "records missing" };
-
-const baselineCommand = (slug: string) => "pulse job add --project " + slug + " --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE'";
+const GATE_LABEL: Record<GateKind, string> = { seed: "no fixtures", constitution: "no constitution", records: "records missing", heldout: "your one step" };
 
 // Which of the loop's two records a project lacks: what the row says first
 // (null is "none"), the title the seed command names when the row is silent.
@@ -177,13 +284,17 @@ function missingRecords(g: EvolveGate, next: string): string[] {
 }
 
 // Which human step, if any, a project waits for. One card per project: the
-// hub's `evolve_next` names the step; the fixtures/baseline pair is the gate
-// ADR-029 is about, so it gets its card whenever fixtures exist and no
-// baseline does. A project the record seed did not reach (ADR-030) gets the
-// seeding step; an older hub still names `pulse record new evolution`.
+// hub's `evolve_next` names the step. A project the record seed did not reach
+// (ADR-030) gets the seeding step; an older hub still names `pulse record new
+// evolution`. The baseline gate has no card (ADR-031): with a baseline job
+// open, a failure the daemon retries, or a step that starts with `none`, the
+// row asks nothing - and an older hub's `pulse job add ... experiment` is the
+// daemon's job now, so it asks nothing either. The held-out fixtures
+// (ADR-012) are the one step left that is the owner's, and the card says so.
 export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
   if (!g) return null;
   const next = g.evolve_next.trim();
+  if (!next || noneStep(next).none || (!g.baseline && (g.baseline_job || g.baseline_failed_at)) || next.startsWith("pulse job add")) return null;
   const base = { slug, level: g.evolve_level };
   if (next.startsWith("pulse evolve seed")) {
     const missing = missingRecords(g, next);
@@ -215,26 +326,27 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
       body: "No enabled public fixture yet, so nothing can be measured. The starter set gives the loop six small checks to begin with; your own fixtures can join them later.",
       command: next,
     };
-  if (g.fixtures_enabled > 0 && !g.baseline)
+  if (next.startsWith("pulse evolve setup"))
     return {
       ...base,
-      kind: "baseline",
-      label: GATE_LABEL.baseline,
-      title: "Record the baseline for " + slug,
-      body: (g.fixtures_enabled === 1 ? "One public fixture is ready" : num(g.fixtures_enabled) + " public fixtures are ready") + "; the loop stays closed until a kept experiment records the baseline. This runs real agent runs (3 per fixture) - queue it when you are ready.",
-      command: next.startsWith("pulse job add") ? next : baselineCommand(slug),
+      kind: "heldout",
+      label: GATE_LABEL.heldout,
+      title: "Your one step: two private held-out fixtures",
+      body: "The daemon does everything else - it measured the baseline and runs each cycle. Two fixtures only you can see are your proof the loop is not grading itself (ADR-012). Write them once, outside the checkout, with the command below; the loop for " + slug + " opens from there.",
+      command: next,
     };
   return null;
 }
 
 // One waiting human step as an inbox card: what, where, why, the command to
-// copy and the way to the project's self-improvement view.
+// copy and the way to the project's self-improvement view. The held-out card
+// (ADR-012) says it is the one step that is the owner's; the rest name what is missing.
 export function GateCard({ step }: { step: GateStep }) {
   return (
     <ItemCard highlight ariaLabel={step.title}>
       <ItemCardHeader right={<LevelBadge level={step.level} />}>
         <ToneBadge tone="accent">self-improvement</ToneBadge>
-        <ToneBadge tone="warn">{step.label}</ToneBadge>
+        <ToneBadge tone={step.kind === "heldout" ? "ok" : "warn"}>{step.label}</ToneBadge>
         <ProjectLink slug={step.slug} className="text-xs" />
       </ItemCardHeader>
       <ItemCardTitle>{step.title}</ItemCardTitle>
@@ -256,19 +368,48 @@ export function GateCard({ step }: { step: GateStep }) {
 
 // ----- the project's panel -----------------------------------------------------
 
-const score = (n: number) => (Number.isFinite(n) ? n.toFixed(3).replace(/\.?0+$/, "") : "—");
+// The named step (title, why, command) the way the inbox card says it, for
+// the panel's "next human step": the same words in both places.
+function StepBlock({ step }: { step: GateStep }) {
+  return (
+    <div className={cn("rounded-md border px-3 py-2.5", step.kind === "heldout" && "border-primary/40 bg-primary/[0.03]")}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <ToneBadge tone={step.kind === "heldout" ? "ok" : "warn"}>{step.label}</ToneBadge>
+        <span className="text-[13px] font-medium leading-snug">{step.title}</span>
+      </div>
+      <p className="mt-1 text-xs leading-snug text-muted-foreground anywhere">{step.body}</p>
+      <CommandBox command={step.command} copy className="mt-2 bg-background/60" />
+    </div>
+  );
+}
 
 // Level, reason and next step, every gate as a badge, then the fixtures.
 // `gates` null means the hub could not evaluate them: the error shows, the
 // fixtures still list. `docs` (the constitution and evaluators as the
 // evolution payload carries them) lets the record flags show revision and seed state.
 export function SelfImprovementPanel({ gates, error, fixtures, docs, className }: { gates: EvolveGates | null | undefined; error?: string; fixtures: EvolveFixture[]; docs?: { constitution: EvolutionDoc | null; evaluators: EvolutionDoc | null }; className?: string }) {
+  const now = useNow();
   const next = (gates?.next_human_step ?? "").trim();
-  const waits = !!next && next !== "none";
+  const none = noneStep(next);
+  const waits = !!next && !none.none;
+  const g = gates ? gateOfStatus(gates, docs) : null;
+  const step = gates && g ? gateStep(gates.project, g) : null;
+  const bl = g ? baselineState(g) : null;
   const h = gates?.heldout;
+  // "none - or <command>": the daemon retries on its own; the command is the owner's shortcut, offered, never asked.
+  const optional = none.none && /^or\s+pulse\b/.test(none.why) ? none.why.replace(/^or\s+/, "") : "";
+  const idle = (): string => {
+    if (bl?.kind === "failed") {
+      const hrs = retryHours(bl.at, now);
+      return "Nothing waits for you - the baseline measurement failed " + rel(bl.at, now) + "; the daemon retries " + (hrs ? "in about " + num(hrs) + " h" : "on its next tick") + ".";
+    }
+    if (bl?.kind === "measuring") return "Nothing waits for you - the daemon is " + baselineJobWord(bl.status) + (bl.status === "leased" ? " the baseline" : " to measure the baseline") + " (" + jobRef(bl.id) + ").";
+    if (none.why && !optional) return "Nothing waits for you - " + none.why.replace(/\.$/, "") + ".";
+    return "Nothing waits for you - every gate is open" + (gates?.loop ? " and the loop is on." : "; cycles run once evolve.loop is on in Settings.");
+  };
   return (
     <Panel title="Self-improvement" actions={gates ? <LevelBadge level={gates.level} /> : undefined} className={className}>
-      {gates ? (
+      {gates && g ? (
         <div className="grid gap-3">
           <p className="text-[13px] leading-snug anywhere">
             <b>{"Level " + (gates.level || "?")}</b>
@@ -284,9 +425,7 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
             <ToneBadge tone={gates.public_fixtures ? "ok" : "warn"} title="enabled public fixtures - the checks agents may see">
               {plural(gates.public_fixtures, "fixture")}
             </ToneBadge>
-            <ToneBadge tone={gates.baseline !== null && gates.baseline !== undefined ? "ok" : "warn"} title={gates.baseline_id ? "recorded by " + gates.baseline_id : "a kept experiment records the baseline score every variant is measured against"}>
-              {gates.baseline !== null && gates.baseline !== undefined ? "baseline " + score(gates.baseline) : "no baseline"}
-            </ToneBadge>
+            <BaselineChip g={g} score={gates.baseline} recordedBy={gates.baseline_id} />
             {h ? (
               <ToneBadge tone={h.problem ? "warn" : "neutral"} title={h.problem || "your held-out evaluators - counted here, never named"}>
                 {"held-out " + num(h.count) + (h.pending ? " · " + num(h.pending) + " pending" : "")}
@@ -309,13 +448,26 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
           </ItemCardMeta>
           <div>
             <div className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">Next human step</div>
-            {waits ? (
+            {waits && step ? (
+              <>
+                <StepBlock step={step} />
+                <p className="mt-1 text-[11.5px] text-muted-foreground">Yours to run in a terminal on the hub machine. The console names the step and never starts a measurement.</p>
+              </>
+            ) : waits ? (
               <>
                 <CommandBox command={next} copy />
                 <p className="mt-1 text-[11.5px] text-muted-foreground">Yours to run in a terminal on the hub machine. The console names the step and never starts a measurement.</p>
               </>
             ) : (
-              <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">{"Nothing waits for you - every gate is open" + (gates.loop ? " and the loop is on." : "; cycles run once evolve.loop is on in Settings.")}</p>
+              <>
+                <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground anywhere">{idle()}</p>
+                {optional ? (
+                  <>
+                    <CommandBox command={optional} copy className="mt-1.5" />
+                    <p className="mt-1 text-[11.5px] text-muted-foreground">Optional: queues the measurement now instead of waiting for the daemon&apos;s retry.</p>
+                  </>
+                ) : null}
+              </>
             )}
           </div>
         </div>

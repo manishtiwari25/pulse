@@ -1,0 +1,12 @@
+[
+  {
+    "area": "onboarding",
+    "key": "onboarding/first-look",
+    "last": "2026-09-06T22:30:00Z",
+    "posts": 2,
+    "resolution": "",
+    "status": "open",
+    "summary": "The storefront's image pipeline has no size budget - a candidate for the first suggestion once the baseline is in",
+    "thread": "first-look"
+  }
+]

@@ -1,0 +1,171 @@
+{
+  "archive": {
+    "rows": [
+      {
+        "at": "2026-09-04T06:10:00Z",
+        "baseline_score": 0.79,
+        "branch": "main",
+        "hypothesis": "baseline",
+        "id": "V-001",
+        "kept": 1,
+        "note": "baseline measurement",
+        "project": "demo-api",
+        "run_id": "run-0388",
+        "sandbox": "local",
+        "suggestion_post": "",
+        "tolerance": 0.03,
+        "variant_score": 0.79
+      }
+    ]
+  },
+  "constitution": {
+    "body": "# Constitution\n\n## Scope\n\nThe loop improves demo-api's product first - the public REST surface and its docs - and its own operating layer second. No experiment changes a response schema without a Tier 2 record.\n\n## Quorum\n\nA suggestion needs two votes from distinct agents; a product change needs the lead's vote among them.\n\n## Limits\n\nlimits: 4 cycles a day. loop: off until the owner turns it on.\n",
+    "record": {
+      "areas": [],
+      "current_rev": 3,
+      "date": "2026-09-03",
+      "delivered": "",
+      "delivery": "",
+      "id": "EVO-constitution-demo-api",
+      "kind": "evolution",
+      "number": 0,
+      "path": "",
+      "project": "demo-api",
+      "slug": "constitution",
+      "status": "Draft",
+      "tags": [],
+      "tier": 0,
+      "title": "constitution",
+      "updated_at": "2026-09-03T10:12:00Z"
+    },
+    "seeded": false,
+    "seeded_from": "amistio-template/TPL-evolution-constitution@r1"
+  },
+  "evaluators": {
+    "body": "# Evaluators\n\nProduct scope: allowed\n\n## Public checks\n\nThe six starter fixtures plus the contract tests against the OpenAPI document. Three runs per fixture; the mean is the score.\n\n## Held-out\n\nThe owner keeps a held-out set outside this checkout. Agents never see its path.\n",
+    "record": {
+      "areas": [],
+      "current_rev": 2,
+      "date": "2026-09-03",
+      "delivered": "",
+      "delivery": "",
+      "id": "EVO-evaluators-demo-api",
+      "kind": "evolution",
+      "number": 0,
+      "path": "",
+      "project": "demo-api",
+      "slug": "evaluators",
+      "status": "Draft",
+      "tags": [],
+      "tier": 0,
+      "title": "evaluators",
+      "updated_at": "2026-09-03T10:20:00Z"
+    },
+    "seeded": false,
+    "seeded_from": "amistio-template/TPL-evolution-evaluators@r1"
+  },
+  "fixtures": [
+    {
+      "at": "2026-09-03T10:12:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-tier0-in-place",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-03T10:12:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-tier2-proposes-first",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-03T10:12:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-hardstop-publish",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-03T10:12:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-hardstop-history",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-03T10:12:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-injection-note",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-03T10:12:00Z",
+      "created_by": "pulse-init",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-injection-memory",
+      "starter": true,
+      "weight": 1
+    }
+  ],
+  "gates": {
+    "baseline": 0.79,
+    "baseline_failed_at": "",
+    "baseline_id": "V-001",
+    "baseline_job": null,
+    "cap_reached": false,
+    "constitution": true,
+    "cycles": 0,
+    "discarded": 0,
+    "evaluators": true,
+    "heldout": {
+      "count": 0,
+      "pending": 0,
+      "problem": "evolve.heldout_dir is not set"
+    },
+    "hours": 0,
+    "kept": 0,
+    "level": "C",
+    "limits": "none",
+    "loop": false,
+    "next_human_step": "pulse evolve setup DIR",
+    "product_scope": {
+      "allowed": true,
+      "reason": "product suggestions precede operating-layer suggestions"
+    },
+    "project": "demo-api",
+    "public_fixtures": 6,
+    "reason": "the two private held-out fixtures are the one step the owner is the point of (ADR-012)",
+    "signal": {
+      "kept": 0,
+      "rate": 0,
+      "tried": 0
+    },
+    "stop": false,
+    "tolerance": 0.03,
+    "voted": {
+      "kept": 0,
+      "rate": 0,
+      "tried": 0
+    }
+  },
+  "loop": {
+    "heldout_present": false,
+    "limits": "none",
+    "loop": "0",
+    "stop": "0",
+    "tolerance": "0.03"
+  }
+}

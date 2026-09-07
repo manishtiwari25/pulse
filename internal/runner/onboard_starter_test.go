@@ -29,7 +29,7 @@ func TestOnboardSeedsStartersAndNamesTheHumanSteps(t *testing.T) {
 	for _, want := range []string{
 		"seeded 6 starter fixtures (pulse evolve fixture list --project seeded)",
 		"What stays human:",
-		"1. record the baseline: pulse job add --project seeded --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE' (the runner measures the starter fixtures; costs real agent runs)",
+		"1. the baseline records itself: once evolve.loop is 1 the daemon measures main with the enabled fixtures and archives the baseline (ADR-031; costs real agent runs); sooner by hand: pulse job add --project seeded --kind baseline --title 'Record baseline'",
 		"2. keep at least two private fixtures in evolve.heldout_dir: pulse evolve setup DIR",
 		"3. set loop: on in the constitution record",
 		"4. keep the daemon alive with `pulse service install`",
@@ -38,7 +38,7 @@ func TestOnboardSeedsStartersAndNamesTheHumanSteps(t *testing.T) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "B- row") || strings.Contains(text, "starter fixtures absent") {
+	if strings.Contains(text, "B- row") || strings.Contains(text, "starter fixtures absent") || strings.Contains(text, "Establish baseline") {
 		t.Fatalf("stale wording:\n%s", text)
 	}
 	fixtures, err := evolve.ListFixtures(s, "seeded", true)

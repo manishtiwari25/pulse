@@ -41,7 +41,7 @@
   "jobs": {
     "blocked": 0,
     "cap": 2,
-    "leased": 0,
+    "leased": 1,
     "queued": 5,
     "running": 0,
     "runs_today": 0

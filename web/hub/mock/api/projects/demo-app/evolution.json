@@ -106,6 +106,8 @@
   ],
   "gates": {
     "baseline": null,
+    "baseline_failed_at": "",
+    "baseline_job": null,
     "cap_reached": false,
     "constitution": true,
     "cycles": 0,
@@ -118,17 +120,17 @@
     },
     "hours": 0,
     "kept": 0,
-    "level": "C",
+    "level": "B",
     "limits": "none",
     "loop": false,
-    "next_human_step": "pulse job add --project demo-app --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE'",
+    "next_human_step": "none - the daemon plans the baseline job on its next tick (pulse daemon)",
     "product_scope": {
       "allowed": false,
       "reason": "no baseline yet - product changes need a measured baseline first"
     },
     "project": "demo-app",
     "public_fixtures": 6,
-    "reason": "6 public fixtures are enabled and no kept experiment has recorded the baseline yet; the loop can rehearse but not evolve",
+    "reason": "no baseline measured yet",
     "signal": {
       "kept": 0,
       "rate": 0,

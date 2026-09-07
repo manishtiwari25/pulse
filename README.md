@@ -61,17 +61,17 @@ Everything else happens in the console:
   decisions (ADRs) to accept, defer or decline with your own words - the same
   `pulse record accept` the terminal runs, recorded as `human` with the words
   in the record's history - plus board proposals, compute requests, and the
-  human steps that open a project's self-improvement loop (record the
-  baseline, seed the loop's records when onboarding could not), each with the
-  exact command to copy.
+  one human step that opens a project's self-improvement loop (two private
+  held-out fixtures), each with the exact command to copy.
 - **Projects** - add a checkout as a project (the same registration, recipe
   import and onboarding job as `pulse init`), typing its path or browsing the
   machine's folders with checkouts and registered projects marked; remove one
   after a preview of what deactivates, and restore a removed one from the
   picker. The brain is never removable from the console. Each project card
   shows its self-improvement state - constitution revision (and whether it is
-  still the seeded text), enabled fixtures, baseline, the level the loop may
-  reach - and the project page lists its fixtures.
+  still the seeded text), enabled fixtures, baseline (measured by the daemon,
+  "measuring" while its job runs), the level the loop may reach - and the
+  project page lists its fixtures.
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
   revision is kept. The project's lead agent turns it into jobs and reports
   back on the task thread.
@@ -161,11 +161,15 @@ EVO-constitution, EVO-evaluators, EVO-archive).
   scorers live in the binary (`pulse evolve score NAME`) and judge effects
   only. `pulse evolve seed [--project P]` seeds both for a project registered
   earlier (`pulse evolve fixture seed` for the fixtures alone); `pulse evolve
-  fixture list|disable` manages fixtures. What stays human after that: record
-  the baseline (a runner experiment - real agent runs), keep at least two
-  private fixtures in `evolve.heldout_dir` (`pulse evolve setup DIR`), and
-  `loop: on`. Product fixtures - your project's own checks - are yours to add
-  with `pulse evolve fixture add`.
+  fixture list|disable` manages fixtures. The baseline is the daemon's: once
+  the records and at least one enabled fixture exist and `loop: on`, it plans
+  a `baseline` job that measures the default branch and archives the score
+  (a failure posts a finding and is retried after 24 hours; `pulse job add
+  --kind baseline` queues it by hand). What stays human after that: at least
+  two private fixtures in `evolve.heldout_dir` (`pulse evolve setup DIR`) -
+  the owner's proof that the loop is not grading itself. Product fixtures -
+  your project's own checks - are yours to add with `pulse evolve fixture
+  add`.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 

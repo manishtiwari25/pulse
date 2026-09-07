@@ -207,7 +207,7 @@ func onboardProject(s *store.Store, path, now string, o onboardOpts) ([]string, 
 		lines = append(lines, fmt.Sprintf("starter fixtures absent: pulse evolve fixture seed --project %s", project.str("slug")))
 	}
 	lines = append(lines, "What stays human:",
-		fmt.Sprintf("1. record the baseline: pulse job add --project %s --kind experiment --title 'Establish baseline' --brief 'Hypothesis: ONE_VARIABLE' (the runner measures the starter fixtures; costs real agent runs)", project.str("slug")),
+		fmt.Sprintf("1. the baseline records itself: once evolve.loop is 1 the daemon measures %s with the enabled fixtures and archives the baseline (ADR-031; costs real agent runs); sooner by hand: pulse job add --project %s --kind baseline --title 'Record baseline'", project.str("default_branch"), project.str("slug")),
 		"2. keep at least two private fixtures in evolve.heldout_dir: pulse evolve setup DIR",
 		"3. set loop: on in the constitution record")
 	if !strings.HasPrefix(daemonStatus(s, now), "alive ") {

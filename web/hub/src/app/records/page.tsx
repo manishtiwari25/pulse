@@ -33,6 +33,9 @@ function RecordsScreen() {
   const status = sp.get("status") || "";
   const project = sp.get("project") || "";
   const id = sp.get("id");
+  // The framework's own docs (workflows, skills, templates…) are indexed too;
+  // they stay behind one toggle so the shelf opens on the records that are yours.
+  const showFramework = sp.get("fw") === "1" || (!!kind && !OWNER_KINDS.includes(kind));
   const [text, setText] = useState("");
   const [area, setArea] = useState("");
   const [view, setView] = useViewMode("records");
@@ -59,8 +62,9 @@ function RecordsScreen() {
   const showingWaiting = kind === "adr" && status === "Proposed" && !project;
   const projects = useMemo(() => (org.data ? registeredProjects(org.data).map((p) => p.slug) : project ? [project] : []), [org.data, project]);
   const all = useMemo(() => q.data?.records ?? [], [q.data]);
-  const statuses = useMemo(() => Array.from(new Set(all.map((r) => r.status).filter(Boolean))).sort(), [all]);
-  const areas = useMemo(() => Array.from(new Set(all.flatMap((r) => r.areas || []))).sort(), [all]);
+  const scope = useMemo(() => (showFramework ? all : all.filter((r) => OWNER_KINDS.includes(r.kind))), [all, showFramework]);
+  const statuses = useMemo(() => Array.from(new Set(scope.map((r) => r.status).filter(Boolean))).sort(), [scope]);
+  const areas = useMemo(() => Array.from(new Set(scope.flatMap((r) => r.areas || []))).sort(), [scope]);
   // Every kind the store holds, in the canonical order, plus the one in the
   // URL so a deep link to an empty shelf still shows which chip is selected.
   const kinds = useMemo(() => {
@@ -69,18 +73,22 @@ function RecordsScreen() {
     const known: string[] = RECORD_KINDS;
     return known.filter((k) => present.has(k)).concat(Array.from(present).filter((k) => !known.includes(k)));
   }, [all, kind]);
+  const ownerKinds = useMemo(() => kinds.filter((k) => OWNER_KINDS.includes(k)), [kinds]);
+  const frameworkKinds = useMemo(() => kinds.filter((k) => !OWNER_KINDS.includes(k)), [kinds]);
   // Everything but the kind filter, so each chip can count what it would show.
-  const base = useMemo(() => {
+  const baseAll = useMemo(() => {
     const t = text.trim().toLowerCase();
     return all.filter((r) => (!status || r.status === status) && (!area || (r.areas || []).includes(area)) && (!t || r.id.toLowerCase().includes(t) || r.title.toLowerCase().includes(t) || (r.tags || []).some((x) => x.toLowerCase().includes(t))));
   }, [all, status, area, text]);
+  const base = useMemo(() => (showFramework ? baseAll : baseAll.filter((r) => OWNER_KINDS.includes(r.kind))), [baseAll, showFramework]);
   const rows = useMemo(() => (kind ? base.filter((r) => r.kind === kind) : base), [base, kind]);
   const perKind = useMemo(() => {
     const m = new Map<string, number>();
-    for (const r of base) m.set(r.kind, (m.get(r.kind) || 0) + 1);
+    for (const r of baseAll) m.set(r.kind, (m.get(r.kind) || 0) + 1);
     return m;
-  }, [base]);
-  const filtered = !!(kind || status || project || area || text);
+  }, [baseAll]);
+  const frameworkCount = useMemo(() => baseAll.filter((r) => !OWNER_KINDS.includes(r.kind)).length, [baseAll]);
+  const filtered = !!(kind || status || project || area || text || showFramework);
 
   // Keep the selected chip in view when the row scrolls (phones, deep links).
   useEffect(() => {
@@ -90,7 +98,7 @@ function RecordsScreen() {
   return (
     <>
       <PageTitle
-        sub="Every ADR, plan, work unit, feature, memory, workflow, skill, guide and context record indexed from docs/. Open one to read it and its revision history."
+        sub="The decisions, plans, work units, features, memory and evolution records of your projects, with their revision history. The framework's own docs (workflows, skills, guides, templates…) are one toggle away."
         actions={
           <>
             <Input aria-label="Search records" placeholder="id, title or tag…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-36 sm:w-56" />
@@ -103,11 +111,31 @@ function RecordsScreen() {
               <KindChip active={!kind} n={q.data ? base.length : undefined} onClick={() => setParams({ kind: null })}>
                 All
               </KindChip>
-              {kinds.map((k) => (
+              {ownerKinds.map((k) => (
                 <KindChip key={k} active={kind === k} n={q.data ? perKind.get(k) || 0 : undefined} onClick={() => setParams({ kind: kind === k ? null : k })}>
                   {kindLabel(k)}
                 </KindChip>
               ))}
+              {frameworkKinds.length ? (
+                <>
+                  <span aria-hidden className="mx-0.5 h-4 w-px shrink-0 bg-border" />
+                  <KindChip
+                    active={showFramework}
+                    n={q.data ? frameworkCount : undefined}
+                    title={showFramework ? "Hide the framework's own docs" : "Show the framework's own docs: workflows, skills, guides, templates, prompts…"}
+                    onClick={() => setParams(showFramework ? { fw: null, kind: kind && !OWNER_KINDS.includes(kind) ? null : kind } : { fw: "1" })}
+                  >
+                    Framework docs
+                  </KindChip>
+                  {showFramework
+                    ? frameworkKinds.map((k) => (
+                        <KindChip key={k} active={kind === k} n={q.data ? perKind.get(k) || 0 : undefined} onClick={() => setParams({ kind: kind === k ? null : k })}>
+                          {kindLabel(k)}
+                        </KindChip>
+                      ))
+                    : null}
+                </>
+              ) : null}
             </BarRow>
             <BarRow>
               <Select value={project || "__all"} onValueChange={(v) => setParams({ project: v === "__all" ? null : v })}>
@@ -159,7 +187,7 @@ function RecordsScreen() {
                   onClick={() => {
                     setText("");
                     setArea("");
-                    setParams({ kind: null, status: null, project: null });
+                    setParams({ kind: null, status: null, project: null, fw: null });
                   }}
                 >
                   clear
@@ -205,6 +233,9 @@ function RecordsScreen() {
 
 const SELECT = "h-8 w-32 shrink-0 sm:w-36";
 
+// The kinds an owner writes or decides on; every other kind is the framework's own documentation.
+const OWNER_KINDS: string[] = ["adr", "plan", "wu", "feature", "memory", "evolution"];
+
 // One row of the sticky filter bar: scrolls sideways on its own (hidden
 // scrollbar) so reaching the last filter never drags the other row along.
 function BarRow({ className, children, ...rest }: React.ComponentProps<"div">) {
@@ -217,11 +248,12 @@ function BarRow({ className, children, ...rest }: React.ComponentProps<"div">) {
 
 // A shelf of the library: one kind and how many records it holds under the
 // other filters. The selected chip is filled; an empty shelf is dimmed.
-function KindChip({ active, n, onClick, children }: { active: boolean; n?: number; onClick: () => void; children: React.ReactNode }) {
+function KindChip({ active, n, title, onClick, children }: { active: boolean; n?: number; title?: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
       type="button"
       aria-pressed={active}
+      title={title}
       onClick={onClick}
       className={cn(
         "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",

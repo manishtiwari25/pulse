@@ -51,6 +51,8 @@
   "fixtures": [],
   "gates": {
     "baseline": null,
+    "baseline_failed_at": "",
+    "baseline_job": null,
     "cap_reached": false,
     "constitution": true,
     "cycles": 0,
