@@ -388,6 +388,7 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			}
 		}
 		log.add("$ %s", strings.Join(shown, " "))
+		launched := wallClock()
 		out, err := ex.runWorker(ctx, cmd, env, minutes)
 		if err != nil {
 			return err
@@ -439,22 +440,30 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			if dirty := ex.dirty(); dirty != "" {
 				log.add("uncommitted changes left in the clone were discarded:\n%s", dirty)
 			}
-			elapsed := wallClock().Sub(started)
+			// Measured from the harness launch, not the clone: a long setup must not
+			// hide a harness that died on its first breath.
+			elapsed := wallClock().Sub(launched)
 			code := -1
 			if exitCode != nil {
 				code = *exitCode
 			}
 			switch {
-			case code != 0 && !parsed.Found && commits == 0 && elapsed < launchSeconds*time.Second:
+			case code != 0 && !parsed.reported() && commits == 0 && elapsed < launchSeconds*time.Second:
+				// The harness died before any work: no report line, no commit, seconds in.
+				// (parsed.Found is true whenever the harness produced output, D-L.)
 				status = "error"
 				src := out.Stderr
 				if src == "" {
 					src = out.Stdout
 				}
 				summary = fmt.Sprintf("worker rejected at launch (exit %d after %ds): %s", code, int(elapsed.Seconds()), squeeze(src, 300))
-				if ex.remote() && loginFault(squeeze(src, 300)) {
-					fault = true
-					summary += fmt.Sprintf(" - the login on %s, not the job; run `pulse executor login %s --admin <admin@host> --with-token`", ex.name(), ex.name())
+				if loginFault(squeeze(src, 300)) {
+					if ex.remote() {
+						fault = true
+						summary += fmt.Sprintf(" - the login on %s, not the job; run `pulse executor login %s --admin <admin@host> --with-token`", ex.name(), ex.name())
+					} else {
+						summary += " - the Copilot login on this machine, not the job; log in again as the daemon's user (`copilot` then `/login`, or `gh auth login`)"
+					}
 				}
 			case code != 0:
 				status = "failed"
@@ -828,12 +837,32 @@ func executorSlots(s *store.Store, now string, busy map[string]int) []string {
 	return slots
 }
 
-// sweepLostRuns closes runs a dead runner left `running`.
+// sweepLostRuns closes runs a dead runner left `running` and releases their
+// jobs: a lost run's lease would otherwise hold the job (and a worker slot in
+// every view) until minutes_per_job passes. The job is queued again while it
+// has attempts left, and failed once it has been lost maxAttempts times.
 func sweepLostRuns(s *store.Store, now string) int {
-	rows := mustRows(s.DB, "SELECT id FROM runs WHERE status = 'running'")
+	rows := mustRows(s.DB, "SELECT id, job_id, agent FROM runs WHERE status = 'running'")
 	for _, r := range rows {
 		exec1(s.DB, "UPDATE runs SET status = 'lost', finished_at = ?, summary = 'the runner stopped while this run was in progress' WHERE id = ?", now, r.str("id"))
 		eventAt(s.DB, now, "runner", "run.lost", r.str("id"), "")
+		releaseLostJob(s, now, r.str("job_id"), r.str("agent"))
 	}
 	return len(rows)
+}
+
+// releaseLostJob frees the lease a lost run still holds on its job.
+func releaseLostJob(s *store.Store, now, jobID, agent string) {
+	job := mustOne(s.DB, "SELECT * FROM jobs WHERE id = ? AND status = 'leased' AND lease_agent = ?", jobID, agent)
+	if job == nil {
+		return
+	}
+	if job.int("attempts") >= maxAttempts {
+		result := fmt.Sprintf("failed: the runner stopped while this job was in progress %d times", job.int("attempts"))
+		exec1(s.DB, "UPDATE jobs SET status = 'failed', lease_agent = '', lease_until = '', finished_at = ?, result = ? WHERE id = ?", now, result, jobID)
+		eventAt(s.DB, now, "runner", "job.failed", jobID, result)
+		return
+	}
+	exec1(s.DB, "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?", jobID)
+	eventAt(s.DB, now, "runner", "job.requeue", jobID, "run lost: the runner stopped while it was in progress")
 }

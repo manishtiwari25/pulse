@@ -375,7 +375,7 @@ export function MachinePanel({ r }: { r: Runner | undefined | null }) {
         rows={[
           ["daemon", (d.text || d.state) + (d.pid ? "" : "")],
           ["last loop", <When key="at" d={d.at} />],
-          ["hands", r.hands.free + " free of " + r.hands.slots + " slots on " + plural(r.hands.executors_active, "active executor")],
+          ["slots", r.hands.free + " free of " + r.hands.slots + " on " + plural(r.hands.executors_active, "active executor")],
           ["workers", r.workers.busy + " busy · " + r.workers.idle + " idle" + (r.workers.idle_names.length ? " (" + r.workers.idle_names.join(", ") + ")" : "") + " · target " + r.workers.target],
           ["jobs", r.jobs.queued + " queued · " + r.jobs.leased + " leased · " + r.jobs.running + " running" + (r.jobs.blocked ? " · " + r.jobs.blocked + " blocked" : "")],
           ["runs today", r.jobs.runs_today + (r.jobs.cap ? " of " + r.jobs.cap : " (no daily cap)")],

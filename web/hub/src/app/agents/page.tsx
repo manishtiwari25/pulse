@@ -181,7 +181,7 @@ export default function AgentsPage() {
         <Kpi n={r ? r.workers.pool : "…"} label="worker pool" sub={r ? num(r.workers.idle) + " idle · " + num(r.workers.busy) + " busy · target " + num(r.workers.target) : "loading"} />
         <Kpi n={r ? r.jobs.running : "…"} label="jobs running" sub={r ? num(r.jobs.queued) + " queued · " + num(r.jobs.blocked) + " blocked" : ""} />
         <Kpi n={r ? r.jobs.runs_today + " / " + (r.jobs.cap || "∞") : "…"} label="runs today" sub="used / cap" />
-        <Kpi n={r ? r.hands.free + " / " + r.hands.slots : "…"} label="free hands" sub={r ? plural(r.hands.executors_active, "executor") + " active" : ""} />
+        <Kpi n={r ? r.hands.free + " / " + r.hands.slots : "…"} label="free slots" sub={r ? plural(r.hands.executors_active, "executor") + " active" : ""} />
         <Kpi n={groups.reduce((a, g) => a + g.jobs_failed, 0)} label="jobs failed" tone={groups.some((g) => g.jobs_failed) ? "bad" : "neutral"} sub="all agents" />
       </KpiGrid>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">

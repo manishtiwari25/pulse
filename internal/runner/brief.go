@@ -208,6 +208,12 @@ type report struct {
 	Found       bool
 }
 
+// reported is true when the worker wrote at least one report line; a harness
+// that died at launch leaves output (so Found is true) but no report.
+func (r report) reported() bool {
+	return r.Summary != "" || len(r.Questions) > 0 || len(r.Findings) > 0 || len(r.Suggestions) > 0 || len(r.Votes) > 0
+}
+
 func parseResultText(text *string) report {
 	var out report
 	if text == nil {
