@@ -288,7 +288,8 @@ function PreviewList({ title, items, empty }: { title: string; items: RemovePrev
         <ul className="grid gap-1 text-[12.5px] leading-snug">
           {items.map((it, i) => (
             <li key={i} className="flex flex-wrap gap-x-1.5 anywhere">
-              <Mono>{it.label}</Mono>
+              {/* The CLI indents a job under its "N queued jobs" line with two spaces; keep them. */}
+              <Mono className="whitespace-pre-wrap">{it.label}</Mono>
               {it.detail ? <span className="text-muted-foreground">{"- " + it.detail}</span> : null}
             </li>
           ))}
