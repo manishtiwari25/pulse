@@ -208,10 +208,10 @@ func onboardProject(s *store.Store, path, now string, o onboardOpts) ([]string, 
 	}
 	lines = append(lines, "What stays human:",
 		fmt.Sprintf("1. the baseline records itself: once evolve.loop is 1 the daemon measures %s with the enabled fixtures and archives the baseline (ADR-031; costs real agent runs); sooner by hand: pulse job add --project %s --kind baseline --title 'Record baseline'", project.str("default_branch"), project.str("slug")),
-		"2. keep at least two private fixtures in evolve.heldout_dir: pulse evolve setup DIR",
+		heldoutStep(s),
 		"3. set loop: on in the constitution record")
 	if !strings.HasPrefix(daemonStatus(s, now), "alive ") {
-		lines = append(lines, "4. keep the daemon alive with `pulse service install`")
+		lines = append(lines, "4. keep the daemon and the hub alive with `pulse service install`")
 	}
 	lines = append(lines, "store: "+s.Path)
 	return lines, nil
@@ -257,4 +257,13 @@ func loopRecordLine(s *store.Store, slug, name string) string {
 		}
 	}
 	return fmt.Sprintf("%s: present (%s r%d)", name, rec.ID, rec.CurrentRev)
+}
+
+// heldoutStep is step 2 of the onboarding summary: the daemon writes the sealed held-out set itself
+// (ADR-033) unless the owner chose evolve.heldout = owner, in which case the fixtures are theirs to keep.
+func heldoutStep(s *store.Store) string {
+	if evolve.HeldoutMode(s) == "owner" {
+		return "2. keep at least two private fixtures in evolve.heldout_dir: pulse evolve setup DIR"
+	}
+	return "2. nothing for the held-out set: the daemon writes two sealed fixtures itself (ADR-033); evolve.heldout = owner to hand-write them instead"
 }

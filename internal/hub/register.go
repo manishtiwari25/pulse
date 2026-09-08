@@ -10,19 +10,24 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/manishtiwari25/pulse/internal/cli"
 )
+
+// restartPoll is how often a service-run hub looks at its own binary; tests shorten it.
+var restartPoll = 30 * time.Second
 
 func init() {
 	for _, name := range []string{"hub", "serve"} {
 		cli.Register(cli.Command{
 			Name: name, Group: "hub", Summary: "Serve the local owner console",
-			Usage: "pulse " + name + " [--project SLUG] [--port N] [--no-browser] [--host 127.0.0.1]",
+			Usage: "pulse " + name + " [--project SLUG] [--port N] [--no-browser] [--host 127.0.0.1] [--restart-on-change]",
 			Flags: func(fs *flag.FlagSet) {
 				fs.Int("port", 8765, "TCP port (0 chooses a free port)")
 				fs.String("host", "127.0.0.1", "listen address (127.0.0.1 only)")
 				fs.Bool("no-browser", false, "do not open the browser")
+				fs.Bool("restart-on-change", false, "exit 3 when the pulse binary changes on disk (the user service restarts it)")
 				fs.String("project", "", "project slug for serve")
 			},
 			Run: func(c *cli.Context, fs *flag.FlagSet, args []string) error {
@@ -77,8 +82,42 @@ func init() {
 				}
 				ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 				defer cancel()
-				return Serve(ctx, listener, h)
+				changed := make(chan struct{}, 1)
+				if fs.Lookup("restart-on-change").Value.String() == "true" {
+					go watchBinary(ctx, cli.BinaryStamp(), func() {
+						fmt.Fprintln(c.Err, "pulse changed on disk; exiting 3 so the service restarts the hub")
+						changed <- struct{}{}
+						cancel()
+					})
+				}
+				err = Serve(ctx, listener, h)
+				select {
+				case <-changed:
+					return cli.Errorf(3, "", "", "")
+				default:
+					return err
+				}
 			},
 		})
+	}
+}
+
+// watchBinary calls onChange once when the executable's stamp differs from stamp; it stops with ctx.
+func watchBinary(ctx context.Context, stamp string, onChange func()) {
+	if stamp == "" {
+		return
+	}
+	t := time.NewTicker(restartPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if now := cli.BinaryStamp(); now != "" && now != stamp {
+				onChange()
+				return
+			}
+		}
 	}
 }

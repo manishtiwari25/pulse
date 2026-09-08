@@ -32,11 +32,19 @@ func TestOnboardSeedsStartersAndNamesTheHumanSteps(t *testing.T) {
 		"1. the baseline records itself: once evolve.loop is 1 the daemon measures main with the enabled fixtures and archives the baseline (ADR-031; costs real agent runs); sooner by hand: pulse job add --project seeded --kind baseline --title 'Record baseline'",
 		"2. keep at least two private fixtures in evolve.heldout_dir: pulse evolve setup DIR",
 		"3. set loop: on in the constitution record",
-		"4. keep the daemon alive with `pulse service install`",
+		"4. keep the daemon and the hub alive with `pulse service install`",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
+	}
+	// newStore pins evolve.heldout to owner so tests never call a model; in the default auto mode the
+	// held-out set is the daemon's (ADR-033) and the summary says so instead of asking for fixtures.
+	if err := s.SetSetting(humanAgent, "evolve.heldout", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if got := heldoutStep(s); !strings.Contains(got, "the daemon writes two sealed fixtures itself (ADR-033)") {
+		t.Fatalf("auto heldout step = %q", got)
 	}
 	if strings.Contains(text, "B- row") || strings.Contains(text, "starter fixtures absent") || strings.Contains(text, "Establish baseline") {
 		t.Fatalf("stale wording:\n%s", text)

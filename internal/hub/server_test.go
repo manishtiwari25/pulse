@@ -353,3 +353,41 @@ func TestStoreCopyIsOutsideRepository(t *testing.T) {
 		t.Fatalf("test home must not be in the repository: %s", s.Home)
 	}
 }
+
+// --restart-on-change: a service-run hub exits 3 when the pulse binary on disk is replaced (the launcher's
+// KeepAlive restarts it on the new build); a matching stamp never fires and a cancelled context stops the watch.
+func TestWatchBinaryFiresOnceOnAChangedStamp(t *testing.T) {
+	oldPoll := restartPoll
+	restartPoll = 5 * time.Millisecond
+	t.Cleanup(func() { restartPoll = oldPoll })
+	fired := make(chan struct{}, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watchBinary(ctx, "0:0", func() { fired <- struct{}{} })
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a changed stamp did not fire")
+	}
+	select {
+	case <-fired:
+		t.Fatal("fired twice")
+	case <-time.After(30 * time.Millisecond):
+	}
+	quiet, quietCancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		watchBinary(quiet, cli.BinaryStamp(), func() { t.Error("an unchanged stamp fired") })
+		close(stopped)
+	}()
+	time.Sleep(30 * time.Millisecond)
+	quietCancel()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch did not stop with its context")
+	}
+	if cli.BinaryStamp() == "" {
+		t.Error("BinaryStamp is empty for the test binary")
+	}
+}

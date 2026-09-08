@@ -219,6 +219,20 @@ func Errorf(code int, what, why, fix string) *Error {
 	return &Error{What: what, Why: why, Fix: fix, Code: code}
 }
 
+// BinaryStamp is the running executable's mtime and size; a service-run process that sees it change
+// exits 3 so the service manager restarts it on the new build.
+func BinaryStamp() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	st, err := os.Stat(exe)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", st.ModTime().UnixNano(), st.Size())
+}
+
 // IsTTY reports whether f is a terminal.
 func IsTTY(f *os.File) bool {
 	if f == nil {

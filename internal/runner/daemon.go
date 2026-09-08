@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/bus"
+	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/hooks"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
@@ -66,17 +67,7 @@ func handsWanted(s *store.Store, brain row, queued, slots, minutes int, now, act
 }
 
 // binaryStamp is source_stamp(): the mtime of the binary on disk; the service restarts a changed one.
-func binaryStamp() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	st, err := os.Stat(exe)
-	if err != nil {
-		return ""
-	}
-	return fmt.Sprintf("%d:%d", st.ModTime().UnixNano(), st.Size())
-}
+func binaryStamp() string { return cli.BinaryStamp() }
 
 type daemonOpts struct {
 	Agent           string

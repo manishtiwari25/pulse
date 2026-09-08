@@ -56,11 +56,13 @@ func init() {
 			fs.String("worker-cmd", "", "harness command for every run")
 			fs.Bool("no-restart", false, "do not exit for a restart when the pulse binary changes")
 		}, Run: cmdDaemon})
-	cli.Register(cli.Command{Name: "service", Group: "runner", Summary: "install, uninstall or show the daemon's user service (launchd / systemd --user)",
-		Usage: "pulse service install|uninstall|status|show [--interval S] [--dry-run]",
+	cli.Register(cli.Command{Name: "service", Group: "runner", Summary: "install, uninstall or show the user services that keep the daemon and the hub alive (launchd / systemd --user)",
+		Usage: "pulse service install|uninstall|status|show [--interval S] [--hub-port N] [--no-hub] [--dry-run]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.Int("interval", 300, "daemon interval in seconds")
-			fs.Bool("dry-run", false, "print the unit or plist instead of installing")
+			fs.Int("hub-port", hubPort, "port the hub service listens on (127.0.0.1)")
+			fs.Bool("no-hub", false, "install the daemon only; run the console by hand with `pulse hub`")
+			fs.Bool("dry-run", false, "print the units or plists instead of installing")
 		}, Run: cmdService})
 	cli.Register(cli.Command{Name: "executor", Group: "runner", Summary: "list, add, probe, drain, activate, remove or log in the executors (remote hands)",
 		Usage: "pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | login NAME --admin admin@host (--with-token | --remove) | token [--with-token | --remove]",
@@ -273,25 +275,34 @@ func cmdService(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		action = args[0]
 	}
 	kind, path := servicePaths("", "")
-	interval := intFlag(fs, "interval")
+	units := serviceUnits(intFlag(fs, "interval"), intFlag(fs, "hub-port"), boolFlag(fs, "no-hub"))
 	switch action {
 	case "install":
-		if boolFlag(fs, "dry-run") {
-			_, err := installService(c.Out, interval, c.Home, "", "", true)
-			return err
+		dryRun := boolFlag(fs, "dry-run")
+		for _, u := range units {
+			if _, err := installUnit(c.Out, u, c.Home, "", "", dryRun); err != nil {
+				return err
+			}
 		}
-		if _, err := installService(c.Out, interval, c.Home, "", "", false); err != nil {
-			return err
+		if dryRun {
+			return nil
 		}
 		c.Printf("the daemon is kept alive by %s; watch: tail -f %s\n", kind, c.Home+"/logs/daemon.log")
+		if !boolFlag(fs, "no-hub") {
+			c.Printf("the hub is kept alive by %s at http://127.0.0.1:%d and restarts itself on a new build; watch: tail -f %s\n",
+				kind, intFlag(fs, "hub-port"), c.Home+"/logs/hub.log")
+		}
 		if note := protectedFoldersNote(c.Store, "", ""); note != "" {
 			c.Printf("%s\n", note)
 		}
 	case "uninstall":
 		uninstallService(c.Out, "", "")
 	case "show":
-		_, err := installService(c.Out, interval, c.Home, "", "", true)
-		return err
+		for _, u := range units {
+			if _, err := installUnit(c.Out, u, c.Home, "", "", true); err != nil {
+				return err
+			}
+		}
 	case "status":
 		serviceStatus(c.Out, c.Store, "", "")
 		if note := protectedFoldersNote(c.Store, "", ""); note != "" {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -209,6 +210,116 @@ func TestServiceRender(t *testing.T) {
 	out.Reset()
 	if _, err := installService(&out, 90, pulseHome, "darwin", userHome, false); err == nil || bootstraps != 2 || !strings.Contains(out.String(), "exit 5") {
 		t.Fatalf("persistent failure: err=%v bootstraps=%d\n%s", err, bootstraps, out.String())
+	}
+}
+
+// The hub is the second unit: its own label, launcher and log, running `pulse hub` with --restart-on-change so a
+// new build restarts the console the way it restarts the daemon. Installing again with nothing changed reloads
+// nothing (the daemon must never be bounced mid-run by a repeated `pulse service install`); uninstall removes
+// both units and their launchers.
+func TestServiceHubUnitAndIdempotentInstall(t *testing.T) {
+	hub := hubUnit(0)
+	plist := unitFileText(hub, "launchd", "/opt/pulse", "/h/.pulse/logs/hub.log", "/usr/bin", "/h/.pulse")
+	for _, want := range []string{"<string>pulse.hub</string>", "<string>/bin/sh</string>", "<string>/h/.pulse/bin/pulse-hub.sh</string>", "/h/.pulse/logs/hub.log"} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("hub plist lacks %q", want)
+		}
+	}
+	if got := launcherFromPlist(plist); got != "/h/.pulse/bin/pulse-hub.sh" {
+		t.Errorf("launcherFromPlist(hub) = %q", got)
+	}
+	if launcher := unitLauncherText(hub, "/opt/pulse"); !strings.Contains(launcher, "/opt/pulse hub --port 8765 --no-browser --restart-on-change &") {
+		t.Errorf("hub launcher:\n%s", launcher)
+	}
+	if unit := unitFileText(hubUnit(9000), "systemd", "/opt/pulse", "/h/.pulse/logs/hub.log", "/usr/bin", "/h/.pulse"); !strings.Contains(unit, "ExecStart=/opt/pulse hub --port 9000 --no-browser --restart-on-change") || !strings.Contains(unit, "Description=PULSE hub") {
+		t.Errorf("hub unit:\n%s", unit)
+	}
+	if units := serviceUnits(60, 0, true); len(units) != 1 || units[0].name != "daemon" {
+		t.Errorf("--no-hub units: %+v", units)
+	}
+	if units := serviceUnits(60, 0, false); len(units) != 2 || units[1].label != "pulse.hub" {
+		t.Errorf("units: %+v", units)
+	}
+
+	old := runService
+	t.Cleanup(func() { runService = old })
+	loaded := map[string]bool{}
+	var loads []string
+	runService = func(argv []string) (int, string) {
+		label := argv[len(argv)-1]
+		switch argv[1] {
+		case "bootstrap":
+			label = strings.TrimSuffix(filepath.Base(argv[3]), ".plist")
+			loaded[label] = true
+			loads = append(loads, label)
+		case "bootout":
+			delete(loaded, strings.TrimPrefix(label, "gui/"+fmt.Sprint(os.Getuid())+"/"))
+		case "print":
+			if !loaded[strings.TrimPrefix(label, "gui/"+fmt.Sprint(os.Getuid())+"/")] {
+				return 113, "Could not find service"
+			}
+		}
+		return 0, ""
+	}
+	userHome, pulseHome := t.TempDir(), t.TempDir()
+	var out bytes.Buffer
+	var paths []string
+	for _, u := range serviceUnits(90, 0, false) {
+		path, err := installUnit(&out, u, pulseHome, "darwin", userHome, false)
+		if err != nil {
+			t.Fatalf("install %s: %v\n%s", u.name, err, out.String())
+		}
+		paths = append(paths, path)
+	}
+	if strings.Join(loads, ",") != "pulse.daemon,pulse.hub" || !fileExists(unitLauncherPath(hub, pulseHome)) {
+		t.Fatalf("first install loads=%v\n%s", loads, out.String())
+	}
+	// Second install, nothing changed: no bootout, no bootstrap.
+	loads = nil
+	out.Reset()
+	for _, u := range serviceUnits(90, 0, false) {
+		if _, err := installUnit(&out, u, pulseHome, "darwin", userHome, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(loads) != 0 || strings.Count(out.String(), "unchanged and loaded; left running") != 2 || !loaded["pulse.daemon"] {
+		t.Fatalf("repeat install reloaded: loads=%v\n%s", loads, out.String())
+	}
+	// A changed interval touches the daemon only.
+	loads = nil
+	out.Reset()
+	for _, u := range serviceUnits(120, 0, false) {
+		if _, err := installUnit(&out, u, pulseHome, "darwin", userHome, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Join(loads, ",") != "pulse.daemon" || !strings.Contains(out.String(), "hub: unchanged and loaded") {
+		t.Fatalf("changed daemon: loads=%v\n%s", loads, out.String())
+	}
+	// Unchanged file but unloaded unit (someone booted it out): loaded again.
+	delete(loaded, "pulse.hub")
+	loads = nil
+	if _, err := installUnit(&out, hubUnit(0), pulseHome, "darwin", userHome, false); err != nil || strings.Join(loads, ",") != "pulse.hub" {
+		t.Fatalf("unloaded hub: err=%v loads=%v", err, loads)
+	}
+	out.Reset()
+	if got := uninstallService(&out, "darwin", userHome); got != paths[0] {
+		t.Fatalf("uninstall returned %s, want the daemon path %s", got, paths[0])
+	}
+	for _, p := range append(paths, launcherPath(pulseHome), unitLauncherPath(hub, pulseHome)) {
+		if fileExists(p) {
+			t.Errorf("uninstall left %s", p)
+		}
+	}
+	if len(loaded) != 0 || !strings.Contains(out.String(), "removed "+unitLauncherPath(hub, pulseHome)) {
+		t.Fatalf("uninstall: loaded=%v\n%s", loaded, out.String())
+	}
+	// Uninstalling when nothing is installed runs no service-manager command and reports nothing removed.
+	out.Reset()
+	loads = nil
+	uninstallService(&out, "darwin", userHome)
+	if out.Len() != 0 || len(loads) != 0 {
+		t.Fatalf("uninstall of nothing:\n%s", out.String())
 	}
 }
 

@@ -45,16 +45,24 @@ The store lives in `$PULSE_HOME` (default `~/.pulse`). Every command accepts
 ```bash
 cd ~/src/my-app
 pulse init --name my-app --verify 'npm test'   # register the checkout, queue onboarding
-pulse service install                          # the runner as a user service (launchd / systemd --user)
-pulse hub                                      # opens http://127.0.0.1:8765
+pulse service install                          # the runner and the console as user services (launchd / systemd --user)
+open http://127.0.0.1:8765                     # the console; `pulse hub` runs one by hand instead (--no-hub above)
 ```
+
+`pulse service install` writes two units: `pulse.daemon` (the fleet) and
+`pulse.hub` (the console on `127.0.0.1:8765`; `--hub-port N` moves it,
+`--no-hub` skips it). Both restart themselves when a new `pulse` binary lands
+on disk, so the console you keep open is always the build the daemon runs, and
+neither dies with a terminal. Running `pulse service install` again is safe: a
+unit whose file did not change and is loaded is left running.
 
 On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
 system ask once whether `sh` may access that folder the first time the daemon
 touches it; answer Allow (the loop waits on the dialog, and `pulse status`
-reports the daemon as silent until then). The service runs pulse through a
-small `/bin/sh` launcher (`~/.pulse/bin/pulse-daemon.sh`) precisely so that
-one answer outlives every rebuild of the binary; checkouts elsewhere never ask.
+reports the daemon as silent until then). The services run pulse through small
+`/bin/sh` launchers (`~/.pulse/bin/pulse-daemon.sh`, `pulse-hub.sh`) precisely
+so that one answer outlives every rebuild of the binary; checkouts elsewhere
+never ask.
 
 Everything else happens in the console:
 
