@@ -398,7 +398,7 @@ func TestTendDeletesAfterGraceAndKeepsWhatTheOwnerRevived(t *testing.T) {
 	// The owner starts vm-nine's machine again and activates it before the grace ends: the row revives.
 	oldProbe := runSSH
 	t.Cleanup(func() { runSSH = oldProbe })
-	runSSH = func(argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
+	runSSH = func(_ context.Context, argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
 		return 0, "hands=ok git=ok copilot=ok keys=- keys_ok=yes remotes=0 workdir=/srv/pulse logged_in=yes disk_free_mb=20000\n", "", nil
 	}
 	if out := invokeOK(t, s, "executor", "", "activate", "vm-nine"); !strings.Contains(out, "vm-nine") {
@@ -611,7 +611,9 @@ func TestExecutorLoginRecordsAdminRoute(t *testing.T) {
 	}
 	old := runSSH
 	t.Cleanup(func() { runSSH = old })
-	runSSH = func(argv []string, stdin []byte, _ time.Duration) (int, string, string, error) { return 0, "", "", nil }
+	runSSH = func(_ context.Context, argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
+		return 0, "", "", nil
+	}
 	if _, err := executorLogin(s, testNow, "vm-seven", "pulseadmin@vm-seven-admin", nil, false, true, humanAgent); err != nil {
 		t.Fatal(err)
 	}

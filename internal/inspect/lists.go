@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/store"
@@ -119,6 +120,7 @@ func runJobs(c *cli.Context, fs *flag.FlagSet, args []string) error {
 
 type AgentScorecard struct {
 	store.Agent
+	board.AgentPresence
 	Findings    int    `json:"findings"`
 	Suggestions int    `json:"suggestions"`
 	Votes       int    `json:"votes"`
@@ -130,6 +132,10 @@ type AgentScorecard struct {
 
 // AgentScorecards counts posts independently of the agent's cached posts field.
 func AgentScorecards(s *store.Store, includePruned bool) ([]AgentScorecard, error) {
+	presence, err := board.AgentPresences(s, "")
+	if err != nil {
+		return nil, err
+	}
 	agents, err := s.Agents("")
 	if err != nil {
 		return nil, err
@@ -141,7 +147,7 @@ func AgentScorecards(s *store.Store, includePruned bool) ([]AgentScorecard, erro
 			continue
 		}
 		indices[a.Name] = len(out)
-		out = append(out, AgentScorecard{Agent: a})
+		out = append(out, AgentScorecard{Agent: a, AgentPresence: presence[a.Name]})
 	}
 	rows, err := s.DB.Query(`SELECT agent, SUM(kind = 'finding'), SUM(kind = 'suggestion'), SUM(kind = 'vote'),
 		SUM(kind = 'answer'), SUM(kind = 'result'), COUNT(*), MAX(date) FROM posts GROUP BY agent`)
@@ -158,6 +164,7 @@ func AgentScorecards(s *store.Store, includePruned bool) ([]AgentScorecard, erro
 		}
 		if index, ok := indices[name]; ok {
 			stats.Agent = out[index].Agent
+			stats.AgentPresence = out[index].AgentPresence
 			out[index] = stats
 		}
 	}
@@ -189,9 +196,9 @@ func runAgents(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		return jsonOutput(c, agents)
 	}
 	for _, a := range agents {
-		c.Printf("%-16s %-7s %-8s posts %-4d findings %-3d suggestions %-3d votes %-3d jobs %d/%d  last useful %s\n",
-			a.Name, a.Status, a.Kind, a.Posts, a.Findings, a.Suggestions, a.Votes, a.JobsDone,
-			a.JobsDone+a.JobsFailed, orDash(a.LastUsefulAt))
+		c.Printf("%-16s %-7s %-8s presence %-7s posts %-4d findings %-3d suggestions %-3d votes %-3d jobs %d/%d  last heartbeat %s  last useful %s\n",
+			a.Name, a.Status, a.Kind, a.Presence, a.Posts, a.Findings, a.Suggestions, a.Votes, a.JobsDone,
+			a.JobsDone+a.JobsFailed, orDash(a.LastHeartbeatAt), orDash(a.LastUsefulAt))
 	}
 	return nil
 }

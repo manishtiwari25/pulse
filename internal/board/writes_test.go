@@ -10,6 +10,7 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/parity"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -279,7 +280,7 @@ func TestAgentsJoinSpawnPrune(t *testing.T) {
 		sort.Strings(keep) // the fixed Go clock ties last_active_at; Python's order is time-driven
 		return strings.Join(keep, "\n")
 	}
-	if strip(out) != strip(pyOut) {
+	if strip(parity.LegacyAgentListing(out)) != strip(pyOut) {
 		t.Fatalf("list differs\n go: %s\n py: %s", out, pyOut)
 	}
 	// prune: alice has been quiet for 20 days, borealis holds a lease

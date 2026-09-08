@@ -595,12 +595,20 @@ export interface SettingsPayload {
   settings: Setting[];
 }
 
+export type AgentPresence = "online" | "idle" | "offline" | "unknown" | "legacy" | "pruned";
+
 export interface RosterRow extends Who {
   agent: string;
   names?: string[];
   kind: string;
   status: string;
   agent_status?: string;
+  presence?: AgentPresence;
+  presence_reason?: string;
+  last_heartbeat_at?: string;
+  presence_session?: string;
+  presence_checked_at?: string;
+  presence_expires_at?: string;
   sessions: string[];
   session_count: number;
   jobs_done: number;

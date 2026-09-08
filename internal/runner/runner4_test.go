@@ -398,7 +398,7 @@ func TestDaemonOnceComputeApproveToReadyToReleased(t *testing.T) {
 	placed := stubPlaceLogin(t, true)
 	var sshCalls []string
 	var sshMu sync.Mutex
-	runSSH = func(argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
+	runSSH = func(_ context.Context, argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
 		sshMu.Lock()
 		sshCalls = append(sshCalls, strings.Join(argv, " "))
 		sshMu.Unlock()

@@ -182,6 +182,10 @@ func TestGoldenParity(t *testing.T) {
 				t.Logf("%s: SQL-native evolution contract; Python filesystem report is not a comparison target", apiPath)
 				return
 			}
+			if route == "roster" {
+				want, got = rosterGolden(want, true), rosterGolden(got, false)
+				t.Log("WU-024: compare roster history by identity, without legacy claim-derived working labels")
+			}
 			diffs := jsonDifferences("$", normalizeGolden(want, ""), normalizeGolden(got, ""))
 			if len(diffs) == 0 {
 				t.Logf("%s: identical after explicit clock/tally ignores", apiPath)
@@ -202,7 +206,30 @@ func TestGoldenParity(t *testing.T) {
 	}
 }
 
+func rosterGolden(value any, legacy bool) any {
+	rows := value.([]any)
+	out := make([]any, len(rows))
+	for i, value := range rows {
+		row := clone(value.(map[string]any))
+		if legacy && row["status"] == "working" && row["agent_status"] != nil {
+			row["status"] = row["agent_status"]
+		}
+		out[i] = row
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return str(out[i].(map[string]any)["agent"]) < str(out[j].(map[string]any)["agent"])
+	})
+	return out
+}
+
 func documentedDifference(slug, route, path string) string {
+	if route == "roster" && strings.HasPrefix(path, "$[") {
+		_, field, _ := strings.Cut(path, "].")
+		switch field {
+		case "presence", "presence_reason", "last_heartbeat_at", "presence_session", "presence_checked_at", "presence_expires_at":
+			return "WU-024 adds supervised presence separately from unchanged identity, score and history fields"
+		}
+	}
 	if strings.HasSuffix(path, ".head") || strings.HasSuffix(path, ".dirty") || strings.HasSuffix(path, ".branch") {
 		return "checkout state: the goldens were captured at another commit with uncommitted changes"
 	}

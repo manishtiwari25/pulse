@@ -271,8 +271,12 @@ func runAgent(c *cli.Context, fs *flag.FlagSet, args []string) error {
 			if useful == "" {
 				useful = "-"
 			}
-			fmt.Fprintf(c.Out, "%-16s %-7s %-8s posts %-4d jobs %d/%d  last useful %s  %s/%s\n",
-				r.Name, r.Status, r.Kind, r.Posts, r.JobsDone, r.JobsDone+r.JobsFailed, useful, r.Runner, r.Model)
+			beat := r.LastHeartbeatAt
+			if beat == "" {
+				beat = "-"
+			}
+			fmt.Fprintf(c.Out, "%-16s %-7s %-8s presence %-7s posts %-4d jobs %d/%d  last heartbeat %s  last useful %s  %s/%s\n",
+				r.Name, r.Status, r.Kind, r.Presence, r.Posts, r.JobsDone, r.JobsDone+r.JobsFailed, beat, useful, r.Runner, r.Model)
 		}
 	case "prune":
 		dry := flagBool(fs, "dry-run")

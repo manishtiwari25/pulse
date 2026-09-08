@@ -351,44 +351,41 @@ func sshCommand(r row, args []string) ([]string, error) {
 }
 
 // sshRunner is what ssh_run does; tests swap it for a local pulse-hands.
-type sshRunner func(argv []string, stdin []byte, timeout time.Duration) (int, string, string, error)
+type sshRunner func(ctx context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error)
 
 var runSSH sshRunner = runProcess
 
-func runProcess(argv []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Stdin = bytes.NewReader(stdin)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
+func runProcess(ctx context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
+	out, err := runGroup(ctx, argv, "", environ(), stdin, timeout)
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			if ctx.Err() != nil {
-				return -1, out.String(), errb.String(), context.DeadlineExceeded
-			}
-			return ee.ExitCode(), out.String(), errb.String(), nil
-		}
 		if errors.Is(err, exec.ErrNotFound) {
 			return -1, "", "", exec.ErrNotFound
 		}
-		if ctx.Err() != nil {
-			return -1, out.String(), errb.String(), context.DeadlineExceeded
-		}
-		return -1, out.String(), errb.String(), err
+		return -1, out.Stdout, out.Stderr, err
 	}
-	return 0, out.String(), errb.String(), nil
+	if out.Timeout {
+		if err := ctx.Err(); err != nil {
+			return -1, out.Stdout, out.Stderr, err
+		}
+		return -1, out.Stdout, out.Stderr, context.DeadlineExceeded
+	}
+	return out.ExitCode, out.Stdout, out.Stderr, nil
 }
 
 func sshRun(r row, args []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
+	return sshRunContext(context.Background(), r, args, stdin, timeout)
+}
+
+func sshRunContext(ctx context.Context, r row, args []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
 	argv, err := sshCommand(r, args)
 	if err != nil {
 		return 0, "", "", err
 	}
-	rc, out, errText, err := runSSH(argv, stdin, timeout)
+	rc, out, errText, err := runSSH(ctx, argv, stdin, timeout)
 	if err != nil {
+		if ctx.Err() != nil {
+			return rc, out, errText, ctx.Err()
+		}
 		if errors.Is(err, exec.ErrNotFound) {
 			return 0, "", "", &ExecutorUnreachable{"ssh is not installed on this machine"}
 		}
@@ -428,7 +425,7 @@ func adminSSHRun(address, remoteCommand string, stdin []byte, timeout time.Durat
 	if err != nil {
 		return 0, "", "", err
 	}
-	rc, out, errText, err := runSSH(argv, stdin, timeout)
+	rc, out, errText, err := runSSH(context.Background(), argv, stdin, timeout)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return 0, "", "", &ExecutorUnreachable{"ssh is not installed on this machine"}

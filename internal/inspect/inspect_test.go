@@ -223,6 +223,9 @@ func TestSnapshotParity(t *testing.T) {
 			}
 			got := invoke(t, s, false, tc.project, tc.name, tc.args...)
 			want := oracle(t, s.Home, true, args...)
+			if tc.name == "agents" {
+				got.out = parity.LegacyAgentListing(got.out)
+			}
 			if tc.name == "settings" && len(tc.args) <= 1 {
 				// The original stored rows are unchanged; compute/evolve defaults
 				// are intentionally appended after the Python-compatible prefix.
@@ -731,7 +734,9 @@ func TestScorecardsPruningAndCounts(t *testing.T) {
 		t.Fatalf("pruned filter: %+v %v", active, err)
 	}
 	for _, args := range [][]string{nil, {"--all"}} {
-		assertParity(t, invoke(t, s, false, "", "agents", args...), oracle(t, s.Home, true, append([]string{"agents"}, args...)...))
+		got := invoke(t, s, false, "", "agents", args...)
+		got.out = parity.LegacyAgentListing(got.out)
+		assertParity(t, got, oracle(t, s.Home, true, append([]string{"agents"}, args...)...))
 	}
 }
 

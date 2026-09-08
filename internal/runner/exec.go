@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -134,7 +135,7 @@ func (e *localExec) runWorker(ctx context.Context, cmd []string, env map[string]
 	if minutes <= 0 {
 		budget = time.Second
 	}
-	out, err := runGroup(ctx, cmd, e.cloneDir, envWith(environ(), env), nil, budget)
+	out, err := runGroupObserved(ctx, cmd, e.cloneDir, envWith(environ(), env), nil, budget, e.observer(e.execution(env)))
 	if err != nil {
 		return out, fail(1, "worker command not found: %s (setting runner_cmd=%s)", cmd[0], e.s.Setting("runner_cmd", ""))
 	}
@@ -290,6 +291,19 @@ func (e *sshExec) prepare(ctx context.Context) (string, error) {
 }
 
 func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]string, minutes int) (outcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	id := e.execution(env)
+	identityErr := id.Validate()
+	heartbeatReporter(e.log)(identityErr)
+	capable := identityErr == nil && e.heartbeatCapable(ctx)
+	if capable {
+		env = maps.Clone(env)
+		env["PULSE_HEARTBEAT"] = "1"
+	}
 	budget := strconv.Itoa(minutes)
 	if minutes <= 0 {
 		budget = "1s"
@@ -300,11 +314,28 @@ func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]st
 	}
 	args = append(append(args, "--"), cmd...)
 	e.begun = true
-	rc, out, errText, err := sshRun(e.row, args, nil, time.Duration(minutes*60+120)*time.Second)
+	var watching chan struct{}
+	if capable {
+		watching = make(chan struct{})
+		go func() {
+			defer close(watching)
+			e.watchRemote(ctx, id)
+		}()
+	}
+	rc, out, errText, err := sshRunContext(ctx, e.row, args, nil, time.Duration(minutes*60+120)*time.Second)
+	cancel()
+	if watching != nil {
+		<-watching
+		e.stopHeartbeat(id, heartbeatReporter(e.log))
+	}
 	e.log.add("$ ssh %s run %s %s -- <worker>\n", e.row.str("address"), e.job.str("id"), budget)
+	if ctx.Err() != nil && err != nil && (err == context.Canceled || err == context.DeadlineExceeded) {
+		return outcome{Timeout: true, ExitCode: -1, Stdout: out, Stderr: errText}, nil
+	}
 	if err != nil {
 		return outcome{ExitCode: -1}, err
 	}
+
 	text := out
 	e.lastOut = &text
 	if rc == remoteExitTimeout {

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -99,7 +100,7 @@ func TestPairDryRunOverFakeSSH(t *testing.T) {
 	old := runSSH
 	t.Cleanup(func() { runSSH = old })
 	var scripts []string
-	runSSH = func(argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
+	runSSH = func(_ context.Context, argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
 		scripts = append(scripts, string(stdin))
 		return 0, "uname=Linux\narch=x86_64\nsudo=yes\nuser=absent\nhands=absent\nworkdir=absent\nworkdir_owner=\nauthorized_keys=absent\nauthorized_keys_lines=0\n" +
 			"dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing\ngit=present\nmise=missing\ngitconfig=missing\nhostkeys=\nhostkey ssh-ed25519 AAAB host\n", "", nil

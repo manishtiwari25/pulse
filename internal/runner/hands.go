@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -11,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -109,6 +109,10 @@ func handsBudget(budget string) (time.Duration, error) {
 
 // withTimeout is timeout(1) --kill-after=30: the command in its own process group, TERM then KILL, exit 124.
 func (h *hands) withTimeout(budget time.Duration, dir string, argv []string, extra map[string]string) int {
+	return h.withTimeoutObserved(budget, dir, argv, extra, nil)
+}
+
+func (h *hands) withTimeoutObserved(budget time.Duration, dir string, argv []string, extra map[string]string, observer *processObserver) int {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
 	env := envWith(os.Environ(), extra)
@@ -123,26 +127,15 @@ func (h *hands) withTimeout(budget time.Duration, dir string, argv []string, ext
 	cmd.Env = kept
 	cmd.Stdin = h.stdin
 	cmd.Stdout, cmd.Stderr = h.stdout, h.stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	err, timedOut, started := waitCommand(context.Background(), cmd, budget, handsKillAfter, observer)
+	if !started {
 		fmt.Fprintf(h.stderr, "%s: %v\n", argv[0], err)
 		return 127
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		return finish(err, "", "", false).ExitCode
-	case <-time.After(budget):
+	if timedOut {
+		return remoteExitTimeout
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-	select {
-	case <-done:
-	case <-time.After(handsKillAfter):
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
-	}
-	return remoteExitTimeout
+	return finish(err, "", "", false).ExitCode
 }
 
 var handsKillAfter = 30 * time.Second
@@ -240,7 +233,7 @@ func (h *hands) probe() error {
 		}
 		return strings.Join(list, ",")
 	}
-	fmt.Fprintf(h.stdout, "hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s remotes=%d keys_ok=%s disk_free_mb=%s jobs=%s keys=%s\n",
+	fmt.Fprintf(h.stdout, "hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s remotes=%d keys_ok=%s disk_free_mb=%s jobs=%s keys=%s heartbeat=1\n",
 		name, h.workdir, gitv, copv, loggedIn, remotes, keysOK, freeMB, dash(jobs), dash(keys))
 	return nil
 }
@@ -392,7 +385,14 @@ func (h *hands) run(job, minutes string, rest []string) error {
 	if os.Getenv("COPILOT_SUBAGENT_MAX_DEPTH") == "" {
 		extra["COPILOT_SUBAGENT_MAX_DEPTH"] = "128"
 	}
-	return &handsExit{h.withTimeout(budget, clone, rest, extra)}
+	var observer *processObserver
+	if extra["PULSE_HEARTBEAT"] == "1" {
+		observer, err = h.heartbeatObserver(job, extra)
+		if err != nil {
+			fmt.Fprintf(h.stderr, "pulse-hands: presence unavailable: %v\n", err)
+		}
+	}
+	return &handsExit{h.withTimeoutObserved(budget, clone, rest, extra, observer)}
 }
 
 func (h *hands) result(job string) error {
@@ -551,6 +551,11 @@ func (h *hands) handsMain(args []string) error {
 	switch verb {
 	case "probe":
 		return h.probe()
+	case "heartbeat":
+		if err := need(2, "heartbeat JOB SESSION"); err != nil {
+			return err
+		}
+		return h.heartbeat(rest[0], rest[1])
 	case "prepare":
 		if err := need(3, "prepare JOB BRANCH AGENT"); err != nil {
 			return err

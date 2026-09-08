@@ -327,6 +327,7 @@ func PruneAgents(s *store.Store, now string, days int, actor string, dryRun bool
 // Scorecard is an agent row with its post counts, what `agent list` prints.
 type Scorecard struct {
 	store.Agent
+	AgentPresence
 	Findings    int    `json:"findings"`
 	Suggestions int    `json:"suggestions"`
 	Votes       int    `json:"votes"`
@@ -338,6 +339,10 @@ type Scorecard struct {
 
 // Scorecards lists agents ordered by status, last active, name with their post counts.
 func Scorecards(s *store.Store, includePruned bool) ([]Scorecard, error) {
+	presence, err := AgentPresences(s, "")
+	if err != nil {
+		return nil, err
+	}
 	q := "SELECT name FROM agents"
 	if !includePruned {
 		q += " WHERE status != 'pruned'"
@@ -368,7 +373,7 @@ func Scorecards(s *store.Store, includePruned bool) ([]Scorecard, error) {
 		if a == nil {
 			continue
 		}
-		sc := Scorecard{Agent: *a}
+		sc := Scorecard{Agent: *a, AgentPresence: presence[n]}
 		var last sql.NullString
 		var f, sg, v, an, r sql.NullInt64
 		if err := s.DB.QueryRow("SELECT SUM(kind = 'finding'), SUM(kind = 'suggestion'), SUM(kind = 'vote'), SUM(kind = 'answer'), "+
