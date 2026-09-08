@@ -217,11 +217,124 @@ func TestAdditionsEventsPolling(t *testing.T) {
 	if status != 200 || len(result["events"].([]any)) != 0 {
 		t.Fatalf("events cursor: %d %#v", status, result)
 	}
+	// Without a cursor the route answers the newest window, oldest first, so
+	// the live feed opens on what just happened rather than the log's start.
+	for _, subject := range []string{"one-3", "one-4", "one-5"} {
+		if err := s.Event("human", "message.sent", subject, map[string]any{"project": "one"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, result = additionsRequest(t, h, "GET", "/api/v1/events?project=one&limit=2", "")
+	if status != 200 {
+		t.Fatalf("recent window: %d %#v", status, result)
+	}
+	if subjects := additionsEventSubjects(result["events"].([]any)); strings.Join(subjects, ",") != "one-4,one-5" {
+		t.Fatalf("recent window should hold the two newest project events oldest first, got %v", subjects)
+	}
+	status, result = additionsRequest(t, h, "GET", fmt.Sprintf("/api/v1/events?project=one&since=%.0f&limit=2", event["id"]), "")
+	if subjects := additionsEventSubjects(result["events"].([]any)); status != 200 || strings.Join(subjects, ",") != "one-4,one-5" {
+		t.Fatalf("a cursor with a limit should also prefer the newest events, got %d %v", status, subjects)
+	}
 	for _, query := range []string{"since=-1", "since=no", "limit=0", "limit=1001", "limit=2.5"} {
 		status, _ := additionsRequest(t, h, "GET", "/api/v1/events?"+query, "")
 		if status != 400 {
 			t.Fatalf("%s: got %d, want 400", query, status)
 		}
+	}
+}
+
+func additionsEventSubjects(events []any) []string {
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		out = append(out, e.(map[string]any)["subject"].(string))
+	}
+	return out
+}
+
+// additionsStreamEvents opens the SSE route and returns a function that reads
+// the next data frame, failing the test when none arrives before the deadline.
+func additionsStreamEvents(t *testing.T, server *httptest.Server, query string, lastEventID string) func() additionEvent {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, "GET", server.URL+"/api/v1/events/stream"+query, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	response, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { response.Body.Close() })
+	if response.StatusCode != 200 || response.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("stream response: %d %v", response.StatusCode, response.Header)
+	}
+	reader := bufio.NewReader(response.Body)
+	return func() additionEvent {
+		t.Helper()
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("waiting for an event: %v", err)
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var event additionEvent
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(line), "data: ")), &event); err != nil {
+				t.Fatalf("frame %q: %v", line, err)
+			}
+			return event
+		}
+	}
+}
+
+func TestAdditionsEventsStreamStartsAtTheHeadWithoutACursor(t *testing.T) {
+	s := additionsStore(t, false)
+	server := httptest.NewServer(New(s, nil))
+	t.Cleanup(server.Close) // registered first so the stream client below disconnects before the server waits on it
+	for i := 0; i < 5; i++ {
+		if err := s.Event("human", "message.sent", fmt.Sprintf("history-%d", i), map[string]any{"project": "one"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := additionsStreamEvents(t, server, "?project=one", "")
+	if err := s.Event("human", "message.sent", "after-connection", map[string]any{"project": "one"}); err != nil {
+		t.Fatal(err)
+	}
+	// A page load must not receive the log's history frame by frame; the first
+	// event on a fresh connection is the first one written after it opened.
+	if event := next(); event.Subject != "after-connection" {
+		t.Fatalf("fresh stream replayed history, first frame was %#v", event)
+	}
+}
+
+func TestAdditionsEventsStreamResumeReplaysTheNewestWindow(t *testing.T) {
+	s := additionsStore(t, false)
+	server := httptest.NewServer(New(s, nil))
+	t.Cleanup(server.Close)
+	var cursor int64
+	if err := s.DB.QueryRow("SELECT COALESCE(MAX(seq),0) FROM events").Scan(&cursor); err != nil {
+		t.Fatal(err)
+	}
+	for _, subject := range []string{"missed-1", "missed-2", "missed-3", "missed-4"} {
+		if err := s.Event("human", "message.sent", subject, map[string]any{"project": "one"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := additionsStreamEvents(t, server, "?project=one&limit=2", fmt.Sprint(cursor))
+	if err := s.Event("human", "message.sent", "live", map[string]any{"project": "one"}); err != nil {
+		t.Fatal(err)
+	}
+	var subjects []string
+	for len(subjects) < 3 {
+		subjects = append(subjects, next().Subject)
+	}
+	if strings.Join(subjects, ",") != "missed-3,missed-4,live" {
+		t.Fatalf("resume should replay the newest limit events after the cursor then go live, got %v", subjects)
 	}
 }
 

@@ -135,6 +135,38 @@ func Since(s *store.Store, sinceID int64, filter Filter, limit int) ([]Event, er
 	return since(context.Background(), s.DB, sinceID, filter, limit)
 }
 
+// Latest returns the newest limit events after sinceID that pass filter,
+// still oldest first, so a reader that wants the recent window gets the tail
+// of the log rather than its beginning; limit <= 0 means every one.
+func Latest(s *store.Store, sinceID int64, filter Filter, limit int) ([]Event, error) {
+	rows, err := s.DB.Query("SELECT seq, at, actor, action, subject, detail FROM events WHERE seq > ? ORDER BY seq DESC", sinceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.At, &e.Actor, &e.Action, &e.Subject, &e.Detail); err != nil {
+			return nil, err
+		}
+		if !filter.Match(e) {
+			continue
+		}
+		out = append(out, e)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
 type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }

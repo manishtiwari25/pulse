@@ -723,8 +723,11 @@ type additionEvent struct {
 	Detail  any    `json:"detail"`
 }
 
+// additionReadEvents returns the newest limit events after since, oldest
+// first: a cursor gets what it missed, no cursor gets the recent window, and
+// neither walks the log from its first row.
 func (h *Handler) additionReadEvents(r *http.Request, since int64, limit int64) ([]additionEvent, error) {
-	events, err := bus.Since(h.Store, since, bus.Filter{Project: h.additionProject(r)}, int(limit))
+	events, err := bus.Latest(h.Store, since, bus.Filter{Project: h.additionProject(r)}, int(limit))
 	if err != nil {
 		return nil, err
 	}
@@ -769,10 +772,26 @@ func (h *Handler) additionEvents(w http.ResponseWriter, r *http.Request, parts [
 		writeError(w, http.StatusBadRequest, "Invalid limit", "limit must be greater than zero.", "Use a limit between 1 and 1000.")
 		return
 	}
-	events, err := h.additionReadEvents(r, since, limit)
-	if err != nil {
-		additionFailure(w, err)
-		return
+	// The stream replays only for a cursor: a fresh connection starts at the
+	// head and leaves the recent window to GET /events, so a page load never
+	// receives the whole log. The head is read before the replay so an event
+	// landing in between is tailed rather than lost.
+	var (
+		head   int64
+		events []additionEvent
+		err    error
+	)
+	if stream {
+		if head, err = bus.LastID(h.Store); err != nil {
+			additionFailure(w, err)
+			return
+		}
+	}
+	if !stream || since > 0 {
+		if events, err = h.additionReadEvents(r, since, limit); err != nil {
+			additionFailure(w, err)
+			return
+		}
 	}
 	if !stream {
 		writeJSON(w, http.StatusOK, map[string]any{"events": events})
@@ -810,11 +829,13 @@ func (h *Handler) additionEvents(w http.ResponseWriter, r *http.Request, parts [
 		if !send(event) {
 			return
 		}
-		since = event.ID
+		if event.ID > head {
+			head = event.ID
+		}
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	tail := bus.Tail(ctx, h.Store, since, bus.Filter{Project: h.additionProject(r)}, time.Second)
+	tail := bus.Tail(ctx, h.Store, head, bus.Filter{Project: h.additionProject(r)}, time.Second)
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	for {

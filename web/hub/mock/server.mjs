@@ -602,7 +602,12 @@ async function handle(req, res) {
     const p = q.get("project");
     const since = Number(q.get("since") || 0);
     const limit = Number(q.get("limit") || 50);
-    return send(res, 200, { events: state.events.filter((e) => e.id > since && (!p || (e.detail && e.detail.project === p))).slice(0, limit) });
+    // Like the hub: the newest `limit` events after `since`, oldest first.
+    const events = state.events
+      .filter((e) => e.id > since && (!p || (e.detail && e.detail.project === p)))
+      .sort((a, b) => b.id - a.id)
+      .slice(0, limit);
+    return send(res, 200, { events: events.reverse() });
   }
   if (segs[0] === "records" && segs.length === 1) {
     const all = (await fixture("records")).records.map(recordView);

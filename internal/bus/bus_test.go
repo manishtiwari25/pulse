@@ -256,6 +256,35 @@ func TestTailFromSince(t *testing.T) {
 	}
 }
 
+func TestLatestReturnsTheNewestWindowOldestFirst(t *testing.T) {
+	s := tempStore(t)
+	var ids []int64
+	for i, action := range []string{"task.created", "settings.set", "task.amended", "task.amended", "post"} {
+		e, err := EmitOn(nil, s, "a", action, "S", map[string]any{"i": i})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, e.ID)
+	}
+	got, err := Latest(s, 0, Filter{Actions: []string{"task.*"}}, 2)
+	if err != nil || len(got) != 2 || got[0].ID != ids[2] || got[1].ID != ids[3] {
+		t.Fatalf("newest two task events: %+v, %v", got, err)
+	}
+	if got, err = Latest(s, ids[2], Filter{}, 10); err != nil || len(got) != 2 || got[0].ID != ids[3] || got[1].ID != ids[4] {
+		t.Fatalf("after a cursor: %+v, %v", got, err)
+	}
+	if got, err = Latest(s, ids[4], Filter{}, 10); err != nil || len(got) != 0 {
+		t.Fatalf("nothing after the head: %+v, %v", got, err)
+	}
+	all, err := Since(s, 0, Filter{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err = Latest(s, 0, Filter{}, 0); err != nil || len(got) != len(all) || got[0] != all[0] || got[len(got)-1] != all[len(all)-1] {
+		t.Fatalf("no limit equals Since: %d events vs %d, %v", len(got), len(all), err)
+	}
+}
+
 func TestMain(m *testing.M) {
 	// never touch the live store
 	os.Setenv("PULSE_HOME", filepath.Join(os.TempDir(), "pulse-bus-test-never-used"))
