@@ -204,6 +204,20 @@ are the same pieces by hand. `pulse stop` / `pulse start` is the kill switch.
 of what deactivates (nothing is deleted) and ask before applying; `--dry-run`
 only previews, `--yes` skips the prompt.
 
+What the daemon does on its own when an executor's Copilot login is refused
+(ADR-034): with a fine-grained token that reaches no repository placed by
+`pulse executor token --with-token` (stdin; `pulse executor token` reports
+presence, account and expiry, `--remove` withdraws it), it puts that login on
+the drained executor once and reactivates it. Without one, a machine PULSE
+created on Azure is deallocated at once so it stops costing money, its executor
+row is removed, and the VM, its NICs, public IPs and OS disk are deleted after
+`compute.retire_grace_hours` (default 24) unless you `az vm start` it and
+`pulse executor activate <name>` before then; a machine PULSE did not create is
+only removed from the roster and left running. Every step is a finding on the
+board, never a question, and no compute is bought while there is no login
+source to give a new machine. `compute.self_heal=0` and `compute.self_retire=0`
+switch the two halves off.
+
 ## Development
 
 ```bash

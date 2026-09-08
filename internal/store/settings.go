@@ -79,6 +79,9 @@ var ComputeSettings = map[string]string{
 	"compute.max_hours_per_day":    "0",
 	"compute.auto_approve":         "0",
 	"compute.budget_credits":       "0",
+	"compute.self_heal":            "1",
+	"compute.self_retire":          "1",
+	"compute.retire_grace_hours":   "24",
 }
 
 // ComputeRules validate ComputeSettings; kind "identifier" is free text that
@@ -94,6 +97,9 @@ var ComputeRules = map[string]SettingRule{
 	"compute.max_hours_per_day":    {Kind: "count", Min: 0, HasMin: true, Description: "machine-hours agents may consume per UTC day across provisioned hands; 0 means none"},
 	"compute.auto_approve":         {Kind: "switch", Choices: []string{"0", "1"}, Description: "1: requests under the caps are approved without the owner; 0: every request becomes a proposal"},
 	"compute.budget_credits":       {Kind: "count", Min: 0, HasMin: true, Description: "AI credits the provisioned hands may spend per UTC day together; 0 means no extra budget"},
+	"compute.self_heal":            {Kind: "switch", Choices: []string{"0", "1"}, Description: "1: the daemon places the executor token (pulse executor token) on a drained executor whose login is refused, once per drain; 0: it leaves the login to you (ADR-034)"},
+	"compute.self_retire":          {Kind: "switch", Choices: []string{"0", "1"}, Description: "1: the daemon deallocates a VM it created whose login stays refused and retires its executor row, then deletes the VM after compute.retire_grace_hours; 0: it only reports (ADR-034)"},
+	"compute.retire_grace_hours":   {Kind: "count", Min: 1, HasMin: true, Description: "hours a retired VM stays deallocated before the daemon deletes it; `az vm start` and `pulse executor activate NAME` within them keep it"},
 }
 
 // EvolveSettings configure the self-improvement loop (D-M). Like

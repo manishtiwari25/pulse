@@ -39,6 +39,7 @@ type Caps struct {
 	BudgetCredits  int    `json:"budget_credits"`
 	VMsNow         int    `json:"vms_now"`
 	HoursToday     int    `json:"hours_today"`
+	LoginSource    bool   `json:"login_source"`
 }
 
 const computeCols = "id, project, requested_by, size, hours, reason, status, decided_by, executor, words, proposal_post, at, updated_at"
@@ -89,9 +90,19 @@ func ListCompute(s *store.Store, project, status string) ([]ComputeRequest, erro
 	return out, rows.Err()
 }
 
+// LoginSourceCheck says whether a login source exists for the machines
+// compute provisions (ADR-034 rule 6: the executor token, or a hub login that
+// reaches no repository). The runner installs it; nil means no check, so a
+// store without the runner behaves as before.
+var LoginSourceCheck func(s *store.Store) bool
+
+// NoLoginSource is the reason a request is held while no login source exists.
+const NoLoginSource = "no executor login source"
+
 // GetCaps reads the compute.* settings and the current use: vms_now counts
 // requests approved, provisioning or ready; hours_today sums the hours of
-// requests made today (UTC) that were not denied.
+// requests made today (UTC) that were not denied. LoginSource is false when
+// no machine could be logged in (the request is held, not denied).
 func GetCaps(s *store.Store) (Caps, error) {
 	c := Caps{
 		Provider:       s.Setting("compute.provider", ""),
@@ -99,6 +110,7 @@ func GetCaps(s *store.Store) (Caps, error) {
 		MaxHoursPerDay: s.SettingInt("compute.max_hours_per_day"),
 		AutoApprove:    s.Setting("compute.auto_approve", "") == "1",
 		BudgetCredits:  s.SettingInt("compute.budget_credits"),
+		LoginSource:    LoginSourceCheck == nil || LoginSourceCheck(s),
 	}
 	if err := s.DB.QueryRow("SELECT COUNT(*) FROM compute_requests WHERE status IN ('approved','provisioning','ready')").Scan(&c.VMsNow); err != nil {
 		return c, err
@@ -140,7 +152,7 @@ func RequestCompute(s *store.Store, project, agent, size string, hours int, reas
 	if err != nil {
 		return nil, err
 	}
-	auto := caps.AutoApprove && caps.VMsNow < caps.MaxVMs && (caps.MaxHoursPerDay == 0 || caps.HoursToday+hours <= caps.MaxHoursPerDay)
+	auto := caps.AutoApprove && caps.VMsNow < caps.MaxVMs && (caps.MaxHoursPerDay == 0 || caps.HoursToday+hours <= caps.MaxHoursPerDay) && caps.LoginSource
 	now := s.Now()
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -175,6 +187,9 @@ func RequestCompute(s *store.Store, project, agent, size string, hours int, reas
 		summary := fmt.Sprintf("compute request %s: %s for %dh - %s", id, size, hours, reason)
 		body := fmt.Sprintf("%s asks for one %s machine for %d hours.\n\nReason: %s\n\nCaps: %d of %d machines in use, auto_approve=%v.\n\nApprove with `pulse compute approve %s --words '...'` or deny with `pulse compute deny %s --words '...'` (or from the hub's Compute page).\n",
 			agent, size, hours, reason, caps.VMsNow, caps.MaxVMs, caps.AutoApprove, id, id)
+		if !caps.LoginSource {
+			body += "\nHeld: " + NoLoginSource + " - a provisioned machine could not log in. Place a Copilot-only fine-grained token with `pulse executor token --with-token`; an approval waits for one (ADR-034).\n"
+		}
 		postID, ev, err := insertPost(tx, now, project, "runner", "compute", "proposal", agent, summary, body, "", "")
 		if err != nil {
 			return nil, err

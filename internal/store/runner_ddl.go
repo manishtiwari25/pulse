@@ -12,6 +12,11 @@ package store
 // executor it became and where it answers, so a later daemon can release it
 // when the request's hours run out. detail is provider JSON (tags, ids);
 // never a credential.
+//
+// retired_vms (ADR-034) remembers a VM the daemon deallocated because its
+// executor's login was refused: where it is, when it was stopped and when the
+// daemon may delete it (delete_after); deleted_at closes the row, note says
+// why when nothing was deleted (kept by the owner, already gone).
 var RunnerDDL = []string{
 	`CREATE TABLE IF NOT EXISTS briefs (
   run_id TEXT NOT NULL,
@@ -34,4 +39,26 @@ var RunnerDDL = []string{
   note TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (request_id)
 )`,
+	`CREATE TABLE IF NOT EXISTS retired_vms (
+  executor TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT '',
+  resource_group TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL DEFAULT '',
+  deallocated_at TEXT NOT NULL DEFAULT '',
+  delete_after TEXT NOT NULL DEFAULT '',
+  deleted_at TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (executor)
+)`,
+}
+
+// RunnerColumns are the columns the runner work added to schema-3 tables after
+// the fact (ADR-034); EnsureRecords adds each one that is missing.
+// executors.admin is the admin ssh address (user@host) pair, executor login
+// --admin or the compute provider used, so the daemon can place a login there;
+// executors.healed_at marks the one heal attempt per drain episode and is
+// cleared when the executor is active again.
+var RunnerColumns = []Column{
+	{Table: "executors", Name: "admin", DDL: "TEXT NOT NULL DEFAULT ''"},
+	{Table: "executors", Name: "healed_at", DDL: "TEXT NOT NULL DEFAULT ''"},
 }

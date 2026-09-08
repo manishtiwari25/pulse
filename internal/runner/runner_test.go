@@ -3,6 +3,8 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -458,8 +460,18 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
+	// ADR-034: no test asks the hub's gh for a token or reaches GitHub; tests that need answers swap githubHTTP.
+	ghAuthToken = func() (string, error) { return "", nil }
+	githubHTTP = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return nil, errors.New("no network in tests: " + r.URL.Host)
+	})}
 	os.Exit(m.Run())
 }
+
+// roundTripFunc is an http.RoundTripper made of one function.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func buildPulse(t *testing.T) string {
 	t.Helper()

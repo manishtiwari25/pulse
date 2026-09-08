@@ -928,6 +928,7 @@ func pairExecutor(s *store.Store, admin, name, now string, o pairOpts) (*pairRep
 	} else {
 		*lines = append(*lines, fmt.Sprintf("kept existing executor %s", name))
 	}
+	setExecutorAdmin(s, name, admin)
 	probeOK, note, err := probeExecutor(s, name, actor, now)
 	if err != nil {
 		return nil, err

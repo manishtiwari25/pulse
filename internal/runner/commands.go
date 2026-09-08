@@ -63,7 +63,7 @@ func init() {
 			fs.Bool("dry-run", false, "print the unit or plist instead of installing")
 		}, Run: cmdService})
 	cli.Register(cli.Command{Name: "executor", Group: "runner", Summary: "list, add, probe, drain, activate, remove or log in the executors (remote hands)",
-		Usage: "pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | login NAME --admin admin@host (--with-token | --remove)",
+		Usage: "pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | login NAME --admin admin@host (--with-token | --remove) | token [--with-token | --remove]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("ssh", "", "user@host[:port] of the executor")
 			fs.String("workdir", "", "absolute work directory on the executor")
@@ -358,11 +358,32 @@ func executorsText(s *store.Store, now string) string {
 func cmdExecutor(c *cli.Context, fs *flag.FlagSet, args []string) error {
 	s, now := c.Store, nowOf(c)
 	if len(args) == 0 {
-		return fail(2, "pulse executor needs an action: list|add|probe|drain|activate|remove|login")
+		return fail(2, "pulse executor needs an action: list|add|probe|drain|activate|remove|login|token")
 	}
 	action := args[0]
 	if action == "list" {
 		fmt.Fprint(c.Out, executorsText(s, now))
+		return nil
+	}
+	if action == "token" {
+		// ADR-034: the executor token the daemon places wherever an executor needs a login.
+		withToken, remove := boolFlag(fs, "with-token"), boolFlag(fs, "remove")
+		var lines []string
+		var err error
+		switch {
+		case withToken && remove:
+			return fail(2, "executor token takes one of --with-token or --remove")
+		case withToken:
+			lines, err = executorTokenSet(s, now, os.Stdin, cli.IsTTY(os.Stdin), humanAgent)
+		case remove:
+			lines, err = executorTokenRemove(s, now, humanAgent)
+		default:
+			lines = executorTokenReport(s, now)
+		}
+		if err != nil {
+			return err
+		}
+		c.Println(strings.Join(lines, "\n"))
 		return nil
 	}
 	if len(args) < 2 {
@@ -420,6 +441,19 @@ func cmdExecutor(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		c.Printf("%s drained: running jobs finish, no new job starts there\n", name)
 	case "activate":
 		r := executorRow(s, name)
+		if r == nil && mustOne(s.DB, "SELECT 1 FROM executors WHERE name = ? AND status = 'removed'", name) != nil {
+			// ADR-034: the undo of a retirement - the removed row comes back drained and is probed as you.
+			exec1(s.DB, "UPDATE executors SET status = 'drained', probe_note = '', errors = 0, backoff_minutes = 0, next_probe_at = '', healed_at = '' WHERE name = ?", name)
+			eventAt(s.DB, now, actor, "executor.revived", name, nil)
+			ok, note, err := probeExecutor(s, name, actor, now)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fail(1, "%s is back but its probe failed (%s); fix that, then `pulse executor probe %s` and activate again", name, note, name)
+			}
+			r = executorRow(s, name)
+		}
 		if r == nil {
 			return fail(2, "No executor %s", name)
 		}
@@ -458,7 +492,7 @@ func cmdExecutor(c *cli.Context, fs *flag.FlagSet, args []string) error {
 			return cli.Errorf(1, "", "", "")
 		}
 	default:
-		return fail(2, "pulse executor: unknown action %q (list|add|probe|drain|activate|remove|login)", action)
+		return fail(2, "pulse executor: unknown action %q (list|add|probe|drain|activate|remove|login|token)", action)
 	}
 	return nil
 }

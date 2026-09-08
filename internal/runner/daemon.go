@@ -343,6 +343,10 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			for _, pr := range reprobeDue(s, interval, now) {
 				say("executor %s is reachable again: %s", pr[0], pr[1])
 			}
+			// ADR-034: a drained executor heals itself or is retired; retired VMs past their grace are deleted.
+			for _, l := range tendExecutors(s, now, actor) {
+				say("%s", l)
+			}
 			busy := map[string]int{}
 			for d := range inflight {
 				busy[d.slot]++

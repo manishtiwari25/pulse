@@ -19,7 +19,8 @@ import (
 // resource group compute.azure.resource_group, created with `az vm create` under the login `az login` left on
 // this machine (never a key in the store), prepared by cloud-init (git and the harness prerequisites), then
 // registered as an executor exactly the way `pulse pair` does - the linux pulse binary travels over the admin
-// ssh session, the hands user gets the forced command. The VM carries the tag pulse=<request id>. Release is
+// ssh session, the hands user gets the forced command. The VM carries the tags pulse=hands (every machine PULSE
+// made, ADR-034) and pulse-request=<request id>. Release is
 // `az vm delete --yes` (disk and nic go with it through the delete options) and the leftovers the CLI creates
 // beside a VM (public ip, vnet, nsg), best effort.
 
@@ -223,7 +224,7 @@ func (p azureProvider) Provision(ctx context.Context, req ProvisionRequest) (*Ma
 	}
 	pubPath := filepath.Join(hubHome, ".ssh", "pulse_hands_ed25519.pub")
 	vm := azureVMName(req.ID)
-	tags := map[string]string{"pulse": req.ID, "pulse-project": req.Project}
+	tags := map[string]string{"pulse": "hands", "pulse-request": req.ID, "pulse-project": req.Project}
 	m := &Machine{Provider: "azure", Name: vm, Executor: req.Executor, Tags: tags,
 		Detail: map[string]string{"resource_group": cfg.ResourceGroup, "location": cfg.Location, "size": cfg.VMSize, "image": cfg.Image, "subscription": cfg.Subscription}}
 	if rc, _, _, err := runAz(ctx, cfg.args("group", "show", "--name", cfg.ResourceGroup, "-o", "none"), 60*time.Second); err != nil || rc != 0 {
@@ -249,7 +250,7 @@ func (p azureProvider) Provision(ctx context.Context, req ProvisionRequest) (*Ma
 			"--image", cfg.Image, "--size", cfg.VMSize, "--admin-username", azureAdminUser, "--ssh-key-values", pubPath,
 			"--custom-data", rendered.Name(), "--public-ip-sku", "Standard", "--os-disk-size-gb", azureDiskGB, "--storage-sku", "StandardSSD_LRS",
 			"--os-disk-delete-option", "Delete", "--nic-delete-option", "Delete",
-			"--tags", "pulse="+req.ID, "pulse-project="+req.Project, "-o", "json"), 20*time.Minute)
+			"--tags", "pulse=hands", "pulse-request="+req.ID, "pulse-project="+req.Project, "-o", "json"), 20*time.Minute)
 		if err != nil || rc != 0 {
 			return m, azErr("az vm create "+vm, rc, out, errText, err)
 		}
@@ -319,6 +320,25 @@ func (p azureProvider) Provision(ctx context.Context, req ProvisionRequest) (*Ma
 			last = rep.Lines[n-1]
 		}
 		return m, fmt.Errorf("pairing %s did not complete: %s", req.Executor, redactSecrets(last))
+	}
+	// ADR-034 rule 6: the machine is born logged in when a login source exists; the admin route is remembered
+	// so the daemon can heal it later. Without a source the caps gate should have held the request.
+	setExecutorAdmin(s, req.Executor, m.Address)
+	if tok, origin, err := loginSource(s); err != nil {
+		log("login source: %s", errMessage(err))
+	} else if len(tok) > 0 {
+		res, err := placeLogin(s, s.Now(), req.Executor, m.Address, tokenReader(tok), false, false, req.Actor)
+		if err != nil {
+			return m, fmt.Errorf("placing the %s on %s: %s", origin, req.Executor, redactSecrets(errMessage(err)))
+		}
+		for _, l := range res.Lines {
+			log("login: %s", redactSecrets(l))
+		}
+		if !res.OK {
+			return m, fmt.Errorf("the %s was refused on %s; the machine cannot work", origin, req.Executor)
+		}
+	} else {
+		log("no login source: %s starts without a copilot login", req.Executor)
 	}
 	return m, nil
 }
