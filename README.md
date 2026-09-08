@@ -60,12 +60,16 @@ Everything else happens in the console:
 - **For you** - everything waiting on the owner in one place: proposed
   decisions (ADRs) to accept, defer or decline with your own words - the same
   `pulse record accept` the terminal runs, recorded as `human` with the words
-  in the record's history - plus board proposals, compute requests, and the
-  one human step that opens a project's self-improvement loop - two private
-  held-out fixtures - taken right there: a dialog picks a private folder,
-  creates the set and writes each fixture (a request plus a built-in effect
-  judge or your own script); the hub writes the files and never reads them
-  back; the command stays as the terminal alternative.
+  in the record's history - plus board proposals and compute requests. The
+  two private held-out fixtures that open a project's self-improvement loop
+  need no step of yours: the daemon writes them itself, sealed (one model call
+  each, no repository, no board, no store) and labelled *generated* wherever
+  the counts appear. Set `evolve.heldout` to `owner` to take the step back:
+  the card returns and a dialog picks a private folder, creates the set and
+  writes each fixture (a request plus a built-in effect judge or your own
+  script); the hub writes the files and never reads them back; the command
+  stays as the terminal alternative. An owner-written fixture is never
+  overwritten by generation.
 - **Projects** - add a checkout as a project (the same registration, recipe
   import and onboarding job as `pulse init`), typing its path or browsing the
   machine's folders with checkouts and registered projects marked; remove one
@@ -169,13 +173,16 @@ EVO-constitution, EVO-evaluators, EVO-archive).
   a `baseline` job that measures the default branch and archives the score
   (a failure posts a finding and is retried after 24 hours; `pulse job add
   --kind baseline` queues it by hand). The job's run log lists every public
-  fixture's score and, for a 0, the scorer's one-line reason. What stays
-  human after that: at least
-  two private fixtures in `evolve.heldout_dir` (`pulse evolve setup DIR`, or
-  the console's Held-out fixtures dialog) - the owner's proof that the loop is
-  not grading itself. Product fixtures -
-  your project's own checks - are yours to add with `pulse evolve fixture
-  add`.
+  fixture's score and, for a 0, the scorer's one-line reason. The two private
+  held-out fixtures - the proof that the loop is not grading itself - are the
+  daemon's too by default (`evolve.heldout auto`): it creates
+  `~/.pulse/private/heldout`, writes one fixture per tick through a sealed
+  model call and marks each as generated (`evolve status` says `2 ready (2
+  generated)`, the archive carries `heldout_generated`). `pulse settings set
+  evolve.heldout owner` hands the step back to you: `pulse evolve setup DIR`
+  or the console's Held-out fixtures dialog, which also work under `auto` and
+  are never overwritten. Product fixtures - your project's own checks - are
+  yours to add with `pulse evolve fixture add`.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 

@@ -53,9 +53,17 @@ func TestStatusLadderBaselineCountsAndNextSteps(t *testing.T) {
 		t.Fatalf("baseline gate with the loop off: %+v", gate)
 	}
 	baseline(t, s, "demo")
+	// ADR-033: under evolve.heldout=auto the daemon writes the private set and the card is hidden.
+	gate = read("C", "none - the daemon writes the private set itself")
+	if gate.Reason != "the daemon writes the private held-out set on its next tick (ADR-033)" {
+		t.Fatalf("held-out gate under auto: %+v", gate)
+	}
+	if err := s.SetSetting("human", "evolve.heldout", "owner"); err != nil {
+		t.Fatal(err)
+	}
 	gate = read("C", "evolve setup DIR")
 	if gate.Reason != "the two private held-out fixtures are the one step the owner is the point of (ADR-012)" {
-		t.Fatalf("held-out gate: %+v", gate)
+		t.Fatalf("held-out gate under owner: %+v", gate)
 	}
 	_, forbidden := privateSet(t, s)
 	read("C", "evolve.loop 1")

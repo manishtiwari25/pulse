@@ -103,6 +103,7 @@ var EvolveSettings = map[string]string{
 	"evolve.limits":      "none",
 	"evolve.tolerance":   "0.02",
 	"evolve.heldout_dir": "",
+	"evolve.heldout":     "auto",
 }
 
 // EvolveRules validate EvolveSettings.
@@ -111,6 +112,7 @@ var EvolveRules = map[string]SettingRule{
 	"evolve.limits":      {Kind: "text", Description: "none, or a budget such as cycles=20,hours=48 after which the loop stops by itself"},
 	"evolve.tolerance":   {Kind: "decimal", Max: 1, HasMax: true, Description: "score improvement a variant needs over the baseline to be kept, a share between 0 and 1 such as 0.02"},
 	"evolve.heldout_dir": {Kind: "identifier", Description: "owner-private directory outside every repository holding held-out fixtures; never quoted to agents"},
+	"evolve.heldout":     {Kind: "choice", Choices: []string{"auto", "owner"}, Description: "auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)"},
 }
 
 var secretValueRes = []*regexp.Regexp{

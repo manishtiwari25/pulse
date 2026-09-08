@@ -140,7 +140,7 @@ func measure(ctx context.Context, s *store.Store, project, repo, ref string, opt
 	}()
 	scores = &Scores{
 		Project: project, Repo: repo, Ref: commit, Fixtures: []FixtureScore{},
-		Heldout: len(private), Sandbox: root, Shadow: opts.Shadow,
+		Heldout: len(private), HeldoutGenerated: state.Generated, Sandbox: root, Shadow: opts.Shadow,
 	}
 	maxWeight := 0.0
 	for _, f := range matrix {

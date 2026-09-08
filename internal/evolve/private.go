@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/store"
@@ -14,16 +15,25 @@ import (
 const maxFixtureBytes = 1 << 20
 const templateMarker = "PULSE_HELDOUT_TEMPLATE"
 
+// generatedLedger is the 0600 file inside the private folder that lists, one
+// stem per line, the fixtures the daemon generated (ADR-033). Stems only.
+const generatedLedger = "generated"
+
 type privateFixture struct {
+	stem    string
 	request string
 	scorer  string
+	judge   string // the built-in judge behind the scorer, or ""
 }
 
-// HeldoutState is deliberately counts-only, including diagnostics.
+// HeldoutState is deliberately counts-only, including diagnostics. Generated
+// counts the ready fixtures the daemon wrote, so a set the owner never
+// touched is labelled as such wherever the counts appear.
 type HeldoutState struct {
-	Count   int    `json:"count"`
-	Pending int    `json:"pending"`
-	Problem string `json:"problem,omitempty"`
+	Count     int    `json:"count"`
+	Pending   int    `json:"pending"`
+	Generated int    `json:"generated"`
+	Problem   string `json:"problem,omitempty"`
 }
 
 type SetupResult struct {
@@ -85,12 +95,16 @@ func HeldoutStatus(s *store.Store) HeldoutView {
 // HeldoutWrite is one fixture authored from the console: the request and
 // either a built-in judge or the owner's own scorer script. Slot is a 1-based
 // position in name order for rewriting a pair; 0 means the first pending pair,
-// else a new one.
+// else a new one. Generated marks the daemon's sealed write (ADR-033): it may
+// fill a pending pair, a new pair or one it generated earlier, never a pair
+// the owner wrote, and the stem is listed in the ledger; an owner write of a
+// listed stem removes it.
 type HeldoutWrite struct {
-	Request string
-	Scorer  string
-	Judge   string
-	Slot    int
+	Request   string
+	Scorer    string
+	Judge     string
+	Slot      int
+	Generated bool
 }
 
 func canonicalPath(value string) (string, error) {
@@ -270,10 +284,64 @@ func loadPrivateAt(s *store.Store, value string) ([]privateFixture, HeldoutState
 			state.Pending++
 			continue
 		}
-		out = append(out, privateFixture{request: string(request), scorer: filepath.Join(dir, stem+".score")})
+		out = append(out, privateFixture{stem: stem, request: string(request), scorer: filepath.Join(dir, stem+".score"), judge: judgeOf(string(scorer))})
 		state.Count++
 	}
+	generated := readLedger(root)
+	for _, f := range out {
+		if generated[f.stem] {
+			state.Generated++
+		}
+	}
 	return out, state, nil
+}
+
+// judgeOf names the built-in judge a scorer script runs, or "" for the
+// owner's own script.
+func judgeOf(scorer string) string {
+	for _, name := range starterNames() {
+		if strings.Contains(scorer, "evolve score "+name+"\n") {
+			return name
+		}
+	}
+	return ""
+}
+
+// readLedger reads the generated stems; a missing or unreadable ledger is an
+// empty one, and a link is never read through.
+func readLedger(root *os.Root) map[string]bool {
+	stems := map[string]bool{}
+	if info, err := root.Lstat(generatedLedger); err != nil || !info.Mode().IsRegular() {
+		return stems
+	}
+	f, err := root.Open(generatedLedger)
+	if err != nil {
+		return stems
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxFixtureBytes))
+	if err != nil {
+		return stems
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if stem := strings.TrimSpace(line); stem != "" {
+			stems[stem] = true
+		}
+	}
+	return stems
+}
+
+func writeLedger(root *os.Root, stems map[string]bool) error {
+	names := make([]string, 0, len(stems))
+	for stem := range stems {
+		names = append(names, stem)
+	}
+	sort.Strings(names)
+	body := ""
+	if len(names) > 0 {
+		body = strings.Join(names, "\n") + "\n"
+	}
+	return heldoutFile(root, generatedLedger, body, 0o600)
 }
 
 // HeldoutCount does not expose a private name, path, request, or scorer.
@@ -402,6 +470,17 @@ func heldoutTarget(root *os.Root, dir string, slot int) (string, error) {
 	return "", privateError("cannot inspect the private fixture set")
 }
 
+// heldoutWritten reports a pair that holds a filled fixture: a file of the
+// pair exists and neither is a template.
+func heldoutWritten(root *os.Root, stem string) bool {
+	_, requestErr := root.Lstat(stem + ".request")
+	_, scorerErr := root.Lstat(stem + ".score")
+	if requestErr != nil && scorerErr != nil {
+		return false
+	}
+	return !heldoutPending(root, stem+".request") && !heldoutPending(root, stem+".score")
+}
+
 // heldoutPending reports the template marker in a file, whatever its mode: a
 // template whose mode drifted is still a template to fill.
 func heldoutPending(root *os.Root, name string) bool {
@@ -471,10 +550,34 @@ func WriteHeldout(s *store.Store, w HeldoutWrite) (*SetupResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	generated := readLedger(root)
+	if w.Generated && !generated[stem] && heldoutWritten(root, stem) {
+		return nil, privateError("generation never overwrites a fixture the owner wrote")
+	}
+	// The ledger is written after the pair; refuse first what heldoutFile would
+	// refuse then, so a pair is never left with a stale ledger entry.
+	if info, err := root.Lstat(generatedLedger); err == nil && (!info.Mode().IsRegular() || multipleLinks(info)) {
+		return nil, privateError("cannot write a private fixture")
+	}
 	if err := heldoutFile(root, stem+".request", w.Request, 0o600); err != nil {
 		return nil, err
 	}
 	if err := heldoutFile(root, stem+".score", scorer, 0o700); err != nil {
+		return nil, err
+	}
+	if w.Generated {
+		generated[stem] = true
+	} else {
+		delete(generated, stem)
+	}
+	for listed := range generated {
+		if _, requestErr := root.Lstat(listed + ".request"); requestErr != nil {
+			if _, scorerErr := root.Lstat(listed + ".score"); scorerErr != nil {
+				delete(generated, listed) // a pair the owner removed leaves the ledger too
+			}
+		}
+	}
+	if err := writeLedger(root, generated); err != nil {
 		return nil, err
 	}
 	_, state, err := loadPrivateAt(s, dir)

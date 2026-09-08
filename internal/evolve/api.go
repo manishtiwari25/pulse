@@ -38,8 +38,11 @@ type Scores struct {
 	Fixtures []FixtureScore `json:"fixtures"`
 	Total    float64        `json:"total"`   // weighted mean of Score, 0..1
 	Heldout  int            `json:"heldout"` // how many held-out fixtures were measured (never which)
-	Sandbox  string         `json:"sandbox"` // where the runs happened (clone root or executor)
-	Shadow   bool           `json:"shadow,omitempty"`
+	// HeldoutGenerated is how many of those the daemon generated (ADR-033), so
+	// an archive over a generated set never reads stronger than it is.
+	HeldoutGenerated int    `json:"heldout_generated,omitempty"`
+	Sandbox          string `json:"sandbox"` // where the runs happened (clone root or executor)
+	Shadow           bool   `json:"shadow,omitempty"`
 }
 
 // MeasureOptions tunes Measure.

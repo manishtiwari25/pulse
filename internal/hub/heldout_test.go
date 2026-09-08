@@ -191,7 +191,7 @@ func TestHeldoutRoutes(t *testing.T) {
 	assertPrivate(raw)
 
 	status, result, raw = heldoutRequest(t, h, "GET", "/api/v1/heldout", "", loopback, false)
-	if status != 200 || result["configured"] != true || result["present"] != true || result["count"] != 2.0 || result["pending"] != 0.0 || result["problem"] != "" {
+	if status != 200 || result["configured"] != true || result["present"] != true || result["count"] != 2.0 || result["pending"] != 0.0 || result["generated"] != 0.0 || result["problem"] != "" {
 		t.Fatalf("status after two fixtures: %d %#v", status, result)
 	}
 	assertPrivate(raw)

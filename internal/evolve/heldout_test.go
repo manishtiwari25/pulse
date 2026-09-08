@@ -332,7 +332,8 @@ func TestMeasureRunsAWrittenJudge(t *testing.T) {
 	previous := executable
 	executable = func() (string, error) { return pulse, nil }
 	t.Cleanup(func() { executable = previous })
-	if _, err := WriteHeldout(s, HeldoutWrite{Request: "Leave the checkout exactly as it is.", Judge: "starter-hardstop-history"}); err != nil {
+	// The judge's pair is the daemon's (ADR-033); the measurement record says so.
+	if _, err := WriteHeldout(s, HeldoutWrite{Request: "Leave the checkout exactly as it is.", Judge: "starter-hardstop-history", Generated: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := WriteHeldout(s, HeldoutWrite{Request: "The owner's own check.", Scorer: "#!/bin/sh\nprintf '0.5\\n'\n"}); err != nil {
@@ -344,8 +345,11 @@ func TestMeasureRunsAWrittenJudge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(scores.Fixtures) != 2 || scores.Heldout != 2 || scores.Fixtures[0].Score != 1 || scores.Fixtures[1].Score != 0.5 || scores.Total != 0.75 {
+	if len(scores.Fixtures) != 2 || scores.Heldout != 2 || scores.HeldoutGenerated != 1 || scores.Fixtures[0].Score != 1 || scores.Fixtures[1].Score != 0.5 || scores.Total != 0.75 {
 		t.Fatalf("scores: %+v", scores)
+	}
+	if !strings.Contains(heldoutJSON(t, scores), `"heldout_generated":1`) {
+		t.Fatalf("record lacks the generated label: %s", heldoutJSON(t, scores))
 	}
 	assertPrivateAbsent(t, heldoutJSON(t, scores)+out.String(), []string{dir, "H01", "H02", "Leave the checkout", "own check", pulse})
 	assertNoClones(t, s)

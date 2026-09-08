@@ -35,8 +35,8 @@ func (h *Handler) additionHeldout(w http.ResponseWriter, r *http.Request, parts 
 	}
 	if r.Method == http.MethodGet {
 		view := evolve.HeldoutStatus(h.Store)
-		writeJSON(w, http.StatusOK, object("configured present count pending problem judges",
-			view.Configured, view.Present, view.Count, view.Pending, view.Problem, view.Judges))
+		writeJSON(w, http.StatusOK, object("configured present count pending generated problem judges",
+			view.Configured, view.Present, view.Count, view.Pending, view.Generated, view.Problem, view.Judges))
 		return
 	}
 	if !loopbackHost(r) {
@@ -72,8 +72,8 @@ func (h *Handler) additionHeldout(w http.ResponseWriter, r *http.Request, parts 
 		additionFailure(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, object("configured present count pending created problem",
-		true, true, result.Count, result.Pending, result.Created, ""))
+	writeJSON(w, http.StatusOK, object("configured present count pending generated created problem",
+		true, true, result.Count, result.Pending, result.Generated, result.Created, ""))
 }
 
 func heldoutWrite(w http.ResponseWriter, payload map[string]any) (evolve.HeldoutWrite, bool) {

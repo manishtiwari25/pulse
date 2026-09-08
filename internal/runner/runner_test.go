@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,11 @@ func newStore(t *testing.T) *store.Store {
 	}
 	s, err := store.Open(store.Options{Home: home, Now: testNow})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The daemon's sealed held-out generation (ADR-033) would start the real runner command; tests
+	// that exercise it switch evolve.heldout back to auto with sealedCall stubbed (see heldout_test.go).
+	if err := s.SetSetting(humanAgent, "evolve.heldout", "owner"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
@@ -443,6 +449,10 @@ func TestDaemonStopsGracefullyOnCancel(t *testing.T) {
 // as cmdHands does (die -> stderr + exit 2, worker exit codes passed through), so the round trip needs no build
 // of ./cmd/pulse (whose other packages may be mid-edit).
 func TestMain(m *testing.M) {
+	// No test may reach the real runner command through the daemon's sealed held-out call.
+	sealedCall = func(context.Context, *store.Store, string) (string, error) {
+		return "", errors.New("the sealed call is stubbed in tests")
+	}
 	if os.Getenv("PULSE_TEST_HANDS") == "1" {
 		err := newHands(os.Stdin, os.Stdout, os.Stderr).handsMain(os.Args[1:])
 		switch e := err.(type) {

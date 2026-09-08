@@ -608,6 +608,31 @@ func TestDecimalSetting(t *testing.T) {
 	}
 }
 
+func TestHeldoutModeSetting(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
+	s := openTemp(t, Options{Create: true, Now: "2026-09-08T10:00:00Z"})
+	if got := s.Setting("evolve.heldout", ""); got != "auto" {
+		t.Fatalf("evolve.heldout default = %q, want auto", got)
+	}
+	for in, want := range map[string]string{"owner": "owner", " Owner ": "owner", "auto": "auto"} {
+		if err := s.SetSetting("human", "evolve.heldout", in); err != nil {
+			t.Fatalf("evolve.heldout %q: %v", in, err)
+		}
+		if got := s.Setting("evolve.heldout", ""); got != want {
+			t.Fatalf("evolve.heldout %q stored as %q, want %q", in, got, want)
+		}
+	}
+	for _, in := range []string{"off", "1", ""} {
+		err := s.SetSetting("human", "evolve.heldout", in)
+		if err == nil || !strings.Contains(err.Error(), "evolve.heldout takes one of auto, owner") {
+			t.Errorf("evolve.heldout %q: %v", in, err)
+		}
+	}
+	if !strings.Contains(EvolveRules["evolve.heldout"].Description, "ADR-033") {
+		t.Fatal("evolve.heldout lacks its description")
+	}
+}
+
 func TestOnEventPublishesAfterCommit(t *testing.T) {
 	t.Setenv("PULSE_JOB", "")
 	s := openTemp(t, Options{Create: true})

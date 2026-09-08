@@ -360,7 +360,10 @@ func Status(s *store.Store, project string) (*LoopStatus, error) {
 	default:
 		status.Level = "C"
 		switch {
-		case status.Heldout.Problem != "" || status.Heldout.Pending > 0 || status.Heldout.Count < 2:
+		case status.Heldout.Problem == "" && !HeldoutComplete(status.Heldout) && HeldoutMode(s) == "auto":
+			// ADR-033: the daemon writes the private set; a step starting with none hides the console card.
+			status.Reason, status.NextHumanStep = "the daemon writes the private held-out set on its next tick (ADR-033)", "none - the daemon writes the private set itself"
+		case !HeldoutComplete(status.Heldout):
 			status.Reason, status.NextHumanStep = "the two private held-out fixtures are the one step the owner is the point of (ADR-012)", "pulse evolve setup DIR"
 		case !status.Loop:
 			status.Reason, status.NextHumanStep = "evolve.loop is off", "pulse settings set evolve.loop 1"
@@ -385,6 +388,16 @@ func StopReminder(s *store.Store) string {
 	return reminder + " Run `pulse evolve cycle --project P` only when reflect reports Level D; never change the owner's gates or archive a shadow run."
 }
 
+// heldoutLabel is "2 ready (2 generated); 0 pending", the parenthetical only
+// when the daemon wrote part of the set (ADR-033).
+func heldoutLabel(h HeldoutState) string {
+	ready := fmt.Sprintf("%d ready", h.Count)
+	if h.Generated > 0 {
+		ready += fmt.Sprintf(" (%d generated)", h.Generated)
+	}
+	return fmt.Sprintf("%s; %d pending", ready, h.Pending)
+}
+
 func statusRows(s *LoopStatus) [][]string {
 	baseline := "none"
 	if s.Baseline != nil {
@@ -400,7 +413,7 @@ func statusRows(s *LoopStatus) [][]string {
 		{"STOP", strconv.FormatBool(s.Stop)}, {"Loop", strconv.FormatBool(s.Loop)},
 		{"Limits", s.Limits}, {"Tolerance", fmt.Sprintf("%.4f", s.Tolerance)},
 		{"Baseline", baseline}, {"Public fixtures", strconv.Itoa(s.PublicFixtures)},
-		{"Held-out fixtures", fmt.Sprintf("%d ready; %d pending", s.Heldout.Count, s.Heldout.Pending)},
+		{"Held-out fixtures", heldoutLabel(s.Heldout)},
 		{"Kept / discarded", fmt.Sprintf("%d / %d", s.Kept, s.Discarded)},
 		{"Voted suggestions", hit(s.Voted)}, {"Signal-derived", hit(s.Signal)},
 		{"Since loop enabled", fmt.Sprintf("%d cycles; %.2f hours", s.Cycles, s.Hours)},

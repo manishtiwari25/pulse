@@ -340,6 +340,10 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			for _, l := range compute.tick(loopCtx, now) {
 				say("%s", l)
 			}
+			// ADR-033: the private held-out set writes itself, one sealed call per tick.
+			for _, l := range tendHeldout(s, now) {
+				say("%s", l)
+			}
 			for _, pr := range reprobeDue(s, interval, now) {
 				say("executor %s is reachable again: %s", pr[0], pr[1])
 			}
