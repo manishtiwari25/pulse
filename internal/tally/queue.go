@@ -44,6 +44,7 @@ type WorkItem struct {
 	Agent   string `json:"agent,omitempty"`
 	Score   int    `json:"score,omitempty"`
 	Status  string `json:"status,omitempty"`
+	Blocked string `json:"blocked,omitempty"`
 }
 
 // QueueProject is one project's line in the cross-project queue.
@@ -53,6 +54,7 @@ type QueueProject struct {
 	Stop        bool   `json:"stop"`
 	Suggestions int    `json:"suggestions"` // open (not closed) suggestions
 	Items       int    `json:"items"`
+	Plannable   int    `json:"plannable"`
 }
 
 // Queue is the cross-project queue.
@@ -108,7 +110,7 @@ func WorkWanted(s *store.Store, projects []string, agent string, th Thresholds) 
 				open++
 			}
 		}
-		q.Projects = append(q.Projects, QueueProject{Slug: slug, Brain: slug == brain, Stop: res.Params.StopPresent, Suggestions: open, Items: len(items)})
+		q.Projects = append(q.Projects, QueueProject{Slug: slug, Brain: slug == brain, Stop: res.Params.StopPresent, Suggestions: open, Items: len(items), Plannable: plannableWork(items)})
 		for _, pr := range res.Proposals {
 			if pr.Status == "awaiting" {
 				q.ForTheHuman = append(q.ForTheHuman, pr)
@@ -119,6 +121,9 @@ func WorkWanted(s *store.Store, projects []string, agent string, th Thresholds) 
 		a, b := q.Work[i], q.Work[j]
 		if a.Rank != b.Rank {
 			return a.Rank < b.Rank
+		}
+		if (a.Blocked == "") != (b.Blocked == "") {
+			return a.Blocked == ""
 		}
 		if a.Score != b.Score {
 			return a.Score > b.Score
@@ -157,6 +162,87 @@ func ageDays(date, now string) int {
 	return d
 }
 
+// OpenHandoffs returns open or stale handoffs nobody claimed later.
+func OpenHandoffs(res *Result) []Post {
+	threads := map[string]Thread{}
+	for _, t := range res.Threads {
+		threads[t.Key] = t
+	}
+	threadOpen := func(key string) bool {
+		st := threads[key].Status
+		return st == "open" || st == "stale"
+	}
+	posts := append([]Post(nil), res.Posts...)
+	sort.SliceStable(posts, func(i, j int) bool {
+		if posts[i].Date != posts[j].Date {
+			return posts[i].Date < posts[j].Date
+		}
+		return posts[i].ID < posts[j].ID
+	})
+	byThread := map[string][]Post{}
+	var keys []string
+	for _, p := range posts {
+		key := p.Area + "/" + p.Thread
+		if _, ok := byThread[key]; !ok {
+			keys = append(keys, key)
+		}
+		byThread[key] = append(byThread[key], p)
+	}
+	var out []Post
+	for _, key := range keys {
+		if !threadOpen(key) {
+			continue
+		}
+		var last *Post
+		for i := range byThread[key] {
+			p := &byThread[key][i]
+			switch p.Kind {
+			case "handoff":
+				last = p
+			case "claim":
+				if last != nil {
+					last = nil
+				}
+			}
+		}
+		if last != nil {
+			out = append(out, *last)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Date != out[j].Date {
+			return out[i].Date < out[j].Date
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// OwnerAddressed reports posts the planner reserves for the owner.
+func OwnerAddressed(summary, thread string) bool {
+	thread = strings.ToLower(thread)
+	if thread == "owner-questions" || thread == "owner-question" || strings.HasPrefix(thread, "owner-") {
+		return true
+	}
+	low := strings.ToLower(strings.TrimSpace(summary))
+	for _, p := range []string{"evaluator proposal for the owner", "release candidate", "owner question", "vote requested"} {
+		if strings.HasPrefix(low, p) {
+			return true
+		}
+	}
+	return strings.Contains(low, "for the owner") || strings.Contains(low, "vote requested")
+}
+
+func plannableWork(items []WorkItem) int {
+	n := 0
+	for _, it := range items {
+		if it.Kind == WorkHandoff || it.Kind == WorkQuestion || (it.Kind == WorkEligible && it.Blocked == "") {
+			n++
+		}
+	}
+	return n
+}
+
 func projectWork(res *Result, agent, session, now string) []WorkItem {
 	slug := res.Project
 	var out []WorkItem
@@ -190,30 +276,18 @@ func projectWork(res *Result, agent, session, now string) []WorkItem {
 		byThread[key] = append(byThread[key], p)
 	}
 	// Handoffs: work someone left, in a thread nobody closed or claimed afterwards.
-	for _, key := range keys {
-		if !threadOpen(key) {
-			continue
-		}
-		var last *Post
-		for i := range byThread[key] {
-			p := &byThread[key][i]
-			switch p.Kind {
-			case "handoff":
-				last = p
-			case "claim":
-				if last != nil {
-					last = nil
-				}
-			}
-		}
-		if last != nil {
-			it := add(WorkHandoff, key, last.ID, last.Summary, last.Date,
-				fmt.Sprintf("read it (pulse show %s), then post a claim and continue the work", last.ID), "as the handoff states")
-			it.Agent = last.Agent
-		}
+	for _, h := range OpenHandoffs(res) {
+		key := h.Area + "/" + h.Thread
+		it := add(WorkHandoff, key, h.ID, h.Summary, h.Date,
+			fmt.Sprintf("read it (pulse show %s), then post a claim and continue the work", h.ID), "as the handoff states")
+		it.Agent = h.Agent
 	}
 	// Eligible suggestions: the experiment queue, hidden while STOP is on.
 	if !res.Params.StopPresent {
+		postByID := map[string]Post{}
+		for _, p := range res.Posts {
+			postByID[p.ID] = p
+		}
 		for _, x := range res.Suggestions {
 			if x.Status != "eligible" {
 				continue
@@ -222,6 +296,16 @@ func projectWork(res *Result, agent, session, now string) []WorkItem {
 				fmt.Sprintf("pulse evolve status --project %s to inspect the gate, then pulse evolve cycle --project %s --once (the queue's top row is %s)", slug, slug, x.ID),
 				"Tier 0-1 (the loop's own limit)")
 			it.Agent, it.Score, it.Status = x.Agent, x.Score, x.Status
+			post := postByID[x.ID]
+			switch {
+			case x.Score <= 0:
+				it.Blocked = "net votes <= 0: the planner takes score > 0 only"
+			case OwnerAddressed(x.Summary, post.Thread):
+				it.Blocked = "addressed to the owner; not a worker job"
+			}
+			if it.Blocked != "" {
+				it.Next = fmt.Sprintf("not planned: %s; vote it up with evidence (a Signal: line naming a file or check) or close the thread", it.Blocked)
+			}
 		}
 	}
 	// Unanswered questions: a question with no answer after it, in an open thread.
@@ -311,7 +395,7 @@ func WorkText(q *Queue, limit int) string {
 		fmt.Fprintf(&b, "  %-18s %-38s %s\n", trunc(pr.Project, 18), trunc(pr.Key, 38), trunc(pr.Summary, 70))
 		fmt.Fprintf(&b, "  %-18s read: pulse show %s\n", "", pr.ID)
 	}
-	b.WriteString("\nPROJECTS (open suggestions, work items, kill switch)\n")
+	b.WriteString("\nPROJECTS (open suggestions, work items, plannable, kill switch)\n")
 	if n == 0 {
 		b.WriteString("  no active projects - pulse init in a project first\n")
 	}
@@ -326,7 +410,7 @@ func WorkText(q *Queue, limit int) string {
 		if p.Stop {
 			stop = "STOP on (pulse start lifts it)"
 		}
-		fmt.Fprintf(&b, "  %-20s %2d %-11s %2d %-5s  %s\n", trunc(name, 20), p.Suggestions, plural(p.Suggestions, "suggestion"), p.Items, plural(p.Items, "item"), stop)
+		fmt.Fprintf(&b, "  %-20s %2d %-11s %2d %-5s %2d %-9s  %s\n", trunc(name, 20), p.Suggestions, plural(p.Suggestions, "suggestion"), p.Items, plural(p.Items, "item"), p.Plannable, "plannable", stop)
 	}
 	if hasBrain {
 		b.WriteString("  * = brain (the PULSE checkout; suggestions about PULSE itself belong there)\n")

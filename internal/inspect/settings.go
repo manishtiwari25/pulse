@@ -44,6 +44,9 @@ func SettingsReport(s *store.Store) ([]SettingReport, error) {
 		if d, ok := store.DaemonSettings[name]; ok {
 			def, rule = d, store.DaemonRules[name]
 		}
+		if d, ok := store.LeadSettings[name]; ok {
+			def, rule = d, store.LeadRules[name]
+		}
 		r := SettingReport{Name: name, Value: def, Default: def, Kind: rule.Kind, Choices: rule.Choices, Description: rule.Description}
 		if rule.HasMin {
 			minimum := rule.Min
@@ -116,6 +119,12 @@ func runSettings(c *cli.Context, _ *flag.FlagSet, args []string) error {
 			}
 			if !exists {
 				value, exists = store.EvolveSettings[name]
+			}
+			if !exists {
+				value, exists = store.DaemonSettings[name]
+			}
+			if !exists {
+				value, exists = store.LeadSettings[name]
 			}
 			value = agentSettingValue(name, value)
 			if c.JSON {

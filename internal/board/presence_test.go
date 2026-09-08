@@ -264,6 +264,29 @@ func TestHeartbeatRestartIdleLegacyAndPruningStaySeparate(t *testing.T) {
 	}
 }
 
+func TestPruneAgentsKeepsLeads(t *testing.T) {
+	_, s := newHome(t)
+	for _, in := range []JoinInput{{Name: "proj-lead", Kind: "lead"}, {Name: "stale-worker", Kind: "worker"}} {
+		if _, _, err := JoinAgent(s, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	presenceSQL(t, s, "UPDATE agents SET last_useful_at='2026-08-01T00:00:00Z', last_active_at='2026-08-01T00:00:00Z' WHERE name IN ('proj-lead', 'stale-worker')")
+
+	pruned, err := PruneAgents(s, testNow, 14, "daemon", false)
+	if err != nil || len(pruned) != 1 || pruned[0].Name != "stale-worker" {
+		t.Fatalf("pruned = %+v, %v", pruned, err)
+	}
+	lead, err := s.Agent("proj-lead")
+	if err != nil || lead == nil || lead.Status != "active" {
+		t.Fatalf("lead pruned: %+v %v", lead, err)
+	}
+	worker, err := s.Agent("stale-worker")
+	if err != nil || worker == nil || worker.Status != "pruned" {
+		t.Fatalf("worker not pruned: %+v %v", worker, err)
+	}
+}
+
 func TestHeartbeatConcurrentStopFencesLateObservations(t *testing.T) {
 	_, s := newHome(t)
 	base := presenceTime()

@@ -34,7 +34,15 @@ type StatusReport struct {
 	Daemon        string             `json:"daemon"`
 	Executors     string             `json:"executors"`
 	Capacity      string             `json:"capacity"`
+	Planner       []PlannerNote      `json:"planner"`
 	Settings      []store.SettingRow `json:"settings"`
+}
+
+type PlannerNote struct {
+	Project string `json:"project"`
+	At      string `json:"at"`
+	Note    string `json:"note"`
+	Stale   bool   `json:"stale"`
 }
 
 func statusCounts(s *store.Store, query string) ([]StatusCount, error) {
@@ -112,24 +120,48 @@ func RunnerStopped(s *store.Store) (string, error) {
 	return "", nil
 }
 
-// DaemonStatus describes the heartbeat without probing or signaling its PID.
-func DaemonStatus(s *store.Store) (string, error) {
+type daemonBeat struct {
+	PID      *int   `json:"pid"`
+	At       string `json:"at"`
+	Loops    int    `json:"loops"`
+	Interval *int   `json:"interval"`
+	Note     string `json:"note"`
+}
+
+func readDaemonBeat(s *store.Store) (daemonBeat, bool, error) {
 	raw, exists, err := s.Meta("daemon")
 	if err != nil {
-		return "", err
+		return daemonBeat{}, false, err
+	}
+	if !exists {
+		return daemonBeat{}, false, nil
+	}
+	var beat daemonBeat
+	if err := json.Unmarshal([]byte(raw), &beat); err != nil {
+		return daemonBeat{}, true, err
+	}
+	return beat, true, nil
+}
+
+func daemonIntervalSeconds(s *store.Store) (int, error) {
+	beat, _, err := readDaemonBeat(s)
+	if err != nil {
+		return 300, nil
+	}
+	if beat.Interval != nil && *beat.Interval != 0 {
+		return *beat.Interval, nil
+	}
+	return 300, nil
+}
+
+// DaemonStatus describes the heartbeat without probing or signaling its PID.
+func DaemonStatus(s *store.Store) (string, error) {
+	beat, exists, err := readDaemonBeat(s)
+	if err != nil {
+		return "unreadable heartbeat", nil
 	}
 	if !exists {
 		return "never started", nil
-	}
-	var beat struct {
-		PID      *int   `json:"pid"`
-		At       string `json:"at"`
-		Loops    int    `json:"loops"`
-		Interval *int   `json:"interval"`
-		Note     string `json:"note"`
-	}
-	if err := json.Unmarshal([]byte(raw), &beat); err != nil {
-		return "unreadable heartbeat", nil
 	}
 	pid, interval := "None", "None"
 	if beat.PID != nil {
@@ -159,6 +191,46 @@ func DaemonStatus(s *store.Store) (string, error) {
 		state = "silent"
 	}
 	return fmt.Sprintf("%s pid %s, last loop %ds ago, %d loop(s), interval %ss", state, pid, age, beat.Loops, interval), nil
+}
+
+func PlannerNotes(s *store.Store) ([]PlannerNote, error) {
+	raw, exists, err := s.Meta("planner")
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return []PlannerNote{}, nil
+	}
+	var stored map[string]struct {
+		At   string `json:"at"`
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return nil, fmt.Errorf("read planner notes: %w", err)
+	}
+	interval, err := daemonIntervalSeconds(s)
+	if err != nil {
+		return nil, err
+	}
+	now, err := parseUTC(s.Now())
+	if err != nil {
+		return nil, err
+	}
+	projects := make([]string, 0, len(stored))
+	for project := range stored {
+		projects = append(projects, project)
+	}
+	sort.Strings(projects)
+	out := make([]PlannerNote, 0, len(projects))
+	for _, project := range projects {
+		item := stored[project]
+		at, err := parseUTC(item.At)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, PlannerNote{Project: project, At: item.At, Note: item.Note, Stale: now.Sub(at) > time.Duration(2*interval)*time.Second})
+	}
+	return out, nil
 }
 
 func CapacityStatus(s *store.Store) (string, error) {
@@ -372,6 +444,10 @@ func Status(s *store.Store) (*StatusReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.Planner, err = PlannerNotes(s)
+	if err != nil {
+		return nil, err
+	}
 	return r, nil
 }
 
@@ -399,6 +475,13 @@ func (r *StatusReport) Text() string {
 	fmt.Fprintf(&out, "runner     %s\ndaemon     %s\nexecutors  %s\n", r.Runner, r.Daemon, r.Executors)
 	if r.Capacity != "" {
 		fmt.Fprintf(&out, "capacity   %s\n", r.Capacity)
+	}
+	for _, note := range r.Planner {
+		stale := ""
+		if note.Stale {
+			stale = " (stale)"
+		}
+		fmt.Fprintf(&out, "planner    %s: %s%s\n", note.Project, note.Note, stale)
 	}
 	settings := make([]string, len(r.Settings))
 	for i, setting := range r.Settings {

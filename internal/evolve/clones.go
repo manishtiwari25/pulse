@@ -182,20 +182,32 @@ func cloneFailure(ctx context.Context, step string) error {
 }
 
 func checkClone(ctx context.Context, dest string, keys []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	info, err := os.Lstat(filepath.Join(dest, ".git"))
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return &ViolationError{Reason: "clone Git metadata is not a local directory"}
 	}
 	head, err := gitOutput(ctx, dest, "symbolic-ref", "--quiet", "HEAD")
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	if err == nil || head != "" {
 		return &ViolationError{Reason: "clone is no longer detached"}
 	}
 	// symbolic-ref's exit 1 means detached; a corrupt repository must not pass.
 	if _, err := gitOutput(ctx, dest, "rev-parse", "--verify", "HEAD"); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return &ViolationError{Reason: "clone HEAD is unreadable"}
 	}
 	for _, args := range [][]string{{"remote"}, {"tag", "--list"}} {
 		out, err := gitOutput(ctx, dest, args...)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil || out != "" {
 			return &ViolationError{Reason: "clone has a remote or tag, or cannot be inspected"}
 		}

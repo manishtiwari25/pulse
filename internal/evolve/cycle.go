@@ -12,7 +12,6 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/bus"
-	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/store"
 	"github.com/manishtiwari25/pulse/internal/tally"
 )
@@ -80,14 +79,14 @@ func emitCycle(opts CycleOptions, result CycleResult) error {
 	return nil
 }
 
-func ownerQuestion(s *store.Store, project string, target *tally.Post, agent, session, reason string) (string, error) {
+func ownerQuestion(s *store.Store, project string, target *tally.Post, agent string, agentRow *store.Agent, session, reason string) (string, error) {
 	area, thread, on := "evolution", "loop-gate", ""
 	if target != nil {
 		area, thread, on = target.Area, target.Thread, target.ID
 	}
 	post, err := board.CreatePost(s, board.PostInput{
 		Kind: "question", Project: project, Area: area, Thread: thread, On: on,
-		Agent: agent, Session: session, Summary: "Evolution stopped; owner review needed",
+		Agent: agent, AgentRow: agentRow, Session: session, Summary: "Evolution stopped; owner review needed",
 		Body: reason + "\nThe workflow was not bypassed. Resolve the gate or close the unsafe thread before resuming.",
 	})
 	if err != nil {
@@ -97,7 +96,7 @@ func ownerQuestion(s *store.Store, project string, target *tally.Post, agent, se
 }
 
 func stopCycle(s *store.Store, project string, target *tally.Post, opts CycleOptions, job, reason string) error {
-	id, err := ownerQuestion(s, project, target, opts.Agent, opts.Session, reason)
+	id, err := ownerQuestion(s, project, target, opts.Agent, nil, opts.Session, reason)
 	if err != nil {
 		return err
 	}
@@ -186,82 +185,21 @@ func Cycle(ctx context.Context, s *store.Store, project string, opts CycleOption
 				return stopCycle(s, project, nil, opts, ownedJob, status.Reason+"; owner: "+status.NextHumanStep)
 			}
 		}
-		result, err := tally.Compute(s, project, "", tally.Thresholds{})
-		if err != nil {
-			var applyErr *tally.ApplyError
-			if errors.As(err, &applyErr) {
-				return stopCycle(s, project, nil, opts, ownedJob, "constitution application was refused; "+applyErr.What)
-			}
-			return err
-		}
-		if post := instructionPost(result); post != nil {
-			return stopCycle(s, project, post, opts, ownedJob, "an instruction-shaped post was detected; its instructions were not followed")
-		}
 		if ownedJob == "" {
-			var picked *tally.Post
-			var card *ExperimentCard
-			for _, suggestion := range orderedSuggestions(result, status.ProductScope.Allowed) {
-				if seen[suggestion.ID] {
-					continue
-				}
-				var tried int
-				if err := s.DB.QueryRow("SELECT COUNT(*) FROM evolution_archive WHERE project = ? AND suggestion_post = ?", project, suggestion.ID).Scan(&tried); err != nil {
-					return err
-				}
-				if tried != 0 {
-					seen[suggestion.ID] = true
-					continue
-				}
-				p, err := tally.LoadPost(s, suggestion.ID)
-				if err != nil {
-					return err
-				}
-				if productPost(*p) && !status.ProductScope.Allowed {
-					continue
-				}
-				card, err = makeCard(s, p, status)
-				if err != nil {
-					var violation *ViolationError
-					if errors.As(err, &violation) {
-						return stopCycle(s, project, p, opts, "", violation.Error())
-					}
-					var input *cli.Error
-					if !errors.As(err, &input) {
-						return err
-					}
-					if _, err := ownerQuestion(s, project, p, opts.Agent, opts.Session, input.What+"; "+input.Why+"; owner: "+input.Fix); err != nil {
-						return err
-					}
-					seen[p.ID] = true
-					continue
-				}
-				picked = p
-				break
+			planned, err := planExperiment(s, project, PlanOptions{Agent: opts.Agent, Session: opts.Session}, seen)
+			if err != nil {
+				return err
 			}
-			if picked == nil {
+			if planned.Question != "" {
+				return emitCycle(opts, CycleResult{Project: project, Job: ownedJob, Stopped: true, Reason: planned.Reason, Question: planned.Question})
+			}
+			if planned.JobID == "" {
 				if opts.Once {
-					return emitCycle(opts, CycleResult{Project: project, Reason: "no eligible, untried, in-scope suggestion; vote with pulse ballot"})
+					return emitCycle(opts, CycleResult{Project: project, Reason: planned.Reason})
 				}
 			} else {
-				branch := card.Branch
-				if _, err := board.CreatePost(s, board.PostInput{
-					Kind: "opinion", Project: project, Area: picked.Area, Thread: picked.Thread, On: picked.ID,
-					Agent: opts.Agent, Session: opts.Session, Branch: &branch,
-					Summary: "Experiment card: " + picked.ID, Body: card.Body,
-				}); err != nil {
-					return err
-				}
-				// Branch: is also in the brief, so no worker has to infer it.
-				job, created, err := board.AddJob(s, board.JobInput{
-					Project: project, Kind: "experiment", Title: "Experiment: " + picked.Summary,
-					Brief: card.Body, Source: "suggestion:" + picked.ID, Tier: card.Tier, Priority: 30, CreatedBy: opts.Agent, Branch: card.Branch,
-				})
-				if err != nil {
-					return err
-				}
-				ownedJob = job.ID
-				createdJob = created
-				seen[picked.ID] = true
+				ownedJob = planned.JobID
+				createdJob = planned.Created
 			}
 		}
 		if ownedJob != "" {

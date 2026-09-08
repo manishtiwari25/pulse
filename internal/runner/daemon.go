@@ -123,6 +123,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	}
 	loops := 0
 	lastPruneDay := ""
+	prevIdle := map[string]string{}
 	stamp := binaryStamp()
 	results := make(chan *dispatch, 64)
 	inflight := map[*dispatch]bool{}
@@ -337,15 +338,42 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 				}
 			}
 			// D-J: every active project is planned before the first lease.
+			slugs := make([]string, 0, len(projects))
+			planned := map[string]int{}
 			for _, proj := range projects {
-				jobs, err := planJobs(s, proj.str("slug"), now, actor)
+				slug := proj.str("slug")
+				slugs = append(slugs, slug)
+				jobs, err := planJobs(s, slug, now, actor)
 				if err != nil {
-					say("planning %s: %s", proj.str("slug"), errMessage(err))
+					say("planning %s: %s", slug, errMessage(err))
 				}
+				planned[slug] = len(jobs)
 				for _, job := range jobs {
 					say("planned %s %s: %s", job.str("kind"), job.str("id"), job.str("title"))
 				}
 			}
+			if !o.DryRun {
+				for _, l := range tendEvolve(s, now, actor, slugs) {
+					say("%s", l)
+				}
+			}
+			// D-J/D-M: if the planner made no leaseable work, keep the why in status and log it once per
+			// change so the owner can see which board gate, not the daemon, held the project idle.
+			curIdle := map[string]string{}
+			for _, slug := range slugs {
+				if planned[slug] != 0 {
+					continue
+				}
+				if mustOne(s.DB, "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased') LIMIT 1", slug) != nil {
+					continue
+				}
+				curIdle[slug] = idleNote(s, slug, now)
+			}
+			for _, l := range idleNotesChanged(prevIdle, curIdle) {
+				say("%s", l)
+			}
+			recordIdleNotes(s, curIdle, now)
+			prevIdle = curIdle
 			for _, l := range compute.tick(loopCtx, now) {
 				say("%s", l)
 			}

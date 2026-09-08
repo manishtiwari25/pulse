@@ -134,6 +134,19 @@ var DaemonRules = map[string]SettingRule{
 	"daemon.self_update_retry_minutes": {Kind: "count", Min: 1, HasMin: true, Description: "minutes the daemon waits before building again after a failed build or smoke test"},
 }
 
+// LeadSettings govern the lead's standing brief (D-C): what the lead does
+// when the owner is quiet and no work is queued for a project.
+var LeadSettings = map[string]string{
+	"lead.idle_hours":    "6",
+	"lead.idle_max_jobs": "3",
+}
+
+// LeadRules validate LeadSettings.
+var LeadRules = map[string]SettingRule{
+	"lead.idle_hours":    {Kind: "count", Min: 0, HasMin: true, Description: "hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; 0 turns the standing brief off"},
+	"lead.idle_max_jobs": {Kind: "count", Min: 1, HasMin: true, Description: "worker jobs one idle lead run may queue"},
+}
+
 var secretValueRes = []*regexp.Regexp{
 	regexp.MustCompile(`-----BEGIN`),
 	regexp.MustCompile(`://[^/\s:@]+:[^@\s]+@`),
@@ -173,6 +186,9 @@ func knownSetting(name string) (SettingRule, bool) {
 	if rule, ok := DaemonRules[name]; ok {
 		return rule, true
 	}
+	if rule, ok := LeadRules[name]; ok {
+		return rule, true
+	}
 	return SettingRule{}, false
 }
 
@@ -186,7 +202,10 @@ func defaultSetting(name string) string {
 	if v, ok := EvolveSettings[name]; ok {
 		return v
 	}
-	return DaemonSettings[name]
+	if v, ok := DaemonSettings[name]; ok {
+		return v
+	}
+	return LeadSettings[name]
 }
 
 // NoneWords are the spellings of "no cap" for count-or-none settings.
@@ -211,11 +230,14 @@ func EvolveSettingNames() []string { return sortedKeys(EvolveSettings) }
 // DaemonSettingNames lists the daemon.* settings sorted by name.
 func DaemonSettingNames() []string { return sortedKeys(DaemonSettings) }
 
+// LeadSettingNames lists the lead.* settings sorted by name.
+func LeadSettingNames() []string { return sortedKeys(LeadSettings) }
+
 // ExtraSettingNames lists every setting that is not written at Create
-// (compute.*, evolve.*, then daemon.*); inspect and the hub list these after
-// the legacy names with their effective values.
+// (compute.*, evolve.*, daemon.*, then lead.*); inspect and the hub list these
+// after the legacy names with their effective values.
 func ExtraSettingNames() []string {
-	return append(append(ComputeSettingNames(), EvolveSettingNames()...), DaemonSettingNames()...)
+	return append(append(append(ComputeSettingNames(), EvolveSettingNames()...), DaemonSettingNames()...), LeadSettingNames()...)
 }
 
 func sortedKeys(m map[string]string) []string {

@@ -656,11 +656,46 @@ func TestDaemonSelfUpdateSettings(t *testing.T) {
 		t.Fatalf("retry 15: %v", err)
 	}
 	names := ExtraSettingNames()
-	if names[len(names)-2] != "daemon.self_update" || names[len(names)-1] != "daemon.self_update_retry_minutes" {
-		t.Fatalf("ExtraSettingNames tail = %v", names[len(names)-3:])
+	leadStart := len(names) - len(LeadSettings)
+	if names[leadStart-2] != "daemon.self_update" || names[leadStart-1] != "daemon.self_update_retry_minutes" {
+		t.Fatalf("ExtraSettingNames daemon segment = %v", names[leadStart-3:leadStart])
 	}
 	if !strings.Contains(DaemonRules["daemon.self_update"].Description, "ADR-035") {
 		t.Fatal("daemon.self_update lacks its description")
+	}
+}
+
+// D-C: the lead.* settings default without a row and validate as counts.
+func TestLeadIdleSettings(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
+	s := openTemp(t, Options{Create: true, Now: "2026-09-08T10:00:00Z"})
+	if got := s.Setting("lead.idle_hours", ""); got != "6" {
+		t.Fatalf("lead.idle_hours default = %q, want 6", got)
+	}
+	if got := s.Setting("lead.idle_max_jobs", ""); got != "3" {
+		t.Fatalf("lead.idle_max_jobs default = %q, want 3", got)
+	}
+	if err := s.SetSetting("human", "lead.idle_hours", "x"); err == nil || !strings.Contains(err.Error(), "lead.idle_hours takes a whole number") {
+		t.Fatalf("idle hours x: %v", err)
+	}
+	if err := s.SetSetting("human", "lead.idle_hours", "-1"); err == nil {
+		t.Fatal("negative idle hours accepted")
+	}
+	if err := s.SetSetting("human", "lead.idle_hours", "0"); err != nil || s.Setting("lead.idle_hours", "") != "0" {
+		t.Fatalf("idle hours 0: %v %q", err, s.Setting("lead.idle_hours", ""))
+	}
+	if err := s.SetSetting("human", "lead.idle_max_jobs", "x"); err == nil || !strings.Contains(err.Error(), "lead.idle_max_jobs takes a whole number") {
+		t.Fatalf("idle max x: %v", err)
+	}
+	if err := s.SetSetting("human", "lead.idle_max_jobs", "-1"); err == nil {
+		t.Fatal("negative idle max accepted")
+	}
+	if err := s.SetSetting("human", "lead.idle_max_jobs", "4"); err != nil || s.Setting("lead.idle_max_jobs", "") != "4" {
+		t.Fatalf("idle max 4: %v %q", err, s.Setting("lead.idle_max_jobs", ""))
+	}
+	names := ExtraSettingNames()
+	if names[len(names)-2] != "lead.idle_hours" || names[len(names)-1] != "lead.idle_max_jobs" {
+		t.Fatalf("ExtraSettingNames tail = %v", names[len(names)-3:])
 	}
 }
 

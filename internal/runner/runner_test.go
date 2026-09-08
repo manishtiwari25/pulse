@@ -40,6 +40,11 @@ func newStore(t *testing.T) *store.Store {
 	if err := s.SetSetting(humanAgent, "daemon.self_update", "off"); err != nil {
 		t.Fatal(err)
 	}
+	// The lead's standing brief (D-C) would queue an idle lead job in every daemon test with a
+	// quiet project; tests that exercise it set lead.idle_hours back on (see lead_idle_test.go).
+	if err := s.SetSetting(humanAgent, "lead.idle_hours", "0"); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { s.Close() })
 	return s
 }

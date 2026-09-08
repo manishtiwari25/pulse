@@ -256,8 +256,9 @@ type Pruned struct {
 	Reason string `json:"reason"`
 }
 
-// PruneAgents retires active agents without useful output for days (setting
-// prune_after_days when days < 0) that hold no lease. dryRun only reports.
+// PruneAgents retires active non-human, non-lead agents without useful output
+// for days (setting prune_after_days when days < 0) that hold no lease. dryRun
+// only reports.
 func PruneAgents(s *store.Store, now string, days int, actor string, dryRun bool) ([]Pruned, error) {
 	if now == "" {
 		now = s.Now()
@@ -273,7 +274,7 @@ func PruneAgents(s *store.Store, now string, days int, actor string, dryRun bool
 		return nil, err
 	}
 	cutoff := t.Add(-time.Duration(days) * 24 * time.Hour).Format(timeLayout)
-	rows, err := s.DB.Query("SELECT name, last_useful_at, last_active_at, created_at FROM agents WHERE status = 'active' AND kind != 'human' ORDER BY name")
+	rows, err := s.DB.Query("SELECT name, last_useful_at, last_active_at, created_at FROM agents WHERE status = 'active' AND kind NOT IN ('human', 'lead') ORDER BY name")
 	if err != nil {
 		return nil, err
 	}

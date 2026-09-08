@@ -6,6 +6,58 @@ import (
 	"testing"
 )
 
+func TestOpenHandoffs(t *testing.T) {
+	res := &Result{
+		Threads: []Thread{
+			{Key: "governance/left", Status: "open"},
+			{Key: "governance/taken", Status: "open"},
+			{Key: "governance/reopened", Status: "stale"},
+			{Key: "governance/closed", Status: "closed"},
+		},
+		Posts: []Post{
+			{ID: "h-taken", Area: "governance", Thread: "taken", Kind: "handoff", Date: "2026-09-01T01:00:00Z", Summary: "taken"},
+			{ID: "c-taken", Area: "governance", Thread: "taken", Kind: "claim", Date: "2026-09-02T01:00:00Z", Summary: "claimed"},
+			{ID: "h-left", Area: "governance", Thread: "left", Kind: "handoff", Date: "2026-09-01T00:00:00Z", Summary: "left"},
+			{ID: "c-before", Area: "governance", Thread: "reopened", Kind: "claim", Date: "2026-09-01T02:00:00Z", Summary: "old claim"},
+			{ID: "h-reopened", Area: "governance", Thread: "reopened", Kind: "handoff", Date: "2026-09-03T00:00:00Z", Summary: "new handoff"},
+			{ID: "h-closed", Area: "governance", Thread: "closed", Kind: "handoff", Date: "2026-09-04T00:00:00Z", Summary: "closed"},
+		},
+	}
+	got := OpenHandoffs(res)
+	var ids []string
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	if strings.Join(ids, ",") != "h-left,h-reopened" {
+		t.Fatalf("handoffs: %v", ids)
+	}
+}
+
+func TestOwnerAddressed(t *testing.T) {
+	tests := []struct {
+		name, summary, thread string
+		want                  bool
+	}{
+		{"owner questions", "anything", "owner-questions", true},
+		{"owner question", "anything", "owner-question", true},
+		{"owner prefix", "anything", "owner-review", true},
+		{"evaluator prefix", " evaluator proposal for the owner: adopt it", "work", true},
+		{"release candidate", "Release candidate 1", "work", true},
+		{"owner question summary", "Owner question: pick one", "work", true},
+		{"vote requested prefix", "vote requested: choose", "work", true},
+		{"for owner contains", "ready for the owner to inspect", "work", true},
+		{"vote requested contains", "please vote requested today", "work", true},
+		{"worker", "implement the cache", "ownerish", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := OwnerAddressed(tt.summary, tt.thread); got != tt.want {
+				t.Fatalf("OwnerAddressed(%q, %q) = %v, want %v", tt.summary, tt.thread, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWorkWanted(t *testing.T) {
 	f := newFixture(t, true)
 	// a second project with a handoff nobody claimed, an old open question and an unknown-kind post
@@ -68,6 +120,7 @@ func TestWorkWanted(t *testing.T) {
 				t.Error("voted amendment on the ballot")
 			}
 		}
+
 	}
 	if ballots != 3 {
 		t.Errorf("ballot items %d", ballots)
@@ -120,5 +173,50 @@ func TestWorkWanted(t *testing.T) {
 	q, err = WorkWanted(f.st, []string{}, "", th)
 	if err != nil || len(q.Work) != 0 || !strings.Contains(WorkText(q, 0), "none - nothing on any board") {
 		t.Errorf("empty: %v\n%s", err, WorkText(q, 0))
+	}
+}
+
+func TestWorkWantedBlockedEligibleAndPlannable(t *testing.T) {
+	f := newFixture(t, true)
+	zero := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: "split", agent: "runner-z/model-z", date: "2026-09-01T08:00:00Z", summary: "Split the worker queue", session: "s-z"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "split", agent: "runner-e/model-e", date: "2026-09-02T08:00:00Z", summary: "up", session: "s-e", on: zero, vote: "up"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "split", agent: "runner-f/model-f", date: "2026-09-02T09:00:00Z", summary: "down", session: "s-f", on: zero, vote: "down"})
+	owner := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: "owner-question", agent: "runner-o/model-o", date: "2026-09-01T07:00:00Z", summary: "Pick the release owner", session: "s-o"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "owner-question", agent: "runner-g/model-g", date: "2026-09-02T07:00:00Z", summary: "up", session: "s-g", on: owner, vote: "up"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "owner-question", agent: "runner-h/model-h", date: "2026-09-02T07:30:00Z", summary: "up", session: "s-h", on: owner, vote: "up"})
+
+	q, err := WorkWanted(f.st, []string{"fixture"}, "", Thresholds{Now: fixtureNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.Projects) != 1 || q.Projects[0].Plannable != 2 {
+		t.Fatalf("plannable projects: %+v", q.Projects)
+	}
+	var eligible []WorkItem
+	byID := map[string]WorkItem{}
+	for _, it := range q.Work {
+		if it.Kind == WorkEligible {
+			eligible = append(eligible, it)
+			byID[it.ID] = it
+		}
+	}
+	if len(eligible) != 3 {
+		t.Fatalf("eligible items: %+v", eligible)
+	}
+	if eligible[0].ID != f.ids["eligible"] || eligible[0].Blocked != "" {
+		t.Fatalf("unblocked eligible did not sort first: %+v", eligible)
+	}
+	if got := byID[zero].Blocked; got != "net votes <= 0: the planner takes score > 0 only" {
+		t.Fatalf("zero blocked = %q", got)
+	}
+	if got := byID[owner].Blocked; got != "addressed to the owner; not a worker job" {
+		t.Fatalf("owner blocked = %q", got)
+	}
+	text := WorkText(q, 0)
+	if !strings.Contains(text, "PROJECTS (open suggestions, work items, plannable, kill switch)") || !strings.Contains(text, " 2 plannable") {
+		t.Fatalf("plannable text:\n%s", text)
+	}
+	if !strings.Contains(text, "next: not planned: net votes <= 0: the planner takes score > 0 only; vote it up with evidence (a Signal: line naming a file or check) or close the thread") {
+		t.Fatalf("blocked next text:\n%s", text)
 	}
 }

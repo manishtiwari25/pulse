@@ -154,17 +154,7 @@ func isOwnerAddressedPost(post row) bool {
 	if post == nil {
 		return false
 	}
-	thread := strings.ToLower(post.str("thread"))
-	if thread == "owner-questions" || thread == "owner-question" || strings.HasPrefix(thread, "owner-") {
-		return true
-	}
-	low := strings.ToLower(strings.TrimSpace(post.str("summary")))
-	for _, p := range []string{"evaluator proposal for the owner", "release candidate", "owner question", "vote requested"} {
-		if strings.HasPrefix(low, p) {
-			return true
-		}
-	}
-	return strings.Contains(low, "for the owner") || strings.Contains(low, "vote requested")
+	return tally.OwnerAddressed(post.str("summary"), post.str("thread"))
 }
 
 func ownerTargeted(post row) bool {
@@ -192,33 +182,68 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 	} else if isNew {
 		return []row{job}, nil
 	}
-	suggestions := suggestionRecords(s, slug, now)
 	var created []row
-	for _, sg := range suggestions {
-		if sg.Status != "eligible" || sg.Score <= 0 {
-			continue
+	// A handoff is work a worker left for the next one; the queue ranks it first, and so does the planner: the
+	// oldest open handoff nobody claimed becomes one improve job, tried once (like a question), never when it
+	// is addressed to the owner or points at owner-only paths.
+	if res, err := tally.Compute(s, slug, "", tally.Thresholds{Now: now}); err == nil && res != nil {
+		tried := map[string]bool{}
+		for _, r := range mustRows(s.DB, "SELECT source FROM jobs WHERE source LIKE 'handoff:%'") {
+			tried[r.str("source")] = true
 		}
-		post := postRow(s.DB, sg.ID)
-		if isOwnerAddressedPost(post) {
-			continue
-		}
-		if post != nil && isWorkerPost(s.DB, post) {
-			if !signalResolves(s.DB, project, post) || ownerTargeted(post) {
+		for _, p := range tally.OpenHandoffs(res) {
+			if tried["handoff:"+p.ID] {
 				continue
 			}
+			post := postRow(s.DB, p.ID)
+			if post == nil || isOwnerAddressedPost(post) || ownerTargeted(post) {
+				continue
+			}
+			brief := fmt.Sprintf("A worker handed off thread %s/%s and nobody claimed it since (handoff %s by %s, %s).\n\n%s\n\n"+
+				"Read the handoff (`pulse show %s`) and the thread it names (`pulse board --project %s`), post a claim on the thread, "+
+				"then continue exactly the work the handoff states - one variable at a time, proven by the project's own checks. "+
+				"When the handoff says the next step needs the owner, post a question on the thread (a `QUESTION:` line) and stop. "+
+				"End with `SUMMARY:` saying what moved.",
+				p.Area, p.Thread, p.ID, p.Agent, p.Date, p.Body, p.ID, slug)
+			job, isNew, err := addJob(s, slug, "improve", fmt.Sprintf("Continue handoff %s: %s", p.ID, trunc(p.Summary, 120)), brief, 1, 8,
+				"handoff:"+p.ID, createdBy, true)
+			if err != nil {
+				return created, err
+			}
+			if isNew {
+				created = append(created, job)
+			}
+			break
 		}
-		brief := fmt.Sprintf("The agents voted this the top eligible suggestion (score %+d, %d voters). Thread %s.\n\n%s\n\n"+
-			"One variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:.",
-			sg.Score, sg.Voters, sg.Key, post.str("body"))
-		job, isNew, err := addJob(s, slug, "improve", fmt.Sprintf("Implement suggestion %s: %s", sg.ID, sg.Summary), brief, 1,
-			10+sg.Score, "suggestion:"+sg.ID, createdBy, true)
-		if err != nil {
-			return created, err
+	}
+	suggestions := suggestionRecords(s, slug, now)
+	if len(created) == 0 {
+		for _, sg := range suggestions {
+			if sg.Status != "eligible" || sg.Score <= 0 {
+				continue
+			}
+			post := postRow(s.DB, sg.ID)
+			if isOwnerAddressedPost(post) {
+				continue
+			}
+			if post != nil && isWorkerPost(s.DB, post) {
+				if !signalResolves(s.DB, project, post) || ownerTargeted(post) {
+					continue
+				}
+			}
+			brief := fmt.Sprintf("The agents voted this the top eligible suggestion (score %+d, %d voters). Thread %s.\n\n%s\n\n"+
+				"One variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:.",
+				sg.Score, sg.Voters, sg.Key, post.str("body"))
+			job, isNew, err := addJob(s, slug, "improve", fmt.Sprintf("Implement suggestion %s: %s", sg.ID, sg.Summary), brief, 1,
+				10+sg.Score, "suggestion:"+sg.ID, createdBy, true)
+			if err != nil {
+				return created, err
+			}
+			if isNew {
+				created = append(created, job)
+			}
+			break
 		}
-		if isNew {
-			created = append(created, job)
-		}
-		break
 	}
 	if len(created) == 0 {
 		tried := map[string]bool{}

@@ -67,6 +67,32 @@ func TestDaemonHeartbeatStates(t *testing.T) {
 	}
 }
 
+func TestPlannerNotesTextAndStale(t *testing.T) {
+	s := temporaryStore(t)
+	execSQL(t, s, `INSERT INTO meta(key,value) VALUES
+		('daemon','{"pid":123,"at":"2026-09-06T18:59:00Z","loops":4,"interval":30,"note":""}'),
+		('planner','{"fresh":{"at":"2026-09-06T18:59:31Z","note":"no suggestions; reflect due"},"old":{"at":"2026-09-06T18:58:59Z","note":"1 eligible suggestions, 0 plannable (1 net votes <= 0)"}}')`)
+
+	notes, err := PlannerNotes(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 2 || notes[0].Project != "fresh" || notes[0].Stale || notes[1].Project != "old" || !notes[1].Stale {
+		t.Fatalf("planner notes: %+v", notes)
+	}
+	report, err := Status(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := report.Text()
+	if !strings.Contains(text, "planner    fresh: no suggestions; reflect due\n") {
+		t.Fatalf("fresh planner line missing:\n%s", text)
+	}
+	if !strings.Contains(text, "planner    old: 1 eligible suggestions, 0 plannable (1 net votes <= 0) (stale)\n") {
+		t.Fatalf("stale planner line missing:\n%s", text)
+	}
+}
+
 func TestUnfitMarksAreReadOnly(t *testing.T) {
 	s := temporaryStore(t)
 	raw := `{"local":{"fresh":{"tool":"tool:node@22","at":"2026-09-05T19:00:01Z"},"expired":{"tool":"uv","at":"2026-09-05T19:00:00Z"},"services":{"tool":"services","at":"2026-09-06T18:00:00Z"}}}`

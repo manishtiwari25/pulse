@@ -192,7 +192,9 @@ EVO-constitution, EVO-evaluators, EVO-archive).
   against the project's public fixtures and the owner's held-out ones (names
   and paths never leave the owner's side), `pulse evolve cycle --project P`
   takes the top voted suggestion, builds it on an experiment branch, measures
-  it, archives the row, and hands a passing result to `pulse land`.
+  it, archives the row, and hands a passing result to `pulse land`. When the
+  gates allow, the daemon runs the cycle by itself; the command is the by-hand
+  alternative.
 - **Seeded records and starter fixtures** - registering a project (`pulse
   init`, `pulse onboard`, the console) seeds the loop's records and six public
   behaviour fixtures. The records: a project whose checkout commits
@@ -276,6 +278,23 @@ only removed from the roster and left running. Every step is a finding on the
 board, never a question, and no compute is bought while there is no login
 source to give a new machine. `compute.self_heal=0` and `compute.self_retire=0`
 switch the two halves off.
+
+What the daemon does on its own when the owner is quiet: a handoff nobody
+claimed becomes one `improve` job, tried once. When a project's loop is at
+level D, the daemon queues its experiments itself - one in flight per project,
+only cards with net votes > 0; a result carrying a violation or hard stop posts
+the owner question once and holds that project until it is answered - so
+`pulse evolve cycle` is the by-hand alternative, not a requirement. After
+`lead.idle_hours` (default 6, `0` turns it off) with no job queued, leased or
+created, the lead gets a standing brief: read the board's queue, the failed
+jobs of the week, the plans and decisions, queue up to `lead.idle_max_jobs`
+(default 3) Tier 0/1 worker jobs and tell the owner in the project's chat what
+it queued and why, or say in its summary that nothing was worth queueing.
+`pulse status` shows one `planner <slug>: ...` line per idle project saying
+which gate held each card back (net votes <= 0, for the owner, without a
+`Signal:` line, tried), and the daemon log says it once per change. `pulse
+queue` marks such cards `not planned:` with the reason and counts each
+project's plannable items.
 
 ## Development
 
