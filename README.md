@@ -181,6 +181,11 @@ Numbered kinds (ADR, PLAN, FEAT, WU) keep their numbers; the rest are
 `PREFIX-<slug>[-<project>]` (GUIDE-*, MEM-*, PROMPT-*, TPL-*, CTX-environment,
 EVO-constitution, EVO-evaluators, EVO-archive).
 
+For a human-run quarterly prune, `pulse record show WF-prune` holds the
+script. It counts local `pulse/*` branches before deletion and saves the count
+as an immutable finding on `governance/prune-notes`. A failed count or note
+write stops pruning; only branches merged into `main` are candidates for `-d`.
+
 ### Democracy and self-improvement
 
 - **Suggestions** collect votes; those over the threshold become proposals for
