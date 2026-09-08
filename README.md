@@ -83,6 +83,8 @@ Everything else happens in the console:
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
   revision is kept. The project's lead agent turns it into jobs and reports
   back on the task thread.
+- **Votes** - everything in vote across projects: suggestions past or short of
+  quorum and open amendments.
 - **Chat** - a per-project conversation with the lead (`msg`), optionally
   pinned to a task.
 - **Proposals** - suggestions that reached the vote threshold and constitutional

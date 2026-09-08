@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { BookOpenIcon, BotIcon, CpuIcon, FolderIcon, HomeIcon, ListTodoIcon, MessagesSquareIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { BookOpenIcon, BotIcon, CpuIcon, FolderIcon, HomeIcon, ListTodoIcon, MessagesSquareIcon, SearchIcon, SettingsIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "@/components/ui/command";
 import { hrefs, PROJECT_TABS } from "@/lib/nav";
@@ -54,6 +54,9 @@ export function CommandPalette() {
             </CommandItem>
             <CommandItem onSelect={() => go(hrefs.tasks())}>
               <ListTodoIcon /> Tasks <CommandShortcut>all projects</CommandShortcut>
+            </CommandItem>
+            <CommandItem onSelect={() => go(hrefs.votes())}>
+              <VoteIcon /> Votes
             </CommandItem>
             <CommandItem onSelect={() => go(hrefs.records())}>
               <BookOpenIcon /> Records

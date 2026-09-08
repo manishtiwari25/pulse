@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { ActivityIcon, BotIcon, BookOpenIcon, ChevronDownIcon, CircleDotIcon, CpuIcon, HomeIcon, ListTodoIcon, SettingsIcon, WifiIcon, WifiOffIcon } from "lucide-react";
+import { ActivityIcon, BotIcon, BookOpenIcon, ChevronDownIcon, CircleDotIcon, CpuIcon, HomeIcon, ListTodoIcon, SettingsIcon, VoteIcon, WifiIcon, WifiOffIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -19,6 +19,7 @@ import { ThemeToggle } from "./theme-toggle";
 const NAV: { href: string; label: string; icon: React.ComponentType<{ className?: string }>; match: (p: string) => boolean }[] = [
   { href: "/", label: "Hub", icon: HomeIcon, match: (p) => p === "/" },
   { href: "/tasks/", label: "Tasks", icon: ListTodoIcon, match: (p) => p.startsWith("/tasks") },
+  { href: "/votes/", label: "Votes", icon: VoteIcon, match: (p) => p.startsWith("/votes") },
   { href: "/records/", label: "Records", icon: BookOpenIcon, match: (p) => p.startsWith("/records") },
   { href: "/compute/", label: "Compute", icon: CpuIcon, match: (p) => p.startsWith("/compute") },
   { href: "/agents/", label: "Agents", icon: BotIcon, match: (p) => p.startsWith("/agents") },
@@ -151,7 +152,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         PULSE hub · 127.0.0.1 only · the owner writes here: projects, tasks, messages, decisions, settings, compute; agents write with the CLI.
       </footer>
       {/* On phones the primary nav sits at the thumb, not in a second header row. */}
-      <nav aria-label="Primary (compact)" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+      <nav aria-label="Primary (compact)" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-7 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
         {NAV.map((n) => {
           const active = n.match(pathname);
           return (

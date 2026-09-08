@@ -132,7 +132,7 @@ export default function HubPage() {
         <Kpi n={openTasks.length} label="open tasks" sub={tasks.data ? plural(openTasks.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.tasks()} />
         <Kpi n={pendingCompute.length} label="compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
         <Kpi n={o.totals.agents_active} label="agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
-        <Kpi n={o.totals.votes_open} label="in vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} />
+        <Kpi n={o.totals.votes_open} label="in vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} href={hrefs.votes()} />
         <Kpi n={o.totals.questions_open} label="open questions" sub="across the boards" />
         <Kpi n={o.totals.posts_24h} label="posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
         <Kpi n={r ? (daemonOn ? "on" : "off") : "…"} label="daemon" sub={r ? (r.runner?.allowed === false ? r.runner.reason : (r.daemon.state || "off") + " · " + num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued") : "loading"} tone={r ? (daemonOn ? "ok" : "warn") : "neutral"} href={hrefs.agents()} />

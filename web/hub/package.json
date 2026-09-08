@@ -6,7 +6,7 @@
     "dev:mock:   `npm run dev:mock` runs mock/server.mjs (fixtures in mock/api/**.json, writes answered in memory, SSE at /api/v1/events/stream) on :8787 and next dev on :3000. No hub needed.",
     "build:      `npm run build` = static export to out/ (commit out/ after UI changes). `npm run serve:out` serves out/ plus the mock API on :8787 (the same layout the Go hub serves) for a last look at the export.",
     "check:      `npm run lint` (eslint) and `npm run typecheck` (tsc --noEmit). All API calls are relative /api/v1/...; the TypeScript contract lives in src/lib/api.ts.",
-    "routes:     / (hub), /project/?slug=&tab=, /tasks/, /records/?id=, /compute/, /settings/, /agents/ - state in search params, no dynamic segments."
+    "routes:     / (hub), /project/?slug=&tab=, /tasks/, /votes/?project=&status=&kind=, /records/?id=, /compute/, /settings/, /agents/ - state in search params, no dynamic segments."
   ],
   "version": "0.1.0",
   "private": true,

@@ -41,5 +41,6 @@ export const hrefs = {
   compute: () => "/compute/",
   settings: (section?: string) => "/settings/" + (section ? "#" + section : ""),
   agents: () => "/agents/",
+  votes: (f: { project?: string; status?: string; kind?: string } = {}) => "/votes/" + qs(f),
   tasks: (f: { project?: string; status?: string } = {}) => "/tasks/" + qs(f),
 };
