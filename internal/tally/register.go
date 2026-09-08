@@ -215,6 +215,24 @@ func runBoard(c *cli.Context, fs *flag.FlagSet, _ []string) error {
 	if err != nil {
 		return wrap(err)
 	}
+	posts, err := PostsFor(c.Store, slug, areaFlag(fs))
+	if err != nil {
+		return wrap(err)
+	}
+	bareSummaries := 0
+	for _, post := range posts {
+		if post.Kind == "vote" {
+			switch strings.ToLower(strings.TrimSpace(post.Summary)) {
+			case "up", "down":
+				bareSummaries++
+			}
+		}
+	}
+	if bareSummaries > 0 {
+		if _, err := fmt.Fprintf(c.Err, "warning: %d vote post(s) have a bare up/down summary; include an explanatory phrase in the vote summary\n", bareSummaries); err != nil {
+			return err
+		}
+	}
 	if c.Color {
 		text = boldHeadings(text, c.Style())
 	}
