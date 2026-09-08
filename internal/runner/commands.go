@@ -287,6 +287,7 @@ func cmdService(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		if dryRun {
 			return nil
 		}
+		ensureSigned(c.Out, c.Home, pulseBinary())
 		c.Printf("the daemon is kept alive by %s; watch: tail -f %s\n", kind, c.Home+"/logs/daemon.log")
 		if !boolFlag(fs, "no-hub") {
 			c.Printf("the hub is kept alive by %s at http://127.0.0.1:%d and restarts itself on a new build; watch: tail -f %s\n",

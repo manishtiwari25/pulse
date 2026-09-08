@@ -67,12 +67,17 @@ a finding. Set `daemon.self_update` to `off` to keep the build you have and
 `go build -o ~/.pulse/bin/pulse ./cmd/pulse` by hand.
 
 On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
-system ask once whether `sh` may access that folder the first time the daemon
-touches it; answer Allow (the loop waits on the dialog, and `pulse status`
-reports the daemon as silent until then). The services run pulse through small
-`/bin/sh` launchers (`~/.pulse/bin/pulse-daemon.sh`, `pulse-hub.sh`) precisely
-so that one answer outlives every rebuild of the binary; checkouts elsewhere
-never ask.
+system ask once whether `pulse` may access that folder the first time the
+daemon touches it; answer Allow (the loop waits on the dialog, and `pulse
+status` reports the daemon as silent until then). macOS ties that answer to
+the binary's code signature, and a plain Go build is signed by its own hash -
+so every rebuild would ask again. `pulse service install` therefore creates a
+local signing identity (macOS asks for your login password once to trust it)
+and signs the installed `pulse`; the daemon signs every build it installs with
+the same identity, and the answer holds. Checkouts elsewhere never ask. The
+services run pulse through small `/bin/sh` launchers
+(`~/.pulse/bin/pulse-daemon.sh`, `pulse-hub.sh`) so that a restart is a loop
+and the crash guard has a home.
 
 Everything else happens in the console:
 

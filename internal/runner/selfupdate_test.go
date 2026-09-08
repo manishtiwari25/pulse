@@ -55,6 +55,9 @@ func selfUpdateFixture(t *testing.T) (*store.Store, string, selfUpdateEnv) {
 	t.Helper()
 	resetSelfUpdate()
 	t.Cleanup(resetSelfUpdate)
+	// Signing is macOS-only and needs the owner's identity; these tests are about the build.
+	signingSystem = "linux"
+	t.Cleanup(func() { signingSystem = "" })
 	s := newStore(t)
 	_, repo := newRepo(t, s)
 	exec1(s.DB, "UPDATE projects SET brain = 1 WHERE slug = 'proj'")
@@ -161,6 +164,19 @@ func TestSelfUpdateWaitsOutEveryOtherStateAndSaysSoOnce(t *testing.T) {
 	if len(lines) != 1 || !strings.Contains(lines[0], "go-that-does-not-exist is not on the daemon's PATH") {
 		t.Fatalf("no go: %v", lines)
 	}
+	// An unreadable checkout names a reason even when git said nothing.
+	exec1(s.DB, "UPDATE projects SET path = ? WHERE slug = 'proj'", filepath.Join(t.TempDir(), "gone"))
+	lines = tendBinary(s, testNow, env)
+	if len(lines) != 1 || !strings.Contains(lines[0], "is not a readable git checkout: ") || strings.HasSuffix(strings.TrimSpace(lines[0]), ":") {
+		t.Fatalf("unreadable checkout: %v", lines)
+	}
+	if got := gitReason(gitResult{Code: -1}); !strings.Contains(got, "killed before it answered") {
+		t.Fatalf("a killed git needs a reason: %q", got)
+	}
+	if got := gitReason(gitResult{Code: 128}); got != "git exited 128 without a message" {
+		t.Fatalf("a silent exit needs a reason: %q", got)
+	}
+	exec1(s.DB, "UPDATE projects SET path = ? WHERE slug = 'proj'", repo)
 	if fileExists(env.Binary+".new") || fileExists(env.Binary+".prev") {
 		t.Fatal("something was built while waiting")
 	}

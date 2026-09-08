@@ -618,6 +618,9 @@ export interface RunningPayload {
   brain: { slug: string; default_branch: string; branch: string; head: string; dirty: boolean } | null;
   last: { at: string; from: string; to: string; inflight: number } | null;
   state: RunningState;
+  // macOS only (null elsewhere): the running binary carries pulse's local code-signing identity, so
+  // the owner's folder answers survive rebuilds (ADR-035 rule 8).
+  signed?: boolean | null;
 }
 
 export type AgentPresence = "online" | "idle" | "offline" | "unknown" | "legacy" | "pruned";

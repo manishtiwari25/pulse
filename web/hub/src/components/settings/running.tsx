@@ -61,6 +61,24 @@ export function RunningStrip() {
       </span>,
     ]);
   }
+  if (d.signed === true || d.signed === false) {
+    rows.push([
+      "signature",
+      d.signed ? (
+        <span key="s" className="inline-flex flex-wrap items-baseline gap-x-2">
+          <span>signed</span>
+          <span className="text-muted-foreground">macOS keeps your folder answers across rebuilds</span>
+        </span>
+      ) : (
+        <span key="s" className="inline-flex flex-wrap items-baseline gap-x-2">
+          <span className="text-warn">unsigned</span>
+          <span className="text-muted-foreground anywhere">
+            each rebuild asks macOS for the Desktop/Documents folders again - <Mono>pulse service install</Mono> creates the signing identity (one password prompt) and every later build is quiet
+          </span>
+        </span>
+      ),
+    ]);
+  }
   if (d.last) {
     rows.push([
       "last rebuild",

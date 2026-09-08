@@ -151,9 +151,10 @@ func launcherText(binary string, interval int) string {
 func unitLauncherText(u serviceUnit, binary string) string {
 	head := []string{
 		"#!/bin/sh",
-		"# Written by `pulse service install`. The service runs this script so that /bin/sh, not the",
-		"# re-linked pulse binary, is the process macOS holds responsible for reading your folders:",
-		"# the Desktop/Documents grant you give once survives every new build. Do not exec pulse here.",
+		"# Written by `pulse service install`. The service runs pulse through this script so that a",
+		"# restart is a loop here, not a launchd/systemd throttle, and the crash guard has a place to",
+		"# live. macOS holds pulse itself responsible for reading your folders; the local signing",
+		"# identity from `pulse service install` is what keeps that answer across builds (ADR-035).",
 	}
 	start := shellJoin(append([]string{binary}, u.args...)) + " &"
 	if !u.guard {
@@ -456,7 +457,8 @@ func protectedFoldersNote(s *store.Store, system, userHome string) string {
 		return ""
 	}
 	return "macOS: " + strings.Join(hits, ", ") + " live under a folder macOS guards (" + strings.Join(protectedFolders, "/") + ").\n" +
-		"  The first time the daemon touches them a dialog asks whether sh (the service runs pulse through /bin/sh) may access that\n" +
-		"  folder: answer Allow once, or the loop waits on it (pulse status then says the daemon is silent). System Settings >\n" +
-		"  Privacy & Security > Files and Folders keeps the answer across pulse builds. Checkouts outside those folders never ask."
+		"  The first time the daemon touches them a dialog asks whether pulse may access that folder: answer Allow once, or the\n" +
+		"  loop waits on it (pulse status then says the daemon is silent). macOS ties the answer to the binary's signature, so\n" +
+		"  pulse service install signs pulse with a local identity (one password prompt to trust it) and every later build keeps\n" +
+		"  the answer; an unsigned build asks again. Checkouts outside those folders never ask."
 }

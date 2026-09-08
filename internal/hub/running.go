@@ -31,8 +31,13 @@ import (
 //	           daemon waits (rule 4)
 func (h *Handler) running(r *http.Request) (map[string]any, error) {
 	hub := object("version revision pid", cli.Version(), cli.Revision(), os.Getpid())
+	// macOS ties a folder answer to the binary's signature (ADR-035 rule 8): null off macOS.
+	var signed any
+	if ok, applicable := cli.CodeSigned(cli.Executable()); applicable {
+		signed = ok
+	}
 	if h.Store == nil {
-		return object("available self_update retry_minutes hub daemon brain last state", false, "", 0, hub, nil, nil, nil, "no-store"), nil
+		return object("available self_update retry_minutes hub daemon brain last state signed", false, "", 0, hub, nil, nil, nil, "no-store", signed), nil
 	}
 	selfUpdate := h.Store.Setting("daemon.self_update", "on")
 	retry := h.Store.SettingInt("daemon.self_update_retry_minutes")
@@ -87,7 +92,7 @@ func (h *Handler) running(r *http.Request) (map[string]any, error) {
 			state = "waiting"
 		}
 	}
-	return object("available self_update retry_minutes hub daemon brain last state", true, selfUpdate, retry, hub, daemon, brain, last, state), nil
+	return object("available self_update retry_minutes hub daemon brain last state signed", true, selfUpdate, retry, hub, daemon, brain, last, state, signed), nil
 }
 
 func (h *Handler) additionRunning(w http.ResponseWriter, r *http.Request) {

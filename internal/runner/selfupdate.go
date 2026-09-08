@@ -107,7 +107,7 @@ func tendBinary(s *store.Store, now string, env selfUpdateEnv) []string {
 	branch := git(repo, "rev-parse", "--abbrev-ref", "HEAD")
 	status := git(repo, "status", "--porcelain")
 	if !head.ok() || !branch.ok() || !status.ok() {
-		return say(fmt.Sprintf("%s is not a readable git checkout: %s", repo, strings.TrimSpace(firstNonEmpty(head.Stderr, branch.Stderr, status.Stderr))))
+		return say(fmt.Sprintf("%s is not a readable git checkout: %s", repo, gitReason(head, branch, status)))
 	}
 	rev := strings.TrimSpace(head.Stdout)
 	if rev == st.installed || rev == env.Revision {
@@ -162,6 +162,10 @@ func buildAndInstall(s *store.Store, repo, rev string, env selfUpdateEnv) selfUp
 	if out, err := runIn(repo, timeout, env.GoCmd, "build", "-trimpath", "-o", newBinary, "./cmd/pulse"); err != nil {
 		return selfUpdateFailure(s, rev, env, "build", out, err)
 	}
+	note, err := signNewBuild(s, newBinary)
+	if err != nil {
+		return selfUpdateFailure(s, rev, env, "sign", "", err)
+	}
 	version, err := runIn(repo, timeout, newBinary, "version")
 	if err != nil {
 		return selfUpdateFailure(s, rev, env, "smoke", version, err)
@@ -194,6 +198,9 @@ func buildAndInstall(s *store.Store, repo, rev string, env selfUpdateEnv) selfUp
 		rev, firstNonEmpty(env.Revision, "an unstamped build"), env.Binary, repo, prev, now, env.Inflight, prev, env.Binary)
 	if err := selfUpdateFinding(s, env.Actor, summary, body); err != nil {
 		return selfUpdateOutcome{installed: true, line: fmt.Sprintf("self-update: installed %s; finding not posted: %s", shortRev(rev), errMessage(err))}
+	}
+	if note != "" {
+		return selfUpdateOutcome{installed: true, line: "self-update: " + summary + "\n" + note}
 	}
 	return selfUpdateOutcome{installed: true, line: "self-update: " + summary}
 }
@@ -239,6 +246,27 @@ func runIn(dir string, timeout time.Duration, name string, args ...string) (stri
 		err = fmt.Errorf("%s timed out after %s", filepath.Base(name), timeout)
 	}
 	return out.String(), err
+}
+
+// gitReason names why the first failed git call failed: its stderr, else its error, else the exit
+// code - a git killed by the timeout (macOS holding a folder behind a dialog) has neither.
+func gitReason(results ...gitResult) string {
+	for _, r := range results {
+		if r.ok() {
+			continue
+		}
+		if text := strings.TrimSpace(r.Stderr); text != "" {
+			return text
+		}
+		if r.Err != nil {
+			return r.Err.Error()
+		}
+		if r.Code < 0 {
+			return "git was killed before it answered (a folder still held behind a dialog, or a timeout)"
+		}
+		return fmt.Sprintf("git exited %d without a message", r.Code)
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {
