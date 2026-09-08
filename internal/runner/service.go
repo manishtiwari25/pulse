@@ -33,11 +33,12 @@ type serviceUnit struct {
 	log      string   // log file under <pulseHome>/logs
 	desc     string   // systemd Description
 	args     []string // pulse subcommand and flags
+	guard    bool     // the launcher restores pulse.prev after three early exits (ADR-035 rule 5)
 }
 
 func daemonUnit(interval int) serviceUnit {
 	return serviceUnit{name: "daemon", label: serviceLabel, unit: "pulse-daemon", launcher: launcherName, log: "daemon.log",
-		desc: "PULSE daemon - the agents' machine", args: []string{"daemon", "--interval", strconv.Itoa(interval)}}
+		desc: "PULSE daemon - the agents' machine", args: []string{"daemon", "--interval", strconv.Itoa(interval)}, guard: true}
 }
 
 func hubUnit(port int) serviceUnit {
@@ -85,12 +86,12 @@ func serviceFileText(kind string, interval int, binary, logPath, pathEnv, pulseH
 	return unitFileText(daemonUnit(interval), kind, binary, logPath, pathEnv, pulseHome)
 }
 
-// unitFileText renders the plist or unit. systemd runs pulse directly; launchd runs the unit's launcher
-// through /bin/sh (see launcherText) so macOS keeps one folder grant across pulse builds.
+// unitFileText renders the plist or unit. Both run the unit's launcher through /bin/sh (see
+// unitLauncherText): on macOS so one folder grant outlives every pulse build, everywhere so the daemon's
+// crash guard lives in one script.
 func unitFileText(u serviceUnit, kind string, binary, logPath, pathEnv, pulseHome string) string {
-	args := append([]string{binary}, u.args...)
+	args := []string{"/bin/sh", unitLauncherPath(u, pulseHome)}
 	if kind == "launchd" {
-		args = []string{"/bin/sh", unitLauncherPath(u, pulseHome)}
 		lines := []string{`<?xml version="1.0" encoding="UTF-8"?>`,
 			`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
 			`<plist version="1.0">`, `<dict>`,
@@ -141,35 +142,83 @@ func launcherText(binary string, interval int) string {
 
 // unitLauncherText: pulse runs as the script's child (never exec'd, which would make pulse the responsible
 // process again); TERM/INT/HUP are forwarded and pulse's own exit code is returned, so the "exit 3 on a
-// changed binary" of the daemon and the hub still restarts them through KeepAlive.
+// changed binary" of the daemon and the hub still restarts them through KeepAlive / Restart=always.
+//
+// A guarded unit (the daemon) adds ADR-035's crash guard: an exit other than 3 within 60 seconds of
+// starting, three times in a row, puts pulse.prev back over pulse (the failed build stays as
+// pulse.failed), logs the restore, leaves the pulse.restored marker the daemon reads at start, and runs
+// again. A stop by signal is never counted.
 func unitLauncherText(u serviceUnit, binary string) string {
-	return strings.Join([]string{
+	head := []string{
 		"#!/bin/sh",
-		"# Written by `pulse service install`. launchd runs this script so that /bin/sh, not the",
+		"# Written by `pulse service install`. The service runs this script so that /bin/sh, not the",
 		"# re-linked pulse binary, is the process macOS holds responsible for reading your folders:",
 		"# the Desktop/Documents grant you give once survives every new build. Do not exec pulse here.",
-		shellJoin(append([]string{binary}, u.args...)) + " &",
-		"pid=$!",
-		`trap 'kill -TERM "$pid" 2>/dev/null' TERM INT HUP`,
-		`wait "$pid"`,
-		"code=$?",
-		`while [ "$code" -gt 128 ] && kill -0 "$pid" 2>/dev/null; do`,
+	}
+	start := shellJoin(append([]string{binary}, u.args...)) + " &"
+	if !u.guard {
+		return strings.Join(append(head,
+			start,
+			"pid=$!",
+			`trap 'kill -TERM "$pid" 2>/dev/null' TERM INT HUP`,
+			`wait "$pid"`,
+			"code=$?",
+			`while [ "$code" -gt 128 ] && kill -0 "$pid" 2>/dev/null; do`,
+			`  wait "$pid"`,
+			"  code=$?",
+			"done",
+			`exit "$code"`,
+			""), "\n")
+	}
+	return strings.Join(append(head,
+		"# Three exits other than 3 within a minute of starting put the previous build back (ADR-035).",
+		"bin="+shellJoin([]string{binary}),
+		"early=0",
+		"stopping=",
+		"while :; do",
+		"  started=$(date +%s)",
+		"  "+start,
+		"  pid=$!",
+		`  trap 'stopping=1; kill -TERM "$pid" 2>/dev/null' TERM INT HUP`,
 		`  wait "$pid"`,
 		"  code=$?",
+		`  while [ "$code" -gt 128 ] && kill -0 "$pid" 2>/dev/null; do`,
+		`    wait "$pid"`,
+		"    code=$?",
+		"  done",
+		`  if [ -n "$stopping" ] || [ "$code" -eq 3 ] || [ $(( $(date +%s) - started )) -ge 60 ]; then`,
+		`    exit "$code"`,
+		"  fi",
+		"  early=$((early + 1))",
+		`  if [ "$early" -lt 3 ]; then`,
+		"    sleep 2",
+		"    continue",
+		"  fi",
+		"  early=0",
+		`  if [ ! -f "$bin.prev" ]; then`,
+		`    exit "$code"`,
+		"  fi",
+		`  mv -f "$bin" "$bin.failed" && mv -f "$bin.prev" "$bin" || exit "$code"`,
+		`  echo "restored the previous pulse after 3 early exits (last exit $code)"`,
+		`  date -u +%Y-%m-%dT%H:%M:%SZ > "$bin.restored"`,
+		"  sleep 2",
 		"done",
-		`exit "$code"`,
-		""}, "\n")
+		""), "\n")
 }
 
-// launcherFromPlist finds the launcher path a plist runs, "" when the plist runs pulse directly.
+// launcherFromPlist finds the launcher path a plist or unit runs, "" when the file runs pulse directly.
 func launcherFromPlist(text string) string {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "<string>") && strings.HasSuffix(line, ".sh</string>") {
-			path := strings.TrimSuffix(strings.TrimPrefix(line, "<string>"), "</string>")
-			if base := filepath.Base(path); strings.HasPrefix(base, "pulse-") {
-				return path
-			}
+		path := ""
+		switch {
+		case strings.HasPrefix(line, "<string>") && strings.HasSuffix(line, ".sh</string>"):
+			path = strings.TrimSuffix(strings.TrimPrefix(line, "<string>"), "</string>")
+		case strings.HasPrefix(line, "ExecStart=/bin/sh ") && strings.HasSuffix(line, ".sh"):
+			path = strings.TrimPrefix(line, "ExecStart=/bin/sh ")
+		}
+		if path = strings.Trim(path, `'"`); path != "" && strings.HasPrefix(filepath.Base(path), "pulse-") {
+			return path
 		}
 	}
 	return ""
@@ -241,32 +290,25 @@ func installUnit(out io.Writer, u serviceUnit, pulseHome, system, userHome strin
 		pathEnv = "/usr/local/bin:/usr/bin:/bin"
 	}
 	text := unitFileText(u, kind, pulseBinary(), filepath.Join(logDir, u.log), pathEnv, pulseHome)
-	launcher, launcherFile := "", unitLauncherPath(u, pulseHome)
-	if kind == "launchd" {
-		launcher = unitLauncherText(u, pulseBinary())
-		fmt.Fprintf(out, "%s launcher: %s\n", u.name, launcherFile)
-	}
+	launcher, launcherFile := unitLauncherText(u, pulseBinary()), unitLauncherPath(u, pulseHome)
+	fmt.Fprintf(out, "%s launcher: %s\n", u.name, launcherFile)
 	fmt.Fprintf(out, "%s %s service file: %s\n", u.name, kind, path)
 	if dryRun {
-		if launcher != "" {
-			fmt.Fprintln(out, launcher)
-		}
+		fmt.Fprintln(out, launcher)
 		fmt.Fprintln(out, text)
 		return path, nil
 	}
-	if sameFile(path, text) && (launcher == "" || sameFile(launcherFile, launcher)) {
+	if sameFile(path, text) && sameFile(launcherFile, launcher) {
 		if rc, _ := runService(unitCommands(u, kind, path, "status")[0]); rc == 0 {
 			fmt.Fprintf(out, "%s: unchanged and loaded; left running\n", u.name)
 			return path, nil
 		}
 	}
-	if launcher != "" {
-		if err := os.MkdirAll(filepath.Dir(launcherFile), 0o755); err != nil {
-			return path, err
-		}
-		if err := os.WriteFile(launcherFile, []byte(launcher), 0o755); err != nil {
-			return path, err
-		}
+	if err := os.MkdirAll(filepath.Dir(launcherFile), 0o755); err != nil {
+		return path, err
+	}
+	if err := os.WriteFile(launcherFile, []byte(launcher), 0o755); err != nil {
+		return path, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return path, err

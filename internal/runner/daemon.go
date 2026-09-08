@@ -31,7 +31,8 @@ type dispatch struct {
 }
 
 func daemonHeartbeat(s *store.Store, loops, interval int, note string) {
-	beat := map[string]any{"pid": os.Getpid(), "at": s.Now(), "loops": loops, "interval": interval, "note": note}
+	beat := map[string]any{"pid": os.Getpid(), "at": s.Now(), "loops": loops, "interval": interval, "note": note,
+		"version": cli.Version(), "revision": cli.Revision()}
 	text, _ := json.Marshal(beat)
 	_, _ = s.DB.Exec("INSERT INTO meta (key, value) VALUES ('daemon', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", string(text))
 }
@@ -78,7 +79,8 @@ type daemonOpts struct {
 	RestartOnChange bool
 	Grace           time.Duration // after a stop signal, how long in-flight runs may finish before their groups are killed
 	Out             io.Writer
-	HubHome         string // the hub user's home (ssh keys, known_hosts) for pairing the machines compute provisions; "" = this user's
+	HubHome         string         // the hub user's home (ssh keys, known_hosts) for pairing the machines compute provisions; "" = this user's
+	SelfUpdate      *selfUpdateEnv // ADR-035; nil = derive from the running binary (tests pass fakes)
 }
 
 // daemonWake is what wakes the loop before its interval is over: the owner wrote (message.sent, task.*), a
@@ -152,6 +154,15 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	say("daemon started %s (interval %ds%s, pid %d)", s.Now(), interval, dry, os.Getpid())
 	if lost > 0 {
 		say("closed %d run(s) a previous runner left in progress as lost", lost)
+	}
+	// ADR-035: the daemon looks after its own binary; the launcher's restore marker is read once, at start.
+	selfEnv := selfUpdateEnv{Binary: pulseBinary(), GoCmd: "go", Revision: cli.Revision(), Actor: actor}
+	if o.SelfUpdate != nil {
+		selfEnv = *o.SelfUpdate
+		selfEnv.Actor = actor
+	}
+	for _, l := range checkRestored(s, selfEnv) {
+		say("%s", l)
 	}
 	report := func(d *dispatch) {
 		delete(inflight, d)
@@ -302,6 +313,13 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 				// Verified branches land first, so a requeued job is planned and taken in the same loop (ADR-024).
 				for _, lr := range landPending(s, proj, actor, now, true, 0, false) {
 					say("landing %s: %s", lr.State, lr.Note)
+				}
+			}
+			// ADR-035: a landing in the brain becomes the running binary; the build runs off the tick.
+			if !o.DryRun {
+				selfEnv.Inflight = len(inflight)
+				for _, l := range tendBinary(s, now, selfEnv) {
+					say("%s", l)
 				}
 			}
 			for _, proj := range projects {

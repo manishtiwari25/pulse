@@ -112,6 +112,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	if strings.HasPrefix(p, "/api/v1/") {
 		route := strings.TrimPrefix(p, "/api/v1/")
+		if route == "running" {
+			h.additionRunning(w, r)
+			return
+		}
 		if h.additions(w, r, route) {
 			return
 		}

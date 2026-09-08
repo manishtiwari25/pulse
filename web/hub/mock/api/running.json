@@ -1,0 +1,10 @@
+{
+  "available": true,
+  "self_update": "on",
+  "retry_minutes": 60,
+  "hub": { "version": "dev-3f9c2a1b7e40", "revision": "3f9c2a1b7e40d5c6a8b9e0f1a2b3c4d5e6f70819", "pid": 48213 },
+  "daemon": { "version": "dev-3f9c2a1b7e40", "revision": "3f9c2a1b7e40d5c6a8b9e0f1a2b3c4d5e6f70819", "pid": 48102, "at": "2026-09-06T11:59:30Z" },
+  "brain": { "slug": "amistio-template", "default_branch": "main", "branch": "main", "head": "3f9c2a1b7e40d5c6a8b9e0f1a2b3c4d5e6f70819", "dirty": false },
+  "last": { "at": "2026-09-06T09:41:12Z", "from": "b81d4e2c9a03", "to": "3f9c2a1b7e40d5c6a8b9e0f1a2b3c4d5e6f70819", "inflight": 1 },
+  "state": "current"
+}

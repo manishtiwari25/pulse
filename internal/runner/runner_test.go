@@ -35,6 +35,11 @@ func newStore(t *testing.T) *store.Store {
 	if err := s.SetSetting(humanAgent, "evolve.heldout", "owner"); err != nil {
 		t.Fatal(err)
 	}
+	// The daemon's self-update (ADR-035) would run the real `go build` in a test's brain checkout; tests
+	// that exercise it turn daemon.self_update back on with a fake go (see selfupdate_test.go).
+	if err := s.SetSetting(humanAgent, "daemon.self_update", "off"); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { s.Close() })
 	return s
 }

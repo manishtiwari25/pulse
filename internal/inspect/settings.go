@@ -41,6 +41,9 @@ func SettingsReport(s *store.Store) ([]SettingReport, error) {
 		if d, ok := store.EvolveSettings[name]; ok {
 			def, rule = d, store.EvolveRules[name]
 		}
+		if d, ok := store.DaemonSettings[name]; ok {
+			def, rule = d, store.DaemonRules[name]
+		}
 		r := SettingReport{Name: name, Value: def, Default: def, Kind: rule.Kind, Choices: rule.Choices, Description: rule.Description}
 		if rule.HasMin {
 			minimum := rule.Min

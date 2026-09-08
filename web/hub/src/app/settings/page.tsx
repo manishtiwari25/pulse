@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { EmptyState, ErrorNotice, Notice, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
 import { Mono } from "@/components/pulse/who";
+import { RunningStrip } from "@/components/settings/running";
 import { SettingRow } from "@/components/settings/setting-row";
 import type { Setting, SettingsPayload } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -17,11 +18,13 @@ interface Group {
   match?: (name: string) => boolean;
   // Clusters inside a section: a heading and the keys under it.
   clusters?: { title: string; keys: string[] }[];
+  // A read-only strip rendered above the rows (the daemon section's "Running").
+  strip?: () => React.ReactNode;
 }
 
-// Three sections, as the store groups them: the 16 legacy rows every store
-// has (Runner caps), then store.ExtraSettingNames() - compute.* and
-// evolve.* - which are not written at Create. Unknown keys fall into
+// Four sections, as the store groups them: the 16 legacy rows every store
+// has (Runner caps), then store.ExtraSettingNames() - compute.*, evolve.*
+// and daemon.* - which are not written at Create. Unknown keys fall into
 // "Other" so a new cap the daemon learns never disappears from the owner's
 // view.
 const RUNNER_CLUSTERS = [
@@ -57,9 +60,17 @@ const GROUPS: Group[] = [
     keys: ["evolve.loop", "evolve.limits", "evolve.tolerance", "evolve.heldout", "evolve.heldout_dir"],
     match: (n) => n.startsWith("evolve."),
   },
+  {
+    id: "daemon",
+    title: "Running",
+    blurb: "Which pulse runs where, and how it keeps itself current. After a landing in the brain the daemon rebuilds pulse from the checkout, smoke-tests the new binary, installs it in place and restarts once its runs finish; the hub follows within a minute; three early exits in a row put the previous build back and turn this off with a finding (ADR-035). The install line is for the first install only.",
+    keys: ["daemon.self_update", "daemon.self_update_retry_minutes"],
+    match: (n) => n.startsWith("daemon."),
+    strip: () => <RunningStrip />,
+  },
 ];
 
-// Mirrors store.ComputeSettings and store.EvolveSettings in the Go store.
+// Mirrors store.ComputeSettings, store.EvolveSettings and store.DaemonSettings in the Go store.
 // These rows are not inserted at Create, so when the hub omits one the
 // screen still lists it at its effective (default) value and the owner can
 // set it from here.
@@ -83,6 +94,8 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "evolve.heldout", value: "auto", default: "auto", kind: "choice", min: null, choices: ["auto", "owner"], description: "auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)" },
   // Owner-private: the hub answers "[owner-private]" instead of the real path once set.
   { name: "evolve.heldout_dir", value: "", default: "", kind: "identifier", min: null, choices: null, description: "path to the owner's held-out evaluators; never shown to agents", secret: true },
+  { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off"], description: "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
+  { name: "daemon.self_update_retry_minutes", value: "60", default: "60", kind: "count", min: 1, choices: null, description: "minutes the daemon waits before building again after a failed build or smoke test" },
 ];
 
 function withExtraDefaults(rows: Setting[]): Setting[] {
@@ -107,7 +120,13 @@ const PILL = "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounde
 function GroupRows({ g, rows, canEdit }: { g: Group; rows: Setting[]; canEdit: boolean }) {
   const row = (s: Setting) => <SettingRow key={s.name} s={s} canEdit={canEdit} labels={SWITCH_LABELS[s.name]} />;
   const clusters = g.clusters;
-  if (!clusters) return <div className="divide-y">{rows.map(row)}</div>;
+  if (!clusters)
+    return (
+      <>
+        {g.strip ? <div className="border-b">{g.strip()}</div> : null}
+        <div className="divide-y">{rows.map(row)}</div>
+      </>
+    );
   const loose = rows.filter((s) => !clusters.some((c) => c.keys.includes(s.name)));
   return (
     <>

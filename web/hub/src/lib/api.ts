@@ -595,6 +595,31 @@ export interface SettingsPayload {
   settings: Setting[];
 }
 
+// GET /api/v1/running (ADR-035): which pulse runs where, against the brain's
+// HEAD. `state` is one word: off, no-daemon, no-brain, current, unstamped,
+// behind, waiting (see internal/hub/running.go). `daemon` comes from the
+// heartbeat and is null until the daemon has run once; `last` is the newest
+// rebuild the daemon recorded, null when it never rebuilt.
+export type RunningState = "off" | "no-store" | "no-daemon" | "no-brain" | "current" | "unstamped" | "behind" | "waiting";
+
+export interface RunningBuild {
+  version: string;
+  revision: string;
+  pid: number | null;
+  at?: string;
+}
+
+export interface RunningPayload {
+  available: boolean;
+  self_update: string;
+  retry_minutes: number;
+  hub: RunningBuild;
+  daemon: RunningBuild | null;
+  brain: { slug: string; default_branch: string; branch: string; head: string; dirty: boolean } | null;
+  last: { at: string; from: string; to: string; inflight: number } | null;
+  state: RunningState;
+}
+
 export type AgentPresence = "online" | "idle" | "offline" | "unknown" | "legacy" | "pruned";
 
 export interface RosterRow extends Who {

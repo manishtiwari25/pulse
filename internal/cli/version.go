@@ -39,3 +39,21 @@ func Version() string {
 	}
 	return "dev-" + rev + dirty
 }
+
+// Revision is the full commit the running binary was built from, from the
+// build info's vcs.revision, or "" for a build the toolchain could not stamp
+// (a go build inside a git worktree, or from a tarball). The daemon compares
+// it with the brain's HEAD to decide whether to rebuild itself (ADR-035), and
+// the hub reports it beside the daemon's on the Running cluster.
+func Revision() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, s := range info.Settings {
+		if s.Key == "vcs.revision" {
+			return s.Value
+		}
+	}
+	return ""
+}

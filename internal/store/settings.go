@@ -121,6 +121,19 @@ var EvolveRules = map[string]SettingRule{
 	"evolve.heldout":     {Kind: "choice", Choices: []string{"auto", "owner"}, Description: "auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)"},
 }
 
+// DaemonSettings govern the daemon's care of its own binary (ADR-035). Like
+// ComputeSettings they are not written at Create; Setting falls back here.
+var DaemonSettings = map[string]string{
+	"daemon.self_update":               "on",
+	"daemon.self_update_retry_minutes": "60",
+}
+
+// DaemonRules validate DaemonSettings.
+var DaemonRules = map[string]SettingRule{
+	"daemon.self_update":               {Kind: "choice", Choices: []string{"on", "off"}, Description: "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)"},
+	"daemon.self_update_retry_minutes": {Kind: "count", Min: 1, HasMin: true, Description: "minutes the daemon waits before building again after a failed build or smoke test"},
+}
+
 var secretValueRes = []*regexp.Regexp{
 	regexp.MustCompile(`-----BEGIN`),
 	regexp.MustCompile(`://[^/\s:@]+:[^@\s]+@`),
@@ -157,6 +170,9 @@ func knownSetting(name string) (SettingRule, bool) {
 	if rule, ok := EvolveRules[name]; ok {
 		return rule, true
 	}
+	if rule, ok := DaemonRules[name]; ok {
+		return rule, true
+	}
 	return SettingRule{}, false
 }
 
@@ -167,7 +183,10 @@ func defaultSetting(name string) string {
 	if v, ok := ComputeSettings[name]; ok {
 		return v
 	}
-	return EvolveSettings[name]
+	if v, ok := EvolveSettings[name]; ok {
+		return v
+	}
+	return DaemonSettings[name]
 }
 
 // NoneWords are the spellings of "no cap" for count-or-none settings.
@@ -189,11 +208,14 @@ func ComputeSettingNames() []string { return sortedKeys(ComputeSettings) }
 // EvolveSettingNames lists the evolve.* settings sorted by name.
 func EvolveSettingNames() []string { return sortedKeys(EvolveSettings) }
 
+// DaemonSettingNames lists the daemon.* settings sorted by name.
+func DaemonSettingNames() []string { return sortedKeys(DaemonSettings) }
+
 // ExtraSettingNames lists every setting that is not written at Create
-// (compute.* then evolve.*); inspect and the hub list these after the legacy
-// names with their effective values.
+// (compute.*, evolve.*, then daemon.*); inspect and the hub list these after
+// the legacy names with their effective values.
 func ExtraSettingNames() []string {
-	return append(ComputeSettingNames(), EvolveSettingNames()...)
+	return append(append(ComputeSettingNames(), EvolveSettingNames()...), DaemonSettingNames()...)
 }
 
 func sortedKeys(m map[string]string) []string {

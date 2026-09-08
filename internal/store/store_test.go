@@ -633,6 +633,37 @@ func TestHeldoutModeSetting(t *testing.T) {
 	}
 }
 
+// ADR-035: the daemon.* settings default without a row, validate as choice / count and list after evolve.*.
+func TestDaemonSelfUpdateSettings(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
+	s := openTemp(t, Options{Create: true, Now: "2026-09-08T10:00:00Z"})
+	if got := s.Setting("daemon.self_update", ""); got != "on" {
+		t.Fatalf("daemon.self_update default = %q, want on", got)
+	}
+	if got := s.Setting("daemon.self_update_retry_minutes", ""); got != "60" {
+		t.Fatalf("retry default = %q, want 60", got)
+	}
+	if err := s.SetSetting("daemon", "daemon.self_update", " OFF "); err != nil || s.Setting("daemon.self_update", "") != "off" {
+		t.Fatalf("off: %v %q", err, s.Setting("daemon.self_update", ""))
+	}
+	if err := s.SetSetting("human", "daemon.self_update", "1"); err == nil || !strings.Contains(err.Error(), "daemon.self_update takes one of on, off") {
+		t.Errorf("bad value: %v", err)
+	}
+	if err := s.SetSetting("human", "daemon.self_update_retry_minutes", "0"); err == nil {
+		t.Error("retry 0 accepted")
+	}
+	if err := s.SetSetting("human", "daemon.self_update_retry_minutes", "15"); err != nil || s.Setting("daemon.self_update_retry_minutes", "") != "15" {
+		t.Fatalf("retry 15: %v", err)
+	}
+	names := ExtraSettingNames()
+	if names[len(names)-2] != "daemon.self_update" || names[len(names)-1] != "daemon.self_update_retry_minutes" {
+		t.Fatalf("ExtraSettingNames tail = %v", names[len(names)-3:])
+	}
+	if !strings.Contains(DaemonRules["daemon.self_update"].Description, "ADR-035") {
+		t.Fatal("daemon.self_update lacks its description")
+	}
+}
+
 func TestOnEventPublishesAfterCommit(t *testing.T) {
 	t.Setenv("PULSE_JOB", "")
 	s := openTemp(t, Options{Create: true})

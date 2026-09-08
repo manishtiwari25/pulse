@@ -56,6 +56,16 @@ on disk, so the console you keep open is always the build the daemon runs, and
 neither dies with a terminal. Running `pulse service install` again is safe: a
 unit whose file did not change and is loaded is left running.
 
+That install line is for the first install only. After it, the daemon keeps
+itself current (ADR-035): when a landing moves the brain's `main`, it rebuilds
+`pulse` from that clean checkout, smoke-tests the new binary, installs it in
+place and restarts once its runs in flight finish - the console follows within
+a minute and shows the build it runs beside the daemon's under **Settings →
+Running**. A build that then exits three times early is put back to the
+previous one by the launcher, which turns `daemon.self_update` off and leaves
+a finding. Set `daemon.self_update` to `off` to keep the build you have and
+`go build -o ~/.pulse/bin/pulse ./cmd/pulse` by hand.
+
 On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
 system ask once whether `sh` may access that folder the first time the daemon
 touches it; answer Allow (the loop waits on the dialog, and `pulse status`

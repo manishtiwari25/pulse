@@ -107,7 +107,8 @@ func TestServiceRender(t *testing.T) {
 		t.Errorf("launcherFromPlist = %q", got)
 	}
 	launcher := launcherText("/opt/my pulse", 120)
-	for _, want := range []string{"#!/bin/sh", "'/opt/my pulse' daemon --interval 120 &", "trap 'kill -TERM \"$pid\" 2>/dev/null' TERM INT HUP", "exit \"$code\""} {
+	for _, want := range []string{"#!/bin/sh", "'/opt/my pulse' daemon --interval 120 &", "trap 'stopping=1; kill -TERM \"$pid\" 2>/dev/null' TERM INT HUP", "exit \"$code\"",
+		"bin='/opt/my pulse'", `mv -f "$bin" "$bin.failed" && mv -f "$bin.prev" "$bin"`, "restored the previous pulse after 3 early exits"} {
 		if !strings.Contains(launcher, want) {
 			t.Errorf("launcher lacks %q\n%s", want, launcher)
 		}
@@ -117,11 +118,15 @@ func TestServiceRender(t *testing.T) {
 			t.Error("the launcher execs pulse, which would make it the responsible process again")
 		}
 	}
+	// systemd runs the same launcher: the crash guard (ADR-035) lives in one script on both systems.
 	unit := serviceFileText("systemd", 60, "/opt/pulse", "/h/.pulse/logs/daemon.log", "/usr/bin", "/h/.pulse")
-	for _, want := range []string{"[Unit]", "[Service]", "ExecStart=/opt/pulse daemon --interval 60", "Restart=always", "Environment=PULSE_HOME=/h/.pulse", "WantedBy=default.target"} {
+	for _, want := range []string{"[Unit]", "[Service]", "ExecStart=/bin/sh /h/.pulse/bin/pulse-daemon.sh", "Restart=always", "Environment=PULSE_HOME=/h/.pulse", "WantedBy=default.target"} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("unit lacks %q", want)
 		}
+	}
+	if got := launcherFromPlist(unit); got != "/h/.pulse/bin/pulse-daemon.sh" {
+		t.Errorf("launcherFromPlist(unit) = %q", got)
 	}
 	old := runService
 	t.Cleanup(func() { runService = old })
@@ -148,9 +153,12 @@ func TestServiceRender(t *testing.T) {
 	if !fileExists(filepath.Join(pulseHome, "logs")) {
 		t.Fatal("no logs dir")
 	}
+	if !fileExists(launcherPath(pulseHome)) {
+		t.Fatal("the linux install wrote no launcher")
+	}
 	calls = nil
 	uninstallService(&out, "linux", userHome)
-	if fileExists(path) || len(calls) == 0 {
+	if fileExists(path) || fileExists(launcherPath(pulseHome)) || len(calls) == 0 {
 		t.Fatalf("uninstall: exists=%v calls=%v", fileExists(path), calls)
 	}
 	// The exported wrapper resolves OS and home itself (W's `pulse remove service`).
@@ -231,8 +239,11 @@ func TestServiceHubUnitAndIdempotentInstall(t *testing.T) {
 	if launcher := unitLauncherText(hub, "/opt/pulse"); !strings.Contains(launcher, "/opt/pulse hub --port 8765 --no-browser --restart-on-change &") {
 		t.Errorf("hub launcher:\n%s", launcher)
 	}
-	if unit := unitFileText(hubUnit(9000), "systemd", "/opt/pulse", "/h/.pulse/logs/hub.log", "/usr/bin", "/h/.pulse"); !strings.Contains(unit, "ExecStart=/opt/pulse hub --port 9000 --no-browser --restart-on-change") || !strings.Contains(unit, "Description=PULSE hub") {
+	if unit := unitFileText(hubUnit(9000), "systemd", "/opt/pulse", "/h/.pulse/logs/hub.log", "/usr/bin", "/h/.pulse"); !strings.Contains(unit, "ExecStart=/bin/sh /h/.pulse/bin/pulse-hub.sh") || !strings.Contains(unit, "Description=PULSE hub") {
 		t.Errorf("hub unit:\n%s", unit)
+	}
+	if launcher := unitLauncherText(hubUnit(9000), "/opt/pulse"); !strings.Contains(launcher, "/opt/pulse hub --port 9000 --no-browser --restart-on-change &") || strings.Contains(launcher, "pulse.prev") {
+		t.Errorf("the hub launcher should run the hub without the daemon's crash guard:\n%s", launcher)
 	}
 	if units := serviceUnits(60, 0, true); len(units) != 1 || units[0].name != "daemon" {
 		t.Errorf("--no-hub units: %+v", units)
@@ -528,5 +539,57 @@ func TestLauncherReturnsTheChildExitAndForwardsTerm(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		_ = cmd.Process.Kill()
 		t.Fatal("the launcher did not stop after TERM")
+	}
+}
+
+// ADR-035 rule 5: three exits other than 3 within a minute put pulse.prev back, keep the failed build as
+// pulse.failed, log the restore and leave the marker the daemon reads at start. Without a pulse.prev the
+// launcher gives up with the child's code, as before.
+func TestLauncherRestoresThePreviousPulseAfterThreeEarlyExits(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "pulse")
+	failing := "#!/bin/sh\necho failing\nexit 7\n"
+	if err := os.WriteFile(fake, []byte(failing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fake+".prev", []byte("#!/bin/sh\necho previous\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(dir, launcherName)
+	if err := os.WriteFile(launcher, []byte(launcherText(fake, 5)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("sh", launcher).CombinedOutput()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 3 {
+		t.Fatalf("exit after the restore: %v\n%s", err, out)
+	}
+	text := string(out)
+	if strings.Count(text, "failing\n") != 3 || strings.Count(text, "\nprevious\n") != 1 || !strings.Contains(text, "restored the previous pulse after 3 early exits (last exit 7)") {
+		t.Fatalf("launcher output:\n%s", text)
+	}
+	if data, _ := os.ReadFile(fake); !strings.Contains(string(data), "previous") {
+		t.Fatalf("pulse is not the previous build:\n%s", data)
+	}
+	if data, _ := os.ReadFile(fake + ".failed"); string(data) != failing {
+		t.Fatalf("the failed build was not kept:\n%s", data)
+	}
+	if fileExists(fake + ".prev") {
+		t.Fatal("pulse.prev still there")
+	}
+	if marker, err := os.ReadFile(fake + restoredMarker); err != nil || !strings.HasSuffix(strings.TrimSpace(string(marker)), "Z") {
+		t.Fatalf("marker: %q %v", marker, err)
+	}
+	// No pulse.prev: three early exits end with the child's code.
+	os.Remove(fake + restoredMarker)
+	if err := os.WriteFile(fake, []byte(failing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err = exec.Command("sh", launcher).CombinedOutput()
+	if !errors.As(err, &ee) || ee.ExitCode() != 7 || strings.Count(string(out), "failing") != 3 || strings.Contains(string(out), "restored") {
+		t.Fatalf("without prev: %v\n%s", err, out)
 	}
 }
