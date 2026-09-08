@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// SigningIdentifier is the code-signing identifier pulse service install and the daemon sign
-// builds with on macOS (ADR-035 rule 8): TCC ties a folder answer to the binary's designated
-// requirement, and with one local certificate that requirement is the same for every build.
+// SigningIdentifier is the code-signing identifier pulse gives its builds on macOS (ADR-035 rule 8):
+// TCC ties a folder answer to the binary's designated requirement, and pulse signs every build ad-hoc
+// with the explicit requirement `identifier "pulse"`, the same for every build.
 const SigningIdentifier = "pulse"
 
-// CodeSigned reports whether the binary at path carries a certificate-based signature under
-// SigningIdentifier (true), only the linker's ad-hoc one or none (false). applicable is false
-// off macOS or when codesign cannot answer, and the hub shows nothing then.
+// CodeSigned reports whether the binary at path carries pulse's requirement (true) or only the
+// linker's cdhash one or none (false). applicable is false off macOS or when the file is missing, and
+// the hub shows nothing then.
 func CodeSigned(path string) (signed, applicable bool) {
 	if runtime.GOOS != "darwin" || path == "" {
 		return false, false
@@ -30,8 +30,9 @@ func CodeSigned(path string) (signed, applicable bool) {
 		}
 		return false, true // present but unsigned: codesign exits 1 ("code object is not signed at all")
 	}
-	text := string(out)
-	return strings.Contains(text, "certificate leaf") && strings.Contains(text, `identifier "`+SigningIdentifier+`"`), true
+	// codesign prints `designated => identifier pulse` (quotes only around identifiers that need them).
+	text := strings.ReplaceAll(string(out), `"`, "")
+	return strings.Contains(text, "designated => identifier "+SigningIdentifier) && !strings.Contains(text, "cdhash"), true
 }
 
 // Executable is the running binary's resolved path, "" when unknown.

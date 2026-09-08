@@ -73,7 +73,7 @@ export function RunningStrip() {
         <span key="s" className="inline-flex flex-wrap items-baseline gap-x-2">
           <span className="text-warn">unsigned</span>
           <span className="text-muted-foreground anywhere">
-            each rebuild asks macOS for the Desktop/Documents folders again - <Mono>pulse service install</Mono> creates the signing identity (one password prompt) and every later build is quiet
+            each rebuild asks macOS for the Desktop/Documents folders again - <Mono>pulse service install</Mono> signs this build as pulse (no password) and every later build keeps the answer
           </span>
         </span>
       ),

@@ -55,7 +55,7 @@ func selfUpdateFixture(t *testing.T) (*store.Store, string, selfUpdateEnv) {
 	t.Helper()
 	resetSelfUpdate()
 	t.Cleanup(resetSelfUpdate)
-	// Signing is macOS-only and needs the owner's identity; these tests are about the build.
+	// Signing is macOS-only (codesign); these tests are about the build.
 	signingSystem = "linux"
 	t.Cleanup(func() { signingSystem = "" })
 	s := newStore(t)

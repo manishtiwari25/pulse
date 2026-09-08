@@ -70,11 +70,12 @@ On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
 system ask once whether `pulse` may access that folder the first time the
 daemon touches it; answer Allow (the loop waits on the dialog, and `pulse
 status` reports the daemon as silent until then). macOS ties that answer to
-the binary's code signature, and a plain Go build is signed by its own hash -
-so every rebuild would ask again. `pulse service install` therefore creates a
-local signing identity (macOS asks for your login password once to trust it)
-and signs the installed `pulse`; the daemon signs every build it installs with
-the same identity, and the answer holds. Checkouts elsewhere never ask. The
+the binary's code-signing requirement, and a plain Go build's requirement is
+its own hash - so every rebuild would ask again. `pulse service install`
+therefore re-signs the installed `pulse` with a requirement every build meets,
+`identifier "pulse"`, and the daemon signs each build it installs the same way:
+no certificate, no password, and the answer holds. Checkouts elsewhere never
+ask. The
 services run pulse through small `/bin/sh` launchers
 (`~/.pulse/bin/pulse-daemon.sh`, `pulse-hub.sh`) so that a restart is a loop
 and the crash guard has a home.

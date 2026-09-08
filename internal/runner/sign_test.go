@@ -8,36 +8,36 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/manishtiwari25/pulse/internal/cli"
 )
 
-// Off macOS signing is silent and does nothing; on macOS without an identity the daemon says so
-// and installs the ad-hoc build anyway (ADR-035 rule 8). Creating the identity needs the owner's
-// password, so setup itself is exercised live by `pulse service install`, not here.
-func TestSigningIsQuietOffMacOSAndHonestWithoutAnIdentity(t *testing.T) {
-	resetSelfUpdate()
-	t.Cleanup(resetSelfUpdate)
-	s := newStore(t)
-	binary := filepath.Join(t.TempDir(), "pulse")
+// Off macOS signing is silent and does nothing. On macOS every build gets the same designated requirement,
+// `identifier "pulse"`, whether it is the daemon's pulse.new (signed in place) or the running binary at
+// `pulse service install` (a signed copy renamed over it), and CodeSigned tells the two apart from a
+// plain ad-hoc build (ADR-035 rule 8).
+func TestSigningGivesEveryBuildTheSameRequirement(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "pulse")
 	if err := os.WriteFile(binary, []byte("not a mach-o"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	signingSystem = "linux"
 	t.Cleanup(func() { signingSystem = "" })
-	sg := signingFor(s.Home)
-	if sg.ready() || sg.signed(binary) {
+	if signed(binary) {
 		t.Fatal("nothing is signed off macOS")
 	}
-	if line, err := signNewBuild(s, binary); line != "" || err != nil {
-		t.Fatalf("off macOS signNewBuild is silent: %q %v", line, err)
+	if err := sign(binary, true); err != nil {
+		t.Fatalf("off macOS sign is a no-op: %v", err)
 	}
 	var out bytes.Buffer
-	ensureSigned(&out, s.Home, binary)
+	ensureSigned(&out, binary)
 	if out.Len() != 0 {
 		t.Fatalf("off macOS ensureSigned says nothing: %q", out.String())
 	}
-	if err := sg.setup(&out); err != nil || out.Len() != 0 {
-		t.Fatalf("off macOS setup is a no-op: %v %q", err, out.String())
+	if data, _ := os.ReadFile(binary); string(data) != "not a mach-o" {
+		t.Fatal("the file was touched off macOS")
 	}
 
 	if runtime.GOOS != "darwin" {
@@ -47,26 +47,50 @@ func TestSigningIsQuietOffMacOSAndHonestWithoutAnIdentity(t *testing.T) {
 		t.Skip("no codesign")
 	}
 	signingSystem = "darwin"
-	if sg.ready() {
-		t.Fatal("a fresh home has no identity")
+	missing := filepath.Join(dir, "missing")
+	if err := sign(missing, true); err == nil {
+		t.Fatal("a missing file cannot be signed")
 	}
-	if sg.signed(binary) {
-		t.Fatal("a plain file is not signed")
-	}
-	line, err := signNewBuild(s, binary)
-	if err != nil || !strings.Contains(line, "no local signing identity") || !strings.Contains(line, "pulse service install") {
-		t.Fatalf("without an identity the daemon says so and goes on: %q %v", line, err)
-	}
-	if data, _ := os.ReadFile(binary); string(data) != "not a mach-o" {
-		t.Fatal("the build was touched without an identity")
-	}
-	if err := sg.sign(binary); err == nil {
-		t.Fatal("sign without a password file must fail")
-	}
-	if fileExists(binary + ".signing") {
+	if fileExists(missing + ".signing") {
 		t.Fatal("a failed sign left its copy behind")
 	}
-	if got := filepath.Base(sg.keychain); got != "pulse.keychain-db" || !strings.HasPrefix(sg.dir, filepath.Join(s.Home, "private")) {
-		t.Fatalf("the identity lives under the store's private dir: %+v", sg)
+	// A real ad-hoc Go build: the linker's requirement is its cdhash until pulse signs it.
+	build := filepath.Join(dir, "hello")
+	src := filepath.Join(dir, "hello.go")
+	if err := os.WriteFile(src, []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("go", "build", "-o", build, src).CombinedOutput(); err != nil {
+		t.Skipf("go build: %v %s", err, out)
+	}
+	if ok, applicable := cli.CodeSigned(build); ok || !applicable {
+		t.Fatalf("a fresh build is not pulse-signed: %v %v", ok, applicable)
+	}
+	if err := sign(build, false); err != nil {
+		t.Fatal(err)
+	}
+	if !signed(build) {
+		t.Fatal("signed in place: the requirement is pulse's")
+	}
+	req, _ := exec.Command("codesign", "-d", "-r-", build).CombinedOutput()
+	if text := strings.ReplaceAll(string(req), `"`, ""); !strings.Contains(text, "designated => identifier pulse") {
+		t.Fatalf("requirement: %s", req)
+	}
+	if out, err := exec.Command("codesign", "--verify", "--strict", build).CombinedOutput(); err != nil {
+		t.Fatalf("the signed build does not verify: %v %s", err, out)
+	}
+	out.Reset()
+	ensureSigned(&out, build)
+	if !strings.Contains(out.String(), "is signed as pulse") {
+		t.Fatalf("a signed binary is left alone: %q", out.String())
+	}
+	// The running-binary path: a copy is signed and renamed over the original.
+	if out, err := exec.Command("codesign", "--force", "-s", "-", build).CombinedOutput(); err != nil {
+		t.Fatalf("re-sign ad-hoc: %v %s", err, out)
+	}
+	out.Reset()
+	ensureSigned(&out, build)
+	if !strings.Contains(out.String(), "signed "+build+" as pulse") || !signed(build) || fileExists(build+".signing") {
+		t.Fatalf("running-binary sign: %q signed=%v", out.String(), signed(build))
 	}
 }

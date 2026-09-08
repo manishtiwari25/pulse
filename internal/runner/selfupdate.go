@@ -162,8 +162,7 @@ func buildAndInstall(s *store.Store, repo, rev string, env selfUpdateEnv) selfUp
 	if out, err := runIn(repo, timeout, env.GoCmd, "build", "-trimpath", "-o", newBinary, "./cmd/pulse"); err != nil {
 		return selfUpdateFailure(s, rev, env, "build", out, err)
 	}
-	note, err := signNewBuild(s, newBinary)
-	if err != nil {
+	if err := signNewBuild(s, newBinary); err != nil {
 		return selfUpdateFailure(s, rev, env, "sign", "", err)
 	}
 	version, err := runIn(repo, timeout, newBinary, "version")
@@ -198,9 +197,6 @@ func buildAndInstall(s *store.Store, repo, rev string, env selfUpdateEnv) selfUp
 		rev, firstNonEmpty(env.Revision, "an unstamped build"), env.Binary, repo, prev, now, env.Inflight, prev, env.Binary)
 	if err := selfUpdateFinding(s, env.Actor, summary, body); err != nil {
 		return selfUpdateOutcome{installed: true, line: fmt.Sprintf("self-update: installed %s; finding not posted: %s", shortRev(rev), errMessage(err))}
-	}
-	if note != "" {
-		return selfUpdateOutcome{installed: true, line: "self-update: " + summary + "\n" + note}
 	}
 	return selfUpdateOutcome{installed: true, line: "self-update: " + summary}
 }

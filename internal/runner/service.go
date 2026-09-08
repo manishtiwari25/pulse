@@ -123,10 +123,9 @@ func unitFileText(u serviceUnit, kind string, binary, logPath, pathEnv, pulseHom
 		"[Install]", "WantedBy=default.target", ""}, "\n")
 }
 
-// launcherName is the script launchd starts instead of pulse. macOS attributes a process tree's folder
-// access to the process launchd spawned; pulse is re-linked on every build and its ad-hoc identity with
-// it, so a plist that ran pulse directly re-asked for the Desktop grant after each install and held the
-// fleet until someone clicked Allow. /bin/sh never changes: the grant given once to it stays.
+// launcherName is the script launchd starts instead of pulse, so that a restart is a loop in the script
+// and the crash guard has a home. It does not carry the macOS folder grant: TCC holds pulse itself
+// responsible, and pulse's stable signing requirement (sign.go, ADR-035 rule 8) is what keeps the answer.
 const launcherName = "pulse-daemon.sh"
 
 func launcherPath(pulseHome string) string { return unitLauncherPath(daemonUnit(0), pulseHome) }
@@ -153,8 +152,8 @@ func unitLauncherText(u serviceUnit, binary string) string {
 		"#!/bin/sh",
 		"# Written by `pulse service install`. The service runs pulse through this script so that a",
 		"# restart is a loop here, not a launchd/systemd throttle, and the crash guard has a place to",
-		"# live. macOS holds pulse itself responsible for reading your folders; the local signing",
-		"# identity from `pulse service install` is what keeps that answer across builds (ADR-035).",
+		"# live. macOS holds pulse itself responsible for reading your folders; the stable signing",
+		"# requirement pulse gives every build is what keeps that answer across builds (ADR-035).",
 	}
 	start := shellJoin(append([]string{binary}, u.args...)) + " &"
 	if !u.guard {
@@ -458,7 +457,7 @@ func protectedFoldersNote(s *store.Store, system, userHome string) string {
 	}
 	return "macOS: " + strings.Join(hits, ", ") + " live under a folder macOS guards (" + strings.Join(protectedFolders, "/") + ").\n" +
 		"  The first time the daemon touches them a dialog asks whether pulse may access that folder: answer Allow once, or the\n" +
-		"  loop waits on it (pulse status then says the daemon is silent). macOS ties the answer to the binary's signature, so\n" +
-		"  pulse service install signs pulse with a local identity (one password prompt to trust it) and every later build keeps\n" +
-		"  the answer; an unsigned build asks again. Checkouts outside those folders never ask."
+		"  loop waits on it (pulse status then says the daemon is silent). macOS ties the answer to the binary's signing\n" +
+		"  requirement, so pulse signs every build as `pulse` and the answer holds across rebuilds; a build that skipped the\n" +
+		"  signing step asks again. Checkouts outside those folders never ask."
 }
