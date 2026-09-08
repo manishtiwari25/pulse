@@ -2,6 +2,7 @@ package runner
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -246,6 +247,17 @@ func leadDue(s *store.Store, slug, lead, now string) ([]tasks.Message, []dueTask
 		if last := mustOne(s.DB, "SELECT MAX(at) AS at FROM events WHERE action = ? AND subject = ?", followUpAction, t.ID); last != nil && last.str("at") >= tally.lastFailed {
 			continue
 		}
+		// A transient failure the daemon will run again by itself (ADR-036) needs no re-plan yet.
+		if slices.ContainsFunc(jobs, func(j tasks.Job) bool { return j.Status == "failed" && recoveryPending(s, j.ID) }) {
+			continue
+		}
+		for i, detail := range tally.details {
+			if id, _, ok := strings.Cut(detail, " "); ok {
+				if outcome := recoveryOutcome(s, id); outcome != "" {
+					tally.details[i] += " — " + outcome
+				}
+			}
+		}
 		due = append(due, dueTask{t, "failed", fmt.Sprintf("%d %s failed and none runs: %s. Re-plan it: queue a corrected job, or send it to review with the reason when only the owner can decide.",
 			tally.failed, plural(tally.failed, "job"), strings.Join(tally.details, "; "))})
 	}
@@ -339,7 +351,7 @@ func tendIdleLead(s *store.Store, slug, lead, now, actor string) []string {
 	failed := mustRows(s.DB, "SELECT id, title, result, finished_at FROM jobs WHERE project = ? AND status = 'failed' AND finished_at >= ? ORDER BY finished_at DESC LIMIT 10",
 		slug, plusHours(now, -24*7))
 	title := fmt.Sprintf("Lead: find the next work for %s (owner idle)", slug)
-	job, isNew, err := addJob(s, slug, leadKind, title, leadIdleBrief(slug, items, failed, maxJobs), 0, leadJobPriority,
+	job, isNew, err := addJob(s, slug, leadKind, title, leadIdleBrief(s, slug, items, failed, maxJobs), 0, leadJobPriority,
 		"lead-idle:"+slug+":"+stampOf(now), actor, true)
 	if err != nil {
 		return []string{fmt.Sprintf("lead of %s: %s", slug, errMessage(err))}
@@ -351,7 +363,7 @@ func tendIdleLead(s *store.Store, slug, lead, now, actor string) []string {
 	return []string{fmt.Sprintf("queued %s %s for %s: %s (owner idle %dh)", leadKind, job.str("id"), lead, title, hours)}
 }
 
-func leadIdleBrief(slug string, items []tally.WorkItem, failed []row, maxJobs int) string {
+func leadIdleBrief(s *store.Store, slug string, items []tally.WorkItem, failed []row, maxJobs int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are the lead of project `%s`. The owner has no open task and no unread message for you, and nothing is queued or running: this is your standing brief. "+
 		"Find the next most valuable Tier 0 or Tier 1 work and queue it yourself - the owner asked that nothing wait on a human that agents can do. "+
@@ -373,7 +385,11 @@ func leadIdleBrief(slug string, items []tally.WorkItem, failed []row, maxJobs in
 		b.WriteString("(none)\n")
 	} else {
 		for _, r := range failed {
-			fmt.Fprintf(&b, "- `%s` %s: %s\n", r.str("id"), trunc(r.str("title"), 100), trunc(strings.TrimSpace(r.str("result")), 200))
+			outcome := recoveryOutcome(s, r.str("id"))
+			if outcome != "" {
+				outcome = " — " + outcome
+			}
+			fmt.Fprintf(&b, "- `%s` %s: %s%s\n", r.str("id"), trunc(r.str("title"), 100), trunc(strings.TrimSpace(r.str("result")), 200), outcome)
 		}
 	}
 	fmt.Fprintf(&b, "\n## What to do\n\n"+

@@ -41,6 +41,14 @@ var JobKinds = []string{"onboard", "task", "improve", "answer", "ballot", "clean
 // JobEndStates are what `job finish` accepts.
 var JobEndStates = []string{"done", "failed", "cancelled", "blocked", "queued"}
 
+// JobRecoverAction is the event the recovery ledger is made of (ADR-036): one
+// row per failed job the daemon or a human decided about, subject = the
+// failed job's id, detail = JSON with at least "outcome" (requeued | replanned
+// | held | retried), "class", "why" and "root" (the first job of the chain).
+// The daemon recovers a failed job at most once per failure: a job.recover
+// event at or after the job's finished_at means it has been dealt with.
+const JobRecoverAction = "job.recover"
+
 // NameWords are the call signs `agent spawn` hands out.
 var NameWords = []string{"aurora", "borealis", "cinder", "delta", "ember", "fjord", "granite",
 	"harbor", "iris", "juniper", "kestrel", "lumen", "meridian", "nimbus",

@@ -35,6 +35,7 @@ type StatusReport struct {
 	Executors     string             `json:"executors"`
 	Capacity      string             `json:"capacity"`
 	Planner       []PlannerNote      `json:"planner"`
+	Recovery      []RecoveryNote     `json:"recovery"`
 	Settings      []store.SettingRow `json:"settings"`
 }
 
@@ -44,6 +45,8 @@ type PlannerNote struct {
 	Note    string `json:"note"`
 	Stale   bool   `json:"stale"`
 }
+
+type RecoveryNote = PlannerNote
 
 func statusCounts(s *store.Store, query string) ([]StatusCount, error) {
 	rows, err := s.DB.Query(query)
@@ -229,6 +232,46 @@ func PlannerNotes(s *store.Store) ([]PlannerNote, error) {
 			return nil, err
 		}
 		out = append(out, PlannerNote{Project: project, At: item.At, Note: item.Note, Stale: now.Sub(at) > time.Duration(2*interval)*time.Second})
+	}
+	return out, nil
+}
+
+func RecoveryNotes(s *store.Store) ([]RecoveryNote, error) {
+	raw, exists, err := s.Meta("recovery")
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return []RecoveryNote{}, nil
+	}
+	var stored map[string]struct {
+		At   string `json:"at"`
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return nil, fmt.Errorf("read recovery notes: %w", err)
+	}
+	interval, err := daemonIntervalSeconds(s)
+	if err != nil {
+		return nil, err
+	}
+	now, err := parseUTC(s.Now())
+	if err != nil {
+		return nil, err
+	}
+	projects := make([]string, 0, len(stored))
+	for project := range stored {
+		projects = append(projects, project)
+	}
+	sort.Strings(projects)
+	out := make([]RecoveryNote, 0, len(projects))
+	for _, project := range projects {
+		item := stored[project]
+		at, err := parseUTC(item.At)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, RecoveryNote{Project: project, At: item.At, Note: item.Note, Stale: now.Sub(at) > time.Duration(2*interval)*time.Second})
 	}
 	return out, nil
 }
@@ -448,6 +491,10 @@ func Status(s *store.Store) (*StatusReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.Recovery, err = RecoveryNotes(s)
+	if err != nil {
+		return nil, err
+	}
 	return r, nil
 }
 
@@ -482,6 +529,13 @@ func (r *StatusReport) Text() string {
 			stale = " (stale)"
 		}
 		fmt.Fprintf(&out, "planner    %s: %s%s\n", note.Project, note.Note, stale)
+	}
+	for _, note := range r.Recovery {
+		stale := ""
+		if note.Stale {
+			stale = " (stale)"
+		}
+		fmt.Fprintf(&out, "recovery   %s: %s%s\n", note.Project, note.Note, stale)
 	}
 	settings := make([]string, len(r.Settings))
 	for i, setting := range r.Settings {

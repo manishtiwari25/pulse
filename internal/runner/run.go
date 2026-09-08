@@ -347,7 +347,8 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			}
 		}()
 		briefText := writeBrief(briefOpts{Job: job, Project: project, Agent: agent, Clone: clone, Minutes: minutes,
-			Ballot: ballot, HasBall: len(ballot) > 0, Remote: ex.remote(), Setup: setupShown, Recipe: recipe, Found: found})
+			Ballot: ballot, HasBall: len(ballot) > 0, Remote: ex.remote(), Setup: setupShown, Recipe: recipe, Found: found,
+			Lessons: recentFailureLessons(s, project.str("slug"), now)})
 		exec1(s.DB, "INSERT OR REPLACE INTO briefs (run_id, job_id, agent, text, at) VALUES (?, ?, ?, ?, ?)", runID, job.str("id"), agent, briefText, now)
 		if o.DryRun {
 			status = "dry-run"

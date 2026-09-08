@@ -78,6 +78,24 @@ type JobInput struct {
 	NoDedupe  bool   // also queue when an open job with the same source exists
 }
 
+// RetryInput is the human's by-hand recovery path for a failed chain.
+type RetryInput struct {
+	JobID string
+	AsNew bool
+	Brief string
+	Actor string
+}
+
+// RetryResult names the job now carrying the work.
+type RetryResult struct {
+	Job     *Job   `json:"job"`
+	Outcome string `json:"outcome"`
+	Root    string `json:"root"`
+
+	reused bool
+	n      int
+}
+
 // AddJob queues a job; created is false when an open job with the same source already exists (that job is returned).
 func AddJob(s *store.Store, in JobInput) (*Job, bool, error) { return addJob(direct(s), in) }
 
@@ -151,6 +169,150 @@ func FinishJob(s *store.Store, jobID, agent, status, result, branch string, gene
 		return nil, err
 	}
 	return JobByID(s, jobID)
+}
+
+// RetryJob queues a failed or cancelled job again, in place or as one corrected copy.
+func RetryJob(s *store.Store, in RetryInput) (*RetryResult, error) {
+	if in.Actor == "" {
+		in.Actor = store.HumanAgent
+	}
+	w, err := begin(s)
+	if err != nil {
+		return nil, err
+	}
+	defer w.rollback()
+	out, err := retryJob(w, in)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func retryJob(w *writer, in RetryInput) (*RetryResult, error) {
+	job, err := jobByID(w.db, in.JobID)
+	if err != nil {
+		return nil, err
+	}
+	if job == nil {
+		return nil, refuse(2, "No job %s", pyRepr(in.JobID))
+	}
+	switch job.Status {
+	case "failed", "cancelled":
+	case "queued", "leased":
+		return nil, refuse(2, "Job %s is %s; it is already running", job.ID, job.Status)
+	case "done":
+		return nil, refuse(2, "Job %s is done; it has nothing to retry", job.ID)
+	default:
+		return nil, refuse(2, "Job %s is %s; only failed or cancelled jobs can be retried", job.ID, job.Status)
+	}
+
+	root, err := recoverRoot(w.db, job)
+	if err != nil {
+		return nil, err
+	}
+	n, err := recoverN(w.db, root)
+	if err != nil {
+		return nil, err
+	}
+	n++
+	if in.AsNew {
+		return retryAsNew(w, job, root, n, in)
+	}
+	return retryInPlace(w, job, root, n, in)
+}
+
+func retryInPlace(w *writer, job *Job, root string, n int, in RetryInput) (*RetryResult, error) {
+	result := fmt.Sprintf("retried by %s: %s", in.Actor, trunc(job.Result, 200))
+	appendBrief := retryNote(w.s.Now(), in.Actor, in.Brief)
+	if _, err := w.db.Exec(`UPDATE jobs SET status = 'queued', result = ?, branch = '', attempts = 0,
+		lease_agent = '', lease_until = '', finished_at = '', brief = brief || ? WHERE id = ?`,
+		result, appendBrief, job.ID); err != nil {
+		return nil, err
+	}
+	if err := w.event(in.Actor, "job.queued", job.ID, trunc400(result)); err != nil {
+		return nil, err
+	}
+	if err := w.event(in.Actor, JobRecoverAction, job.ID, recoverDetail("retried", root, n, in.Actor, "")); err != nil {
+		return nil, err
+	}
+	queued, err := jobByID(w.db, job.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &RetryResult{Job: queued, Outcome: "retried", Root: root, n: n}, nil
+}
+
+func retryAsNew(w *writer, job *Job, root string, n int, in RetryInput) (*RetryResult, error) {
+	brief := job.Brief + "\n\n## Earlier attempt (ADR-036)\n\n" +
+		fmt.Sprintf("Job `%s` failed at %s: %s.\n\n", job.ID, job.FinishedAt, job.Result)
+	if in.Brief != "" {
+		brief += in.Brief + "\n\n"
+	}
+	brief += "Start from the cause, fix it, then deliver the original task above."
+	copyJob, created, err := addJob(w, JobInput{Project: job.Project, Kind: job.Kind, Tier: job.Tier, Priority: job.Priority,
+		Title: retryTitle(root, job.Title), Brief: brief, Source: job.Source, CreatedBy: in.Actor})
+	if err != nil {
+		return nil, err
+	}
+	if err := w.event(in.Actor, JobRecoverAction, job.ID, recoverDetail("replanned", root, n, in.Actor, copyJob.ID)); err != nil {
+		return nil, err
+	}
+	return &RetryResult{Job: copyJob, Outcome: "replanned", Root: root, reused: !created, n: n}, nil
+}
+
+func retryNote(now, actor, brief string) string {
+	if brief == "" {
+		return ""
+	}
+	return fmt.Sprintf("\n\n## Retry note (%s, %s)\n\n%s", actor, now, brief)
+}
+
+// recoverRoot names the first job of the chain: a corrected copy keeps its original's source, so the ledger
+// links it - the "replanned" event that created it names the copy in "job" and the chain in "root".
+func recoverRoot(db dbx, job *Job) (string, error) {
+	var root string
+	err := db.QueryRow(`SELECT json_extract(detail, '$.root') FROM events WHERE action = ? AND json_valid(detail)
+		AND json_extract(detail, '$.outcome') = 'replanned' AND json_extract(detail, '$.job') = ? ORDER BY seq LIMIT 1`,
+		JobRecoverAction, job.ID).Scan(&root)
+	if err == sql.ErrNoRows {
+		return job.ID, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+// retryTitle prefixes the chain root once, however many copies deep the job is.
+func retryTitle(root, title string) string {
+	prefix := "Retry " + root + ": "
+	return trunc(prefix+strings.TrimPrefix(title, prefix), 200)
+}
+
+func recoverN(db dbx, root string) (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE action = ? AND json_valid(detail)
+		AND json_extract(detail, '$.root') = ?
+		AND json_extract(detail, '$.outcome') IN ('requeued', 'replanned', 'retried')`, JobRecoverAction, root).Scan(&n)
+	return n, err
+}
+
+func recoverDetail(outcome, root string, n int, actor, job string) map[string]any {
+	detail := map[string]any{
+		"class":     "human",
+		"n":         n,
+		"outcome":   outcome,
+		"root":      root,
+		"signature": "",
+		"why":       "pulse job retry by " + actor,
+	}
+	if job != "" {
+		detail["job"] = job
+	}
+	return detail
 }
 
 func trunc400(text string) string {

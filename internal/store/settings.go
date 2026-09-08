@@ -121,17 +121,24 @@ var EvolveRules = map[string]SettingRule{
 	"evolve.heldout":     {Kind: "choice", Choices: []string{"auto", "owner"}, Description: "auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)"},
 }
 
-// DaemonSettings govern the daemon's care of its own binary (ADR-035). Like
-// ComputeSettings they are not written at Create; Setting falls back here.
+// DaemonSettings govern the daemon's care of its own binary (ADR-035) and of
+// the jobs that failed (ADR-036: recovery). Like ComputeSettings they are not
+// written at Create; Setting falls back here.
 var DaemonSettings = map[string]string{
 	"daemon.self_update":               "on",
 	"daemon.self_update_retry_minutes": "60",
+	"daemon.recover":                   "on",
+	"daemon.recover_limit":             "3",
+	"daemon.recover_days":              "7",
 }
 
 // DaemonRules validate DaemonSettings.
 var DaemonRules = map[string]SettingRule{
 	"daemon.self_update":               {Kind: "choice", Choices: []string{"on", "off"}, Description: "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)"},
 	"daemon.self_update_retry_minutes": {Kind: "count", Min: 1, HasMin: true, Description: "minutes the daemon waits before building again after a failed build or smoke test"},
+	"daemon.recover":                   {Kind: "choice", Choices: []string{"on", "off"}, Description: "on: the daemon recovers failed jobs by itself - a transient failure runs again after a growing pause, a failure in the work becomes one corrected job carrying the failure, a structural one waits for its own fix - and writes the repeated causes down as memory records that later briefs carry; off: a failed job stays failed until `pulse job retry` (ADR-036)"},
+	"daemon.recover_limit":             {Kind: "count", Min: 0, HasMin: true, Description: "recoveries one failed job may receive (the same job run again or a corrected job queued for it) before the daemon holds it for the lead and the owner; 0 holds every failure at once"},
+	"daemon.recover_days":              {Kind: "count", Min: 1, HasMin: true, Description: "days a failed job stays eligible for recovery and counts toward a repeated-failure lesson"},
 }
 
 // LeadSettings govern the lead's standing brief (D-C): what the lead does

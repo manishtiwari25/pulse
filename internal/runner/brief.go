@@ -56,7 +56,8 @@ type briefOpts struct {
 	Remote  bool
 	Setup   string
 	Recipe  *Recipe
-	Found   bool // a recipe exists (record or file); false renders the "not written yet" teaching
+	Found   bool     // a recipe exists (record or file); false renders the "not written yet" teaching
+	Lessons []string // ADR-036: one line per memory record written from this project's repeated failures; none renders no section
 }
 
 func writeBrief(o briefOpts) string {
@@ -87,6 +88,16 @@ func writeBrief(o briefOpts) string {
 	w("")
 	if job.str("brief") != "" {
 		w("%s", job.str("brief"))
+		w("")
+	}
+	if len(o.Lessons) > 0 {
+		w("## Lessons from this project's recent failures (ADR-036)")
+		w("")
+		w("Earlier jobs here failed for the reasons below; the daemon wrote them down so you do not repeat them. Read the record with `pulse record show <id>` when you need the detail.")
+		w("")
+		for _, line := range o.Lessons {
+			w("- %s", line)
+		}
 		w("")
 	}
 	w("## Rules")

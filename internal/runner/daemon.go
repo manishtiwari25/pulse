@@ -336,6 +336,14 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 				for _, l := range tendTasks(s, slug, now, actor) {
 					say("%s", l)
 				}
+				// ADR-036: failed jobs are recovered by class - run again, re-planned, or held with the why -
+				// and the causes that repeat are written down as lessons the next briefs carry.
+				for _, l := range recoverFailedJobs(s, proj, now, actor) {
+					say("%s", l)
+				}
+				for _, l := range tendLessons(s, slug, now, actor) {
+					say("%s", l)
+				}
 			}
 			// D-J: every active project is planned before the first lease.
 			slugs := make([]string, 0, len(projects))

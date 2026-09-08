@@ -1,6 +1,7 @@
 package inspect
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"sort"
@@ -58,22 +59,28 @@ type Job struct {
 	FinishedAt string `json:"finished_at"`
 	Result     string `json:"result"`
 	Branch     string `json:"branch"`
+	Recovery   string `json:"recovery"`
 }
 
 // Jobs lists the queue in the same order as Python's print_jobs.
 func Jobs(s *store.Store, project string, includeFinished bool) ([]Job, error) {
-	q := `SELECT id, project, kind, tier, title, brief, source, priority, status,
-		created_at, created_by, lease_agent, lease_until, generation, attempts, finished_at, result, branch
-		FROM jobs WHERE 1=1`
+	q := `SELECT j.id, j.project, j.kind, j.tier, j.title, j.brief, j.source, j.priority, j.status,
+		j.created_at, j.created_by, j.lease_agent, j.lease_until, j.generation, j.attempts, j.finished_at, j.result, j.branch,
+		COALESCE(e.at, ''), COALESCE(e.detail, '')
+		FROM jobs j
+		LEFT JOIN events e ON e.seq = (
+			SELECT seq FROM events WHERE action = 'job.recover' AND subject = j.id ORDER BY seq DESC LIMIT 1
+		)
+		WHERE 1=1`
 	var params []any
 	if project != "" {
-		q += " AND project = ?"
+		q += " AND j.project = ?"
 		params = append(params, project)
 	}
 	if !includeFinished {
-		q += " AND status IN ('queued', 'leased', 'blocked')"
+		q += " AND j.status IN ('queued', 'leased', 'blocked')"
 	}
-	rows, err := s.DB.Query(q+" ORDER BY status, priority DESC, created_at", params...)
+	rows, err := s.DB.Query(q+" ORDER BY j.status, j.priority DESC, j.created_at", params...)
 	if err != nil {
 		return nil, err
 	}
@@ -81,14 +88,43 @@ func Jobs(s *store.Store, project string, includeFinished bool) ([]Job, error) {
 	out := []Job{}
 	for rows.Next() {
 		var j Job
+		var recoverAt, recoverDetail string
 		if err := rows.Scan(&j.ID, &j.Project, &j.Kind, &j.Tier, &j.Title, &j.Brief, &j.Source, &j.Priority,
 			&j.Status, &j.CreatedAt, &j.CreatedBy, &j.LeaseAgent, &j.LeaseUntil, &j.Generation, &j.Attempts,
-			&j.FinishedAt, &j.Result, &j.Branch); err != nil {
+			&j.FinishedAt, &j.Result, &j.Branch, &recoverAt, &recoverDetail); err != nil {
 			return nil, err
 		}
+		j.Recovery = recoveryText(recoverAt, recoverDetail)
 		out = append(out, j)
 	}
 	return out, rows.Err()
+}
+
+func recoveryText(at, detail string) string {
+	if detail == "" {
+		return ""
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(detail), &doc); err != nil {
+		return ""
+	}
+	outcome, _ := doc["outcome"].(string)
+	switch outcome {
+	case "requeued":
+		return "ran again " + at
+	case "replanned":
+		if job, _ := doc["job"].(string); job != "" {
+			return "re-planned as " + job
+		}
+		return "re-planned"
+	case "held":
+		why, _ := doc["why"].(string)
+		return "held: " + why
+	case "retried":
+		return "retried by hand " + at
+	default:
+		return ""
+	}
 }
 
 func runJobs(c *cli.Context, fs *flag.FlagSet, args []string) error {
@@ -111,8 +147,15 @@ func runJobs(c *cli.Context, fs *flag.FlagSet, args []string) error {
 			lease = fmt.Sprintf(" by %s until %s", j.LeaseAgent, j.LeaseUntil)
 		}
 		c.Printf("%-9s %-14s %-8s tier %d  %-34s %s%s\n", j.Status, j.Project, j.Kind, j.Tier, j.ID, trunc(j.Title, 60), lease)
-		if j.Result != "" {
-			c.Printf("          %s\n", trunc(j.Result, 100))
+		if j.Result != "" || j.Recovery != "" {
+			detail := trunc(j.Result, 100)
+			if j.Recovery != "" {
+				if detail != "" {
+					detail += "  "
+				}
+				detail += "recovery: " + trunc(j.Recovery, 100)
+			}
+			c.Printf("          %s\n", detail)
 		}
 	}
 	return nil

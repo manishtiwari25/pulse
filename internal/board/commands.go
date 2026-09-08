@@ -88,18 +88,20 @@ func init() {
 	})
 	cli.Register(cli.Command{
 		Name: "job", Group: "runner",
-		Summary: "add or finish a job by hand",
+		Summary: "add, finish, or retry a job by hand",
 		Usage: "pulse job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--project SLUG]\n" +
-			"       pulse job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]",
+			"       pulse job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n" +
+			"       pulse job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("kind", "task", "job kind: "+strings.Join(JobKinds, ", "))
 			fs.String("title", "", "one line (add)")
-			fs.String("brief", "", "what the worker reads (add)")
+			fs.String("brief", "", "what the worker reads (add); retry note (retry)")
 			fs.Int("tier", 1, "0 or 1 (add)")
 			fs.Int("priority", 0, "higher runs first (add)")
 			fs.String("source", "", "what queued it; an open job with the same source is reused (add)")
-			fs.String("result", "", "the outcome text (finish)")
+			fs.String("result", "", "the outcome text (finish); retry note (retry)")
 			fs.String("branch", "", "the branch the work is on (finish)")
+			fs.Bool("as-new", false, "retry by queuing one corrected copy (retry)")
 		},
 		Run: runJob,
 	})
@@ -466,7 +468,7 @@ func runDecide(c *cli.Context, fs *flag.FlagSet, args []string) error {
 
 func runJob(c *cli.Context, fs *flag.FlagSet, args []string) error {
 	if len(args) == 0 {
-		return usage("job", "add or finish")
+		return usage("job", "add, finish or retry")
 	}
 	switch args[0] {
 	case "add":
@@ -514,8 +516,41 @@ func runJob(c *cli.Context, fs *flag.FlagSet, args []string) error {
 			return cli.WriteJSON(c.Out, job)
 		}
 		fmt.Fprintf(c.Out, "%s %s\n", job.ID, job.Status)
+	case "retry":
+		if len(args) != 2 {
+			return usage("job", "retry JOB_ID")
+		}
+		agent, err := ResolveAgent(c.Store, c.Agent, false)
+		if err != nil {
+			return err
+		}
+		name := store.HumanAgent
+		if agent != nil {
+			name = agent.Name
+		}
+		brief := flagString(fs, "brief")
+		if result := flagString(fs, "result"); result != "" {
+			if brief != "" {
+				brief += "\n\n"
+			}
+			brief += result
+		}
+		retry, err := RetryJob(c.Store, RetryInput{JobID: args[1], AsNew: flagBool(fs, "as-new"), Brief: brief, Actor: name})
+		if err != nil {
+			return err
+		}
+		if c.JSON {
+			return cli.WriteJSON(c.Out, retry)
+		}
+		if retry.Outcome == "retried" {
+			fmt.Fprintf(c.Out, "job %s queued again (retry %d of this chain)\n", retry.Job.ID, retry.n)
+		} else if retry.reused {
+			fmt.Fprintf(c.Out, "job %s already has open corrected job %s (retry %d of this chain)\n", args[1], retry.Job.ID, retry.n)
+		} else {
+			fmt.Fprintf(c.Out, "job %s re-planned as %s\n", args[1], retry.Job.ID)
+		}
 	default:
-		return usage("job", "unknown action "+pyRepr(args[0])+"; add or finish")
+		return usage("job", "unknown action "+pyRepr(args[0])+"; add, finish or retry")
 	}
 	return nil
 }

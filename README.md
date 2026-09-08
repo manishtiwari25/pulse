@@ -152,6 +152,7 @@ pulse claim --area api --thread rate-limits --summary "taking the 429 fix"
 pulse post finding --area api --thread rate-limits --summary "root cause" --body-file note.txt
 pulse vote POST-ID up --summary "measured on three fixtures"
 pulse queue                                  # work wanted across every active project
+pulse job retry JOB_ID --brief "cause fixed" # by-hand recovery for a failed job
 pulse task list --project my-app             # the owner's tasks and their status
 pulse msg list --project my-app --unread     # what the owner said
 pulse compute request --project my-app --hours 4 --reason "parallel fixture runs"
@@ -265,6 +266,32 @@ useful-output pruning and permanently retired names are unchanged.
 of what deactivates (nothing is deleted) and ask before applying; `--dry-run`
 only previews, `--yes` skips the prompt.
 
+What the daemon does on its own when a job fails (ADR-036): every failed job is
+classified from what the runner wrote. A transient failure - the machine, the
+runner or the moment: a lost run, a runner error, an unreachable executor, a
+timeout or a landing conflict - runs again after a growing pause (5 min, 15,
+45, ... at most 6 h), with its stale branch removed first. A deterministic
+failure - the work: a non-zero exit, a reported failure, no report or commits
+that fail the check - becomes one corrected job whose brief carries the failure
+and the run log's tail; a task's job instead goes back to the lead to re-plan
+as before, and the lead waits for a transient failure the daemon will run
+again. A structural failure - a login, a missing tool, an invalid recipe,
+the owner's paths, an identity refusal, a hard stop, an owner question or a
+worker's own SUMMARY that it stopped blocked - is held with its reason because
+another path fixes it; so is a failure whose work a later job with the same
+source already carries. Recovery adds to a project's queue only while fewer
+than five jobs wait there, so recovered work interleaves with fresh work
+instead of flooding it. A chain is recovered at most `daemon.recover_limit`
+times (default 3) within `daemon.recover_days` (default 7), then held with one
+finding; `pulse status` shows one `recovery   <slug>: ...`
+line per project with failures, `pulse jobs --all` shows each failed job's
+recovery state, and `pulse job retry JOB_ID [--as-new] [--brief TEXT]` is the
+by-hand alternative. A cause that fails twice becomes a memory record
+(`MEM-failure-pattern-...`, `pulse record list memory`) the daemon writes and
+amends itself, and every later worker brief of that project opens with those
+lessons so the cause is not repeated. `daemon.recover off` keeps failed jobs
+failed until you retry them.
+
 What the daemon does on its own when an executor's Copilot login is refused
 (ADR-034): with a fine-grained token that reaches no repository placed by
 `pulse executor token --with-token` (stdin; `pulse executor token` reports
@@ -329,7 +356,7 @@ internal/records    typed records, Markdown import, guide, export, lead time
 internal/tasks      owner tasks, messages, compute requests and caps
 internal/bus        in-process event bus, redaction, tail/bridge for other processes
 internal/hooks      store hooks (scripts, webhooks) and harness hooks (copilot, claude)
-internal/runner     daemon, planner, workers, landing, executors, leads, compute providers, experiments
+internal/runner     daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery
 internal/evolve     the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage
 internal/inspect    status, projects, jobs, agents, events, settings, schema, verify, signers
 internal/hub        the HTTP API and SSE the console uses
