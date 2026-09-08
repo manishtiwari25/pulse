@@ -326,10 +326,11 @@ func TestTendHealRefusedRetiresAndDoesNotHealTwice(t *testing.T) {
 	placed := stubPlaceLogin(t, false)
 	setSetting(t, s, "compute.self_retire", "0")
 
-	// No admin on record: the route is pulseadmin@<public ip> of our Azure VM. The refusal marks the episode.
+	// No admin on record: the route is the admin user at the executor's own ssh host, so the alias's key applies
+	// (pulseadmin@<public ip> would miss it). The refusal marks the episode.
 	lines := tendExecutors(s, testNow, testDaemon)
 	calls := placed.calls()
-	if len(calls) != 1 || calls[0].admin != "pulseadmin@203.0.113.7" {
+	if len(calls) != 1 || calls[0].admin != "pulseadmin@vm-seven" {
 		t.Fatalf("placement: %+v", calls)
 	}
 	if ex := executorRow(s, "vm-seven"); ex.str("status") != "drained" || ex.str("healed_at") != testNow {
@@ -617,5 +618,19 @@ func TestExecutorLoginRecordsAdminRoute(t *testing.T) {
 	}
 	if ex := executorRow(s, "vm-seven"); ex.str("admin") != "pulseadmin@vm-seven-admin" {
 		t.Fatalf("admin not recorded: %v", ex)
+	}
+}
+
+func TestAdminRoutePrefersTheExecutorHost(t *testing.T) {
+	for _, c := range []struct{ address, ip, want string }{
+		{"pulse@pulse-vm1", "20.0.0.1", "pulseadmin@pulse-vm1"},
+		{"pulse-vm1", "20.0.0.1", "pulseadmin@pulse-vm1"},
+		{"pulse@", "20.0.0.1", "pulseadmin@20.0.0.1"},
+		{"", "20.0.0.1", "pulseadmin@20.0.0.1"},
+		{"", "", ""},
+	} {
+		if got := adminRoute(c.address, c.ip); got != c.want {
+			t.Errorf("adminRoute(%q, %q) = %q, want %q", c.address, c.ip, got, c.want)
+		}
 	}
 }

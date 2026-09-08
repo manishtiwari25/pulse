@@ -125,8 +125,9 @@ func tendExecutors(s *store.Store, now, actor string) []string {
 }
 
 // healExecutor places the login source once per drain episode (healed_at) over the admin route: executors.admin,
-// else pulseadmin@<public ip> when the VM is PULSE's on Azure. The token is read from the source and handed to
-// executorLogin as a stream; it is not kept.
+// else the admin user at the executor's own ssh host (so the alias's key and options apply), else at the public
+// address of PULSE's Azure VM. The token is read from the source and handed to executorLogin as a stream; it is
+// not kept.
 func healExecutor(s *store.Store, now, actor string, r row, identify func() (*retiredVM, bool)) (bool, string) {
 	name := r.str("name")
 	tok, origin, err := loginSource(s)
@@ -138,8 +139,8 @@ func healExecutor(s *store.Store, now, actor string, r row, identify func() (*re
 	}
 	admin := r.str("admin")
 	if admin == "" {
-		if vm, ours := identify(); ours && vm.Provider == "azure" && vm.IP != "" {
-			admin = azureAdminUser + "@" + vm.IP
+		if vm, ours := identify(); ours && vm.Provider == "azure" {
+			admin = adminRoute(r.str("address"), vm.IP)
 		}
 	}
 	if admin == "" {
@@ -168,6 +169,23 @@ func healExecutor(s *store.Store, now, actor string, r row, identify func() (*re
 			Agent: actorAgent(s, actor), Date: now})
 	}
 	return true, fmt.Sprintf("healed %s: login placed from %s", name, origin)
+}
+
+// adminRoute is the admin login for a VM with no admin on record: the admin user at the host part of the
+// executor's address (an ssh alias keeps its IdentityFile, port and jumps; the user on the command line wins
+// over the alias's User), else at the VM's public address, else nothing.
+func adminRoute(address, ip string) string {
+	host := strings.TrimSpace(address)
+	if _, after, ok := strings.Cut(host, "@"); ok {
+		host = after
+	}
+	if host == "" {
+		host = ip
+	}
+	if host == "" {
+		return ""
+	}
+	return azureAdminUser + "@" + host
 }
 
 // retireExecutor: the machine stops costing money now, the row is removed, and a finding says how to undo it.
