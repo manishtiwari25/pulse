@@ -21,11 +21,13 @@ import type { EvolutionDoc, EvolveFixture, EvolveGate, EvolveGates, EvolveLevel,
 // (constitution, evaluators) are seeded at onboarding from the template's
 // text; the console shows their revision and whether they are still that
 // text. The baseline is the daemon's to measure (ADR-031): the console
-// reports where that stands and asks nothing. The one human step left is the
-// owner's two private held-out fixtures (ADR-012), named as such wherever a
-// step is named - and since ADR-032 taken here too: a dialog has the hub
-// write the two files, never read back, with the command kept as the
-// terminal alternative. Nothing here starts a measurement or edits a record.
+// reports where that stands and asks nothing. The two private held-out
+// fixtures (ADR-012) are the daemon's too since ADR-033: under
+// evolve.heldout auto it writes them sealed and the hub counts them as
+// generated, so no step is named; under owner they are the one human step
+// left, named as such and taken here (ADR-032): a dialog has the hub write
+// the two files, never read back, with the command kept as the terminal
+// alternative. Nothing here starts a measurement or edits a record.
 
 const LEVELS = "A observe · B record · C rehearse · D evolve";
 const LEVEL_TITLE = "highest self-improvement level allowed right now (" + LEVELS + ")";
@@ -346,7 +348,7 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
       kind: "heldout",
       label: GATE_LABEL.heldout,
       title: "Your one step: two private held-out fixtures",
-      body: "The daemon does everything else - it measured the baseline and runs each cycle. Two fixtures only you can see are your proof the loop is not grading itself (ADR-012). Write them here, outside every checkout - the hub writes the files and never reads them back - or with the command; the loop for " + slug + " opens from there.",
+      body: "The daemon does everything else - it measured the baseline and runs each cycle. Two fixtures only you can see are your proof the loop is not grading itself (ADR-012). evolve.heldout is on owner, so they are yours: write them here, outside every checkout - the hub writes the files and never reads them back - or with the command; the loop for " + slug + " opens from there. On auto the daemon writes them itself (ADR-033).",
       command: next,
     };
   return null;
@@ -436,6 +438,20 @@ function StepBlock({ step }: { step: GateStep }) {
 // in a terminal (ADR-032); every other step is the owner's to run in a terminal.
 const stepFootnote = (kind: GateKind | null) => (kind === "heldout" ? "Done here or in a terminal; the console writes the two files and never reads them back." : "Yours to run in a terminal on the hub machine. The console names the step and never starts a measurement.");
 
+// The held-out badge: counts only, and since ADR-033 how many of the ready
+// fixtures the daemon wrote sealed - weaker evidence than yours, so it is
+// said where the count is said. An older hub sends no `generated`.
+type HeldoutCounts = { count: number; pending: number; generated?: number };
+export function heldoutLabel(h: HeldoutCounts): string {
+  const gen = h.generated ?? 0;
+  return "held-out " + num(h.count) + (gen ? " (" + (gen === h.count ? "generated" : num(gen) + " generated") + ")" : "") + (h.pending ? " · " + num(h.pending) + " pending" : "");
+}
+export function heldoutTitle(h: HeldoutCounts): string {
+  const gen = h.generated ?? 0;
+  if (!gen) return "your held-out evaluators - counted here, never named";
+  return (gen === h.count ? "all " : num(gen) + " of ") + plural(h.count, "held-out fixture") + " written by the daemon, sealed (ADR-033) - rewrite any from the dialog to make it yours; a fixture you write is never overwritten";
+}
+
 // Level, reason and next step, every gate as a badge, then the fixtures.
 // `gates` null means the hub could not evaluate them: the error shows, the
 // fixtures still list. `docs` (the constitution and evaluators as the
@@ -480,8 +496,8 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
             </ToneBadge>
             <BaselineChip g={g} score={gates.baseline} recordedBy={gates.baseline_id} />
             {h ? (
-              <ToneBadge tone={h.problem ? "warn" : "neutral"} title={h.problem || "your held-out evaluators - counted here, never named"}>
-                {"held-out " + num(h.count) + (h.pending ? " · " + num(h.pending) + " pending" : "")}
+              <ToneBadge tone={h.problem ? "warn" : "neutral"} title={h.problem || heldoutTitle(h)}>
+                {heldoutLabel(h)}
               </ToneBadge>
             ) : null}
             {/* The set exists and the gate has moved on: the dialog's done state (add one, rewrite one) stays reachable from here (ADR-032). */}

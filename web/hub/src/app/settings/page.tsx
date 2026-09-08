@@ -41,19 +41,20 @@ const GROUPS: Group[] = [
   {
     id: "compute",
     title: "Compute (Azure)",
-    blurb: "Caps for machines agents may ask for, and the Azure target they are created in. Credentials never live here: the hub machine's az login is the auth.",
-    keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits", "compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"],
+    blurb: "Caps for machines agents may ask for, and the Azure target they are created in. Credentials never live here: the hub machine's az login is the auth. A machine whose Copilot login is refused is the daemon's to mend or retire (ADR-034): it places the executor token you put on file with pulse executor token, else deallocates the VM PULSE created, retires it and deletes it after the grace hours - a finding each time, never a question.",
+    keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits", "compute.self_heal", "compute.self_retire", "compute.retire_grace_hours", "compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"],
     match: (n) => n.startsWith("compute."),
     clusters: [
       { title: "Caps", keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"] },
+      { title: "Refused logins", keys: ["compute.self_heal", "compute.self_retire", "compute.retire_grace_hours"] },
       { title: "Azure target", keys: ["compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"] },
     ],
   },
   {
     id: "evolve",
     title: "Self-improvement loop",
-    blurb: "Bounds on pulse-evolve. The held-out directory is yours alone: agents never see its path. The set itself - folder and two fixtures - is created from the Held-out fixtures dialog on a project's Self-improvement panel, or with pulse evolve setup DIR.",
-    keys: ["evolve.loop", "evolve.limits", "evolve.tolerance", "evolve.heldout_dir"],
+    blurb: "Bounds on pulse-evolve. The held-out directory is yours alone: agents never see its path. With evolve.heldout on auto the daemon creates the set itself - a private folder under the store and two fixtures written by a sealed model call that sees no repository, board or store - and labels them generated (ADR-033). On owner, you write them from the Held-out fixtures dialog on a project's Self-improvement panel, or with pulse evolve setup DIR; a fixture you write is never overwritten either way.",
+    keys: ["evolve.loop", "evolve.limits", "evolve.tolerance", "evolve.heldout", "evolve.heldout_dir"],
     match: (n) => n.startsWith("evolve."),
   },
 ];
@@ -68,6 +69,9 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "compute.max_hours_per_day", value: "0", default: "0", kind: "count", min: 0, choices: null, description: "VM-hours the runner may approve per UTC day; 0 means none" },
   { name: "compute.auto_approve", value: "0", default: "0", kind: "switch", min: null, choices: null, description: "1 lets within-cap requests start without the owner; 0 holds every request for a decision" },
   { name: "compute.budget_credits", value: "0", default: "0", kind: "count", min: 0, choices: null, description: "credits the compute requests may spend in total; 0 means no budget" },
+  { name: "compute.self_heal", value: "1", default: "1", kind: "switch", min: null, choices: null, description: "1: a refused login is replaced from the executor token on file (pulse executor token); 0: never" },
+  { name: "compute.self_retire", value: "1", default: "1", kind: "switch", min: null, choices: null, description: "1: a VM PULSE created whose login stays refused is deallocated and retired, then deleted after the grace hours; 0: it is left as it is" },
+  { name: "compute.retire_grace_hours", value: "24", default: "24", kind: "count", min: 1, choices: null, description: "hours a retired VM stays deallocated before it is deleted; az vm start and pulse executor activate within them keep it" },
   { name: "compute.azure.subscription", value: "", default: "", kind: "identifier", min: null, choices: null, description: "Azure subscription id the VMs are created in" },
   { name: "compute.azure.resource_group", value: "", default: "", kind: "identifier", min: null, choices: null, description: "resource group that holds the executor VMs" },
   { name: "compute.azure.location", value: "", default: "", kind: "identifier", min: null, choices: null, description: "Azure region, e.g. westeurope" },
@@ -76,6 +80,7 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "evolve.loop", value: "0", default: "0", kind: "switch", min: null, choices: null, description: "1 lets pulse-evolve run cycles back to back; 0 keeps the loop off" },
   { name: "evolve.limits", value: "none", default: "none", kind: "text", min: null, choices: null, description: "caps the constitution writes for the loop, or none" },
   { name: "evolve.tolerance", value: "0.02", default: "0.02", kind: "text", min: null, choices: null, description: "fraction a measured check may regress before a cycle is discarded" },
+  { name: "evolve.heldout", value: "auto", default: "auto", kind: "choice", min: null, choices: ["auto", "owner"], description: "auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)" },
   // Owner-private: the hub answers "[owner-private]" instead of the real path once set.
   { name: "evolve.heldout_dir", value: "", default: "", kind: "identifier", min: null, choices: null, description: "path to the owner's held-out evaluators; never shown to agents", secret: true },
 ];
@@ -89,6 +94,8 @@ function withExtraDefaults(rows: Setting[]): Setting[] {
 const SWITCH_LABELS: Record<string, { on: string; off: string }> = {
   stop: { on: "STOPPED - nothing runs", off: "running" },
   "compute.auto_approve": { on: "on - within-cap requests start without you", off: "off - every request waits for you" },
+  "compute.self_heal": { on: "on - a refused login is replaced from the executor token", off: "off - a refused login stays refused" },
+  "compute.self_retire": { on: "on - a refused VM PULSE created is deallocated, retired, then deleted", off: "off - a refused VM is left running" },
   "evolve.loop": { on: "on - cycles run back to back", off: "off - the loop waits" },
 };
 

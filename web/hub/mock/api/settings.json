@@ -338,6 +338,63 @@
       "value": "[owner-private]"
     },
     {
+      "choices": [
+        "auto",
+        "owner"
+      ],
+      "default": "auto",
+      "description": "auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)",
+      "kind": "choice",
+      "min": null,
+      "name": "evolve.heldout",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "auto"
+    },
+    {
+      "choices": [
+        "0",
+        "1"
+      ],
+      "default": "1",
+      "description": "1: a refused login is replaced from the executor token on file (pulse executor token); 0: never",
+      "kind": "switch",
+      "min": null,
+      "name": "compute.self_heal",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "1"
+    },
+    {
+      "choices": [
+        "0",
+        "1"
+      ],
+      "default": "1",
+      "description": "1: a VM PULSE created whose login stays refused is deallocated and retired, then deleted after the grace hours; 0: it is left as it is",
+      "kind": "switch",
+      "min": null,
+      "name": "compute.self_retire",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "1"
+    },
+    {
+      "choices": null,
+      "default": "24",
+      "description": "hours a retired VM stays deallocated before it is deleted; az vm start and pulse executor activate within them keep it",
+      "kind": "count",
+      "min": 1,
+      "name": "compute.retire_grace_hours",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "24"
+    },
+    {
       "choices": null,
       "default": "none",
       "description": "none, or a budget such as cycles=20,hours=48 after which the loop stops by itself",

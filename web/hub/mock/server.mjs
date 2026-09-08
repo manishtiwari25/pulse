@@ -31,15 +31,16 @@ const JUDGES = [
   { name: "starter-tier0-in-place", label: "Only README.md may change; no plan, work-unit or decision record was created" },
   { name: "starter-tier2-proposes-first", label: "Only new files under decisions/; nothing else touched" },
 ];
-// MOCK_HELDOUT=pending|ready|missing starts the set in that state (default: not configured) so each face of the dialog can be looked at.
+// MOCK_HELDOUT=pending|ready|generated|missing starts the set in that state (default: not configured) so each face of the dialog can be looked at;
+// `generated` is the ADR-033 set the daemon wrote itself (two ready, both labelled generated, under the store's private folder).
 function heldoutState() {
-  const h = { configured: false, present: false, count: 0, pending: 0, problem: "", judges: JUDGES, dir: "", sets: {} };
+  const h = { configured: false, present: false, count: 0, pending: 0, generated: 0, problem: "", judges: JUDGES, dir: "", sets: {} };
   const preset = process.env.MOCK_HELDOUT || "";
-  if (preset) Object.assign(h, { configured: true, present: preset !== "missing", dir: HOME + "/private/pulse-heldout" }, preset === "ready" ? { count: 2 } : preset === "pending" ? { pending: 2 } : {});
-  if (preset) h.sets[h.dir] = { count: h.count, pending: h.pending, fresh: false };
+  if (preset) Object.assign(h, { configured: true, present: preset !== "missing", dir: preset === "generated" ? HOME + "/.pulse/private/heldout" : HOME + "/private/pulse-heldout" }, preset === "ready" ? { count: 2 } : preset === "generated" ? { count: 2, generated: 2 } : preset === "pending" ? { pending: 2 } : {});
+  if (preset) h.sets[h.dir] = { count: h.count, pending: h.pending, generated: h.generated, fresh: false };
   return h;
 }
-const heldoutView = (h) => ({ configured: h.configured, present: h.present, count: h.count, pending: h.pending, problem: h.problem, judges: h.judges });
+const heldoutView = (h) => ({ configured: h.configured, present: h.present, count: h.count, pending: h.pending, generated: h.generated, problem: h.problem, judges: h.judges });
 const loadJson = async (rel) => JSON.parse(await readFile(join(root, rel), "utf8"));
 async function init() {
   state.heldout = heldoutState();
@@ -137,6 +138,7 @@ const heldoutRefused = (res, why) => fail(res, 400, "Private fixture set is not 
 // The projects whose next human step was the held-out one: after a write their
 // gates move the way the real hub's do (status.go), so the card leaves the inbox.
 const heldoutGated = new Set();
+const heldoutAuto = () => (state.settings.settings.find((s) => s.name === "evolve.heldout")?.value || "auto") !== "owner";
 function heldoutGates() {
   const h = state.heldout;
   const ready = h.configured && h.present && h.count >= 2 && h.pending === 0 && !h.problem;
@@ -144,7 +146,7 @@ function heldoutGates() {
   for (const p of state.projects) {
     if (!heldoutGated.has(p.slug) && !/^pulse evolve setup/.test(p.evolve_next || "")) continue;
     heldoutGated.add(p.slug);
-    if (!ready) [p.evolve_level, p.evolve_next] = ["C", "pulse evolve setup DIR"];
+    if (!ready) [p.evolve_level, p.evolve_next] = ["C", heldoutAuto() ? "none - the daemon writes the private set itself" : "pulse evolve setup DIR"];
     else if (loopOn) [p.evolve_level, p.evolve_next] = ["D", "none"];
     else [p.evolve_level, p.evolve_next] = ["C", "pulse settings set evolve.loop 1"];
   }
@@ -159,11 +161,11 @@ function evolutionView(slug, d) {
   if (d.loop) out.loop = { ...d.loop, heldout_present: h.configured && h.present };
   if (d.gates) {
     const problem = !h.configured ? "evolve.heldout_dir is not set" : !h.present ? "private fixture validation failed; owner: pulse evolve setup DIR" : h.problem;
-    out.gates = { ...d.gates, heldout: { count: h.count, pending: h.pending, ...(problem ? { problem } : {}) } };
+    out.gates = { ...d.gates, heldout: { count: h.count, pending: h.pending, generated: h.generated, ...(problem ? { problem } : {}) } };
     if (p && heldoutGated.has(slug)) {
       out.gates.level = p.evolve_level;
       out.gates.next_human_step = p.evolve_next;
-      out.gates.reason = p.evolve_level === "D" ? "the loop may run until a stop rule fires" : /evolve\.loop/.test(p.evolve_next) ? "evolve.loop is off" : "the two private held-out fixtures are the one step the owner is the point of (ADR-012)";
+      out.gates.reason = p.evolve_level === "D" ? "the loop may run until a stop rule fires" : /evolve\.loop/.test(p.evolve_next) ? "evolve.loop is off" : heldoutAuto() ? "the daemon writes the private held-out set on its next tick (ADR-033)" : "the two private held-out fixtures are the one step the owner is the point of (ADR-012)";
     }
   }
   return out;
@@ -503,12 +505,12 @@ async function handle(req, res) {
         const full = privatePath(dir);
         const clash = state.projects.find((p) => p.status === "active" && (full === p.path || full.startsWith(p.path + "/") || p.path.startsWith(full + "/")));
         if (clash) return heldoutRefused(res, "the directory must be outside every registered project");
-        if (full === HOME + "/.pulse" || full.startsWith(HOME + "/.pulse/")) return heldoutRefused(res, "the directory must not overlap the fleet area");
+        if (full === HOME + "/.pulse" || full === HOME + "/.pulse/fleet" || full.startsWith(HOME + "/.pulse/fleet/")) return heldoutRefused(res, "the directory must not overlap the fleet area");
         // Templates are written once per folder and never overwritten; a folder seen before keeps its counts.
         const set = (h.sets[full] ||= { count: 0, pending: 2, fresh: true });
         const created = set.fresh ? 4 : 0;
         set.fresh = false;
-        Object.assign(h, { configured: true, present: true, count: set.count, pending: set.pending, problem: "", dir: full });
+        Object.assign(h, { configured: true, present: true, count: set.count, pending: set.pending, generated: set.generated || 0, problem: "", dir: full });
         // The store's `setting` event, masked the way the real hub masks a private setting (bus.PrivateSettings).
         emit("human", "setting", "evolve.heldout_dir", "[owner-private]");
         heldoutGates();
@@ -530,7 +532,8 @@ async function handle(req, res) {
       if (h.pending > 0) [h.pending, h.count] = [h.pending - 1, h.count + 1];
       else if (slot > 0 && slot > h.count) return heldoutRefused(res, "slot " + slot + " is out of range (1-" + h.count + ")");
       else if (slot === 0) h.count += 1;
-      Object.assign(h.sets[h.dir], { count: h.count, pending: h.pending });
+      else if (h.generated > 0) h.generated -= 1; // rewriting a generated pair makes it the owner's (ADR-033 ledger)
+      Object.assign(h.sets[h.dir], { count: h.count, pending: h.pending, generated: h.generated });
       heldoutGates();
       return send(res, 200, { configured: true, present: true, count: h.count, pending: h.pending, created: 0, problem: "" });
     }

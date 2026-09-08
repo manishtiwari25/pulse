@@ -241,7 +241,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                An absolute path or ~. It may not exist yet: the hub creates it, readable by you alone (0700). Outside every checkout and not under <Mono>~/.pulse</Mono>.
+                An absolute path or ~. It may not exist yet: the hub creates it, readable by you alone (0700). Outside every checkout and not under <Mono>~/.pulse/fleet</Mono>; the daemon&apos;s own default is <Mono>~/.pulse/private/heldout</Mono> (ADR-033).
               </p>
               {browsing ? (
                 <FolderBrowser

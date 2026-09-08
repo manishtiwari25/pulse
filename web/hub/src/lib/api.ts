@@ -533,6 +533,8 @@ export interface HeldoutPayload {
   present: boolean;
   count: number;
   pending: number;
+  // ADR-033: how many of the ready fixtures the daemon wrote sealed (omitted by an older hub).
+  generated?: number;
   problem?: string;
   judges: HeldoutJudge[];
   // On a write: template files the setup created (4 the first time, 0 after).
@@ -783,7 +785,9 @@ export interface EvolveGates {
   baseline_job?: BaselineJobRef | null;
   baseline_failed_at?: string;
   public_fixtures: number;
-  heldout: { count: number; pending: number; problem?: string };
+  // ADR-033: `generated` counts the ready fixtures the daemon wrote sealed;
+  // an older hub omits it.
+  heldout: { count: number; pending: number; generated?: number; problem?: string };
   kept: number;
   discarded: number;
   voted: { tried: number; kept: number; rate: number };
