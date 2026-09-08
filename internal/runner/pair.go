@@ -159,32 +159,19 @@ func pairManualCopilotLines() []string {
 }
 
 // pairInspectScript: read-only remote inspection; prints key=value lines and never changes the machine.
-// It also prints `arch=` (which linux binary to ship) and `hands_sha256=` (compared once the binary is built).
+// It also reads hands metadata for comparison once the linux binary is built.
 func pairInspectScript(workdir, pubkey, handsHash, dropinHash string) string {
 	return `#!/bin/sh
 set -u
 WORKDIR=` + shellQuote(workdir) + `
 PUBKEY=` + shellQuote(pubkey) + `
-HANDS_HASH=` + shellQuote(handsHash) + `
 DROPIN_HASH=` + shellQuote(dropinHash) + `
 DROPIN=` + shellQuote(pairDropinPath) + `
 printf 'uname=%s\n' "$(uname -s 2>/dev/null || echo unknown)"
 printf 'arch=%s\n' "$(uname -m 2>/dev/null || echo unknown)"
 if sudo -n true 2>/dev/null; then echo sudo=yes; else echo sudo=no; fi
 if getent passwd pulse >/dev/null 2>&1; then echo user=present; else echo user=absent; fi
-if [ -f ` + pairHandsPath + ` ]; then
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf 'hands_sha256=%s\n' "$(sha256sum ` + pairHandsPath + ` | awk '{print $1}')"
-  fi
-  if [ -n "$HANDS_HASH" ] && command -v sha256sum >/dev/null 2>&1 && [ "$(sha256sum ` + pairHandsPath + ` | awk '{print $1}')" = "$HANDS_HASH" ]; then
-    echo hands=present
-  else
-    echo hands=differs
-  fi
-else
-  echo hands=absent
-fi
-if [ -d "$WORKDIR" ]; then
+` + pairInspectHandsScript(pairHandsPath, handsHash) + `if [ -d "$WORKDIR" ]; then
   echo workdir=present
   if command -v stat >/dev/null 2>&1; then
     owner="$(stat -c '%U:%G:%a' "$WORKDIR" 2>/dev/null || ls -ld "$WORKDIR" | awk '{print $3 ":" $4}')"
@@ -567,12 +554,16 @@ func pairCloseControlMaster(admin, controlPath string) {
 	_, _, _, _ = runSSH(context.Background(), []string{"ssh", "-O", "exit", "-o", "ControlPath=" + controlPath, "-p", strconv.Itoa(port), user + "@" + host}, nil, 30*time.Second)
 }
 
-func pairInspectionSummary(insp map[string]string) []string {
+func pairInspectionSummary(insp map[string]string, hands []byte) []string {
 	keys := []string{"uname", "arch", "sudo", "user", "hands", "workdir", "workdir_owner", "authorized_keys",
 		"authorized_keys_lines", "dropin", "dropin_dir", "remotes", "apt", "copilot", "node", "git", "gitconfig"}
 	out := []string{"inspection:"}
 	for _, k := range keys {
-		out = append(out, fmt.Sprintf("  %s=%s", k, insp[k]))
+		value := insp[k]
+		if k == "hands" {
+			value = pairHandsSummary(insp, hands)
+		}
+		out = append(out, fmt.Sprintf("  %s=%s", k, value))
 	}
 	return out
 }
@@ -757,7 +748,7 @@ func pairExecutor(s *store.Store, admin, name, now string, o pairOpts) (*pairRep
 	arch := goArchFor(insp["arch"])
 	var hands []byte
 	handsFrom := ""
-	if !o.DryRun && insp["uname"] == "Linux" {
+	if insp["uname"] == "Linux" && (!o.DryRun || insp["hands"] != "absent") {
 		if arch == "" {
 			return nil, pairRefuse("remote architecture %s has no pulse build (x86_64 and aarch64 do)", pyRepr(insp["arch"]))
 		}
@@ -765,15 +756,8 @@ func pairExecutor(s *store.Store, admin, name, now string, o pairOpts) (*pairRep
 		if err != nil {
 			return nil, err
 		}
-		if insp["hands_sha256"] != "" {
-			if insp["hands_sha256"] == sha256Bytes(hands) {
-				insp["hands"] = "present"
-			} else {
-				insp["hands"] = "differs"
-			}
-		}
 	}
-	*lines = append(*lines, pairInspectionSummary(insp)...)
+	*lines = append(*lines, pairInspectionSummary(insp, hands)...)
 	if handsFrom != "" {
 		*lines = append(*lines, fmt.Sprintf("hands binary: linux/%s, %d bytes, from %s", arch, len(hands), handsFrom))
 	}

@@ -248,6 +248,18 @@ messages get answers. `pulse work` runs one worker here; `pulse land`,
 `pulse plan`, `pulse executor`, `pulse pair`, `pulse hands` and `pulse env`
 are the same pieces by hand. `pulse stop` / `pulse start` is the kill switch.
 
+`pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) reads the
+machine and prints the proposed scripts without applying them. For installed
+hands it loads or builds the Linux template locally, then reports mismatches
+as `hands=differs (installed VERSION SHA7, template VERSION SHA7)`. Versions
+come from Go build metadata or a script's `# pulse-hands VERSION` header;
+`SHA7` is the first seven hex digits of its SHA-256. Metadata is read, never
+executed. Exact shipped pre-Go script hashes report `hands=older` with
+`legacy-COMMIT` versions, including the old `.sh` installation path. Edited
+or unrecognized artifacts remain `differs`, even if they claim an older
+version; unavailable metadata is `unknown`. These diagnostics do not change
+the pairing approval gate or the apply policy.
+
 Successfully started local workers and the existing SSH hands supervisor
 record an initial heartbeat and refresh it every 60 seconds, including quiet
 work and lead jobs. Presence is offline at five minutes without valid evidence

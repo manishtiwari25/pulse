@@ -97,8 +97,12 @@ func TestPairScripts(t *testing.T) {
 func TestPairDryRunOverFakeSSH(t *testing.T) {
 	s := newStore(t)
 	hub := t.TempDir()
-	old := runSSH
-	t.Cleanup(func() { runSSH = old })
+	old, oldBinary := runSSH, handsBinary
+	t.Cleanup(func() { runSSH, handsBinary = old, oldBinary })
+	handsBinary = func(string) ([]byte, string, error) {
+		t.Fatal("absent hands need no template in a dry run")
+		return nil, "", nil
+	}
 	var scripts []string
 	runSSH = func(_ context.Context, argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
 		scripts = append(scripts, string(stdin))

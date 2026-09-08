@@ -85,7 +85,7 @@ func init() {
 	cli.Register(cli.Command{Name: "hands", Group: "runner", Summary: "the forced command on a paired machine (probe, prepare, key, run, ...)",
 		Usage: "pulse hands VERB [ARGS]  (or via SSH_ORIGINAL_COMMAND)", NoStore: true, Raw: true, Run: cmdHands})
 	cli.Register(cli.Command{Name: "pair", Group: "runner", Summary: "turn a Linux machine into an executor over its admin ssh session",
-		Usage: "pulse pair ADMIN@HOST[:PORT] --name N [--workdir D] [--workers N] [--projects P] [--install-copilot] [--dry-run]",
+		Usage: "pulse pair ADMIN@HOST[:PORT] --name N [--workdir D] [--workers N] [--projects P] [--install-copilot] [--dry-run | --inspect]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("name", "", "executor name (lowercase words with dashes)")
 			fs.String("workdir", "/srv/pulse", "work directory on the machine")
@@ -93,6 +93,7 @@ func init() {
 			fs.String("projects", "*", "comma-separated project slugs or *")
 			fs.Bool("install-copilot", false, "install node and copilot through apt")
 			fs.Bool("dry-run", false, "inspect and print the scripts; change nothing")
+			fs.Bool("inspect", false, "alias for --dry-run")
 		}, Run: cmdPair})
 	cli.Register(cli.Command{Name: "onboard", Group: "runner", Summary: "register a project (init) and queue its onboarding job; prints what stays human",
 		Usage: "pulse onboard [PATH] [--name N] [--remote URL] [--verify CMD] [--brain] [--now T]", NoStore: true,
@@ -618,7 +619,8 @@ func cmdPair(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		return fail(2, "pulse pair needs --name (the executor's name)")
 	}
 	rep, err := pairExecutor(c.Store, args[0], strFlag(fs, "name"), nowOf(c), pairOpts{Workdir: strFlag(fs, "workdir"), Workers: intFlag(fs, "workers"),
-		Projects: strFlag(fs, "projects"), InstallCopilot: boolFlag(fs, "install-copilot"), DryRun: boolFlag(fs, "dry-run"), Actor: actorOf(c)})
+		Projects: strFlag(fs, "projects"), InstallCopilot: boolFlag(fs, "install-copilot"),
+		DryRun: boolFlag(fs, "dry-run") || boolFlag(fs, "inspect"), Actor: actorOf(c)})
 	if err != nil {
 		return err
 	}
