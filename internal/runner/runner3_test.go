@@ -3,10 +3,12 @@ package runner
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -88,11 +90,29 @@ func TestOwnerPathsTouched(t *testing.T) {
 // -- service: the plist and unit render; nothing is loaded ---------------------------------------------------
 
 func TestServiceRender(t *testing.T) {
+	// launchd runs the launcher through /bin/sh, never pulse itself (the folder grant must outlive rebuilds).
 	plist := serviceFileText("launchd", 120, "/opt/pulse", "/h/.pulse/logs/daemon.log", "/usr/bin:/bin", "/h/.pulse")
-	for _, want := range []string{"<string>" + serviceLabel + "</string>", "<string>/opt/pulse</string>", "<string>daemon</string>", "<string>--interval</string>", "<string>120</string>",
+	for _, want := range []string{"<string>" + serviceLabel + "</string>", "<string>/bin/sh</string>", "<string>/h/.pulse/bin/pulse-daemon.sh</string>",
 		"<key>KeepAlive</key>", "PULSE_HOME", "/h/.pulse/logs/daemon.log"} {
 		if !strings.Contains(plist, want) {
 			t.Errorf("plist lacks %q", want)
+		}
+	}
+	if strings.Contains(plist, "<string>/opt/pulse</string>") || strings.Contains(plist, "<string>daemon</string>") {
+		t.Error("plist runs pulse directly")
+	}
+	if got := launcherFromPlist(plist); got != "/h/.pulse/bin/pulse-daemon.sh" {
+		t.Errorf("launcherFromPlist = %q", got)
+	}
+	launcher := launcherText("/opt/my pulse", 120)
+	for _, want := range []string{"#!/bin/sh", "'/opt/my pulse' daemon --interval 120 &", "trap 'kill -TERM \"$pid\" 2>/dev/null' TERM INT HUP", "exit \"$code\""} {
+		if !strings.Contains(launcher, want) {
+			t.Errorf("launcher lacks %q\n%s", want, launcher)
+		}
+	}
+	for _, line := range strings.Split(launcher, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "exec ") {
+			t.Error("the launcher execs pulse, which would make it the responsible process again")
 		}
 	}
 	unit := serviceFileText("systemd", 60, "/opt/pulse", "/h/.pulse/logs/daemon.log", "/usr/bin", "/h/.pulse")
@@ -112,7 +132,7 @@ func TestServiceRender(t *testing.T) {
 	if err != nil || !strings.HasSuffix(path, "Library/LaunchAgents/"+serviceLabel+".plist") {
 		t.Fatalf("dry run: %s %v", path, err)
 	}
-	if fileExists(path) || len(calls) != 0 || !strings.Contains(out.String(), "<string>90</string>") {
+	if fileExists(path) || fileExists(launcherPath(pulseHome)) || len(calls) != 0 || !strings.Contains(out.String(), "--interval 90 &") {
 		t.Fatalf("dry run wrote or loaded something: %v\n%s", calls, out.String())
 	}
 	out.Reset()
@@ -161,8 +181,21 @@ func TestServiceRender(t *testing.T) {
 		return 0, ""
 	}
 	out.Reset()
-	if _, err := installService(&out, 90, pulseHome, "darwin", userHome, false); err != nil || bootstraps != 2 || slept != 1 || strings.Contains(out.String(), "exit 5") {
+	darwinPath, err := installService(&out, 90, pulseHome, "darwin", userHome, false)
+	if err != nil || bootstraps != 2 || slept != 1 || strings.Contains(out.String(), "exit 5") {
 		t.Fatalf("bootstrap retry: err=%v bootstraps=%d slept=%d\n%s", err, bootstraps, slept, out.String())
+	}
+	// The darwin install writes the launcher, executable, and the plist points at it; uninstall removes both.
+	if fi, err := os.Stat(launcherPath(pulseHome)); err != nil || fi.Mode().Perm()&0o100 == 0 {
+		t.Fatalf("launcher: %v %v", fi, err)
+	}
+	if data, _ := os.ReadFile(darwinPath); !strings.Contains(string(data), "<string>"+launcherPath(pulseHome)+"</string>") {
+		t.Fatalf("plist does not run the launcher:\n%s", data)
+	}
+	out.Reset()
+	uninstallService(&out, "darwin", userHome)
+	if fileExists(darwinPath) || fileExists(launcherPath(pulseHome)) || !strings.Contains(out.String(), "removed "+launcherPath(pulseHome)) {
+		t.Fatalf("darwin uninstall left files:\n%s", out.String())
 	}
 	bootstraps, slept = 0, 0
 	runService = func(argv []string) (int, string) {
@@ -337,5 +370,51 @@ func TestSSHCommandWireFormat(t *testing.T) {
 	raw, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(last, "b64 "))
 	if string(raw) != "count\x00JOB-1\x00abc\x00" {
 		t.Fatalf("payload %q", raw)
+	}
+}
+
+// The launcher keeps pulse a child, returns its exit code and forwards TERM; a shell runs it for real.
+func TestLauncherReturnsTheChildExitAndForwardsTerm(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	// A stand-in pulse: exits 3 at once (the daemon's "binary changed" code).
+	fake := filepath.Join(dir, "pulse")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\n[ \"$1\" = daemon ] || exit 9\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(dir, launcherName)
+	if err := os.WriteFile(launcher, []byte(launcherText(fake, 5)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := exec.Command("sh", launcher).Run()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 3 {
+		t.Fatalf("exit code not passed through: %v", err)
+	}
+
+	// A stand-in that sleeps and exits 0 on TERM: the launcher forwards the signal and returns its code.
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", launcher)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("after TERM: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the launcher did not stop after TERM")
 	}
 }

@@ -37,10 +37,12 @@ func xmlEsc(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
 
-// serviceFileText renders the plist or unit: ProgramArguments = [pulse, daemon, --interval, N], KeepAlive / Restart=always.
+// serviceFileText renders the plist or unit. systemd runs pulse directly; launchd runs launcherPath through
+// /bin/sh (see launcherText) so macOS keeps one folder grant across pulse builds.
 func serviceFileText(kind string, interval int, binary, logPath, pathEnv, pulseHome string) string {
 	args := []string{binary, "daemon", "--interval", strconv.Itoa(interval)}
 	if kind == "launchd" {
+		args = []string{"/bin/sh", launcherPath(pulseHome)}
 		lines := []string{`<?xml version="1.0" encoding="UTF-8"?>`,
 			`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
 			`<plist version="1.0">`, `<dict>`,
@@ -70,6 +72,47 @@ func serviceFileText(kind string, interval int, binary, logPath, pathEnv, pulseH
 		"Environment=PATH=" + pathEnv, "Environment=PULSE_HOME=" + pulseHome,
 		"StandardOutput=append:" + logPath, "StandardError=append:" + logPath, "",
 		"[Install]", "WantedBy=default.target", ""}, "\n")
+}
+
+// launcherName is the script launchd starts instead of pulse. macOS attributes a process tree's folder
+// access to the process launchd spawned; pulse is re-linked on every build and its ad-hoc identity with
+// it, so a plist that ran pulse directly re-asked for the Desktop grant after each install and held the
+// fleet until someone clicked Allow. /bin/sh never changes: the grant given once to it stays.
+const launcherName = "pulse-daemon.sh"
+
+func launcherPath(pulseHome string) string { return filepath.Join(pulseHome, "bin", launcherName) }
+
+// launcherText: pulse runs as the script's child (never exec'd, which would make pulse the responsible
+// process again); TERM/INT/HUP are forwarded and pulse's own exit code is returned, so the daemon's
+// "exit 3 on a changed binary" still restarts it through KeepAlive.
+func launcherText(binary string, interval int) string {
+	return strings.Join([]string{
+		"#!/bin/sh",
+		"# Written by `pulse service install`. launchd runs this script so that /bin/sh, not the",
+		"# re-linked pulse binary, is the process macOS holds responsible for reading your folders:",
+		"# the Desktop/Documents grant you give once survives every new build. Do not exec pulse here.",
+		shellJoin([]string{binary, "daemon", "--interval", strconv.Itoa(interval)}) + " &",
+		"pid=$!",
+		`trap 'kill -TERM "$pid" 2>/dev/null' TERM INT HUP`,
+		`wait "$pid"`,
+		"code=$?",
+		`while [ "$code" -gt 128 ] && kill -0 "$pid" 2>/dev/null; do`,
+		`  wait "$pid"`,
+		"  code=$?",
+		"done",
+		`exit "$code"`,
+		""}, "\n")
+}
+
+// launcherFromPlist finds the launcher path a plist runs, "" when the plist runs pulse directly.
+func launcherFromPlist(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "<string>") && strings.HasSuffix(line, "/"+launcherName+"</string>") {
+			return strings.TrimSuffix(strings.TrimPrefix(line, "<string>"), "</string>")
+		}
+	}
+	return ""
 }
 
 func serviceCommands(kind, path, action string) [][]string {
@@ -125,10 +168,26 @@ func installService(out io.Writer, interval int, pulseHome, system, userHome str
 		pathEnv = "/usr/local/bin:/usr/bin:/bin"
 	}
 	text := serviceFileText(kind, interval, pulseBinary(), filepath.Join(logDir, "daemon.log"), pathEnv, pulseHome)
+	launcher := ""
+	if kind == "launchd" {
+		launcher = launcherText(pulseBinary(), interval)
+		fmt.Fprintf(out, "launcher: %s\n", launcherPath(pulseHome))
+	}
 	fmt.Fprintf(out, "%s service file: %s\n", kind, path)
 	if dryRun {
+		if launcher != "" {
+			fmt.Fprintln(out, launcher)
+		}
 		fmt.Fprintln(out, text)
 		return path, nil
+	}
+	if launcher != "" {
+		if err := os.MkdirAll(filepath.Dir(launcherPath(pulseHome)), 0o755); err != nil {
+			return path, err
+		}
+		if err := os.WriteFile(launcherPath(pulseHome), []byte(launcher), 0o755); err != nil {
+			return path, err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return path, err
@@ -178,6 +237,12 @@ func uninstallService(out io.Writer, system, userHome string) string {
 		fmt.Fprintf(out, "%s%s\n", strings.Join(cmd, " "), suffix)
 	}
 	if fileExists(path) {
+		if data, err := os.ReadFile(path); err == nil {
+			if launcher := launcherFromPlist(string(data)); launcher != "" && fileExists(launcher) {
+				_ = os.Remove(launcher)
+				fmt.Fprintf(out, "removed %s\n", launcher)
+			}
+		}
 		_ = os.Remove(path)
 		fmt.Fprintf(out, "removed %s\n", path)
 	}
@@ -251,7 +316,7 @@ func protectedFoldersNote(s *store.Store, system, userHome string) string {
 		return ""
 	}
 	return "macOS: " + strings.Join(hits, ", ") + " live under a folder macOS guards (" + strings.Join(protectedFolders, "/") + ").\n" +
-		"  The first time the daemon touches them a dialog asks whether pulse may access that folder: answer Allow, or the loop\n" +
-		"  waits on it (pulse status then says the daemon is silent). System Settings > Privacy & Security > Files and Folders keeps\n" +
-		"  the answer; rebuilding pulse changes its code hash and macOS may ask once more. Checkouts outside those folders never ask."
+		"  The first time the daemon touches them a dialog asks whether sh (the service runs pulse through /bin/sh) may access that\n" +
+		"  folder: answer Allow once, or the loop waits on it (pulse status then says the daemon is silent). System Settings >\n" +
+		"  Privacy & Security > Files and Folders keeps the answer across pulse builds. Checkouts outside those folders never ask."
 }

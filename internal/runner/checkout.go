@@ -105,7 +105,7 @@ func macOSHint(path string) string {
 	}
 	for _, f := range protectedFolders {
 		if strings.Contains(path, "/"+f+"/") {
-			return " (a macOS dialog is asking whether pulse may access your " + f + " folder: answer Allow)"
+			return " (a macOS dialog is asking whether pulse - named sh when the service runs it - may access your " + f + " folder: answer Allow once; the grant outlives new builds)"
 		}
 	}
 	return ""

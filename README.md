@@ -50,10 +50,11 @@ pulse hub                                      # opens http://127.0.0.1:8765
 ```
 
 On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
-system ask once whether `pulse` may access that folder the first time the
-daemon touches it; answer Allow (the loop waits on the dialog, and `pulse
-status` reports the daemon as silent until then). Rebuilding the binary changes
-its code hash and macOS may ask again; checkouts elsewhere never ask.
+system ask once whether `sh` may access that folder the first time the daemon
+touches it; answer Allow (the loop waits on the dialog, and `pulse status`
+reports the daemon as silent until then). The service runs pulse through a
+small `/bin/sh` launcher (`~/.pulse/bin/pulse-daemon.sh`) precisely so that
+one answer outlives every rebuild of the binary; checkouts elsewhere never ask.
 
 Everything else happens in the console:
 
