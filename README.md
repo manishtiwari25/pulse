@@ -105,6 +105,12 @@ Everything else happens in the console:
 The console binds to `127.0.0.1` only. Nothing in it is a wrapper around an
 agent command; it calls the same store helpers the CLI uses.
 
+The **Agents** roster defaults to **Live**: supervised online executions and
+idle reusable workers/leads. **History** shows offline, unknown, legacy and
+pruned identities; **All** restores the whole roster. Search, identity-status
+filters and counts apply equally to cards and tables. Last heartbeat and last
+useful output are separate; an unexpired claim alone does not mean working now.
+
 ## The agents' path
 
 ```bash
@@ -208,6 +214,20 @@ messages get answers. `pulse work` runs one worker here; `pulse land`,
 `pulse plan`, `pulse executor`, `pulse pair`, `pulse hands` and `pulse env`
 are the same pieces by hand. `pulse stop` / `pulse start` is the kill switch.
 
+Successfully started local workers and the existing SSH hands supervisor
+record an initial heartbeat and refresh it every 60 seconds, including quiet
+work and lead jobs. Presence is offline at five minutes without valid evidence
+and returns on a fresh, current-run observation. Old hands without heartbeat
+support and pre-heartbeat sessions remain unknown rather than appearing online.
+The hub only accepts acknowledged remote child observations, not an SSH client
+or lease as proof of life. Exit, cancellation and timeout stop observations.
+
+Heartbeats replace bounded metadata, not posts or useful-output scores.
+`pulse agent list` and `pulse agents` show the same presence while retaining
+their identity/history fields (`--all` still includes pruned names). A missed
+heartbeat does not kill, retire, requeue or change lease ownership. Existing
+useful-output pruning and permanently retired names are unchanged.
+
 `pulse remove project <slug>` and `pulse remove executor <name>` show a preview
 of what deactivates (nothing is deleted) and ask before applying; `--dry-run`
 only previews, `--yes` skips the prompt.
@@ -243,6 +263,11 @@ npm run build                                # regenerates out/, which web/hub/d
 ```
 
 Commit `web/hub/out/` together with the source change that produced it.
+The existing mock includes live, idle, offline, legacy, pruned and multi-session
+roster cases. `MOCK_AGENT_RETURN_MS=12000` exercises a returning worker twelve
+seconds after the first roster read; use a free loopback port via
+`PULSE_HUB_PORT`. `MOCK_ROSTER_ONLY=1 npm run mock:generate`
+refreshes only the roster fixture rather than unrelated console fixtures.
 
 ```text
 cmd/pulse/          the binary (blank-imports every command package)

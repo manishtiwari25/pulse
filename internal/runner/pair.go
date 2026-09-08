@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -548,7 +549,7 @@ func pairOpenControlMaster(admin, controlPath string) (int, string, error) {
 	}
 	cmd := append([]string{"ssh"}, sshOptions...)
 	cmd = append(cmd, "-o", "ControlMaster=yes", "-o", "ControlPersist=120", "-o", "ControlPath="+controlPath, "-p", strconv.Itoa(port), user+"@"+host, "true")
-	rc, out, errText, err := runSSH(cmd, nil, 60*time.Second)
+	rc, out, errText, err := runSSH(context.Background(), cmd, nil, 60*time.Second)
 	if err != nil {
 		if err == exec.ErrNotFound {
 			return 0, "", &ExecutorUnreachable{"ssh is not installed on this machine"}
@@ -563,7 +564,7 @@ func pairCloseControlMaster(admin, controlPath string) {
 	if err != nil {
 		return
 	}
-	_, _, _, _ = runSSH([]string{"ssh", "-O", "exit", "-o", "ControlPath=" + controlPath, "-p", strconv.Itoa(port), user + "@" + host}, nil, 30*time.Second)
+	_, _, _, _ = runSSH(context.Background(), []string{"ssh", "-O", "exit", "-o", "ControlPath=" + controlPath, "-p", strconv.Itoa(port), user + "@" + host}, nil, 30*time.Second)
 }
 
 func pairInspectionSummary(insp map[string]string) []string {

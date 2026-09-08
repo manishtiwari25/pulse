@@ -278,14 +278,10 @@ func (h *Handler) roster(views []projectView) ([]map[string]any, error) {
 	for _, agent := range stored {
 		people[agent.Name] = newPerson(agent)
 	}
-	now := ""
-	for _, view := range views {
-		if view.Data != nil && str(view.Data.Params["now"]) > now {
-			now = str(view.Data.Params["now"])
-		}
-	}
-	if now == "" {
-		now = h.Store.Now()
+	now := h.Store.Now()
+	presence, err := board.AgentPresences(h.Store, now)
+	if err != nil {
+		return nil, err
 	}
 	reference := parseTime(now)
 	for _, view := range views {
@@ -356,6 +352,13 @@ func (h *Handler) roster(views []projectView) ([]map[string]any, error) {
 	}
 	out := make([]map[string]any, 0, len(people))
 	for _, row := range people {
+		p, ok := presence[str(row["agent"])]
+		if !ok {
+			p = board.AgentPresence{Presence: "legacy", PresenceReason: "historical identity; no supervised execution", PresenceCheckedAt: now}
+		}
+		row["presence"], row["presence_reason"], row["last_heartbeat_at"] = p.Presence, p.PresenceReason, p.LastHeartbeatAt
+		row["presence_session"], row["presence_checked_at"] = p.PresenceSession, p.PresenceCheckedAt
+		row["presence_expires_at"] = p.PresenceExpiresAt
 		if row["first_seen"] == "" {
 			row["first_seen"] = row["created_at"]
 		}
@@ -374,7 +377,7 @@ func (h *Handler) roster(views []projectView) ([]map[string]any, error) {
 			last = reference
 		}
 		row["days_since"] = math.RoundToEven(max(0, reference.Sub(last).Hours()/24)*1000) / 1000
-		if row["status"] != "pruned" && len(row["active_claims"].([]map[string]any)) > 0 {
+		if p.Presence == "online" && len(row["active_claims"].([]map[string]any)) > 0 {
 			row["status"] = "working"
 		}
 		out = append(out, row)

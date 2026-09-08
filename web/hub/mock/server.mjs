@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rosterScenarios } from "./roster.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "api");
 const port = Number(process.env.PULSE_HUB_PORT ?? 8787);
@@ -16,6 +17,10 @@ const delay = Number(process.env.MOCK_DELAY_MS ?? 120);
 // hub does (dist.go embeds web/hub/out); used by `npm run serve:out`.
 const staticDir = process.env.MOCK_STATIC ? normalize(join(dirname(fileURLToPath(import.meta.url)), "..", process.env.MOCK_STATIC)) : "";
 const now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+// Begin the return on the first roster read, so startup delays cannot skip it.
+const agentReturnMS = Number(process.env.MOCK_AGENT_RETURN_MS ?? 0);
+let agentReturned = agentReturnMS <= 0;
+let agentReturnStarted = false;
 
 // ----- in-memory state for writes ----------------------------------------
 
@@ -541,6 +546,16 @@ async function handle(req, res) {
   }
 
   // GET - live state first, fixtures second
+  if (segs[0] === "roster" && segs.length === 1) {
+    if (!agentReturned && !agentReturnStarted) {
+      agentReturnStarted = true;
+      setTimeout(() => {
+        agentReturned = true;
+        emit("delta", "agent.resume", "delta", { session: "run-delta-current" });
+      }, agentReturnMS);
+    }
+    return send(res, 200, rosterScenarios(await loadJson("roster.json"), now(), agentReturned));
+  }
   if (segs[0] === "heldout" && segs.length === 1) return send(res, 200, heldoutView(state.heldout));
   if (segs[0] === "projects" && segs.length === 3 && segs[2] === "evolution") {
     const d = await fixture("projects/" + segs[1] + "/evolution");

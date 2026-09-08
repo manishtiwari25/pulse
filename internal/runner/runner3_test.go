@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -312,7 +313,7 @@ func TestRemoteRunThroughLocalHands(t *testing.T) {
 	old := runSSH
 	t.Cleanup(func() { runSSH = old })
 	// the fake ssh: hand SSH_ORIGINAL_COMMAND to the test binary acting as `pulse hands`, like sshd would
-	runSSH = func(argv []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
+	runSSH = func(_ context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
 		cmd := exec.Command(bin)
 		cmd.Env = append(os.Environ(), "PULSE_TEST_HANDS=1", "PULSE_HANDS_WORKDIR="+workdir, "HOME="+handsHome,
 			"PULSE_HANDS_ALLOW_ANY_WORKER=1", "PULSE_HANDS_KEYS_OK=yes", "SSH_ORIGINAL_COMMAND="+argv[len(argv)-1])

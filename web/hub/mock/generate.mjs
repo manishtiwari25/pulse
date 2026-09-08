@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rosterScenarios } from "./roster.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..", "..");
@@ -29,6 +30,7 @@ let clock = Date.parse("2026-09-01T09:00:00Z");
 const stamp = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 const tick = (minutes = 7) => stamp((clock += minutes * 60_000));
 const frozen = "2026-09-07T09:00:00Z";
+const rosterOnly = process.env.MOCK_ROSTER_ONLY === "1";
 
 function pulse(args, { agent, json, input } = {}) {
   const argv = ["--home", home, "--no-color", "--now", tick()];
@@ -262,7 +264,9 @@ async function capture() {
         await new Promise((r) => setTimeout(r, 100));
       }
     }
-    for (const route of ["activity", "compute", "events", "executors", "health", "messages", "notices", "org", "proposals", "roster", "runner", "settings", "timeline", "votes"]) write(route, await get(route));
+    write("roster", rosterScenarios(await get("roster"), frozen));
+    if (rosterOnly) return;
+    for (const route of ["activity", "compute", "events", "executors", "health", "messages", "notices", "org", "proposals", "runner", "settings", "timeline", "votes"]) write(route, await get(route));
     write("constitution", await get("constitution?project=pulse"));
     const records = write("records", await get("records"));
     for (const r of records.records) write("records/" + r.id, await get("records/" + encodeURIComponent(r.id)));
@@ -286,7 +290,7 @@ async function capture() {
 try {
   if (!process.env.PULSE_BIN) execFileSync("go", ["build", "-o", bin, "./cmd/pulse"], { cwd: repo, stdio: "inherit" });
   seed();
-  rmSync(out, { recursive: true, force: true });
+  if (!rosterOnly) rmSync(out, { recursive: true, force: true });
   await capture();
   console.log(`fixtures written to ${out}`);
 } finally {

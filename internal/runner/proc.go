@@ -22,19 +22,40 @@ type outcome struct {
 // the budget ends or ctx is cancelled (Python: subprocess timeout; the hands'
 // timeout(1) --kill-after). stdin is closed. A budget <= 0 means no limit.
 func runGroup(ctx context.Context, argv []string, dir string, env []string, stdin []byte, budget time.Duration) (outcome, error) {
+	return runGroupObserved(ctx, argv, dir, env, stdin, budget, nil)
+}
+
+func runGroupObserved(ctx context.Context, argv []string, dir string, env []string, stdin []byte, budget time.Duration, observer *processObserver) (outcome, error) {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir, cmd.Env, cmd.Stdin = dir, env, bytes.NewReader(stdin)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err, timedOut, started := waitCommand(ctx, cmd, budget, killAfter, observer)
+	if !started && !timedOut {
+		return outcome{ExitCode: -1}, err
+	}
+	return finish(err, out.String(), errb.String(), timedOut), nil
+}
+
+type processObserver struct {
+	beat func()
+	stop func()
+}
+
+// waitCommand is shared by local workers and the hands supervisor. Only a
+// successfully started child earns observations; checks and SSH clients do not.
+func waitCommand(ctx context.Context, cmd *exec.Cmd, budget, grace time.Duration, observer *processObserver) (error, bool, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = dir
-	cmd.Env = env
-	cmd.Stdin = bytes.NewReader(stdin)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := ctx.Err(); err != nil {
+		return err, true, false
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
-		return outcome{ExitCode: -1}, err
+		return err, false, false
 	}
+	started := time.Now()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	var timer <-chan time.Time
@@ -43,26 +64,67 @@ func runGroup(ctx context.Context, argv []string, dir string, env []string, stdi
 		defer t.Stop()
 		timer = t.C
 	}
-	timedOut := false
-	select {
-	case err := <-done:
-		return finish(err, out.String(), errb.String(), false), nil
-	case <-timer:
-		timedOut = true
-	case <-ctx.Done():
-		timedOut = true
+	var beats <-chan time.Time
+	stop := func() {}
+	if observer != nil {
+		ch, cancel := heartbeatTicks(heartbeatInterval)
+		beats = ch
+		defer cancel()
+		stopped := false
+		stop = func() {
+			if !stopped {
+				stopped = true
+				observer.stop()
+			}
+		}
+		defer stop()
 	}
-	killGroup(cmd.Process.Pid, done)
-	return finish(nil, out.String(), errb.String(), timedOut), nil
+	observe := observer != nil
+	for {
+		// Prefer an already observed exit/cancellation over a coincident tick.
+		select {
+		case err := <-done:
+			return err, false, true
+		default:
+		}
+		if ctx.Err() != nil || (budget > 0 && time.Since(started) >= budget) {
+			break
+		}
+		if observe {
+			observer.beat()
+			observe = false
+		}
+		select {
+		case err := <-done:
+			return err, false, true
+		case <-timer:
+			stop()
+			killGroupAfter(cmd.Process.Pid, done, grace)
+			return nil, true, true
+		case <-ctx.Done():
+			stop()
+			killGroupAfter(cmd.Process.Pid, done, grace)
+			return nil, true, true
+		case <-beats:
+			observe = true
+		}
+	}
+	stop()
+	killGroupAfter(cmd.Process.Pid, done, grace)
+	return nil, true, true
 }
 
 // killGroup is timeout(1) --kill-after: TERM the group, wait, then KILL it.
 func killGroup(pid int, done <-chan error) {
+	killGroupAfter(pid, done, killAfter)
+}
+
+func killGroupAfter(pid int, done <-chan error, grace time.Duration) {
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 	select {
 	case <-done:
 		return
-	case <-time.After(killAfter):
+	case <-time.After(grace):
 	}
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 	select {

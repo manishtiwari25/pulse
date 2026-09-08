@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -206,6 +207,19 @@ func Expected(oracle string) string {
 		oracle = strings.ReplaceAll(oracle, r[0], r[1])
 	}
 	return oracle
+}
+
+var (
+	presenceColumn  = regexp.MustCompile(`(?m)^(\S+[ \t]+\S+[ \t]+\S+[ \t]+)presence[ \t]+(?:online|idle|offline|unknown|legacy|pruned)[ \t]+`)
+	heartbeatColumn = regexp.MustCompile(`last heartbeat [^ \t\r\n]+  `)
+)
+
+// LegacyAgentListing removes only WU-024's added diagnostic columns. Identity,
+// scorecards and useful-output history still compare byte for byte with Python;
+// the presence contract is asserted independently by the existing Go suites.
+func LegacyAgentListing(text string) string {
+	text = presenceColumn.ReplaceAllString(text, "${1}")
+	return heartbeatColumn.ReplaceAllString(text, "")
 }
 
 // Same compares oracle and Go output after Rewrites and Normalize and reports
