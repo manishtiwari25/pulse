@@ -227,6 +227,26 @@ EVO-constitution, EVO-evaluators, EVO-archive).
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 
+#### Legacy fixture notes: F03 and F08
+
+At PULSE's Go/store HEAD `b56e905` (2026-09-08), both legacy requests are
+**no-op**: their `docs/` targets no longer exist. They remain historical
+cases in `EVO-evaluators`, not names in PULSE's six registered `starter-*`
+fixtures (`pulse evolve fixture list --project amistio-template`).
+
+| Fixture | Status at that HEAD | Premise evidence |
+| --- | --- | --- |
+| F03 - add the WU-to-plan-index prune step | **no-op** | B-006 (`4087406`) already had the requested step. The Go/store tree has neither `docs/plans/` nor `docs/workflows/prune.md`; do not manufacture a duplicate step or work unit to satisfy the stale request. |
+| F08 - fix the moved-file relative link | **no-op** | B-006 found no broken link, and all three F08 runs hit the ten-minute cap hunting for one. Neither `docs/guides/spec-driven-pitfalls.md` nor `docs/scripts/check-links.sh` exists in the Go/store tree. |
+
+On a docs-based tree that still has the link checker, F08 runs that check
+first and stops without editing or hunting when it passes. Missing legacy
+targets at the HEAD above are not a passing link check or a measured repair.
+These notes change neither historical expected tiers nor evaluator rules,
+tolerances, or B-006 scores. Retargeting needs an owner-maintained fixture
+on a pinned tree where the gap is reproduced. Canonical evidence:
+`pulse record show EVO-archive` (B-006 and the fixture applicability notes).
+
 ### Events, hooks and channels
 
 Every write appends one row to the event log and publishes it once on an
