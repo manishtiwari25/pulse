@@ -3,6 +3,7 @@ package records
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -379,5 +380,91 @@ func TestCLICommandsAndGuide(t *testing.T) {
 	_, rev, err := s.GetRecord("ADR-001", 0)
 	if err != nil || rev.Body != "From stdin\n" {
 		t.Fatal("stdin body not stored")
+	}
+}
+
+func TestAmendRefusesEmptyBody(t *testing.T) {
+	tests := []struct {
+		name, body string
+		blank      bool
+	}{
+		{"empty", "", true},
+		{"ascii-whitespace", " \t\r\n\v\f", true},
+		{"unicode-whitespace", "\u0085\u00a0\u2003\u2028\u2029\u3000", true},
+		{"one-character", "x", false},
+		{"padded-content", " \t\u2003# Revised body\r\n\u00a0 \t", false},
+	}
+	for _, source := range []string{"file", "stdin", "-"} {
+		for _, tt := range tests {
+			t.Run(source+"/"+tt.name, func(t *testing.T) {
+				s := tempStore(t)
+				addProject(t, s, "brain", t.TempDir(), true)
+				const original = "Original body\n"
+				rec, err := New(s, "memory", "brain", "Keep this body", NewOptions{Author: "agent", Body: original})
+				if err != nil {
+					t.Fatal(err)
+				}
+				bodyFile := filepath.Join(t.TempDir(), "body")
+				if err := os.WriteFile(bodyFile, []byte(tt.body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if source != "file" {
+					stdin, err := os.Open(bodyFile)
+					if err != nil {
+						t.Fatal(err)
+					}
+					oldStdin := os.Stdin
+					os.Stdin = stdin
+					t.Cleanup(func() { os.Stdin = oldStdin; stdin.Close() })
+					bodyFile = source
+				}
+				var out bytes.Buffer
+				c := &cli.Context{Store: s, Home: s.Home, Out: &out, Err: io.Discard, Agent: "agent", Project: "brain"}
+				err = runRecord(c, nil, []string{"amend", rec.ID, "--body-file", bodyFile, "--note", "Replace body"})
+				wantRev, wantBody := 2, tt.body
+				if tt.blank {
+					wantRev, wantBody = 1, original
+					want := cli.Error{
+						Code: 2,
+						What: "Empty record body",
+						Why:  "the body file has no content",
+						Fix:  "pulse record amend ID --body-file F with a non-empty file, or stdin",
+					}
+					var ce *cli.Error
+					if !errors.As(err, &ce) || *ce != want {
+						t.Errorf("blank body error = %v, want %v", err, &want)
+					}
+					if out.Len() != 0 {
+						t.Errorf("refused amend printed success: %q", out.String())
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				head, rev, err := s.GetRecord(rec.ID, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if head.CurrentRev != wantRev || rev.Rev != wantRev || rev.Body != wantBody {
+					t.Errorf("head/revision/body = %d/%d/%q, want %d/%d/%q", head.CurrentRev, rev.Rev, rev.Body, wantRev, wantRev, wantBody)
+				}
+				revisions, err := s.Revisions(rec.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(revisions) != wantRev {
+					t.Errorf("revision count = %d, want %d", len(revisions), wantRev)
+				}
+				if got := eventCount(t, s, "record.revised"); got != wantRev-1 {
+					t.Errorf("record.revised events = %d, want %d", got, wantRev-1)
+				}
+				var emptyRevisions int
+				if err := s.DB.QueryRow("SELECT COUNT(*) FROM record_revisions WHERE body = ''").Scan(&emptyRevisions); err != nil {
+					t.Fatal(err)
+				}
+				if emptyRevisions != 0 {
+					t.Errorf("zero-byte revisions = %d, want 0", emptyRevisions)
+				}
+			})
+		}
 	}
 }
