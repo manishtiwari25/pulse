@@ -125,7 +125,7 @@ function TasksScreen() {
         <Kpi n={by("open")} label="open" sub="waiting for a lead" tone={by("open") ? "info" : "neutral"} href={link("open")} />
         <Kpi n={by("planned")} label="planned" sub="jobs written" href={link("planned")} />
         <Kpi n={by("in_progress")} label="in progress" tone={by("in_progress") ? "ok" : "neutral"} sub="jobs running" href={link("in_progress")} />
-        <Kpi n={by("review")} label="review" tone={by("review") ? "warn" : "neutral"} sub="lead reports back" href={link("review")} />
+        <Kpi n={by("review")} label="review" tone={by("review") ? "warn" : "neutral"} sub="the lead needs you" href={link("review")} />
         <Kpi n={by("done")} label="done" href={link("done")} />
         <Kpi n={by("cancelled")} label="cancelled" href={link("cancelled")} />
         <Kpi n={scope.filter((x) => !x.lead && isActive(x)).length} label="no lead yet" sub="runner wakes one" />

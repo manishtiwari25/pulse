@@ -104,8 +104,13 @@ Everything else happens in the console:
   "measuring" while its job runs), the level the loop may reach - and the
   project page lists its fixtures.
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
-  revision is kept. The project's lead agent turns it into jobs and reports
-  back on the task thread.
+  revision is kept. The project's lead agent picks it up the same tick, turns
+  it into jobs at the task's priority (urgent runs first) and reports back on
+  the task thread. Nothing waits on you: a task the lead parked comes back to
+  it on a doubling schedule (15 min for urgent, then 30, 60, ...) until the
+  blocker is gone, a failed job goes back to the lead to re-plan, and a task
+  whose jobs are done and landed closes itself. `review` means the lead could
+  not finish without you - the conversation says why.
 - **Votes** - everything in vote across projects: suggestions past or short of
   quorum and open amendments.
 - **Chat** - a per-project conversation with the lead (`msg`), optionally

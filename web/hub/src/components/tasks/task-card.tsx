@@ -101,7 +101,7 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
               <Mono>{t.job_id}</Mono>
             </>
           ) : null}
-          {t.status === "review" ? <span className="ml-1 text-warn">· the lead reports back - read the conversation</span> : null}
+          {t.status === "review" ? <span className="ml-1 text-warn">· the lead could not finish this without you - read the conversation</span> : null}
         </span>
         <span className="ml-auto flex items-center gap-1.5">
           <TaskQuickActions t={t} onOpen={open} />

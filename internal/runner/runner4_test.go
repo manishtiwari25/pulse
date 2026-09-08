@@ -181,18 +181,198 @@ func TestTendTasksFollowsTheLeadsJobs(t *testing.T) {
 	if _, err := finishJob(s, b.str("id"), "w1", "failed", "b failed", "", -1); err != nil {
 		t.Fatal(err)
 	}
+	// One failure is the lead's to re-plan, not the owner's: the task stays in progress and wakes the lead once.
 	lines := tendTasks(s, "proj", testNow, "daemon")
+	if tk, _, _ = tasks.Get(s, task.ID); tk.Status != "in_progress" || len(lines) != 0 {
+		t.Fatalf("a failed job goes back to the lead first: %+v\n%v", tk, lines)
+	}
+	_, due, err := leadDue(s, "proj", "proj-lead", testNow)
+	if err != nil || len(due) != 1 || due[0].Why != "failed" || !strings.Contains(due[0].Detail, "b failed") {
+		t.Fatalf("lead due: %+v %v", due, err)
+	}
+	lines = tendLead(s, "proj", testNow, "daemon")
+	leadJobs := mustRows(s.DB, "SELECT * FROM jobs WHERE kind = 'lead'")
+	if len(leadJobs) != 1 || !strings.Contains(leadJobs[0].str("brief"), "1 job failed and none runs") || !strings.Contains(leadJobs[0].str("brief"), "pulse task status <id> review") {
+		t.Fatalf("follow-up lead job: %v\n%v", leadJobs, lines)
+	}
+	if tk, _, _ = tasks.Get(s, task.ID); tk.JobID != a.str("id") {
+		t.Fatalf("a failure follow-up keeps the task's first worker job: %+v", tk)
+	}
+	if _, due, _ = leadDue(s, "proj", "proj-lead", testNow); len(due) != 0 {
+		t.Fatalf("one follow-up per failure: %+v", due)
+	}
+	// The lead's follow-up runs and queues nothing: now the owner hears.
+	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ?, result = 'SUMMARY: b needs the owner' WHERE id = ?", testNow, leadJobs[0].str("id"))
+	lines = tendTasks(s, "proj", testNow, "daemon")
 	if tk, _, _ = tasks.Get(s, task.ID); tk.Status != "review" {
-		t.Fatalf("all jobs finished: %+v\n%v", tk, lines)
+		t.Fatalf("follow-up queued nothing: %+v\n%v", tk, lines)
 	}
 	posts := mustRows(s.DB, "SELECT * FROM posts WHERE kind = 'result' AND area = 'tasks' AND thread = ?", strings.ToLower(task.ID))
-	if len(posts) != 1 || posts[0].str("agent") != "proj-lead" || !strings.Contains(posts[0].str("summary"), "1 job(s) done, 1 failed") {
+	if len(posts) != 1 || posts[0].str("agent") != "proj-lead" || !strings.Contains(posts[0].str("summary"), "1 job(s) done, 1 failed - review") || !strings.Contains(posts[0].str("body"), "queued nothing") {
 		t.Fatalf("review post: %v", posts)
 	}
 	// A second pass changes nothing.
 	if lines := tendTasks(s, "proj", testNow, "daemon"); len(lines) != 0 {
 		t.Fatalf("second pass: %v", lines)
 	}
+}
+
+// A task closes itself when its jobs are done and landed; a failure that a later job fixed counts as done;
+// three failures go to the owner. Nothing waits on a human that agents can do.
+func TestTasksCloseThemselvesWhenTheirJobsLand(t *testing.T) {
+	s := newStore(t)
+	newRepo(t, s)
+	if _, _, err := ensureLead(s, "proj"); err != nil {
+		t.Fatal(err)
+	}
+	newTask := func(title string) (tasks.Task, []row) {
+		task, err := tasks.New(s, "proj", title, "do it", 50, humanAgent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var jobs []row
+		for _, name := range []string{"a", "b"} {
+			j, _, err := addJob(s, "proj", "task", title+" "+name, "do "+name, 1, 50, "task:"+task.ID, "proj-lead", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jobs = append(jobs, j)
+		}
+		return *task, jobs
+	}
+	finish := func(j row, status, branch string) {
+		if _, err := leaseJob(s, "w1", testNow, leaseOpts{JobID: j.str("id")}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := finishJob(s, j.str("id"), "w1", status, status, branch, -1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	landed, jobs := newTask("Landed")
+	finish(jobs[0], "done", "")
+	finish(jobs[1], "done", "pulse/w1/"+jobs[1].str("id"))
+	tendTasks(s, "proj", testNow, "daemon")
+	if tk, _, _ := tasks.Get(s, landed.ID); tk.Status != "in_progress" {
+		t.Fatalf("a branch still to land keeps the task open: %+v", tk)
+	}
+	exec1(s.DB, "UPDATE jobs SET branch = '', result = result || ' | landed abc from x' WHERE id = ?", jobs[1].str("id"))
+	lines := tendTasks(s, "proj", testNow, "daemon")
+	if tk, _, _ := tasks.Get(s, landed.ID); tk.Status != "done" {
+		t.Fatalf("landed jobs close the task: %+v\n%v", tk, lines)
+	}
+	posts := mustRows(s.DB, "SELECT * FROM posts WHERE kind = 'result' AND thread = ?", strings.ToLower(landed.ID))
+	if len(posts) != 1 || !strings.Contains(posts[0].str("summary"), "done: 2 job(s) landed") || strings.Contains(posts[0].str("body"), "Mark it done") {
+		t.Fatalf("done post: %v", posts)
+	}
+
+	fixed, jobs := newTask("Fixed")
+	finish(jobs[0], "done", "")
+	finish(jobs[1], "failed", "")
+	exec1(s.DB, "UPDATE jobs SET finished_at = '2026-09-06T09:00:00Z' WHERE id = ?", jobs[1].str("id"))
+	fix, _, err := addJob(s, "proj", "task", "Fixed b again", "do b right", 1, 50, "task:"+fixed.ID, "proj-lead", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish(fix, "done", "")
+	tendTasks(s, "proj", testNow, "daemon")
+	if tk, _, _ := tasks.Get(s, fixed.ID); tk.Status != "done" {
+		t.Fatalf("a later job in a failure's place closes the task: %+v", tk)
+	}
+	if _, due, _ := leadDue(s, "proj", "proj-lead", testNow); len(due) != 0 {
+		t.Fatalf("nothing is due for a fixed task: %+v", due)
+	}
+
+	hopeless, jobs := newTask("Hopeless")
+	finish(jobs[0], "failed", "")
+	finish(jobs[1], "failed", "")
+	third, _, err := addJob(s, "proj", "task", "Hopeless c", "do c", 1, 50, "task:"+hopeless.ID, "proj-lead", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish(third, "failed", "")
+	lines = tendTasks(s, "proj", testNow, "daemon")
+	if tk, _, _ := tasks.Get(s, hopeless.ID); tk.Status != "review" {
+		t.Fatalf("three failures go to the owner: %+v\n%v", tk, lines)
+	}
+	if _, due, _ := leadDue(s, "proj", "proj-lead", testNow); len(due) != 0 {
+		t.Fatalf("a task in review is not the lead's any more: %+v", due)
+	}
+}
+
+// A parked task - open, no jobs after the lead's run - comes back to the lead on a doubling schedule so a
+// blocker that clears (a fixed environment, a landed dependency) is noticed without the owner asking.
+func TestParkedTasksWakeTheLeadOnADoublingSchedule(t *testing.T) {
+	s := newStore(t)
+	newRepo(t, s)
+	if _, _, err := ensureLead(s, "proj"); err != nil {
+		t.Fatal(err)
+	}
+	urgent, err := tasks.New(s, "proj", "Urgent one", "now", 50, humanAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, err := tasks.New(s, "proj", "Normal one", "later", 10, humanAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, due, err := leadDue(s, "proj", "proj-lead", testNow)
+	if err != nil || len(due) != 2 || due[0].Why != "new" {
+		t.Fatalf("new tasks: %+v %v", due, err)
+	}
+	// The lead ran at T+1min and parked both: no jobs, its SUMMARY names a prerequisite.
+	lead, _, err := addJob(s, "proj", "lead", "Lead: plan", "plan", 0, leadJobPriority, "lead:proj:1", "daemon", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(min int) string { return plusMinutes(testNow, float64(min)) }
+	exec1(s.DB, "UPDATE jobs SET status = 'failed', finished_at = ?, result = 'SUMMARY: queued 0 jobs pending an owner-prepared console build' WHERE id = ?", at(1), lead.str("id"))
+	for _, id := range []string{urgent.ID, normal.ID} {
+		if _, err := tasks.SetLead(s, id, "proj-lead", lead.str("id"), "daemon"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec1(s.DB, "UPDATE tasks SET updated_at = ?", at(1))
+	check := func(min int, want ...string) {
+		t.Helper()
+		_, due, err := leadDue(s, "proj", "proj-lead", at(min))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, d := range due {
+			got = append(got, d.ID+":"+d.Why)
+		}
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Fatalf("at T+%dmin due %v, wanted %v", min, got, want)
+		}
+	}
+	check(10)
+	check(16, urgent.ID+":parked") // urgent: 15 minutes after the lead's run
+	check(59, urgent.ID+":parked")
+	check(62, urgent.ID+":parked", normal.ID+":parked") // normal: an hour
+	_, due, _ = leadDue(s, "proj", "proj-lead", at(16))
+	if !strings.Contains(due[0].Detail, "owner-prepared console build") || !strings.Contains(due[0].Detail, "Re-check the blocker") {
+		t.Fatalf("the parked detail carries the last SUMMARY: %q", due[0].Detail)
+	}
+	// The follow-up lead job runs at T+20 and parks the urgent task again: the next wait is the task's age, 20 min.
+	lines := tendLead(s, "proj", at(16), "daemon")
+	second := mustRows(s.DB, "SELECT * FROM jobs WHERE kind = 'lead' AND status = 'queued'")
+	if len(second) != 1 || !strings.Contains(second[0].str("brief"), "parked: open since") || !strings.Contains(strings.Join(lines, "\n"), urgent.ID+" parked: back to proj-lead") {
+		t.Fatalf("follow-up job: %v\n%v", second, lines)
+	}
+	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ?, result = 'SUMMARY: waiting on the owner: which colour' WHERE id = ?", at(20), second[0].str("id"))
+	exec1(s.DB, "UPDATE tasks SET updated_at = ? WHERE id = ?", at(20), urgent.ID)
+	check(35)
+	check(41, urgent.ID+":parked")
+	// A task with jobs is never parked, and the wait never exceeds a day.
+	if _, _, err := addJob(s, "proj", "task", "Urgent a", "do a", 1, 50, "task:"+urgent.ID, "proj-lead", false); err != nil {
+		t.Fatal(err)
+	}
+	check(41)
+	exec1(s.DB, "UPDATE tasks SET created_at = '2026-08-01T00:00:00Z' WHERE id = ?", normal.ID)
+	check(60*24+2, normal.ID+":parked")
+	check(60*24 - 2)
 }
 
 // -- constitution auto-apply (D-H) -------------------------------------------------------------------------
