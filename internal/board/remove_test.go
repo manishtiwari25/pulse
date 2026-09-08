@@ -24,6 +24,17 @@ func rowCounts(t *testing.T, home string) map[string]int {
 func TestRemoveProjectSnapshot(t *testing.T) {
 	noTTY(t)
 	home, s := snapshotHome(t)
+	// The snapshot's original checkout and branches are not stable test fixtures.
+	repo := gitRepo(t)
+	branches := []string{"evolve/remove-preview", "pulse/remove-preview"}
+	for _, branch := range branches {
+		if _, ok := git(repo, "branch", branch); !ok {
+			t.Fatalf("create fixture branch %q", branch)
+		}
+	}
+	if _, err := s.DB.Exec("UPDATE projects SET path = ? WHERE slug = 'project-light'", repo); err != nil {
+		t.Fatal(err)
+	}
 	// give the project a queued job and a dedicated executor so every section has something to say
 	if _, err := s.DB.Exec("INSERT INTO jobs (id, project, kind, title, status, created_at, source) VALUES ('job-20260906T090000Z-aaaaaa', 'project-light', 'task', 'Tidy the docs', 'queued', ?, 'test:1')", testNow); err != nil {
 		t.Fatal(err)
@@ -50,7 +61,8 @@ func TestRemoveProjectSnapshot(t *testing.T) {
 		"1 queued job", "job-20260906T090000Z-aaaaaa",
 		"2 leased jobs", "posts",
 		"vm-light", "vm-both",
-		"branch -D evolve/", "branch -D pulse/",
+		"the checkout " + repo,
+		"branch -D evolve/remove-preview", "branch -D pulse/remove-preview",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("preview lacks %q", want)
@@ -141,6 +153,11 @@ func TestRemoveProjectSnapshot(t *testing.T) {
 		t.Fatalf("again: %v", err)
 	}
 	s.Close()
+	for _, branch := range branches {
+		if _, ok := git(repo, "show-ref", "--verify", "refs/heads/"+branch); !ok {
+			t.Errorf("remove deleted fixture branch %q", branch)
+		}
+	}
 }
 
 func TestRemoveExecutorSnapshot(t *testing.T) {
