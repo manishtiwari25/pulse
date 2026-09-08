@@ -220,6 +220,9 @@ func documentedDifference(slug, route, path string) string {
 	if route == "settings" && path == "$.settings.length" {
 		return "API v1 adds compute.* and evolve.* settings; legacy rows checked separately"
 	}
+	if route == "executors" && (strings.HasSuffix(path, ".admin") || strings.HasSuffix(path, ".healed_at")) {
+		return "ADR-034 adds the admin route and the heal marker to every executor row"
+	}
 	if route == "overview" && strings.HasPrefix(path, "$.evolution.") {
 		return "SQL-native evolution fields follow the revised contract, not the Python filesystem report"
 	}

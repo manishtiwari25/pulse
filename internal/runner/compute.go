@@ -33,7 +33,7 @@ const (
 
 // ProvisionRequest is everything a Provider needs to satisfy one approved compute request.
 type ProvisionRequest struct {
-	ID       string       // the compute request id (CR-NNN); the machine carries the tag pulse=<ID>
+	ID       string       // the compute request id (CR-NNN); the machine carries the tags pulse=hands and pulse-request=<ID>
 	Project  string       // the project that asked; the executor is limited to it
 	Size     string       // the provider's machine size (compute.azure.vm_size when the request named none)
 	Hours    int          // how long the machine is wanted
@@ -71,6 +71,8 @@ var (
 	providersMu sync.RWMutex
 	providerSet = map[string]Provider{}
 )
+
+func init() { tasks.LoginSourceCheck = hasLoginSource }
 
 // RegisterProvider makes a provider available under its Name; registering the same name again replaces it
 // (tests swap in a fake).
@@ -174,13 +176,14 @@ type computeOpts struct {
 // loop, one goroutine per provisioning or release in flight, and tick() which the loop calls to start them
 // from the durable rows (so a request approved while no daemon ran is picked up at the next start).
 type computeWorker struct {
-	s        *store.Store
-	o        computeOpts
-	mu       sync.Mutex
-	inflight map[string]bool
-	wg       sync.WaitGroup
-	wake     chan struct{}
-	lines    chan string
+	s           *store.Store
+	o           computeOpts
+	mu          sync.Mutex
+	inflight    map[string]bool
+	noSourceDay string // the UTC day the "no executor login source" finding was last posted (ADR-034)
+	wg          sync.WaitGroup
+	wake        chan struct{}
+	lines       chan string
 }
 
 func newComputeWorker(ctx context.Context, s *store.Store, o computeOpts) *computeWorker {
@@ -326,10 +329,16 @@ func (w *computeWorker) tick(ctx context.Context, now string) []string {
 					cancel()
 				}
 			} else {
-				why += fmt.Sprintf("; look for a machine tagged pulse=%s at the provider", req.ID)
+				why += fmt.Sprintf("; look for a machine tagged pulse-request=%s at the provider", req.ID)
 			}
 			w.fail(req, why)
 		})
+	}
+	if s.Setting("compute.auto_approve", "0") == "1" && len(approved) == 0 {
+		// ADR-034: a pending request the auto-approval held for want of a login source is explained once a day.
+		if pending, _ := tasks.ListCompute(s, "", "pending"); len(pending) > 0 && !hasLoginSource(s) {
+			w.noSourceFinding(pending[0], now)
+		}
 	}
 	ready, _ := tasks.ListCompute(s, "", "ready")
 	for _, req := range ready {
@@ -344,11 +353,16 @@ func (w *computeWorker) tick(ctx context.Context, now string) []string {
 }
 
 func (w *computeWorker) finding(req tasks.ComputeRequest, summary, body string) {
-	_, err := createPost(w.s, w.s.Now(), postOpts{Kind: "finding", Project: req.Project, Area: computeArea, Thread: computeThread,
-		Summary: trunc(summary, 230), Body: body, Agent: actorAgent(w.s, w.o.Actor), On: req.ProposalPost})
-	if err != nil {
+	if err := computeFinding(w.s, w.o.Actor, req, summary, body); err != nil {
 		w.say("compute %s: finding not posted: %s", req.ID, errMessage(err))
 	}
+}
+
+// computeFinding is one finding on the request's thread (runner/compute), on its proposal post when there is one.
+func computeFinding(s *store.Store, actor string, req tasks.ComputeRequest, summary, body string) error {
+	_, err := createPost(s, s.Now(), postOpts{Kind: "finding", Project: req.Project, Area: computeArea, Thread: computeThread,
+		Summary: trunc(summary, 230), Body: body, Agent: actorAgent(s, actor), On: req.ProposalPost})
+	return err
 }
 
 func (w *computeWorker) fail(req tasks.ComputeRequest, why string) {
@@ -364,7 +378,8 @@ func (w *computeWorker) fail(req tasks.ComputeRequest, why string) {
 }
 
 // capsAllow: the request must fit both caps counting itself (an approved row is already in VMsNow; its
-// hours are in HoursToday when it was made today).
+// hours are in HoursToday when it was made today), and a login source must exist for the machine (ADR-034:
+// tasks.NoLoginSource holds the request, it does not fail it).
 func capsAllow(caps tasks.Caps, req tasks.ComputeRequest, now string) string {
 	if caps.MaxVMs <= 0 || caps.VMsNow > caps.MaxVMs {
 		return fmt.Sprintf("cap: %d machine(s) approved, provisioning or ready against compute.max_vms=%d", caps.VMsNow, caps.MaxVMs)
@@ -376,7 +391,37 @@ func capsAllow(caps tasks.Caps, req tasks.ComputeRequest, now string) string {
 	if caps.MaxHoursPerDay <= 0 || used > caps.MaxHoursPerDay {
 		return fmt.Sprintf("cap: %d machine-hour(s) today against compute.max_hours_per_day=%d", used, caps.MaxHoursPerDay)
 	}
+	if !caps.LoginSource {
+		return tasks.NoLoginSource
+	}
 	return ""
+}
+
+// noSourceFinding posts "no executor login source" at most once per UTC day: the day is remembered in the
+// worker and, across daemon restarts, read back from the last compute.no-login-source event.
+func (w *computeWorker) noSourceFinding(req tasks.ComputeRequest, now string) {
+	day := now[:10]
+	w.mu.Lock()
+	seen := w.noSourceDay == day
+	w.mu.Unlock()
+	if seen {
+		return
+	}
+	if last := mustOne(w.s.DB, "SELECT at FROM events WHERE action = 'compute.no-login-source' ORDER BY seq DESC LIMIT 1"); last != nil && strings.HasPrefix(last.str("at"), day) {
+		w.mu.Lock()
+		w.noSourceDay = day
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Lock()
+	w.noSourceDay = day
+	w.mu.Unlock()
+	eventAt(w.s.DB, now, w.o.Actor, "compute.no-login-source", req.ID, map[string]any{"project": req.Project})
+	w.finding(req, fmt.Sprintf("%s: compute %s waits; place a Copilot-only token with `pulse executor token --with-token`", tasks.NoLoginSource, req.ID),
+		fmt.Sprintf("Compute request %s (%s, by %s) is held: a machine PULSE provisions would have no Copilot login and drain at its first launch, "+
+			"so none is bought (ADR-034). The hub's own `gh` login is not used because it reaches repositories. Place a fine-grained token with "+
+			"only the Copilot Requests permission with `pulse executor token --with-token` (stdin); the daemon then logs every new machine in "+
+			"before it works. This note is posted once a day while the hold lasts.\n", req.ID, req.Size, req.RequestedBy))
 }
 
 func (w *computeWorker) provision(ctx context.Context, req tasks.ComputeRequest) {
@@ -390,6 +435,12 @@ func (w *computeWorker) provision(ctx context.Context, req tasks.ComputeRequest)
 		return
 	}
 	if why := capsAllow(caps, req, s.Now()); why != "" {
+		if why == tasks.NoLoginSource {
+			// held, not failed: the row stays approved and is tried again next tick
+			w.noSourceFinding(req, s.Now())
+			w.say("compute %s held: %s", req.ID, why)
+			return
+		}
 		w.fail(req, why)
 		return
 	}
@@ -478,8 +529,14 @@ func (w *computeWorker) releaseDue(req tasks.ComputeRequest, now string) string 
 	return ""
 }
 
-func (w *computeWorker) release(ctx context.Context, req tasks.ComputeRequest, why string) {
-	s := w.s
+func (w *computeWorker) release(_ context.Context, req tasks.ComputeRequest, why string) {
+	releaseCompute(w.s, w.o.Actor, req, why, w.say)
+}
+
+// releaseCompute destroys a request's machine through its provider, removes the executor row, marks the
+// request released and posts the finding; the compute worker and the retire phase (ADR-034, a compute VM
+// whose login was refused) both call it. A provider refusal is counted and retried on the next tick.
+func releaseCompute(s *store.Store, actor string, req tasks.ComputeRequest, why string, say func(format string, a ...any)) bool {
 	m, _ := loadMachine(s, req.ID)
 	if m == nil {
 		m = &Machine{Provider: s.Setting("compute.provider", ""), Executor: req.Executor}
@@ -491,30 +548,32 @@ func (w *computeWorker) release(ctx context.Context, req tasks.ComputeRequest, w
 			cancel()
 			if err != nil {
 				attempts := machineReleaseFailed(s, req.ID, errMessage(err))
-				w.say("compute %s: release attempt %d failed: %s", req.ID, attempts, redactSecrets(errMessage(err)))
+				say("compute %s: release attempt %d failed: %s", req.ID, attempts, redactSecrets(errMessage(err)))
 				if attempts == 1 {
-					w.finding(req, fmt.Sprintf("compute %s: releasing %s failed (%s); the daemon retries", req.ID, m.Name, why),
+					_ = computeFinding(s, actor, req, fmt.Sprintf("compute %s: releasing %s failed (%s); the daemon retries", req.ID, m.Name, why),
 						fmt.Sprintf("`%s` on %s should be released because %s, but the provider refused: %s\n\nThe daemon retries every loop; "+
-							"a human may delete it by hand (its tag is pulse=%s).\n", m.Name, m.Provider, why, redactSecrets(errMessage(err)), req.ID))
+							"a human may delete it by hand (its tag is pulse-request=%s).\n", m.Name, m.Provider, why, redactSecrets(errMessage(err)), req.ID))
 				}
-				return
+				return false
 			}
 		}
 	}
 	if m.Executor != "" && executorRow(s, m.Executor) != nil {
-		if _, err := board.RemoveExecutor(s, m.Executor, w.o.Actor, false); err != nil {
-			w.say("compute %s: executor %s not removed: %s", req.ID, m.Executor, errMessage(err))
+		if _, err := board.RemoveExecutor(s, m.Executor, actor, false); err != nil {
+			say("compute %s: executor %s not removed: %s", req.ID, m.Executor, errMessage(err))
 		}
 	}
 	now := s.Now()
 	machineReleased(s, req.ID, now)
-	if _, err := tasks.SetComputeStatus(s, req.ID, "released", "", w.o.Actor); err != nil {
-		w.say("compute %s: %s", req.ID, errMessage(err))
-		return
+	if _, err := tasks.SetComputeStatus(s, req.ID, "released", "", actor); err != nil {
+		say("compute %s: %s", req.ID, errMessage(err))
+		return false
 	}
-	w.finding(req, fmt.Sprintf("compute %s released: %s", req.ID, why),
+	if err := computeFinding(s, actor, req, fmt.Sprintf("compute %s released: %s", req.ID, why),
 		fmt.Sprintf("The machine `%s` (%s) that served %s's request is gone because %s; executor `%s` is removed. "+
-			"Runs it made stay in the log.\n", m.Name, m.Provider, req.RequestedBy, why, m.Executor))
-	w.say("compute %s released: %s", req.ID, why)
-	_ = ctx
+			"Runs it made stay in the log.\n", m.Name, m.Provider, req.RequestedBy, why, m.Executor)); err != nil {
+		say("compute %s: finding not posted: %s", req.ID, errMessage(err))
+	}
+	say("compute %s released: %s", req.ID, why)
+	return true
 }

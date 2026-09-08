@@ -274,8 +274,8 @@ func setExecutorStatus(s *store.Store, now, name, status, actor string, note *st
 		noteArg = *note
 	}
 	exec1(s.DB, "UPDATE executors SET status = ?, probe_note = COALESCE(?, probe_note), errors = CASE WHEN ? = 'active' THEN 0 ELSE errors END, "+
-		"backoff_minutes = CASE WHEN ? = 'active' THEN 0 ELSE backoff_minutes END, next_probe_at = CASE WHEN ? = 'active' THEN '' ELSE next_probe_at END "+
-		"WHERE name = ?", status, noteArg, status, status, status, name)
+		"backoff_minutes = CASE WHEN ? = 'active' THEN 0 ELSE backoff_minutes END, next_probe_at = CASE WHEN ? = 'active' THEN '' ELSE next_probe_at END, "+
+		"healed_at = CASE WHEN ? = 'active' THEN '' ELSE healed_at END WHERE name = ?", status, noteArg, status, status, status, status, name)
 	text := ""
 	if note != nil {
 		text = *note
@@ -491,28 +491,42 @@ type tokenFacts struct {
 	Note    string
 }
 
-func githubTokenFacts(token, api string) tokenFacts {
+// githubHTTP carries every call to the GitHub API; tests point it at a fake transport.
+var githubHTTP = &http.Client{Timeout: 15 * time.Second}
+
+func githubAPIBase(api string) string {
 	if api == "" {
 		api = os.Getenv("PULSE_GITHUB_API")
 	}
 	if api == "" {
 		api = githubAPI
 	}
-	api = strings.TrimRight(api, "/")
-	req, err := http.NewRequest("GET", api+"/user", nil)
+	return strings.TrimRight(api, "/")
+}
+
+// githubGet is one authenticated GET; the token travels in the header and nowhere else.
+func githubGet(token, url string) (*http.Response, []byte, error) {
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return tokenFacts{Note: fmt.Sprintf("GitHub not reached (%s); the token's validity is unknown", cut(err.Error(), 80))}
+		return nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", "pulse")
 	req.Header.Set("Accept", "application/vnd.github+json")
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := githubHTTP.Do(req)
 	if err != nil {
-		return tokenFacts{Note: fmt.Sprintf("GitHub not reached (%s); the token's validity is unknown", cut(err.Error(), 80))}
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	return resp, body, nil
+}
+
+func githubTokenFacts(token, api string) tokenFacts {
+	resp, body, err := githubGet(token, githubAPIBase(api)+"/user")
+	if err != nil {
+		return tokenFacts{Note: fmt.Sprintf("GitHub not reached (%s); the token's validity is unknown", cut(redactTokens(err.Error()), 80))}
+	}
 	t, f := true, false
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
@@ -535,6 +549,30 @@ func githubTokenFacts(token, api string) tokenFacts {
 		return tokenFacts{OK: &f, Note: fmt.Sprintf("GitHub refuses the token (%d): invalid, expired, or revoked - the token was not sent", resp.StatusCode)}
 	}
 	return tokenFacts{Note: fmt.Sprintf("GitHub answered %d; the token's validity is unknown", resp.StatusCode)}
+}
+
+// noRepositoryRefusal is the executor token rule (ADR-034 rule 1): a token that reaches any repository
+// could push around the land gate from a machine that runs untrusted agent output, so it never travels.
+const noRepositoryRefusal = "the executor token must reach no repository: mint a fine-grained token with only the Copilot Requests permission"
+
+// githubNoRepos asks GitHub for one repository the token can see in any role; ok is true only when the
+// answer is 200 with an empty list. The note explains any other answer without the token.
+func githubNoRepos(token, api string) (bool, string) {
+	resp, body, err := githubGet(token, githubAPIBase(api)+"/user/repos?per_page=1&affiliation=owner,collaborator,organization_member")
+	if err != nil {
+		return false, fmt.Sprintf("GitHub not reached (%s); the token's reach is unknown", cut(redactTokens(err.Error()), 80))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Sprintf("GitHub answered %d to the repository check; the token's reach is unknown", resp.StatusCode)
+	}
+	var repos []json.RawMessage
+	if err := json.Unmarshal(body, &repos); err != nil {
+		return false, "GitHub's repository answer was not a list; the token's reach is unknown"
+	}
+	if len(repos) > 0 {
+		return false, noRepositoryRefusal
+	}
+	return true, "the token reaches no repository"
 }
 
 var expiryDateRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})`)
@@ -695,6 +733,14 @@ func loginCheck(s *store.Store, name, actor, now string, apply bool) (bool, stri
 	return ok, note, nil
 }
 
+// setExecutorAdmin remembers the admin ssh address a login travelled over (ADR-034 rule 3), so the daemon
+// can heal the executor there later.
+func setExecutorAdmin(s *store.Store, name, admin string) {
+	if admin = strings.TrimSpace(admin); admin != "" {
+		exec1(s.DB, "UPDATE executors SET admin = ? WHERE name = ?", admin, name)
+	}
+}
+
 func loginDrained(r row) bool {
 	return r.str("status") == "drained" && loginFault(r.str("probe_note")) && r.str("next_probe_at") != ""
 }
@@ -717,6 +763,9 @@ func lastLines(text string, n int) []string {
 	return lines
 }
 
+// placeLogin is executorLogin as the daemon calls it (heal, Provision); tests swap it for a stub.
+var placeLogin = executorLogin
+
 // executorLogin is executor_login(): place or remove the copilot login over the admin session.
 func executorLogin(s *store.Store, now, name, adminAddress string, token io.Reader, isTTY, remove bool, actor string) (loginResult, error) {
 	r := executorRow(s, name)
@@ -729,6 +778,7 @@ func executorLogin(s *store.Store, now, name, adminAddress string, token io.Read
 	if (token == nil) == !remove {
 		return loginResult{}, fail(2, "executor login needs exactly one of --with-token or --remove")
 	}
+	setExecutorAdmin(s, name, adminAddress)
 	res := loginResult{Lines: []string{}}
 	logEvent := func(extra map[string]any) {
 		d := map[string]any{"kind": res.Kind, "rc": res.RC, "ok": res.OK}

@@ -596,3 +596,36 @@ func TestWatchDeliversEventsFromAnotherConnection(t *testing.T) {
 		t.Fatalf("json line %q %v", lines[1], err)
 	}
 }
+
+func TestComputeAutoApproveHeldWithoutLoginSource(t *testing.T) {
+	s := newStore(t)
+	for k, v := range map[string]string{"compute.auto_approve": "1", "compute.max_vms": "2", "compute.max_hours_per_day": "8"} {
+		if err := s.SetSetting("human", k, v); err != nil {
+			t.Fatal(k, err)
+		}
+	}
+	old := LoginSourceCheck
+	t.Cleanup(func() { LoginSourceCheck = old })
+	LoginSourceCheck = func(*store.Store) bool { return false }
+	r, err := RequestCompute(s, "demo", "demo-lead", "", 1, "no login anywhere")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != "pending" || r.ProposalPost == "" {
+		t.Fatalf("held request: %+v", r)
+	}
+	var body string
+	s.DB.QueryRow("SELECT body FROM posts WHERE id = ?", r.ProposalPost).Scan(&body)
+	if !strings.Contains(body, NoLoginSource) || !strings.Contains(body, "pulse executor token --with-token") {
+		t.Fatalf("proposal body:\n%s", body)
+	}
+	caps, _ := GetCaps(s)
+	if caps.LoginSource {
+		t.Fatalf("caps: %+v", caps)
+	}
+	LoginSourceCheck = func(*store.Store) bool { return true }
+	r2, _ := RequestCompute(s, "demo", "demo-lead", "", 1, "with a source")
+	if r2.Status != "approved" {
+		t.Fatalf("with a source: %+v", r2)
+	}
+}

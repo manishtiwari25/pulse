@@ -302,11 +302,20 @@ func TestSealedCallRunsTheRunnerCommand(t *testing.T) {
 		t.Fatalf("H01.request: %q", body)
 	}
 
+	// The tick that reported fixture 1 already started fixture 2 with the same runner; let it finish
+	// before the store changes underneath it.
+	waitHeldoutIdle(t)
+	lines = tendHeldout(s, plusMinutes(testNow, 2))
+	if len(lines) != 1 || lines[0] != "held-out: generated fixture 2 of 2 (judge starter-hardstop-publish)" {
+		t.Fatalf("second fixture: %q", lines)
+	}
+
 	// A failing runner: stderr's first line, redacted, is the reason; stdout is never quoted.
 	failing := filepath.Join(scratch, "failing.sh")
 	if err := os.WriteFile(failing, []byte("#!/bin/sh\necho 'the reply that must not be quoted'\necho 'login failed for ghp_abcdefghijklmnopqrstuvwxyz0123456789' >&2\necho second >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	s = autoStore(t)
 	setSetting(t, s, "runner_cmd", failing)
 	tendHeldout(s, plusMinutes(testNow, 2))
 	waitHeldoutIdle(t)

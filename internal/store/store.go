@@ -313,6 +313,35 @@ func AdditiveDDL() [][]string {
 	return [][]string{RecordsDDL, TasksDDL, HooksDDL, RunnerDDL, EvolveDDL}
 }
 
+// Column is one column an additive list adds to a schema-3 table after the
+// fact: EnsureRecords runs ALTER TABLE ... ADD COLUMN when it is missing. DDL
+// is the column's type and default; it must allow existing rows (a default).
+type Column struct {
+	Table, Name, DDL string
+}
+
+// AdditiveColumns lists every column EnsureRecords adds to existing tables.
+func AdditiveColumns() []Column { return RunnerColumns }
+
+// hasColumn reports whether table has a column of that name.
+func hasColumn(q querier, table, column string) (bool, error) {
+	rows, err := q.Query("SELECT name FROM pragma_table_info(?)", table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 var createNameRe = regexp.MustCompile(`(?i)CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+(\w+)`)
 
 // additiveComplete reports whether every object the additive lists declare
@@ -342,7 +371,15 @@ func (s *Store) additiveComplete() bool {
 		}
 		delete(names, name)
 	}
-	return rows.Err() == nil && len(names) == 0
+	if rows.Err() != nil || len(names) > 0 {
+		return false
+	}
+	for _, c := range AdditiveColumns() {
+		if has, err := hasColumn(s.DB, c.Table, c.Name); err != nil || !has {
+			return false
+		}
+	}
+	return true
 }
 
 // EnsureRecords adds the records tables and the other additive lists
@@ -362,6 +399,17 @@ func (s *Store) EnsureRecords() error {
 	for _, list := range AdditiveDDL() {
 		for _, stmt := range list {
 			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("records schema: %w", err)
+			}
+		}
+	}
+	for _, c := range AdditiveColumns() {
+		has, err := hasColumn(tx, c.Table, c.Name)
+		if err != nil {
+			return fmt.Errorf("records schema: %w", err)
+		}
+		if !has {
+			if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", c.Table, c.Name, c.DDL)); err != nil {
 				return fmt.Errorf("records schema: %w", err)
 			}
 		}
@@ -406,6 +454,10 @@ func Now() string {
 
 type execer interface {
 	Exec(query string, args ...any) (sql.Result, error)
+}
+
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
 }
 
 // EventRecord is one events row as this package wrote it.

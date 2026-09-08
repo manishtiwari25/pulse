@@ -393,6 +393,9 @@ func TestDaemonOnceComputeApproveToReadyToReleased(t *testing.T) {
 	oldAz, oldSSH, oldPair := runAz, runSSH, pairHands
 	t.Cleanup(func() { runAz, runSSH, pairHands = oldAz, oldSSH, oldPair })
 	runAz = az.run
+	// ADR-034: with an executor token on the hub the machine is born logged in.
+	writeExecutorToken(t, s)
+	placed := stubPlaceLogin(t, true)
 	var sshCalls []string
 	var sshMu sync.Mutex
 	runSSH = func(argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
@@ -450,7 +453,7 @@ func TestDaemonOnceComputeApproveToReadyToReleased(t *testing.T) {
 			create = strings.Join(c, " ")
 		}
 	}
-	if !strings.Contains(create, "--tags pulse=CR-001 pulse-project=proj") || !strings.Contains(create, "--custom-data ") {
+	if !strings.Contains(create, "--tags pulse=hands pulse-request=CR-001 pulse-project=proj") || !strings.Contains(create, "--custom-data ") {
 		t.Fatalf("vm create: %s", create)
 	}
 	paired.Lock()
@@ -459,8 +462,11 @@ func TestDaemonOnceComputeApproveToReadyToReleased(t *testing.T) {
 	}
 	paired.Unlock()
 	ex := executorRow(s, "hands-cr-001")
-	if ex == nil || ex.str("status") != "active" {
+	if ex == nil || ex.str("status") != "active" || ex.str("admin") != "pulseadmin@203.0.113.5" {
 		t.Fatalf("executor: %v", ex)
+	}
+	if calls := placed.calls(); len(calls) != 1 || calls[0].name != "hands-cr-001" || calls[0].admin != "pulseadmin@203.0.113.5" || calls[0].token != testExecutorToken {
+		t.Fatalf("login placement: %+v", calls)
 	}
 	known, _ := os.ReadFile(filepath.Join(hubHome, ".ssh", "known_hosts"))
 	if !strings.Contains(string(known), "203.0.113.5") {
@@ -471,7 +477,7 @@ func TestDaemonOnceComputeApproveToReadyToReleased(t *testing.T) {
 		t.Fatalf("ssh config: %q", sshCfg)
 	}
 	m, mrow := loadMachine(s, req.ID)
-	if m == nil || m.Name != "pulse-cr-001" || m.Tags["pulse"] != req.ID || mrow.str("released_at") != "" {
+	if m == nil || m.Name != "pulse-cr-001" || m.Tags["pulse"] != "hands" || m.Tags["pulse-request"] != req.ID || mrow.str("released_at") != "" {
 		t.Fatalf("machine memory: %+v %v", m, mrow)
 	}
 	findings := mustRows(s.DB, "SELECT * FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'compute'")

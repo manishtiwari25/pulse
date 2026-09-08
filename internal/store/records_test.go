@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -108,5 +109,70 @@ func TestComputeSettings(t *testing.T) {
 	}
 	if got := len(ExtraSettingNames()); got != len(ComputeSettings)+len(EvolveSettings) {
 		t.Fatalf("ExtraSettingNames = %d", got)
+	}
+	// ADR-034: self-heal, self-retire and the grace before a retired VM is deleted.
+	if s.Setting("compute.self_heal", "") != "1" || s.Setting("compute.self_retire", "") != "1" || s.SettingInt("compute.retire_grace_hours") != 24 {
+		t.Fatal("ADR-034 defaults not resolved")
+	}
+	for _, name := range []string{"compute.self_heal", "compute.self_retire"} {
+		if v, err := ValidateSetting(name, "0"); err != nil || v != "0" {
+			t.Fatalf("%s 0: %q %v", name, v, err)
+		}
+		if _, err := ValidateSetting(name, "yes"); err == nil {
+			t.Fatalf("%s accepted yes", name)
+		}
+	}
+	if _, err := ValidateSetting("compute.retire_grace_hours", "0"); err == nil {
+		t.Fatal("retire_grace_hours 0 accepted")
+	}
+	if v, err := ValidateSetting("compute.retire_grace_hours", "48"); err != nil || v != "48" {
+		t.Fatalf("retire_grace_hours: %q %v", v, err)
+	}
+}
+
+// TestAdditiveColumns: EnsureRecords adds executors.admin / executors.healed_at to a schema-3 store that
+// predates them and creates retired_vms; a second open is a no-op (ADR-034).
+func TestAdditiveColumns(t *testing.T) {
+	home := t.TempDir()
+	// a schema-3 store as legacy/pulse.py left it: no additive tables, no ADR-034 columns
+	bare, err := sql.Open("sqlite", dsn(filepath.Join(home, StoreName), false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initSchema(bare, "2026-09-08T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if has, _ := hasColumn(bare, "executors", "admin"); has {
+		t.Fatal("schema 3 already has executors.admin")
+	}
+	bare.Close()
+	s, err := Open(Options{Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, c := range RunnerColumns {
+		if has, err := hasColumn(s.DB, c.Table, c.Name); err != nil || !has {
+			t.Fatalf("%s.%s missing after EnsureRecords: %v", c.Table, c.Name, err)
+		}
+	}
+	if _, err := s.DB.Exec("INSERT INTO executors (name, created_at) VALUES ('x', '2026-09-08T00:00:00Z')"); err != nil {
+		t.Fatal(err)
+	}
+	var admin, healed string
+	if err := s.DB.QueryRow("SELECT admin, healed_at FROM executors WHERE name = 'x'").Scan(&admin, &healed); err != nil || admin != "" || healed != "" {
+		t.Fatalf("defaults: %q %q %v", admin, healed, err)
+	}
+	if _, err := s.DB.Exec("INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after) VALUES ('x', 'azure', 'rg', 'vm', 'a', 'b')"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.additiveComplete() {
+		t.Fatal("additiveComplete false after EnsureRecords")
+	}
+	if err := s.EnsureRecords(); err != nil {
+		t.Fatal(err)
+	}
+	if n := countEvents(t, s, "schema.records"); n != 1 {
+		t.Fatalf("schema.records events = %d", n)
 	}
 }
