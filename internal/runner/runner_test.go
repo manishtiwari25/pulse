@@ -23,6 +23,9 @@ func newStore(t *testing.T) *store.Store {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("PULSE_HOME", home)
+	for _, name := range []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"} {
+		t.Setenv(name, "")
+	}
 	if err := store.Create(filepath.Join(home, store.StoreName)); err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +50,19 @@ func newStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+func TestNewStoreWithRunnerEnvironment(t *testing.T) {
+	names := []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"}
+	for _, name := range names {
+		t.Setenv(name, "parent")
+	}
+	newStore(t)
+	for _, name := range names {
+		if got := os.Getenv(name); got != "" {
+			t.Errorf("%s = %q, want empty fixture default", name, got)
+		}
+	}
 }
 
 func run(t *testing.T, dir string, argv ...string) string {
