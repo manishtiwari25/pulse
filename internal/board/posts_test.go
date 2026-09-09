@@ -33,6 +33,16 @@ func seedPosts(t *testing.T, s *store.Store) (suggestion, amendment, finding *Po
 }
 
 func TestCreatePostRuleMatrix(t *testing.T) {
+	testCreatePostRuleMatrix(t)
+}
+
+func TestCreatePostRuleMatrixWithoutOracle(t *testing.T) {
+	t.Setenv("PULSE_ORACLE_DIR", t.TempDir())
+	testCreatePostRuleMatrix(t)
+}
+
+func testCreatePostRuleMatrix(t *testing.T) {
+	t.Helper()
 	noTTY(t)
 	home, s, _ := fixture(t)
 	sug, am, fin := seedPosts(t, s)
@@ -97,36 +107,41 @@ func TestCreatePostRuleMatrix(t *testing.T) {
 			if tc.skip {
 				return
 			}
-			pyOut, pyErr, pyCode := oracle(t, pyHome, nil, args...)
-			if tc.want == "" {
-				if pyCode != 0 {
-					t.Fatalf("oracle failed: %s", pyErr)
+			t.Run("oracle", func(t *testing.T) {
+				pyOut, pyErr, pyCode := oracle(t, pyHome, nil, args...)
+				if tc.want == "" {
+					if pyCode != 0 {
+						t.Fatalf("oracle failed: %s", pyErr)
+					}
+					if !regexp.MustCompile(`^\d{8}T\d{6}Z-bob(-\d+)?$`).MatchString(strings.TrimSpace(pyOut)) {
+						t.Fatalf("oracle id %q", pyOut)
+					}
+					return
 				}
-				if !regexp.MustCompile(`^\d{8}T\d{6}Z-bob(-\d+)?$`).MatchString(strings.TrimSpace(pyOut)) {
-					t.Fatalf("oracle id %q", pyOut)
+				if got := oracleMessage(pyErr); got != tc.want || pyCode != 2 {
+					t.Fatalf("oracle: got %q (code %d)\nwant %q", got, pyCode, tc.want)
 				}
-				return
-			}
-			if got := oracleMessage(pyErr); got != tc.want || pyCode != 2 {
-				t.Fatalf("oracle: got %q (code %d)\nwant %q", got, pyCode, tc.want)
-			}
+			})
 		})
 	}
 	// the successful writes left the same shape in both stores
-	pyStore, err := store.Open(store.Options{Home: pyHome, SkipRecords: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pyStore.Close()
-	for _, q := range []string{
-		"SELECT kind, project, area, thread, agent, summary, body, vote, on_post, text_hash, has_read_line, resolution, session, name, origin FROM posts WHERE agent = 'bob' AND kind != 'finding' OR (agent = 'bob' AND body = 'text') ORDER BY kind, summary",
-		"SELECT name, posts, last_useful_at != '' FROM agents WHERE name = 'bob'",
-	} {
-		g, p := dumpQuery(t, s, q), dumpQuery(t, pyStore, q)
-		if g != p {
-			t.Errorf("rows differ for %s\n go: %s\n py: %s", q, g, p)
+	t.Run("oracle-state", func(t *testing.T) {
+		oracleAvailable(t)
+		pyStore, err := store.Open(store.Options{Home: pyHome, SkipRecords: true})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		defer pyStore.Close()
+		for _, q := range []string{
+			"SELECT kind, project, area, thread, agent, summary, body, vote, on_post, text_hash, has_read_line, resolution, session, name, origin FROM posts WHERE agent = 'bob' AND kind != 'finding' OR (agent = 'bob' AND body = 'text') ORDER BY kind, summary",
+			"SELECT name, posts, last_useful_at != '' FROM agents WHERE name = 'bob'",
+		} {
+			g, p := dumpQuery(t, s, q), dumpQuery(t, pyStore, q)
+			if g != p {
+				t.Errorf("rows differ for %s\n go: %s\n py: %s", q, g, p)
+			}
+		}
+	})
 }
 
 func containsFlag(args []string, name string) bool {
