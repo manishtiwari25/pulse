@@ -2,6 +2,7 @@ package hub
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/cli"
@@ -56,23 +57,27 @@ func (h *Handler) additionProjectList(w http.ResponseWriter, r *http.Request) {
 		additionFailure(w, err)
 		return
 	}
-	rows := make([]map[string]any, 0, len(projects))
+	rows := make([]map[string]any, len(projects))
 	brain := ""
+	var probes sync.WaitGroup
 	for i := range projects {
 		p := &projects[i]
 		if p.Brain {
 			brain = p.Slug
 		}
-		row := map[string]any{
-			"slug": p.Slug, "name": p.Name, "path": p.Path, "remote": p.Remote, "brain": p.Brain,
-			"status": p.Status, "verify_cmd": p.VerifyCmd, "default_branch": p.DefaultBranch,
-			"added_at": p.AddedAt, "added_by": p.AddedBy, "last_seen": p.LastSeen, "present": present(p),
-		}
-		for key, value := range projectGates(h.Store, p.Slug) {
-			row[key] = value
-		}
-		rows = append(rows, row)
+		probes.Go(func() {
+			row := map[string]any{
+				"slug": p.Slug, "name": p.Name, "path": p.Path, "remote": p.Remote, "brain": p.Brain,
+				"status": p.Status, "verify_cmd": p.VerifyCmd, "default_branch": p.DefaultBranch,
+				"added_at": p.AddedAt, "added_by": p.AddedBy, "last_seen": p.LastSeen, "present": present(p),
+			}
+			for key, value := range projectGates(h.Store, p.Slug) {
+				row[key] = value
+			}
+			rows[i] = row
+		})
 	}
+	probes.Wait()
 	writeJSON(w, http.StatusOK, map[string]any{"projects": rows, "brain": brain})
 }
 

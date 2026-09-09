@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/store"
@@ -103,6 +104,7 @@ type projectView struct {
 	Project *store.Project
 	Data    *boardData
 	Error   string
+	Present bool
 }
 
 func (h *Handler) each() ([]projectView, error) {
@@ -118,22 +120,28 @@ func (h *Handler) each() ([]projectView, error) {
 		return nil, err
 	}
 	projects = append(projects, *commons)
-	out := make([]projectView, 0, len(projects))
-	for _, p := range projects {
-		view := projectView{Project: &p}
-		if present(&p) {
-			view.Data, err = h.snapshot(p.Slug, "")
-			if err != nil {
-				view.Error = err.Error()
+	out := make([]projectView, len(projects))
+	var probes sync.WaitGroup
+	for i := range projects {
+		probes.Go(func() {
+			p := &projects[i]
+			view := projectView{Project: p, Present: present(p)}
+			if view.Present {
+				data, err := h.snapshot(p.Slug, "")
+				view.Data = data
+				if err != nil {
+					view.Error = err.Error()
+				}
+			} else {
+				view.Error = "missing on disk"
+				if p.Slug == store.CommonsSlug {
+					view.Error = "not created yet"
+				}
 			}
-		} else {
-			view.Error = "missing on disk"
-			if p.Slug == store.CommonsSlug {
-				view.Error = "not created yet"
-			}
-		}
-		out = append(out, view)
+			out[i] = view
+		})
 	}
+	probes.Wait()
 	return out, nil
 }
 
@@ -225,7 +233,7 @@ func (h *Handler) summary(view projectView) map[string]any {
 		kind = "commons"
 	}
 	if d == nil {
-		return object("slug kind brain base path present missing error", p.Slug, kind, p.Brain, baseFor(p.Slug), p.Path, false, !present(p), view.Error)
+		return object("slug kind brain base path present missing error", p.Slug, kind, p.Brain, baseFor(p.Slug), p.Path, false, !view.Present, view.Error)
 	}
 	overview := d.overview()
 	evo := evolutionSummary(d.Evolution)
