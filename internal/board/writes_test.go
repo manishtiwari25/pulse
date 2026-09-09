@@ -663,18 +663,32 @@ func TestBoardWritesReachBusSubscribers(t *testing.T) {
 }
 
 func TestDecideIsAtomicUnderRace(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		answers []string
+	}{
+		{"yes", []string{"yes"}},
+		{"no", []string{"no"}},
+		{"mixed", []string{"yes", "no"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testDecideIsAtomicUnderRace(t, tc.answers)
+		})
+	}
+}
+
+func testDecideIsAtomicUnderRace(t *testing.T, answers []string) {
+	t.Helper()
 	_, s, _ := fixture(t)
 	sug, _, _ := seedPosts(t, s)
-	ch, cancel := bus.Default().Subscribe(bus.Filter{Actions: []string{"decide"}}, 16)
+	// The action family also includes decide.job, whose subject is the queued job.
+	ch, cancel := bus.Default().Subscribe(bus.Filter{Actions: []string{"decide"}, Subject: sug.ID}, 16)
 	defer cancel()
 	const racers = 6
 	errs := make(chan error, racers)
 	for i := 0; i < racers; i++ {
 		go func(i int) {
-			answer := "yes"
-			if i%2 == 1 {
-				answer = "no"
-			}
+			answer := answers[i%len(answers)]
 			_, err := Decide(s, sug.ID, answer, "", "")
 			errs <- err
 		}(i)
@@ -704,7 +718,7 @@ func TestDecideIsAtomicUnderRace(t *testing.T) {
 	}
 	select {
 	case e := <-ch:
-		if e.Subject != sug.ID || e.ID == 0 {
+		if e.Action != "decide" || e.Subject != sug.ID || e.ID == 0 {
 			t.Fatalf("event %+v", e)
 		}
 	case <-time.After(2 * time.Second):
