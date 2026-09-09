@@ -17,6 +17,13 @@ func Version() string {
 	if !ok {
 		return "dev"
 	}
+	return BuildVersion(info)
+}
+
+// BuildVersion derives the module or development version from build metadata,
+// without executing the binary that supplied it. Linked-in overrides are handled
+// by the caller.
+func BuildVersion(info *debug.BuildInfo) string {
 	if v := info.Main.Version; v != "" && v != "(devel)" {
 		return v
 	}
