@@ -77,7 +77,7 @@ func writeBrief(o briefOpts) string {
 	}
 	job, project, agent := o.Job, o.Project, o.Agent
 	jid := job.str("id")
-	finish := fmt.Sprintf("`pulse job finish %s --status ok --result '<SUMMARY line>' --branch pulse/%s/%s`", jid, agent, jid)
+	finish := fmt.Sprintf("`pulse job finish %s done --result '<SUMMARY line>' --branch pulse/%s/%s`", jid, agent, jid)
 	w("# PULSE job %s for %s (agent %s)", jid, project.str("slug"), agent)
 	w("")
 	w("You are the agent `%s`, working alone in a throwaway clone at %s.", agent, o.Clone)
@@ -156,7 +156,7 @@ func writeBrief(o briefOpts) string {
 		w("   output (the runner reads them), each on its own line:")
 	} else {
 		w("6. Finish within %d minutes. Report with %s", o.Minutes, finish)
-		w("   (`--status failed` when you could not do it; `--result` carries your SUMMARY line). Print the other lines")
+		w("   (replace `done` with `failed` when you could not do it; `--result` carries your SUMMARY line). Print the other lines")
 		w("   below to your output, each on its own line - the runner reads them even when the finish call is missing:")
 	}
 	w("   - `SUMMARY:` one line saying what changed and what you measured")
