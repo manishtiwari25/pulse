@@ -212,8 +212,18 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 		for _, r := range mustRows(s.DB, "SELECT source FROM jobs WHERE source LIKE 'question:%'") {
 			tried[r.str("source")] = true
 		}
-		for _, q := range openQuestions(s, slug, now) {
-			if tried["question:"+q.str("id")] || !answerable(q, createdBy) {
+		// A thread gets one worker attempt per human turn: while an open question in it was already tried (the
+		// job runs, or failed), the next question there waits too, until an answer or a closing post resets
+		// the thread. Otherwise every failed attempt that ends in a new QUESTION: line seeds the next run.
+		open := openQuestions(s, slug, now)
+		waiting := map[string]bool{}
+		for _, q := range open {
+			if tried["question:"+q.str("id")] {
+				waiting[q.str("area")+"/"+q.str("thread")] = true
+			}
+		}
+		for _, q := range open {
+			if tried["question:"+q.str("id")] || waiting[q.str("area")+"/"+q.str("thread")] || !answerable(q, createdBy) {
 				continue
 			}
 			brief := fmt.Sprintf("Question %s in thread %s/%s:\n\n%s\n\nInvestigate in the clone and write the answer as SUMMARY:; the runner posts it. "+

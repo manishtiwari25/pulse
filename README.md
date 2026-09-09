@@ -207,7 +207,9 @@ owner-only path gates still apply independently. Questions the daemon or the
 evolution loop posts (its "Evolution stopped; owner review needed" gate) are
 asks for the owner by construction: the planner never sends a worker to answer
 them, flagged or not, and the loop posts such a question once per open gate,
-not once per tick.
+not once per tick. A thread gets one worker attempt per human turn: while an
+open question in it was already tried (the job runs, or failed), later
+questions there wait until an answer or a closing post resets the thread.
 
 Interactive harnesses get the same flow through hooks:
 `pulse hooks install copilot|claude` writes a session-start hook that reads the

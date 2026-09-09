@@ -170,3 +170,58 @@ func TestPlanJobsNeverAnswersMachineQuestions(t *testing.T) {
 		t.Fatalf("planned %d job(s), want one answer job for %s", len(jobs), human.str("id"))
 	}
 }
+
+// One worker attempt per thread per human turn: while the first question's job runs or failed, a later question
+// in the same thread is not planned; an answer in the thread resets it and the next new question gets a worker.
+func TestPlanJobsOneTriedQuestionPerThread(t *testing.T) {
+	s := newStore(t)
+	newRepo(t, s)
+	suppressPlannerReflect(t, s)
+	if err := s.SetSetting(humanAgent, "parallel_per_project", "3"); err != nil {
+		t.Fatal(err)
+	}
+	ask := func(at, agent, thread, summary string) row {
+		t.Helper()
+		p, err := createPost(s, at, postOpts{
+			Kind: "question", Project: "proj", Area: "api", Thread: thread, Summary: summary,
+			Body: "Signal: check:owner-routing\n", Agent: actorAgent(s, agent), Session: "s-" + agent,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	first := ask(plusHours(testNow, -3), "author-one", "rate-limits", "Which fixture covers 429s?")
+	second := ask(plusHours(testNow, -2), "author-two", "rate-limits", "Should the fixture also cover 503s?")
+	elsewhere := ask(plusHours(testNow, -1), "author-two", "retries", "How long is the retry pause?")
+	plan := func() []row {
+		t.Helper()
+		jobs, err := planJobs(s, "proj", testNow, "daemon")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return jobs
+	}
+	jobs := plan()
+	if len(jobs) != 1 || jobs[0].str("source") != "question:"+first.str("id") {
+		t.Fatalf("first plan = %d job(s), want the oldest question %s", len(jobs), first.str("id"))
+	}
+	if jobs = plan(); len(jobs) != 1 || jobs[0].str("source") != "question:"+elsewhere.str("id") {
+		t.Fatalf("while %s runs, planned %d job(s); want only the other thread's %s", first.str("id"), len(jobs), elsewhere.str("id"))
+	}
+	exec1(s.DB, "UPDATE jobs SET status = 'failed', finished_at = ?, result = 'blocked: owner disposition required' WHERE source = ?",
+		testNow, "question:"+first.str("id"))
+	if jobs = plan(); len(jobs) != 0 {
+		t.Fatalf("after the failed attempt, planned %s; want the thread to wait for a human", jobs[0].str("source"))
+	}
+	if _, err := createPost(s, plusMinutes(testNow, 1), postOpts{
+		Kind: "answer", Project: "proj", Area: "api", Thread: "rate-limits", Summary: "the 429 fixture is tests/limits.json",
+		On: first.str("id"), Agent: actorAgent(s, "author-one"), Session: "s-author-one",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	third := ask(plusMinutes(testNow, 2), "author-two", "rate-limits", "Does tests/limits.json need a 503 case?")
+	if jobs = plan(); len(jobs) != 1 || jobs[0].str("source") != "question:"+third.str("id") {
+		t.Fatalf("after the answer, planned %d job(s); want %s (not %s)", len(jobs), third.str("id"), second.str("id"))
+	}
+}
