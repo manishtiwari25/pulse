@@ -9,17 +9,19 @@ import (
 )
 
 type Focus struct {
-	Agent    string       `json:"agent"`
-	JobID    string       `json:"job_id"`
-	JobKind  string       `json:"job_kind"`
-	JobTitle string       `json:"job_title"`
-	Project  string       `json:"project"`
-	Source   string       `json:"source"`
-	RunID    string       `json:"run_id"`
-	Executor string       `json:"executor"`
-	Since    string       `json:"since"`
-	Thread   string       `json:"thread"`
-	Claims   []FocusClaim `json:"claims"`
+	Agent     string       `json:"agent"`
+	JobID     string       `json:"job_id"`
+	JobKind   string       `json:"job_kind"`
+	JobTitle  string       `json:"job_title"`
+	Project   string       `json:"project"`
+	Source    string       `json:"source"`
+	Task      string       `json:"task"`
+	TaskTitle string       `json:"task_title"`
+	RunID     string       `json:"run_id"`
+	Executor  string       `json:"executor"`
+	Since     string       `json:"since"`
+	Thread    string       `json:"thread"`
+	Claims    []FocusClaim `json:"claims"`
 }
 
 type FocusClaim struct {
@@ -64,6 +66,7 @@ func ProjectFocus(s *store.Store, project, now string) ([]Focus, error) {
 		f.Claims = append([]FocusClaim(nil), claims...)
 		if !inProject {
 			f.JobID, f.JobKind, f.JobTitle, f.Project, f.Source = "", "", "", "", ""
+			f.Task, f.TaskTitle = "", ""
 			f.RunID, f.Executor, f.Since = "", "", ""
 			if len(f.Claims) > 0 {
 				f.Thread = f.Claims[0].Thread
@@ -92,6 +95,7 @@ func addLeasedFocuses(s *store.Store, out map[string]Focus, now string) error {
 		if err := rows.Scan(&f.JobID, &f.JobKind, &f.JobTitle, &f.Project, &f.Source, &f.Agent, &f.Since); err != nil {
 			return err
 		}
+		f.Task, f.TaskTitle = sourceTask(s, f.Source)
 		f.Thread = sourceThread(s, f.Source)
 		out[f.Agent] = mergeFocus(out[f.Agent], f)
 	}
@@ -113,6 +117,7 @@ func addRunningFocuses(s *store.Store, out map[string]Focus) error {
 		if err := rows.Scan(&f.Agent, &f.RunID, &f.Executor, &f.Since, &f.JobID, &f.JobKind, &f.JobTitle, &f.Project, &f.Source); err != nil {
 			return err
 		}
+		f.Task, f.TaskTitle = sourceTask(s, f.Source)
 		f.Thread = sourceThread(s, f.Source)
 		out[f.Agent] = mergeFocus(out[f.Agent], f)
 	}
@@ -151,6 +156,7 @@ func mergeFocus(old, next Focus) Focus {
 	}
 	if old.JobID == "" {
 		old.JobID, old.JobKind, old.JobTitle, old.Project, old.Source = next.JobID, next.JobKind, next.JobTitle, next.Project, next.Source
+		old.Task, old.TaskTitle = next.Task, next.TaskTitle
 	}
 	if next.RunID != "" {
 		old.RunID, old.Executor, old.Since = next.RunID, next.Executor, next.Since
@@ -161,6 +167,18 @@ func mergeFocus(old, next Focus) Focus {
 		old.Thread = next.Thread
 	}
 	return old
+}
+
+func sourceTask(s *store.Store, source string) (id, title string) {
+	id, ok := strings.CutPrefix(source, "task:")
+	if !ok || id == "" {
+		return "", ""
+	}
+	err := s.DB.QueryRow("SELECT title FROM tasks WHERE id = ?", id).Scan(&title)
+	if err != nil {
+		return id, ""
+	}
+	return id, title
 }
 
 func sourceThread(s *store.Store, source string) string {

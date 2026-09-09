@@ -1,5 +1,5 @@
 {
-  "binary_version": "v0.0.0-20260908134649-b56e905e964f+dirty",
+  "binary_version": "v0.0.0-20260909100531-6a5be5c7240c+dirty",
   "board_params": {
     "amend_majority": "2/3",
     "amend_quorum": 40,
@@ -17,9 +17,9 @@
   "built_at": "2026-09-07T09:00:00Z",
   "dirty": "0",
   "evolution_present": "0",
-  "fingerprint": "store:1788897262319011990:348160:139",
+  "fingerprint": "store:1788950532100877057:356352:143",
   "generated_at": "2026-09-07T09:00:00Z",
-  "head": "00d0cc4",
+  "head": "c364d4d",
   "last_error": "",
   "note": "computed from the store; no projection database",
   "now": "2026-09-07T09:00:00Z",
@@ -32,5 +32,5 @@
   "store": "/home/owner/.pulse/pulse.sqlite",
   "tally_mode": "go",
   "tally_script": "",
-  "tool": "pulse v0.0.0-20260908134649-b56e905e964f+dirty"
+  "tool": "pulse v0.0.0-20260909100531-6a5be5c7240c+dirty"
 }

@@ -228,8 +228,9 @@ func documentedDifference(slug, route, path string) string {
 		switch field {
 		case "presence", "presence_reason", "last_heartbeat_at", "presence_session", "presence_checked_at", "presence_expires_at":
 			return "WU-024 adds supervised presence separately from unchanged identity, score and history fields"
-		case "current_job", "current_job_kind", "current_job_title", "current_thread", "executor", "focus_since":
-			return "agents-focus-roster adds current work fields separately from identity, score and history fields"
+		case "current_job", "current_job_kind", "current_job_title", "current_thread", "executor", "focus_since",
+			"current_task", "current_task_title", "current_project", "current_source":
+			return "agents-focus-roster adds current work/task fields separately from identity, score and history fields"
 		}
 	}
 	if strings.HasSuffix(path, ".head") || strings.HasSuffix(path, ".dirty") || strings.HasSuffix(path, ".branch") {

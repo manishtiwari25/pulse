@@ -471,6 +471,17 @@ func TestAdditionsTasksAndMessages(t *testing.T) {
 	if task["created_by"] != "human" || task["brief"] != "Build the thing" || task["current_rev"] != float64(1) || task["priority"] != float64(3) {
 		t.Fatalf("new task: %#v", task)
 	}
+	if task["jobs_total"] != float64(0) || task["working"] == nil || len(task["working"].([]any)) != 0 {
+		t.Fatalf("new task work summary: %#v", task)
+	}
+	status, result = additionsRequest(t, h, "GET", "/api/v1/tasks?project=one", "")
+	if status != 200 || len(result["tasks"].([]any)) != 1 {
+		t.Fatalf("task list: %d %#v", status, result)
+	}
+	taskRow := result["tasks"].([]any)[0].(map[string]any)
+	if taskRow["jobs_total"] != float64(0) || taskRow["working"] == nil || len(taskRow["working"].([]any)) != 0 {
+		t.Fatalf("task list work summary: %#v", taskRow)
+	}
 	status, result = additionsRequest(t, h, "GET", "/api/v1/tasks?project=two", "")
 	if status != 200 || len(result["tasks"].([]any)) != 0 {
 		t.Fatalf("task project filter: %d %#v", status, result)
@@ -478,6 +489,9 @@ func TestAdditionsTasksAndMessages(t *testing.T) {
 	status, result = additionsRequest(t, h, "POST", "/api/v1/tasks/"+id+"/amend", `{"brief":"Build the amended thing","note":"Owner clarification"}`)
 	if status != 200 || result["task"].(map[string]any)["title"] != "Owner task" || result["task"].(map[string]any)["current_rev"] != float64(2) {
 		t.Fatalf("amend: %d %#v", status, result)
+	}
+	if result["task"].(map[string]any)["jobs_total"] != float64(0) || result["task"].(map[string]any)["working"] == nil {
+		t.Fatalf("amend work summary: %#v", result["task"])
 	}
 	wakeups, unsubscribe := bus.Default().Subscribe(bus.Filter{Project: "one", Actions: []string{"message.sent"}}, 1)
 	defer unsubscribe()
@@ -502,6 +516,10 @@ func TestAdditionsTasksAndMessages(t *testing.T) {
 	if status != 200 || len(result["revisions"].([]any)) != 2 || len(result["messages"].([]any)) != 1 || result["jobs"] == nil {
 		t.Fatalf("task detail: %d %#v", status, result)
 	}
+	detailTask := result["task"].(map[string]any)
+	if detailTask["jobs_total"] != float64(0) || detailTask["working"] == nil || len(detailTask["working"].([]any)) != 0 {
+		t.Fatalf("task detail work summary: %#v", detailTask)
+	}
 	revision := result["revisions"].([]any)[1].(map[string]any)
 	if revision["author"] != "human" || revision["note"] != "Owner clarification" {
 		t.Fatalf("revision author/note: %#v", revision)
@@ -515,7 +533,7 @@ func TestAdditionsTasksAndMessages(t *testing.T) {
 		t.Fatal("message did not publish the lead's wakeup event")
 	}
 	status, result = additionsRequest(t, h, "POST", "/api/v1/tasks/"+id+"/cancel", `{"reason":"Priorities changed"}`)
-	if status != 200 || result["task"].(map[string]any)["status"] != "cancelled" {
+	if status != 200 || result["task"].(map[string]any)["status"] != "cancelled" || result["task"].(map[string]any)["working"] == nil {
 		t.Fatalf("cancel task: %d %#v", status, result)
 	}
 	for _, action := range []string{"task.created", "task.amended", "task.cancelled", "message.sent"} {

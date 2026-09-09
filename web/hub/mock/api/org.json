@@ -1,6 +1,6 @@
 {
   "active_claims": [],
-  "binary_version": "v0.0.0-20260908134649-b56e905e964f+dirty",
+  "binary_version": "v0.0.0-20260909100531-6a5be5c7240c+dirty",
   "can_decide": true,
   "commons": {
     "active_claims": [],
@@ -17,7 +17,7 @@
     "dirty": false,
     "error": "",
     "evolution_present": false,
-    "head": "fdde2b5",
+    "head": "11e17e3",
     "kind": "commons",
     "last_post": {
       "agent": "aurora",
@@ -48,7 +48,7 @@
     "threads_open": 1
   },
   "commons_dir": "/home/owner/.pulse/commons",
-  "fingerprint": "store:1788897262319011990:348160:139",
+  "fingerprint": "store:1788950532100877057:356352:143",
   "generated_at": "2026-09-07T09:00:00Z",
   "note": "computed from the store; no projection database",
   "notices": {
@@ -108,12 +108,12 @@
       "dirty": false,
       "error": "",
       "evolution_present": false,
-      "head": "c1c08c7",
+      "head": "59e2b92",
       "kind": "project",
       "last_post": {
         "agent": "human",
-        "date": "2026-09-01T20:33:00Z",
-        "id": "20260901T203300Z-human",
+        "date": "2026-09-01T21:01:00Z",
+        "id": "20260901T210100Z-human",
         "kind": "result",
         "name": "",
         "session": "",
@@ -153,12 +153,12 @@
       "dirty": false,
       "error": "",
       "evolution_present": false,
-      "head": "00d0cc4",
+      "head": "c364d4d",
       "kind": "project",
       "last_post": {
         "agent": "delta",
-        "date": "2026-09-01T20:19:00Z",
-        "id": "20260901T201900Z-delta",
+        "date": "2026-09-01T20:47:00Z",
+        "id": "20260901T204700Z-delta",
         "kind": "proposal",
         "name": "",
         "session": "",
@@ -198,7 +198,7 @@
       "dirty": false,
       "error": "",
       "evolution_present": true,
-      "head": "45476c6",
+      "head": "7527778",
       "kind": "project",
       "last_post": {
         "agent": "cinder",
@@ -252,7 +252,7 @@
   "stamp": "2026-09-07T09:00:00Z|2026-09-07T09:00:00Z|2026-09-07T09:00:00Z|2026-09-07T09:00:00Z",
   "store": "/home/owner/.pulse/pulse.sqlite",
   "tally_mode": "go",
-  "tool": "pulse v0.0.0-20260908134649-b56e905e964f+dirty",
+  "tool": "pulse v0.0.0-20260909100531-6a5be5c7240c+dirty",
   "totals": {
     "agents": 8,
     "agents_active": 0,

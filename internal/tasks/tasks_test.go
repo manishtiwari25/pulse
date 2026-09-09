@@ -213,6 +213,81 @@ func TestCancelCancelsQueuedJobsOnly(t *testing.T) {
 	}
 }
 
+func TestWorkForSummarizesTaskJobs(t *testing.T) {
+	s := newStore(t)
+	task, err := New(s, "demo", "Owner task", "brief", 0, "human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := New(s, "demo", "Empty task", "", 0, "human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := []struct {
+		id, project, kind, title, source, status, agent, leaseUntil, createdAt string
+	}{
+		{"JOB-plan", "demo", "plan", "Plan task", "lead:demo:20260906T210000Z", "leased", "demo-lead", "", "2026-09-06T21:01:00Z"},
+		{"JOB-queued", "demo", "improve", "Queued work", "task:TASK-001", "queued", "", "", "2026-09-06T21:02:00Z"},
+		{"JOB-blocked", "demo", "improve", "Blocked work", "task:TASK-001", "blocked", "", "", "2026-09-06T21:03:00Z"},
+		{"JOB-run", "demo", "improve", "Running work", "task:TASK-001", "leased", "cinder", "2026-09-06T22:00:00Z", "2026-09-06T21:04:00Z"},
+		{"JOB-expired", "demo", "improve", "Expired lease", "task:TASK-001", "leased", "ember", "2026-09-06T20:00:00Z", "2026-09-06T21:05:00Z"},
+		{"JOB-done", "demo", "improve", "Done work", "task:TASK-001", "done", "", "", "2026-09-06T21:06:00Z"},
+		{"JOB-failed", "demo", "improve", "Failed work", "task:TASK-001", "failed", "", "", "2026-09-06T21:07:00Z"},
+		{"JOB-cancelled", "demo", "improve", "Cancelled work", "task:TASK-001", "cancelled", "", "", "2026-09-06T21:08:00Z"},
+		{"JOB-other", "other", "improve", "Wrong project", "task:TASK-001", "failed", "", "", "2026-09-06T21:09:00Z"},
+	}
+	for _, job := range jobs {
+		if _, err := s.DB.Exec(`INSERT INTO jobs (id, project, kind, title, source, status, lease_agent, lease_until, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, job.id, job.project, job.kind, job.title, job.source, job.status, job.agent, job.leaseUntil, job.createdAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.DB.Exec(`INSERT INTO events(at, actor, action, subject, detail) VALUES
+		('2026-09-06T21:00:30Z', 'demo-lead', 'job.lease', 'JOB-plan', '{}'),
+		('2026-09-06T21:10:00Z', 'cinder', 'job.lease', 'JOB-run', '{}'),
+		('2026-09-06T21:11:00Z', 'ember', 'job.lease', 'JOB-expired', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO runs (id, job_id, agent, project, started_at, status, mode, executor)
+		VALUES ('RUN-1', 'JOB-run', 'cinder', 'demo', '2026-09-06T21:12:00Z', 'running', 'real', 'remote')`); err != nil {
+		t.Fatal(err)
+	}
+	task, err = SetLead(s, task.ID, "demo-lead", "JOB-plan", "runner")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	work, err := WorkFor(s, []Task{*task, *empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := work[task.ID]
+	if got.Total != 8 || got.Queued != 1 || got.Blocked != 1 || got.Running != 3 || got.Done != 1 || got.Failed != 1 {
+		t.Fatalf("summary = %+v", got)
+	}
+	if len(got.Working) != 2 {
+		t.Fatalf("working = %+v", got.Working)
+	}
+	if got.Working[0] != (Worker{Job: "JOB-plan", Kind: "plan", Title: "Plan task", Agent: "demo-lead", Since: "2026-09-06T21:00:30Z"}) {
+		t.Fatalf("planning worker = %+v", got.Working[0])
+	}
+	wantRun := Worker{Job: "JOB-run", Kind: "improve", Title: "Running work", Agent: "cinder", Since: "2026-09-06T21:12:00Z", Executor: "remote"}
+	if got.Working[1] != wantRun {
+		t.Fatalf("running worker = %+v", got.Working[1])
+	}
+	emptyWork := work[empty.ID]
+	if emptyWork.Total != 0 || len(emptyWork.Working) != 0 {
+		t.Fatalf("empty work = %+v", emptyWork)
+	}
+	encoded, err := json.Marshal(emptyWork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"working":[]`) {
+		t.Fatalf("empty working must marshal as [], got %s", encoded)
+	}
+}
+
 func TestMessagesSinceUnreadAndImmutable(t *testing.T) {
 	s := newStore(t)
 	a, _ := New(s, "demo", "T", "", 0, "human")

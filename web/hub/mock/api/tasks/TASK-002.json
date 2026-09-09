@@ -1,19 +1,60 @@
 {
-  "jobs": [],
+  "jobs": [
+    {
+      "agent": "",
+      "attempts": 0,
+      "branch": "pulse/cinder/job-20260901T190200Z-87e2d1",
+      "brief": "Cover the race where the test reads the total before the async price lookup has updated the page.",
+      "created_at": "2026-09-01T19:02:00Z",
+      "created_by": "demo-app-lead",
+      "finished_at": "2026-09-01T19:09:00Z",
+      "generation": 0,
+      "id": "job-20260901T190200Z-87e2d1",
+      "kind": "task",
+      "lease_until": "",
+      "priority": 25,
+      "project": "demo-app",
+      "result": "Regression test added for the checkout total race.",
+      "source": "task:TASK-002",
+      "status": "done",
+      "tier": 0,
+      "title": "Add a regression test for the checkout total race"
+    },
+    {
+      "agent": "cinder",
+      "attempts": 0,
+      "branch": "",
+      "brief": "Update the checkout test so it waits for the price lookup to resolve before asserting the rendered total.",
+      "created_at": "2026-09-01T19:16:00Z",
+      "created_by": "demo-app-lead",
+      "finished_at": "",
+      "generation": 0,
+      "id": "job-20260901T191600Z-f05f5f",
+      "kind": "improve",
+      "lease_until": "",
+      "priority": 30,
+      "project": "demo-app",
+      "result": "",
+      "source": "task:TASK-002",
+      "status": "leased",
+      "tier": 0,
+      "title": "Await the price lookup before reading the total"
+    }
+  ],
   "messages": [
     {
-      "at": "2026-09-01T19:44:00Z",
+      "at": "2026-09-01T20:05:00Z",
       "author": "human",
       "body": "Is the flake in the test or in the page?",
-      "id": "MSG-20260901T194400Z-1",
+      "id": "MSG-20260901T200500Z-1",
       "project": "demo-app",
       "task_id": "TASK-002"
     },
     {
-      "at": "2026-09-01T19:51:00Z",
+      "at": "2026-09-01T20:12:00Z",
       "author": "demo-app-lead",
       "body": "In the test: it reads the total before the price lookup resolves. Fix is one await.",
-      "id": "MSG-20260901T195100Z-1",
+      "id": "MSG-20260901T201200Z-1",
       "project": "demo-app",
       "task_id": "TASK-002"
     }
@@ -35,11 +76,27 @@
     "current_rev": 1,
     "id": "TASK-002",
     "job_id": "",
+    "jobs_blocked": 0,
+    "jobs_done": 1,
+    "jobs_failed": 0,
+    "jobs_queued": 0,
+    "jobs_running": 1,
+    "jobs_total": 2,
     "lead": "",
     "priority": 30,
     "project": "demo-app",
     "status": "in_progress",
     "title": "Fix the flaky checkout test",
-    "updated_at": "2026-09-01T18:55:00Z"
+    "updated_at": "2026-09-01T18:55:00Z",
+    "working": [
+      {
+        "job": "job-20260901T191600Z-f05f5f",
+        "kind": "improve",
+        "title": "Await the price lookup before reading the total",
+        "agent": "cinder",
+        "since": "2026-09-07T08:51:00.000Z",
+        "executor": "local"
+      }
+    ]
   }
 }

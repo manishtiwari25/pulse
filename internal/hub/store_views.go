@@ -269,11 +269,11 @@ func newPerson(agent store.Agent) map[string]any {
 	if name != "" {
 		names = append(names, name)
 	}
-	return object("agent name names kind status agent_status runner model session sessions session_count jobs_done jobs_failed posts store_posts pruned_at pruned_reason last_useful_at last_active_at created_at legacy_id notes votes claims questions answers suggestions findings first_seen last_seen active_claims projects current_job current_job_kind current_job_title current_thread executor focus_since days_since approximate name_shared shared_with",
+	return object("agent name names kind status agent_status runner model session sessions session_count jobs_done jobs_failed posts store_posts pruned_at pruned_reason last_useful_at last_active_at created_at legacy_id notes votes claims questions answers suggestions findings first_seen last_seen active_claims projects current_job current_job_kind current_job_title current_thread executor focus_since current_task current_task_title current_project current_source days_since approximate name_shared shared_with",
 		agent.Name, name, names, agent.Kind, agent.Status, agent.Status, agent.Runner, agent.Model, "", sessions, len(sessions),
 		agent.JobsDone, agent.JobsFailed, agent.Posts, agent.Posts, agent.PrunedAt, agent.PrunedReason, agent.LastUsefulAt, agent.LastActiveAt,
 		agent.CreatedAt, agent.LegacyID, agent.Notes, 0, 0, 0, 0, 0, 0, "", "", []map[string]any{}, []string{},
-		"", "", "", "", "", "", 0.0, false, false, []string{})
+		"", "", "", "", "", "", "", "", "", "", 0.0, false, false, []string{})
 }
 
 func (h *Handler) roster(views []projectView) ([]map[string]any, error) {
@@ -373,6 +373,8 @@ func (h *Handler) roster(views []projectView) ([]map[string]any, error) {
 		if f, ok := focuses[str(row["agent"])]; ok {
 			row["current_job"], row["current_job_kind"], row["current_job_title"] = f.JobID, f.JobKind, f.JobTitle
 			row["current_thread"], row["executor"], row["focus_since"] = f.Thread, f.Executor, f.Since
+			row["current_task"], row["current_task_title"] = f.Task, f.TaskTitle
+			row["current_project"], row["current_source"] = f.Project, f.Source
 		}
 		if row["first_seen"] == "" {
 			row["first_seen"] = row["created_at"]

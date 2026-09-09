@@ -4,14 +4,14 @@
     "branch": "main",
     "default_branch": "main",
     "dirty": false,
-    "head": "45476c6a3be36d1e8e6369441875613b27e64a9e",
+    "head": "752777875b67be6f5f3d2bdc0e2635cbd71b4b52",
     "slug": "pulse"
   },
   "daemon": null,
   "hub": {
-    "pid": 67899,
-    "revision": "b56e905e964f9d11a3c755a6788cbc588544608d",
-    "version": "v0.0.0-20260908134649-b56e905e964f+dirty"
+    "pid": 75703,
+    "revision": "6a5be5c7240cb44da16ccc8f77c5a4cdc05bd7b6",
+    "version": "v0.0.0-20260909100531-6a5be5c7240c+dirty"
   },
   "last": null,
   "retry_minutes": 60,

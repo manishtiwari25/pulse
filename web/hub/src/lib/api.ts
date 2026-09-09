@@ -682,6 +682,10 @@ export interface RosterRow extends Who {
   current_job: string;
   current_job_kind: string;
   current_job_title: string;
+  current_task?: string;
+  current_task_title?: string;
+  current_project?: string;
+  current_source?: string;
   current_thread: string;
   executor: string;
   focus_since: string;
@@ -899,6 +903,34 @@ export interface Task {
   updated_at: string;
   current_rev: number;
   brief: string; // Markdown, the current revision's brief
+  jobs_total?: number;
+  jobs_queued?: number;
+  jobs_blocked?: number;
+  jobs_running?: number;
+  jobs_done?: number;
+  jobs_failed?: number;
+  working?: TaskWorker[];
+}
+
+export interface TaskWorker {
+  job: string;
+  kind: string;
+  title: string;
+  agent: string;
+  since: string;
+  executor: string;
+}
+
+export function taskProgress(t: Task): { total: number; done: number; failed: number; running: number; queued: number; blocked: number; working: TaskWorker[] } {
+  return {
+    total: t.jobs_total ?? 0,
+    done: t.jobs_done ?? 0,
+    failed: t.jobs_failed ?? 0,
+    running: t.jobs_running ?? 0,
+    queued: t.jobs_queued ?? 0,
+    blocked: t.jobs_blocked ?? 0,
+    working: t.working ?? [],
+  };
 }
 
 export interface TaskRevision {

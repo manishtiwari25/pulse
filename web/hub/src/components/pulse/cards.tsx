@@ -12,9 +12,9 @@ import { EmptyState, Kv, Panel } from "./panel";
 import { Fact, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
 import { KindBadge, Mono, PostLink, ProjectLink, Provenance, StatusBadge, ThreadLink, ToneBadge, VoteBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
-import { expiresAt, hashHue, initials, num, plural, statusTone, untilText } from "@/lib/format";
+import { expiresAt, hashHue, initials, num, plural, statusTone, truncate, untilText } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { COMMONS_HINT, evolveGate, writes, type Amendment, type Claim, type EvolveGate, type Executor, type LandingHold, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion } from "@/lib/api";
+import { COMMONS_HINT, evolveGate, taskProgress, writes, type Amendment, type Claim, type EvolveGate, type Executor, type LandingHold, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion, type Task } from "@/lib/api";
 import { useNow } from "@/lib/use-api";
 import { EvolveBadges, gateStep } from "./evolve";
 
@@ -360,10 +360,30 @@ export function FeedList({ rows, slug, limit }: { rows: PostRef[]; slug?: string
   );
 }
 
-export function WorkingNow({ claims, slug }: { claims: Claim[]; slug?: string }) {
-  if (!claims.length) return <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground anywhere">Nobody holds a claim right now - a claim is an agent saying &quot;I am on this thread&quot; for a few hours.</p>;
+export function WorkingNow({ claims, slug, tasks }: { claims: Claim[]; slug?: string; tasks?: Task[] }) {
+  const taskWork = (tasks ?? []).flatMap((t) => taskProgress(t).working.map((w, i) => ({ t, w, k: t.id + "/" + w.job + "/" + i })));
+  if (!claims.length && !taskWork.length) return <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground anywhere">Nobody is on a task or holds a claim right now - work appears here when a job is leased or an agent claims a thread.</p>;
   return (
     <ul className="divide-y">
+      {taskWork.map(({ t, w, k }) => (
+        <li key={k} className="flex items-start gap-2.5 py-2 first:pt-0 last:pb-0">
+          <Who row={{ agent: w.agent }} compact className="w-32 shrink-0" />
+          <div className="min-w-0 flex-1 text-[13px]">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="text-muted-foreground">on</span>
+              <Link href={hrefs.task(t.project, t.id)} className="hover:underline">
+                <Mono>{t.id}</Mono>
+              </Link>
+              <span className="min-w-0 truncate text-foreground">{truncate(t.title, 72)}</span>
+              <ToneBadge tone="info">{w.kind}</ToneBadge>
+            </div>
+            <p className="mt-0.5 leading-snug text-muted-foreground anywhere">
+              {w.title ? truncate(w.title, 96) : w.job} <Mono className="text-muted-foreground">{w.job}</Mono>
+            </p>
+          </div>
+          {w.since ? <span className="shrink-0 text-xs text-muted-foreground">since <When d={w.since} /></span> : null}
+        </li>
+      ))}
       {claims.map((c) => {
         const s = c.slug || slug || "";
         const exp = c.expires ? new Date(c.expires) : null;

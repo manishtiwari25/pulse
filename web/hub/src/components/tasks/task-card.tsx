@@ -12,11 +12,24 @@ import { EmptyState } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { prioLabel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { writes, type Task } from "@/lib/api";
+import { taskProgress, writes, type Task } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { AmendTaskDialog } from "./task-dialogs";
+import { TaskWorkingLine } from "./task-work";
 
 const isClosed = (t: Task) => t.status === "done" || t.status === "cancelled";
+
+// Why a planned or in-progress task has nobody on it right now, in the
+// runner's own terms (tendTasks): a queued job waits for a free worker, a
+// failed job goes back to the lead, done jobs wait for their branch to land.
+function idleHint(t: Task, p: ReturnType<typeof taskProgress>): string | null {
+  if (p.working.length || p.running || (t.status !== "in_progress" && t.status !== "planned")) return null;
+  if (p.queued) return "waiting for a worker";
+  if (p.blocked) return "a job is blocked";
+  if (!p.total) return t.lead ? "the lead is planning" : "no job yet";
+  if (p.failed) return "the lead re-plans after a failure";
+  return "every job done - waiting to land";
+}
 const STATUS_CUE: Record<Task["status"], string> = {
   open: "border-l-primary/50",
   planned: "border-l-muted-foreground/40",
@@ -80,6 +93,8 @@ export function TaskQuickActions({ t, onOpen, size = "xs", showOpen }: { t: Task
 export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task; showProject?: boolean; onOpen?: (t: Task) => void; active?: boolean; compact?: boolean }) {
   const router = useRouter();
   const prio = prioLabel(t.priority);
+  const progress = taskProgress(t);
+  const hint = idleHint(t, progress);
   // Always a button, never a link: the card carries links and buttons of its
   // own, and an anchor cannot nest them.
   const open = onOpen ? () => onOpen(t) : () => router.push(hrefs.task(t.project, t.id));
@@ -100,16 +115,23 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
         {showProject ? <ProjectLink slug={t.project} className="text-xs" /> : null}
       </ItemCardHeader>
       <ItemCardTitle chevron>{t.title}</ItemCardTitle>
+      <TaskWorkingLine t={t} compact={compact} />
       {body && !compact ? <ItemCardBody>{body}</ItemCardBody> : null}
       <ItemCardActions>
-        <span className="text-[11.5px] text-muted-foreground anywhere">
-          {"rev " + t.current_rev}
-          {t.job_id ? (
+        <span className={cn("text-[11.5px] text-muted-foreground anywhere", compact && "line-clamp-1")}>
+          <span>{"rev " + t.current_rev}</span>
+          {progress.total ? (
             <>
-              {" · job "}
-              <Mono>{t.job_id}</Mono>
+              {" · "}
+              <span className="tnum text-foreground">{progress.done + "/" + progress.total}</span>
+              {" jobs done"}
+              {progress.running ? <span className="text-ok">{" · " + progress.running + " running"}</span> : null}
+              {progress.failed ? <span className="text-bad">{" · " + progress.failed + " failed"}</span> : null}
+              {progress.queued ? <span>{" · " + progress.queued + " queued"}</span> : null}
+              {progress.blocked ? <span>{" · " + progress.blocked + " blocked"}</span> : null}
             </>
           ) : null}
+          {hint ? <span>{" · " + hint}</span> : null}
           {t.status === "review" ? <span className="ml-1 text-warn">· the lead could not finish this without you - read the conversation</span> : null}
         </span>
         <span className="ml-auto flex items-center gap-1.5">

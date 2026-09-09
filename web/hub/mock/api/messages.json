@@ -9,42 +9,42 @@
       "task_id": "TASK-001"
     },
     {
-      "at": "2026-09-01T19:30:00Z",
+      "at": "2026-09-01T19:51:00Z",
       "author": "human",
       "body": "How is the sign-in work going? I would like a preview by Friday.",
-      "id": "MSG-20260901T193000Z-1",
-      "project": "demo-app",
-      "task_id": null
-    },
-    {
-      "at": "2026-09-01T19:37:00Z",
-      "author": "demo-app-lead",
-      "body": "The mail sender landed; the link endpoint is in review. A preview on Thursday is realistic.",
-      "id": "MSG-20260901T193700Z-1",
-      "project": "demo-app",
-      "task_id": null
-    },
-    {
-      "at": "2026-09-01T19:44:00Z",
-      "author": "human",
-      "body": "Is the flake in the test or in the page?",
-      "id": "MSG-20260901T194400Z-1",
-      "project": "demo-app",
-      "task_id": "TASK-002"
-    },
-    {
-      "at": "2026-09-01T19:51:00Z",
-      "author": "demo-app-lead",
-      "body": "In the test: it reads the total before the price lookup resolves. Fix is one await.",
       "id": "MSG-20260901T195100Z-1",
       "project": "demo-app",
-      "task_id": "TASK-002"
+      "task_id": null
     },
     {
       "at": "2026-09-01T19:58:00Z",
+      "author": "demo-app-lead",
+      "body": "The mail sender landed; the link endpoint is in review. A preview on Thursday is realistic.",
+      "id": "MSG-20260901T195800Z-1",
+      "project": "demo-app",
+      "task_id": null
+    },
+    {
+      "at": "2026-09-01T20:05:00Z",
+      "author": "human",
+      "body": "Is the flake in the test or in the page?",
+      "id": "MSG-20260901T200500Z-1",
+      "project": "demo-app",
+      "task_id": "TASK-002"
+    },
+    {
+      "at": "2026-09-01T20:12:00Z",
+      "author": "demo-app-lead",
+      "body": "In the test: it reads the total before the price lookup resolves. Fix is one await.",
+      "id": "MSG-20260901T201200Z-1",
+      "project": "demo-app",
+      "task_id": "TASK-002"
+    },
+    {
+      "at": "2026-09-01T20:19:00Z",
       "author": "human",
       "body": "Ship v2 when the guide is done; no rush.",
-      "id": "MSG-20260901T195800Z-1",
+      "id": "MSG-20260901T201900Z-1",
       "project": "demo-lib",
       "task_id": null
     }

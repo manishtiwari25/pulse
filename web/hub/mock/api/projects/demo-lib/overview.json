@@ -3,7 +3,7 @@
   "agents": [
     {
       "agent": "delta",
-      "last": "2026-09-01T20:19:00Z",
+      "last": "2026-09-01T20:47:00Z",
       "name": null,
       "posts": 1,
       "session": ""
@@ -76,7 +76,7 @@
       "active_claims": [],
       "area": "runner",
       "key": "runner/compute",
-      "last": "2026-09-01T20:19:00Z",
+      "last": "2026-09-01T20:47:00Z",
       "last_by": "delta",
       "last_kind": "proposal",
       "open_handoffs": 0,
@@ -119,8 +119,8 @@
   "recent_posts": [
     {
       "agent": "delta",
-      "date": "2026-09-01T20:19:00Z",
-      "id": "20260901T201900Z-delta",
+      "date": "2026-09-01T20:47:00Z",
+      "id": "20260901T204700Z-delta",
       "kind": "proposal",
       "name": "",
       "provenance_ok": 0,

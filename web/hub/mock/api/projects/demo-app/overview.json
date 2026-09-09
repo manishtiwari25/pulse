@@ -3,21 +3,21 @@
   "agents": [
     {
       "agent": "human",
-      "last": "2026-09-01T20:33:00Z",
+      "last": "2026-09-01T21:01:00Z",
       "name": null,
       "posts": 2,
       "session": ""
     },
     {
       "agent": "ember",
-      "last": "2026-09-01T20:26:00Z",
+      "last": "2026-09-01T20:54:00Z",
       "name": null,
       "posts": 1,
       "session": ""
     },
     {
       "agent": "cinder",
-      "last": "2026-09-01T20:05:00Z",
+      "last": "2026-09-01T20:33:00Z",
       "name": null,
       "posts": 1,
       "session": ""
@@ -157,8 +157,8 @@
   "recent_posts": [
     {
       "agent": "human",
-      "date": "2026-09-01T20:33:00Z",
-      "id": "20260901T203300Z-human",
+      "date": "2026-09-01T21:01:00Z",
+      "id": "20260901T210100Z-human",
       "kind": "result",
       "name": "",
       "provenance_ok": 0,
@@ -168,8 +168,8 @@
     },
     {
       "agent": "ember",
-      "date": "2026-09-01T20:26:00Z",
-      "id": "20260901T202600Z-ember",
+      "date": "2026-09-01T20:54:00Z",
+      "id": "20260901T205400Z-ember",
       "kind": "proposal",
       "name": "",
       "provenance_ok": 0,
@@ -179,8 +179,8 @@
     },
     {
       "agent": "human",
-      "date": "2026-09-01T20:12:00Z",
-      "id": "20260901T201200Z-human",
+      "date": "2026-09-01T20:40:00Z",
+      "id": "20260901T204000Z-human",
       "kind": "result",
       "name": "",
       "provenance_ok": 0,
@@ -190,8 +190,8 @@
     },
     {
       "agent": "cinder",
-      "date": "2026-09-01T20:05:00Z",
-      "id": "20260901T200500Z-cinder",
+      "date": "2026-09-01T20:33:00Z",
+      "id": "20260901T203300Z-cinder",
       "kind": "proposal",
       "name": "",
       "provenance_ok": 0,

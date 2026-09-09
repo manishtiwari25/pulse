@@ -37,12 +37,18 @@ func TestRosterPresenceHistoryClaimsAndSharedClock(t *testing.T) {
 	}
 	exec("UPDATE agents SET status='pruned',pruned_at=?,pruned_reason='no useful output for 14 days' WHERE name='pruned'", s.Now())
 	exec("UPDATE agents SET jobs_done=3,posts=4,last_useful_at='2026-09-01T00:00:00Z' WHERE name='live'")
+	exec(`INSERT INTO tasks(id,project,title,status,priority,created_by,created_at,updated_at,current_rev)
+		VALUES('TASK-live','commons','Live owner task','open',0,'owner',?,?,1)`, s.Now(), s.Now())
 	tokens := map[string]board.ExecutionIdentity{}
 	for _, name := range []string{"live", "offline"} {
 		id := board.ExecutionIdentity{Agent: name, Session: "run-" + name, RunID: "run-" + name, JobID: "job-" + name, Generation: 2, Executor: "local"}
 		tokens[name] = id
-		exec(`INSERT INTO jobs(id,project,kind,title,created_at,status,lease_agent,generation)
-			VALUES(?,'commons','task','presence',?,'leased',?,2)`, id.JobID, s.Now(), name)
+		source := ""
+		if name == "live" {
+			source = "task:TASK-live"
+		}
+		exec(`INSERT INTO jobs(id,project,kind,title,source,created_at,status,lease_agent,generation)
+			VALUES(?,'commons','task','presence',?,?,'leased',?,2)`, id.JobID, source, s.Now(), name)
 		exec(`INSERT INTO runs(id,job_id,agent,project,started_at,status)
 			VALUES(?,?,?,'commons','2026-09-06T11:50:00Z','running')`, id.RunID, id.JobID, name)
 		if name == "live" {
@@ -96,6 +102,10 @@ func TestRosterPresenceHistoryClaimsAndSharedClock(t *testing.T) {
 		byName["live"]["current_job_title"] != "presence" || byName["live"]["current_thread"] != "agents/live" ||
 		byName["live"]["executor"] != "local" || byName["live"]["focus_since"] != "2026-09-06T11:50:00Z" {
 		t.Fatalf("focus fields missing: %+v", byName["live"])
+	}
+	if byName["live"]["current_task"] != "TASK-live" || byName["live"]["current_task_title"] != "Live owner task" ||
+		byName["live"]["current_project"] != "commons" || byName["live"]["current_source"] != "task:TASK-live" {
+		t.Fatalf("focus task fields missing: %+v", byName["live"])
 	}
 	cards, err := board.Scorecards(s, true)
 	if err != nil {
@@ -170,7 +180,8 @@ func TestRosterGoldenKeepsIdentityAndHistoryAssertions(t *testing.T) {
 		t.Fatalf("legacy roster normalization changed identity/history: %+v", rows)
 	}
 	for _, field := range []string{"presence", "presence_reason", "last_heartbeat_at", "presence_session", "presence_checked_at", "presence_expires_at",
-		"current_job", "current_job_kind", "current_job_title", "current_thread", "executor", "focus_since"} {
+		"current_job", "current_job_kind", "current_job_title", "current_thread", "executor", "focus_since",
+		"current_task", "current_task_title", "current_project", "current_source"} {
 		if documentedDifference("org", "roster", "$[0]."+field) == "" {
 			t.Errorf("added field %s is undocumented", field)
 		}

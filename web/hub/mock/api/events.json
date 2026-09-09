@@ -1,38 +1,6 @@
 {
   "events": [
     {
-      "id": 40,
-      "at": "2026-09-01T10:31:00Z",
-      "actor": "human",
-      "action": "setting",
-      "subject": "compute.max_hours_per_day",
-      "detail": 12
-    },
-    {
-      "id": 41,
-      "at": "2026-09-01T10:38:00Z",
-      "actor": "human",
-      "action": "setting",
-      "subject": "compute.budget_credits",
-      "detail": 500
-    },
-    {
-      "id": 42,
-      "at": "2026-09-01T10:45:00Z",
-      "actor": "human",
-      "action": "setting",
-      "subject": "compute.azure.subscription",
-      "detail": "demo-subscription"
-    },
-    {
-      "id": 43,
-      "at": "2026-09-01T10:52:00Z",
-      "actor": "human",
-      "action": "setting",
-      "subject": "compute.azure.resource_group",
-      "detail": "pulse-hands"
-    },
-    {
       "id": 44,
       "at": "2026-09-01T10:59:00Z",
       "actor": "human",
@@ -428,7 +396,7 @@
       "at": "2026-09-01T14:43:00Z",
       "actor": "",
       "action": "job.add",
-      "subject": "job-20260901T144300Z-d57da2",
+      "subject": "job-20260901T144300Z-8df608",
       "detail": {
         "kind": "improve",
         "project": "demo-app",
@@ -902,6 +870,38 @@
     {
       "id": 113,
       "at": "2026-09-01T19:02:00Z",
+      "actor": "demo-app-lead",
+      "action": "job.add",
+      "subject": "job-20260901T190200Z-87e2d1",
+      "detail": {
+        "kind": "task",
+        "project": "demo-app",
+        "title": "Add a regression test for the checkout total race"
+      }
+    },
+    {
+      "id": 114,
+      "at": "2026-09-01T19:09:00Z",
+      "actor": "demo-app-lead",
+      "action": "job.done",
+      "subject": "job-20260901T190200Z-87e2d1",
+      "detail": "Regression test added for the checkout total race."
+    },
+    {
+      "id": 115,
+      "at": "2026-09-01T19:16:00Z",
+      "actor": "demo-app-lead",
+      "action": "job.add",
+      "subject": "job-20260901T191600Z-f05f5f",
+      "detail": {
+        "kind": "improve",
+        "project": "demo-app",
+        "title": "Await the price lookup before reading the total"
+      }
+    },
+    {
+      "id": 116,
+      "at": "2026-09-01T19:23:00Z",
       "actor": "human",
       "action": "task.created",
       "subject": "TASK-003",
@@ -912,8 +912,8 @@
       }
     },
     {
-      "id": 114,
-      "at": "2026-09-01T19:09:00Z",
+      "id": 117,
+      "at": "2026-09-01T19:30:00Z",
       "actor": "demo-lib-lead",
       "action": "task.status",
       "subject": "TASK-003",
@@ -924,8 +924,8 @@
       }
     },
     {
-      "id": 115,
-      "at": "2026-09-01T19:16:00Z",
+      "id": 118,
+      "at": "2026-09-01T19:37:00Z",
       "actor": "human",
       "action": "task.created",
       "subject": "TASK-004",
@@ -936,8 +936,8 @@
       }
     },
     {
-      "id": 116,
-      "at": "2026-09-01T19:23:00Z",
+      "id": 119,
+      "at": "2026-09-01T19:44:00Z",
       "actor": "human",
       "action": "task.cancelled",
       "subject": "TASK-004",
@@ -950,59 +950,59 @@
       }
     },
     {
-      "id": 117,
-      "at": "2026-09-01T19:30:00Z",
-      "actor": "human",
-      "action": "message.sent",
-      "subject": "MSG-20260901T193000Z-1",
-      "detail": {
-        "author": "human",
-        "project": "demo-app",
-        "task_id": ""
-      }
-    },
-    {
-      "id": 118,
-      "at": "2026-09-01T19:37:00Z",
-      "actor": "demo-app-lead",
-      "action": "message.sent",
-      "subject": "MSG-20260901T193700Z-1",
-      "detail": {
-        "author": "demo-app-lead",
-        "project": "demo-app",
-        "task_id": ""
-      }
-    },
-    {
-      "id": 119,
-      "at": "2026-09-01T19:44:00Z",
-      "actor": "human",
-      "action": "message.sent",
-      "subject": "MSG-20260901T194400Z-1",
-      "detail": {
-        "author": "human",
-        "project": "demo-app",
-        "task_id": "TASK-002"
-      }
-    },
-    {
       "id": 120,
       "at": "2026-09-01T19:51:00Z",
-      "actor": "demo-app-lead",
+      "actor": "human",
       "action": "message.sent",
       "subject": "MSG-20260901T195100Z-1",
       "detail": {
-        "author": "demo-app-lead",
+        "author": "human",
         "project": "demo-app",
-        "task_id": "TASK-002"
+        "task_id": ""
       }
     },
     {
       "id": 121,
       "at": "2026-09-01T19:58:00Z",
-      "actor": "human",
+      "actor": "demo-app-lead",
       "action": "message.sent",
       "subject": "MSG-20260901T195800Z-1",
+      "detail": {
+        "author": "demo-app-lead",
+        "project": "demo-app",
+        "task_id": ""
+      }
+    },
+    {
+      "id": 122,
+      "at": "2026-09-01T20:05:00Z",
+      "actor": "human",
+      "action": "message.sent",
+      "subject": "MSG-20260901T200500Z-1",
+      "detail": {
+        "author": "human",
+        "project": "demo-app",
+        "task_id": "TASK-002"
+      }
+    },
+    {
+      "id": 123,
+      "at": "2026-09-01T20:12:00Z",
+      "actor": "demo-app-lead",
+      "action": "message.sent",
+      "subject": "MSG-20260901T201200Z-1",
+      "detail": {
+        "author": "demo-app-lead",
+        "project": "demo-app",
+        "task_id": "TASK-002"
+      }
+    },
+    {
+      "id": 124,
+      "at": "2026-09-01T20:19:00Z",
+      "actor": "human",
+      "action": "message.sent",
+      "subject": "MSG-20260901T201900Z-1",
       "detail": {
         "author": "human",
         "project": "demo-lib",
@@ -1010,8 +1010,20 @@
       }
     },
     {
-      "id": 122,
-      "at": "2026-09-01T20:05:00Z",
+      "id": 125,
+      "at": "2026-09-01T20:26:00Z",
+      "actor": "demo-app-lead",
+      "action": "job.add",
+      "subject": "job-20260901T202600Z-3b3437",
+      "detail": {
+        "kind": "task",
+        "project": "demo-app",
+        "title": "Send the magic link by email"
+      }
+    },
+    {
+      "id": 126,
+      "at": "2026-09-01T20:33:00Z",
       "actor": "cinder",
       "action": "compute.requested",
       "subject": "CR-001",
@@ -1023,11 +1035,11 @@
       }
     },
     {
-      "id": 123,
-      "at": "2026-09-01T20:05:00Z",
+      "id": 127,
+      "at": "2026-09-01T20:33:00Z",
       "actor": "cinder",
       "action": "post",
-      "subject": "20260901T200500Z-cinder",
+      "subject": "20260901T203300Z-cinder",
       "detail": {
         "kind": "proposal",
         "project": "demo-app",
@@ -1035,11 +1047,11 @@
       }
     },
     {
-      "id": 124,
-      "at": "2026-09-01T20:12:00Z",
+      "id": 128,
+      "at": "2026-09-01T20:40:00Z",
       "actor": "human",
       "action": "post",
-      "subject": "20260901T201200Z-human",
+      "subject": "20260901T204000Z-human",
       "detail": {
         "kind": "result",
         "project": "demo-app",
@@ -1047,19 +1059,19 @@
       }
     },
     {
-      "id": 125,
-      "at": "2026-09-01T20:12:00Z",
+      "id": 129,
+      "at": "2026-09-01T20:40:00Z",
       "actor": "human",
       "action": "decide",
-      "subject": "20260901T200500Z-cinder",
+      "subject": "20260901T203300Z-cinder",
       "detail": {
         "answer": "yes",
-        "result": "20260901T201200Z-human"
+        "result": "20260901T204000Z-human"
       }
     },
     {
-      "id": 126,
-      "at": "2026-09-01T20:12:00Z",
+      "id": 130,
+      "at": "2026-09-01T20:40:00Z",
       "actor": "human",
       "action": "compute.approved",
       "subject": "CR-001",
@@ -1070,8 +1082,8 @@
       }
     },
     {
-      "id": 127,
-      "at": "2026-09-01T20:19:00Z",
+      "id": 131,
+      "at": "2026-09-01T20:47:00Z",
       "actor": "delta",
       "action": "compute.requested",
       "subject": "CR-002",
@@ -1083,11 +1095,11 @@
       }
     },
     {
-      "id": 128,
-      "at": "2026-09-01T20:19:00Z",
+      "id": 132,
+      "at": "2026-09-01T20:47:00Z",
       "actor": "delta",
       "action": "post",
-      "subject": "20260901T201900Z-delta",
+      "subject": "20260901T204700Z-delta",
       "detail": {
         "kind": "proposal",
         "project": "demo-lib",
@@ -1095,8 +1107,8 @@
       }
     },
     {
-      "id": 129,
-      "at": "2026-09-01T20:26:00Z",
+      "id": 133,
+      "at": "2026-09-01T20:54:00Z",
       "actor": "ember",
       "action": "compute.requested",
       "subject": "CR-003",
@@ -1108,11 +1120,11 @@
       }
     },
     {
-      "id": 130,
-      "at": "2026-09-01T20:26:00Z",
+      "id": 134,
+      "at": "2026-09-01T20:54:00Z",
       "actor": "ember",
       "action": "post",
-      "subject": "20260901T202600Z-ember",
+      "subject": "20260901T205400Z-ember",
       "detail": {
         "kind": "proposal",
         "project": "demo-app",
@@ -1120,11 +1132,11 @@
       }
     },
     {
-      "id": 131,
-      "at": "2026-09-01T20:33:00Z",
+      "id": 135,
+      "at": "2026-09-01T21:01:00Z",
       "actor": "human",
       "action": "post",
-      "subject": "20260901T203300Z-human",
+      "subject": "20260901T210100Z-human",
       "detail": {
         "kind": "result",
         "project": "demo-app",
@@ -1132,19 +1144,19 @@
       }
     },
     {
-      "id": 132,
-      "at": "2026-09-01T20:33:00Z",
+      "id": 136,
+      "at": "2026-09-01T21:01:00Z",
       "actor": "human",
       "action": "decide",
-      "subject": "20260901T202600Z-ember",
+      "subject": "20260901T205400Z-ember",
       "detail": {
         "answer": "no",
-        "result": "20260901T203300Z-human"
+        "result": "20260901T210100Z-human"
       }
     },
     {
-      "id": 133,
-      "at": "2026-09-01T20:33:00Z",
+      "id": 137,
+      "at": "2026-09-01T21:01:00Z",
       "actor": "human",
       "action": "compute.denied",
       "subject": "CR-003",
@@ -1155,11 +1167,11 @@
       }
     },
     {
-      "id": 134,
-      "at": "2026-09-01T20:40:00Z",
+      "id": 138,
+      "at": "2026-09-01T21:08:00Z",
       "actor": "",
       "action": "job.add",
-      "subject": "job-20260901T204000Z-7576ad",
+      "subject": "job-20260901T210800Z-5c8fa5",
       "detail": {
         "kind": "task",
         "project": "demo-app",
@@ -1167,19 +1179,19 @@
       }
     },
     {
-      "id": 135,
-      "at": "2026-09-01T20:47:00Z",
+      "id": 139,
+      "at": "2026-09-01T21:15:00Z",
       "actor": "human",
       "action": "job.done",
-      "subject": "job-20260901T204000Z-7576ad",
+      "subject": "job-20260901T210800Z-5c8fa5",
       "detail": "Matrix green in 6m12s; timings posted to product/checkout-latency."
     },
     {
-      "id": 136,
-      "at": "2026-09-01T20:54:00Z",
+      "id": 140,
+      "at": "2026-09-01T21:22:00Z",
       "actor": "",
       "action": "job.add",
-      "subject": "job-20260901T205400Z-84d7fc",
+      "subject": "job-20260901T212200Z-4a8819",
       "detail": {
         "kind": "task",
         "project": "demo-lib",
@@ -1187,19 +1199,19 @@
       }
     },
     {
-      "id": 137,
-      "at": "2026-09-01T21:01:00Z",
+      "id": 141,
+      "at": "2026-09-01T21:29:00Z",
       "actor": "human",
       "action": "job.failed",
-      "subject": "job-20260901T205400Z-84d7fc",
+      "subject": "job-20260901T212200Z-4a8819",
       "detail": "The README section conflicts with an open task; stopped."
     },
     {
-      "id": 138,
-      "at": "2026-09-01T21:08:00Z",
+      "id": 142,
+      "at": "2026-09-01T21:36:00Z",
       "actor": "",
       "action": "job.add",
-      "subject": "job-20260901T210800Z-b51232",
+      "subject": "job-20260901T213600Z-2e1e4c",
       "detail": {
         "kind": "reflect",
         "project": "pulse",
@@ -1207,11 +1219,11 @@
       }
     },
     {
-      "id": 139,
-      "at": "2026-09-01T21:15:00Z",
+      "id": 143,
+      "at": "2026-09-01T21:43:00Z",
       "actor": "",
       "action": "job.add",
-      "subject": "job-20260901T211500Z-7adf09",
+      "subject": "job-20260901T214300Z-de188c",
       "detail": {
         "kind": "answer",
         "project": "demo-app",

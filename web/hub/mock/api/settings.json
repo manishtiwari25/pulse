@@ -196,7 +196,7 @@
       "min": 0,
       "name": "workers",
       "secret": false,
-      "updated_at": "2026-09-01T11:20:00Z",
+      "updated_at": "2026-09-01T11:27:00Z",
       "updated_by": "human",
       "value": "4"
     },
@@ -214,6 +214,78 @@
       "updated_at": "",
       "updated_by": "default",
       "value": "0"
+    },
+    {
+      "choices": null,
+      "default": "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id",
+      "description": "AMI id (ami-...) or an SSM public parameter path resolved at launch; the default is Canonical's current Ubuntu 24.04 amd64 image",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.aws.image",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+    },
+    {
+      "choices": null,
+      "default": "t3.medium",
+      "description": "EC2 instance type for a provisioned hand, e.g. t3.medium",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.aws.instance_type",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "t3.medium"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "AWS CLI profile the runner provisions with; empty means the CLI's default (auth is aws configure or aws sso login on this machine)",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.aws.profile",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "AWS region the instances are created in, e.g. eu-west-1",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.aws.region",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "security group id the instances get; empty means a group named pulse-hands that allows ssh in, created when missing",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.aws.security_group",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "subnet id the instances join; empty means the default VPC's default subnet in the region",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.aws.subnet",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
     },
     {
       "choices": null,
@@ -277,71 +349,47 @@
     },
     {
       "choices": null,
-      "default": "",
-      "description": "AWS CLI profile the runner provisions with; empty means the CLI's default (auth is aws configure or aws sso login on this machine)",
+      "default": "0",
+      "description": "AI credits the provisioned hands may spend per UTC day together; 0 means no extra budget",
+      "kind": "count",
+      "min": 0,
+      "name": "compute.budget_credits",
+      "secret": false,
+      "updated_at": "2026-09-01T10:38:00Z",
+      "updated_by": "human",
+      "value": "500"
+    },
+    {
+      "choices": null,
+      "default": "ubuntu-2404-lts-amd64",
+      "description": "Ubuntu image family in ubuntu-os-cloud, e.g. ubuntu-2404-lts-amd64, or a full image path projects/P/global/images/I",
       "kind": "identifier",
       "min": null,
-      "name": "compute.aws.profile",
+      "name": "compute.gcp.image",
       "secret": false,
       "updated_at": "",
       "updated_by": "default",
-      "value": ""
+      "value": "ubuntu-2404-lts-amd64"
+    },
+    {
+      "choices": null,
+      "default": "e2-medium",
+      "description": "machine type for a provisioned hand, e.g. e2-medium",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.gcp.machine_type",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "e2-medium"
     },
     {
       "choices": null,
       "default": "",
-      "description": "AWS region the instances are created in, e.g. eu-west-1",
+      "description": "VPC network the instances join; empty means default. A firewall rule pulse-hands-ssh (tcp 22 to the tag pulse-hands) is created on it when missing",
       "kind": "identifier",
       "min": null,
-      "name": "compute.aws.region",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": ""
-    },
-    {
-      "choices": null,
-      "default": "t3.medium",
-      "description": "EC2 instance type for a provisioned hand, e.g. t3.medium",
-      "kind": "identifier",
-      "min": null,
-      "name": "compute.aws.instance_type",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "t3.medium"
-    },
-    {
-      "choices": null,
-      "default": "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id",
-      "description": "AMI id (ami-...) or an SSM public parameter path resolved at launch; the default is Canonical's current Ubuntu 24.04 amd64 image",
-      "kind": "identifier",
-      "min": null,
-      "name": "compute.aws.image",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
-    },
-    {
-      "choices": null,
-      "default": "",
-      "description": "subnet id the instances join; empty means the default VPC's default subnet in the region",
-      "kind": "identifier",
-      "min": null,
-      "name": "compute.aws.subnet",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": ""
-    },
-    {
-      "choices": null,
-      "default": "",
-      "description": "security group id the instances get; empty means a group named pulse-hands that allows ssh in, created when missing",
-      "kind": "identifier",
-      "min": null,
-      "name": "compute.aws.security_group",
+      "name": "compute.gcp.network",
       "secret": false,
       "updated_at": "",
       "updated_by": "default",
@@ -373,78 +421,6 @@
     },
     {
       "choices": null,
-      "default": "e2-medium",
-      "description": "machine type for a provisioned hand, e.g. e2-medium",
-      "kind": "identifier",
-      "min": null,
-      "name": "compute.gcp.machine_type",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "e2-medium"
-    },
-    {
-      "choices": null,
-      "default": "ubuntu-2404-lts-amd64",
-      "description": "Ubuntu image family in ubuntu-os-cloud, e.g. ubuntu-2404-lts-amd64, or a full image path projects/P/global/images/I",
-      "kind": "identifier",
-      "min": null,
-      "name": "compute.gcp.image",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "ubuntu-2404-lts-amd64"
-    },
-    {
-      "choices": null,
-      "default": "",
-      "description": "VPC network the instances join; empty means default. A firewall rule pulse-hands-ssh (tcp 22 to the tag pulse-hands) is created on it when missing",
-      "kind": "identifier",
-      "min": null,
-      "name": "compute.gcp.network",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": ""
-    },
-    {
-      "choices": null,
-      "default": "cpus=2,mem=4G,disk=32G",
-      "description": "size of a local multipass hand as cpus=N,mem=SIZE,disk=SIZE, e.g. cpus=2,mem=4G,disk=32G",
-      "kind": "identifier",
-      "min": null,
-      "name": "compute.multipass.size",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "cpus=2,mem=4G,disk=32G"
-    },
-    {
-      "choices": null,
-      "default": "24.04",
-      "description": "multipass image a local hand launches from, e.g. 24.04",
-      "kind": "identifier",
-      "min": null,
-      "name": "compute.multipass.image",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "24.04"
-    },
-    {
-      "choices": null,
-      "default": "0",
-      "description": "AI credits the provisioned hands may spend per UTC day together; 0 means no extra budget",
-      "kind": "count",
-      "min": 0,
-      "name": "compute.budget_credits",
-      "secret": false,
-      "updated_at": "2026-09-01T10:38:00Z",
-      "updated_by": "human",
-      "value": "500"
-    },
-    {
-      "choices": null,
       "default": "0",
       "description": "machine-hours agents may consume per UTC day across provisioned hands; 0 means none",
       "kind": "count",
@@ -468,6 +444,30 @@
       "value": "2"
     },
     {
+      "choices": null,
+      "default": "24.04",
+      "description": "multipass image a local hand launches from, e.g. 24.04",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.multipass.image",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "24.04"
+    },
+    {
+      "choices": null,
+      "default": "cpus=2,mem=4G,disk=32G",
+      "description": "size of a local multipass hand as cpus=N,mem=SIZE,disk=SIZE, e.g. cpus=2,mem=4G,disk=32G",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.multipass.size",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "cpus=2,mem=4G,disk=32G"
+    },
+    {
       "choices": [
         "azure",
         "aws",
@@ -486,15 +486,45 @@
     },
     {
       "choices": null,
-      "default": "",
-      "description": "owner-private directory outside every repository holding held-out fixtures; never quoted to agents",
-      "kind": "identifier",
+      "default": "24",
+      "description": "hours a retired VM stays stopped before the daemon deletes it; starting it again at the provider (the finding names the command) and `pulse executor activate NAME` within them keep it",
+      "kind": "count",
+      "min": 1,
+      "name": "compute.retire_grace_hours",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "24"
+    },
+    {
+      "choices": [
+        "0",
+        "1"
+      ],
+      "default": "1",
+      "description": "1: the daemon places the executor token (pulse executor token) on a drained executor whose login is refused, once per drain; 0: it leaves the login to you (ADR-034)",
+      "kind": "switch",
       "min": null,
-      "name": "evolve.heldout_dir",
-      "secret": true,
-      "updated_at": "2026-09-01T11:06:00Z",
-      "updated_by": "human",
-      "value": "[owner-private]"
+      "name": "compute.self_heal",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "1"
+    },
+    {
+      "choices": [
+        "0",
+        "1"
+      ],
+      "default": "1",
+      "description": "1: the daemon deallocates a VM it created whose login stays refused and retires its executor row, then deletes the VM after compute.retire_grace_hours; 0: it only reports (ADR-034)",
+      "kind": "switch",
+      "min": null,
+      "name": "compute.self_retire",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "1"
     },
     {
       "choices": [
@@ -512,46 +542,16 @@
       "value": "auto"
     },
     {
-      "choices": [
-        "0",
-        "1"
-      ],
-      "default": "1",
-      "description": "1: a refused login is replaced from the executor token on file (pulse executor token); 0: never",
-      "kind": "switch",
-      "min": null,
-      "name": "compute.self_heal",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "1"
-    },
-    {
-      "choices": [
-        "0",
-        "1"
-      ],
-      "default": "1",
-      "description": "1: a VM PULSE created whose login stays refused is deallocated and retired, then deleted after the grace hours; 0: it is left as it is",
-      "kind": "switch",
-      "min": null,
-      "name": "compute.self_retire",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "1"
-    },
-    {
       "choices": null,
-      "default": "24",
-      "description": "hours a retired VM stays stopped before the daemon deletes it; starting it again at the provider (the finding names the command) and `pulse executor activate NAME` within them keep it",
-      "kind": "count",
-      "min": 1,
-      "name": "compute.retire_grace_hours",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "24"
+      "default": "",
+      "description": "owner-private directory outside every repository holding held-out fixtures; never quoted to agents",
+      "kind": "identifier",
+      "min": null,
+      "name": "evolve.heldout_dir",
+      "secret": true,
+      "updated_at": "2026-09-01T11:06:00Z",
+      "updated_by": "human",
+      "value": "[owner-private]"
     },
     {
       "choices": null,
@@ -591,6 +591,177 @@
       "updated_at": "2026-09-01T11:13:00Z",
       "updated_by": "human",
       "value": "0.03"
+    },
+    {
+      "choices": [
+        "on",
+        "off"
+      ],
+      "default": "on",
+      "description": "on: the daemon recovers failed jobs by itself - a transient failure runs again after a growing pause, a failure in the work becomes one corrected job carrying the failure, a structural one waits for its own fix - and writes the repeated causes down as memory records that later briefs carry; off: a failed job stays failed until `pulse job retry` (ADR-036)",
+      "kind": "choice",
+      "min": null,
+      "name": "daemon.recover",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "on"
+    },
+    {
+      "choices": null,
+      "default": "7",
+      "description": "days a failed job stays eligible for recovery and counts toward a repeated-failure lesson",
+      "kind": "count",
+      "min": 1,
+      "name": "daemon.recover_days",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "7"
+    },
+    {
+      "choices": null,
+      "default": "3",
+      "description": "recoveries one failed job may receive (the same job run again or a corrected job queued for it) before the daemon holds it for the lead and the owner; 0 holds every failure at once",
+      "kind": "count",
+      "min": 0,
+      "name": "daemon.recover_limit",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "3"
+    },
+    {
+      "choices": [
+        "on",
+        "off"
+      ],
+      "default": "on",
+      "description": "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)",
+      "kind": "choice",
+      "min": null,
+      "name": "daemon.self_update",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "on"
+    },
+    {
+      "choices": null,
+      "default": "60",
+      "description": "minutes the daemon waits before building again after a failed build or smoke test",
+      "kind": "count",
+      "min": 1,
+      "name": "daemon.self_update_retry_minutes",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "60"
+    },
+    {
+      "choices": [
+        "on",
+        "off"
+      ],
+      "default": "on",
+      "description": "on: every ten minutes the daemon removes what its runs and landings left on this machine and nothing holds any more - clones, keys and bundles of finished jobs under PULSE_HOME/work, landing worktrees whose process is gone, holding refs, run logs and patches past daemon.sweep_keep_days, and pulse/* or evolve/* branches no job will land (saved as a patch first); a run in flight, a branch waiting to land and the owner's own files are never touched. off: `pulse sweep` by hand",
+      "kind": "choice",
+      "min": null,
+      "name": "daemon.sweep",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "on"
+    },
+    {
+      "choices": null,
+      "default": "7",
+      "description": "days since its last commit before a pulse/* or evolve/* branch that no job will land is removed; its commits are saved under PULSE_HOME/patches first unless they are already on the default branch",
+      "kind": "count",
+      "min": 0,
+      "name": "daemon.sweep_branch_days",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "7"
+    },
+    {
+      "choices": null,
+      "default": "30",
+      "description": "minutes a finished job's clone, key or bundle and a dead landing's worktree must sit untouched before the sweep removes them; a lost run's leftovers go at once",
+      "kind": "count",
+      "min": 0,
+      "name": "daemon.sweep_grace_minutes",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "30"
+    },
+    {
+      "choices": null,
+      "default": "30",
+      "description": "days run logs, saved patches and work files of jobs this store does not know are kept before the sweep removes them",
+      "kind": "count",
+      "min": 1,
+      "name": "daemon.sweep_keep_days",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "30"
+    },
+    {
+      "choices": [
+        "off",
+        "main"
+      ],
+      "default": "off",
+      "description": "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has, and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)",
+      "kind": "choice",
+      "min": null,
+      "name": "landing.push",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "off"
+    },
+    {
+      "choices": null,
+      "default": "6",
+      "description": "hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; 0 turns the standing brief off",
+      "kind": "count",
+      "min": 0,
+      "name": "lead.idle_hours",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "6"
+    },
+    {
+      "choices": null,
+      "default": "3",
+      "description": "worker jobs one idle lead run may queue",
+      "kind": "count",
+      "min": 1,
+      "name": "lead.idle_max_jobs",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "3"
+    },
+    {
+      "choices": [
+        "present",
+        "away"
+      ],
+      "default": "present",
+      "description": "present: proposals, compute requests and owner questions wait for you; away: each project's lead decides the board's proposals on your behalf with its best judgement, recorded as the lead's decision and never as yours - hard stops, money (compute), Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch still wait for you",
+      "kind": "choice",
+      "min": null,
+      "name": "owner.presence",
+      "secret": false,
+      "updated_at": "2026-09-01T11:20:00Z",
+      "updated_by": "human",
+      "value": "away"
     }
   ]
 }

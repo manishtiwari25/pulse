@@ -34,6 +34,36 @@ func TestAgentFocusLeasedJobAndSourceThread(t *testing.T) {
 	}
 }
 
+func TestAgentFocusTaskFromSource(t *testing.T) {
+	_, s := newHome(t)
+	addFocusProject(t, s, "proj")
+	for _, name := range []string{"aurora", "borealis", "cygnus"} {
+		joinFocusAgent(t, s, name)
+	}
+	execFocusSQL(t, s, `INSERT INTO tasks(id,project,title,status,priority,created_by,created_at,updated_at,current_rev)
+		VALUES('TASK-001','proj','Task title','open',0,'owner',?,?,1)`, testNow, testNow)
+	execFocusSQL(t, s, `INSERT INTO jobs(id,project,kind,title,source,status,created_at,lease_agent,lease_until)
+		VALUES('job-task','proj','task','Task job','task:TASK-001','leased',?,'aurora','2026-09-06T12:00:00Z')`, testNow)
+	execFocusSQL(t, s, `INSERT INTO jobs(id,project,kind,title,source,status,created_at,lease_agent,lease_until)
+		VALUES('job-post','proj','improve','Post job','handoff:missing','leased',?,'borealis','2026-09-06T12:00:00Z')`, testNow)
+	execFocusSQL(t, s, `INSERT INTO jobs(id,project,kind,title,source,status,created_at,lease_agent,lease_until)
+		VALUES('job-missing-task','proj','task','Missing task job','task:TASK-999','leased',?,'cygnus','2026-09-06T12:00:00Z')`, testNow)
+
+	focuses, err := AgentFocuses(s, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := focuses["aurora"]; f.Task != "TASK-001" || f.TaskTitle != "Task title" {
+		t.Fatalf("task focus: %+v", f)
+	}
+	if f := focuses["borealis"]; f.Task != "" || f.TaskTitle != "" {
+		t.Fatalf("non-task focus: %+v", f)
+	}
+	if f := focuses["cygnus"]; f.Task != "TASK-999" || f.TaskTitle != "" {
+		t.Fatalf("missing task focus: %+v", f)
+	}
+}
+
 func TestAgentFocusRunningRunExecutorAndClaims(t *testing.T) {
 	_, s := newHome(t)
 	addFocusProject(t, s, "proj")

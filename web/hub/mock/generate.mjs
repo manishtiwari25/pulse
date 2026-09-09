@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rosterScenarios } from "./roster.mjs";
+import { taskDetailScenario, taskScenarios, taskWorkFocus } from "./tasks.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..", "..");
@@ -221,6 +222,27 @@ function seed() {
   pulse(["task", "reply", "TASK-001", "Planned as three jobs: the mail sender, the link endpoint and the flag. First job starts on the next loop."], { agent: "demo-app-lead" });
   pulse(["task", "new", "--project", "demo-app", "--title", "Fix the flaky checkout test", "--brief", "`checkout renders totals` fails one run in five on the executor. Make it deterministic.", "--priority", "30"]);
   pulse(["task", "status", "TASK-002", "in_progress"], { agent: "demo-app-lead" });
+  const regressionJob = pulse([
+    "job", "add",
+    "--project", "demo-app",
+    "--kind", "task",
+    "--source", "task:TASK-002",
+    "--title", "Add a regression test for the checkout total race",
+    "--brief", "Cover the race where the test reads the total before the async price lookup has updated the page.",
+    "--tier", "0",
+    "--priority", "25",
+  ], { agent: "demo-app-lead", json: true }).job.id;
+  pulse(["job", "finish", regressionJob, "done", "--result", "Regression test added for the checkout total race.", "--branch", "pulse/cinder/" + regressionJob], { agent: "demo-app-lead" });
+  pulse([
+    "job", "add",
+    "--project", "demo-app",
+    "--kind", "improve",
+    "--source", "task:TASK-002",
+    "--title", "Await the price lookup before reading the total",
+    "--brief", "Update the checkout test so it waits for the price lookup to resolve before asserting the rendered total.",
+    "--tier", "0",
+    "--priority", "30",
+  ], { agent: "demo-app-lead", json: true });
   pulse(["task", "new", "--project", "demo-lib", "--title", "Publish v2 of the client", "--brief", "Tag v2.0.0 from main once the migration guide is in the README.", "--priority", "10"]);
   pulse(["task", "status", "TASK-003", "review"], { agent: "demo-lib-lead" });
   pulse(["task", "new", "--project", "demo-app", "--title", "Retire the legacy export", "--brief", "Remove the CSV export nobody uses.", "--priority", "5"]);
@@ -230,6 +252,16 @@ function seed() {
   pulse(["msg", "send", "--project", "demo-app", "--task", "TASK-002", "Is the flake in the test or in the page?"]);
   pulse(["msg", "send", "--project", "demo-app", "--task", "TASK-002", "In the test: it reads the total before the price lookup resolves. Fix is one await."], { agent: "demo-app-lead" });
   pulse(["msg", "send", "--project", "demo-lib", "Ship v2 when the guide is done; no rush."]);
+  pulse([
+    "job", "add",
+    "--project", "demo-app",
+    "--kind", "task",
+    "--source", "task:TASK-001",
+    "--title", "Send the magic link by email",
+    "--brief", "Implement the mail-sender job for passwordless sign-in so planned work has a queued worker handoff.",
+    "--tier", "1",
+    "--priority", "20",
+  ], { agent: "demo-app-lead", json: true });
 
   // compute
   pulse(["compute", "request", "--project", "demo-app", "--size", "Standard_D8s_v5", "--hours", "4", "--reason", "the browser test matrix needs eight cores for four hours"], { agent: "cinder" });
@@ -278,14 +310,18 @@ async function capture() {
         await new Promise((r) => setTimeout(r, 100));
       }
     }
-    write("roster", rosterScenarios(await get("roster"), frozen));
+    const task002Focus = await get("tasks/TASK-002");
+    write("roster", rosterScenarios(await get("roster"), frozen, true, taskWorkFocus(task002Focus, frozen)));
     if (rosterOnly) return;
     for (const route of ["activity", "compute", "events", "executors", "health", "messages", "notices", "org", "proposals", "runner", "running", "settings", "timeline", "votes"]) write(route, await get(route));
     write("constitution", await get("constitution?project=pulse"));
     const records = write("records", await get("records"));
     for (const r of records.records) write("records/" + r.id, await get("records/" + encodeURIComponent(r.id)));
-    const tasks = write("tasks", await get("tasks"));
-    for (const t of tasks.tasks) write("tasks/" + t.id, await get("tasks/" + t.id));
+    const taskRows = await get("tasks");
+    const taskDetails = Object.fromEntries(await Promise.all(taskRows.tasks.map(async (t) => [t.id, await get("tasks/" + t.id)])));
+    for (const [id, detail] of Object.entries(taskDetails)) taskDetails[id] = taskDetailScenario(detail, frozen);
+    const tasks = write("tasks", taskScenarios(taskRows, frozen, taskDetails));
+    for (const t of tasks.tasks) write("tasks/" + t.id, taskDetails[t.id]);
     for (const slug of ["pulse", "demo-app", "demo-lib", "commons"]) {
       for (const route of ["amendments", "evolution", "notices", "overview", "project", "proposals", "suggestions", "timeline"]) write(`projects/${slug}/${route}`, await get(`projects/${slug}/${route}`));
       const threads = write(`projects/${slug}/threads`, await get(`projects/${slug}/threads`));

@@ -1,6 +1,6 @@
 // Synthetic WU-024 scenarios shared by fixture generation and the live mock.
 // Runtime clocks move only presence evidence, never useful-output/history dates.
-export function rosterScenarios(rows, at, returned = true) {
+export function rosterScenarios(rows, at, returned = true, focus = null) {
   const clock = Date.parse(at);
   const stamp = (offset = 0) => new Date(clock + offset).toISOString();
   const observation = (state, session = "", offset = 0) => ({
@@ -11,8 +11,9 @@ export function rosterScenarios(rows, at, returned = true) {
     last_heartbeat_at: session ? stamp(offset) : "",
     presence_expires_at: state === "online" ? stamp(offset + 300_000) : "",
   });
+  const baseFocus = { current_task: "", current_task_title: "", current_project: "", current_source: "" };
   const result = rows.filter((r) => r.agent !== "granite" && !(r.agent === "delta" && r.session === "run-delta-current")).map((r) => {
-    const base = { ...r, ...observation("unknown"), session: "", sessions: r.sessions || [] };
+    const base = { ...baseFocus, ...r, ...observation("unknown"), session: "", sessions: r.sessions || [] };
     switch (r.agent) {
       case "aurora":
         return { ...base, kind: "worker", sessions: ["run-aurora"], session_count: 1, ...observation("online", "run-aurora"),
@@ -21,11 +22,15 @@ export function rosterScenarios(rows, at, returned = true) {
       case "demo-app-lead":
         return { ...base, kind: "lead", sessions: ["run-app-lead"], session_count: 1, ...observation("online", "run-app-lead"),
           current_job: "JOB-004", current_job_kind: "answer", current_job_title: "Answer the open governance question",
+          current_task: "", current_task_title: "", current_project: "demo-app", current_source: "",
           current_thread: "governance/review-depth", executor: "local", focus_since: stamp(-120_000) };
       case "demo-lib-lead":
         return { ...base, kind: "lead", ...observation("idle") };
       case "cinder":
-        return { ...base, kind: "worker", ...observation("idle") };
+        return { ...base, kind: "worker", sessions: ["run-cinder"], session_count: 1, ...observation("online", "run-cinder"),
+          current_job: focus?.job || "", current_job_kind: focus?.kind || "improve", current_job_title: focus?.title || "Await the price lookup before reading the total",
+          current_task: "TASK-002", current_task_title: "Fix the flaky checkout test", current_project: "demo-app", current_source: "task:TASK-002",
+          current_thread: "", executor: focus?.executor || "local", focus_since: stamp(-540_000) };
       case "borealis":
         return { ...base, sessions: ["run-offline"], session_count: 1, ...observation("offline", "run-offline", -360_000),
           active_claims: [{ id: "mock-offline-claim", slug: "demo-app", thread_key: "agents/old-claim", summary: "An unexpired claim is not liveness", expires: stamp(3_600_000) }] };
@@ -55,6 +60,7 @@ export function rosterScenarios(rows, at, returned = true) {
     pruned_at: "2026-09-07T09:00:00Z", pruned_reason: "no useful output since 2026-08-20T00:00:00Z (limit 14 days)",
     projects: ["demo-app"], active_claims: [], days_since: 18, approximate: false, name_shared: false, shared_with: [],
     current_job: "", current_job_kind: "", current_job_title: "", current_thread: "", executor: "", focus_since: "",
+    current_task: "", current_task_title: "", current_project: "", current_source: "",
     ...observation("pruned"),
   });
   return result;

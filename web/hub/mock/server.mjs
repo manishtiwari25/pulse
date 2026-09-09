@@ -9,6 +9,7 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rosterScenarios } from "./roster.mjs";
+import { taskDetailScenario, taskScenarios, taskWorkFocus } from "./tasks.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "api");
 const port = Number(process.env.PULSE_HUB_PORT ?? 8787);
@@ -64,11 +65,12 @@ async function init() {
   state.projects.push({ slug: "old-site", name: "old-site", path: "/home/owner/src/old-site", remote: "", brain: false, status: "inactive", verify_cmd: "", default_branch: "main", added_at: "2026-08-20T09:00:00Z", added_by: "human", last_seen: "2026-09-03T09:00:00Z", present: true, ...gate({}) });
   for (const t of state.tasks) {
     try {
-      t._detail = await loadJson(`tasks/${t.id}.json`);
+      t._detail = taskDetailScenario(await loadJson(`tasks/${t.id}.json`), now());
     } catch {
       t._detail = { task: t, revisions: [{ rev: 1, title: t.title, brief: t.brief, note: "", author: t.created_by, at: t.created_at }], messages: [], jobs: [] };
     }
   }
+  state.tasks = taskScenarios({ tasks: state.tasks }, now(), Object.fromEntries(state.tasks.map((t) => [t.id, t._detail]))).tasks;
   heldoutGates();
 }
 
@@ -292,7 +294,8 @@ async function handle(req, res) {
     // tasks
     if (segs[0] === "tasks" && segs.length === 1) {
       if (!body.project || !body.title?.trim()) return fail(res, 400, "task needs a project and a title", "the lead is woken per project and plans from the title + brief", "pick a project and write a title");
-      const t = { id: nextId("TASK", state.tasks), project: body.project, title: body.title.trim(), status: "open", priority: Number(body.priority ?? 10), lead: "", job_id: "", created_by: "human", created_at: now(), updated_at: now(), current_rev: 1, brief: body.brief || "" };
+      const t = { id: nextId("TASK", state.tasks), project: body.project, title: body.title.trim(), status: "open", priority: Number(body.priority ?? 10), lead: "", job_id: "", created_by: "human", created_at: now(), updated_at: now(), current_rev: 1, brief: body.brief || "",
+        jobs_total: 0, jobs_queued: 0, jobs_blocked: 0, jobs_running: 0, jobs_done: 0, jobs_failed: 0, working: [] };
       t._detail = { task: t, revisions: [{ rev: 1, title: t.title, brief: t.brief, note: "", author: "human", at: t.created_at }], messages: [], jobs: [] };
       state.tasks.push(t);
       emit("human", "task.created", t.id, { project: t.project, title: t.title });
@@ -300,6 +303,8 @@ async function handle(req, res) {
         t.lead = t.project + "-lead";
         t.status = "planned";
         t.updated_at = now();
+        t.jobs_total = 1;
+        t.jobs_done = 1;
         t._detail.jobs.push({ id: "job-" + Date.now(), kind: "plan", title: "Plan " + t.id + " into jobs", status: "done", agent: t.lead, branch: "", project: t.project });
         emit(t.lead, "task.planned", t.id, { project: t.project });
       }, 4000);
@@ -554,7 +559,8 @@ async function handle(req, res) {
         emit("delta", "agent.resume", "delta", { session: "run-delta-current" });
       }, agentReturnMS);
     }
-    return send(res, 200, rosterScenarios(await loadJson("roster.json"), now(), agentReturned));
+    const task002 = state.tasks.find((t) => t.id === "TASK-002")?._detail;
+    return send(res, 200, rosterScenarios(await loadJson("roster.json"), now(), agentReturned, taskWorkFocus(task002, now())));
   }
   if (segs[0] === "heldout" && segs.length === 1) return send(res, 200, heldoutView(state.heldout));
   if (segs[0] === "projects" && segs.length === 3 && segs[2] === "evolution") {
@@ -565,12 +571,15 @@ async function handle(req, res) {
   if (segs[0] === "tasks" && segs.length === 1) {
     const p = q.get("project");
     const st = q.get("status");
-    return send(res, 200, { tasks: state.tasks.filter((t) => (!p || t.project === p) && (!st || t.status === st)).map(strip) });
+    const details = Object.fromEntries(state.tasks.map((t) => [t.id, t._detail]));
+    const tasks = taskScenarios({ tasks: state.tasks.filter((t) => (!p || t.project === p) && (!st || t.status === st)) }, now(), details).tasks;
+    return send(res, 200, { tasks: tasks.map(strip) });
   }
   if (segs[0] === "tasks" && segs.length === 2) {
     const t = state.tasks.find((x) => x.id === segs[1]);
     if (!t) return fail(res, 404, "no such task", segs[1] + " is not in the store", "open it from the Tasks page");
-    return send(res, 200, { ...t._detail, task: strip(t), messages: state.messages.filter((m) => m.task_id === t.id) });
+    const detail = taskDetailScenario(t._detail, now());
+    return send(res, 200, { ...detail, task: strip(detail.task), messages: state.messages.filter((m) => m.task_id === t.id) });
   }
   if (segs[0] === "messages") {
     const p = q.get("project");

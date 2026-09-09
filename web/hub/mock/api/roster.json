@@ -1,5 +1,9 @@
 [
   {
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
     "active_claims": [],
     "agent": "human",
     "agent_status": "active",
@@ -11,17 +15,17 @@
     "current_job_kind": "",
     "current_job_title": "",
     "current_thread": "",
-    "days_since": 5.519,
+    "days_since": 5.499,
     "executor": "",
     "findings": 0,
-    "first_seen": "2026-09-01T20:12:00Z",
+    "first_seen": "2026-09-01T20:40:00Z",
     "focus_since": "",
     "jobs_done": 0,
     "jobs_failed": 0,
     "kind": "human",
-    "last_active_at": "2026-09-01T20:33:00Z",
+    "last_active_at": "2026-09-01T21:01:00Z",
     "last_heartbeat_at": "",
-    "last_seen": "2026-09-01T20:33:00Z",
+    "last_seen": "2026-09-01T21:01:00Z",
     "last_useful_at": "",
     "legacy_id": "",
     "model": "",
@@ -54,6 +58,10 @@
     "votes": 0
   },
   {
+    "current_task": "TASK-002",
+    "current_task_title": "Fix the flaky checkout test",
+    "current_project": "demo-app",
+    "current_source": "task:TASK-002",
     "active_claims": [],
     "agent": "cinder",
     "agent_status": "active",
@@ -61,21 +69,21 @@
     "approximate": false,
     "claims": 0,
     "created_at": "2026-09-01T09:42:00Z",
-    "current_job": "",
-    "current_job_kind": "",
-    "current_job_title": "",
+    "current_job": "job-20260901T191600Z-f05f5f",
+    "current_job_kind": "improve",
+    "current_job_title": "Await the price lookup before reading the total",
     "current_thread": "",
     "days_since": 5.621,
-    "executor": "",
+    "executor": "local",
     "findings": 1,
     "first_seen": "2026-09-01T14:08:00Z",
-    "focus_since": "",
+    "focus_since": "2026-09-07T08:51:00.000Z",
     "jobs_done": 0,
     "jobs_failed": 0,
     "kind": "worker",
-    "last_active_at": "2026-09-01T20:05:00Z",
-    "last_heartbeat_at": "",
-    "last_seen": "2026-09-01T20:05:00Z",
+    "last_active_at": "2026-09-01T20:33:00Z",
+    "last_heartbeat_at": "2026-09-07T09:00:00.000Z",
+    "last_seen": "2026-09-01T20:33:00Z",
     "last_useful_at": "2026-09-01T18:06:00Z",
     "legacy_id": "",
     "model": "claude-fable-5.1",
@@ -86,11 +94,11 @@
     ],
     "notes": "",
     "posts": 8,
-    "presence": "idle",
+    "presence": "online",
     "presence_checked_at": "2026-09-07T09:00:00.000Z",
-    "presence_expires_at": "",
-    "presence_reason": "reusable; no active run",
-    "presence_session": "",
+    "presence_expires_at": "2026-09-07T09:05:00.000Z",
+    "presence_reason": "supervised execution",
+    "presence_session": "run-cinder",
     "projects": [
       "demo-app",
       "pulse"
@@ -100,8 +108,10 @@
     "questions": 0,
     "runner": "claude-code",
     "session": "",
-    "session_count": 0,
-    "sessions": [],
+    "session_count": 1,
+    "sessions": [
+      "run-cinder"
+    ],
     "shared_with": [],
     "status": "active",
     "store_posts": 8,
@@ -109,6 +119,10 @@
     "votes": 3
   },
   {
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
     "active_claims": [
       {
         "id": "mock-live-claim",
@@ -175,6 +189,10 @@
     "votes": 3
   },
   {
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
     "active_claims": [],
     "agent": "ember",
     "agent_status": "active",
@@ -194,9 +212,9 @@
     "jobs_done": 0,
     "jobs_failed": 0,
     "kind": "legacy",
-    "last_active_at": "2026-09-01T20:26:00Z",
+    "last_active_at": "2026-09-01T20:54:00Z",
     "last_heartbeat_at": "",
-    "last_seen": "2026-09-01T20:26:00Z",
+    "last_seen": "2026-09-01T20:54:00Z",
     "last_useful_at": "2026-09-01T17:45:00Z",
     "legacy_id": "",
     "model": "gpt-6-astra",
@@ -231,6 +249,10 @@
     "votes": 2
   },
   {
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
     "active_claims": [
       {
         "id": "mock-offline-claim",
@@ -296,6 +318,10 @@
     "votes": 3
   },
   {
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
     "active_claims": [],
     "agent": "fjord",
     "agent_status": "active",
@@ -346,6 +372,10 @@
     "votes": 1
   },
   {
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
     "active_claims": [],
     "agent": "delta",
     "agent_status": "active",
@@ -365,9 +395,9 @@
     "jobs_done": 0,
     "jobs_failed": 0,
     "kind": "worker",
-    "last_active_at": "2026-09-01T20:19:00Z",
+    "last_active_at": "2026-09-01T20:47:00Z",
     "last_heartbeat_at": "2026-09-07T08:00:00.000Z",
-    "last_seen": "2026-09-01T20:19:00Z",
+    "last_seen": "2026-09-01T20:47:00Z",
     "last_useful_at": "2026-09-01T17:17:00Z",
     "legacy_id": "",
     "model": "gpt-6-astra",
@@ -404,6 +434,10 @@
     "votes": 3
   },
   {
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
     "active_claims": [],
     "agent": "demo-lib-lead",
     "agent_status": "active",
@@ -458,6 +492,10 @@
     "votes": 0
   },
   {
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "demo-app",
+    "current_source": "",
     "active_claims": [],
     "agent": "demo-app-lead",
     "agent_status": "active",
@@ -512,6 +550,10 @@
     "votes": 0
   },
   {
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
     "active_claims": [],
     "agent": "delta",
     "agent_status": "active",
@@ -531,7 +573,7 @@
     "jobs_done": 0,
     "jobs_failed": 0,
     "kind": "worker",
-    "last_active_at": "2026-09-01T20:19:00Z",
+    "last_active_at": "2026-09-01T20:47:00Z",
     "last_heartbeat_at": "2026-09-07T09:00:00.000Z",
     "last_seen": "2026-09-07T08:59:30.000Z",
     "last_useful_at": "2026-09-01T17:17:00Z",
@@ -612,6 +654,10 @@
     "current_thread": "",
     "executor": "",
     "focus_since": "",
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
     "presence": "pruned",
     "presence_reason": "no supervised heartbeat evidence",
     "presence_checked_at": "2026-09-07T09:00:00.000Z",

@@ -16,9 +16,10 @@ import { EmptyState, ErrorNotice, Kv, SkeletonRows } from "@/components/pulse/pa
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { prioLabel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { enc, writes, type Task, type TaskDetail } from "@/lib/api";
+import { enc, taskProgress, writes, type Task, type TaskDetail } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { AmendTaskDialog } from "./task-dialogs";
+import { TaskWorkerInline, TaskWorkingLine } from "./task-work";
 
 export const TASK_COLUMNS = (showProject: boolean): Column<Task>[] => [
   { key: "id", label: "task", nowrap: true, sort: (t) => t.id, render: (t) => <Mono className="font-medium">{t.id}</Mono> },
@@ -27,6 +28,14 @@ export const TASK_COLUMNS = (showProject: boolean): Column<Task>[] => [
   { key: "status", label: "status", sort: (t) => t.status, render: (t) => <StatusBadge status={t.status} /> },
   { key: "priority", label: "priority", align: "right", sort: (t) => t.priority, hide: "sm", render: (t) => <span title={String(t.priority)}>{prioLabel(t.priority)}</span> },
   { key: "lead", label: "lead", hide: "md", render: (t) => (t.lead ? <Who row={{ agent: t.lead }} compact /> : <span className="text-muted-foreground">not yet</span>) },
+  { key: "working", label: "working", hide: "md", render: (t) => {
+    const workers = taskProgress(t).working;
+    return workers.length ? <span className="inline-flex flex-wrap items-center gap-1.5">{workers.map((w, i) => <span key={w.job + i} className="inline-flex items-center gap-1">{i ? <span className="text-muted-foreground">,</span> : null}<Who row={{ agent: w.agent }} compact /></span>)}</span> : <span className="text-muted-foreground">—</span>;
+  } },
+  { key: "jobs", label: "jobs", align: "right", hide: "lg", sort: (t) => taskProgress(t).total, render: (t) => {
+    const p = taskProgress(t);
+    return p.total ? <span className="tnum">{p.done + "/" + p.total}{p.failed ? <span className="text-bad">{" · " + p.failed + " failed"}</span> : null}</span> : <span className="text-muted-foreground">—</span>;
+  } },
   { key: "rev", label: "rev", align: "right", hide: "lg", render: (t) => t.current_rev },
   { key: "updated", label: "updated", nowrap: true, sort: (t) => t.updated_at, render: (t) => <When d={t.updated_at} /> },
 ];
@@ -66,6 +75,7 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
       </div>
     );
   const t = data.task;
+  const progress = taskProgress(t);
   const project = t.project || slug || "";
   const closed = t.status === "done" || t.status === "cancelled";
   return (
@@ -92,6 +102,15 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
           {t.job_id ? (
             <span>
               job <Mono>{t.job_id}</Mono>
+            </span>
+          ) : null}
+          <TaskWorkingLine t={t} className="basis-full" />
+          {progress.total ? (
+            <span className="inline-flex basis-full flex-wrap items-center gap-1.5">
+              <ToneBadge tone="neutral">{progress.total + " jobs"}</ToneBadge>
+              {progress.done ? <ToneBadge tone="ok">{progress.done + " done"}</ToneBadge> : null}
+              {progress.running ? <ToneBadge tone="info">{progress.running + " running"}</ToneBadge> : null}
+              {progress.failed ? <ToneBadge tone="bad">{progress.failed + " failed"}</ToneBadge> : null}
             </span>
           ) : null}
         </SheetDescription>
@@ -140,7 +159,9 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
           </SectionHeading>
           {data.jobs.length ? (
             <ul className="divide-y rounded-lg border">
-              {data.jobs.map((j) => (
+              {data.jobs.map((j) => {
+                const worker = progress.working.find((w) => w.job === j.id);
+                return (
                 <li key={j.id} className="grid gap-1 px-3 py-2.5">
                   <div className="flex flex-wrap items-center gap-1.5 text-xs">
                     <Mono className="font-semibold">{j.id}</Mono>
@@ -149,9 +170,16 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
                     {j.agent ? <Who row={{ agent: j.agent }} compact className="ml-auto" /> : <span className="ml-auto text-muted-foreground">no agent yet</span>}
                   </div>
                   <div className="text-[13px] leading-snug anywhere">{j.title}</div>
+                  {worker ? (
+                    <div className="text-xs text-muted-foreground">
+                      {"· "}
+                      <TaskWorkerInline t={t} w={worker} compact />
+                    </div>
+                  ) : null}
                   {j.branch ? <Mono className="text-muted-foreground">{j.branch}</Mono> : null}
                 </li>
-              ))}
+                );
+              })}
             </ul>
           ) : (
             <EmptyState title="No job yet">No job yet. The lead breaks the task into jobs with the CLI (pulse job add --source task:{t.id}); they appear here with their branch and status.</EmptyState>

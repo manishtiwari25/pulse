@@ -105,23 +105,62 @@ function PresenceBadge({ g }: { g: AgentGroup }) {
 
 const sessionCount = (g: AgentGroup) => g.sessions.reduce((a, r) => a + (r.session_count ?? r.sessions?.length ?? Number(!!r.session)), 0);
 const currentFocus = (g: AgentGroup) =>
-  [...g.sessions].sort((a, b) => timestamp(b.focus_since) - timestamp(a.focus_since)).find((r) => r.current_job || r.current_thread) ?? null;
+  [...g.sessions].sort((a, b) => timestamp(b.focus_since) - timestamp(a.focus_since)).find((r) => r.current_task || r.current_job || r.current_thread) ?? null;
 
 function AgentNow({ g, compact }: { g: AgentGroup; compact?: boolean }) {
   const r = currentFocus(g);
   if (!r) return compact ? <span className="text-muted-foreground">idle</span> : null;
-  if (r.current_job) {
+  const taskId = r.current_task || "";
+  const taskProject = r.current_project || g.projects[0] || "";
+  const taskTitle = r.current_task_title || "";
+  const taskText = (
+    <>
+      <Mono>{taskId}</Mono>
+      {taskTitle ? <span className="min-w-0 truncate text-foreground">{truncate(taskTitle, compact ? 48 : 72)}</span> : null}
+    </>
+  );
+  if (compact && taskId) {
     return (
-      <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-1.5", compact ? "text-xs" : "text-[13px]")}>
-        <span className="font-medium text-foreground">Now</span>
-        {r.current_job_kind ? <ToneBadge tone="info">{r.current_job_kind}</ToneBadge> : null}
-        <span className="min-w-0 truncate text-foreground">{truncate(r.current_job_title || r.current_job, 80)}</span>
-        <Mono>{r.current_job}</Mono>
-        {r.executor ? <span className="text-muted-foreground">{"on " + r.executor}</span> : null}
-        {r.current_thread ? <Mono className="text-muted-foreground">{r.current_thread}</Mono> : null}
+      <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+        {taskProject ? (
+          <Link href={hrefs.task(taskProject, taskId)} className="inline-flex min-w-0 items-center gap-1.5 hover:underline">
+            {taskText}
+          </Link>
+        ) : (
+          <span className="inline-flex min-w-0 items-center gap-1.5">{taskText}</span>
+        )}
+        {r.current_job ? <Mono className="text-muted-foreground">{r.current_job}</Mono> : null}
       </span>
     );
   }
+  const taskLine = taskId ? (
+    <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-1.5", compact ? "text-xs" : "text-[13px]")}>
+      <span className="text-muted-foreground">on task</span>
+      {taskProject ? (
+        <Link href={hrefs.task(taskProject, taskId)} className="inline-flex min-w-0 items-center gap-1.5 hover:underline">
+          {taskText}
+        </Link>
+      ) : (
+        <span className="inline-flex min-w-0 items-center gap-1.5">{taskText}</span>
+      )}
+    </span>
+  ) : null;
+  if (r.current_job) {
+    return (
+      <span className="grid min-w-0 gap-0.5">
+        {taskLine}
+        <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-1.5", compact ? "text-xs" : "text-[13px]")}>
+          <span className="font-medium text-foreground">Now</span>
+          {r.current_job_kind ? <ToneBadge tone="info">{r.current_job_kind}</ToneBadge> : null}
+          <span className="min-w-0 truncate text-foreground">{truncate(r.current_job_title || r.current_job, 80)}</span>
+          <Mono>{r.current_job}</Mono>
+          {r.executor ? <span className="text-muted-foreground">{"on " + r.executor}</span> : null}
+          {r.current_thread ? <Mono className="text-muted-foreground">{r.current_thread}</Mono> : null}
+        </span>
+      </span>
+    );
+  }
+  if (taskLine) return taskLine;
   return (
     <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-1.5", compact ? "text-xs" : "text-[13px]")}>
       <span className="text-muted-foreground">claims</span>
@@ -133,7 +172,7 @@ function AgentNow({ g, compact }: { g: AgentGroup; compact?: boolean }) {
 const COLUMNS: Column<AgentGroup>[] = [
   { key: "agent", label: "agent", sort: (g) => g.agent, render: (g) => <Who row={g.primary} /> },
   { key: "presence", label: "presence", sort: (g) => g.presence, render: (g) => <PresenceBadge g={g} /> },
-  { key: "now", label: "now", sort: (g) => currentFocus(g)?.focus_since || "", render: (g) => <AgentNow g={g} compact /> },
+  { key: "now", label: "now", sort: (g) => currentFocus(g)?.focus_since || currentFocus(g)?.current_task || "", render: (g) => <AgentNow g={g} compact /> },
   { key: "status", label: "identity", sort: (g) => identityStatus(g.primary), render: (g) => <span className="inline-flex flex-wrap gap-1"><StatusBadge status={identityStatus(g.primary)} />{g.primary.pruned_reason ? <ToneBadge tone="warn" className="h-auto max-w-full whitespace-normal break-words text-left">{"pruned: " + g.primary.pruned_reason}</ToneBadge> : null}</span> },
   { key: "kind", label: "kind", hide: "md", render: (g) => <span className="text-xs text-muted-foreground">{g.primary.kind}</span> },
   { key: "runner", label: "runner / model", hide: "lg", render: (g) => <span className="text-xs text-muted-foreground anywhere">{[g.primary.runner, g.primary.model].filter(Boolean).join(" · ")}</span> },

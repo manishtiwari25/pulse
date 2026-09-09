@@ -226,7 +226,46 @@ func (h *Handler) additionTask(r *http.Request, id string) (map[string]any, erro
 	if len(rows) == 0 || (project != "" && project != rows[0]["project"]) {
 		return nil, cli.Errorf(2, "No task "+strconv.Quote(id), "No task matches this ID in the selected project.", "Select an existing task from the task list.")
 	}
+	if err := h.additionTaskWork(rows); err != nil {
+		return nil, err
+	}
 	return rows[0], nil
+}
+
+func (h *Handler) additionTaskWork(rows []map[string]any) error {
+	ts := make([]tasks.Task, 0, len(rows))
+	for _, row := range rows {
+		ts = append(ts, tasks.Task{
+			ID:      additionRowString(row, "id"),
+			Project: additionRowString(row, "project"),
+			JobID:   additionRowString(row, "job_id"),
+		})
+	}
+	work, err := tasks.WorkFor(h.Store, ts)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		w := work[additionRowString(row, "id")]
+		row["jobs_total"] = w.Total
+		row["jobs_queued"] = w.Queued
+		row["jobs_blocked"] = w.Blocked
+		row["jobs_running"] = w.Running
+		row["jobs_done"] = w.Done
+		row["jobs_failed"] = w.Failed
+		if w.Working == nil {
+			w.Working = []tasks.Worker{}
+		}
+		row["working"] = w.Working
+	}
+	return nil
+}
+
+func additionRowString(row map[string]any, key string) string {
+	if text, ok := row[key].(string); ok {
+		return text
+	}
+	return ""
 }
 
 func (h *Handler) additionTasks(w http.ResponseWriter, r *http.Request, parts []string) {
@@ -267,6 +306,10 @@ func (h *Handler) additionTasks(w http.ResponseWriter, r *http.Request, parts []
 			additionFailure(w, err)
 			return
 		}
+		if err := h.additionTaskWork(tasks); err != nil {
+			additionFailure(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
 		return
 	}
@@ -287,7 +330,7 @@ func (h *Handler) additionTasks(w http.ResponseWriter, r *http.Request, parts []
 	}
 	jobs, err := h.additionRows(r, `SELECT id,project,kind,tier,title,brief,source,priority,status,created_at,created_by,
 		lease_agent AS agent,lease_until,generation,attempts,finished_at,result,branch FROM jobs
-		WHERE project=? AND (source=? OR id=?) ORDER BY created_at,id`, task["project"], "task:"+parts[1], task["job_id"])
+		WHERE project=? AND (source=? OR (? != '' AND id=?)) ORDER BY created_at,id`, task["project"], "task:"+parts[1], task["job_id"], task["job_id"])
 	if err != nil {
 		additionFailure(w, err)
 		return
@@ -404,7 +447,12 @@ func (h *Handler) additionTaskWrite(w http.ResponseWriter, r *http.Request, part
 		if !ok {
 			return
 		}
-		task, err := tasks.New(h.Store, project, title, brief, priority, store.HumanAgent)
+		created, err := tasks.New(h.Store, project, title, brief, priority, store.HumanAgent)
+		if err != nil {
+			additionFailure(w, err)
+			return
+		}
+		task, err := h.additionTask(r, created.ID)
 		if err != nil {
 			additionFailure(w, err)
 			return

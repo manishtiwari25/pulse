@@ -42,7 +42,7 @@
     "blocked": 0,
     "cap": 2,
     "leased": 0,
-    "queued": 6,
+    "queued": 8,
     "running": 0,
     "runs_today": 0
   },
