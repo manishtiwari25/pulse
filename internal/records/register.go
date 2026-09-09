@@ -181,6 +181,9 @@ func runRecord(c *cli.Context, _ *flag.FlagSet, args []string) error {
 		if err != nil {
 			return err
 		}
+		if strings.TrimSpace(body) == "" {
+			return inputError("Empty record body", "the body file has no content", "pulse record amend ID --body-file F with a non-empty file, or stdin")
+		}
 		rec, err := Amend(c.Store, id, body, author(c), note)
 		if err != nil {
 			return recordError(id, err)
