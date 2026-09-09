@@ -10,6 +10,10 @@ import (
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
+// signalRe matches case-insensitive Signal: lines (optional "-" bullet/backticked
+// label) or inline single-token signals. Examples: "Signal: README.md",
+// "- `Signal`: 20260905T154439Z-helix-0905", "evidence Signal: check:go-test".
+// Values name project-relative files, existing post IDs, or check:NAME references.
 var signalRe = regexp.MustCompile(`(?im)^\s*(?:-\s*)?` + "`?signal`?" + `\s*:\s*(.+?)\s*$|\bsignal:\s*(\S+)`)
 
 // OwnerPaths are what worker commits and worker-card signals may not target (store.OwnerPaths).
