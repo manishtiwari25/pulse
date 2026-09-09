@@ -1,179 +1,7 @@
 {
   "events": [
     {
-      "id": 1,
-      "at": "2026-09-01T09:07:00Z",
-      "actor": "pulse",
-      "action": "schema.records",
-      "subject": "records_version=1",
-      "detail": ""
-    },
-    {
-      "id": 2,
-      "at": "2026-09-01T09:07:00Z",
-      "actor": "human",
-      "action": "project.add",
-      "subject": "pulse",
-      "detail": "/home/owner/src/pulse"
-    },
-    {
-      "id": 3,
-      "at": "2026-09-01T09:07:00Z",
-      "actor": "init",
-      "action": "job.add",
-      "subject": "job-20260901T090700Z-a069a1",
-      "detail": {
-        "kind": "onboard",
-        "project": "pulse",
-        "title": "Onboard pulse: read the guide, run the checks, post the first findings"
-      }
-    },
-    {
-      "id": 4,
-      "at": "2026-09-01T09:14:00Z",
-      "actor": "human",
-      "action": "project.add",
-      "subject": "demo-app",
-      "detail": "/home/owner/src/demo-app"
-    },
-    {
-      "id": 5,
-      "at": "2026-09-01T09:14:00Z",
-      "actor": "init",
-      "action": "job.add",
-      "subject": "job-20260901T091400Z-f0ab3f",
-      "detail": {
-        "kind": "onboard",
-        "project": "demo-app",
-        "title": "Onboard demo-app: read the guide, run the checks, post the first findings"
-      }
-    },
-    {
-      "id": 6,
-      "at": "2026-09-01T09:21:00Z",
-      "actor": "human",
-      "action": "project.add",
-      "subject": "demo-lib",
-      "detail": "/home/owner/src/demo-lib"
-    },
-    {
-      "id": 7,
-      "at": "2026-09-01T09:21:00Z",
-      "actor": "init",
-      "action": "job.add",
-      "subject": "job-20260901T092100Z-33d231",
-      "detail": {
-        "kind": "onboard",
-        "project": "demo-lib",
-        "title": "Onboard demo-lib: read the guide, run the checks, post the first findings"
-      }
-    },
-    {
-      "id": 8,
-      "at": "2026-09-01T09:28:00Z",
-      "actor": "aurora",
-      "action": "agent.join",
-      "subject": "aurora",
-      "detail": {
-        "model": "claude-fable-5.1",
-        "runner": "copilot-cli",
-        "session": ""
-      }
-    },
-    {
-      "id": 9,
-      "at": "2026-09-01T09:35:00Z",
-      "actor": "borealis",
-      "action": "agent.join",
-      "subject": "borealis",
-      "detail": {
-        "model": "gpt-6-astra",
-        "runner": "copilot-cli",
-        "session": ""
-      }
-    },
-    {
-      "id": 10,
-      "at": "2026-09-01T09:42:00Z",
-      "actor": "cinder",
-      "action": "agent.join",
-      "subject": "cinder",
-      "detail": {
-        "model": "claude-fable-5.1",
-        "runner": "claude-code",
-        "session": ""
-      }
-    },
-    {
-      "id": 11,
-      "at": "2026-09-01T09:49:00Z",
-      "actor": "delta",
-      "action": "agent.join",
-      "subject": "delta",
-      "detail": {
-        "model": "gpt-6-astra",
-        "runner": "copilot-cli",
-        "session": ""
-      }
-    },
-    {
-      "id": 12,
-      "at": "2026-09-01T09:56:00Z",
-      "actor": "ember",
-      "action": "agent.join",
-      "subject": "ember",
-      "detail": {
-        "model": "gpt-6-astra",
-        "runner": "codex",
-        "session": ""
-      }
-    },
-    {
-      "id": 13,
-      "at": "2026-09-01T10:03:00Z",
-      "actor": "fjord",
-      "action": "agent.join",
-      "subject": "fjord",
-      "detail": {
-        "model": "claude-fable-5.1",
-        "runner": "copilot-cli",
-        "session": ""
-      }
-    },
-    {
-      "id": 14,
-      "at": "2026-09-01T10:10:00Z",
-      "actor": "demo-app-lead",
-      "action": "agent.join",
-      "subject": "demo-app-lead",
-      "detail": {
-        "model": "gpt-6-astra",
-        "runner": "pulse-daemon",
-        "session": ""
-      }
-    },
-    {
-      "id": 15,
-      "at": "2026-09-01T10:17:00Z",
-      "actor": "demo-lib-lead",
-      "action": "agent.join",
-      "subject": "demo-lib-lead",
-      "detail": {
-        "model": "gpt-6-astra",
-        "runner": "pulse-daemon",
-        "session": ""
-      }
-    },
-    {
-      "id": 16,
-      "at": "2026-09-01T10:24:00Z",
-      "actor": "human",
-      "action": "setting",
-      "subject": "compute.max_vms",
-      "detail": 2
-    },
-    {
-      "id": 17,
+      "id": 40,
       "at": "2026-09-01T10:31:00Z",
       "actor": "human",
       "action": "setting",
@@ -181,7 +9,7 @@
       "detail": 12
     },
     {
-      "id": 18,
+      "id": 41,
       "at": "2026-09-01T10:38:00Z",
       "actor": "human",
       "action": "setting",
@@ -189,7 +17,7 @@
       "detail": 500
     },
     {
-      "id": 19,
+      "id": 42,
       "at": "2026-09-01T10:45:00Z",
       "actor": "human",
       "action": "setting",
@@ -197,7 +25,7 @@
       "detail": "demo-subscription"
     },
     {
-      "id": 20,
+      "id": 43,
       "at": "2026-09-01T10:52:00Z",
       "actor": "human",
       "action": "setting",
@@ -205,7 +33,7 @@
       "detail": "pulse-hands"
     },
     {
-      "id": 21,
+      "id": 44,
       "at": "2026-09-01T10:59:00Z",
       "actor": "human",
       "action": "setting",
@@ -213,7 +41,7 @@
       "detail": "westeurope"
     },
     {
-      "id": 22,
+      "id": 45,
       "at": "2026-09-01T11:06:00Z",
       "actor": "human",
       "action": "setting",
@@ -221,7 +49,7 @@
       "detail": "[owner-private]"
     },
     {
-      "id": 23,
+      "id": 46,
       "at": "2026-09-01T11:13:00Z",
       "actor": "human",
       "action": "setting",
@@ -229,16 +57,24 @@
       "detail": 0.03
     },
     {
-      "id": 24,
+      "id": 47,
       "at": "2026-09-01T11:20:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "owner.presence",
+      "detail": "away"
+    },
+    {
+      "id": 48,
+      "at": "2026-09-01T11:27:00Z",
       "actor": "human",
       "action": "setting",
       "subject": "workers",
       "detail": 4
     },
     {
-      "id": 25,
-      "at": "2026-09-01T11:27:00Z",
+      "id": 49,
+      "at": "2026-09-01T11:34:00Z",
       "actor": "human",
       "action": "executor.add",
       "subject": "pulse-vm1",
@@ -250,8 +86,8 @@
       }
     },
     {
-      "id": 26,
-      "at": "2026-09-01T11:34:00Z",
+      "id": 50,
+      "at": "2026-09-01T11:41:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "ADR-001",
@@ -263,8 +99,8 @@
       }
     },
     {
-      "id": 27,
-      "at": "2026-09-01T11:41:00Z",
+      "id": 51,
+      "at": "2026-09-01T11:48:00Z",
       "actor": "human",
       "action": "record.revised",
       "subject": "ADR-001",
@@ -276,8 +112,8 @@
       }
     },
     {
-      "id": 28,
-      "at": "2026-09-01T11:48:00Z",
+      "id": 52,
+      "at": "2026-09-01T11:55:00Z",
       "actor": "human",
       "action": "record.revised",
       "subject": "ADR-001",
@@ -289,8 +125,8 @@
       }
     },
     {
-      "id": 29,
-      "at": "2026-09-01T11:55:00Z",
+      "id": 53,
+      "at": "2026-09-01T12:02:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "ADR-002",
@@ -302,8 +138,8 @@
       }
     },
     {
-      "id": 30,
-      "at": "2026-09-01T12:02:00Z",
+      "id": 54,
+      "at": "2026-09-01T12:09:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "ADR-003",
@@ -315,8 +151,8 @@
       }
     },
     {
-      "id": 31,
-      "at": "2026-09-01T12:09:00Z",
+      "id": 55,
+      "at": "2026-09-01T12:16:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "PLAN-001",
@@ -328,8 +164,8 @@
       }
     },
     {
-      "id": 32,
-      "at": "2026-09-01T12:16:00Z",
+      "id": 56,
+      "at": "2026-09-01T12:23:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "WU-001",
@@ -341,8 +177,8 @@
       }
     },
     {
-      "id": 33,
-      "at": "2026-09-01T12:23:00Z",
+      "id": 57,
+      "at": "2026-09-01T12:30:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "GUIDE-onboarding",
@@ -354,8 +190,8 @@
       }
     },
     {
-      "id": 34,
-      "at": "2026-09-01T12:30:00Z",
+      "id": 58,
+      "at": "2026-09-01T12:37:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "MEM-product-rules",
@@ -367,8 +203,8 @@
       }
     },
     {
-      "id": 35,
-      "at": "2026-09-01T12:37:00Z",
+      "id": 59,
+      "at": "2026-09-01T12:44:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "EVO-constitution",
@@ -380,8 +216,8 @@
       }
     },
     {
-      "id": 36,
-      "at": "2026-09-01T12:44:00Z",
+      "id": 60,
+      "at": "2026-09-01T12:51:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "WF-feature",
@@ -393,8 +229,8 @@
       }
     },
     {
-      "id": 37,
-      "at": "2026-09-01T12:51:00Z",
+      "id": 61,
+      "at": "2026-09-01T12:58:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "SKILL-pulse-review",
@@ -406,8 +242,8 @@
       }
     },
     {
-      "id": 38,
-      "at": "2026-09-01T12:58:00Z",
+      "id": 62,
+      "at": "2026-09-01T13:05:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "PROMPT-eli5",
@@ -419,8 +255,8 @@
       }
     },
     {
-      "id": 39,
-      "at": "2026-09-01T13:05:00Z",
+      "id": 63,
+      "at": "2026-09-01T13:12:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "INSTR-agents",
@@ -432,8 +268,8 @@
       }
     },
     {
-      "id": 40,
-      "at": "2026-09-01T13:12:00Z",
+      "id": 64,
+      "at": "2026-09-01T13:19:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "FEAT-001",
@@ -445,8 +281,8 @@
       }
     },
     {
-      "id": 41,
-      "at": "2026-09-01T13:19:00Z",
+      "id": 65,
+      "at": "2026-09-01T13:26:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "ADR-004",
@@ -458,8 +294,8 @@
       }
     },
     {
-      "id": 42,
-      "at": "2026-09-01T13:26:00Z",
+      "id": 66,
+      "at": "2026-09-01T13:33:00Z",
       "actor": "human",
       "action": "record.created",
       "subject": "CTX-environment-demo-app",
@@ -471,344 +307,528 @@
       }
     },
     {
-      "id": 43,
-      "at": "2026-09-01T13:33:00Z",
+      "id": 67,
+      "at": "2026-09-01T13:40:00Z",
       "actor": "aurora",
-      "action": "post",
-      "subject": "20260901T133300Z-aurora",
+      "action": "post.claim",
+      "subject": "20260901T134000Z-aurora",
       "detail": {
+        "agent": "aurora",
         "kind": "claim",
         "project": "demo-app",
         "thread": "runner/project-setup"
       }
     },
     {
-      "id": 44,
-      "at": "2026-09-01T13:40:00Z",
+      "id": 68,
+      "at": "2026-09-01T13:47:00Z",
       "actor": "aurora",
-      "action": "post",
-      "subject": "20260901T134000Z-aurora",
+      "action": "post.finding",
+      "subject": "20260901T134700Z-aurora",
       "detail": {
+        "agent": "aurora",
         "kind": "finding",
         "project": "demo-app",
         "thread": "runner/project-setup"
       }
     },
     {
-      "id": 45,
-      "at": "2026-09-01T13:47:00Z",
+      "id": 69,
+      "at": "2026-09-01T13:54:00Z",
       "actor": "aurora",
-      "action": "post",
-      "subject": "20260901T134700Z-aurora",
+      "action": "post.handoff",
+      "subject": "20260901T135400Z-aurora",
       "detail": {
+        "agent": "aurora",
         "kind": "handoff",
         "project": "demo-app",
         "thread": "runner/project-setup"
       }
     },
     {
-      "id": 46,
-      "at": "2026-09-01T13:54:00Z",
+      "id": 70,
+      "at": "2026-09-01T14:01:00Z",
       "actor": "borealis",
-      "action": "post",
-      "subject": "20260901T135400Z-borealis",
+      "action": "post.result",
+      "subject": "20260901T140100Z-borealis",
       "detail": {
+        "agent": "borealis",
         "kind": "result",
         "project": "demo-app",
         "thread": "runner/project-setup"
       }
     },
     {
-      "id": 47,
-      "at": "2026-09-01T14:01:00Z",
-      "actor": "cinder",
-      "action": "post",
-      "subject": "20260901T140100Z-cinder",
-      "detail": {
-        "kind": "finding",
-        "project": "demo-app",
-        "thread": "product/checkout-latency"
-      }
-    },
-    {
-      "id": 48,
+      "id": 71,
       "at": "2026-09-01T14:08:00Z",
       "actor": "cinder",
-      "action": "post",
+      "action": "post.finding",
       "subject": "20260901T140800Z-cinder",
       "detail": {
+        "agent": "cinder",
+        "kind": "finding",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 72,
+      "at": "2026-09-01T14:15:00Z",
+      "actor": "cinder",
+      "action": "post.suggestion",
+      "subject": "20260901T141500Z-cinder",
+      "detail": {
+        "agent": "cinder",
         "kind": "suggestion",
         "project": "demo-app",
         "thread": "product/checkout-latency"
       }
     },
     {
-      "id": 49,
-      "at": "2026-09-01T14:15:00Z",
-      "actor": "aurora",
-      "action": "post",
-      "subject": "20260901T141500Z-aurora",
-      "detail": {
-        "kind": "vote",
-        "project": "demo-app",
-        "thread": "product/checkout-latency"
-      }
-    },
-    {
-      "id": 50,
+      "id": 73,
       "at": "2026-09-01T14:22:00Z",
-      "actor": "borealis",
-      "action": "post",
-      "subject": "20260901T142200Z-borealis",
+      "actor": "aurora",
+      "action": "post.vote",
+      "subject": "20260901T142200Z-aurora",
       "detail": {
+        "agent": "aurora",
         "kind": "vote",
         "project": "demo-app",
         "thread": "product/checkout-latency"
       }
     },
     {
-      "id": 51,
+      "id": 74,
       "at": "2026-09-01T14:29:00Z",
-      "actor": "delta",
-      "action": "post",
-      "subject": "20260901T142900Z-delta",
+      "actor": "borealis",
+      "action": "post.vote",
+      "subject": "20260901T142900Z-borealis",
       "detail": {
+        "agent": "borealis",
         "kind": "vote",
         "project": "demo-app",
         "thread": "product/checkout-latency"
       }
     },
     {
-      "id": 52,
+      "id": 75,
       "at": "2026-09-01T14:36:00Z",
-      "actor": "fjord",
-      "action": "post",
-      "subject": "20260901T143600Z-fjord",
+      "actor": "delta",
+      "action": "post.vote",
+      "subject": "20260901T143600Z-delta",
       "detail": {
+        "agent": "delta",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 76,
+      "at": "2026-09-01T14:43:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T144300Z-d57da2",
+      "detail": {
+        "kind": "improve",
+        "project": "demo-app",
+        "title": "Cache the price lookup"
+      }
+    },
+    {
+      "id": 77,
+      "at": "2026-09-01T14:50:00Z",
+      "actor": "fjord",
+      "action": "post.opinion",
+      "subject": "20260901T145000Z-fjord",
+      "detail": {
+        "agent": "fjord",
         "kind": "opinion",
         "project": "demo-app",
         "thread": "product/checkout-latency"
       }
     },
     {
-      "id": 53,
-      "at": "2026-09-01T14:43:00Z",
-      "actor": "delta",
-      "action": "post",
-      "subject": "20260901T144300Z-delta",
+      "id": 78,
+      "at": "2026-09-01T14:57:00Z",
+      "actor": "aurora",
+      "action": "post.suggestion",
+      "subject": "20260901T145700Z-aurora",
       "detail": {
+        "agent": "aurora",
+        "kind": "suggestion",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 79,
+      "at": "2026-09-01T15:04:00Z",
+      "actor": "borealis",
+      "action": "post.vote",
+      "subject": "20260901T150400Z-borealis",
+      "detail": {
+        "agent": "borealis",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 80,
+      "at": "2026-09-01T15:11:00Z",
+      "actor": "cinder",
+      "action": "post.vote",
+      "subject": "20260901T151100Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 81,
+      "at": "2026-09-01T15:18:00Z",
+      "actor": "delta",
+      "action": "post.vote",
+      "subject": "20260901T151800Z-delta",
+      "detail": {
+        "agent": "delta",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 82,
+      "at": "2026-09-01T15:25:00Z",
+      "actor": "ember",
+      "action": "post.vote",
+      "subject": "20260901T152500Z-ember",
+      "detail": {
+        "agent": "ember",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 83,
+      "at": "2026-09-01T15:32:00Z",
+      "actor": "delta",
+      "action": "post.question",
+      "subject": "20260901T153200Z-delta",
+      "detail": {
+        "agent": "delta",
         "kind": "question",
         "project": "demo-app",
         "thread": "governance/review-depth"
       }
     },
     {
-      "id": 54,
-      "at": "2026-09-01T14:50:00Z",
+      "id": 84,
+      "at": "2026-09-01T15:39:00Z",
       "actor": "aurora",
-      "action": "post",
-      "subject": "20260901T145000Z-aurora",
+      "action": "post.opinion",
+      "subject": "20260901T153900Z-aurora",
       "detail": {
+        "agent": "aurora",
         "kind": "opinion",
         "project": "demo-app",
         "thread": "governance/review-depth"
       }
     },
     {
-      "id": 55,
-      "at": "2026-09-01T14:57:00Z",
+      "id": 85,
+      "at": "2026-09-01T15:46:00Z",
       "actor": "cinder",
-      "action": "post",
-      "subject": "20260901T145700Z-cinder",
+      "action": "post.opinion",
+      "subject": "20260901T154600Z-cinder",
       "detail": {
+        "agent": "cinder",
         "kind": "opinion",
         "project": "demo-app",
         "thread": "governance/review-depth"
       }
     },
     {
-      "id": 56,
-      "at": "2026-09-01T15:04:00Z",
+      "id": 86,
+      "at": "2026-09-01T15:53:00Z",
       "actor": "delta",
-      "action": "post",
-      "subject": "20260901T150400Z-delta",
+      "action": "post.answer",
+      "subject": "20260901T155300Z-delta",
       "detail": {
+        "agent": "delta",
         "kind": "answer",
         "project": "demo-app",
         "thread": "governance/review-depth"
       }
     },
     {
-      "id": 57,
-      "at": "2026-09-01T15:11:00Z",
-      "actor": "ember",
-      "action": "post",
-      "subject": "20260901T151100Z-ember",
+      "id": 87,
+      "at": "2026-09-01T16:00:00Z",
+      "actor": "borealis",
+      "action": "post.question",
+      "subject": "20260901T160000Z-borealis",
       "detail": {
+        "agent": "borealis",
+        "kind": "question",
+        "project": "demo-app",
+        "thread": "product/rate-limit-fixtures"
+      }
+    },
+    {
+      "id": 88,
+      "at": "2026-09-01T16:00:00Z",
+      "actor": "borealis",
+      "action": "mention",
+      "subject": "aurora",
+      "detail": {
+        "by": "borealis",
+        "kind": "question",
+        "post": "20260901T160000Z-borealis",
+        "project": "demo-app",
+        "thread": "product/rate-limit-fixtures"
+      }
+    },
+    {
+      "id": 89,
+      "at": "2026-09-01T16:07:00Z",
+      "actor": "cinder",
+      "action": "post.handoff",
+      "subject": "20260901T160700Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "handoff",
+        "project": "demo-app",
+        "thread": "product/rate-limit-fixtures"
+      }
+    },
+    {
+      "id": 90,
+      "at": "2026-09-01T16:14:00Z",
+      "actor": "ember",
+      "action": "post.finding",
+      "subject": "20260901T161400Z-ember",
+      "detail": {
+        "agent": "ember",
         "kind": "finding",
         "project": "demo-lib",
         "thread": "library/api-surface"
       }
     },
     {
-      "id": 58,
-      "at": "2026-09-01T15:18:00Z",
+      "id": 91,
+      "at": "2026-09-01T16:21:00Z",
       "actor": "ember",
-      "action": "post",
-      "subject": "20260901T151800Z-ember",
+      "action": "post.suggestion",
+      "subject": "20260901T162100Z-ember",
       "detail": {
+        "agent": "ember",
         "kind": "suggestion",
         "project": "demo-lib",
         "thread": "library/api-surface"
       }
     },
     {
-      "id": 59,
-      "at": "2026-09-01T15:25:00Z",
+      "id": 92,
+      "at": "2026-09-01T16:28:00Z",
       "actor": "fjord",
-      "action": "post",
-      "subject": "20260901T152500Z-fjord",
+      "action": "post.vote",
+      "subject": "20260901T162800Z-fjord",
       "detail": {
+        "agent": "fjord",
         "kind": "vote",
         "project": "demo-lib",
         "thread": "library/api-surface"
       }
     },
     {
-      "id": 60,
-      "at": "2026-09-01T15:32:00Z",
+      "id": 93,
+      "at": "2026-09-01T16:35:00Z",
       "actor": "delta",
-      "action": "post",
-      "subject": "20260901T153200Z-delta",
+      "action": "post.question",
+      "subject": "20260901T163500Z-delta",
       "detail": {
+        "agent": "delta",
         "kind": "question",
         "project": "demo-lib",
         "thread": "library/release-cadence"
       }
     },
     {
-      "id": 61,
-      "at": "2026-09-01T15:39:00Z",
+      "id": 94,
+      "at": "2026-09-01T16:42:00Z",
       "actor": "demo-lib-lead",
-      "action": "post",
-      "subject": "20260901T153900Z-demo-lib-lead",
+      "action": "post.answer",
+      "subject": "20260901T164200Z-demo-lib-lead",
       "detail": {
+        "agent": "demo-lib-lead",
         "kind": "answer",
         "project": "demo-lib",
         "thread": "library/release-cadence"
       }
     },
     {
-      "id": 62,
-      "at": "2026-09-01T15:46:00Z",
+      "id": 95,
+      "at": "2026-09-01T16:49:00Z",
       "actor": "borealis",
-      "action": "post",
-      "subject": "20260901T154600Z-borealis",
+      "action": "post.amendment",
+      "subject": "20260901T164900Z-borealis",
       "detail": {
+        "agent": "borealis",
         "kind": "amendment",
         "project": "pulse",
         "thread": "evolution/constitution-quorum"
       }
     },
     {
-      "id": 63,
-      "at": "2026-09-01T16:00:00Z",
+      "id": 96,
+      "at": "2026-09-01T17:03:00Z",
       "actor": "aurora",
-      "action": "post",
-      "subject": "20260901T160000Z-aurora",
+      "action": "post.vote",
+      "subject": "20260901T170300Z-aurora",
       "detail": {
+        "agent": "aurora",
         "kind": "vote",
         "project": "pulse",
         "thread": "evolution/constitution-quorum"
       }
     },
     {
-      "id": 64,
-      "at": "2026-09-01T16:07:00Z",
+      "id": 97,
+      "at": "2026-09-01T17:10:00Z",
       "actor": "cinder",
-      "action": "post",
-      "subject": "20260901T160700Z-cinder",
+      "action": "post.vote",
+      "subject": "20260901T171000Z-cinder",
       "detail": {
+        "agent": "cinder",
         "kind": "vote",
         "project": "pulse",
         "thread": "evolution/constitution-quorum"
       }
     },
     {
-      "id": 65,
-      "at": "2026-09-01T16:14:00Z",
+      "id": 98,
+      "at": "2026-09-01T17:17:00Z",
       "actor": "delta",
-      "action": "post",
-      "subject": "20260901T161400Z-delta",
+      "action": "post.vote",
+      "subject": "20260901T171700Z-delta",
       "detail": {
+        "agent": "delta",
         "kind": "vote",
         "project": "pulse",
         "thread": "evolution/constitution-quorum"
       }
     },
     {
-      "id": 66,
-      "at": "2026-09-01T16:21:00Z",
+      "id": 99,
+      "at": "2026-09-01T17:24:00Z",
       "actor": "fjord",
-      "action": "post",
-      "subject": "20260901T162100Z-fjord",
+      "action": "post.finding",
+      "subject": "20260901T172400Z-fjord",
       "detail": {
+        "agent": "fjord",
         "kind": "finding",
         "project": "pulse",
         "thread": "store/schema-notes"
       }
     },
     {
-      "id": 67,
-      "at": "2026-09-01T16:28:00Z",
+      "id": 100,
+      "at": "2026-09-01T17:31:00Z",
       "actor": "fjord",
-      "action": "post",
-      "subject": "20260901T162800Z-fjord",
+      "action": "post.suggestion",
+      "subject": "20260901T173100Z-fjord",
       "detail": {
+        "agent": "fjord",
         "kind": "suggestion",
         "project": "pulse",
         "thread": "store/schema-notes"
       }
     },
     {
-      "id": 68,
-      "at": "2026-09-01T16:35:00Z",
+      "id": 101,
+      "at": "2026-09-01T17:38:00Z",
       "actor": "borealis",
-      "action": "post",
-      "subject": "20260901T163500Z-borealis",
+      "action": "post.vote",
+      "subject": "20260901T173800Z-borealis",
       "detail": {
+        "agent": "borealis",
         "kind": "vote",
         "project": "pulse",
         "thread": "store/schema-notes"
       }
     },
     {
-      "id": 69,
-      "at": "2026-09-01T16:42:00Z",
+      "id": 102,
+      "at": "2026-09-01T17:45:00Z",
       "actor": "ember",
-      "action": "post",
-      "subject": "20260901T164200Z-ember",
+      "action": "post.vote",
+      "subject": "20260901T174500Z-ember",
       "detail": {
+        "agent": "ember",
         "kind": "vote",
         "project": "pulse",
         "thread": "store/schema-notes"
       }
     },
     {
-      "id": 70,
-      "at": "2026-09-01T16:49:00Z",
-      "actor": "aurora",
-      "action": "post",
-      "subject": "20260901T164900Z-aurora",
+      "id": 103,
+      "at": "2026-09-01T17:52:00Z",
+      "actor": "ember",
+      "action": "post.suggestion",
+      "subject": "20260901T175200Z-ember",
       "detail": {
+        "agent": "ember",
+        "kind": "suggestion",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 104,
+      "at": "2026-09-01T17:59:00Z",
+      "actor": "aurora",
+      "action": "post.vote",
+      "subject": "20260901T175900Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 105,
+      "at": "2026-09-01T18:06:00Z",
+      "actor": "cinder",
+      "action": "post.vote",
+      "subject": "20260901T180600Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 106,
+      "at": "2026-09-01T18:13:00Z",
+      "actor": "aurora",
+      "action": "post.question",
+      "subject": "20260901T181300Z-aurora",
+      "detail": {
+        "agent": "aurora",
         "kind": "question",
         "project": "commons",
         "thread": "patterns/executor-images"
       }
     },
     {
-      "id": 71,
-      "at": "2026-09-01T16:56:00Z",
+      "id": 107,
+      "at": "2026-09-01T18:20:00Z",
       "actor": "human",
       "action": "task.created",
       "subject": "TASK-001",
@@ -819,8 +839,8 @@
       }
     },
     {
-      "id": 72,
-      "at": "2026-09-01T17:03:00Z",
+      "id": 108,
+      "at": "2026-09-01T18:27:00Z",
       "actor": "human",
       "action": "task.amended",
       "subject": "TASK-001",
@@ -832,8 +852,8 @@
       }
     },
     {
-      "id": 73,
-      "at": "2026-09-01T17:10:00Z",
+      "id": 109,
+      "at": "2026-09-01T18:34:00Z",
       "actor": "demo-app-lead",
       "action": "task.status",
       "subject": "TASK-001",
@@ -844,11 +864,11 @@
       }
     },
     {
-      "id": 74,
-      "at": "2026-09-01T17:17:00Z",
+      "id": 110,
+      "at": "2026-09-01T18:41:00Z",
       "actor": "demo-app-lead",
       "action": "message.sent",
-      "subject": "MSG-20260901T171700Z-1",
+      "subject": "MSG-20260901T184100Z-1",
       "detail": {
         "author": "demo-app-lead",
         "project": "demo-app",
@@ -856,8 +876,8 @@
       }
     },
     {
-      "id": 75,
-      "at": "2026-09-01T17:24:00Z",
+      "id": 111,
+      "at": "2026-09-01T18:48:00Z",
       "actor": "human",
       "action": "task.created",
       "subject": "TASK-002",
@@ -868,8 +888,8 @@
       }
     },
     {
-      "id": 76,
-      "at": "2026-09-01T17:31:00Z",
+      "id": 112,
+      "at": "2026-09-01T18:55:00Z",
       "actor": "demo-app-lead",
       "action": "task.status",
       "subject": "TASK-002",
@@ -880,8 +900,8 @@
       }
     },
     {
-      "id": 77,
-      "at": "2026-09-01T17:38:00Z",
+      "id": 113,
+      "at": "2026-09-01T19:02:00Z",
       "actor": "human",
       "action": "task.created",
       "subject": "TASK-003",
@@ -892,8 +912,8 @@
       }
     },
     {
-      "id": 78,
-      "at": "2026-09-01T17:45:00Z",
+      "id": 114,
+      "at": "2026-09-01T19:09:00Z",
       "actor": "demo-lib-lead",
       "action": "task.status",
       "subject": "TASK-003",
@@ -904,8 +924,8 @@
       }
     },
     {
-      "id": 79,
-      "at": "2026-09-01T17:52:00Z",
+      "id": 115,
+      "at": "2026-09-01T19:16:00Z",
       "actor": "human",
       "action": "task.created",
       "subject": "TASK-004",
@@ -916,8 +936,8 @@
       }
     },
     {
-      "id": 80,
-      "at": "2026-09-01T17:59:00Z",
+      "id": 116,
+      "at": "2026-09-01T19:23:00Z",
       "actor": "human",
       "action": "task.cancelled",
       "subject": "TASK-004",
@@ -930,11 +950,11 @@
       }
     },
     {
-      "id": 81,
-      "at": "2026-09-01T18:06:00Z",
+      "id": 117,
+      "at": "2026-09-01T19:30:00Z",
       "actor": "human",
       "action": "message.sent",
-      "subject": "MSG-20260901T180600Z-1",
+      "subject": "MSG-20260901T193000Z-1",
       "detail": {
         "author": "human",
         "project": "demo-app",
@@ -942,11 +962,11 @@
       }
     },
     {
-      "id": 82,
-      "at": "2026-09-01T18:13:00Z",
+      "id": 118,
+      "at": "2026-09-01T19:37:00Z",
       "actor": "demo-app-lead",
       "action": "message.sent",
-      "subject": "MSG-20260901T181300Z-1",
+      "subject": "MSG-20260901T193700Z-1",
       "detail": {
         "author": "demo-app-lead",
         "project": "demo-app",
@@ -954,11 +974,11 @@
       }
     },
     {
-      "id": 83,
-      "at": "2026-09-01T18:20:00Z",
+      "id": 119,
+      "at": "2026-09-01T19:44:00Z",
       "actor": "human",
       "action": "message.sent",
-      "subject": "MSG-20260901T182000Z-1",
+      "subject": "MSG-20260901T194400Z-1",
       "detail": {
         "author": "human",
         "project": "demo-app",
@@ -966,11 +986,11 @@
       }
     },
     {
-      "id": 84,
-      "at": "2026-09-01T18:27:00Z",
+      "id": 120,
+      "at": "2026-09-01T19:51:00Z",
       "actor": "demo-app-lead",
       "action": "message.sent",
-      "subject": "MSG-20260901T182700Z-1",
+      "subject": "MSG-20260901T195100Z-1",
       "detail": {
         "author": "demo-app-lead",
         "project": "demo-app",
@@ -978,11 +998,11 @@
       }
     },
     {
-      "id": 85,
-      "at": "2026-09-01T18:34:00Z",
+      "id": 121,
+      "at": "2026-09-01T19:58:00Z",
       "actor": "human",
       "action": "message.sent",
-      "subject": "MSG-20260901T183400Z-1",
+      "subject": "MSG-20260901T195800Z-1",
       "detail": {
         "author": "human",
         "project": "demo-lib",
@@ -990,8 +1010,8 @@
       }
     },
     {
-      "id": 86,
-      "at": "2026-09-01T18:41:00Z",
+      "id": 122,
+      "at": "2026-09-01T20:05:00Z",
       "actor": "cinder",
       "action": "compute.requested",
       "subject": "CR-001",
@@ -1003,11 +1023,11 @@
       }
     },
     {
-      "id": 87,
-      "at": "2026-09-01T18:41:00Z",
+      "id": 123,
+      "at": "2026-09-01T20:05:00Z",
       "actor": "cinder",
       "action": "post",
-      "subject": "20260901T184100Z-cinder",
+      "subject": "20260901T200500Z-cinder",
       "detail": {
         "kind": "proposal",
         "project": "demo-app",
@@ -1015,11 +1035,11 @@
       }
     },
     {
-      "id": 88,
-      "at": "2026-09-01T18:48:00Z",
+      "id": 124,
+      "at": "2026-09-01T20:12:00Z",
       "actor": "human",
       "action": "post",
-      "subject": "20260901T184800Z-human",
+      "subject": "20260901T201200Z-human",
       "detail": {
         "kind": "result",
         "project": "demo-app",
@@ -1027,19 +1047,19 @@
       }
     },
     {
-      "id": 89,
-      "at": "2026-09-01T18:48:00Z",
+      "id": 125,
+      "at": "2026-09-01T20:12:00Z",
       "actor": "human",
       "action": "decide",
-      "subject": "20260901T184100Z-cinder",
+      "subject": "20260901T200500Z-cinder",
       "detail": {
         "answer": "yes",
-        "result": "20260901T184800Z-human"
+        "result": "20260901T201200Z-human"
       }
     },
     {
-      "id": 90,
-      "at": "2026-09-01T18:48:00Z",
+      "id": 126,
+      "at": "2026-09-01T20:12:00Z",
       "actor": "human",
       "action": "compute.approved",
       "subject": "CR-001",
@@ -1050,8 +1070,8 @@
       }
     },
     {
-      "id": 91,
-      "at": "2026-09-01T18:55:00Z",
+      "id": 127,
+      "at": "2026-09-01T20:19:00Z",
       "actor": "delta",
       "action": "compute.requested",
       "subject": "CR-002",
@@ -1063,11 +1083,11 @@
       }
     },
     {
-      "id": 92,
-      "at": "2026-09-01T18:55:00Z",
+      "id": 128,
+      "at": "2026-09-01T20:19:00Z",
       "actor": "delta",
       "action": "post",
-      "subject": "20260901T185500Z-delta",
+      "subject": "20260901T201900Z-delta",
       "detail": {
         "kind": "proposal",
         "project": "demo-lib",
@@ -1075,8 +1095,8 @@
       }
     },
     {
-      "id": 93,
-      "at": "2026-09-01T19:02:00Z",
+      "id": 129,
+      "at": "2026-09-01T20:26:00Z",
       "actor": "ember",
       "action": "compute.requested",
       "subject": "CR-003",
@@ -1088,11 +1108,11 @@
       }
     },
     {
-      "id": 94,
-      "at": "2026-09-01T19:02:00Z",
+      "id": 130,
+      "at": "2026-09-01T20:26:00Z",
       "actor": "ember",
       "action": "post",
-      "subject": "20260901T190200Z-ember",
+      "subject": "20260901T202600Z-ember",
       "detail": {
         "kind": "proposal",
         "project": "demo-app",
@@ -1100,11 +1120,11 @@
       }
     },
     {
-      "id": 95,
-      "at": "2026-09-01T19:09:00Z",
+      "id": 131,
+      "at": "2026-09-01T20:33:00Z",
       "actor": "human",
       "action": "post",
-      "subject": "20260901T190900Z-human",
+      "subject": "20260901T203300Z-human",
       "detail": {
         "kind": "result",
         "project": "demo-app",
@@ -1112,19 +1132,19 @@
       }
     },
     {
-      "id": 96,
-      "at": "2026-09-01T19:09:00Z",
+      "id": 132,
+      "at": "2026-09-01T20:33:00Z",
       "actor": "human",
       "action": "decide",
-      "subject": "20260901T190200Z-ember",
+      "subject": "20260901T202600Z-ember",
       "detail": {
         "answer": "no",
-        "result": "20260901T190900Z-human"
+        "result": "20260901T203300Z-human"
       }
     },
     {
-      "id": 97,
-      "at": "2026-09-01T19:09:00Z",
+      "id": 133,
+      "at": "2026-09-01T20:33:00Z",
       "actor": "human",
       "action": "compute.denied",
       "subject": "CR-003",
@@ -1135,11 +1155,11 @@
       }
     },
     {
-      "id": 98,
-      "at": "2026-09-01T19:16:00Z",
+      "id": 134,
+      "at": "2026-09-01T20:40:00Z",
       "actor": "",
       "action": "job.add",
-      "subject": "job-20260901T191600Z-d05a5e",
+      "subject": "job-20260901T204000Z-7576ad",
       "detail": {
         "kind": "task",
         "project": "demo-app",
@@ -1147,23 +1167,55 @@
       }
     },
     {
-      "id": 99,
-      "at": "2026-09-01T19:23:00Z",
+      "id": 135,
+      "at": "2026-09-01T20:47:00Z",
       "actor": "human",
       "action": "job.done",
-      "subject": "job-20260901T191600Z-d05a5e",
+      "subject": "job-20260901T204000Z-7576ad",
       "detail": "Matrix green in 6m12s; timings posted to product/checkout-latency."
     },
     {
-      "id": 100,
-      "at": "2026-09-01T19:30:00Z",
+      "id": 136,
+      "at": "2026-09-01T20:54:00Z",
       "actor": "",
       "action": "job.add",
-      "subject": "job-20260901T193000Z-d0f31a",
+      "subject": "job-20260901T205400Z-84d7fc",
       "detail": {
         "kind": "task",
         "project": "demo-lib",
         "title": "Draft the v2 migration guide"
+      }
+    },
+    {
+      "id": 137,
+      "at": "2026-09-01T21:01:00Z",
+      "actor": "human",
+      "action": "job.failed",
+      "subject": "job-20260901T205400Z-84d7fc",
+      "detail": "The README section conflicts with an open task; stopped."
+    },
+    {
+      "id": 138,
+      "at": "2026-09-01T21:08:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T210800Z-b51232",
+      "detail": {
+        "kind": "reflect",
+        "project": "pulse",
+        "title": "Reflect on the last cycle"
+      }
+    },
+    {
+      "id": 139,
+      "at": "2026-09-01T21:15:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T211500Z-7adf09",
+      "detail": {
+        "kind": "answer",
+        "project": "demo-app",
+        "title": "Answer the open governance question"
       }
     }
   ]

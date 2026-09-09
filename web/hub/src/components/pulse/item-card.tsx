@@ -40,11 +40,11 @@ const OpenContext = createContext<{ open: () => void; label?: string } | null>(n
 
 export function ItemCard({ children, href, onOpen, active, highlight, className, ariaLabel }: { children: React.ReactNode; href?: string; onOpen?: () => void; active?: boolean; highlight?: boolean; className?: string; ariaLabel?: string }) {
   const cls = cn(
-    "group/item relative flex flex-col gap-2 rounded-lg border bg-card p-3.5 text-left shadow-xs transition-colors",
-    (href || onOpen) && "cursor-pointer hover:bg-muted/40",
+    "group/item relative flex flex-col gap-2 rounded-lg border bg-card p-4 text-left shadow-card transition-all duration-200",
+    (href || onOpen) && "cursor-pointer hover:border-foreground/15 hover:shadow-pop",
     href && !onOpen && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
     onOpen && "has-[[data-open]:focus-visible]:ring-2 has-[[data-open]:focus-visible]:ring-ring",
-    highlight && "border-primary/40",
+    highlight && "border-primary/40 surface-tint",
     active && "ring-2 ring-ring",
     className,
   );
@@ -90,11 +90,11 @@ export function ItemCardTitle({ children, className, chevron }: { children: Reac
   const inner = (
     <>
       <span className="min-w-0 flex-1">{children}</span>
-      {chevron ? <ChevronRightIcon className="mt-0.5 size-4 shrink-0 opacity-40 transition-transform group-hover/item:translate-x-0.5" /> : null}
+      {chevron ? <ChevronRightIcon className="mt-0.5 size-4 shrink-0 opacity-40 transition-transform group-hover/item:translate-x-0.5 group-hover/item:opacity-70" /> : null}
     </>
   );
   return (
-    <h3 className={cn("text-[14px] font-semibold leading-snug anywhere", className)}>
+    <h3 className={cn("text-[15px] font-semibold leading-snug anywhere", className)}>
       {ctx ? (
         <button
           type="button"
@@ -116,7 +116,7 @@ export function ItemCardTitle({ children, className, chevron }: { children: Reac
 }
 
 export function ItemCardBody({ children, className, clamp = 2 }: { children: React.ReactNode; className?: string; clamp?: 0 | 1 | 2 | 3 | 5 }) {
-  return <div className={cn("text-[13px] leading-relaxed text-muted-foreground anywhere", clamp === 1 && "line-clamp-1", clamp === 2 && "line-clamp-2", clamp === 3 && "line-clamp-3", clamp === 5 && "line-clamp-5", className)}>{children}</div>;
+  return <div className={cn("text-[13.5px] leading-relaxed text-muted-foreground anywhere", clamp === 1 && "line-clamp-1", clamp === 2 && "line-clamp-2", clamp === 3 && "line-clamp-3", clamp === 5 && "line-clamp-5", className)}>{children}</div>;
 }
 
 // Small facts in a row: "3 posts · quorum 2 · expires in 4 d".
@@ -142,20 +142,21 @@ export function ItemCardActions({ children, className }: { children: React.React
 // A compact fact tile for the inside of a card (used by project cards).
 export function Fact({ n, label, tone, className }: { n: React.ReactNode; label: string; tone?: "ok" | "warn" | "bad" | "accent" | "info"; className?: string }) {
   return (
-    <div className={cn("rounded-md bg-muted/40 px-1 py-1.5 text-center", className)}>
-      <div className={cn("tnum text-[15px] font-semibold leading-none", tone === "ok" && "text-ok", tone === "warn" && "text-warn", tone === "bad" && "text-bad", tone === "accent" && "text-accent-2", tone === "info" && "text-info")}>{n}</div>
-      <div className="mt-1 text-[10.5px] uppercase tracking-wide text-muted-foreground">{label}</div>
+    <div className={cn("rounded-md bg-muted/50 px-2 py-2 text-center", className)}>
+      <div className={cn("tnum text-base font-semibold leading-none", tone === "ok" && "text-ok", tone === "warn" && "text-warn", tone === "bad" && "text-bad", tone === "accent" && "text-accent-2", tone === "info" && "text-info")}>{n}</div>
+      <div className="mt-1 text-[10.5px] uppercase tracking-wider text-muted-foreground">{label}</div>
     </div>
   );
 }
 
 // Section heading for a card group: title, count, and an optional link.
-export function SectionHeading({ children, count, action, className }: { children: React.ReactNode; count?: number | string; action?: React.ReactNode; className?: string }) {
+export function SectionHeading({ children, count, action, className, icon: Icon }: { children: React.ReactNode; count?: number | string; action?: React.ReactNode; className?: string; icon?: React.ComponentType<{ className?: string }> }) {
   return (
     <div className={cn("mb-2 flex items-center justify-between gap-2", className)}>
-      <h2 className="flex items-center gap-2 text-sm font-semibold">
+      <h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold tracking-tight">
+        {Icon ? <Icon className="size-4 shrink-0 text-muted-foreground" /> : null}
         {children}
-        {count !== undefined && count !== "" ? <span className="tnum rounded-full bg-muted px-1.5 text-[11px] font-medium text-muted-foreground">{count}</span> : null}
+        {count !== undefined && count !== "" ? <span className="tnum rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{count}</span> : null}
       </h2>
       {action ? <div className="text-xs text-muted-foreground">{action}</div> : null}
     </div>

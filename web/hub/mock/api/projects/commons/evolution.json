@@ -6,7 +6,7 @@
   "evaluators": null,
   "fixtures": [],
   "gates": null,
-  "gates_error": "the commons is not a project - it has no checkout and no loop of its own",
+  "gates_error": "Evolution needs a registered project",
   "loop": {
     "heldout_present": false,
     "limits": "none",

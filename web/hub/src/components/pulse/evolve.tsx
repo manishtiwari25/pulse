@@ -5,6 +5,7 @@ import { useState } from "react";
 import { CheckIcon, CopyIcon, ExternalLinkIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
 import { HeldoutButton } from "./heldout";
 import { Notice, Panel } from "./panel";
@@ -31,6 +32,7 @@ import type { EvolutionDoc, EvolveFixture, EvolveGate, EvolveGates, EvolveLevel,
 
 const LEVELS = "A observe · B record · C rehearse · D evolve";
 const LEVEL_TITLE = "highest self-improvement level allowed right now (" + LEVELS + ")";
+const LEVEL_PROGRESS: Record<string, number> = { A: 25, B: 50, C: 75, D: 100 };
 const score = (n: number) => (Number.isFinite(n) ? n.toFixed(3).replace(/\.?0+$/, "") : "—");
 
 // ----- copy ------------------------------------------------------------------
@@ -79,9 +81,9 @@ export function CopyButton({ text, label = "Copy", size = "sm", variant = "defau
 // that is the point: the console names the step, the human takes it.
 export function CommandBox({ command, copy, className }: { command: string; copy?: boolean; className?: string }) {
   return (
-    <div className={cn("flex items-start gap-2 rounded-md border bg-muted/40 px-2.5 py-1.5", className)}>
-      <code className="min-w-0 flex-1 whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed anywhere">{command}</code>
-      {copy ? <CopyButton text={command} size="xs" variant="outline" className="-my-0.5 shrink-0" /> : null}
+    <div className={cn("flex items-start gap-2 rounded-lg border bg-muted/60 p-3", className)}>
+      <code className="min-w-0 flex-1 whitespace-pre-wrap font-mono text-[12.5px] leading-5 anywhere">{command}</code>
+      {copy ? <CopyButton text={command} size="xs" variant="outline" className="shrink-0" /> : null}
     </div>
   );
 }
@@ -384,7 +386,7 @@ export function GateCard({ step }: { step: GateStep }) {
     <ItemCard highlight ariaLabel={step.title}>
       <ItemCardHeader right={<LevelBadge level={step.level} />}>
         <ToneBadge tone="accent">self-improvement</ToneBadge>
-        <ToneBadge tone={heldout ? "ok" : "warn"}>{step.label}</ToneBadge>
+        <ToneBadge tone="warn">{step.label}</ToneBadge>
         {slugs.length > 1 ? <span className="text-xs text-muted-foreground">{plural(slugs.length, "project")}</span> : <ProjectLink slug={step.slug} className="text-xs" />}
       </ItemCardHeader>
       <ItemCardTitle>{step.title}</ItemCardTitle>
@@ -400,7 +402,7 @@ export function GateCard({ step }: { step: GateStep }) {
             </Button>
           ))}
         </span>
-        <span className="ml-auto shrink-0">{heldout ? <HeldoutButton projects={slugs} /> : <CopyButton text={step.command} />}</span>
+        <span className="ml-auto shrink-0">{heldout ? <HeldoutButton projects={slugs} variant="outline" /> : <CopyButton text={step.command} variant="outline" />}</span>
       </ItemCardActions>
     </ItemCard>
   );
@@ -484,6 +486,13 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
             <b>{"Level " + (gates.level || "?")}</b>
             {gates.reason ? <span className="text-muted-foreground">{" · " + gates.reason}</span> : null}
           </p>
+          <div className="grid gap-1.5 rounded-lg border bg-muted/30 px-3 py-2">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-muted-foreground">{LEVELS}</span>
+              <LevelBadge level={gates.level} />
+            </div>
+            <Progress value={LEVEL_PROGRESS[gates.level] ?? 0} className="h-1.5" />
+          </div>
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             {gates.stop ? <ToneBadge tone="bad" title="STOP is set - the loop halts until you clear it">STOP</ToneBadge> : null}
             <ToneBadge tone={gates.loop ? "ok" : "neutral"} dot title="evolve.loop - whether cycles may run back to back">
@@ -518,7 +527,7 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
             {gates.tolerance ? <span className="tnum">{"tolerance " + gates.tolerance}</span> : null}
           </ItemCardMeta>
           <div>
-            <div className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">Next human step</div>
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Next human step</div>
             {waits && step ? (
               <>
                 <StepBlock step={step} />
@@ -605,7 +614,7 @@ export function FixtureList({ fixtures, className }: { fixtures: EvolveFixture[]
   const enabled = fixtures.filter((f) => f.enabled).length;
   return (
     <section className={className} aria-label="Fixtures">
-      <div className="mb-1.5 flex items-center justify-between gap-2 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         <span>Fixtures</span>
         <span className="tnum normal-case tracking-normal">{fixtures.length ? num(enabled) + " enabled of " + num(fixtures.length) : ""}</span>
       </div>

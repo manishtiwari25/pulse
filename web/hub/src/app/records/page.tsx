@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { BookOpenIcon, InboxIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/pulse/data-table";
-import { Count, EmptyState, ErrorNotice, Notice, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { Count, EmptyState, ErrorNotice, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Mono } from "@/components/pulse/who";
 import { RECORD_COLUMNS, RecordCards, RecordSheet, kindLabel } from "@/components/records/records";
@@ -98,6 +99,7 @@ function RecordsScreen() {
   return (
     <>
       <PageTitle
+        icon={BookOpenIcon}
         sub="The decisions, plans, work units, features, memory and evolution records of your projects, with their revision history. The framework's own docs (workflows, skills, guides, templates…) are one toggle away."
         actions={
           <>
@@ -107,7 +109,7 @@ function RecordsScreen() {
         }
         bar={
           <div className="grid gap-1">
-            <BarRow ref={chipsRef} role="group" aria-label="Kind" className="gap-1.5">
+            <BarRow ref={chipsRef} role="group" aria-label="Kind" className="w-fit gap-0.5 rounded-lg border bg-muted/40 p-0.5">
               <KindChip active={!kind} n={q.data ? base.length : undefined} onClick={() => setParams({ kind: null })}>
                 All
               </KindChip>
@@ -203,24 +205,46 @@ function RecordsScreen() {
         Records
       </PageTitle>
       {waiting && !showingWaiting ? (
-        <Notice tone="accent" className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px]">
-          <span>{plural(waiting, "proposed decision") + (waiting === 1 ? " waits" : " wait") + " for you."}</span>
-          <button type="button" className="font-medium hover:underline" onClick={() => setParams({ kind: "adr", status: "Proposed", project: null })}>
+        <div className="surface-tint mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 px-3.5 py-2.5 text-sm">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden>
+            <InboxIcon className="size-4" />
+          </span>
+          <span className="min-w-0 flex-1 anywhere">{plural(waiting, "proposed decision") + (waiting === 1 ? " waits" : " wait") + " for you."}</span>
+          <Button size="xs" onClick={() => setParams({ kind: "adr", status: "Proposed", project: null })}>
             Show them here
-          </button>
-          <Link href={hrefs.home() + "#for-you"} className="font-medium hover:underline">
-            Decide on the hub
-          </Link>
-        </Notice>
+          </Button>
+          <Button asChild size="xs" variant="outline">
+            <Link href={hrefs.home() + "#for-you"}>Decide on the hub</Link>
+          </Button>
+        </div>
       ) : null}
       {q.error && !q.data ? (
         <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
       ) : !q.data ? (
         <SkeletonRows n={10} />
       ) : !rows.length ? (
-        <EmptyState>{all.length ? "Nothing matches these filters." : <>No record indexed yet. <Mono>pulse init</Mono> indexes docs/ (ADRs, plans, work units, memory…) into the store; agents add records as they work.</>}</EmptyState>
+        <EmptyState
+          title={all.length ? "No matching records" : "No records indexed yet"}
+          action={
+            filtered ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  setText("");
+                  setArea("");
+                  setParams({ kind: null, status: null, project: null, fw: null });
+                }}
+              >
+                clear filters
+              </Button>
+            ) : undefined
+          }
+        >
+          {all.length ? "Nothing matches these filters." : <>Run <Mono>pulse init</Mono> to index docs/ (ADRs, plans, work units, memory…); agents add records as they work.</>}
+        </EmptyState>
       ) : view === "table" ? (
-        <div className="rounded-lg border bg-card">
+        <div className="overflow-hidden rounded-lg border bg-card">
           <DataTable columns={RECORD_COLUMNS(!project)} rows={rows} rowKey={(r) => r.id} onRow={(r) => setParams({ id: r.id })} initialSort="updated" caption="Records" />
         </div>
       ) : (
@@ -240,7 +264,7 @@ const OWNER_KINDS: string[] = ["adr", "plan", "wu", "feature", "memory", "evolut
 // scrollbar) so reaching the last filter never drags the other row along.
 function BarRow({ className, children, ...rest }: React.ComponentProps<"div">) {
   return (
-    <div className={cn("-mx-3 flex items-center gap-2 overflow-x-auto px-3 py-0.5 [scrollbar-width:none] sm:-mx-4 sm:px-4 [&::-webkit-scrollbar]:hidden", className)} {...rest}>
+    <div className={cn("-mx-3 flex flex-wrap items-center gap-2 overflow-x-auto px-3 py-0.5 [scrollbar-width:none] sm:-mx-4 sm:px-4 [&::-webkit-scrollbar]:hidden", className)} {...rest}>
       {children}
     </div>
   );
@@ -256,13 +280,13 @@ function KindChip({ active, n, title, onClick, children }: { active: boolean; n?
       title={title}
       onClick={onClick}
       className={cn(
-        "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-        active ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground",
+        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+        active ? "bg-card text-foreground shadow-card" : "text-muted-foreground hover:text-foreground",
         !active && n === 0 && "opacity-50",
       )}
     >
       {children}
-      {n !== undefined ? <span className={cn("tnum", active ? "opacity-70" : "text-muted-foreground/70")}>{n}</span> : null}
+      {n !== undefined ? <span className={cn("tnum rounded-full bg-muted px-1.5 text-[10.5px]", active ? "bg-primary/10 text-primary" : "text-muted-foreground")}>{n}</span> : null}
     </button>
   );
 }

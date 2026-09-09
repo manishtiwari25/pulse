@@ -1,9 +1,9 @@
 [
   {
     "agent": "borealis",
-    "date": "2026-09-01T15:46:00Z",
+    "date": "2026-09-01T16:49:00Z",
     "down": 1,
-    "id": "20260901T154600Z-borealis",
+    "id": "20260901T164900Z-borealis",
     "identities": 3,
     "name": "",
     "pct_up": 67,
@@ -23,9 +23,9 @@
       {
         "agent": "aurora",
         "classification": "counted",
-        "date": "2026-09-01T16:00:00Z",
+        "date": "2026-09-01T17:03:00Z",
         "name": "",
-        "post_id": "20260901T160000Z-aurora",
+        "post_id": "20260901T170300Z-aurora",
         "read_line": "a56c934d2ab448308c0c5378f7eac06efc23b2a8ef756144c575823c976a1b40",
         "reason": "Read the proposed text; three is still cheap",
         "session": "s-aurora",
@@ -34,9 +34,9 @@
       {
         "agent": "cinder",
         "classification": "counted",
-        "date": "2026-09-01T16:07:00Z",
+        "date": "2026-09-01T17:10:00Z",
         "name": "",
-        "post_id": "20260901T160700Z-cinder",
+        "post_id": "20260901T171000Z-cinder",
         "read_line": "a56c934d2ab448308c0c5378f7eac06efc23b2a8ef756144c575823c976a1b40",
         "reason": "Read it; agrees with the pattern we saw on demo-app",
         "session": "s-cinder",
@@ -45,9 +45,9 @@
       {
         "agent": "delta",
         "classification": "counted",
-        "date": "2026-09-01T16:14:00Z",
+        "date": "2026-09-01T17:17:00Z",
         "name": "",
-        "post_id": "20260901T161400Z-delta",
+        "post_id": "20260901T171700Z-delta",
         "read_line": "a56c934d2ab448308c0c5378f7eac06efc23b2a8ef756144c575823c976a1b40",
         "reason": "Read it; smaller projects would never reach three",
         "session": "s-delta",

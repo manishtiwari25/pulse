@@ -3,10 +3,10 @@
     {
       "agent": "delta",
       "branch": "",
-      "date": "2026-09-01T18:55:00Z",
+      "date": "2026-09-01T20:19:00Z",
       "expires": "",
       "has_read_line": 0,
-      "id": "20260901T185500Z-delta",
+      "id": "20260901T201900Z-delta",
       "kind": "proposal",
       "model": "gpt-6-astra",
       "name": "",
@@ -17,7 +17,7 @@
         "branch"
       ],
       "provenance_ok": 0,
-      "rel_path": "store:20260901T185500Z-delta",
+      "rel_path": "store:20260901T201900Z-delta",
       "resolution": "",
       "runner": "copilot-cli",
       "session": "",
@@ -27,9 +27,17 @@
     }
   ],
   "thread": {
+    "active_claims": [],
     "area": "runner",
     "key": "runner/compute",
-    "last": "2026-09-01T18:55:00Z",
+    "last": "2026-09-01T20:19:00Z",
+    "last_by": "delta",
+    "last_kind": "proposal",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "delta"
+    ],
     "posts": 1,
     "resolution": "",
     "status": "open",

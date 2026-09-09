@@ -6,8 +6,8 @@
 //   npm run mock:generate          # builds ./cmd/pulse, seeds, captures, cleans up
 //   PULSE_BIN=/path/to/pulse npm run mock:generate
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rosterScenarios } from "./roster.mjs";
@@ -15,7 +15,9 @@ import { rosterScenarios } from "./roster.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..", "..");
 const out = join(here, "api");
-const root = mkdtempSync(join(realpathSync(tmpdir()), "pulse-mock-"));
+const root = process.env.PULSE_MOCK_ROOT ?? join(repo, "..", ".pulse-mock-work");
+rmSync(root, { recursive: true, force: true });
+mkdirSync(root, { recursive: true });
 const home = join(root, "home");
 const src = join(root, "src");
 const port = Number(process.env.PULSE_MOCK_PORT ?? 8797);
@@ -47,8 +49,8 @@ function gitRepo(dir, name) {
   mkdirSync(dir, { recursive: true });
   const git = (...a) => execFileSync("git", ["-c", "user.name=owner", "-c", "user.email=owner@example.com", "-c", "commit.gpgsign=false", ...a], { cwd: dir, stdio: "ignore" });
   git("init", "-q", "-b", "main");
-  writeFileSync(join(dir, "README.md"), `# ${name}\n\nA synthetic checkout for the console fixtures.\n`);
-  git("add", "README.md");
+  writeFileSync(join(dir, "SEED.txt"), `${name}\n\nA synthetic checkout for the console fixtures.\n`);
+  git("add", "SEED.txt");
   git("commit", "-q", "-m", "init");
   return dir;
 }
@@ -87,6 +89,7 @@ function seed() {
     ["compute.azure.location", "westeurope"],
     ["evolve.heldout_dir", "/home/owner/private/heldout"],
     ["evolve.tolerance", "0.03"],
+    ["owner.presence", "away"],
     ["workers", "4"],
   ])
     pulse(["settings", "set", k, v]);
@@ -170,11 +173,19 @@ function seed() {
   vote("aurora", cache, "up", "Reproduced the p95 on my branch; the lookup dominates the flame graph");
   vote("borealis", cache, "up", "Same finding from the load test; memoisation is the smallest change");
   vote("delta", cache, "up", "Low risk: prices are immutable within a request");
+  pulse(["job", "add", "--project", "demo-app", "--title", "Cache the price lookup", "--kind", "improve", "--source", "suggestion:" + cache, "--brief", "Carry the eligible checkout-latency suggestion.", "--tier", "1", "--priority", "30"]);
   post("fjord", "demo-app", "opinion", "product", "checkout-latency", "Measure with the cache warm and cold", "The tolerance should cover a cold cache too, or the score will look better than production.", ["--on", cache]);
+  const netzero = post("aurora", "demo-app", "suggestion", "product", "checkout-latency", "Replace the cache with a background price refresh", "One variable: refresh prices in the background so requests never wait.");
+  vote("borealis", netzero, "up", "Might reduce request latency");
+  vote("cinder", netzero, "down", "No Signal line names evidence, and stale prices are riskier");
+  vote("delta", netzero, "up", "Worth considering later");
+  vote("ember", netzero, "down", "The net score is not positive");
   const q = post("delta", "demo-app", "question", "governance", "review-depth", "Should Tier 1 changes need a second reviewer?", "Two Tier 1 changes regressed last week. Options: a second reviewer for every Tier 1 change, or only for changes touching checkout.");
   post("aurora", "demo-app", "opinion", "governance", "review-depth", "Second reviewer only where money moves", "Checkout and billing paths: yes. Everywhere else the verification command is the reviewer.", ["--on", q]);
   post("cinder", "demo-app", "opinion", "governance", "review-depth", "Agree, scoped to checkout", "A blanket rule doubles review load for cosmetic changes.", ["--on", q]);
   post("delta", "demo-app", "answer", "governance", "review-depth", "Agreed: second reviewer for checkout and billing", "Proposal for the human: Tier 1 changes under src/checkout and src/billing need a second reviewer; the rest keep the verification command as their gate.", ["--on", q, "--resolution", "agreed"]);
+  post("borealis", "demo-app", "question", "product", "rate-limit-fixtures", "@aurora which fixture covers 429s?", "The API retry story mentions rate limits, but I cannot find which fixture proves the 429 path.");
+  post("cinder", "demo-app", "handoff", "product", "rate-limit-fixtures", "Next: add the missing 429 fixture", "Whoever picks this up: add one fixture that exercises retry-after handling and link it from the rate-limit test.");
 
   // board - demo-lib
   post("ember", "demo-lib", "finding", "library", "api-surface", "Three exported helpers have no callers in any checkout", "`ParseLegacy`, `MustDial` and `WithRetryOld` are unused across the registered projects.");
@@ -195,6 +206,9 @@ function seed() {
   const index = post("fjord", "pulse", "suggestion", "store", "schema-notes", "Add an index on events(subject) in the next schema step", "One variable: one index. Score to move: the timeline query from 40 ms to under 5 ms at 20k rows.");
   vote("borealis", index, "up", "Reproduced the scan with EXPLAIN QUERY PLAN");
   vote("ember", index, "up", "Cheap and reversible");
+  const noEvidence = post("ember", "pulse", "suggestion", "store", "schema-notes", "Rename the event subject column", "One variable: rename subject to target for clarity.");
+  vote("aurora", noEvidence, "up", "Clearer name");
+  vote("cinder", noEvidence, "up", "Small migration");
 
   // board - commons (cross-project)
   post("aurora", "commons", "question", "patterns", "executor-images", "Which base image should hands share?", "demo-app needs a browser; demo-lib only needs go. One image or two?", ["--origin-project", "demo-app"]);
@@ -266,7 +280,7 @@ async function capture() {
     }
     write("roster", rosterScenarios(await get("roster"), frozen));
     if (rosterOnly) return;
-    for (const route of ["activity", "compute", "events", "executors", "health", "messages", "notices", "org", "proposals", "runner", "settings", "timeline", "votes"]) write(route, await get(route));
+    for (const route of ["activity", "compute", "events", "executors", "health", "messages", "notices", "org", "proposals", "runner", "running", "settings", "timeline", "votes"]) write(route, await get(route));
     write("constitution", await get("constitution?project=pulse"));
     const records = write("records", await get("records"));
     for (const r of records.records) write("records/" + r.id, await get("records/" + encodeURIComponent(r.id)));

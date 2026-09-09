@@ -358,7 +358,7 @@ async function handle(req, res) {
       if (s.kind === "fraction" && !/^\d+\/\d+$/.test(v)) return fail(res, 400, "not a fraction", s.name + " is written like 2/3", "use n/m");
       if (s.kind === "choice" && !(s.choices || []).includes(v)) return fail(res, 400, "not a choice", s.name + " must be one of " + (s.choices || []).join(", "), "pick from the list");
       // store.ComputeRules: an identifier never holds a credential-looking value.
-      if (s.kind === "identifier" && secretShaped(v)) return fail(res, 400, "looks like a secret", s.name + " is an identifier, not a credential", "auth is the hub machine's az login; set only ids, names and regions here");
+      if (s.kind === "identifier" && secretShaped(v)) return fail(res, 400, "looks like a secret", s.name + " is an identifier, not a credential", "auth is the hub machine's CLI login (az login, aws configure, gcloud auth login); set only ids, names and regions here");
       const previous = s.value;
       s.value = v;
       s.updated_at = now();

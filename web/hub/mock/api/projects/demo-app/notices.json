@@ -7,7 +7,7 @@
       "name": "demo-app",
       "proposals": 1,
       "slug": "demo-app",
-      "suggestions": 1
+      "suggestions": 2
     }
   ],
   "brain": "",
@@ -16,5 +16,5 @@
   "commons_present": null,
   "commons_questions": null,
   "proposals_awaiting": 1,
-  "votes_open": 1
+  "votes_open": 2
 }

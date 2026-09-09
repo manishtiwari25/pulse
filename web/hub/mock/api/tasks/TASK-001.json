@@ -2,17 +2,17 @@
   "jobs": [],
   "messages": [
     {
-      "at": "2026-09-01T17:17:00Z",
+      "at": "2026-09-01T18:41:00Z",
       "author": "demo-app-lead",
       "body": "Planned as three jobs: the mail sender, the link endpoint and the flag. First job starts on the next loop.",
-      "id": "MSG-20260901T171700Z-1",
+      "id": "MSG-20260901T184100Z-1",
       "project": "demo-app",
       "task_id": "TASK-001"
     }
   ],
   "revisions": [
     {
-      "at": "2026-09-01T16:56:00Z",
+      "at": "2026-09-01T18:20:00Z",
       "author": "human",
       "brief": "Replace the password form with a magic link by email. Links expire after ten minutes; the session cookie stays as it is.",
       "note": "",
@@ -20,7 +20,7 @@
       "title": "Add passwordless sign-in"
     },
     {
-      "at": "2026-09-01T17:03:00Z",
+      "at": "2026-09-01T18:27:00Z",
       "author": "human",
       "brief": "Replace the password form with a magic link by email. Links expire after ten minutes; the session cookie stays as it is. Also keep the old form behind a feature flag for one release.",
       "note": "keep a way back for one release",
@@ -30,7 +30,7 @@
   ],
   "task": {
     "brief": "Replace the password form with a magic link by email. Links expire after ten minutes; the session cookie stays as it is. Also keep the old form behind a feature flag for one release.",
-    "created_at": "2026-09-01T16:56:00Z",
+    "created_at": "2026-09-01T18:20:00Z",
     "created_by": "human",
     "current_rev": 2,
     "id": "TASK-001",
@@ -40,6 +40,6 @@
     "project": "demo-app",
     "status": "planned",
     "title": "Add passwordless sign-in",
-    "updated_at": "2026-09-01T17:10:00Z"
+    "updated_at": "2026-09-01T18:34:00Z"
   }
 }

@@ -1,7 +1,7 @@
 {
   "amendments": [
     {
-      "id": "20260901T154600Z-borealis",
+      "id": "20260901T164900Z-borealis",
       "passed": false,
       "protected": false,
       "quorum": 40,
@@ -27,6 +27,6 @@
     "tags": [],
     "tier": 0,
     "title": "constitution",
-    "updated_at": "2026-09-01T12:37:00Z"
+    "updated_at": "2026-09-01T12:44:00Z"
   }
 }

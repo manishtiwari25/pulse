@@ -4,19 +4,19 @@ import Link from "next/link";
 import { useState } from "react";
 import { CheckIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { ConfirmDialog } from "@/components/pulse/confirm";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
 import { Kv } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
-import { Bar2 } from "@/components/pulse/charts";
 import { writes, type ComputeCaps, type ComputeRequest } from "@/lib/api";
-import { num } from "@/lib/format";
+import { num, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 
 const CHANGES = (p: string) => p.startsWith("compute") || p.startsWith("executors") || p.startsWith("events") || p.startsWith("runner");
 
 // Approve / deny buttons for one pending request; each confirms with words.
-// Approve is the primary move, Deny an outline in the bad tone; `sm` by
+// Approve is the primary move, Deny stays quiet in the bad tone; `sm` by
 // default so they are easy to hit on a card, `xs` for dense rows.
 export function ComputeDecide({ r, size = "sm" }: { r: ComputeRequest; size?: "xs" | "sm" }) {
   const [which, setWhich] = useState<"approve" | "deny" | null>(null);
@@ -26,7 +26,7 @@ export function ComputeDecide({ r, size = "sm" }: { r: ComputeRequest; size?: "x
       <Button size={size} onClick={() => setWhich("approve")} aria-label={"Approve " + r.id}>
         <CheckIcon /> Approve
       </Button>
-      <Button size={size} variant="outline" className="text-bad hover:text-bad" onClick={() => setWhich("deny")} aria-label={"Deny " + r.id}>
+      <Button size={size} variant="ghost" className="text-bad hover:text-bad" onClick={() => setWhich("deny")} aria-label={"Deny " + r.id}>
         <XIcon /> Deny
       </Button>
       <ConfirmDialog
@@ -53,7 +53,7 @@ export function ComputeDecide({ r, size = "sm" }: { r: ComputeRequest; size?: "x
 // One request as a card: who asks, for what and why, with Approve / Deny in
 // reach while it is pending and the decision once made. There is no detail
 // page, so the card is a plain article. `compact` clamps the reason.
-export function ComputeRequestCard({ r, compact }: { r: ComputeRequest; compact?: boolean }) {
+export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; compact?: boolean; caps?: ComputeCaps }) {
   const pending = r.status === "pending";
   const decider = r.decided_by === "human" || r.decided_by === "owner" ? "you" : r.decided_by;
   return (
@@ -66,15 +66,26 @@ export function ComputeRequestCard({ r, compact }: { r: ComputeRequest; compact?
           </>
         }
       >
+        <Mono className="font-semibold">{r.id}</Mono>
         <StatusBadge status={r.status} />
-        <ProjectLink slug={r.project} />
+        <ToneBadge tone="info">compute</ToneBadge>
+        <ProjectLink slug={r.project} className="text-xs" />
       </ItemCardHeader>
       <ItemCardTitle>
-        <Mono className="text-[13px]">{r.size}</Mono> for {num(r.hours)} h
+        {r.requested_by + " asks for "}
+        <Mono>{r.size}</Mono>
+        {" for " + plural(r.hours, "hour")}
       </ItemCardTitle>
       {r.reason ? <ItemCardBody clamp={compact ? 3 : 0}>{r.reason}</ItemCardBody> : null}
       <ItemCardMeta>
-        <Mono>{r.id}</Mono>
+        {caps ? (
+          <>
+            <span className="tnum">{num(caps.vms_now) + " of " + num(caps.max_vms) + " VMs up"}</span>
+            <span className="tnum">{num(caps.hours_today) + " of " + num(caps.max_hours_per_day) + " h today"}</span>
+            <span className="tnum">{"budget " + num(caps.budget_credits) + " credits"}</span>
+            {caps.provider ? <Mono>{caps.provider}</Mono> : null}
+          </>
+        ) : null}
         {decider ? <span>decided by {decider}</span> : null}
         {r.executor ? (
           <span>
@@ -83,7 +94,7 @@ export function ComputeRequestCard({ r, compact }: { r: ComputeRequest; compact?
         ) : null}
       </ItemCardMeta>
       {pending ? (
-        <ItemCardActions>
+        <ItemCardActions className="justify-end">
           <ComputeDecide r={r} />
         </ItemCardActions>
       ) : null}
@@ -93,36 +104,42 @@ export function ComputeRequestCard({ r, compact }: { r: ComputeRequest; compact?
 
 export function CapsPanel({ caps }: { caps: ComputeCaps }) {
   const auto = caps.auto_approve === true || caps.auto_approve === 1;
+  const pct = (value: number, max: number) => (max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0);
   return (
     <div className="grid gap-3">
-      <Kv
-        rows={[
-          ["provider", <Mono key="p">{caps.provider || "(none)"}</Mono>],
-          [
-            "machines",
-            <span key="m" className="inline-flex items-center gap-2">
-              <span className="tnum">{num(caps.vms_now) + " of " + num(caps.max_vms)}</span>
-              <Bar2 value={caps.vms_now} max={caps.max_vms} className="w-24" />
-            </span>,
-          ],
-          [
-            "hours today",
-            <span key="h" className="inline-flex items-center gap-2">
-              <span className="tnum">{num(caps.hours_today) + " of " + num(caps.max_hours_per_day)}</span>
-              <Bar2 value={caps.hours_today} max={caps.max_hours_per_day} className="w-24" />
-            </span>,
-          ],
-          ["budget", <span key="b" className="tnum">{num(caps.budget_credits) + " credits"}</span>],
-          ["auto-approve", <ToneBadge key="a" tone={auto ? "warn" : "neutral"}>{auto ? "on - requests within caps start without you" : "off - every request waits for you"}</ToneBadge>],
-        ]}
-      />
+      <div className="grid gap-3">
+        <CapMeter label="VMs up" value={caps.vms_now} max={caps.max_vms} percent={pct(caps.vms_now, caps.max_vms)} />
+        <CapMeter label="hours today" value={caps.hours_today} max={caps.max_hours_per_day} percent={pct(caps.hours_today, caps.max_hours_per_day)} />
+        <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2">
+          <span className="text-xs text-muted-foreground">budget</span>
+          <span className="tnum font-medium">{num(caps.budget_credits) + " credits"}</span>
+        </div>
+        <Kv
+          rows={[
+            ["provider", <Mono key="p" className="rounded-full border bg-muted px-2 py-0.5">{caps.provider || "(none)"}</Mono>],
+            ["auto-approve", <ToneBadge key="a" tone={auto ? "warn" : "neutral"}>{auto ? "on - requests within caps start without you" : "off - every request waits for you"}</ToneBadge>],
+          ]}
+        />
+      </div>
       <p className="text-xs text-muted-foreground">
-        Caps and the Azure target live in{" "}
+        Caps, the provider and its target live in{" "}
         <Link className="underline" href={hrefs.settings("compute")}>
           Settings → Compute
         </Link>
         .
       </p>
+    </div>
+  );
+}
+
+function CapMeter({ label, value, max, percent }: { label: string; value: number; max: number; percent: number }) {
+  return (
+    <div className="grid gap-1.5 rounded-lg border bg-muted/30 px-3 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <span className="tnum font-medium">{num(value) + " / " + num(max)}</span>
+      </div>
+      <Progress value={percent} aria-label={label + " cap"} />
     </div>
   );
 }

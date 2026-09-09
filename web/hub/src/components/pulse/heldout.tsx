@@ -185,7 +185,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
 
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="max-h-[90vh] overflow-y-auto rounded-xl sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Held-out fixtures</DialogTitle>
           <DialogDescription>
@@ -257,7 +257,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
               ) : null}
             </div>
             <div className="rounded-md border bg-muted/30 px-3 py-2">
-              <div className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">What happens</div>
+              <div className="mb-1 text-sm font-semibold">What happens</div>
               <ul className="grid gap-1 text-[12.5px] leading-snug text-muted-foreground">
                 <li className="flex gap-2">
                   <span aria-hidden>•</span>
@@ -289,7 +289,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
               </Notice>
             ) : null}
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="text-[13px] font-semibold">{heading}</h3>
+              <h3 className="text-sm font-semibold">{heading}</h3>
               <span className="tnum text-xs text-muted-foreground">{num(count) + " ready · " + num(pending) + " pending"}</span>
             </div>
             {slot !== null ? <p className="text-xs text-muted-foreground">The console never reads a fixture back, so this replaces the whole pair at position {num(slot)} - request and judge.</p> : null}

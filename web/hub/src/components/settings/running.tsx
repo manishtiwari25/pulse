@@ -3,7 +3,7 @@
 import { Kv } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
 import type { RunningPayload, RunningState } from "@/lib/api";
-import { rel, type Tone } from "@/lib/format";
+import { num, rel, type Tone } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 
 // The "Running" strip at the top of the daemon section (ADR-035): which pulse
@@ -49,6 +49,18 @@ export function RunningStrip() {
     ["hub", <Build key="h" b={d.hub} />],
     ["daemon", <Build key="d" b={d.daemon} />],
   ];
+  const bus = d.daemon?.bus;
+  if (bus) {
+    rows.push([
+      "bus",
+      <span key="bus" className="inline-flex flex-wrap items-baseline gap-x-2">
+        <span className="tnum">{bus.subscribers + " subscribers"}</span>
+        <ToneBadge tone={bus.dropped > 0 ? "warn" : "neutral"}>{num(bus.dropped) + " dropped"}</ToneBadge>
+        <span className="tnum text-muted-foreground">{num(bus.deduped) + " deduped"}</span>
+        {bus.dropped > 0 ? <span className="text-warn">slow subscribers lost events</span> : null}
+      </span>,
+    ]);
+  }
   if (d.brain) {
     rows.push([
       "brain",
@@ -92,14 +104,14 @@ export function RunningStrip() {
     ]);
   }
   return (
-    <div className="grid gap-2 px-4 py-2.5 text-[12.5px]" data-testid="running-strip">
+    <div className="grid gap-3 px-4 py-3 text-[13px]" data-testid="running-strip">
       <div className="flex flex-wrap items-center gap-2">
         <ToneBadge tone={st.tone} dot>
           {st.label}
         </ToneBadge>
         <span className="text-muted-foreground anywhere">{st.text}</span>
       </div>
-      <Kv rows={rows} />
+      <Kv rows={rows} className="rounded-lg border bg-muted/30 p-3" />
     </div>
   );
 }

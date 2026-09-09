@@ -1,10 +1,10 @@
 {
-  "binary_version": "v0.0.0-20260906180824-02691f84e875+dirty",
+  "binary_version": "v0.0.0-20260908134649-b56e905e964f+dirty",
   "board_params": {
     "amend_majority": "2/3",
     "amend_quorum": 40,
     "area": "",
-    "constitution_present": true,
+    "constitution_present": false,
     "expiry_days": 14,
     "now": "2026-09-07T09:00:00Z",
     "protected_sections": "Hard stops, Kill switch, Amendments, frontmatter",
@@ -16,10 +16,10 @@
   "branch": "main",
   "built_at": "2026-09-07T09:00:00Z",
   "dirty": "0",
-  "evolution_present": "1",
-  "fingerprint": "store:1788737716411065427:307200:103",
+  "evolution_present": "0",
+  "fingerprint": "store:1788897262319011990:348160:139",
   "generated_at": "2026-09-07T09:00:00Z",
-  "head": "5812239",
+  "head": "c1c08c7",
   "last_error": "",
   "note": "computed from the store; no projection database",
   "now": "2026-09-07T09:00:00Z",
@@ -32,5 +32,5 @@
   "store": "/home/owner/.pulse/pulse.sqlite",
   "tally_mode": "go",
   "tally_script": "",
-  "tool": "pulse v0.0.0-20260906180824-02691f84e875+dirty"
+  "tool": "pulse v0.0.0-20260908134649-b56e905e964f+dirty"
 }

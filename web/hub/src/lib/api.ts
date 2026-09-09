@@ -134,6 +134,12 @@ export interface ThreadRow {
   status: string;
   resolution: string;
   summary: string;
+  participants: string[];
+  last_by: string;
+  last_kind: string;
+  open_questions: number;
+  open_handoffs: number;
+  active_claims: string[];
 }
 
 export interface Vote extends Who {
@@ -161,6 +167,10 @@ export interface Suggestion extends Who {
   base?: string;
   quorum?: number;
   expiry_days?: number;
+  job?: string;
+  job_status?: "queued" | "leased" | "blocked" | string;
+  gate?: string;
+  plannable?: boolean;
 }
 
 export interface Amendment extends Who {
@@ -279,6 +289,7 @@ export interface ProjectCardData extends Partial<EvolveGate> {
   threads_open: number;
   questions_open: number;
   suggestions_eligible: number;
+  suggestions_plannable?: number;
   suggestions_needing_votes: number;
   amendments_open: number;
   proposals_awaiting: number;
@@ -392,6 +403,7 @@ export interface Org {
   registry: string;
   tally_mode: string;
   can_decide: boolean;
+  owner_presence?: "present" | "away";
   commons_dir: string;
   projects: ProjectCardData[];
   commons: ProjectCardData | null;
@@ -568,13 +580,24 @@ export interface Runner {
   workers: { pool: number; idle: number; busy: number; target: number; idle_names: string[]; prune_after_days: number };
   jobs: { queued: number; leased: number; blocked: number; running: number; runs_today: number; cap: number };
   capacity?: string;
+  // Projects whose verified branches cannot land right now and why (ADR-024:
+  // the checkout is dirty or off its default branch, a lock, an unreadable
+  // folder). Written by the daemon once per change; empty when everything lands.
+  landing?: LandingHold[];
+}
+
+export interface LandingHold {
+  project: string;
+  at: string;
+  note: string;
+  stale: boolean;
 }
 
 export type SettingKind = "count" | "count-or-none" | "credits" | "fraction" | "switch" | "choice" | "command" | "text" | "identifier";
 
 // One of the owner's caps as the store holds it (ADR-025). `secret` marks
 // keys whose values the API never returns (compute credentials never live
-// here - Azure auth is `az login` on the hub machine - but the flag is the
+// here - each provider's auth is its CLI login on the hub machine - but the flag is the
 // contract for anything the Go hub decides to hide).
 export interface Setting {
   name: string;
@@ -614,7 +637,7 @@ export interface RunningPayload {
   self_update: string;
   retry_minutes: number;
   hub: RunningBuild;
-  daemon: RunningBuild | null;
+  daemon: (RunningBuild & { bus?: { subscribers: number; dropped: number; deduped: number } | null }) | null;
   brain: { slug: string; default_branch: string; branch: string; head: string; dirty: boolean } | null;
   last: { at: string; from: string; to: string; inflight: number } | null;
   state: RunningState;
@@ -656,6 +679,12 @@ export interface RosterRow extends Who {
   approximate: boolean;
   name_shared: boolean;
   shared_with: string[];
+  current_job: string;
+  current_job_kind: string;
+  current_job_title: string;
+  current_thread: string;
+  executor: string;
+  focus_since: string;
 }
 
 export interface Votes {
@@ -723,6 +752,7 @@ export interface Overview {
   posts: number;
   posts_without_provenance: number;
   suggestions_eligible: number;
+  suggestions_plannable?: number;
   suggestions_needing_votes: number;
   amendments_open: number;
   amendments_passed: number;
@@ -1048,7 +1078,7 @@ export interface StoreEvent {
   id: number;
   at: string;
   actor: string;
-  action: string; // e.g. post.created, task.amended, settings.set, compute.approved
+  action: string; // e.g. post.question, mention, hook.failed, task.amended, settings.set, compute.approved
   subject: string;
   detail: unknown;
 }

@@ -31,23 +31,23 @@
     "tags": [],
     "tier": 2,
     "title": "Keep the control plane in one SQLite store",
-    "updated_at": "2026-09-01T11:48:00Z"
+    "updated_at": "2026-09-01T11:55:00Z"
   },
   "revisions": [
     {
-      "at": "2026-09-01T11:34:00Z",
+      "at": "2026-09-01T11:41:00Z",
       "author": "human",
       "note": "",
       "rev": 1
     },
     {
-      "at": "2026-09-01T11:41:00Z",
+      "at": "2026-09-01T11:48:00Z",
       "author": "human",
       "note": "Yes - one store, one export.",
       "rev": 2
     },
     {
-      "at": "2026-09-01T11:48:00Z",
+      "at": "2026-09-01T11:55:00Z",
       "author": "human",
       "note": "delivery: delivered",
       "rev": 3

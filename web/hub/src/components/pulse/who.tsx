@@ -11,17 +11,17 @@ import { useNow } from "@/lib/use-api";
 import type { Who as WhoRow } from "@/lib/api";
 
 const TONE_BADGE: Record<Tone, string> = {
-  neutral: "border-border bg-muted/50 text-foreground",
-  ok: "border-ok/30 bg-ok/10 text-ok",
-  warn: "border-warn/40 bg-warn/15 text-[color-mix(in_oklch,var(--warn),black_25%)] dark:text-warn",
-  bad: "border-bad/30 bg-bad/10 text-bad",
-  info: "border-info/30 bg-info/10 text-info",
-  accent: "border-accent-2/30 bg-accent-2/10 text-accent-2",
+  neutral: "border-border bg-muted text-foreground",
+  ok: "border-ok/20 bg-ok/10 text-ok",
+  warn: "border-warn/20 bg-warn/10 text-[color-mix(in_oklch,var(--warn),black_28%)] dark:text-warn",
+  bad: "border-bad/20 bg-bad/10 text-bad",
+  info: "border-info/20 bg-info/10 text-info",
+  accent: "border-accent-2/20 bg-accent-2/10 text-accent-2",
 };
 
 export function ToneBadge({ tone = "neutral", children, className, dot, title }: { tone?: Tone; children: React.ReactNode; className?: string; dot?: boolean; title?: string }) {
   return (
-    <Badge variant="outline" title={title} className={cn("h-5 gap-1 rounded-md px-1.5 font-medium", TONE_BADGE[tone], className)}>
+    <Badge variant="outline" title={title} className={cn("h-5 gap-1 rounded-full px-2 text-[11.5px] font-medium", TONE_BADGE[tone], className)}>
       {dot ? <span className="size-1.5 rounded-full bg-current" aria-hidden /> : null}
       {children}
     </Badge>
@@ -89,8 +89,8 @@ export function Avatar({ seed, size = 22, human, className }: { seed: string; si
   return (
     <span
       aria-hidden
-      className={cn("inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white", className)}
-      style={{ width: size, height: size, fontSize: Math.max(9, size * 0.42), background: human ? "var(--primary)" : `oklch(0.6 0.13 ${hue})`, color: human ? "var(--primary-foreground)" : undefined }}
+      className={cn("inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white ring-1 ring-background", human && "bg-primary text-primary-foreground", className)}
+      style={{ width: size, height: size, fontSize: Math.max(9, size * 0.42), background: human ? undefined : `oklch(0.62 0.14 ${hue})`, color: human ? undefined : "white" }}
     >
       {human ? <UserIcon style={{ width: size * 0.55, height: size * 0.55 }} /> : initials(seed || "?")}
     </span>

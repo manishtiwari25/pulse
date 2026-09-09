@@ -1,18 +1,22 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
+import { BotIcon, CircleDotIcon, CrownIcon, GaugeIcon, HardDriveIcon, LayersIcon, LoaderIcon, ServerIcon, TriangleAlertIcon, WifiIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ExecutorRow, MachinePanel } from "@/components/pulse/cards";
+import { ExecutorRow, LandingHolds } from "@/components/pulse/cards";
 import { DataTable, type Column } from "@/components/pulse/data-table";
 import { CardGrid, Fact, ItemCard, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
+import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Lead, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
-import { Mono, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
+import { Avatar, Mono, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
 import type { AgentPresence, RosterRow, Runner } from "@/lib/api";
-import { num, plural } from "@/lib/format";
+import { num, plural, statusTone, truncate } from "@/lib/format";
+import { hrefs } from "@/lib/nav";
 import { useApi, useNow } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
 
 interface AgentGroup {
   agent: string;
@@ -99,9 +103,37 @@ function PresenceBadge({ g }: { g: AgentGroup }) {
   return <ToneBadge dot tone={g.presence === "online" ? "ok" : g.presence === "idle" ? "info" : g.presence === "offline" ? "warn" : g.presence === "pruned" ? "bad" : "neutral"} title={g.presence_reason}>{g.presence}</ToneBadge>;
 }
 
+const sessionCount = (g: AgentGroup) => g.sessions.reduce((a, r) => a + (r.session_count ?? r.sessions?.length ?? Number(!!r.session)), 0);
+const currentFocus = (g: AgentGroup) =>
+  [...g.sessions].sort((a, b) => timestamp(b.focus_since) - timestamp(a.focus_since)).find((r) => r.current_job || r.current_thread) ?? null;
+
+function AgentNow({ g, compact }: { g: AgentGroup; compact?: boolean }) {
+  const r = currentFocus(g);
+  if (!r) return compact ? <span className="text-muted-foreground">idle</span> : null;
+  if (r.current_job) {
+    return (
+      <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-1.5", compact ? "text-xs" : "text-[13px]")}>
+        <span className="font-medium text-foreground">Now</span>
+        {r.current_job_kind ? <ToneBadge tone="info">{r.current_job_kind}</ToneBadge> : null}
+        <span className="min-w-0 truncate text-foreground">{truncate(r.current_job_title || r.current_job, 80)}</span>
+        <Mono>{r.current_job}</Mono>
+        {r.executor ? <span className="text-muted-foreground">{"on " + r.executor}</span> : null}
+        {r.current_thread ? <Mono className="text-muted-foreground">{r.current_thread}</Mono> : null}
+      </span>
+    );
+  }
+  return (
+    <span className={cn("inline-flex min-w-0 flex-wrap items-center gap-1.5", compact ? "text-xs" : "text-[13px]")}>
+      <span className="text-muted-foreground">claims</span>
+      <Mono>{r.current_thread}</Mono>
+    </span>
+  );
+}
+
 const COLUMNS: Column<AgentGroup>[] = [
   { key: "agent", label: "agent", sort: (g) => g.agent, render: (g) => <Who row={g.primary} /> },
   { key: "presence", label: "presence", sort: (g) => g.presence, render: (g) => <PresenceBadge g={g} /> },
+  { key: "now", label: "now", sort: (g) => currentFocus(g)?.focus_since || "", render: (g) => <AgentNow g={g} compact /> },
   { key: "status", label: "identity", sort: (g) => identityStatus(g.primary), render: (g) => <span className="inline-flex flex-wrap gap-1"><StatusBadge status={identityStatus(g.primary)} />{g.primary.pruned_reason ? <ToneBadge tone="warn" className="h-auto max-w-full whitespace-normal break-words text-left">{"pruned: " + g.primary.pruned_reason}</ToneBadge> : null}</span> },
   { key: "kind", label: "kind", hide: "md", render: (g) => <span className="text-xs text-muted-foreground">{g.primary.kind}</span> },
   { key: "runner", label: "runner / model", hide: "lg", render: (g) => <span className="text-xs text-muted-foreground anywhere">{[g.primary.runner, g.primary.model].filter(Boolean).join(" · ")}</span> },
@@ -117,11 +149,54 @@ const COLUMNS: Column<AgentGroup>[] = [
 ];
 
 const isLead = (agent: string) => /lead$/.test(agent);
-const sessionCount = (g: AgentGroup) => g.sessions.reduce((a, r) => a + (r.session_count ?? r.sessions?.length ?? Number(!!r.session)), 0);
+const presenceDot = (p: AgentPresence) => (p === "online" ? "bg-ok" : p === "idle" ? "bg-warn" : "bg-muted-foreground");
 
 // A quiet second line under a Fact's number ("2 failed", "1 now").
 function FactSub({ children, tone }: { children: React.ReactNode; tone: "ok" | "bad" }) {
-  return <span className={"mt-1 block text-[10.5px] font-medium leading-none " + (tone === "ok" ? "text-ok" : "text-bad")}>{children}</span>;
+  return <span className={"mt-1 block text-[11.5px] font-medium leading-none " + (tone === "ok" ? "text-ok" : "text-bad")}>{children}</span>;
+}
+
+function AgentMachinePanel({ r }: { r: Runner | undefined | null }) {
+  if (!r) return <Panel title="The machine" icon={ServerIcon}>{<EmptyState title="Runner unavailable">The runner state is not available.</EmptyState>}</Panel>;
+  if (!r.available) return <Panel title="The machine" icon={ServerIcon}>{<EmptyState title="No daemon state" hint="pulse daemon">No store yet, or no daemon has run. Start one with the CLI.</EmptyState>}</Panel>;
+  const d = r.daemon;
+  const stopped = r.runner && !r.runner.allowed;
+  return (
+    <Panel
+      title="The machine"
+      icon={ServerIcon}
+      actions={
+        <span className="flex items-center gap-1.5">
+          <ToneBadge tone={stopped ? "bad" : d.state === "running" || d.state === "alive" ? "ok" : statusTone(d.state)} dot>
+            {stopped ? "STOP" : d.state}
+          </ToneBadge>
+          <Link href={hrefs.settings("runner")} className="hover:underline">
+            caps
+          </Link>
+        </span>
+      }
+    >
+      <Kv
+        rows={[
+          ["daemon", d.text || d.state],
+          ["last loop", <When key="at" d={d.at} />],
+          ["slots", <span key="slots" className="tnum">{r.hands.free + " free of " + r.hands.slots + " on " + plural(r.hands.executors_active, "active executor")}</span>],
+          ["workers", <span key="workers" className="tnum">{r.workers.busy + " busy · " + r.workers.idle + " idle" + (r.workers.idle_names.length ? " (" + r.workers.idle_names.join(", ") + ")" : "") + " · target " + r.workers.target}</span>],
+          ["jobs", <span key="jobs" className="tnum">{r.jobs.queued + " queued · " + r.jobs.leased + " leased · " + r.jobs.running + " running" + (r.jobs.blocked ? " · " + r.jobs.blocked + " blocked" : "")}</span>],
+          ["runs today", <span key="runs" className="tnum">{r.jobs.runs_today + (r.jobs.cap ? " of " + r.jobs.cap : " (no daily cap)")}</span>],
+        ]}
+      />
+      {stopped ? <p className="mt-2 text-xs text-bad">{"The runner is stopped: " + (r.runner?.reason || "the stop switch is on") + "."}</p> : null}
+      <LandingHolds holds={r.landing} />
+      {r.executors.length ? (
+        <ul className="mt-3 grid gap-1.5">
+          {r.executors.map((e) => (
+            <ExecutorRow key={e.name} e={e} />
+          ))}
+        </ul>
+      ) : null}
+    </Panel>
+  );
 }
 
 // One agent's scorecard. Its active claims are listed inside, so in card
@@ -129,21 +204,32 @@ function FactSub({ children, tone }: { children: React.ReactNode; tone: "ok" | "
 function AgentCard({ g }: { g: AgentGroup }) {
   const p = g.primary;
   const claims = g.presence === "online" ? g.sessions.flatMap((s) => s.active_claims || []) : [];
+  const name = p.agent || p.name || g.agent;
+  const runnerModel = [p.runner, p.model].filter(Boolean).join(" · ");
+  const lead = isLead(g.agent);
   return (
     <ItemCard highlight={claims.length > 0} ariaLabel={g.agent} className="min-w-0">
       <ItemCardHeader>
         <PresenceBadge g={g} />
         {p.pruned_reason ? <ToneBadge tone="warn" className="h-auto max-w-full whitespace-normal break-words text-left">{"pruned: " + p.pruned_reason}</ToneBadge> : null}
-        {isLead(g.agent) ? <ToneBadge tone="accent">lead</ToneBadge> : null}
+        <ToneBadge tone={lead ? "accent" : "neutral"}>{lead ? "lead" : "worker"}</ToneBadge>
         <span className="text-muted-foreground">{p.kind}</span>
       </ItemCardHeader>
-      <ItemCardTitle>
-        <Who row={p} />
-      </ItemCardTitle>
-      <p className="text-xs text-muted-foreground">Identity: {identityStatus(p)}. {g.presence_reason}</p>
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span className="relative shrink-0">
+          <Avatar seed={name} size={36} />
+          <span className={cn("absolute -right-0.5 -bottom-0.5 size-3 rounded-full ring-2 ring-card", presenceDot(g.presence))} aria-hidden />
+        </span>
+        <div className="min-w-0">
+          <ItemCardTitle className="font-semibold">{name}</ItemCardTitle>
+          {runnerModel ? <p className="truncate text-xs text-muted-foreground">{runnerModel}</p> : null}
+        </div>
+      </div>
+      <p className="text-[13px] text-muted-foreground anywhere">Identity: {identityStatus(p)}. {g.presence_reason}</p>
+      <AgentNow g={g} />
       {claims.length ? (
-        <div className="grid gap-0.5 rounded-md border border-ok/30 bg-ok/5 px-2.5 py-1.5">
-          <div className="text-[10.5px] font-medium uppercase tracking-wide text-ok">working now</div>
+        <div className="grid gap-1 rounded-lg border border-ok/30 bg-ok/5 px-3 py-2">
+          <div className="text-[10.5px] font-medium uppercase tracking-wider text-ok">working now</div>
           {claims.map((c) => (
             <ItemCardBody key={c.id} clamp={1} className="leading-snug">
               {c.slug ? <ProjectLink slug={c.slug} className="text-foreground" /> : null}
@@ -160,15 +246,12 @@ function AgentCard({ g }: { g: AgentGroup }) {
         <Fact n={num(g.votes)} label="votes" className="flex flex-col justify-between" />
         <Fact n={<>{num(g.claims)}{g.active ? <FactSub tone="ok">{num(g.active) + " now"}</FactSub> : null}</>} label="claims" className="flex flex-col justify-between" />
       </div>
-      <div className="grid gap-1 text-xs text-muted-foreground">
-        <span>Last heartbeat: <When d={g.last_heartbeat_at} /></span>
-        <span>Last useful output: <When d={g.last_useful_at} /></span>
-      </div>
+      <Kv rows={[["last heartbeat", <When key="h" d={g.last_heartbeat_at} />], ["last useful output", <When key="u" d={g.last_useful_at} />]]} className="text-xs" />
       <ItemCardMeta className="mt-auto">
         {g.projects.map((s) => (
-          <ProjectLink key={s} slug={s} className="text-foreground" />
+          <ProjectLink key={s} slug={s} className="rounded-full bg-muted px-2 text-xs text-foreground" />
         ))}
-        <span className="ml-auto">{plural(sessionCount(g), "session")}</span>
+        <span className="ml-auto tnum">{plural(sessionCount(g), "session")}</span>
       </ItemCardMeta>
     </ItemCard>
   );
@@ -193,7 +276,7 @@ export default function AgentsPage() {
   if (q.error)
     return (
       <>
-        <PageTitle>Agents</PageTitle>
+        <PageTitle icon={BotIcon}>Agents</PageTitle>
         <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
       </>
     );
@@ -204,11 +287,21 @@ export default function AgentsPage() {
   const cards = [...rows].sort((a, b) => Number(b.active > 0) - Number(a.active > 0));
   const filters = (
     <div className="flex flex-wrap items-center gap-2 py-0.5">
-      <div role="group" aria-label="Roster scope" className="inline-flex shrink-0 rounded-lg border bg-background p-0.5">
+      <div role="group" aria-label="Roster scope" className="inline-flex shrink-0 rounded-lg border bg-muted/40 p-0.5">
         {(["live", "history", "all"] as const).map((s) => (
-          <Button key={s} size="sm" variant={scope === s ? "secondary" : "ghost"} aria-pressed={scope === s} onClick={() => setScope(s)} className="h-7 px-2 text-xs">
-            {s === "live" ? "Live" : s === "history" ? "History" : "All"} <span className="tnum">{s === "live" ? liveCount : s === "history" ? matching.length - liveCount : matching.length}</span>
-          </Button>
+          <button
+            key={s}
+            type="button"
+            aria-pressed={scope === s}
+            onClick={() => setScope(s)}
+            className={cn(
+              "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              scope === s ? "bg-card text-foreground shadow-card" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            {s === "live" ? "Live" : s === "history" ? "History" : "All"}
+            <span className={cn("tnum rounded-full bg-muted px-1.5 text-[10.5px]", scope === s && "bg-primary/10 text-primary")}>{s === "live" ? liveCount : s === "history" ? matching.length - liveCount : matching.length}</span>
+          </button>
         ))}
       </div>
       <Select value={status} onValueChange={setStatus}>
@@ -233,23 +326,24 @@ export default function AgentsPage() {
   );
   return (
     <>
-      <PageTitle sub="Live shows supervised online agents and idle reusable workers/leads. History keeps offline, unknown, legacy and pruned identities; nothing is deleted or retired by a missed heartbeat." bar={filters}>
+      <PageTitle icon={BotIcon} sub="Live shows supervised online agents and idle reusable workers/leads. History keeps offline, unknown, legacy and pruned identities; nothing is deleted or retired by a missed heartbeat." bar={filters}>
         Agents
       </PageTitle>
+      <Lead>One roster for who is live, who has history and how much work the machine can take right now.</Lead>
       <KpiGrid>
-        <Kpi n={rows.length} label="agents shown" sub={plural(matching.length, "matching agent")} />
-        <Kpi n={rows.filter((g) => g.presence === "online").length} label="online shown" tone={rows.some((g) => g.presence === "online") ? "ok" : "neutral"} sub="heartbeat within five minutes" />
-        <Kpi n={rows.filter((g) => isLead(g.agent)).length} label="leads shown" sub="reusable project identities" />
-        <Kpi n={r ? r.workers.pool : "…"} label="worker pool" sub={r ? num(r.workers.idle) + " idle · " + num(r.workers.busy) + " busy · target " + num(r.workers.target) : "loading"} />
-        <Kpi n={r ? r.jobs.running : "…"} label="jobs running" sub={r ? num(r.jobs.queued) + " queued · " + num(r.jobs.blocked) + " blocked" : ""} />
-        <Kpi n={r ? r.jobs.runs_today + " / " + (r.jobs.cap || "∞") : "…"} label="runs today" sub="used / cap" />
-        <Kpi n={r ? r.hands.free + " / " + r.hands.slots : "…"} label="free slots" sub={r ? plural(r.hands.executors_active, "executor") + " active" : ""} />
-        <Kpi n={rows.reduce((a, g) => a + g.jobs_failed, 0)} label="jobs failed" tone={rows.some((g) => g.jobs_failed) ? "bad" : "neutral"} sub="shown agents" />
+        <Kpi icon={BotIcon} n={rows.length} label="agents shown" sub={plural(matching.length, "matching agent")} />
+        <Kpi icon={WifiIcon} n={rows.filter((g) => g.presence === "online").length} label="online shown" tone={rows.some((g) => g.presence === "online") ? "ok" : "neutral"} sub="heartbeat within five minutes" />
+        <Kpi icon={CrownIcon} n={rows.filter((g) => isLead(g.agent)).length} label="leads shown" sub="reusable project identities" />
+        <Kpi icon={LayersIcon} n={r ? r.workers.pool : "…"} label="worker pool" sub={r ? num(r.workers.idle) + " idle · " + num(r.workers.busy) + " busy · target " + num(r.workers.target) : "loading"} />
+        <Kpi icon={LoaderIcon} n={r ? r.jobs.running : "…"} label="jobs running" sub={r ? num(r.jobs.queued) + " queued · " + num(r.jobs.blocked) + " blocked" : ""} />
+        <Kpi icon={GaugeIcon} n={r ? r.jobs.runs_today + " / " + (r.jobs.cap || "∞") : "…"} label="runs today" sub="used / cap" />
+        <Kpi icon={CircleDotIcon} n={r ? r.hands.free + " / " + r.hands.slots : "…"} label="free slots" sub={r ? plural(r.hands.executors_active, "executor") + " active" : ""} />
+        <Kpi icon={TriangleAlertIcon} n={rows.reduce((a, g) => a + g.jobs_failed, 0)} label="jobs failed" tone={rows.some((g) => g.jobs_failed) ? "bad" : "neutral"} sub="shown agents" />
       </KpiGrid>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <div className="grid min-w-0 content-start gap-4">
           {!rows.length ? (
-            <EmptyState>{groups.length ? "Nothing matches this view. History or All keeps older identities available." : <>No agent yet. The first appears when the runner wakes a lead for a task or a worker for a job - or when someone posts with <Mono>pulse post</Mono>.</>}</EmptyState>
+            <EmptyState title="No agents in this view" action={groups.length ? <Button size="sm" variant="outline" onClick={() => { setScope("all"); setStatus("all"); setText(""); }}>Show all agents</Button> : null}>{groups.length ? "Nothing matches this view. History or All keeps older identities available." : <>No agent yet. The first appears when the runner wakes a lead for a task or a worker for a job - or when someone posts with <Mono>pulse post</Mono>.</>}</EmptyState>
           ) : mode === "cards" ? (
             <CardGrid cols={3}>
               {cards.map((g) => (
@@ -257,7 +351,7 @@ export default function AgentsPage() {
               ))}
             </CardGrid>
           ) : (
-            <div className="min-w-0 rounded-lg border bg-card">
+            <div className="min-w-0 overflow-hidden rounded-lg border bg-card">
               <DataTable columns={COLUMNS} rows={rows} rowKey={(g) => g.agent} initialSort="last" caption="Agent scorecards" />
             </div>
           )}
@@ -278,10 +372,10 @@ export default function AgentsPage() {
           ) : null}
         </div>
         <div className="grid gap-4 content-start">
-          <MachinePanel r={r} />
-          <Panel title="Executors" dense>
+          <AgentMachinePanel r={r} />
+          <Panel title="Executors" icon={HardDriveIcon} dense>
             {r?.executors?.length ? (
-              <ul className="divide-y">
+              <ul className="grid gap-1.5 p-3">
                 {r.executors.map((e) => (
                   <ExecutorRow key={e.name} e={e} />
                 ))}

@@ -66,7 +66,7 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
 
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="scroll-thin max-h-[90vh] overflow-y-auto rounded-xl sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
           <DialogDescription>Tell the project&apos;s lead what you want. The brief is Markdown; the lead breaks it into jobs and reports back in the chat.</DialogDescription>
@@ -92,6 +92,7 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
                   </SelectContent>
                 </Select>
               )}
+              <p className="text-xs text-muted-foreground">The project lead receives the task on its next wake.</p>
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="nt-priority">Priority</Label>
@@ -107,11 +108,13 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground">Urgent and high tasks run before routine work.</p>
             </div>
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor="nt-title">Title</Label>
             <Input id="nt-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="One line: what should be true when this is done" maxLength={200} autoFocus />
+            <p className="text-xs text-muted-foreground">Keep it short and outcome-shaped.</p>
           </div>
           <div className="grid gap-1.5">
             <div className="flex items-center justify-between">
@@ -128,7 +131,7 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="write">
-                <Textarea id="nt-brief" value={brief} onChange={(e) => setBrief(e.target.value)} rows={10} className="font-mono text-[12.5px]" placeholder={"## Goal\nWhat and why.\n\n## Done when\n- the check that proves it\n\n## Constraints\n- files or behaviour that must not change"} />
+                <Textarea id="nt-brief" value={brief} onChange={(e) => setBrief(e.target.value)} rows={10} className="min-h-40 font-mono text-[13px]" placeholder={"## Goal\nWhat and why.\n\n## Done when\n- the check that proves it\n\n## Constraints\n- files or behaviour that must not change"} />
               </TabsContent>
               <TabsContent value="preview">
                 <div className="min-h-40 rounded-md border p-3">
@@ -136,11 +139,12 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
                 </div>
               </TabsContent>
             </Tabs>
+            <p className="text-xs text-muted-foreground">Markdown is saved as the task brief and shown to the lead, jobs, and chat.</p>
           </div>
         </div>
         <DialogFooter className="items-center gap-2">
           {confirm ? <span className="mr-auto text-xs text-muted-foreground">{"Create " + (title.trim() || "this task") + " in " + chosen + "?"}</span> : null}
-          <Button variant="outline" onClick={() => (confirm ? setConfirm(false) : onOpenChange(false))} disabled={busy}>
+          <Button variant="ghost" onClick={() => (confirm ? setConfirm(false) : onOpenChange(false))} disabled={busy}>
             {confirm ? "Back" : "Cancel"}
           </Button>
           {confirm ? (
@@ -190,7 +194,7 @@ export function AmendTaskDialog({ task, open, onOpenChange }: { task: Task; open
   };
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="scroll-thin max-h-[90vh] overflow-y-auto rounded-xl sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{"Amend " + task.id}</DialogTitle>
           <DialogDescription>{"Revision " + (task.current_rev + 1) + " of this task. Say what changed in the note; the lead reads it."}</DialogDescription>
@@ -199,19 +203,22 @@ export function AmendTaskDialog({ task, open, onOpenChange }: { task: Task; open
           <div className="grid gap-1.5">
             <Label htmlFor="at-title">Title</Label>
             <Input id="at-title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} />
+            <p className="text-xs text-muted-foreground">Changing the title updates the task list and the next revision.</p>
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor="at-brief">Brief (Markdown)</Label>
-            <Textarea id="at-brief" value={brief} onChange={(e) => setBrief(e.target.value)} rows={12} className="font-mono text-[12.5px]" />
+            <Textarea id="at-brief" value={brief} onChange={(e) => setBrief(e.target.value)} rows={12} className="min-h-40 font-mono text-[13px]" />
+            <p className="text-xs text-muted-foreground">The new Markdown brief becomes revision {task.current_rev + 1}.</p>
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor="at-note">What changed and why</Label>
             <Input id="at-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. narrowed the scope to the CLI; the UI is a separate task" maxLength={300} />
+            <p className="text-xs text-muted-foreground">Required: this note tells the lead how to adapt.</p>
           </div>
         </div>
         <DialogFooter className="items-center gap-2">
           {!changed ? <span className="mr-auto text-xs text-muted-foreground">Nothing changed yet.</span> : null}
-          <Button variant="outline" onClick={() => (confirm ? setConfirm(false) : onOpenChange(false))} disabled={busy}>
+          <Button variant="ghost" onClick={() => (confirm ? setConfirm(false) : onOpenChange(false))} disabled={busy}>
             {confirm ? "Back" : "Cancel"}
           </Button>
           {confirm ? (

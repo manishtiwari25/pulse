@@ -9,11 +9,24 @@ import type { EventsPayload, StoreEvent } from "@/lib/api";
 import { statusTone, type Tone } from "@/lib/format";
 
 function actionTone(a: string): Tone {
-  if (/\.(failed|cancelled|denied|removed|pruned|stopped)$/.test(a)) return "bad";
-  if (/^decide\.|\.(accepted|approved|finished|landed|ready|amended)$/.test(a)) return "ok";
-  if (/^task\.|^message|^msg/.test(a)) return "info";
-  if (/^compute|^record|^constitution/.test(a)) return "accent";
-  return statusTone(a);
+  if (a === "mention" || a === "post.question" || a === "post.handoff") return "warn";
+  if (a === "hook.failed") return "bad";
+  if (a === "land.pushed" || a === "land.landed") return "ok";
+  if (a === "land.held") return "warn";
+  if (a === "post" || a.startsWith("post.")) return "neutral";
+  if (/\.(fail|failed|stop|stopped|deny|denied|cancelled|removed|pruned)$/.test(a)) return "bad";
+  if (/\.(add|added|create|created)$/.test(a)) return "ok";
+  if (/^decide\.|\.(decide|decided|approve|approved)$/.test(a)) return "info";
+  return statusTone(a) === "neutral" ? "neutral" : statusTone(a);
+}
+
+function actionLabel(e: StoreEvent): string {
+  if (e.action === "mention") {
+    const d = e.detail as Record<string, unknown> | null;
+    const by = d && typeof d.by === "string" && d.by ? " mentioned by " + d.by : " mentioned";
+    return "@" + (e.subject || "agent") + by;
+  }
+  return e.action;
 }
 
 function detailText(d: unknown): string {
@@ -35,7 +48,9 @@ function detailText(d: unknown): string {
 }
 
 // The live timeline: the last events from the store, newest first, merged
-// from the initial GET and everything the SSE stream delivered since.
+// from the initial GET and everything the SSE stream delivered since. With a
+// project, both halves are that project's: the GET asks the hub for it and
+// the stream (one connection for the whole hub) is filtered here.
 export function LiveFeed({ project, limit = 40, title = "Live", height }: { project?: string; limit?: number; title?: string; height?: number }) {
   const { events: live, state } = useLiveEvents();
   const { data, error, loading } = useApi<EventsPayload>("events?limit=" + limit + (project ? "&project=" + encodeURIComponent(project) : ""), { refresh: 30000 });
@@ -44,7 +59,7 @@ export function LiveFeed({ project, limit = 40, title = "Live", height }: { proj
     const out: StoreEvent[] = [];
     for (const e of [...live, ...(data?.events ?? [])]) {
       if (seen.has(e.id)) continue;
-      if (project && e.subject && !matchesProject(e, project)) continue;
+      if (project && !matchesProject(e, project)) continue;
       seen.add(e.id);
       out.push(e);
     }
@@ -52,12 +67,14 @@ export function LiveFeed({ project, limit = 40, title = "Live", height }: { proj
   }, [live, data, project, limit]);
   return (
     <Panel
-      title={
-        <span className="inline-flex items-center gap-1.5">
-          <RadioIcon className={"size-3.5 " + (state === "live" ? "text-ok" : "text-muted-foreground")} /> {title}
+      title={title}
+      icon={RadioIcon}
+      actions={
+        <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 px-2 py-0.5 text-[11.5px]">
+          <span className={"size-1.5 rounded-full " + (state === "live" ? "bg-ok" : state === "polling" ? "bg-warn" : "bg-muted-foreground")} aria-hidden />
+          {state === "live" ? "streaming" : state === "polling" ? "polling" : "connecting"}
         </span>
       }
-      actions={<span>{state === "live" ? "streaming" : state === "polling" ? "polling every 10 s" : "connecting"}</span>}
       dense
     >
       {loading && !data ? (
@@ -66,26 +83,21 @@ export function LiveFeed({ project, limit = 40, title = "Live", height }: { proj
         <div className="p-3 text-xs text-muted-foreground">{"The events route is not available yet (" + error + "). The board views still refresh on their own."}</div>
       ) : rows.length === 0 ? (
         <div className="p-3">
-          <EmptyState>No events yet. Every CLI write and every hub write appears here the moment it lands in the store.</EmptyState>
+          <EmptyState>{project ? "No events for " + project + " yet. Every CLI write and every hub write on this project appears here the moment it lands in the store." : "No events yet. Every CLI write and every hub write appears here the moment it lands in the store."}</EmptyState>
         </div>
       ) : (
-        <ul className="divide-y overflow-y-auto" style={height ? { maxHeight: height } : undefined}>
+        <ul className="scroll-thin divide-y overflow-y-auto" style={height ? { maxHeight: height } : undefined}>
           {rows.map((e) => (
-            <li key={e.id} className="px-3 py-1.5 text-xs">
+            <li key={e.id} className="px-3 py-2 text-xs transition-colors hover:bg-muted/40">
               <div className="flex items-center gap-2">
-                <When d={e.at} className="w-14 shrink-0 text-muted-foreground" />
+                <Who row={{ agent: e.actor }} compact className="w-24 shrink-0" />
                 <ToneBadge tone={actionTone(e.action)} className="shrink-0">
-                  {e.action}
+                  {actionLabel(e)}
                 </ToneBadge>
-                <span className="min-w-0 flex-1" />
-                <Who row={{ agent: e.actor }} compact className="shrink-0 max-w-40" />
+                <span className="min-w-0 flex-1 truncate">{e.subject ? <Mono className="truncate text-foreground">{e.subject}</Mono> : <span className="text-muted-foreground">{detailText(e.detail)}</span>}</span>
+                <When d={e.at} className="ml-auto shrink-0 text-right text-muted-foreground" />
               </div>
-              {e.subject || detailText(e.detail) ? (
-                <div className="mt-0.5 pl-16 anywhere">
-                  {e.subject ? <Mono className="text-foreground">{e.subject}</Mono> : null}
-                  {detailText(e.detail) ? <span className="ml-1.5 text-muted-foreground">{detailText(e.detail)}</span> : null}
-                </div>
-              ) : null}
+              {e.subject && detailText(e.detail) ? <div className="mt-0.5 pl-[8.5rem] pr-16 text-muted-foreground anywhere">{detailText(e.detail)}</div> : null}
             </li>
           ))}
         </ul>
@@ -94,8 +106,12 @@ export function LiveFeed({ project, limit = 40, title = "Live", height }: { proj
   );
 }
 
+// The same rule the hub applies to GET /events?project= (bus.Filter): an
+// event belongs to a project when its detail names it or its subject is the
+// project itself (project.add, project.removed). Events that name no project
+// - settings, executors, decisions, jobs of other projects - are not its.
 function matchesProject(e: StoreEvent, project: string): boolean {
-  const d = e.detail as Record<string, unknown> | null;
-  if (d && typeof d === "object" && "project" in d) return d.project === project;
-  return true;
+  if (e.subject === project) return true;
+  const d = e.detail;
+  return typeof d === "object" && d !== null && (d as Record<string, unknown>).project === project;
 }

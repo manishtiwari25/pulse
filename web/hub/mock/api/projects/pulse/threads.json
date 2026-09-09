@@ -1,18 +1,41 @@
 [
   {
+    "active_claims": [],
     "area": "store",
     "key": "store/schema-notes",
-    "last": "2026-09-01T16:42:00Z",
-    "posts": 4,
+    "last": "2026-09-01T18:06:00Z",
+    "last_by": "cinder",
+    "last_kind": "vote",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "fjord",
+      "borealis",
+      "ember",
+      "aurora",
+      "cinder"
+    ],
+    "posts": 7,
     "resolution": "",
     "status": "open",
-    "summary": "Cheap and reversible",
+    "summary": "Small migration",
     "thread": "schema-notes"
   },
   {
+    "active_claims": [],
     "area": "evolution",
     "key": "evolution/constitution-quorum",
-    "last": "2026-09-01T16:14:00Z",
+    "last": "2026-09-01T17:17:00Z",
+    "last_by": "delta",
+    "last_kind": "vote",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "borealis",
+      "aurora",
+      "cinder",
+      "delta"
+    ],
     "posts": 4,
     "resolution": "",
     "status": "open",

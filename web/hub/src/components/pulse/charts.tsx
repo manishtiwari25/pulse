@@ -11,6 +11,9 @@ export type Range = "24h" | "7d" | "30d";
 export type By = "total" | "kind" | "project";
 
 const COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)", "oklch(0.7 0.1 200)", "oklch(0.65 0.12 30)", "oklch(0.55 0.1 120)"];
+const segmented = "inline-flex h-auto rounded-lg border bg-muted/40 p-0.5";
+const segment = "h-6 rounded-md px-2 text-xs data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-card";
+const tooltipStyle = { background: "var(--popover)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "0.375rem 0.625rem", color: "var(--popover-foreground)", fontSize: 12, boxShadow: "var(--sh-pop)" };
 
 export function lastDays(tl: Timeline, n: number): number[] {
   return (tl.days || []).slice(-n).map((b) => b.n);
@@ -63,9 +66,9 @@ export function ActivityChart({ tl, bys, title = "Activity", height = 200 }: { t
           <span className="tnum hidden sm:inline">{num(total) + " posts"}</span>
           {bys.length > 1 ? (
             <Tabs value={by} onValueChange={(v) => setBy(v as By)}>
-              <TabsList className="h-7">
+              <TabsList className={segmented}>
                 {bys.map((b) => (
-                  <TabsTrigger key={b} value={b} className="h-6 px-2 text-xs">
+                  <TabsTrigger key={b} value={b} className={segment}>
                     {b}
                   </TabsTrigger>
                 ))}
@@ -73,9 +76,9 @@ export function ActivityChart({ tl, bys, title = "Activity", height = 200 }: { t
             </Tabs>
           ) : null}
           <Tabs value={range} onValueChange={(v) => setRange(v as Range)}>
-            <TabsList className="h-7">
+            <TabsList className={segmented}>
               {(["24h", "7d", "30d"] as Range[]).map((r) => (
-                <TabsTrigger key={r} value={r} className="h-6 px-2 text-xs">
+                <TabsTrigger key={r} value={r} className={segment}>
                   {r}
                 </TabsTrigger>
               ))}
@@ -88,18 +91,24 @@ export function ActivityChart({ tl, bys, title = "Activity", height = 200 }: { t
         <ResponsiveContainer width="100%" height="100%">
           {by === "total" ? (
             <AreaChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+              <defs>
+                <linearGradient id="activity-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
               <XAxis dataKey="t" tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={24} />
               <YAxis tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
-              <ChartTooltip contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} labelStyle={{ color: "var(--muted-foreground)" }} cursor={{ stroke: "var(--border)" }} />
-              <Area type="monotone" dataKey="posts" stroke="var(--chart-1)" fill="var(--chart-1)" fillOpacity={0.18} strokeWidth={2} isAnimationActive={false} />
+              <ChartTooltip contentStyle={tooltipStyle} labelStyle={{ color: "var(--muted-foreground)" }} wrapperClassName="!outline-none" cursor={{ stroke: "var(--border)" }} />
+              <Area type="monotone" dataKey="posts" stroke="var(--chart-1)" fill="url(#activity-fill)" strokeWidth={2} isAnimationActive={false} />
             </AreaChart>
           ) : (
             <BarChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
               <XAxis dataKey="t" tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={24} />
               <YAxis tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
-              <ChartTooltip contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} labelStyle={{ color: "var(--muted-foreground)" }} cursor={{ fill: "var(--muted)", opacity: 0.5 }} />
+              <ChartTooltip contentStyle={tooltipStyle} labelStyle={{ color: "var(--muted-foreground)" }} wrapperClassName="!outline-none" cursor={{ fill: "var(--muted)", opacity: 0.5 }} />
               <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
               {keys.map((k, i) => (
                 <Bar key={k} dataKey={k} stackId="a" fill={COLORS[i % COLORS.length]} isAnimationActive={false} radius={i === keys.length - 1 ? [3, 3, 0, 0] : 0} />

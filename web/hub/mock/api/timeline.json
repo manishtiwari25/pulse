@@ -122,15 +122,15 @@
         "answer": 2,
         "claim": 1,
         "finding": 4,
-        "handoff": 1,
+        "handoff": 2,
         "opinion": 3,
         "proposal": 3,
-        "question": 3,
+        "question": 4,
         "result": 3,
-        "suggestion": 3,
-        "vote": 9
+        "suggestion": 5,
+        "vote": 15
       },
-      "n": 33,
+      "n": 43,
       "t": "2026-09-01"
     },
     {
@@ -412,15 +412,15 @@
             "answer": 1,
             "claim": 1,
             "finding": 2,
-            "handoff": 1,
+            "handoff": 2,
             "opinion": 3,
             "proposal": 2,
-            "question": 1,
+            "question": 2,
             "result": 3,
-            "suggestion": 1,
-            "vote": 3
+            "suggestion": 2,
+            "vote": 7
           },
-          "n": 18,
+          "n": 25,
           "t": "2026-09-01"
         },
         {
@@ -579,7 +579,7 @@
       "kind": "project",
       "now": "2026-09-07T09:00:00Z",
       "slug": "demo-app",
-      "total": 18,
+      "total": 25,
       "unparsed": 0
     },
     {
@@ -995,10 +995,10 @@
           "kinds": {
             "amendment": 1,
             "finding": 1,
-            "suggestion": 1,
-            "vote": 5
+            "suggestion": 2,
+            "vote": 7
           },
-          "n": 8,
+          "n": 11,
           "t": "2026-09-01"
         },
         {
@@ -1157,7 +1157,7 @@
       "kind": "project",
       "now": "2026-09-07T09:00:00Z",
       "slug": "pulse",
-      "total": 8,
+      "total": 11,
       "unparsed": 0
     },
     {
@@ -1446,6 +1446,6 @@
       "unparsed": 0
     }
   ],
-  "total": 33,
+  "total": 43,
   "unparsed": 0
 }

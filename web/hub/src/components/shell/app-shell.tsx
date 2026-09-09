@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { ActivityIcon, BotIcon, BookOpenIcon, ChevronDownIcon, CircleDotIcon, CpuIcon, HomeIcon, ListTodoIcon, SettingsIcon, VoteIcon, WifiIcon, WifiOffIcon } from "lucide-react";
+import { ActivityIcon, BotIcon, BookOpenIcon, ChevronDownIcon, CpuIcon, FolderIcon, HomeIcon, ListTodoIcon, SettingsIcon, VoteIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -26,14 +26,24 @@ const NAV: { href: string; label: string; icon: React.ComponentType<{ className?
   { href: "/settings/", label: "Settings", icon: SettingsIcon, match: (p) => p.startsWith("/settings") },
 ];
 
+function projectInitial(slug: string) {
+  return slug.trim().charAt(0).toUpperCase();
+}
+
+function ProjectAvatar({ slug }: { slug: string }) {
+  const initial = projectInitial(slug);
+  if (!initial) return <FolderIcon className="size-4 text-muted-foreground" />;
+  return <span className="inline-flex size-5 shrink-0 items-center justify-center rounded-md bg-primary/15 text-[10px] font-semibold text-primary">{initial}</span>;
+}
+
 function LiveDot() {
   const { state } = useEventStream();
   const label = state === "live" ? "live: the hub streams every store event" : state === "polling" ? "polling: the event stream is reconnecting, refreshing every 10 s" : "connecting to the hub";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground" aria-live="polite" aria-label={label}>
-          {state === "live" ? <WifiIcon className="size-3.5 text-ok" /> : state === "polling" ? <WifiOffIcon className="size-3.5 text-warn" /> : <CircleDotIcon className="size-3.5 animate-pulse" />}
+        <span className="inline-flex h-7 items-center gap-1.5 rounded-full border px-2 text-xs text-muted-foreground" aria-live="polite" aria-label={label}>
+          <span className={cn("relative inline-flex size-1.5 rounded-full", state === "live" && "bg-ok after:absolute after:inset-0 after:rounded-full after:bg-ok after:opacity-40 after:animate-ping", state === "polling" && "bg-warn", state !== "live" && state !== "polling" && "animate-pulse bg-muted-foreground")} />
           <span className="hidden sm:inline">{state}</span>
         </span>
       </TooltipTrigger>
@@ -58,13 +68,13 @@ function ProjectSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className="max-w-[220px] gap-1.5" aria-label="Switch project">
-          <ActivityIcon className="size-3.5 text-muted-foreground" />
-          <span className="truncate">{current || "Projects"}</span>
+        <Button variant="outline" size="sm" className="max-w-[220px] gap-1.5 rounded-md bg-card pr-2 shadow-card" aria-label="Switch project">
+          {current ? <ProjectAvatar slug={current} /> : <FolderIcon className="size-4 text-muted-foreground" />}
+          <span className="truncate">{current || "All projects"}</span>
           <ChevronDownIcon className="size-3.5 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-72">
+      <DropdownMenuContent align="start" className="w-80 rounded-xl p-1 shadow-pop">
         <DropdownMenuLabel>Projects on this machine</DropdownMenuLabel>
         {projects.length === 0 ? <div className="px-2 py-1.5 text-xs text-muted-foreground">{data ? "No project is registered yet: run pulse init in a checkout." : "Loading…"}</div> : null}
         {projects.map((p) => {
@@ -72,9 +82,12 @@ function ProjectSwitcher() {
           const forYou = p.proposals_awaiting + (decisions.get(p.slug) || 0) + (step ? 1 : 0);
           return (
             <DropdownMenuItem key={p.slug} asChild>
-              <Link href={hrefs.project(p.slug)} className="flex items-center justify-between gap-2">
-                <span className="truncate">{p.slug}</span>
-                <span className="flex items-center gap-1">
+              <Link href={hrefs.project(p.slug)} className="flex items-center justify-between gap-2 py-1.5">
+                <span className="flex min-w-0 items-center gap-2">
+                  <ProjectAvatar slug={p.slug} />
+                  <span className="truncate">{p.slug}</span>
+                </span>
+                <span className="ml-auto flex shrink-0 items-center gap-1">
                   {p.brain ? <Badge variant="secondary">framework</Badge> : null}
                   {forYou ? <Badge>{forYou} for you</Badge> : null}
                   {!p.present ? <Badge variant="destructive">missing</Badge> : null}
@@ -88,9 +101,12 @@ function ProjectSwitcher() {
             <DropdownMenuSeparator />
             <DropdownMenuLabel>Shared by every project</DropdownMenuLabel>
             <DropdownMenuItem asChild>
-              <Link href={hrefs.project(commons.slug)} title={COMMONS_HINT} className="flex items-center justify-between gap-2">
-                <span className="truncate">Commons</span>
-                <span className="flex items-center gap-1">
+              <Link href={hrefs.project(commons.slug)} title={COMMONS_HINT} className="flex items-center justify-between gap-2 py-1.5">
+                <span className="flex min-w-0 items-center gap-2">
+                  <ProjectAvatar slug={commons.slug} />
+                  <span className="truncate">Commons</span>
+                </span>
+                <span className="ml-auto flex shrink-0 items-center gap-1">
                   {commons.questions_open ? <Badge variant="outline">{commons.questions_open} open</Badge> : null}
                   <Badge variant="outline">board</Badge>
                 </span>
@@ -100,7 +116,10 @@ function ProjectSwitcher() {
         ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
-          <Link href="/">All projects</Link>
+          <Link href="/" className="flex items-center gap-2 py-1.5">
+            <FolderIcon className="size-4 text-muted-foreground" />
+            <span>All projects</span>
+          </Link>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -114,13 +133,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-1.5 focus:text-primary-foreground">
         Skip to content
       </a>
-      <header className="sticky top-0 z-40 h-12 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+      <header className="sticky top-0 z-40 h-12 border-b bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60">
         <div className="mx-auto flex h-12 max-w-[1560px] items-center gap-2 px-3 sm:px-4">
-          <Link href="/" className="mr-1 flex items-center gap-2 font-semibold tracking-tight" aria-label="PULSE hub">
-            <span className="inline-flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
-              <ActivityIcon className="size-3.5" />
+          <Link href="/" className="mr-1 flex items-center gap-2 font-semibold tracking-tight transition hover:scale-[1.01] hover:opacity-90" aria-label="PULSE hub">
+            <span className="inline-flex size-7 items-center justify-center rounded-lg bg-brand text-white shadow-card">
+              <ActivityIcon className="size-4" />
             </span>
-            <span className="hidden sm:inline">PULSE</span>
+            <span className="hidden font-semibold tracking-tight sm:inline">PULSE</span>
           </Link>
           <Suspense fallback={<div className="h-7 w-32 rounded-md bg-muted" />}>
             <ProjectSwitcher />
@@ -129,8 +148,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {NAV.map((n) => {
               const active = n.match(pathname);
               return (
-                <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined} className={cn("inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground", active && "bg-muted text-foreground")}>
-                  <n.icon className="size-3.5" />
+                <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined} className={cn("inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground", active && "bg-primary/10 font-medium text-primary hover:bg-primary/10 hover:text-primary")}>
+                  <n.icon className="size-4" />
                   {n.label}
                 </Link>
               );
@@ -148,16 +167,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1560px] flex-1 px-3 pt-0 pb-20 outline-none sm:px-4 md:pb-4">
         {children}
       </main>
-      <footer className="hidden border-t px-4 py-3 text-center text-xs text-muted-foreground md:block">
+      <footer className="hidden border-t bg-background px-4 py-3 text-center text-xs text-muted-foreground md:block">
         PULSE hub · 127.0.0.1 only · the owner writes here: projects, tasks, messages, decisions, settings, compute; agents write with the CLI.
       </footer>
       {/* On phones the primary nav sits at the thumb, not in a second header row. */}
-      <nav aria-label="Primary (compact)" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-7 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+      <nav aria-label="Primary (compact)" className="fixed inset-x-0 bottom-0 z-40 grid h-14 grid-cols-7 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
         {NAV.map((n) => {
           const active = n.match(pathname);
           return (
-            <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined} className={cn("flex h-14 flex-col items-center justify-center gap-1 text-[10.5px] font-medium text-muted-foreground", active && "text-foreground")}>
-              <span className={cn("inline-flex h-6 w-10 items-center justify-center rounded-full", active && "bg-muted")}>
+            <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined} className={cn("flex h-14 flex-col items-center justify-center gap-1 text-[10.5px] font-medium text-muted-foreground", active && "text-primary")}>
+              <span className={cn("inline-flex h-6 w-10 items-center justify-center rounded-full", active && "bg-primary/10")}>
                 <n.icon className="size-4" />
               </span>
               {n.label}

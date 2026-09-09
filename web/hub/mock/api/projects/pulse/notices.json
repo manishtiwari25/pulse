@@ -7,7 +7,7 @@
       "name": "pulse",
       "proposals": 0,
       "slug": "pulse",
-      "suggestions": 1
+      "suggestions": 2
     }
   ],
   "brain": "",
@@ -16,5 +16,5 @@
   "commons_present": null,
   "commons_questions": null,
   "proposals_awaiting": 0,
-  "votes_open": 2
+  "votes_open": 3
 }

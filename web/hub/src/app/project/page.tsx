@@ -17,7 +17,8 @@ import { AmendmentsTab, ChatTab, EnvTab, EvolutionTab, NoticesTab, OverviewTab, 
 import { hrefs, isProjectTab, PROJECT_TABS, type ProjectTab } from "@/lib/nav";
 import { allProjects, COMMONS_HINT, registeredProjects, type Org, type ProjectCardData, type ProjectsPayload, type RegisteredProject } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
-import { num, plural } from "@/lib/format";
+import { hashHue, initials, num, plural } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 export default function ProjectPage() {
   return (
@@ -142,13 +143,10 @@ function ProjectScreen() {
           card ? (
             isCommons ? (
               COMMONS_HINT
+            ) : card.name && card.name !== card.slug ? (
+              card.name
             ) : (
-              <>
-                {card.name && card.name !== card.slug ? card.name + " · " : null}
-                <Mono>{card.branch}</Mono> <Mono className="text-muted-foreground">{card.head}</Mono>
-                {card.dirty ? <span className="ml-1 text-warn">dirty</span> : null}
-                {card.path ? <span className="ml-2 text-muted-foreground">{card.path}</span> : null}
-              </>
+              "Board, tasks and lead conversation for this checkout."
             )
           ) : (
             org.error || "…"
@@ -166,22 +164,30 @@ function ProjectScreen() {
           )
         }
         bar={
-          <TabsList variant="line" className="w-max">
+          // Real tabs (roving focus, arrow keys) whose change handler keeps the
+          // other params, so an open task follows the owner into the Chat tab.
+          <TabsList variant="line" className="h-9 w-max gap-0 p-0" aria-label="Project sections">
             {PROJECT_TABS.map((t) => (
-              <TabsTrigger key={t.id} value={t.id} className="gap-1.5 px-2">
+              <TabsTrigger key={t.id} value={t.id} className="h-9 flex-none gap-1.5 rounded-none px-3 text-muted-foreground after:hidden hover:text-foreground data-active:bg-transparent data-active:font-medium data-active:text-foreground">
                 {t.label}
-                {counts[t.id] ? <span className="tnum rounded-full bg-muted px-1.5 text-[10.5px] text-muted-foreground">{counts[t.id]}</span> : null}
+                {counts[t.id] ? <span className={cn("tnum rounded-full bg-muted px-1.5 text-[10.5px]", tab === t.id ? "bg-primary/10 text-primary" : "text-muted-foreground")}>{counts[t.id]}</span> : null}
+                {tab === t.id ? <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-primary" aria-hidden /> : null}
               </TabsTrigger>
             ))}
           </TabsList>
         }
+        badge={
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            {card?.brain ? <Badge variant="secondary">framework</Badge> : null}
+            {isCommons ? <Badge variant="outline">shared board</Badge> : null}
+            {card?.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
+            {card && !card.present ? <Badge variant="destructive">missing on disk</Badge> : null}
+          </span>
+        }
       >
-        <span className="inline-flex flex-wrap items-center gap-2">
-          {isCommons ? "Commons" : slug}
-          {card?.brain ? <Badge variant="secondary">framework</Badge> : null}
-          {isCommons ? <Badge variant="outline">shared board</Badge> : null}
-          {card?.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
-          {card && !card.present ? <Badge variant="destructive">missing on disk</Badge> : null}
+        <span className="flex min-w-0 items-center gap-2.5">
+          <ProjectAvatar slug={isCommons ? "Commons" : slug} />
+          <span className="truncate font-semibold tracking-tight">{isCommons ? "Commons" : slug}</span>
         </span>
       </PageTitle>
 
@@ -203,6 +209,14 @@ function ProjectScreen() {
       <PostSheet slug={slug} postId={post} onClose={() => setParams({ post: null })} />
       <TaskSheet id={tab === "chat" ? null : task} slug={slug} onClose={() => setParams({ task: null })} />
     </Tabs>
+  );
+}
+
+function ProjectAvatar({ slug }: { slug: string }) {
+  return (
+    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold text-white shadow-card" style={{ background: `oklch(0.62 0.12 ${hashHue(slug)})` }} aria-hidden>
+      {initials(slug)}
+    </span>
   );
 }
 

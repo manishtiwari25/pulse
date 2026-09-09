@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CornerDownLeftIcon, Loader2Icon } from "lucide-react";
+import { Loader2Icon, SendIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -125,7 +125,7 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
   };
 
   return (
-    <div className={cn("flex min-h-0 flex-col", embedded ? "h-full" : "h-[calc(100vh-14rem)] min-h-[420px] rounded-lg border bg-card", className)}>
+    <div className={cn("flex min-h-0 flex-col", embedded ? "h-full" : "h-[calc(100vh-14rem)] min-h-[420px] rounded-xl border bg-card shadow-card", className)}>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" role="log" aria-live="polite" aria-label="Conversation">
         {messages.length === 0 ? (
           <EmptyState className="mx-auto mt-6 max-w-lg border-0">
@@ -171,14 +171,14 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
                       ) : null}
                       <div className={cn("flex gap-2", human && "flex-row-reverse")}>
                         <Avatar seed={m.author} human={human} size={26} className="mt-0.5" />
-                        <div className={cn("max-w-[85%] min-w-0 rounded-lg px-3 py-2", human ? "bg-primary text-primary-foreground" : "bg-muted")}>
-                          <div className={cn("mb-1 flex items-center gap-2 text-[11px]", human ? "text-primary-foreground/80" : "text-muted-foreground")}>
+                        <div className={cn("max-w-[85%] min-w-0 rounded-2xl px-3 py-2 shadow-card", human ? "rounded-br-md bg-primary/10 text-foreground" : "rounded-bl-md border bg-card")}>
+                          <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
                             {human ? <span className="font-medium">you</span> : <AuthorBadge author={m.author} />}
                             <time dateTime={m.at} title={fmtDate(m.at)}>
                               <When d={m.at} />
                             </time>
                           </div>
-                          <Markdown source={m.body} className={cn(human && "[&_a]:text-primary-foreground [&_code]:bg-primary-foreground/15 [&_pre]:bg-primary-foreground/10")} />
+                          <Markdown source={m.body} />
                         </div>
                       </div>
                     </li>
@@ -191,7 +191,7 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
         <div ref={bottom} />
       </div>
       <form
-        className="flex items-end gap-2 border-t p-3"
+        className="m-3 flex items-end gap-2 rounded-xl border bg-card p-2 shadow-card focus-within:ring-2 focus-within:ring-ring/30"
         onSubmit={(e) => {
           e.preventDefault();
           void send();
@@ -209,11 +209,11 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
           }}
           placeholder={taskId ? "Reply about " + taskId + "… (Enter sends, Shift-Enter for a new line)" : "Message " + (lead || project + "-lead") + "… (Enter sends, Shift-Enter for a new line)"}
           rows={2}
-          className="max-h-40 min-h-10 flex-1 resize-y text-[13px]"
+          className="max-h-40 min-h-10 flex-1 resize-y border-0 bg-transparent text-[13px] shadow-none focus-visible:ring-0"
           disabled={busy}
         />
         <Button type="submit" size="default" disabled={busy || !draft.trim()} aria-label="Send">
-          {busy ? <Loader2Icon className="animate-spin" /> : <CornerDownLeftIcon />}
+          {busy ? <Loader2Icon className="animate-spin" /> : <SendIcon />}
           Send
         </Button>
       </form>

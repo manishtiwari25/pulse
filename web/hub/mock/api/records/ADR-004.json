@@ -30,11 +30,11 @@
     "tags": [],
     "tier": 2,
     "title": "Version the client API with a v2 package",
-    "updated_at": "2026-09-01T13:19:00Z"
+    "updated_at": "2026-09-01T13:26:00Z"
   },
   "revisions": [
     {
-      "at": "2026-09-01T13:19:00Z",
+      "at": "2026-09-01T13:26:00Z",
       "author": "human",
       "note": "",
       "rev": 1

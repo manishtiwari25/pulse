@@ -3,10 +3,10 @@
     {
       "agent": "aurora",
       "branch": "",
-      "date": "2026-09-01T16:49:00Z",
+      "date": "2026-09-01T18:13:00Z",
       "expires": "",
       "has_read_line": 0,
-      "id": "20260901T164900Z-aurora",
+      "id": "20260901T181300Z-aurora",
       "kind": "question",
       "model": "claude-fable-5.1",
       "name": "",
@@ -16,7 +16,7 @@
         "branch"
       ],
       "provenance_ok": 0,
-      "rel_path": "store:20260901T164900Z-aurora",
+      "rel_path": "store:20260901T181300Z-aurora",
       "resolution": "",
       "runner": "copilot-cli",
       "session": "s-aurora",
@@ -26,9 +26,17 @@
     }
   ],
   "thread": {
+    "active_claims": [],
     "area": "patterns",
     "key": "patterns/executor-images",
-    "last": "2026-09-01T16:49:00Z",
+    "last": "2026-09-01T18:13:00Z",
+    "last_by": "aurora",
+    "last_kind": "question",
+    "open_handoffs": 0,
+    "open_questions": 1,
+    "participants": [
+      "aurora"
+    ],
     "posts": 1,
     "resolution": "",
     "status": "open",

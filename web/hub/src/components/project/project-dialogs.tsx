@@ -128,7 +128,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
             </div>
           </div>
           <div className="rounded-md border bg-muted/30 px-3 py-2">
-            <div className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">What happens</div>
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">What happens</div>
             <ul className="grid gap-1 text-[12.5px] leading-snug text-muted-foreground">
               <li className="flex gap-2">
                 <span aria-hidden>•</span>
@@ -280,15 +280,15 @@ export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }:
                   {e.checkout ? <GitBranchIcon className="size-4 shrink-0 text-ok" /> : <FolderIcon className="size-4 shrink-0 text-muted-foreground" />}
                   <span className="truncate">{e.name}</span>
                   {e.registered ? (
-                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                    <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">
                       registered · {e.registered}
                     </Badge>
                   ) : folderMode && owner(e) ? (
-                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                    <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">
                       inside · {owner(e)}
                     </Badge>
                   ) : e.checkout ? (
-                    <Badge variant="outline" className="h-4 px-1.5 text-[10px] text-ok">
+                    <Badge variant="outline" className="h-4 px-1.5 text-[11px] text-ok">
                       git
                     </Badge>
                   ) : null}
@@ -468,12 +468,12 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
       <AlertDialogFooter>
         <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
         <AlertDialogAction
+          variant="destructive"
           disabled={busy || !preview}
           onClick={(e) => {
             e.preventDefault();
             void apply();
           }}
-          className={cn("bg-destructive text-white hover:bg-destructive/90")}
         >
           {busy ? <Loader2Icon className="animate-spin" /> : <Trash2Icon />}
           {text.action}
@@ -484,7 +484,7 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
 }
 
 function PreviewTitle({ children }: { children: React.ReactNode }) {
-  return <div className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
+  return <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
 }
 
 function PreviewList({ title, items, empty }: { title: string; items: RemovePreview["changes"]; empty: string }) {
@@ -525,7 +525,7 @@ export function RemoveMenuButton({ kind, name, onApplied, compact }: { kind: Rem
           <TooltipContent>{"Remove " + kind + "…"}</TooltipContent>
         </Tooltip>
       ) : (
-        <Button variant="outline" size="sm" aria-label={label} onClick={() => setOpen(true)}>
+        <Button variant="outline" size="sm" aria-label={label} className="text-muted-foreground hover:text-foreground" onClick={() => setOpen(true)}>
           <Trash2Icon /> Remove…
         </Button>
       )}

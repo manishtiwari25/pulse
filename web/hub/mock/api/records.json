@@ -18,7 +18,7 @@
       "tags": [],
       "tier": 2,
       "title": "Keep the control plane in one SQLite store",
-      "updated_at": "2026-09-01T11:48:00Z"
+      "updated_at": "2026-09-01T11:55:00Z"
     },
     {
       "areas": [
@@ -38,7 +38,7 @@
       "tags": [],
       "tier": 2,
       "title": "Agents ask for compute through the board",
-      "updated_at": "2026-09-01T11:55:00Z"
+      "updated_at": "2026-09-01T12:02:00Z"
     },
     {
       "areas": [
@@ -58,7 +58,7 @@
       "tags": [],
       "tier": 2,
       "title": "The console is the owner's only surface",
-      "updated_at": "2026-09-01T12:02:00Z"
+      "updated_at": "2026-09-01T12:09:00Z"
     },
     {
       "areas": [
@@ -78,7 +78,7 @@
       "tags": [],
       "tier": 2,
       "title": "Version the client API with a v2 package",
-      "updated_at": "2026-09-01T13:19:00Z"
+      "updated_at": "2026-09-01T13:26:00Z"
     },
     {
       "areas": [],
@@ -96,7 +96,7 @@
       "tags": [],
       "tier": 0,
       "title": "Environment recipe",
-      "updated_at": "2026-09-01T13:26:00Z"
+      "updated_at": "2026-09-01T13:33:00Z"
     },
     {
       "areas": [],
@@ -114,7 +114,7 @@
       "tags": [],
       "tier": 0,
       "title": "constitution",
-      "updated_at": "2026-09-01T12:37:00Z"
+      "updated_at": "2026-09-01T12:44:00Z"
     },
     {
       "areas": [
@@ -134,7 +134,7 @@
       "tags": [],
       "tier": 2,
       "title": "Passwordless sign-in",
-      "updated_at": "2026-09-01T13:12:00Z"
+      "updated_at": "2026-09-01T13:19:00Z"
     },
     {
       "areas": [],
@@ -152,7 +152,7 @@
       "tags": [],
       "tier": 0,
       "title": "onboarding",
-      "updated_at": "2026-09-01T12:23:00Z"
+      "updated_at": "2026-09-01T12:30:00Z"
     },
     {
       "areas": [],
@@ -170,7 +170,7 @@
       "tags": [],
       "tier": 0,
       "title": "agents",
-      "updated_at": "2026-09-01T13:05:00Z"
+      "updated_at": "2026-09-01T13:12:00Z"
     },
     {
       "areas": [],
@@ -188,7 +188,7 @@
       "tags": [],
       "tier": 0,
       "title": "product rules",
-      "updated_at": "2026-09-01T12:30:00Z"
+      "updated_at": "2026-09-01T12:37:00Z"
     },
     {
       "areas": [
@@ -208,7 +208,7 @@
       "tags": [],
       "tier": 2,
       "title": "Console fixtures from the hub",
-      "updated_at": "2026-09-01T12:09:00Z"
+      "updated_at": "2026-09-01T12:16:00Z"
     },
     {
       "areas": [],
@@ -226,7 +226,7 @@
       "tags": [],
       "tier": 0,
       "title": "eli5",
-      "updated_at": "2026-09-01T12:58:00Z"
+      "updated_at": "2026-09-01T13:05:00Z"
     },
     {
       "areas": [],
@@ -244,7 +244,7 @@
       "tags": [],
       "tier": 0,
       "title": "pulse review",
-      "updated_at": "2026-09-01T12:51:00Z"
+      "updated_at": "2026-09-01T12:58:00Z"
     },
     {
       "areas": [],
@@ -262,7 +262,7 @@
       "tags": [],
       "tier": 0,
       "title": "feature",
-      "updated_at": "2026-09-01T12:44:00Z"
+      "updated_at": "2026-09-01T12:51:00Z"
     },
     {
       "areas": [
@@ -282,79 +282,7 @@
       "tags": [],
       "tier": 1,
       "title": "Mock generator",
-      "updated_at": "2026-09-01T12:16:00Z"
-    },
-    {
-      "areas": [],
-      "current_rev": 1,
-      "date": "2026-09-01",
-      "delivered": "",
-      "delivery": "",
-      "id": "EVO-constitution-demo-cli",
-      "kind": "evolution",
-      "number": 0,
-      "path": "",
-      "project": "demo-cli",
-      "slug": "constitution",
-      "status": "Draft",
-      "tags": [],
-      "tier": 0,
-      "title": "constitution",
-      "updated_at": "2026-09-01T12:37:00Z"
-    },
-    {
-      "areas": [],
-      "current_rev": 1,
-      "date": "2026-09-01",
-      "delivered": "",
-      "delivery": "",
-      "id": "EVO-evaluators-demo-cli",
-      "kind": "evolution",
-      "number": 0,
-      "path": "",
-      "project": "demo-cli",
-      "slug": "evaluators",
-      "status": "Draft",
-      "tags": [],
-      "tier": 0,
-      "title": "evaluators",
-      "updated_at": "2026-09-01T12:37:00Z"
-    },
-    {
-      "areas": [],
-      "current_rev": 3,
-      "date": "2026-09-01",
-      "delivered": "",
-      "delivery": "",
-      "id": "EVO-constitution-demo-app",
-      "kind": "evolution",
-      "number": 0,
-      "path": "",
-      "project": "demo-app",
-      "slug": "constitution",
-      "status": "Draft",
-      "tags": [],
-      "tier": 0,
-      "title": "constitution",
-      "updated_at": "2026-09-05T15:12:00Z"
-    },
-    {
-      "areas": [],
-      "current_rev": 1,
-      "date": "2026-09-01",
-      "delivered": "",
-      "delivery": "",
-      "id": "EVO-evaluators-demo-app",
-      "kind": "evolution",
-      "number": 0,
-      "path": "",
-      "project": "demo-app",
-      "slug": "evaluators",
-      "status": "Draft",
-      "tags": [],
-      "tier": 0,
-      "title": "evaluators",
-      "updated_at": "2026-09-01T12:37:00Z"
+      "updated_at": "2026-09-01T12:23:00Z"
     }
   ]
 }

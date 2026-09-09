@@ -2,20 +2,21 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { BanIcon, HistoryIcon, MessagesSquareIcon, PencilIcon } from "lucide-react";
+import { BanIcon, BriefcaseBusinessIcon, FileTextIcon, HistoryIcon, MessagesSquareIcon, PencilIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChatPane } from "@/components/chat/chat-pane";
 import { ConfirmDialog } from "@/components/pulse/confirm";
-import { DataTable, type Column } from "@/components/pulse/data-table";
+import { type Column } from "@/components/pulse/data-table";
+import { SectionHeading } from "@/components/pulse/item-card";
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState, ErrorNotice, Kv, SkeletonRows } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { prioLabel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { enc, writes, type Task, type TaskDetail, type TaskJob } from "@/lib/api";
+import { enc, writes, type Task, type TaskDetail } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { AmendTaskDialog } from "./task-dialogs";
 
@@ -30,19 +31,10 @@ export const TASK_COLUMNS = (showProject: boolean): Column<Task>[] => [
   { key: "updated", label: "updated", nowrap: true, sort: (t) => t.updated_at, render: (t) => <When d={t.updated_at} /> },
 ];
 
-const JOB_COLUMNS: Column<TaskJob>[] = [
-  { key: "id", label: "job", nowrap: true, render: (j) => <Mono>{j.id}</Mono> },
-  { key: "kind", label: "kind", render: (j) => <ToneBadge tone="neutral">{j.kind}</ToneBadge> },
-  { key: "title", label: "title", render: (j) => <span className="anywhere">{j.title}</span> },
-  { key: "status", label: "status", render: (j) => <StatusBadge status={j.status} /> },
-  { key: "agent", label: "agent", render: (j) => (j.agent ? <Who row={{ agent: j.agent }} compact /> : <span className="text-muted-foreground">{"—"}</span>) },
-  { key: "branch", label: "branch", render: (j) => (j.branch ? <Mono>{j.branch}</Mono> : null) },
-];
-
 export function TaskSheet({ id, slug, onClose }: { id: string | null; slug?: string; onClose: () => void }) {
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="flex flex-col gap-0 overflow-hidden p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
+      <SheetContent side="right" className="flex flex-col gap-0 overflow-hidden rounded-l-xl p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
         {id ? <TaskBody id={id} slug={slug} /> : null}
       </SheetContent>
     </Sheet>
@@ -63,7 +55,7 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
         <ErrorNotice error={error} onRetry={() => void reload()} />
       </div>
     );
-  if (!data || loading && !data)
+  if (!data || (loading && !data))
     return (
       <div className="p-4">
         <SheetHeader className="px-0">
@@ -78,7 +70,7 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
   const closed = t.status === "done" || t.status === "cancelled";
   return (
     <>
-      <SheetHeader className="border-b px-4 py-3">
+      <SheetHeader className="border-b bg-card px-4 py-3">
         <div className="flex flex-wrap items-center gap-1.5 pr-8 text-xs">
           <Mono className="font-semibold">{t.id}</Mono>
           <StatusBadge status={t.status} />
@@ -86,15 +78,17 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
           <ToneBadge tone="neutral">{"rev " + t.current_rev}</ToneBadge>
           {!slug ? <ProjectLink slug={project} className="text-xs" /> : null}
         </div>
-        <SheetTitle className="text-base leading-snug anywhere">{t.title}</SheetTitle>
+        <SheetTitle className="text-lg font-semibold leading-snug anywhere">{t.title}</SheetTitle>
         <SheetDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="inline-flex items-center gap-1.5">
+            lead: {t.lead ? <Who row={{ agent: t.lead }} compact /> : <span>none yet - the runner keeps one lead per active project and wakes it for this task</span>}
+          </span>
           <span>
             opened <When d={t.created_at} /> by {t.created_by === "human" ? "you" : t.created_by}
           </span>
           <span>
             updated <When d={t.updated_at} />
           </span>
-          <span>lead: {t.lead ? <b className="text-foreground">{t.lead}</b> : <span>none yet - the runner keeps one lead per active project and wakes it for this task</span>}</span>
           {t.job_id ? (
             <span>
               job <Mono>{t.job_id}</Mono>
@@ -102,16 +96,16 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
           ) : null}
         </SheetDescription>
         <div className="mt-1 flex flex-wrap gap-2">
+          <Button size="sm" asChild>
+            <Link href={hrefs.chat(project, t.id)}>
+              <MessagesSquareIcon /> Chat
+            </Link>
+          </Button>
           <Button size="sm" variant="outline" onClick={() => setAmend(true)} disabled={closed} title={closed ? "a " + t.status + " task cannot be amended - open a new one" : undefined}>
             <PencilIcon /> Amend
           </Button>
-          <Button size="sm" variant="outline" className="text-bad" onClick={() => setCancel(true)} disabled={closed}>
+          <Button size="sm" variant="destructive" onClick={() => setCancel(true)} disabled={closed}>
             <BanIcon /> Cancel task
-          </Button>
-          <Button size="sm" variant="ghost" asChild>
-            <Link href={hrefs.chat(project, t.id)}>
-              <MessagesSquareIcon /> Open in chat
-            </Link>
           </Button>
         </div>
       </SheetHeader>
@@ -128,19 +122,48 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
             <HistoryIcon /> Revisions <span className="tnum text-muted-foreground">{data.revisions.length}</span>
           </TabsTrigger>
         </TabsList>
-        <TabsContent value="brief" className="min-h-0 flex-1 overflow-y-auto p-4">
+        <TabsContent value="brief" className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
+          <SectionHeading icon={FileTextIcon}>Brief</SectionHeading>
           <Markdown source={t.brief} />
         </TabsContent>
         <TabsContent value="chat" className="min-h-0 flex-1 overflow-hidden">
+          <div className="border-b px-4 pt-3">
+            <SectionHeading icon={MessagesSquareIcon} count={data.messages.length}>
+              Conversation
+            </SectionHeading>
+          </div>
           <ChatPane project={project} taskId={t.id} messages={data.messages} lead={t.lead} embedded />
         </TabsContent>
-        <TabsContent value="jobs" className="min-h-0 flex-1 overflow-y-auto p-4">
-          {data.jobs.length ? <DataTable columns={JOB_COLUMNS} rows={data.jobs} rowKey={(j) => j.id} dense /> : <EmptyState>No job yet. The lead breaks the task into jobs with the CLI (pulse job add --source task:{t.id}); they appear here with their branch and status.</EmptyState>}
+        <TabsContent value="jobs" className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
+          <SectionHeading icon={BriefcaseBusinessIcon} count={data.jobs.length}>
+            Jobs
+          </SectionHeading>
+          {data.jobs.length ? (
+            <ul className="divide-y rounded-lg border">
+              {data.jobs.map((j) => (
+                <li key={j.id} className="grid gap-1 px-3 py-2.5">
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                    <Mono className="font-semibold">{j.id}</Mono>
+                    <ToneBadge tone="neutral">{j.kind}</ToneBadge>
+                    <StatusBadge status={j.status} />
+                    {j.agent ? <Who row={{ agent: j.agent }} compact className="ml-auto" /> : <span className="ml-auto text-muted-foreground">no agent yet</span>}
+                  </div>
+                  <div className="text-[13px] leading-snug anywhere">{j.title}</div>
+                  {j.branch ? <Mono className="text-muted-foreground">{j.branch}</Mono> : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState title="No job yet">No job yet. The lead breaks the task into jobs with the CLI (pulse job add --source task:{t.id}); they appear here with their branch and status.</EmptyState>
+          )}
         </TabsContent>
-        <TabsContent value="history" className="min-h-0 flex-1 overflow-y-auto p-4">
+        <TabsContent value="history" className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
+          <SectionHeading icon={HistoryIcon} count={data.revisions.length}>
+            Revisions
+          </SectionHeading>
           <ol className="grid gap-3">
             {[...data.revisions].sort((a, b) => b.rev - a.rev).map((r) => (
-              <li key={r.rev} className="rounded-md border p-3">
+              <li key={r.rev} className="rounded-lg border bg-card p-3 shadow-card">
                 <Kv
                   rows={[
                     ["revision", <span key="r">{r.rev + (r.rev === t.current_rev ? " (current)" : "")}</span>],

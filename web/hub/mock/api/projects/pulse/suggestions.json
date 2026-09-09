@@ -1,10 +1,14 @@
 [
   {
     "agent": "fjord",
-    "date": "2026-09-01T16:28:00Z",
+    "date": "2026-09-01T17:31:00Z",
     "down": 0,
-    "id": "20260901T162800Z-fjord",
+    "gate": "",
+    "id": "20260901T173100Z-fjord",
+    "job": "",
+    "job_status": "",
     "name": "",
+    "plannable": true,
     "rank": 1,
     "score": 2,
     "session": "s-fjord",
@@ -17,9 +21,9 @@
       {
         "agent": "borealis",
         "classification": "counted",
-        "date": "2026-09-01T16:35:00Z",
+        "date": "2026-09-01T17:38:00Z",
         "name": "",
-        "post_id": "20260901T163500Z-borealis",
+        "post_id": "20260901T173800Z-borealis",
         "reason": "Reproduced the scan with EXPLAIN QUERY PLAN",
         "session": "s-borealis",
         "vote": "up"
@@ -27,11 +31,52 @@
       {
         "agent": "ember",
         "classification": "counted",
-        "date": "2026-09-01T16:42:00Z",
+        "date": "2026-09-01T17:45:00Z",
         "name": "",
-        "post_id": "20260901T164200Z-ember",
+        "post_id": "20260901T174500Z-ember",
         "reason": "Cheap and reversible",
         "session": "s-ember",
+        "vote": "up"
+      }
+    ]
+  },
+  {
+    "agent": "ember",
+    "date": "2026-09-01T17:52:00Z",
+    "down": 0,
+    "gate": "",
+    "id": "20260901T175200Z-ember",
+    "job": "",
+    "job_status": "",
+    "name": "",
+    "plannable": true,
+    "rank": 2,
+    "score": 2,
+    "session": "s-ember",
+    "status": "eligible",
+    "summary": "Rename the event subject column",
+    "thread_key": "store/schema-notes",
+    "up": 2,
+    "voters": 2,
+    "votes": [
+      {
+        "agent": "aurora",
+        "classification": "counted",
+        "date": "2026-09-01T17:59:00Z",
+        "name": "",
+        "post_id": "20260901T175900Z-aurora",
+        "reason": "Clearer name",
+        "session": "s-aurora",
+        "vote": "up"
+      },
+      {
+        "agent": "cinder",
+        "classification": "counted",
+        "date": "2026-09-01T18:06:00Z",
+        "name": "",
+        "post_id": "20260901T180600Z-cinder",
+        "reason": "Small migration",
+        "session": "s-cinder",
         "vote": "up"
       }
     ]

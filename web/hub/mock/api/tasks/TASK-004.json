@@ -3,7 +3,7 @@
   "messages": [],
   "revisions": [
     {
-      "at": "2026-09-01T17:52:00Z",
+      "at": "2026-09-01T19:16:00Z",
       "author": "human",
       "brief": "Remove the CSV export nobody uses.",
       "note": "",
@@ -13,7 +13,7 @@
   ],
   "task": {
     "brief": "Remove the CSV export nobody uses.",
-    "created_at": "2026-09-01T17:52:00Z",
+    "created_at": "2026-09-01T19:16:00Z",
     "created_by": "human",
     "current_rev": 1,
     "id": "TASK-004",
@@ -23,6 +23,6 @@
     "project": "demo-app",
     "status": "cancelled",
     "title": "Retire the legacy export",
-    "updated_at": "2026-09-01T17:59:00Z"
+    "updated_at": "2026-09-01T19:23:00Z"
   }
 }

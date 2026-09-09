@@ -13,9 +13,18 @@ import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/componen
 import { prioLabel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { writes, type Task } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { AmendTaskDialog } from "./task-dialogs";
 
 const isClosed = (t: Task) => t.status === "done" || t.status === "cancelled";
+const STATUS_CUE: Record<Task["status"], string> = {
+  open: "border-l-primary/50",
+  planned: "border-l-muted-foreground/40",
+  in_progress: "border-l-info",
+  review: "border-l-warn",
+  done: "border-l-ok/60",
+  cancelled: "border-l-border",
+};
 
 // The owner's three moves on a task - talk to the lead, amend the brief,
 // cancel - without opening the sheet first. Amend and Cancel confirm.
@@ -76,11 +85,11 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
   const open = onOpen ? () => onOpen(t) : () => router.push(hrefs.task(t.project, t.id));
   const body = excerpt(t.brief, compact ? 120 : 220);
   return (
-    <ItemCard onOpen={open} active={active} highlight={t.status === "review"} ariaLabel={t.id + " " + t.title}>
+    <ItemCard onOpen={open} active={active} highlight={t.status === "review"} ariaLabel={t.id + " " + t.title} className={cn("border-l-2", STATUS_CUE[t.status])}>
       <ItemCardHeader
         right={
           <>
-            {t.lead ? <Who row={{ agent: t.lead }} compact /> : <span title="the runner keeps one lead per active project and wakes it for this task">no lead yet</span>}
+            {t.lead ? <Who row={{ agent: t.lead }} compact /> : <span className="text-muted-foreground" title="the runner keeps one lead per active project and wakes it for this task">no lead yet</span>}
             <When d={t.updated_at} />
           </>
         }
@@ -93,7 +102,7 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
       <ItemCardTitle chevron>{t.title}</ItemCardTitle>
       {body && !compact ? <ItemCardBody>{body}</ItemCardBody> : null}
       <ItemCardActions>
-        <span className="text-[11.5px] text-muted-foreground">
+        <span className="text-[11.5px] text-muted-foreground anywhere">
           {"rev " + t.current_rev}
           {t.job_id ? (
             <>
@@ -111,8 +120,13 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
   );
 }
 
-export function TaskCards({ tasks, showProject, onOpen, activeId, cols = 2, compact, empty }: { tasks: Task[]; showProject?: boolean; onOpen?: (t: Task) => void; activeId?: string | null; cols?: 1 | 2 | 3; compact?: boolean; empty?: React.ReactNode }) {
-  if (!tasks.length) return <EmptyState>{empty ?? "No task here."}</EmptyState>;
+export function TaskCards({ tasks, showProject, onOpen, activeId, cols = 2, compact, empty, emptyTitle, emptyAction }: { tasks: Task[]; showProject?: boolean; onOpen?: (t: Task) => void; activeId?: string | null; cols?: 1 | 2 | 3; compact?: boolean; empty?: React.ReactNode; emptyTitle?: React.ReactNode; emptyAction?: React.ReactNode }) {
+  if (!tasks.length)
+    return (
+      <EmptyState title={emptyTitle} action={emptyAction}>
+        {empty ?? "No task here."}
+      </EmptyState>
+    );
   return (
     <CardGrid cols={cols}>
       {tasks.map((t) => (

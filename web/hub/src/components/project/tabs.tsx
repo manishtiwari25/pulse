@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { ActivityIcon, BellIcon, BotIcon, CheckCircle2Icon, FileDiffIcon, FolderIcon, GitBranchIcon, InboxIcon, ListTodoIcon, MessageSquareIcon, MessagesSquareIcon, RadioIcon, ServerIcon, SettingsIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -14,22 +15,47 @@ import { Markdown } from "@/components/pulse/markdown";
 import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Check, Mono, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
-import { THREAD_COLUMNS, ThreadCards } from "@/components/board/sheets";
+import { THREAD_COLUMNS, ThreadCards, ThreadLastBy, ThreadParticipants, ThreadSignals } from "@/components/board/sheets";
 import { ChatPane } from "@/components/chat/chat-pane";
+import { SectionHeading } from "@/components/pulse/item-card";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { TASK_COLUMNS } from "@/components/tasks/task-sheet";
-import { RECORD_COLUMNS } from "@/components/records/records";
+import { kindLabel, RECORD_COLUMNS, RecordCards, RecordSheet } from "@/components/records/records";
 import { hrefs } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { num, plural, statusTone } from "@/lib/format";
-import { isBaselineRow, projectPath, TASK_STATUSES, type Amendment, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type ProjectInfo, type Proposal, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
+import { isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type ProjectInfo, type Proposal, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
 
 function Wait<T>({ q, rows = 5, children }: { q: Loaded<T>; rows?: number; children: (d: T) => React.ReactNode }) {
   if (q.error && !q.data) return <ErrorNotice error={q.error} onRetry={() => void q.reload()} />;
   if (q.data === undefined) return <SkeletonRows n={rows} />;
   return <>{children(q.data)}</>;
+}
+
+function ProjectBranchLine({ info }: { info?: ProjectInfo }) {
+  if (!info) return null;
+  return (
+    <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[12.5px]">
+      <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 shadow-card">
+        <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <Mono className="font-semibold">{info.branch || "—"}</Mono>
+      </span>
+      {info.head ? (
+        <span className="inline-flex items-center rounded-full border bg-muted/40 px-2.5 py-1">
+          <Mono className="text-muted-foreground">{info.head.slice(0, 7)}</Mono>
+        </span>
+      ) : null}
+      {info.dirty === "1" ? <ToneBadge tone="warn">dirty</ToneBadge> : null}
+      {info.repo ? (
+        <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 shadow-card sm:max-w-[34rem]" title={info.repo}>
+          <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <Mono className="truncate text-muted-foreground">{info.repo}</Mono>
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 // A one-of filter as a row of chips: every choice is visible and one tap
@@ -69,15 +95,16 @@ export function OverviewTab({ slug }: { slug: string }) {
         const bp = i?.board_params;
         return (
           <div className="grid gap-4">
+            <ProjectBranchLine info={i} />
             <KpiGrid>
-              <Kpi n={o.proposals_awaiting} label="for you" sub="proposals waiting" tone={o.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "proposals")} />
-              <Kpi n={open.length} label="open tasks" sub={tasks.data ? plural(open.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.project(slug, "tasks")} />
-              <Kpi n={o.claims_active} label="working now" sub="active claims" tone={o.claims_active ? "ok" : "neutral"} />
-              <Kpi n={o.threads_open} label="open threads" sub={num(o.threads_stale) + " stale"} tone={o.threads_stale ? "warn" : "neutral"} href={hrefs.project(slug, "threads")} />
-              <Kpi n={o.suggestions_eligible} label="eligible" sub="suggestions past quorum" tone={o.suggestions_eligible ? "accent" : "neutral"} href={hrefs.project(slug, "suggestions")} />
-              <Kpi n={o.suggestions_needing_votes} label="need votes" sub={"quorum " + num(o.quorum)} tone={o.suggestions_needing_votes ? "warn" : "neutral"} href={hrefs.project(slug, "suggestions")} />
-              <Kpi n={o.amendments_open} label="amendments" sub={num(o.amendments_passed) + " passed"} href={hrefs.project(slug, "amendments")} />
-              <Kpi n={o.posts} label="posts" sub={num(o.posts_without_provenance) + " without provenance"} tone={o.posts_without_provenance ? "warn" : "neutral"} />
+              <Kpi icon={InboxIcon} n={o.proposals_awaiting} label="for you" sub="proposals waiting" tone={o.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "proposals")} />
+              <Kpi icon={ListTodoIcon} n={open.length} label="open tasks" sub={tasks.data ? plural(open.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.project(slug, "tasks")} />
+              <Kpi icon={ActivityIcon} n={o.claims_active} label="working now" sub="active claims" tone={o.claims_active ? "ok" : "neutral"} />
+              <Kpi icon={MessagesSquareIcon} n={o.threads_open} label="open threads" sub={num(o.threads_stale) + " stale"} tone={o.threads_stale ? "warn" : "neutral"} href={hrefs.project(slug, "threads")} />
+              <Kpi icon={CheckCircle2Icon} n={o.suggestions_eligible} label="eligible" sub={o.suggestions_plannable === undefined ? "suggestions past quorum" : num(o.suggestions_plannable) + " plannable"} tone={o.suggestions_eligible ? "accent" : "neutral"} href={hrefs.project(slug, "suggestions")} />
+              <Kpi icon={VoteIcon} n={o.suggestions_needing_votes} label="need votes" sub={"quorum " + num(o.quorum)} tone={o.suggestions_needing_votes ? "warn" : "neutral"} href={hrefs.project(slug, "suggestions")} />
+              <Kpi icon={FileDiffIcon} n={o.amendments_open} label="amendments" sub={num(o.amendments_passed) + " passed"} href={hrefs.project(slug, "amendments")} />
+              <Kpi icon={MessageSquareIcon} n={o.posts} label="posts" sub={num(o.posts_without_provenance) + " without provenance"} tone={o.posts_without_provenance ? "warn" : "neutral"} />
             </KpiGrid>
             {!o.board_present ? (
               <Notice tone="warn">
@@ -87,20 +114,20 @@ export function OverviewTab({ slug }: { slug: string }) {
             <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
               <div className="grid gap-4 content-start">
                 {tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={180} /> : null}
-                <Panel title={o.open_threads.length ? "Open threads (" + num(o.threads_open) + ")" : "Open threads"} actions={<Link href={hrefs.project(slug, "threads")} className="hover:underline">all</Link>} dense>
+                <Panel title={o.open_threads.length ? "Open threads (" + num(o.threads_open) + ")" : "Open threads"} icon={MessagesSquareIcon} actions={<Link href={hrefs.project(slug, "threads")} className="hover:underline">all</Link>} dense>
                   {o.open_threads.length ? <OpenThreads rows={o.open_threads} slug={slug} limit={6} /> : <p className="px-4 py-3 text-[12.5px] text-muted-foreground">No open thread. Threads open when an agent posts a claim, question or suggestion.</p>}
                 </Panel>
-                <Panel title="Recent posts" actions={<Link href={hrefs.project(slug, "timeline")} className="hover:underline">all</Link>}>
+                <Panel title="Recent posts" icon={MessageSquareIcon} actions={<Link href={hrefs.project(slug, "timeline")} className="hover:underline">all</Link>}>
                   <FeedList rows={o.recent_posts} slug={slug} limit={8} />
                 </Panel>
               </div>
               <div className="grid gap-4 content-start">
                 <LiveFeed project={slug} limit={30} height={360} />
-                <Panel title={o.active_claims.length ? "Working now (" + num(o.active_claims.length) + ")" : "Working now"} dense={!o.active_claims.length}>
+                <Panel title={o.active_claims.length ? "Working now (" + num(o.active_claims.length) + ")" : "Working now"} icon={RadioIcon} dense={!o.active_claims.length}>
                   {o.active_claims.length ? <WorkingNow claims={o.active_claims} slug={slug} /> : <p className="px-4 py-2.5 text-[12.5px] text-muted-foreground">Nobody holds a claim right now - a claim is an agent saying &quot;I am on this thread&quot; for a few hours.</p>}
                 </Panel>
                 {o.stale_claims.length ? (
-                  <Panel title={"Stale claims (" + o.stale_claims.length + ")"}>
+                  <Panel title={"Stale claims (" + o.stale_claims.length + ")"} icon={RadioIcon}>
                     <ul className="grid gap-1 text-[12.5px]">
                       {o.stale_claims.map((c) => (
                         <li key={c.id} className="anywhere">
@@ -110,7 +137,7 @@ export function OverviewTab({ slug }: { slug: string }) {
                     </ul>
                   </Panel>
                 ) : null}
-                <Panel title="Repository">
+                <Panel title="Repository" icon={ServerIcon}>
                   {i ? (
                     <Kv
                       rows={[
@@ -129,7 +156,7 @@ export function OverviewTab({ slug }: { slug: string }) {
                   )}
                   {i?.last_error ? <p className="mt-2 text-xs text-bad anywhere">{i.last_error}</p> : null}
                 </Panel>
-                <Panel title="Agents on this board" dense>
+                <Panel title="Agents on this board" icon={BotIcon} dense>
                   {o.agents.length ? (
                     <ul className="grid text-[12.5px] sm:grid-cols-2">
                       {o.agents.map((a, i) => (
@@ -166,10 +193,15 @@ function OpenThreads({ rows, slug, limit }: { rows: ThreadRow[]; slug: string; l
               <StatusBadge status={t.status} />
               <Mono className="font-semibold">{t.key}</Mono>
               {t.resolution ? <ToneBadge tone={statusTone(t.resolution)}>{t.resolution}</ToneBadge> : null}
+              <ThreadSignals t={t} />
               <span className="ml-auto flex items-center gap-2 text-muted-foreground">
                 <span className="tnum">{plural(t.posts, "post")}</span>
                 <When d={t.last} />
               </span>
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <ThreadParticipants t={t} />
+              <ThreadLastBy t={t} />
             </div>
             {t.summary ? <p className="mt-0.5 line-clamp-1 text-[12.5px] text-muted-foreground anywhere">{t.summary}</p> : null}
           </Link>
@@ -226,9 +258,9 @@ export function TasksTab({ slug, onOpen, activeId }: { slug: string; onOpen: (id
                 <DataTable columns={TASK_COLUMNS(false)} rows={rows} rowKey={(t) => t.id} onRow={(t) => onOpen(t.id)} initialSort="updated" />
               </div>
             ) : (
-              <EmptyState>{empty}</EmptyState>
+              <EmptyState title="No task" action={status === "active" && !text ? <NewTaskButton project={slug} onCreated={(t: Task) => onOpen(t.id)} /> : undefined}>{empty}</EmptyState>
             );
-          return <TaskCards tasks={rows} onOpen={(t) => onOpen(t.id)} activeId={activeId} empty={empty} />;
+          return <TaskCards tasks={rows} onOpen={(t) => onOpen(t.id)} activeId={activeId} empty={empty} emptyTitle={status === "active" && !text ? "No open task" : undefined} emptyAction={status === "active" && !text ? <NewTaskButton project={slug} onCreated={(t: Task) => onOpen(t.id)} /> : undefined} />;
         }}
       </Wait>
     </div>
@@ -366,7 +398,7 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
                 ))}
               </div>
             ) : (
-              <EmptyState>{show === "awaiting" ? "Nothing waits for your decision. Agents raise a proposal when a suggestion passes quorum and needs a human yes or no; it shows here and on the hub." : "No proposal has been raised on this board yet."}</EmptyState>
+              <EmptyState title={show === "awaiting" ? "Nothing waits for you" : "No proposals"}>{show === "awaiting" ? "Nothing waits for your decision. Agents raise a proposal when a suggestion passes quorum and needs a human yes or no; it shows here and on the hub." : "No proposal has been raised on this board yet."}</EmptyState>
             )}
           </div>
         );
@@ -401,7 +433,7 @@ export function SuggestionsTab({ slug }: { slug: string }) {
                 ))}
               </div>
             ) : (
-              <EmptyState>No suggestion here. Agents post suggestions on the board; other agents vote; the ones past quorum become jobs.</EmptyState>
+              <EmptyState title="No suggestions">No suggestion here. Agents post suggestions on the board; other agents vote; suggestions past quorum still pass the planner gates before becoming jobs.</EmptyState>
             )}
           </div>
         );
@@ -426,9 +458,9 @@ export function AmendmentsTab({ slug }: { slug: string }) {
               ))}
             </div>
           ) : (
-            <EmptyState>No amendment proposed. An agent amends the constitution by posting kind: amendment on the board; it passes with the amendment quorum and majority in Settings.</EmptyState>
+            <EmptyState title="No amendments">No amendment proposed. An agent amends the constitution by posting kind: amendment on the board; it passes with the amendment quorum and majority in Settings.</EmptyState>
           )}
-          <Panel title={c.data?.record ? "Constitution · " + c.data.record.id : "Constitution"} actions={c.data?.record ? <Link href={hrefs.record(c.data.record.id, slug)} className="hover:underline">open record</Link> : null}>
+          <Panel title={c.data?.record ? "Constitution · " + c.data.record.id : "Constitution"} icon={FileDiffIcon} actions={c.data?.record ? <Link href={hrefs.record(c.data.record.id, slug)} className="hover:underline">open record</Link> : null}>
             {c.error && !c.data && !noRecord(c.error) ? <ErrorNotice error={c.error} onRetry={() => void c.reload()} /> : c.data === undefined && !c.error ? <SkeletonRows n={4} /> : c.data?.body ? <Markdown source={c.data.body} className="max-h-[60vh] overflow-y-auto" /> : <EmptyState>This project has no constitution record yet.</EmptyState>}
             {c.data?.amendments?.length ? (
               <ul className="mt-3 grid gap-1 border-t pt-3 text-[12.5px]">
@@ -519,7 +551,7 @@ export function EvolutionTab({ slug }: { slug: string }) {
                     {[!e.constitution ? "EVO-constitution" : "", !e.evaluators ? "EVO-evaluators" : ""].filter(Boolean).join(" and ")} not in the store yet - the loop refuses to run without both. Onboarding seeds them from the template&apos;s text; when it could not, <Mono>{"pulse evolve seed --project " + slug}</Mono> seeds what is missing, or write your own and index it with <Mono>pulse record new evolution</Mono>.
                   </Notice>
                 ) : null}
-                <Panel title="Archive - measured cycles" actions={<span>{plural(cycles.length, "cycle") + (baselineRow ? " · measured baseline " + score(baselineRow.variant_score) : "")}</span>} dense>
+                <Panel title="Archive - measured cycles" icon={ActivityIcon} actions={<span>{plural(cycles.length, "cycle") + (baselineRow ? " · measured baseline " + score(baselineRow.variant_score) : "")}</span>} dense>
                   {rows.length ? (
                     <DataTable
                       dense
@@ -552,7 +584,7 @@ export function EvolutionTab({ slug }: { slug: string }) {
                   )}
                 </Panel>
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <Panel title="Constitution" actions={e.constitution ? <DocRev doc={e.constitution} slug={slug} /> : undefined}>
+                  <Panel title="Constitution" icon={FileDiffIcon} actions={e.constitution ? <DocRev doc={e.constitution} slug={slug} /> : undefined}>
                     {e.constitution ? (
                       <>
                         <SeededMarker doc={e.constitution} className="mb-3" />
@@ -562,7 +594,7 @@ export function EvolutionTab({ slug }: { slug: string }) {
                       <EmptyState>Not indexed yet. The bounds the loop runs inside - seeded from the template at onboarding, or written in your words.</EmptyState>
                     )}
                   </Panel>
-                  <Panel title="Evaluators" actions={e.evaluators ? <DocRev doc={e.evaluators} slug={slug} /> : undefined}>
+                  <Panel title="Evaluators" icon={CheckCircle2Icon} actions={e.evaluators ? <DocRev doc={e.evaluators} slug={slug} /> : undefined}>
                     {e.evaluators ? (
                       <>
                         <SeededMarker doc={e.evaluators} className="mb-3" />
@@ -574,7 +606,7 @@ export function EvolutionTab({ slug }: { slug: string }) {
                   </Panel>
                 </div>
                 {e.archive?.record && e.archive.body ? (
-                  <Panel title="Historical archive" actions={<Link href={hrefs.record(e.archive.record.id, slug)} className="hover:underline">{e.archive.record.id}</Link>}>
+                  <Panel title="Historical archive" icon={ActivityIcon} actions={<Link href={hrefs.record(e.archive.record.id, slug)} className="hover:underline">{e.archive.record.id}</Link>}>
                     <Markdown source={e.archive.body} className="max-h-[50vh] overflow-y-auto" />
                   </Panel>
                 ) : null}
@@ -599,7 +631,7 @@ export function TimelineTab({ slug }: { slug: string }) {
       {tl.error && !tl.data ? <ErrorNotice error={tl.error} onRetry={() => void tl.reload()} /> : tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={240} title="Posts over time" /> : <SkeletonRows n={4} />}
       <div className="grid gap-4 xl:grid-cols-2">
         <LiveFeed project={slug} limit={60} height={560} title="Store events" />
-        <Panel title="Board activity" dense>
+        <Panel title="Board activity" icon={MessageSquareIcon} dense>
           <Wait q={ov} rows={8}>
             {(o) => <FeedList rows={o.recent_posts} slug={slug} limit={60} />}
           </Wait>
@@ -618,12 +650,12 @@ export function NoticesTab({ slug }: { slug: string }) {
       {(n) => (
         <div className="grid gap-4">
           <KpiGrid>
-            <Kpi n={n.votes_open} label="votes open" tone={n.votes_open ? "warn" : "neutral"} />
-            <Kpi n={n.proposals_awaiting} label="proposals for you" tone={n.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "proposals")} />
-            <Kpi n={n.commons_questions ?? 0} label="commons questions" sub={n.commons_present ? "commons present" : "no commons"} />
-            <Kpi n={n.brain || "—"} label="framework brain" />
+            <Kpi icon={VoteIcon} n={n.votes_open} label="votes open" tone={n.votes_open ? "warn" : "neutral"} />
+            <Kpi icon={InboxIcon} n={n.proposals_awaiting} label="proposals for you" tone={n.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "proposals")} />
+            <Kpi icon={MessageSquareIcon} n={n.commons_questions ?? 0} label="commons questions" sub={n.commons_present ? "commons present" : "no commons"} />
+            <Kpi icon={BotIcon} n={n.brain || "—"} label="framework brain" />
           </KpiGrid>
-          <Panel title="Ballot - what agents are asked to vote on next" dense>
+          <Panel title="Ballot - what agents are asked to vote on next" icon={BellIcon} dense>
             {n.ballot.length ? (
               <DataTable
                 dense
@@ -656,19 +688,100 @@ export function EnvTab({ slug }: { slug: string }) {
   return (
     <div className="grid gap-4">
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel title={env ? "Environment · " + env.id : "Environment"} actions={env ? <Link href={hrefs.record(env.id, slug)} className="hover:underline">open record</Link> : null}>
+        <Panel title={env ? "Environment · " + env.id : "Environment"} icon={SettingsIcon} actions={env ? <Link href={hrefs.record(env.id, slug)} className="hover:underline">open record</Link> : null}>
           {recs.error && !recs.data ? <ErrorNotice error={recs.error} onRetry={() => void recs.reload()} /> : recs.data === undefined ? <SkeletonRows n={4} /> : env ? <EnvBody id={env.id} slug={slug} /> : <EmptyState>No CTX-environment record. Agents write one from <Mono>docs/context/environment.md</Mono> the first time they run in this checkout.</EmptyState>}
         </Panel>
-        <Panel title={c.data?.record ? "Constitution · " + c.data.record.id : "Constitution"} actions={c.data?.record ? <Link href={hrefs.record(c.data.record.id, slug)} className="hover:underline">open record</Link> : null}>
+        <Panel title={c.data?.record ? "Constitution · " + c.data.record.id : "Constitution"} icon={FileDiffIcon} actions={c.data?.record ? <Link href={hrefs.record(c.data.record.id, slug)} className="hover:underline">open record</Link> : null}>
           {c.error && !c.data && !noRecord(c.error) ? <ErrorNotice error={c.error} onRetry={() => void c.reload()} /> : c.data === undefined && !c.error ? <SkeletonRows n={4} /> : c.data?.body ? <Markdown source={c.data.body} className="max-h-[60vh] overflow-y-auto" /> : <EmptyState>No constitution yet. It is the <Mono>EVO-constitution</Mono> record - the boundary every agent runs inside; onboarding seeds it from the template, <Mono>{"pulse evolve seed --project " + slug}</Mono> does when it could not.</EmptyState>}
         </Panel>
       </div>
-      <Panel title="Records of this project" actions={<Link href={hrefs.records({ project: slug })} className="hover:underline">browse</Link>} dense>
-        <Wait q={all} rows={6}>
-          {(d) => (d.records.length ? <DataTable dense columns={RECORD_COLUMNS(false)} rows={d.records} rowKey={(r) => r.id} initialSort="updated" /> : <EmptyState className="m-3">No records indexed for this project yet. pulse init indexes docs/ into the store.</EmptyState>)}
-        </Wait>
-      </Panel>
+      <ProjectRecords slug={slug} q={all} />
     </div>
+  );
+}
+
+// The project's shelf of the library: its decisions, plans, work units,
+// features, memory and evolution records as cards, the dense table one click
+// away, narrowed by kind or text, each opening in place. Every filter the
+// library knows lives on the Records page; "browse" leads there pre-filtered.
+function ProjectRecords({ slug, q }: { slug: string; q: Loaded<RecordsPayload> }) {
+  const [kind, setKind] = useState("all");
+  const [text, setText] = useState("");
+  const [open, setOpen] = useState<string | null>(null);
+  const [view, setView] = useViewMode("project-records");
+  const all = q.data?.records ?? NONE;
+  // The kinds this project holds, in the canonical order, unknown ones last.
+  const kinds = useMemo(() => {
+    const present = new Set<string>(all.map((r) => r.kind));
+    const known: string[] = RECORD_KINDS;
+    return known.filter((k) => present.has(k)).concat(Array.from(present).filter((k) => !known.includes(k)));
+  }, [all]);
+  const rows = useMemo(() => {
+    const t = text.trim().toLowerCase();
+    return all
+      .filter((r) => (kind === "all" || r.kind === kind) && (!t || r.id.toLowerCase().includes(t) || r.title.toLowerCase().includes(t) || (r.tags || []).some((x) => x.toLowerCase().includes(t))))
+      .sort(byNewest((r) => r.updated_at || r.date));
+  }, [all, kind, text]);
+  const chips = [{ id: "all", label: "All", n: all.length }, ...kinds.map((k) => ({ id: k, label: kindLabel(k), n: all.filter((r) => r.kind === k).length }))];
+  const clear = () => {
+    setKind("all");
+    setText("");
+  };
+  return (
+    <section aria-label="Records of this project">
+      <SectionHeading
+        icon={FolderIcon}
+        count={q.data ? all.length : undefined}
+        action={
+          <Link href={hrefs.records({ project: slug })} className="hover:underline">
+            browse the library
+          </Link>
+        }
+      >
+        Records of this project
+      </SectionHeading>
+      {all.length ? (
+        <Toolbar className="mb-3">
+          <Chips label="Kind" value={kind} onChange={setKind} options={chips} />
+          <Input aria-label="Filter records" placeholder="filter…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-44 sm:w-56" />
+          <span className="ml-auto flex items-center gap-2">
+            <Count>{plural(rows.length, "record")}</Count>
+            <ViewToggle value={view} onChange={setView} />
+          </span>
+        </Toolbar>
+      ) : null}
+      <Wait q={q} rows={3}>
+        {() => {
+          if (!all.length)
+            return (
+              <EmptyState title="No records yet">
+                Nothing is indexed for <b>{slug}</b> yet. <Mono>pulse init</Mono> in its checkout indexes docs/ (ADRs, plans, work units, features, memory…) into the store; agents add records as they work.
+              </EmptyState>
+            );
+          if (!rows.length)
+            return (
+              <EmptyState
+                title="No matching records"
+                action={
+                  <Button size="xs" variant="outline" onClick={clear}>
+                    clear filters
+                  </Button>
+                }
+              >
+                Nothing matches this filter.
+              </EmptyState>
+            );
+          if (view === "table")
+            return (
+              <div className="rounded-lg border bg-card">
+                <DataTable columns={RECORD_COLUMNS(false)} rows={rows} rowKey={(r) => r.id} onRow={(r) => setOpen(r.id)} initialSort="updated" caption={"Records of " + slug} />
+              </div>
+            );
+          return <RecordCards rows={rows} onOpen={(r) => setOpen(r.id)} activeId={open} cols={3} />;
+        }}
+      </Wait>
+      <RecordSheet id={open} project={slug} onClose={() => setOpen(null)} />
+    </section>
   );
 }
 

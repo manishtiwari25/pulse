@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { ClockIcon, CloudIcon, CoinsIcon, CpuIcon, HistoryIcon, InboxIcon, ServerIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExecutorRow, MachinePanel } from "@/components/pulse/cards";
 import { CapsPanel, ComputeRequestCard } from "@/components/compute/compute";
@@ -27,7 +28,7 @@ export default function ComputePage() {
   if (q.error && !q.data)
     return (
       <>
-        <PageTitle>Compute</PageTitle>
+        <PageTitle icon={CpuIcon}>Compute</PageTitle>
         <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
       </>
     );
@@ -47,12 +48,13 @@ export default function ComputePage() {
   return (
     <>
       <PageTitle
+        icon={CpuIcon}
         sub="Agents ask for machines; you approve or deny within the caps. Approved requests become executors the daemon runs jobs on."
         bar={
-          <div role="group" aria-label="Which requests" className="inline-flex rounded-lg border bg-background p-0.5">
+          <div role="group" aria-label="Which requests" className="inline-flex rounded-lg border bg-muted/40 p-0.5">
             {chips.map((ch) => (
-              <Button key={ch.id} size="xs" variant={show === ch.id ? "secondary" : "ghost"} aria-pressed={show === ch.id} onClick={() => setShow(ch.id)}>
-                {ch.label} <span className="tnum opacity-70">({num(ch.n)})</span>
+              <Button key={ch.id} size="xs" variant="ghost" aria-pressed={show === ch.id} className={show === ch.id ? "bg-card text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:text-foreground"} onClick={() => setShow(ch.id)}>
+                {ch.label} <span className={show === ch.id ? "tnum rounded-full bg-primary/10 px-1.5 text-[10.5px] text-primary" : "tnum rounded-full bg-muted px-1.5 text-[10.5px] text-muted-foreground"}>{num(ch.n)}</span>
               </Button>
             ))}
           </div>
@@ -61,26 +63,26 @@ export default function ComputePage() {
         Compute
       </PageTitle>
       <KpiGrid>
-        <Kpi n={pending.length} label="to decide" tone={pending.length ? "warn" : "neutral"} sub="pending requests" />
-        <Kpi n={live.length} label="live" sub="approved / provisioning / ready" tone={live.length ? "ok" : "neutral"} />
-        <Kpi n={num(c.caps.vms_now) + " / " + num(c.caps.max_vms)} label="machines" sub="now / cap" />
-        <Kpi n={num(c.caps.hours_today) + " / " + num(c.caps.max_hours_per_day)} label="hours today" sub="used / cap" tone={c.caps.hours_today >= c.caps.max_hours_per_day && c.caps.max_hours_per_day > 0 ? "bad" : "neutral"} />
-        <Kpi n={c.caps.budget_credits} label="budget" sub="credits" />
-        <Kpi n={c.caps.provider || "none"} label="provider" sub={c.caps.auto_approve === true || c.caps.auto_approve === 1 ? "auto-approve on" : "manual approval"} href={hrefs.settings("compute")} />
-        <Kpi n={executors.length} label="executors" sub={num(active) + " active"} tone={active ? "ok" : "neutral"} />
+        <Kpi n={pending.length} label="to decide" tone={pending.length ? "warn" : "neutral"} sub="pending requests" icon={InboxIcon} />
+        <Kpi n={live.length} label="live" sub="approved / provisioning / ready" tone={live.length ? "ok" : "neutral"} icon={CpuIcon} />
+        <Kpi n={num(c.caps.vms_now) + " / " + num(c.caps.max_vms)} label="machines" sub="now / cap" icon={ServerIcon} />
+        <Kpi n={num(c.caps.hours_today) + " / " + num(c.caps.max_hours_per_day)} label="hours today" sub="used / cap" tone={c.caps.hours_today >= c.caps.max_hours_per_day && c.caps.max_hours_per_day > 0 ? "bad" : "neutral"} icon={ClockIcon} />
+        <Kpi n={c.caps.budget_credits} label="budget" sub="credits" icon={CoinsIcon} />
+        <Kpi n={c.caps.provider || "none"} label="provider" sub={c.caps.auto_approve === true || c.caps.auto_approve === 1 ? "auto-approve on" : "manual approval"} href={hrefs.settings("compute")} icon={CloudIcon} />
+        <Kpi n={executors.length} label="executors" sub={num(active) + " active"} tone={active ? "ok" : "neutral"} icon={ServerIcon} />
         <Kpi n={c.requests.length} label="requests" sub="all time" />
       </KpiGrid>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <section aria-label="Requests">
-          <SectionHeading count={rows.length}>Requests</SectionHeading>
+          <SectionHeading count={rows.length} icon={show === "pending" ? InboxIcon : HistoryIcon}>{show === "pending" ? "Pending requests" : "Request history"}</SectionHeading>
           {rows.length ? (
             <CardGrid cols={2}>
               {rows.map((r) => (
-                <ComputeRequestCard key={r.id} r={r} />
+                <ComputeRequestCard key={r.id} r={r} caps={c.caps} />
               ))}
             </CardGrid>
           ) : (
-            <EmptyState>
+            <EmptyState title="No compute request">
               {show === "pending" ? (
                 <>
                   Nothing to decide. When an agent runs <Mono>pulse compute request</Mono> the request shows here and on the hub with Approve / Deny.

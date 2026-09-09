@@ -1,8 +1,16 @@
 [
   {
+    "active_claims": [],
     "area": "runner",
     "key": "runner/compute",
-    "last": "2026-09-01T18:55:00Z",
+    "last": "2026-09-01T20:19:00Z",
+    "last_by": "delta",
+    "last_kind": "proposal",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "delta"
+    ],
     "posts": 1,
     "resolution": "",
     "status": "open",
@@ -10,9 +18,18 @@
     "thread": "compute"
   },
   {
+    "active_claims": [],
     "area": "library",
     "key": "library/api-surface",
-    "last": "2026-09-01T15:25:00Z",
+    "last": "2026-09-01T16:28:00Z",
+    "last_by": "fjord",
+    "last_kind": "vote",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "ember",
+      "fjord"
+    ],
     "posts": 3,
     "resolution": "",
     "status": "open",
@@ -20,9 +37,18 @@
     "thread": "api-surface"
   },
   {
+    "active_claims": [],
     "area": "library",
     "key": "library/release-cadence",
-    "last": "2026-09-01T15:39:00Z",
+    "last": "2026-09-01T16:42:00Z",
+    "last_by": "demo-lib-lead",
+    "last_kind": "answer",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "delta",
+      "demo-lib-lead"
+    ],
     "posts": 2,
     "resolution": "answered",
     "status": "closed",

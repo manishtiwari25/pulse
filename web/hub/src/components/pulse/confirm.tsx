@@ -58,15 +58,15 @@ export function ConfirmDialog({ open, onOpenChange, title, description, action, 
   };
   return (
     <AlertDialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <AlertDialogContent size="default" className="sm:max-w-lg">
+      <AlertDialogContent size="default" className="rounded-xl sm:max-w-lg">
         <AlertDialogHeader>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
-          {description ? <AlertDialogDescription className="anywhere">{description}</AlertDialogDescription> : null}
+          <AlertDialogTitle className="text-base font-semibold tracking-tight">{title}</AlertDialogTitle>
+          {description ? <AlertDialogDescription className="leading-relaxed anywhere">{description}</AlertDialogDescription> : null}
         </AlertDialogHeader>
         {children}
         {words ? (
           <div className="grid gap-1.5">
-            <Label htmlFor="confirm-words">{words.label}</Label>
+            <Label htmlFor="confirm-words" className="text-sm font-medium">{words.label}</Label>
             <Textarea
               id="confirm-words"
               value={text}
@@ -83,7 +83,7 @@ export function ConfirmDialog({ open, onOpenChange, title, description, action, 
         ) : null}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={busy || missing} onClick={(e) => { e.preventDefault(); void run(); }} className={cn(destructive && "bg-destructive text-white hover:bg-destructive/90")}>
+          <AlertDialogAction disabled={busy || missing} onClick={(e) => { e.preventDefault(); void run(); }} className={cn(destructive && "bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/30")}>
             {busy ? <Loader2Icon className="animate-spin" /> : null}
             {action}
           </AlertDialogAction>

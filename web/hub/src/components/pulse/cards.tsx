@@ -12,9 +12,9 @@ import { EmptyState, Kv, Panel } from "./panel";
 import { Fact, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
 import { KindBadge, Mono, PostLink, ProjectLink, Provenance, StatusBadge, ThreadLink, ToneBadge, VoteBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
-import { expiresAt, num, plural, statusTone, untilText } from "@/lib/format";
+import { expiresAt, hashHue, initials, num, plural, statusTone, untilText } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { COMMONS_HINT, evolveGate, writes, type Amendment, type Claim, type EvolveGate, type Executor, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion } from "@/lib/api";
+import { COMMONS_HINT, evolveGate, writes, type Amendment, type Claim, type EvolveGate, type Executor, type LandingHold, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion } from "@/lib/api";
 import { useNow } from "@/lib/use-api";
 import { EvolveBadges, gateStep } from "./evolve";
 
@@ -22,6 +22,23 @@ import { EvolveBadges, gateStep } from "./evolve";
 
 type FactTone = "ok" | "warn" | "accent";
 const FACT_TONE: Record<FactTone, string> = { ok: "text-ok", warn: "text-warn", accent: "text-accent-2" };
+const FOOTER_TONE = {
+  neutral: "border-border bg-muted/40 text-muted-foreground",
+  warn: "border-warn/30 bg-warn/10 text-warn",
+  bad: "border-bad/30 bg-bad/10 text-bad",
+} as const;
+
+function ProjectAvatar({ slug }: { slug: string }) {
+  return (
+    <span className="flex size-9 shrink-0 items-center justify-center rounded-lg font-semibold text-white shadow-card" style={{ background: `oklch(0.62 0.12 ${hashHue(slug)})` }} aria-hidden>
+      {initials(slug)}
+    </span>
+  );
+}
+
+function AttentionLine({ tone = "neutral", children }: { tone?: keyof typeof FOOTER_TONE; children: React.ReactNode }) {
+  return <p className={cn("rounded-md border px-2.5 py-1.5 text-xs leading-snug anywhere", FOOTER_TONE[tone])}>{children}</p>;
+}
 
 // `gate` overrides what the org row says about the self-improvement gates
 // (the hub page merges in the registry row); undefined reads the row itself.
@@ -40,10 +57,21 @@ export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: nu
     { n: inVote, label: "in vote", tone: inVote ? "warn" : undefined },
     { n: p.posts_24h, label: "posts/24h" },
   ];
+  const footer = p.error
+    ? { tone: "bad" as const, text: p.error }
+    : p.stop_present
+      ? { tone: "bad" as const, text: "STOP is set - the evolution loop halts until it is removed." }
+      : p.missing || !p.present
+        ? { tone: "warn" as const, text: "Registered but missing on disk." }
+        : !p.board_present
+          ? { tone: "warn" as const, text: "No board yet - pulse init registers this checkout." }
+          : null;
   return (
     <ItemCard href={hrefs.project(p.slug)} highlight={attention} ariaLabel={"Project " + p.slug}>
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <ProjectAvatar slug={p.slug} />
+          <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="truncate text-[15px] font-semibold tracking-tight">{p.slug}</span>
             {p.brain ? <Badge variant="secondary">framework</Badge> : null}
@@ -55,13 +83,13 @@ export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: nu
             {p.head ? <Mono className="ml-1.5 text-muted-foreground">{p.head}</Mono> : null}
             {p.dirty ? <span className="ml-1.5 text-warn">dirty</span> : null}
           </div>
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-2 text-muted-foreground">
           {spark?.length ? <Sparkline values={spark} w={72} h={20} /> : null}
           <ChevronRightIcon className="size-4 opacity-40 transition-transform group-hover/item:translate-x-0.5" />
         </div>
       </div>
-      {p.error ? <p className="text-xs text-bad anywhere">{p.error}</p> : null}
       {/* Tiles from sm up; one quiet line on phones so four cards fit a screen. */}
       <div className="hidden grid-cols-6 gap-1.5 sm:grid">
         {facts.map((f) => (
@@ -81,9 +109,12 @@ export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: nu
         <p className="truncate text-xs text-muted-foreground">
           <KindBadge kind={p.last_post.kind} /> <span className="ml-1">{p.last_post.summary}</span>
         </p>
+      ) : footer ? (
+        <AttentionLine tone={footer.tone}>{footer.text}</AttentionLine>
       ) : (
-        <p className="text-xs text-muted-foreground">{p.board_present ? "No posts yet." : "No board yet - pulse init registers this checkout."}</p>
+        <AttentionLine>No posts yet.</AttentionLine>
       )}
+      {p.last_post && footer ? <AttentionLine tone={footer.tone}>{footer.text}</AttentionLine> : null}
     </ItemCard>
   );
 }
@@ -102,14 +133,18 @@ export function CommonsCard({ c, spark }: { c: ProjectCardData; spark?: number[]
   return (
     <ItemCard href={hrefs.project(c.slug)} ariaLabel="Commons - the board every project shares">
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary shadow-card" aria-hidden>
+            <UsersIcon className="size-4" />
+          </span>
+          <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
-            <UsersIcon className="size-4 text-muted-foreground" aria-hidden />
             <span className="text-[15px] font-semibold tracking-tight">Commons</span>
             <Badge variant="outline">shared board</Badge>
             {!c.present ? <Badge variant="secondary">not created yet</Badge> : null}
           </div>
           <p className="text-xs text-muted-foreground">{COMMONS_HINT}</p>
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-2 text-muted-foreground">
           {spark?.length ? <Sparkline values={spark} w={72} h={20} /> : null}
@@ -221,6 +256,8 @@ export function SuggestionCard({ s, quorum, slug, detail }: { s: Suggestion; quo
   const now = useNow();
   const need = Math.max(0, quorum - s.voters);
   const exp = expiresAt(s);
+  const planned = s.status === "eligible" ? (s.job ? s.gate || "job " + s.job + (s.job_status ? " is " + s.job_status : "") : s.gate ? "not planned: " + s.gate : s.plannable ? "plannable — the daemon queues it at its next tick" : "") : "";
+  const plannedTone = s.job ? "text-muted-foreground" : s.gate ? "text-warn" : "text-ok";
   return (
     <article className="rounded-lg border bg-card p-3.5 shadow-xs">
       <div className="flex flex-wrap items-center gap-1.5 text-xs">
@@ -250,6 +287,7 @@ export function SuggestionCard({ s, quorum, slug, detail }: { s: Suggestion; quo
         </span>
         {exp && s.status !== "eligible" ? <span>{"expires " + untilText(exp, now)}</span> : null}
       </div>
+      {planned ? <p className={cn("mt-1.5 text-xs leading-snug", plannedTone)}>{s.job ? "▸ " : ""}{planned}</p> : null}
       {detail}
     </article>
   );
@@ -323,7 +361,6 @@ export function FeedList({ rows, slug, limit }: { rows: PostRef[]; slug?: string
 }
 
 export function WorkingNow({ claims, slug }: { claims: Claim[]; slug?: string }) {
-  const now = useNow();
   if (!claims.length) return <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground anywhere">Nobody holds a claim right now - a claim is an agent saying &quot;I am on this thread&quot; for a few hours.</p>;
   return (
     <ul className="divide-y">
@@ -342,7 +379,7 @@ export function WorkingNow({ claims, slug }: { claims: Claim[]; slug?: string })
                 <PostLink slug={s} id={c.id} label={c.summary} />
               </p>
             </div>
-            <span className="shrink-0 text-xs text-muted-foreground tnum">{exp ? untilText(exp, now) : "no expiry"}</span>
+            {exp ? <When d={c.expires} className="shrink-0 text-xs text-muted-foreground" /> : <span className="shrink-0 text-xs text-muted-foreground tnum">no expiry</span>}
           </li>
         );
       })}
@@ -353,13 +390,14 @@ export function WorkingNow({ claims, slug }: { claims: Claim[]; slug?: string })
 // ----- the machine ---------------------------------------------------------
 
 export function MachinePanel({ r }: { r: Runner | undefined | null }) {
-  if (!r) return <Panel title="The machine">{<EmptyState>The runner state is not available.</EmptyState>}</Panel>;
-  if (!r.available) return <Panel title="The machine">{<EmptyState hint="pulse daemon">No store yet, or no daemon has run. Start one with the CLI.</EmptyState>}</Panel>;
+  if (!r) return <Panel title="The machine" icon={ServerIcon}>{<EmptyState>The runner state is not available.</EmptyState>}</Panel>;
+  if (!r.available) return <Panel title="The machine" icon={ServerIcon}>{<EmptyState hint="pulse daemon">No store yet, or no daemon has run. Start one with the CLI.</EmptyState>}</Panel>;
   const d = r.daemon;
   const stopped = r.runner && !r.runner.allowed;
   return (
     <Panel
       title="The machine"
+      icon={ServerIcon}
       actions={
         <span className="flex items-center gap-1.5">
           <ToneBadge tone={stopped ? "bad" : d.state === "running" || d.state === "alive" ? "ok" : statusTone(d.state)} dot>
@@ -382,6 +420,7 @@ export function MachinePanel({ r }: { r: Runner | undefined | null }) {
         ]}
       />
       {stopped ? <p className="mt-2 text-xs text-bad">{"The runner is stopped: " + (r.runner?.reason || "the stop switch is on") + "."}</p> : null}
+      <LandingHolds holds={r.landing} />
       {r.executors.length ? (
         <ul className="mt-3 grid gap-1.5">
           {r.executors.map((e) => (
@@ -393,9 +432,30 @@ export function MachinePanel({ r }: { r: Runner | undefined | null }) {
   );
 }
 
+// Verified branches that cannot land and why (ADR-024): the daemon writes one
+// note per held project - a dirty or switched checkout, a lock, an unreadable
+// folder - and clears it when the branches land again. Nothing pushes; landing
+// moves the local default branch, so the fix is the owner's: commit or stash,
+// switch back, and the next tick lands the queue.
+export function LandingHolds({ holds }: { holds: LandingHold[] | undefined }) {
+  if (!holds?.length) return null;
+  return (
+    <ul className="mt-2 grid gap-1 text-xs text-warn" aria-label="landing held">
+      {holds.map((h) => (
+        <li key={h.project}>
+          <span className="font-medium">{"landing held for " + h.project + ": "}</span>
+          {h.note}
+          {h.stale ? <span className="text-muted-foreground">{" (stale)"}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ExecutorRow({ e, action }: { e: Executor; action?: React.ReactNode }) {
   return (
     <li className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
+      <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground" aria-hidden />
       <ServerIcon className="size-3.5 text-muted-foreground" />
       <span className="font-medium">{e.name}</span>
       <ToneBadge tone="neutral">{e.kind}</ToneBadge>

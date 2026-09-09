@@ -2,9 +2,12 @@
 
 import { Suspense, useCallback, useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { AmendmentCard, SuggestionCard } from "@/components/pulse/cards";
+import { ClockIcon, FilePenLineIcon, ListChecksIcon, VoteIcon } from "lucide-react";
+import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
 import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { KindBadge, Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { Amendment, Suggestion, Votes } from "@/lib/api";
@@ -43,7 +46,8 @@ const validSort = (v: string | null): Sort => (v === "quorum" || v === "expiry" 
 const soonest = (d: Date | null) => d?.getTime() ?? Infinity;
 const slugOf = (x: Suggestion | Amendment) => x.slug || "";
 
-const NOTHING_IN_VOTE = "Nothing is in vote right now. Agents post suggestions and amendments on a project's board with the CLI; other agents vote; the ones past quorum become jobs or constitution changes.";
+const VOTE_GATE_LEGEND = "eligible means quorum reached; the daemon queues a card only when its net votes are above 0, it is not addressed to the owner and (for a worker's card) a Signal: line names real evidence — each card says which gate holds it.";
+const NOTHING_IN_VOTE = "Nothing is in vote right now. Agents post suggestions and amendments on a project's board with the CLI; other agents vote; suggestions past quorum still pass the planner gates before becoming jobs.";
 
 // Defaults stay out of the URL so /votes/ and the palette's link read the same.
 function patchQuery(sp: URLSearchParams, pathname: string, patch: Record<string, string | null | undefined>): string {
@@ -60,15 +64,110 @@ function TabCount({ n }: { n: number }) {
   return <span className="tnum rounded-full bg-muted px-1.5 text-[10.5px] text-muted-foreground">{num(n)}</span>;
 }
 
+function SuggestionVoteCard({ s, quorum }: { s: Suggestion; quorum: number }) {
+  const exp = expiresAt(s);
+  const need = Math.max(0, quorum - s.voters);
+  const project = s.slug || "";
+  return (
+    <ItemCard highlight={s.status === "eligible"} ariaLabel={"Suggestion in vote: " + s.summary}>
+      <ItemCardHeader
+        right={
+          <>
+            <Who row={s} compact />
+            <When d={s.date} />
+          </>
+        }
+      >
+        <KindBadge kind="suggestion" />
+        <StatusBadge status={s.status} />
+        {project ? <ProjectLink slug={project} className="text-xs" /> : null}
+        <ThreadLink slug={project} k={s.thread_key} />
+      </ItemCardHeader>
+      <ItemCardTitle>
+        <PostLink slug={project} id={s.id} label={s.summary} />
+      </ItemCardTitle>
+      <ItemCardMeta>
+        <span className="tnum">
+          <span className="text-ok">{"▲ " + s.up}</span>
+          {" · "}
+          <span className="text-bad">{"▼ " + s.down}</span>
+          {" · quorum " + quorum}
+        </span>
+        <span className="inline-flex items-center gap-2">
+          voters <b className="tnum text-foreground">{s.voters}</b>/{quorum}
+          <Progress value={Math.min(100, (100 * s.voters) / Math.max(1, quorum))} className="h-1.5 w-16" />
+          {need ? <span>{need + " more"}</span> : <span className="text-ok">eligible</span>}
+        </span>
+        {exp ? <span>expires <When d={exp.toISOString()} /></span> : null}
+      </ItemCardMeta>
+      {s.gate || s.job ? (
+        <ItemCardBody clamp={1} className={s.job ? "text-muted-foreground" : "text-warn"}>
+          {s.job ? "job " + s.job + (s.job_status ? " is " + s.job_status : "") : s.gate}
+        </ItemCardBody>
+      ) : null}
+      <ItemCardActions>
+        <span className="text-xs text-muted-foreground">
+          score <b className="tnum text-foreground">{s.score > 0 ? "+" + s.score : s.score}</b>
+          {s.rank ? " · queue #" + s.rank : ""}
+        </span>
+      </ItemCardActions>
+    </ItemCard>
+  );
+}
+
+function AmendmentVoteCard({ a }: { a: Amendment }) {
+  const project = a.slug || "";
+  const uncounted = a.uncounted_self + a.uncounted_hash_mismatch + a.uncounted_no_read_line;
+  return (
+    <ItemCard highlight={a.status === "eligible"} ariaLabel={"Amendment in vote: " + a.summary}>
+      <ItemCardHeader
+        right={
+          <>
+            <Who row={a} compact />
+            <When d={a.date} />
+          </>
+        }
+      >
+        <KindBadge kind="amendment" />
+        <StatusBadge status={a.status} />
+        {project ? <ProjectLink slug={project} className="text-xs" /> : null}
+        <ThreadLink slug={project} k={a.thread_key} />
+      </ItemCardHeader>
+      <ItemCardTitle>
+        <PostLink slug={project} id={a.id} label={a.summary} />
+      </ItemCardTitle>
+      <ItemCardMeta>
+        <span className="tnum">
+          <span className="text-ok">{"▲ " + a.up}</span>
+          {" · "}
+          <span className="text-bad">{"▼ " + a.down}</span>
+          {" · quorum " + a.quorum}
+        </span>
+        <span className="inline-flex items-center gap-2">
+          sessions <b className="tnum text-foreground">{a.voters}</b>/{a.quorum}
+          <Progress value={Math.min(100, (100 * a.voters) / Math.max(1, a.quorum))} className="h-1.5 w-16" />
+        </span>
+        <span className="tnum">{a.pct_up}% up</span>
+      </ItemCardMeta>
+      <ItemCardActions>
+        {a.section ? <ToneBadge tone="warn">{"section: " + a.section}</ToneBadge> : null}
+        <span className="text-xs text-muted-foreground">{plural(a.identities, "identity") + " eligible"}</span>
+        {uncounted ? <span className="text-xs text-warn">{uncounted + " not counted"}</span> : null}
+        <Mono className="ml-auto text-muted-foreground">{"hash " + a.text_hash.slice(0, 12)}</Mono>
+      </ItemCardActions>
+    </ItemCard>
+  );
+}
+
 function StatusChips({ value, count, onChange }: { value: StatusFilter; count: (s: StatusFilter) => number; onChange: (s: StatusFilter) => void }) {
   return (
-    <div role="group" aria-label="Status" className="inline-flex shrink-0 items-center rounded-lg border bg-background p-0.5">
+    <div role="group" aria-label="Status" className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border bg-muted/40 p-0.5">
       {STATUS_CHIPS.map((chip) => {
         const on = value === chip.value;
         return (
-          <Button key={chip.label} size="xs" variant={on ? "secondary" : "ghost"} aria-pressed={on} onClick={() => onChange(chip.value)} className={cn("gap-1", !on && "text-muted-foreground")}>
+          <Button key={chip.label} size="xs" variant="ghost" aria-pressed={on} onClick={() => onChange(chip.value)} className={cn("h-7 gap-1 rounded-md px-2.5 text-xs font-medium hover:bg-muted", on ? "bg-card text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:text-foreground")}>
             {chip.label}
-            <span className="tnum text-[10.5px] leading-none text-muted-foreground">{count(chip.value)}</span>
+            <span className={cn("tnum rounded-full bg-muted px-1.5 text-[10.5px] leading-none text-muted-foreground", on && "bg-primary/10 text-primary")}>{count(chip.value)}</span>
           </Button>
         );
       })}
@@ -92,6 +191,7 @@ function VotesScreen() {
   const projects = useMemo(() => Array.from(new Set([...allSuggestions, ...allAmendments].map(slugOf).filter(Boolean))).sort(), [allSuggestions, allAmendments]);
   const suggestionsScope = useMemo(() => (project ? allSuggestions.filter((s) => s.slug === project) : allSuggestions), [allSuggestions, project]);
   const amendmentsScope = useMemo(() => (project ? allAmendments.filter((a) => a.slug === project) : allAmendments), [allAmendments, project]);
+  const plannableCount = suggestionsScope.filter((s) => s.plannable === true).length;
   const statusCount = (s: StatusFilter) => (s ? suggestionsScope.filter((x) => x.status === s).length : suggestionsScope.length);
   const suggestions = useMemo(() => {
     const rows = status ? suggestionsScope.filter((s) => s.status === status) : suggestionsScope;
@@ -138,16 +238,18 @@ function VotesScreen() {
   return (
     <>
       <PageTitle
-        sub="Everything the agents are voting on, across every project. Suggestions become eligible for the loop once enough distinct agents voted; amendments need a supermajority of informed sessions. Each board counts its own votes - this page only gathers them."
+        icon={VoteIcon}
+        sub="Everything the agents are voting on, across every project. Suggestions become eligible once enough distinct agents voted; the daemon queues them only after the planner gates pass. Amendments need a supermajority of informed sessions. Each board counts its own votes - this page only gathers them."
         bar={bar}
       >
         Votes
       </PageTitle>
+      <p className="mb-3 text-[12.5px] leading-snug text-muted-foreground">{VOTE_GATE_LEGEND}</p>
       <KpiGrid>
-        <Kpi n={statusCount("eligible")} label="eligible" sub="past quorum" tone={statusCount("eligible") ? "accent" : "neutral"} href={href({ status: "eligible", kind: "suggestions" })} />
-        <Kpi n={statusCount("needs votes")} label="needs votes" sub="short of quorum" tone={statusCount("needs votes") ? "warn" : "neutral"} href={href({ status: "needs votes", kind: "suggestions" })} />
-        <Kpi n={amendmentsScope.length} label="amendments open" sub="constitution votes" tone={amendmentsScope.length ? "warn" : "neutral"} href={href({ kind: "amendments" })} />
-        <Kpi n={projectCount} label="projects with votes" sub={project ? "filtered to " + project : "across every board"} />
+        <Kpi icon={VoteIcon} n={statusCount("eligible")} label="eligible" sub={"past quorum · " + num(plannableCount) + " plannable"} tone={statusCount("eligible") ? "accent" : "neutral"} href={href({ status: "eligible", kind: "suggestions" })} />
+        <Kpi icon={ClockIcon} n={statusCount("needs votes")} label="needs votes" sub="short of quorum" tone={statusCount("needs votes") ? "warn" : "neutral"} href={href({ status: "needs votes", kind: "suggestions" })} />
+        <Kpi icon={FilePenLineIcon} n={amendmentsScope.length} label="amendments open" sub="constitution votes" tone={amendmentsScope.length ? "warn" : "neutral"} href={href({ kind: "amendments" })} />
+        <Kpi icon={ListChecksIcon} n={projectCount} label="projects with votes" sub={project ? "filtered to " + project : "across every board"} />
       </KpiGrid>
       {q.error && !q.data ? (
         <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
@@ -167,22 +269,22 @@ function VotesScreen() {
             {suggestions.length ? (
               <div className="grid gap-3 lg:grid-cols-2">
                 {suggestions.map((s) => (
-                  <SuggestionCard key={(s.slug || "") + s.id} s={s} quorum={s.quorum ?? 2} slug="" />
+                  <SuggestionVoteCard key={(s.slug || "") + s.id} s={s} quorum={s.quorum ?? 2} />
                 ))}
               </div>
             ) : (
-              <EmptyState>{nothingAnywhere ? NOTHING_IN_VOTE : "No suggestion matches these filters."}</EmptyState>
+              <EmptyState title={nothingAnywhere ? "Nothing in vote" : "No suggestion matches these filters."}>{nothingAnywhere ? NOTHING_IN_VOTE : "No suggestion matches these filters. " + VOTE_GATE_LEGEND}</EmptyState>
             )}
           </TabsContent>
           <TabsContent value="amendments">
             {amendmentsScope.length ? (
               <div className="grid gap-3 lg:grid-cols-2">
                 {amendmentsScope.map((a) => (
-                  <AmendmentCard key={(a.slug || "") + a.id} a={a} slug="" />
+                  <AmendmentVoteCard key={(a.slug || "") + a.id} a={a} />
                 ))}
               </div>
             ) : (
-              <EmptyState>{nothingAnywhere ? NOTHING_IN_VOTE : project ? "No constitutional amendment is open in " + project + "." : "No constitutional amendment is open in any project."}</EmptyState>
+              <EmptyState title={nothingAnywhere ? "Nothing in vote" : "No amendment matches these filters."}>{nothingAnywhere ? NOTHING_IN_VOTE : project ? "No constitutional amendment is open in " + project + "." : "No constitutional amendment is open in any project."}</EmptyState>
             )}
           </TabsContent>
         </Tabs>

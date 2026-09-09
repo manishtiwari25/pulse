@@ -2,83 +2,12 @@
   "archive": {
     "rows": []
   },
-  "constitution": {
-    "body": "# Constitution\n\n## Scope\n\nThe loop improves demo-app's product first - the web app its users see - and its own operating layer second. No experiment touches the billing module.\n\n## Quorum\n\nA suggestion needs two votes from distinct agents; a product change needs the lead's vote among them.\n\n## Limits\n\nlimits: 4 cycles a day. loop: off until the baseline is recorded and the owner turns it on.\n",
-    "record": {
-      "areas": [],
-      "current_rev": 3,
-      "date": "2026-09-01",
-      "delivered": "",
-      "delivery": "",
-      "id": "EVO-constitution-demo-app",
-      "kind": "evolution",
-      "number": 0,
-      "path": "",
-      "project": "demo-app",
-      "slug": "constitution",
-      "status": "Draft",
-      "tags": [],
-      "tier": 0,
-      "title": "constitution",
-      "updated_at": "2026-09-05T15:12:00Z"
-    },
-    "seeded": false,
-    "seeded_from": "amistio-template/TPL-evolution-constitution@r1"
-  },
-  "evaluators": {
-    "body": "# Evaluators\n\n## Public checks\n\nThe six starter fixtures: each asks for one small, ordinary change and scores the result against the project's own checks (build, tests, lint, a reviewer's read). Three runs per fixture; the mean is the score.\n\n## Held-out\n\nThe owner keeps a held-out set outside this checkout. Agents never see its path.\n",
-    "record": {
-      "areas": [],
-      "current_rev": 1,
-      "date": "2026-09-01",
-      "delivered": "",
-      "delivery": "",
-      "id": "EVO-evaluators-demo-app",
-      "kind": "evolution",
-      "number": 0,
-      "path": "",
-      "project": "demo-app",
-      "slug": "evaluators",
-      "status": "Draft",
-      "tags": [],
-      "tier": 0,
-      "title": "evaluators",
-      "updated_at": "2026-09-01T12:37:00Z"
-    },
-    "seeded": true,
-    "seeded_from": "amistio-template/TPL-evolution-evaluators@r1"
-  },
+  "constitution": null,
+  "evaluators": null,
   "fixtures": [
     {
       "at": "2026-09-01T09:14:00Z",
-      "created_by": "pulse-init",
-      "enabled": true,
-      "kind": "public",
-      "name": "starter-tier0-in-place",
-      "starter": true,
-      "weight": 1
-    },
-    {
-      "at": "2026-09-01T09:14:00Z",
-      "created_by": "pulse-init",
-      "enabled": true,
-      "kind": "public",
-      "name": "starter-tier2-proposes-first",
-      "starter": true,
-      "weight": 1
-    },
-    {
-      "at": "2026-09-01T09:14:00Z",
-      "created_by": "pulse-init",
-      "enabled": true,
-      "kind": "public",
-      "name": "starter-hardstop-publish",
-      "starter": true,
-      "weight": 1
-    },
-    {
-      "at": "2026-09-01T09:14:00Z",
-      "created_by": "pulse-init",
+      "created_by": "human",
       "enabled": true,
       "kind": "public",
       "name": "starter-hardstop-history",
@@ -87,7 +16,25 @@
     },
     {
       "at": "2026-09-01T09:14:00Z",
-      "created_by": "pulse-init",
+      "created_by": "human",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-hardstop-publish",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-01T09:14:00Z",
+      "created_by": "human",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-injection-memory",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-01T09:14:00Z",
+      "created_by": "human",
       "enabled": true,
       "kind": "public",
       "name": "starter-injection-note",
@@ -96,10 +43,19 @@
     },
     {
       "at": "2026-09-01T09:14:00Z",
-      "created_by": "pulse-init",
+      "created_by": "human",
       "enabled": true,
       "kind": "public",
-      "name": "starter-injection-memory",
+      "name": "starter-tier0-in-place",
+      "starter": true,
+      "weight": 1
+    },
+    {
+      "at": "2026-09-01T09:14:00Z",
+      "created_by": "human",
+      "enabled": true,
+      "kind": "public",
+      "name": "starter-tier2-proposes-first",
       "starter": true,
       "weight": 1
     }
@@ -109,38 +65,39 @@
     "baseline_failed_at": "",
     "baseline_job": null,
     "cap_reached": false,
-    "constitution": true,
+    "constitution": false,
     "cycles": 0,
     "discarded": 0,
-    "evaluators": true,
+    "evaluators": false,
     "heldout": {
       "count": 0,
+      "generated": 0,
       "pending": 0,
-      "problem": "evolve.heldout_dir is not set"
+      "problem": "private fixture validation failed; owner: pulse evolve setup DIR"
     },
     "hours": 0,
     "kept": 0,
     "level": "B",
     "limits": "none",
     "loop": false,
-    "next_human_step": "none - the daemon plans the baseline job on its next tick (pulse daemon)",
+    "next_human_step": "pulse evolve seed --project demo-app  (template copy), or pulse record new evolution --project demo-app --title Constitution --body-file FILE",
     "product_scope": {
       "allowed": false,
-      "reason": "no baseline yet - product changes need a measured baseline first"
+      "reason": "operating layer only; owner: add Product scope: allowed to EVO-evaluators"
     },
     "project": "demo-app",
     "public_fixtures": 6,
-    "reason": "no baseline measured yet",
+    "reason": "constitution record is missing or empty",
     "signal": {
       "kept": 0,
-      "rate": 0,
+      "rate": null,
       "tried": 0
     },
     "stop": false,
     "tolerance": 0.03,
     "voted": {
       "kept": 0,
-      "rate": 0,
+      "rate": null,
       "tried": 0
     }
   },

@@ -3,7 +3,7 @@
   "messages": [],
   "revisions": [
     {
-      "at": "2026-09-01T17:38:00Z",
+      "at": "2026-09-01T19:02:00Z",
       "author": "human",
       "brief": "Tag v2.0.0 from main once the migration guide is in the README.",
       "note": "",
@@ -13,7 +13,7 @@
   ],
   "task": {
     "brief": "Tag v2.0.0 from main once the migration guide is in the README.",
-    "created_at": "2026-09-01T17:38:00Z",
+    "created_at": "2026-09-01T19:02:00Z",
     "created_by": "human",
     "current_rev": 1,
     "id": "TASK-003",
@@ -23,6 +23,6 @@
     "project": "demo-lib",
     "status": "review",
     "title": "Publish v2 of the client",
-    "updated_at": "2026-09-01T17:45:00Z"
+    "updated_at": "2026-09-01T19:09:00Z"
   }
 }

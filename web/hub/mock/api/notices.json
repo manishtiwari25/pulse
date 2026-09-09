@@ -7,7 +7,7 @@
       "name": "demo-app",
       "proposals": 1,
       "slug": "demo-app",
-      "suggestions": 1
+      "suggestions": 2
     },
     {
       "amendments": 0,
@@ -25,7 +25,7 @@
       "name": "pulse",
       "proposals": 0,
       "slug": "pulse",
-      "suggestions": 1
+      "suggestions": 2
     }
   ],
   "brain": "pulse",
@@ -36,5 +36,5 @@
   "commons_present": true,
   "commons_questions": 1,
   "proposals_awaiting": 1,
-  "votes_open": 4
+  "votes_open": 6
 }

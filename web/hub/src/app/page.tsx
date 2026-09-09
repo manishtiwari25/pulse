@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { CheckIcon, ExternalLinkIcon } from "lucide-react";
+import { ActivityIcon, BotIcon, CheckIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
 import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow } from "@/components/pulse/cards";
@@ -11,7 +11,7 @@ import { ComputeDecide } from "@/components/compute/compute";
 import { GateCard, foldSteps, gateStep, type GateStep } from "@/components/pulse/evolve";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { LiveFeed } from "@/components/pulse/live-feed";
-import { EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { EmptyState, ErrorNotice, Kpi, KpiGrid, Notice, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { AddProjectButton } from "@/components/project/project-dialogs";
 import { awaitsDecision, ProposedRecordCard } from "@/components/records/decide-record";
@@ -73,19 +73,40 @@ export default function HubPage() {
     const s = tl.data?.series?.find((x) => x.slug === slug);
     return s ? lastDays(s, 14) : undefined;
   };
+  const metaChipBase = "items-center gap-1 whitespace-nowrap rounded-full border bg-card px-2 py-0.5 text-xs text-muted-foreground";
+  const metaChip = "inline-flex " + metaChipBase;
 
   return (
     <>
       <PageTitle
+        icon={HomeIcon}
+        badge={
+          inbox > 0 ? (
+            <a href="#for-you" className="inline-flex items-center rounded-full bg-primary px-2 py-0.5 text-[11.5px] font-medium text-primary-foreground shadow-card hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              {num(inbox) + " for you"}
+            </a>
+          ) : null
+        }
         sub={
-          <>
-            {plural(o.totals.projects, "project")} {o.totals.brain ? <>· framework brain <Mono>{o.totals.brain}</Mono></> : null} · tally <Mono>{o.tally_mode}</Mono>
-            <span className="max-sm:hidden">
-              {" · store "}
-              <Mono>{o.store || o.registry}</Mono>
-              {o.binary_version ? <> · pulse <Mono>{o.binary_version}</Mono></> : null}
+          <span className="flex flex-wrap items-center gap-1.5">
+            <span className={metaChip}>{plural(o.totals.projects, "project")}</span>
+            {o.totals.brain ? (
+              <span className={metaChip}>
+                brain <Mono>{o.totals.brain}</Mono>
+              </span>
+            ) : null}
+            <span className={metaChip}>
+              tally <Mono>{o.tally_mode}</Mono>
             </span>
-          </>
+            {o.binary_version ? (
+              <span className={metaChip}>
+                pulse <Mono>{o.binary_version}</Mono>
+              </span>
+            ) : null}
+            <span title={o.store || o.registry} className={"hidden min-w-0 max-w-[min(42vw,28rem)] sm:inline-flex " + metaChipBase}>
+              store <Mono className="min-w-0 truncate text-muted-foreground">{o.store || o.registry}</Mono>
+            </span>
+          </span>
         }
         actions={
           <>
@@ -98,50 +119,62 @@ export default function HubPage() {
       >
         Hub
       </PageTitle>
+      {o.owner_presence === "away" ? (
+        <Notice tone="warn" className="mb-3">
+          You&apos;re marked away — each project&apos;s lead decides proposals on your behalf. Hard stops, ADRs and compute requests still wait for you.{" "}
+          <Link href={hrefs.settings("owner")} className="font-medium underline underline-offset-2">
+            Settings
+          </Link>
+        </Notice>
+      ) : null}
 
       {/* The inbox: everything that waits for the owner's yes or no, buttons in reach, before anything else. Decisions first, then proposals, then compute, then the steps only the owner can take. */}
       {inbox ? (
         <section id="for-you" className="mb-4" aria-label="For you">
-          <SectionHeading count={inbox} action={down.length ? <span className="text-warn">{down.join(" · ")}</span> : <span className="text-right">{decisions && steps.length ? "your yes or no, and steps only you can take" : steps.length ? "the steps only you can take" : "waiting for your yes or no"}</span>}>
+          <SectionHeading icon={InboxIcon} count={inbox} action={down.length ? <span className="text-warn">{down.join(" · ")}</span> : <span className="text-right">{decisions && steps.length ? "your yes or no, and steps only you can take" : steps.length ? "the steps only you can take" : "waiting for your yes or no"}</span>}>
             For you
           </SectionHeading>
-          <CardGrid cols={2}>
-            {adrs.map((r) => (
-              <ProposedRecordCard key={r.project + "/" + r.id} r={r} onOpen={setOpenRecord} />
-            ))}
-            {awaiting.map((p) => (
-              <ProposalCard key={p.id} r={p} slug={p.slug || o.totals.brain} canDecide={o.can_decide} />
-            ))}
-            {pendingCompute.map((cr) => (
-              <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
-            ))}
-            {steps.map((s) => (
-              <GateCard key={s.slug + "/" + s.kind} step={s} />
-            ))}
-          </CardGrid>
+          <div className="rounded-xl border border-primary/25 surface-tint p-3 shadow-card sm:p-4">
+            <CardGrid cols={2}>
+              {adrs.map((r) => (
+                <ProposedRecordCard key={r.project + "/" + r.id} r={r} onOpen={setOpenRecord} />
+              ))}
+              {awaiting.map((p) => (
+                <ProposalCard key={p.id} r={p} slug={p.slug || o.totals.brain} canDecide={o.can_decide} />
+              ))}
+              {pendingCompute.map((cr) => (
+                <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
+              ))}
+              {steps.map((s) => (
+                <GateCard key={s.slug + "/" + s.kind} step={s} />
+              ))}
+            </CardGrid>
+          </div>
         </section>
       ) : (
-        <p id="for-you" className="mb-4 flex items-center gap-1.5 text-[13px] text-muted-foreground">
-          <CheckIcon className="size-3.5 shrink-0 text-ok" aria-hidden />
+        <p id="for-you" className="mb-4 flex items-center gap-2 rounded-lg border bg-card px-3.5 py-2.5 text-sm text-muted-foreground">
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-ok/10 text-ok" aria-hidden>
+            <CheckIcon className="size-3.5" />
+          </span>
           <span>{downWhy.length ? "No proposal waits for you - " + downWhy.join("; ") + "." : checking.length ? "No proposal waits for you - checking " + checking.join(" and ") + "…" : "Nothing waits for you right now."}</span>
         </p>
       )}
 
       <KpiGrid>
-        <Kpi n={inbox} label="for you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length ? plural(steps.length, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
-        <Kpi n={openTasks.length} label="open tasks" sub={tasks.data ? plural(openTasks.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.tasks()} />
-        <Kpi n={pendingCompute.length} label="compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
-        <Kpi n={o.totals.agents_active} label="agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
-        <Kpi n={o.totals.votes_open} label="in vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} href={hrefs.votes()} />
-        <Kpi n={o.totals.questions_open} label="open questions" sub="across the boards" />
-        <Kpi n={o.totals.posts_24h} label="posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
-        <Kpi n={r ? (daemonOn ? "on" : "off") : "…"} label="daemon" sub={r ? (r.runner?.allowed === false ? r.runner.reason : (r.daemon.state || "off") + " · " + num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued") : "loading"} tone={r ? (daemonOn ? "ok" : "warn") : "neutral"} href={hrefs.agents()} />
+        <Kpi icon={InboxIcon} n={inbox} label="for you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length ? plural(steps.length, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
+        <Kpi icon={ListTodoIcon} n={openTasks.length} label="open tasks" sub={tasks.data ? `${num(openTasks.filter((t) => t.status === "in_progress").length)} in progress` : "loading"} href={hrefs.tasks()} />
+        <Kpi icon={CpuIcon} n={pendingCompute.length} label="compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
+        <Kpi icon={BotIcon} n={o.totals.agents_active} label="agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
+        <Kpi icon={VoteIcon} n={o.totals.votes_open} label="in vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} href={hrefs.votes()} />
+        <Kpi icon={MessageCircleQuestionIcon} n={o.totals.questions_open} label="open questions" sub="across the boards" />
+        <Kpi icon={MessageSquareIcon} n={o.totals.posts_24h} label="posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
+        <Kpi icon={daemonOn ? PowerIcon : ActivityIcon} n={r ? (daemonOn ? "on" : "off") : "…"} label="daemon" sub={r ? (r.runner?.allowed === false ? r.runner.reason : (r.daemon.state || "off") + " · " + num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued") : "loading"} tone={r ? (daemonOn ? "ok" : "warn") : "neutral"} href={hrefs.agents()} />
       </KpiGrid>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-        <div className="grid min-w-0 grid-cols-1 content-start gap-4">
+        <div className="grid min-w-0 grid-cols-1 content-start gap-6">
           <section aria-label="Projects">
-            <SectionHeading count={projects.length} action={<AddProjectButton size="sm" variant="outline" onRegistered={(r) => router.push(hrefs.project(r.project.slug))} />}>
+            <SectionHeading icon={FolderIcon} count={projects.length} action={<AddProjectButton size="sm" variant="outline" onRegistered={(r) => router.push(hrefs.project(r.project.slug))} />}>
               Projects
             </SectionHeading>
             {projects.length ? (
@@ -158,12 +191,13 @@ export default function HubPage() {
           </section>
           {commons ? (
             <section aria-label="Commons">
-              <SectionHeading action={<span>not a project - the board every project shares</span>}>Commons</SectionHeading>
+              <SectionHeading icon={UsersIcon} action={<span>not a project - the board every project shares</span>}>Commons</SectionHeading>
               <CommonsCard c={commons} spark={sparkFor(commons.slug)} />
             </section>
           ) : null}
           <section aria-label="Open tasks">
             <SectionHeading
+              icon={ListTodoIcon}
               count={tasks.data ? openTasks.length : undefined}
               action={
                 <Link href={hrefs.tasks()} className="hover:underline">
@@ -188,7 +222,7 @@ export default function HubPage() {
           <LiveFeed limit={40} height={320} />
           <MachinePanel r={r} />
           {o.active_claims.length ? (
-            <Panel title="Working now" actions={<span className="tnum">{plural(o.active_claims.length, "claim")}</span>}>
+            <Panel title="Working now" icon={ActivityIcon} actions={<span className="tnum">{plural(o.active_claims.length, "claim")}</span>}>
               <WorkingNow claims={o.active_claims} />
             </Panel>
           ) : (

@@ -16,9 +16,12 @@ export function rosterScenarios(rows, at, returned = true) {
     switch (r.agent) {
       case "aurora":
         return { ...base, kind: "worker", sessions: ["run-aurora"], session_count: 1, ...observation("online", "run-aurora"),
-          active_claims: [{ id: "mock-live-claim", slug: "demo-app", thread_key: "agents/heartbeat", summary: "Quiet supervised work", expires: stamp(3_600_000) }] };
+          active_claims: [{ id: "mock-live-claim", slug: "demo-app", thread_key: "agents/heartbeat", summary: "Quiet supervised work", expires: stamp(3_600_000) }],
+          current_thread: "agents/heartbeat", focus_since: stamp(-180_000) };
       case "demo-app-lead":
-        return { ...base, kind: "lead", sessions: ["run-app-lead"], session_count: 1, ...observation("online", "run-app-lead") };
+        return { ...base, kind: "lead", sessions: ["run-app-lead"], session_count: 1, ...observation("online", "run-app-lead"),
+          current_job: "JOB-004", current_job_kind: "answer", current_job_title: "Answer the open governance question",
+          current_thread: "governance/review-depth", executor: "local", focus_since: stamp(-120_000) };
       case "demo-lib-lead":
         return { ...base, kind: "lead", ...observation("idle") };
       case "cinder":
@@ -51,6 +54,7 @@ export function rosterScenarios(rows, at, returned = true) {
     first_seen: "2026-08-01T00:00:00Z", last_seen: "2026-08-20T00:00:00Z", last_useful_at: "2026-08-20T00:00:00Z",
     pruned_at: "2026-09-07T09:00:00Z", pruned_reason: "no useful output since 2026-08-20T00:00:00Z (limit 14 days)",
     projects: ["demo-app"], active_claims: [], days_since: 18, approximate: false, name_shared: false, shared_with: [],
+    current_job: "", current_job_kind: "", current_job_title: "", current_thread: "", executor: "", focus_since: "",
     ...observation("pruned"),
   });
   return result;

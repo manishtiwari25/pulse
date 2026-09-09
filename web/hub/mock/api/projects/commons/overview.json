@@ -3,7 +3,7 @@
   "agents": [
     {
       "agent": "aurora",
-      "last": "2026-09-01T16:49:00Z",
+      "last": "2026-09-01T18:13:00Z",
       "name": null,
       "posts": 1,
       "session": "s-aurora"
@@ -39,9 +39,17 @@
   },
   "open_threads": [
     {
+      "active_claims": [],
       "area": "patterns",
       "key": "patterns/executor-images",
-      "last": "2026-09-01T16:49:00Z",
+      "last": "2026-09-01T18:13:00Z",
+      "last_by": "aurora",
+      "last_kind": "question",
+      "open_handoffs": 0,
+      "open_questions": 1,
+      "participants": [
+        "aurora"
+      ],
       "posts": 1,
       "resolution": "",
       "status": "open",
@@ -58,8 +66,8 @@
   "recent_posts": [
     {
       "agent": "aurora",
-      "date": "2026-09-01T16:49:00Z",
-      "id": "20260901T164900Z-aurora",
+      "date": "2026-09-01T18:13:00Z",
+      "id": "20260901T181300Z-aurora",
       "kind": "question",
       "name": "",
       "provenance_ok": 0,
@@ -72,6 +80,7 @@
   "suggestions_eligible": 0,
   "suggestions_expired": 0,
   "suggestions_needing_votes": 0,
+  "suggestions_plannable": 0,
   "threads_closed": 0,
   "threads_open": 1,
   "threads_stale": 0

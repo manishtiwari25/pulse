@@ -9,7 +9,7 @@ import type { Column } from "@/components/pulse/data-table";
 import { CardGrid, ItemCard, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState, ErrorNotice, Kv, Panel, SkeletonRows } from "@/components/pulse/panel";
-import { Mono, ProjectLink, StatusBadge, ToneBadge, When } from "@/components/pulse/who";
+import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { awaitsDecision, RecordDecisionButtons } from "@/components/records/decide-record";
 import { hrefs } from "@/lib/nav";
 import { enc, type RecordDetail, type RecordRow } from "@/lib/api";
@@ -48,7 +48,7 @@ export const RECORD_COLUMNS = (showProject: boolean): Column<RecordRow>[] => [
   { key: "title", label: "title", sort: (r) => r.title, render: (r) => <Link href={hrefs.record(r.id, r.project)} className="anywhere hover:underline">{r.title}</Link> },
   { key: "status", label: "status", sort: (r) => r.status, render: (r) => <StatusBadge status={r.status} /> },
   ...(showProject ? ([{ key: "project", label: "project", sort: (r) => r.project, render: (r) => <ProjectLink slug={r.project} /> }] as Column<RecordRow>[]) : []),
-  { key: "tier", label: "tier", align: "right", hide: "md", sort: (r) => r.tier ?? -1, render: (r) => (r.tier === null || r.tier === undefined ? "" : "T" + r.tier) },
+  { key: "tier", label: "tier", align: "right", hide: "md", sort: (r) => r.tier ?? -1, render: (r) => (r.tier === null || r.tier === undefined ? "" : <Mono>{"T" + r.tier}</Mono>) },
   { key: "areas", label: "areas", hide: "lg", render: (r) => <span className="text-xs text-muted-foreground">{(r.areas || []).join(", ")}</span> },
   { key: "delivery", label: "delivery", hide: "lg", sort: (r) => r.delivery || "", render: (r) => (r.delivery ? <ToneBadge tone={r.delivered ? "ok" : "neutral"}>{r.delivery + (r.delivered ? " · " + r.delivered : "")}</ToneBadge> : "") },
   { key: "updated", label: "updated", nowrap: true, sort: (r) => r.updated_at || r.date, render: (r) => <When d={r.updated_at || r.date} /> },
@@ -76,7 +76,7 @@ export function RecordCard({ r, showProject, onOpen, active }: { r: RecordRow; s
       >
         <RecordKindBadge kind={r.kind} />
         <StatusBadge status={r.status} />
-        {r.tier !== null && r.tier !== undefined ? <ToneBadge tone="neutral">{"T" + r.tier}</ToneBadge> : null}
+        {r.tier !== null && r.tier !== undefined ? <ToneBadge tone="neutral"><Mono>{"T" + r.tier}</Mono></ToneBadge> : null}
         {showProject ? (
           // A link card cannot nest another link, so the project is plain text there.
           open ? <ProjectLink slug={r.project} className="text-xs" /> : <Mono className="text-xs">{r.project}</Mono>
@@ -99,7 +99,7 @@ export function RecordCard({ r, showProject, onOpen, active }: { r: RecordRow; s
               {tags.length > MAX_TAGS ? <span className="tnum">{"+" + (tags.length - MAX_TAGS)}</span> : null}
             </span>
           ) : null}
-          {r.delivery ? <ToneBadge tone={r.delivered ? "ok" : "neutral"}>{r.delivery + (r.delivered ? " · " + r.delivered : "")}</ToneBadge> : null}
+          {r.delivery ? <ToneBadge tone={r.delivered ? "ok" : "neutral"}>{(r.delivered ? "delivered" : r.delivery) + (r.delivered ? " · " + r.delivered : "")}</ToneBadge> : null}
         </ItemCardMeta>
       ) : null}
     </ItemCard>
@@ -121,7 +121,7 @@ export function RecordSheet({ id, project, onClose }: { id: string | null; proje
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
       {/* The Sheet sizes itself with data-[side] variants, so the override must use the same ones. */}
-      <SheetContent side="right" className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-4xl">
+      <SheetContent side="right" className="scroll-thin overflow-y-auto rounded-xl data-[side=right]:w-full data-[side=right]:sm:max-w-4xl">
         {id ? <RecordBody id={id} project={project} /> : null}
       </SheetContent>
     </Sheet>
@@ -160,27 +160,26 @@ export function RecordBody({ id, project }: { id: string; project?: string }) {
   const r = data.record;
   const fm = data.frontmatter || {};
   const shownRev = rev ? Number(rev) : r.current_rev;
+  const areas = r.areas || [];
+  const author = r.created_by || (typeof fm.author === "string" ? fm.author : "");
   return (
     <>
-      <SheetHeader>
-        {/* pr-8 keeps the row clear of the sheet's close button; the decision buttons (Proposed ADRs only) sit at its end and wrap under the badges on phones. */}
+      <SheetHeader className="gap-2 border-b">
         <div className="flex flex-wrap items-center gap-1.5 pr-8 text-xs">
           <RecordKindBadge kind={r.kind} />
           <StatusBadge status={r.status} />
-          {r.tier !== null && r.tier !== undefined ? <ToneBadge tone="neutral">{"Tier " + r.tier}</ToneBadge> : null}
+          {r.tier !== null && r.tier !== undefined ? <ToneBadge tone="neutral"><Mono>{"T" + r.tier}</Mono></ToneBadge> : null}
           {r.delivery ? <ToneBadge tone={r.delivered ? "ok" : "neutral"}>{"delivery: " + r.delivery + (r.delivered ? " · " + r.delivered : "")}</ToneBadge> : null}
-          <ProjectLink slug={r.project} />
-          {awaitsDecision(r) ? (
-            <span className="ml-auto">
-              <RecordDecisionButtons record={r} size="xs" />
-            </span>
-          ) : null}
         </div>
-        <SheetTitle className="text-base leading-snug anywhere">
-          <Mono className="mr-2 text-muted-foreground">{r.id}</Mono>
+        <Mono className="text-muted-foreground">{r.id}</Mono>
+        <SheetTitle className="pr-8 text-lg font-semibold leading-snug anywhere">
           {r.title}
         </SheetTitle>
-        <SheetDescription className="flex flex-wrap items-center gap-3">
+        <SheetDescription className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
+          <ProjectLink slug={r.project} />
+          {r.tier !== null && r.tier !== undefined ? <span>{"Tier " + r.tier}</span> : null}
+          {areas.length ? <span>{areas.join(", ")}</span> : null}
+          {author ? <Who row={{ author }} compact /> : null}
           <span>
             {"dated "}
             <When d={r.date} exact />
@@ -195,6 +194,12 @@ export function RecordBody({ id, project }: { id: string; project?: string }) {
         </SheetDescription>
       </SheetHeader>
       <div className="grid gap-3 px-4 pb-4">
+        {awaitsDecision(r) ? (
+          <div className="surface-tint sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 p-3 shadow-card">
+            <span className="min-w-0 flex-1 text-sm font-medium anywhere">Waiting for your yes, defer or no</span>
+            <RecordDecisionButtons record={r} size="xs" />
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-xs text-muted-foreground">
             {shownRev === r.current_rev ? "Current revision r" + r.current_rev : "Showing revision r" + shownRev + " (current is r" + r.current_rev + ")"}
@@ -222,22 +227,25 @@ export function RecordBody({ id, project }: { id: string; project?: string }) {
             </div>
           ) : null}
         </div>
-        <article className="rounded-lg border bg-card p-4">
+        <article className="rounded-lg border bg-card p-4 shadow-card">
           <Markdown source={data.body || ""} />
         </article>
-        <Panel title="Frontmatter" dense>
+        <Panel title="Frontmatter">
           <Kv rows={Object.entries(fm).map(([k, v]) => [k, <Mono key={k} className="anywhere">{Array.isArray(v) ? v.join(", ") : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}</Mono>])} />
         </Panel>
-        <Panel title="Revisions" dense>
+        <Panel title="Revisions">
           {revisions.length ? (
-            <ol className="grid gap-1 text-[12.5px]">
+            <ol className="ml-2 grid gap-0 border-l text-[12.5px]">
               {revisions.map((x) => (
-                <li key={x.rev} className="flex flex-wrap items-baseline gap-2">
-                  <button type="button" className={"font-mono hover:underline " + (x.rev === shownRev ? "font-semibold" : "")} onClick={() => setRev(x.rev === r.current_rev ? "" : String(x.rev))}>
-                    {"r" + x.rev}
-                  </button>
-                  <When d={x.at} />
-                  {x.author ? <Mono>{x.author}</Mono> : null}
+                <li key={x.rev} className="relative grid gap-1 pb-3 pl-4 last:pb-0">
+                  <span className="absolute -left-[4.5px] top-1.5 size-2 rounded-full bg-primary ring-2 ring-card" aria-hidden />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button type="button" className={"rounded-sm font-mono hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " + (x.rev === shownRev ? "font-semibold text-foreground" : "text-muted-foreground")} onClick={() => setRev(x.rev === r.current_rev ? "" : String(x.rev))}>
+                      {"r" + x.rev}
+                    </button>
+                    {x.author ? <Who row={{ author: x.author }} compact /> : null}
+                    <When d={x.at} className="text-muted-foreground" />
+                  </div>
                   <span className="text-muted-foreground anywhere">{x.note}</span>
                 </li>
               ))}

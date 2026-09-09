@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { BanIcon, BotOffIcon, CheckCircle2Icon, CircleDashedIcon, EyeIcon, LayersIcon, ListChecksIcon, ListTodoIcon, LoaderIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -35,13 +36,13 @@ const STATUS_CHIPS: [string, string][] = [["active", "active"], ["all", "all"], 
 // pipeline and its counts are visible at a glance and one tap switches.
 function StatusChips({ value, count, onChange }: { value: string; count: (s: string) => number; onChange: (s: string) => void }) {
   return (
-    <div role="group" aria-label="Status" className="inline-flex shrink-0 items-center rounded-lg border bg-background p-0.5">
+    <div role="group" aria-label="Status" className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border bg-muted/40 p-0.5">
       {STATUS_CHIPS.map(([v, label]) => {
         const on = value === v;
         return (
-          <Button key={v} size="xs" variant={on ? "secondary" : "ghost"} aria-pressed={on} onClick={() => onChange(v)} className={cn("gap-1", !on && "text-muted-foreground")}>
+          <Button key={v} size="xs" variant="ghost" aria-pressed={on} onClick={() => onChange(v)} className={cn("h-7 gap-1 rounded-md px-2.5 text-xs font-medium hover:bg-muted", on ? "bg-card text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:text-foreground")}>
             {label}
-            <span className="tnum text-[10.5px] leading-none text-muted-foreground">{count(v)}</span>
+            <span className={cn("tnum rounded-full bg-muted px-1.5 text-[10.5px] leading-none text-muted-foreground", on && "bg-primary/10 text-primary")}>{count(v)}</span>
           </Button>
         );
       })}
@@ -90,9 +91,12 @@ function TasksScreen() {
       No task yet. Click <b>New task</b>, pick the project, write the brief in Markdown - the runner wakes that project&apos;s lead, which plans jobs and answers in the task&apos;s conversation.
     </>
   );
+  const emptyTitle = all.length ? "Nothing matches these filters." : "No task yet";
+  const emptyAction = all.length ? undefined : <NewTaskButton project={project || undefined} onCreated={(t) => setParams({ task: t.id })} />;
   return (
     <>
       <PageTitle
+        icon={ListTodoIcon}
         sub="What you asked for, across every project. The project's lead plans each task into jobs and talks with you in its conversation."
         actions={<NewTaskButton project={project || undefined} onCreated={(t) => setParams({ task: t.id })} />}
         bar={
@@ -122,14 +126,14 @@ function TasksScreen() {
         Tasks
       </PageTitle>
       <KpiGrid>
-        <Kpi n={by("open")} label="open" sub="waiting for a lead" tone={by("open") ? "info" : "neutral"} href={link("open")} />
-        <Kpi n={by("planned")} label="planned" sub="jobs written" href={link("planned")} />
-        <Kpi n={by("in_progress")} label="in progress" tone={by("in_progress") ? "ok" : "neutral"} sub="jobs running" href={link("in_progress")} />
-        <Kpi n={by("review")} label="review" tone={by("review") ? "warn" : "neutral"} sub="the lead needs you" href={link("review")} />
-        <Kpi n={by("done")} label="done" href={link("done")} />
-        <Kpi n={by("cancelled")} label="cancelled" href={link("cancelled")} />
-        <Kpi n={scope.filter((x) => !x.lead && isActive(x)).length} label="no lead yet" sub="runner wakes one" />
-        <Kpi n={scope.length} label="all time" href={link("all")} />
+        <Kpi icon={CircleDashedIcon} n={by("open")} label="open" sub="waiting for a lead" tone={by("open") ? "info" : "neutral"} href={link("open")} />
+        <Kpi icon={ListChecksIcon} n={by("planned")} label="planned" sub="jobs written" href={link("planned")} />
+        <Kpi icon={LoaderIcon} n={by("in_progress")} label="in progress" tone={by("in_progress") ? "ok" : "neutral"} sub="jobs running" href={link("in_progress")} />
+        <Kpi icon={EyeIcon} n={by("review")} label="review" tone={by("review") ? "warn" : "neutral"} sub="the lead needs you" href={link("review")} />
+        <Kpi icon={CheckCircle2Icon} n={by("done")} label="done" href={link("done")} />
+        <Kpi icon={BanIcon} n={by("cancelled")} label="cancelled" href={link("cancelled")} />
+        <Kpi icon={BotOffIcon} n={scope.filter((x) => !x.lead && isActive(x)).length} label="no lead yet" sub="runner wakes one" />
+        <Kpi icon={LayersIcon} n={scope.length} label="all time" href={link("all")} />
       </KpiGrid>
       {q.error && !q.data ? (
         <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
@@ -137,14 +141,16 @@ function TasksScreen() {
         <SkeletonRows n={8} />
       ) : view === "table" ? (
         rows.length ? (
-          <div className="rounded-lg border bg-card">
+          <div className="overflow-hidden rounded-lg border bg-card">
             <DataTable columns={TASK_COLUMNS(true)} rows={rows} rowKey={(t) => t.id} onRow={(t) => setParams({ task: t.id })} initialSort="updated" caption="Tasks" />
           </div>
         ) : (
-          <EmptyState>{empty}</EmptyState>
+          <EmptyState title={emptyTitle} action={emptyAction}>
+            {empty}
+          </EmptyState>
         )
       ) : (
-        <TaskCards tasks={rows} showProject onOpen={(t) => setParams({ task: t.id })} activeId={task} cols={3} empty={empty} />
+        <TaskCards tasks={rows} showProject onOpen={(t) => setParams({ task: t.id })} activeId={task} cols={3} empty={empty} emptyTitle={emptyTitle} emptyAction={emptyAction} />
       )}
       <TaskSheet id={task} onClose={() => setParams({ task: null })} />
     </>
