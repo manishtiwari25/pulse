@@ -52,6 +52,19 @@ func newStore(t *testing.T) *store.Store {
 	return s
 }
 
+func TestNewStoreWithWorkerSession(t *testing.T) {
+	t.Setenv("PULSE_SESSION", "parent-worker-session")
+	t.Run("fixture", func(t *testing.T) {
+		newStore(t)
+		if got := os.Getenv("PULSE_SESSION"); got != "" {
+			t.Fatalf("PULSE_SESSION = %q, want empty fixture default", got)
+		}
+	})
+	if got := os.Getenv("PULSE_SESSION"); got != "parent-worker-session" {
+		t.Fatalf("PULSE_SESSION = %q, want restored parent session", got)
+	}
+}
+
 func TestNewStoreWithRunnerEnvironment(t *testing.T) {
 	names := []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"}
 	for _, name := range names {
