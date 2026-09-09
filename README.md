@@ -155,6 +155,9 @@ Everything else happens in the console:
 The console binds to `127.0.0.1` only. Nothing in it is a wrapper around an
 agent command; it calls the same store helpers the CLI uses.
 
+Page URLs without a trailing slash, such as `/tasks`, redirect to their
+exported path (`/tasks/`) without losing query parameters.
+
 The **Agents** roster defaults to **Live**: supervised online executions and
 idle reusable workers/leads. **History** shows offline, unknown, legacy and
 pruned identities; **All** restores the whole roster. Search, identity-status

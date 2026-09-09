@@ -188,7 +188,15 @@ func (h *Handler) static(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := fs.ReadFile(h.UI, name)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		if info, statErr := fs.Stat(h.UI, name); statErr != nil || !info.IsDir() {
+		if info, statErr := fs.Stat(h.UI, name); statErr == nil && info.IsDir() {
+			data, err = fs.ReadFile(h.UI, name+"/index.html")
+			if err == nil {
+				target := url.URL{Path: "/" + name + "/", RawQuery: r.URL.RawQuery, ForceQuery: r.URL.ForceQuery}
+				http.Redirect(w, r, target.String(), http.StatusPermanentRedirect)
+				return
+			}
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
 			writeError(w, 503, "The UI could not be read", err.Error(), "Rebuild PULSE with the static UI export.")
 			return
 		}
