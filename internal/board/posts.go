@@ -39,6 +39,18 @@ type Post struct {
 	CreatedAt     string `json:"created_at"`
 }
 
+// IsBareVoteSummary reports vote posts whose summary states only a direction.
+func IsBareVoteSummary(kind, summary string) bool {
+	if kind != "vote" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(summary)) {
+	case "up", "down":
+		return true
+	}
+	return false
+}
+
 const postCols = "id, project, area, thread, kind, agent, runner, model, session, date, branch, expires, on_post, vote, " +
 	"text_hash, has_read_line, resolution, summary, body, links, files, name, origin_project, extra, origin, created_at"
 
