@@ -276,6 +276,25 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 
+#### Evolution runner caps
+
+`pulse settings help` explains the supported caps without opening a store
+(`pulse settings --help` and `pulse help settings` show the same guidance).
+The Go CLI does **not** support `evolve_minutes` or `evolve_credits`; they are
+not aliases. The former `docs/workflows/evolve.md` is now the `WF-evolve`
+record, read with `pulse record show WF-evolve`.
+
+| Setting | Built-in default | Scope |
+| --- | --- | --- |
+| `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. |
+| `max_ai_credits` | `30` credits (minimum `30`) | Passed to Copilot workers; not automatically applied to measurement harnesses. |
+| `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
+
+These are defaults, not the owner's effective values. Read those with
+`pulse settings get NAME` or `pulse settings list --json` (also includes
+defaults, validation rules and descriptions). Only the owner changes caps;
+neither an unlimited loop nor these docs adds a measurement-wide credit budget.
+
 #### Legacy fixture notes: F03 and F08
 
 At PULSE's Go/store HEAD `b56e905` (2026-09-08), both legacy requests are

@@ -320,7 +320,9 @@ func TestRegistrationAndJSON(t *testing.T) {
 	}
 	for _, name := range []string{"settings", "start", "stop"} {
 		cmd, _ := cli.Lookup(name)
-		if cmd.Group != "human" || cmd.ReadOnly || cmd.NoStore {
+		// Settings opens its own store only after handling help.
+		wantNoStore := name == "settings"
+		if cmd.Group != "human" || cmd.ReadOnly || cmd.NoStore != wantNoStore {
 			t.Fatalf("wrong human command registry metadata: %+v", cmd)
 		}
 	}

@@ -23,7 +23,7 @@ func init() {
 			fs.Int("limit", 40, "maximum events; a negative value means all")
 			fs.String("since", "", "events after this sequence number or UTC timestamp")
 		}, Run: runEvents},
-		{Name: "settings", Group: "human", Summary: "read or change a setting", Usage: "pulse settings [get NAME | set NAME VALUE | list] [--json]", Run: runSettings},
+		{Name: "settings", Group: "human", Summary: "read or change a setting", Usage: settingsUsage(), NoStore: true, Run: runSettings},
 		{Name: "schema", Group: "inspect", Summary: "print the schema", Usage: "pulse schema [--json]", NoStore: true, Run: runSchema},
 		{Name: "verify", Group: "inspect", Summary: "verify a commit's signature and trailers against its run", Usage: "pulse verify <ref> [--project P] [--json]", ReadOnly: true, Run: runVerify},
 		{Name: "signers", Group: "inspect", Summary: "an allowed-signers file for every run's key", Usage: "pulse signers [--project P] [--json]", ReadOnly: true, Run: runSigners},

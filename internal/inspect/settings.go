@@ -1,13 +1,37 @@
 package inspect
 
 import (
+	"errors"
 	"flag"
+	"fmt"
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
+
+func settingsUsage() string {
+	return fmt.Sprintf(`pulse settings [get NAME | set NAME VALUE | list | help] [--json]
+
+Runner and evolution caps (built-in defaults):
+  minutes_per_job  default %s minutes
+    Worker wall-clock cap; also the deadline for each measurement harness and
+    scorer. Measurement requires a positive value.
+  max_ai_credits   default %s credits (minimum %d)
+    Passed to Copilot workers; not automatically applied to measurement harnesses.
+  evolve.limits   default %s
+    Optional loop budget: cycles=N,hours=H. none does not remove runner caps.
+
+evolve_minutes and evolve_credits are not supported by this Go CLI; they are
+not aliases for the settings above.
+
+Use pulse settings get NAME for an effective value, or pulse settings list --json
+for values, defaults, validation rules and descriptions. Only the owner changes caps.`,
+		store.DefaultSettings["minutes_per_job"],
+		store.DefaultSettings["max_ai_credits"], store.SettingRules["max_ai_credits"].Min,
+		store.EvolveSettings["evolve.limits"])
+}
 
 type SettingReport struct {
 	Name        string   `json:"name"`
@@ -98,13 +122,29 @@ func agentSettingValue(name, value string) string {
 	return value
 }
 
-func runSettings(c *cli.Context, _ *flag.FlagSet, args []string) error {
+func runSettings(c *cli.Context, _ *flag.FlagSet, args []string) (retErr error) {
 	action := "list"
 	if len(args) > 0 {
 		action = args[0]
 	}
+	if action == "help" {
+		if err := noArgs(args[1:]); err != nil {
+			return err
+		}
+		return flag.ErrHelp
+	}
 	if len(args) > 3 {
 		return noArgs(args[3:])
+	}
+	if c.Store == nil {
+		s, err := store.Open(store.Options{Home: c.Home, Now: c.Now})
+		if err != nil {
+			return err
+		}
+		defer func() { retErr = errors.Join(retErr, s.Close()) }()
+		copy := *c
+		copy.Store = s
+		c = &copy
 	}
 	switch action {
 	case "list", "get":
@@ -190,6 +230,6 @@ func runSettings(c *cli.Context, _ *flag.FlagSet, args []string) error {
 		c.Printf("%s=%s\n", args[1], agentSettingValue(args[1], args[2]))
 		return nil
 	default:
-		return cli.Errorf(2, "pulse: settings action must be get, set, or list", "", "")
+		return cli.Errorf(2, "pulse: settings action must be get, set, list, or help", "", "")
 	}
 }
