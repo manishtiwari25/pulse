@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { ActivityChart } from "@/components/pulse/charts";
-import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow } from "@/components/pulse/cards";
+import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { DataTable } from "@/components/pulse/data-table";
 import { DocRev, SeededMarker, SelfImprovementPanel } from "@/components/pulse/evolve";
 import { LiveFeed } from "@/components/pulse/live-feed";
@@ -123,7 +123,7 @@ export function OverviewTab({ slug }: { slug: string }) {
               </div>
               <div className="grid gap-4 content-start">
                 <LiveFeed project={slug} limit={30} height={360} />
-                <Panel title={o.active_claims.length ? "Working now (" + num(o.active_claims.length) + ")" : "Working now"} icon={RadioIcon} dense={!o.active_claims.length}>
+                <Panel title="Working now" icon={RadioIcon} dense={!o.active_claims.length} actions={o.active_claims.length ? <span className="tnum">{workingSummary(workingRows(o.active_claims, [], slug), o.active_claims.length)}</span> : undefined}>
                   {o.active_claims.length ? <WorkingNow claims={o.active_claims} slug={slug} /> : <p className="px-4 py-2.5 text-[12.5px] text-muted-foreground">Nobody holds a claim right now - a claim is an agent saying &quot;I am on this thread&quot; for a few hours.</p>}
                 </Panel>
                 {o.stale_claims.length ? (

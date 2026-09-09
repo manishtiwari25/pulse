@@ -14,7 +14,7 @@ import { KindBadge, Mono, PostLink, ProjectLink, Provenance, StatusBadge, Thread
 import { cn } from "@/lib/utils";
 import { expiresAt, hashHue, initials, num, plural, statusTone, truncate, untilText } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { COMMONS_HINT, evolveGate, taskProgress, writes, type Amendment, type Claim, type EvolveGate, type Executor, type LandingHold, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion, type Task } from "@/lib/api";
+import { COMMONS_HINT, evolveGate, taskProgress, writes, type Amendment, type Claim, type EvolveGate, type Executor, type LandingHold, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion, type Task, type TaskWorker } from "@/lib/api";
 import { useNow } from "@/lib/use-api";
 import { EvolveBadges, gateStep } from "./evolve";
 
@@ -360,50 +360,140 @@ export function FeedList({ rows, slug, limit }: { rows: PostRef[]; slug?: string
   );
 }
 
-export function WorkingNow({ claims, slug, tasks }: { claims: Claim[]; slug?: string; tasks?: Task[] }) {
-  const taskWork = (tasks ?? []).flatMap((t) => taskProgress(t).working.map((w, i) => ({ t, w, k: t.id + "/" + w.job + "/" + i })));
-  if (!claims.length && !taskWork.length) return <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground anywhere">Nobody is on a task or holds a claim right now - work appears here when a job is leased or an agent claims a thread.</p>;
+// ----- working now ---------------------------------------------------------
+
+export interface WorkingRow {
+  key: string;
+  agent: string;
+  slug: string;
+  task: { t: Task; w: TaskWorker } | null;
+  /** The agent's live claims in this project, newest first. */
+  claims: Claim[];
+  /** When the newest unit of work started (ms), for ordering. */
+  at: number;
+}
+
+const ms = (s?: string) => (s ? Date.parse(s) || 0 : 0);
+
+// One row per agent and project. A claim is a unit of work, not a person, and a busy fleet
+// holds a dozen per agent - so the panel answers "who is on what" and keeps the claims behind a
+// toggle instead of listing every one.
+export function workingRows(claims: Claim[], tasks: Task[] = [], slug?: string): WorkingRow[] {
+  const rows = new Map<string, WorkingRow>();
+  const rowFor = (agent: string, project: string) => {
+    const key = agent + "@" + project;
+    let r = rows.get(key);
+    if (!r) {
+      r = { key, agent, slug: project, task: null, claims: [], at: 0 };
+      rows.set(key, r);
+    }
+    return r;
+  };
+  for (const t of tasks) {
+    for (const w of taskProgress(t).working) {
+      const r = rowFor(w.agent, t.project);
+      if (!r.task || ms(w.since) > ms(r.task.w.since)) r.task = { t, w };
+      r.at = Math.max(r.at, ms(w.since));
+    }
+  }
+  for (const c of claims) {
+    const r = rowFor(c.agent || c.name || c.session || "(unknown)", c.slug || slug || "");
+    r.claims.push(c);
+    r.at = Math.max(r.at, ms(c.expires));
+  }
+  for (const r of rows.values()) r.claims.sort((a, b) => ms(b.expires) - ms(a.expires) || (a.id < b.id ? 1 : -1));
+  return [...rows.values()].sort((a, b) => Number(!!b.task) - Number(!!a.task) || b.at - a.at || a.agent.localeCompare(b.agent));
+}
+
+export function workingSummary(rows: WorkingRow[], claims: number): string {
+  return claims ? plural(rows.length, "agent") + " · " + plural(claims, "claim") : plural(rows.length, "agent");
+}
+
+export function WorkingNow({ claims, slug, tasks, limit = 6 }: { claims: Claim[]; slug?: string; tasks?: Task[]; limit?: number }) {
+  const [all, setAll] = useState(false);
+  const rows = workingRows(claims, tasks ?? [], slug);
+  if (!rows.length) return <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground anywhere">Nobody is on a task or holds a claim right now - work appears here when a job is leased or an agent claims a thread.</p>;
+  const shown = all || rows.length <= limit ? rows : rows.slice(0, limit);
   return (
-    <ul className="divide-y">
-      {taskWork.map(({ t, w, k }) => (
-        <li key={k} className="flex items-start gap-2.5 py-2 first:pt-0 last:pb-0">
-          <Who row={{ agent: w.agent }} compact className="w-32 shrink-0" />
-          <div className="min-w-0 flex-1 text-[13px]">
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="text-muted-foreground">on</span>
-              <Link href={hrefs.task(t.project, t.id)} className="hover:underline">
-                <Mono>{t.id}</Mono>
-              </Link>
-              <span className="min-w-0 truncate text-foreground">{truncate(t.title, 72)}</span>
-              <ToneBadge tone="info">{w.kind}</ToneBadge>
-            </div>
-            <p className="mt-0.5 leading-snug text-muted-foreground anywhere">
-              {w.title ? truncate(w.title, 96) : w.job} <Mono className="text-muted-foreground">{w.job}</Mono>
-            </p>
-          </div>
-          {w.since ? <span className="shrink-0 text-xs text-muted-foreground">since <When d={w.since} /></span> : null}
-        </li>
-      ))}
-      {claims.map((c) => {
-        const s = c.slug || slug || "";
-        const exp = c.expires ? new Date(c.expires) : null;
-        return (
-          <li key={s + c.id} className="flex items-start gap-2.5 py-2 first:pt-0 last:pb-0">
-            <Who row={c} compact className="w-32 shrink-0" />
-            <div className="min-w-0 flex-1 text-[13px]">
-              <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                {c.slug && !slug ? <ProjectLink slug={c.slug} /> : null}
-                <ThreadLink slug={s} k={c.thread_key} />
+    <div>
+      <ul className="divide-y">
+        {shown.map((r) => (
+          <WorkingRowItem key={r.key} r={r} slug={slug} />
+        ))}
+      </ul>
+      {rows.length > limit ? (
+        <button type="button" aria-expanded={all} className="mt-2 text-xs underline underline-offset-2 hover:text-foreground" onClick={() => setAll((v) => !v)}>
+          {all ? "show fewer" : "show all " + plural(rows.length, "agent")}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkingRowItem({ r, slug }: { r: WorkingRow; slug?: string }) {
+  const [open, setOpen] = useState(false);
+  const s = r.slug;
+  const latest = r.claims[0];
+  // With a task the whole claim list folds; without one the newest claim is the headline and the rest fold.
+  const folded = r.task ? r.claims.length : r.claims.length - 1;
+  const threads = new Set(r.claims.map((c) => c.thread_key)).size;
+  const when = r.task ? (
+    r.task.w.since ? <span className="ml-auto shrink-0 text-xs text-muted-foreground">since <When d={r.task.w.since} /></span> : null
+  ) : latest?.expires ? (
+    <When d={latest.expires} className="ml-auto shrink-0 text-xs text-muted-foreground" />
+  ) : (
+    <span className="ml-auto shrink-0 text-xs text-muted-foreground tnum">no expiry</span>
+  );
+  // The panel lives in a narrow column: the agent leads the header line instead of taking a side column, so
+  // the summary - the answer to "on what?" - gets the full width.
+  return (
+    <li className="py-2 first:pt-0 last:pb-0 text-[13px]">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+        <Who row={{ agent: r.agent }} compact className="max-w-[45%] font-medium" />
+        {r.task ? (
+          <>
+            <span className="text-muted-foreground">on</span>
+            <Link href={hrefs.task(r.task.t.project, r.task.t.id)} className="hover:underline">
+              <Mono>{r.task.t.id}</Mono>
+            </Link>
+            <ToneBadge tone="info">{r.task.w.kind}</ToneBadge>
+          </>
+        ) : latest ? (
+          <>
+            {s && !slug ? <ProjectLink slug={s} /> : null}
+            <ThreadLink slug={s} k={latest.thread_key} className="text-muted-foreground" />
+          </>
+        ) : null}
+        {when}
+      </div>
+      {r.task ? (
+        <p className="mt-0.5 line-clamp-2 leading-snug anywhere">
+          <Link href={hrefs.task(r.task.t.project, r.task.t.id)} className="hover:underline">{truncate(r.task.t.title, 90)}</Link>
+          <span className="text-muted-foreground"> - {r.task.w.title ? truncate(r.task.w.title, 96) : r.task.w.job}</span>
+        </p>
+      ) : latest ? (
+        <p className="mt-0.5 line-clamp-2 leading-snug anywhere">
+          <PostLink slug={s} id={latest.id} label={latest.summary} />
+        </p>
+      ) : null}
+      {folded > 0 ? (
+        <button type="button" aria-expanded={open} className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline tnum" onClick={() => setOpen((v) => !v)}>
+          {open ? "hide claims" : (r.task ? "also holds " : "+ ") + plural(folded, r.task ? "claim" : "more claim") + (threads > 1 ? " across " + plural(threads, "thread") : "")}
+        </button>
+      ) : null}
+      {open ? (
+        <ul className="mt-1.5 ml-1 grid gap-1 border-l pl-2.5 text-[12.5px]">
+          {(r.task ? r.claims : r.claims.slice(1)).map((c) => (
+            <li key={c.id} className="flex items-start gap-2">
+              <div className="min-w-0 flex-1 anywhere">
+                <ThreadLink slug={s} k={c.thread_key} className="text-muted-foreground" /> <PostLink slug={s} id={c.id} label={truncate(c.summary, 120)} />
               </div>
-              <p className="mt-0.5 leading-snug anywhere">
-                <PostLink slug={s} id={c.id} label={c.summary} />
-              </p>
-            </div>
-            {exp ? <When d={c.expires} className="shrink-0 text-xs text-muted-foreground" /> : <span className="shrink-0 text-xs text-muted-foreground tnum">no expiry</span>}
-          </li>
-        );
-      })}
-    </ul>
+              {c.expires ? <When d={c.expires} className="shrink-0 text-xs text-muted-foreground" /> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </li>
   );
 }
 

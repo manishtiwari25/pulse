@@ -6,7 +6,7 @@ import { useState } from "react";
 import { ActivityIcon, BotIcon, CheckIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
-import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow } from "@/components/pulse/cards";
+import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { ComputeDecide } from "@/components/compute/compute";
 import { GateCard, foldSteps, gateStep, type GateStep } from "@/components/pulse/evolve";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
@@ -20,7 +20,7 @@ import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num, plural } from "@/lib/format";
-import { evolveGate, registeredProjects, taskProgress, type Compute, type ComputeCaps, type ComputeRequest, type Org, type ProjectCardData, type ProjectsPayload, type RecordRow, type RecordsPayload, type Runner, type TasksPayload, type Timeline } from "@/lib/api";
+import { evolveGate, registeredProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type ProjectCardData, type ProjectsPayload, type RecordRow, type RecordsPayload, type Runner, type TasksPayload, type Timeline } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 export default function HubPage() {
@@ -53,7 +53,7 @@ export default function HubPage() {
   const commons = o.commons;
   const awaiting = o.proposals.filter((p) => p.status === "awaiting");
   const openTasks = (tasks.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled");
-  const taskWorkCount = openTasks.reduce((n, t) => n + taskProgress(t).working.length, 0);
+  const working = workingRows(o.active_claims, openTasks);
   const recent = [...openTasks].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, 6);
   const pendingCompute = (compute.data?.requests ?? []).filter((r) => r.status === "pending");
   const adrs = (proposed.data?.records ?? []).filter(awaitsDecision);
@@ -222,7 +222,7 @@ export default function HubPage() {
         <div className="grid min-w-0 grid-cols-1 content-start gap-4">
           <LiveFeed limit={40} height={320} />
           <MachinePanel r={r} />
-          <Panel title="Working now" icon={ActivityIcon} actions={<span className="tnum">{plural(taskWorkCount + o.active_claims.length, "item")}</span>}>
+          <Panel title="Working now" icon={ActivityIcon} actions={<span className="tnum">{workingSummary(working, o.active_claims.length)}</span>}>
             <WorkingNow claims={o.active_claims} tasks={openTasks} />
           </Panel>
           {attention.length ? (
