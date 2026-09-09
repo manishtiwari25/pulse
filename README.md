@@ -343,10 +343,11 @@ pulse hook deliveries 1 --json                           # newest attempts and r
 ```
 
 Every hook firing is recorded as a delivery. Failed scripts or webhooks retry
-after 1, 5 and 15 minutes; after the third failed attempt the delivery is
-`failed` and PULSE emits one `hook.failed` event. Stopping the daemon does not
-kill a running hook or drop a queued hook event: running deliveries finish
-within their own timeout, and queued deliveries are stored for the next start.
+after 1 minute and then 5 minutes, for at most three attempts in total. After
+the third failed attempt the delivery is `failed` and PULSE emits one
+`hook.failed` event. Stopping the daemon does not kill a running hook or drop
+a queued hook event: running deliveries finish within their own timeout, and
+queued deliveries are stored for the next start.
 
 ## The runner
 
