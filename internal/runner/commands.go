@@ -49,7 +49,7 @@ func init() {
 	cli.Register(cli.Command{Name: "daemon", Group: "runner", Summary: "the runner loop: land, plan, dispatch workers, sweep",
 		Usage: "pulse daemon [--interval S] [--once] [--max-loops N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]",
 		Flags: func(fs *flag.FlagSet) {
-			fs.Int("interval", 300, "seconds between loops")
+			fs.Int("interval", DefaultDaemonIntervalSeconds, "idle wait and runner-error retry delay in seconds")
 			fs.Bool("once", false, "one loop, then exit")
 			fs.Int("max-loops", 0, "stop after N loops (0 = forever)")
 			fs.Bool("dry-run", false, "lease and plan nothing")
@@ -65,7 +65,7 @@ func init() {
 	cli.Register(cli.Command{Name: "service", Group: "runner", Summary: "install, uninstall or show the user services that keep the daemon and the hub alive (launchd / systemd --user)",
 		Usage: "pulse service install|uninstall|status|show [--interval S] [--hub-port N] [--no-hub] [--dry-run]",
 		Flags: func(fs *flag.FlagSet) {
-			fs.Int("interval", 300, "daemon interval in seconds")
+			fs.Int("interval", DefaultDaemonIntervalSeconds, "daemon idle wait and runner-error retry delay in seconds")
 			fs.Int("hub-port", hubPort, "port the hub service listens on (127.0.0.1)")
 			fs.Bool("no-hub", false, "install the daemon only; run the console by hand with `pulse hub`")
 			fs.Bool("dry-run", false, "print the units or plists instead of installing")

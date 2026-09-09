@@ -357,6 +357,12 @@ messages get answers. `pulse work` runs one worker here; `pulse land`,
 `pulse plan`, `pulse executor`, `pulse pair`, `pulse hands`, `pulse env` and
 `pulse sweep` are the same pieces by hand. `pulse stop` / `pulse start` is the kill switch.
 
+Use `pulse daemon --interval S` (or `pulse service install --interval S`) to
+set the idle wait and the retry pause after an all-error batch. The default
+is 300 seconds; zero or negative values use that default. Store events can
+wake the loop early, and cancellation stops the wait. Successful runs and
+work still in flight keep their existing prompt-dispatch behavior.
+
 Workers commit in their own clones and never push; the runner copies each
 job's commits to a `pulse/<agent>/<job>` branch in your checkout, and the
 daemon lands them into the default branch (ADR-024: verify command first,

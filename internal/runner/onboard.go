@@ -66,7 +66,7 @@ func daemonStatus(s *store.Store, now string) string {
 	}
 	at, _ := beat["at"].(string)
 	age := int(mustISO(now).Sub(mustISO(at)).Seconds())
-	interval := 300
+	interval := DefaultDaemonIntervalSeconds
 	if v, ok := beat["interval"].(float64); ok && v > 0 {
 		interval = int(v)
 	}

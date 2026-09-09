@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,7 +22,9 @@ import (
 
 func additionsStore(t *testing.T, skipRecords bool) *store.Store {
 	t.Helper()
-	t.Setenv("PULSE_JOB", "")
+	for _, name := range []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"} {
+		t.Setenv(name, "")
+	}
 	home := t.TempDir()
 	s, err := store.Open(store.Options{Home: home, Create: true, SkipRecords: skipRecords, Now: "2026-09-06T12:00:00Z"})
 	if err != nil {
@@ -29,6 +32,26 @@ func additionsStore(t *testing.T, skipRecords bool) *store.Store {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+func TestAdditionsStoreWithRunnerEnvironment(t *testing.T) {
+	names := []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"}
+	for _, name := range names {
+		t.Setenv(name, "parent")
+	}
+	t.Run("fixture", func(t *testing.T) {
+		additionsStore(t, false)
+		for _, name := range names {
+			if got := os.Getenv(name); got != "" {
+				t.Errorf("%s = %q, want empty fixture default", name, got)
+			}
+		}
+	})
+	for _, name := range names {
+		if got := os.Getenv(name); got != "parent" {
+			t.Errorf("%s = %q, want restored parent value", name, got)
+		}
+	}
 }
 
 func additionsRequest(t *testing.T, h http.Handler, method, path, body string) (int, map[string]any) {
