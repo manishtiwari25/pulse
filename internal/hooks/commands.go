@@ -24,6 +24,7 @@ func init() {
 		Summary: "scripts and webhooks that fire on store events: add, list, remove, enable, test",
 		Usage: "pulse hook add <event-glob> --script PATH | --url URL [--project P]\n" +
 			"pulse hook list [--all] [--json]\n" +
+			"pulse hook deliveries <id> [--limit N] [--json]\n" +
 			"pulse hook remove <id>      (disables; rows are never deleted)\n" +
 			"pulse hook enable <id>\n" +
 			"pulse hook test <id>        (fires it with a synthetic event)",
@@ -31,6 +32,7 @@ func init() {
 			fs.String("script", "", "executable to run (env PULSE_EVENT_*, JSON on stdin, 30 s)")
 			fs.String("url", "", "URL to POST the event JSON to (10 s)")
 			fs.Bool("all", false, "list removed hooks too")
+			fs.Int("limit", 50, "delivery rows to show")
 		},
 		Run: runHook,
 	})
@@ -74,7 +76,7 @@ func parseID(arg string) (int64, error) {
 
 func runHook(c *cli.Context, fs *flag.FlagSet, args []string) error {
 	if len(args) == 0 {
-		return cli.Errorf(2, "pulse hook needs a subcommand", "add, list, remove, enable or test", "pulse help hook")
+		return cli.Errorf(2, "pulse hook needs a subcommand", "add, list, deliveries, remove, enable or test", "pulse help hook")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -109,8 +111,12 @@ func runHook(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		if list == nil {
 			list = []Hook{}
 		}
+		states, err := DeliveryStates(c.Store)
+		if err != nil {
+			return err
+		}
 		if c.JSON {
-			return cli.WriteJSON(c.Out, map[string]any{"hooks": list})
+			return cli.WriteJSON(c.Out, map[string]any{"hooks": list, "deliveries": states})
 		}
 		if len(list) == 0 {
 			c.Println("No hooks. Add one: pulse hook add 'task.*' --script PATH")
@@ -122,9 +128,38 @@ func runHook(c *cli.Context, fs *flag.FlagSet, args []string) error {
 			if !h.Enabled {
 				on = "off"
 			}
-			rows = append(rows, []string{strconv.FormatInt(h.ID, 10), on, h.Event, h.Project, h.Kind, h.Target, strconv.Itoa(h.Fires), h.LastFiredAt, h.LastStatus})
+			state := states[h.ID]
+			rows = append(rows, []string{strconv.FormatInt(h.ID, 10), on, h.Event, h.Project, h.Kind, h.Target, strconv.Itoa(h.Fires), strconv.Itoa(state.Pending), h.LastFiredAt, h.LastStatus, state.LastError})
 		}
-		cli.Table(c.Out, c.Color, []string{"ID", "ENABLED", "EVENT", "PROJECT", "KIND", "TARGET", "FIRES", "LAST", "STATUS"}, rows)
+		cli.Table(c.Out, c.Color, []string{"ID", "ENABLED", "EVENT", "PROJECT", "KIND", "TARGET", "FIRES", "PENDING", "LAST", "STATUS", "LAST ERROR"}, rows)
+		return nil
+	case "deliveries":
+		if len(rest) < 1 {
+			return cli.Errorf(2, "Missing hook id", "which hook?", "pulse hook list")
+		}
+		id, err := parseID(rest[0])
+		if err != nil {
+			return err
+		}
+		if _, err := Get(c.Store, id); err != nil {
+			return err
+		}
+		limit, _ := strconv.Atoi(fs.Lookup("limit").Value.String())
+		deliveries, err := Deliveries(c.Store, id, limit)
+		if err != nil {
+			return err
+		}
+		if deliveries == nil {
+			deliveries = []Delivery{}
+		}
+		if c.JSON {
+			return cli.WriteJSON(c.Out, map[string]any{"deliveries": deliveries})
+		}
+		rows := make([][]string, 0, len(deliveries))
+		for _, d := range deliveries {
+			rows = append(rows, []string{strconv.FormatInt(d.ID, 10), strconv.FormatInt(d.EventSeq, 10), d.EventAction, strconv.Itoa(d.Attempt), d.Status, d.NextAt, d.Detail})
+		}
+		cli.Table(c.Out, c.Color, []string{"ID", "EVENT", "ACTION", "ATTEMPT", "STATUS", "NEXT", "DETAIL"}, rows)
 		return nil
 	case "remove", "enable":
 		if len(rest) < 1 {
@@ -175,7 +210,7 @@ func runHook(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		c.Printf("hook %d fired: %s\n", h.ID, status)
 		return nil
 	}
-	return cli.Errorf(2, "pulse hook: unknown subcommand "+strconv.Quote(sub), "add, list, remove, enable or test", "pulse help hook")
+	return cli.Errorf(2, "pulse hook: unknown subcommand "+strconv.Quote(sub), "add, list, deliveries, remove, enable or test", "pulse help hook")
 }
 
 func runHooks(c *cli.Context, fs *flag.FlagSet, args []string) error {

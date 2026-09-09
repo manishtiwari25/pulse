@@ -43,20 +43,25 @@ func idleNote(s *store.Store, slug, now string) string {
 
 func suggestionIdlePart(s *store.Store, slug, now string) string {
 	suggestions := suggestionRecords(s, slug, now)
-	eligible, plannable, netNonPositive, owner, noEvidence := 0, 0, 0, 0, 0
+	eligible, plannable, inFlight, netNonPositive, owner, noEvidence := 0, 0, 0, 0, 0, 0
 	needsVotes, tried := 0, 0
 	project := projectBySlug(s.DB, slug)
+	projectPath := ""
+	if project != nil {
+		projectPath = project.str("path")
+	}
 	for _, sg := range suggestions {
 		switch sg.Status {
 		case "eligible":
 			eligible++
-			post := postRow(s.DB, sg.ID)
-			switch {
-			case sg.Score <= 0:
+			switch gate := tally.PlanGate(s, projectPath, sg, tallyPost(s, sg.ID)); {
+			case tally.InFlightGate(sg) != "":
+				inFlight++
+			case gate == tally.GateNetVotes:
 				netNonPositive++
-			case isOwnerAddressedPost(post):
+			case gate == tally.GateOwner:
 				owner++
-			case post != nil && isWorkerPost(s.DB, post) && (!signalResolves(s.DB, project, post) || ownerTargeted(post)):
+			case gate == tally.GateNoEvidence || gate == tally.GateOwnerPaths:
 				noEvidence++
 			default:
 				plannable++
@@ -89,6 +94,9 @@ func suggestionIdlePart(s *store.Store, slug, now string) string {
 	}
 	if noEvidence > 0 {
 		held = append(held, fmt.Sprintf("%d without evidence", noEvidence))
+	}
+	if inFlight > 0 {
+		held = append(held, fmt.Sprintf("%d in flight", inFlight))
 	}
 	if len(held) == 0 {
 		return fmt.Sprintf("%d eligible suggestions, %d plannable", eligible, plannable)

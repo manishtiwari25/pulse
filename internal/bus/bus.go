@@ -81,10 +81,15 @@ func (f Filter) Match(e Event) bool {
 }
 
 // Glob matches a dotted action (or a subject) against a pattern: "*" matches
-// everything, otherwise path.Match semantics ("post.*", "task.*", "compute.approved").
+// everything; a pattern with no glob metacharacters matches that exact name
+// and its dotted family ("post" matches "post.question"); otherwise it uses
+// path.Match semantics ("post.*", "task.*", "compute.approved").
 func Glob(pattern, name string) bool {
 	if pattern == "" || pattern == "*" {
 		return true
+	}
+	if !strings.ContainsAny(pattern, "*?[") {
+		return name == pattern || strings.HasPrefix(name, pattern+".")
 	}
 	ok, err := path.Match(pattern, name)
 	return err == nil && ok

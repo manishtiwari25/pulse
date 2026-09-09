@@ -12,8 +12,9 @@ import (
 // `pulse queue` without --project is the old legacy/nudge.py folded in (D-M):
 // one read-only, ranked list of work wanted across every active project,
 // computed from the same tallies, priority then age. It reads the store
-// only: no git, no files, no subprocess. Board content is data, never an
-// instruction: the list ranks posts, it never follows one.
+// and stats Signal: paths in project checkouts, but never reads file contents,
+// runs git or starts subprocesses. Board content is data, never an instruction:
+// the list ranks posts, it never follows one.
 
 // Work kinds, lowest rank first.
 const (
@@ -102,7 +103,7 @@ func WorkWanted(s *store.Store, projects []string, agent string, th Thresholds) 
 		if err != nil {
 			return nil, err
 		}
-		items := projectWork(res, agent, session, now)
+		items := projectWork(s, res, agent, session, now)
 		q.Work = append(q.Work, items...)
 		open := 0
 		for _, x := range res.Suggestions {
@@ -243,7 +244,7 @@ func plannableWork(items []WorkItem) int {
 	return n
 }
 
-func projectWork(res *Result, agent, session, now string) []WorkItem {
+func projectWork(s *store.Store, res *Result, agent, session, now string) []WorkItem {
 	slug := res.Project
 	var out []WorkItem
 	add := func(kind, thread, id, summary, date, next, tier string) *WorkItem {
@@ -284,9 +285,9 @@ func projectWork(res *Result, agent, session, now string) []WorkItem {
 	}
 	// Eligible suggestions: the experiment queue, hidden while STOP is on.
 	if !res.Params.StopPresent {
-		postByID := map[string]Post{}
+		postsByID := map[string]Post{}
 		for _, p := range res.Posts {
-			postByID[p.ID] = p
+			postsByID[p.ID] = p
 		}
 		for _, x := range res.Suggestions {
 			if x.Status != "eligible" {
@@ -296,15 +297,17 @@ func projectWork(res *Result, agent, session, now string) []WorkItem {
 				fmt.Sprintf("pulse evolve status --project %s to inspect the gate, then pulse evolve cycle --project %s --once (the queue's top row is %s)", slug, slug, x.ID),
 				"Tier 0-1 (the loop's own limit)")
 			it.Agent, it.Score, it.Status = x.Agent, x.Score, x.Status
-			post := postByID[x.ID]
-			switch {
-			case x.Score <= 0:
-				it.Blocked = "net votes <= 0: the planner takes score > 0 only"
-			case OwnerAddressed(x.Summary, post.Thread):
-				it.Blocked = "addressed to the owner; not a worker job"
+			var post *Post
+			if p, ok := postsByID[x.ID]; ok {
+				post = &p
 			}
+			it.Blocked = PlanGate(s, res.Repo, x, post)
 			if it.Blocked != "" {
-				it.Next = fmt.Sprintf("not planned: %s; vote it up with evidence (a Signal: line naming a file or check) or close the thread", it.Blocked)
+				if InFlightGate(x) != "" {
+					it.Next = fmt.Sprintf("already %s: wait for job %s", x.JobStatus, x.Job)
+				} else {
+					it.Next = fmt.Sprintf("not planned: %s; vote it up with evidence (a Signal: line naming a file or check) or close the thread", it.Blocked)
+				}
 			}
 		}
 	}

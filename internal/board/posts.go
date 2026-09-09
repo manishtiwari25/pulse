@@ -269,10 +269,15 @@ func createPost(w *writer, in PostInput) (*Post, error) {
 	if origin == "" {
 		origin = "store"
 	}
-	extra := in.Extra
-	if extra == nil {
-		extra = map[string]any{}
+	extra := map[string]any{}
+	for k, v := range in.Extra {
+		extra[k] = v
 	}
+	mentions, err := postMentions(s, agentName, summary+"\n"+in.Body)
+	if err != nil {
+		return nil, err
+	}
+	extra["mentions"] = mentions
 	extraText, err := store.PyJSON(extra)
 	if err != nil {
 		return nil, err
@@ -296,8 +301,14 @@ func createPost(w *writer, in PostInput) (*Post, error) {
 			return nil, err
 		}
 	}
-	if err := w.event(agentName, "post", pid, map[string]any{"kind": in.Kind, "project": in.Project, "thread": area + "/" + thread}); err != nil {
+	threadKey := area + "/" + thread
+	if err := w.event(agentName, "post."+in.Kind, pid, map[string]any{"agent": agentName, "kind": in.Kind, "project": in.Project, "thread": threadKey}); err != nil {
 		return nil, err
+	}
+	for _, name := range mentions {
+		if err := w.event(agentName, "mention", name, map[string]any{"by": agentName, "kind": in.Kind, "post": pid, "project": in.Project, "thread": threadKey}); err != nil {
+			return nil, err
+		}
 	}
 	return postByID(w.db, pid)
 }

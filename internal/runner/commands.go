@@ -46,7 +46,7 @@ func init() {
 			fs.Bool("no-verify", false, "skip the verify command")
 			fs.Bool("dry-run", false, "list what waits, land nothing")
 		}, Run: cmdLand})
-	cli.Register(cli.Command{Name: "daemon", Group: "runner", Summary: "the runner loop: land, plan, dispatch workers",
+	cli.Register(cli.Command{Name: "daemon", Group: "runner", Summary: "the runner loop: land, plan, dispatch workers, sweep",
 		Usage: "pulse daemon [--interval S] [--once] [--max-loops N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.Int("interval", 300, "seconds between loops")
@@ -56,6 +56,12 @@ func init() {
 			fs.String("worker-cmd", "", "harness command for every run")
 			fs.Bool("no-restart", false, "do not exit for a restart when the pulse binary changes")
 		}, Run: cmdDaemon})
+	cli.Register(cli.Command{Name: "sweep", Group: "runner", Summary: "remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes)",
+		Usage: "pulse sweep [--dry-run] [--held] [--json]",
+		Flags: func(fs *flag.FlagSet) {
+			fs.Bool("dry-run", false, "list what would go and what is held; remove nothing")
+			fs.Bool("held", false, "also list what the sweep keeps and why")
+		}, Run: cmdSweep})
 	cli.Register(cli.Command{Name: "service", Group: "runner", Summary: "install, uninstall or show the user services that keep the daemon and the hub alive (launchd / systemd --user)",
 		Usage: "pulse service install|uninstall|status|show [--interval S] [--hub-port N] [--no-hub] [--dry-run]",
 		Flags: func(fs *flag.FlagSet) {
@@ -229,14 +235,27 @@ func cmdLand(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		if len(results) == 0 {
 			c.Printf("%s: nothing waiting\n", slug)
 		}
+		landed := false
 		for _, r := range results {
 			c.Printf("%s %s: %s\n", slug, r.State, r.Note)
+			if r.State == "landed" {
+				landed = true
+			}
 			w, ok := rank[r.State]
 			if !ok {
 				w = 3
 			}
 			if w > worst {
 				worst = w
+			}
+		}
+		// ADR-037: by hand as by the daemon - with landing.push=main, what landed (now or earlier) is pushed.
+		if line, note := pushLanded(s, proj, actor, now, landed); line != "" {
+			c.Printf("%s\n", line)
+		} else if note != "" {
+			c.Printf("%s %s\n", slug, note)
+			if worst < 1 {
+				worst = 1
 			}
 		}
 	}
@@ -267,6 +286,51 @@ func cmdDaemon(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		fmt.Fprintln(c.Err, "pulse binary changed on disk; exiting 3 so the service restarts the daemon")
 	}
 	return cli.Errorf(3, "", "", "")
+}
+
+// cmdSweep is the daemon's hygiene pass by hand: over every active project whose checkout answers, with the
+// same holds. Without --dry-run it removes; the report goes to meta.hygiene and the event log as the
+// daemon's would.
+func cmdSweep(c *cli.Context, fs *flag.FlagSet, args []string) error {
+	s, now := c.Store, nowOf(c)
+	if len(args) > 0 {
+		return fail(2, "pulse sweep takes no arguments (pulse sweep [--dry-run] [--held] [--json])")
+	}
+	dryRun := boolFlag(fs, "dry-run")
+	probes := &checkoutProbes{}
+	projects, held, _ := probes.ready(projectRows(s.DB, false), checkoutProbeTimeout)
+	rep := sweep(s, projects, now, sweepOpts{DryRun: dryRun, Actor: actorOf(c)})
+	if !dryRun {
+		recordSweep(s, rep, now, actorOf(c))
+	}
+	if c.JSON {
+		return cli.WriteJSON(c.Out, map[string]any{"at": rep.At, "dry_run": rep.DryRun, "removed": rep.Removed, "held": rep.Held,
+			"errors": rep.Errors, "bytes": rep.bytes(), "unreadable": held})
+	}
+	for slug, why := range held {
+		c.Printf("skipped %s: %s\n", slug, why)
+	}
+	for _, l := range sweepLines(rep) {
+		c.Printf("%s\n", l)
+	}
+	if boolFlag(fs, "held") {
+		for _, x := range rep.Held {
+			where := x.Path
+			if x.Project != "" && (x.Kind == "branch" || x.Kind == "ref") {
+				where = x.Project + " " + x.Path
+			}
+			c.Printf("held %s %s (%s)\n", x.Kind, where, x.Why)
+		}
+	}
+	verb := "removed"
+	if dryRun {
+		verb = "would remove"
+	}
+	c.Printf("%s %d item(s), %s; %d held\n", verb, len(rep.Removed), sizeText(rep.bytes()), len(rep.Held))
+	if len(rep.Errors) > 0 {
+		return cli.Errorf(1, fmt.Sprintf("%s could not be swept", plural(len(rep.Errors), "item")), rep.Errors[0], "fix the cause above and run pulse sweep again; the daemon tries again every ten minutes")
+	}
+	return nil
 }
 
 func cmdService(c *cli.Context, fs *flag.FlagSet, args []string) error {
@@ -664,23 +728,38 @@ func asHandsExit(err error, target **handsExit) bool {
 	return ok
 }
 
-// cmdComputeProviders is `pulse compute providers`: the compute providers this binary can provision with.
+// cmdComputeProviders is `pulse compute providers`: the compute providers this binary can provision with,
+// what each makes, the CLI login it works through and the setting that holds its default size.
 func cmdComputeProviders(c *cli.Context) error {
 	names := ProviderNames()
+	chosen := c.Store.Setting("compute.provider", "")
 	if c.JSON {
-		return cli.WriteJSON(c.Out, map[string]any{"providers": names, "setting": c.Store.Setting("compute.provider", "")})
+		var rows []map[string]any
+		for _, n := range names {
+			rows = append(rows, map[string]any{"name": n, "kind": providerNamed(n).Kind(), "auth": providerAuth[n],
+				"size_setting": store.ComputeSizeSetting(n), "chosen": n == chosen})
+		}
+		return cli.WriteJSON(c.Out, map[string]any{"providers": names, "detail": rows, "setting": chosen})
 	}
 	if len(names) == 0 {
 		c.Printf("no compute provider is built in\n")
 		return nil
 	}
-	chosen := c.Store.Setting("compute.provider", "")
 	for _, n := range names {
 		mark := ""
 		if n == chosen {
 			mark = "  (setting compute.provider)"
 		}
-		c.Printf("%s%s\n", n, mark)
+		c.Printf("%-10s %s; auth: %s; size: %s%s\n", n, providerNamed(n).Kind(), providerAuth[n], store.ComputeSizeSetting(n), mark)
 	}
 	return nil
+}
+
+// providerAuth names the login each provider works through - on this machine, as the daemon's user; PULSE
+// keeps no cloud credential of its own.
+var providerAuth = map[string]string{
+	"azure":     "az login",
+	"aws":       "aws configure or aws sso login",
+	"gcp":       "gcloud auth login",
+	"multipass": "multipassd running locally",
 }

@@ -31,8 +31,10 @@ type dispatch struct {
 }
 
 func daemonHeartbeat(s *store.Store, loops, interval int, note string) {
+	b := bus.Default()
 	beat := map[string]any{"pid": os.Getpid(), "at": s.Now(), "loops": loops, "interval": interval, "note": note,
-		"version": cli.Version(), "revision": cli.Revision()}
+		"version": cli.Version(), "revision": cli.Revision(),
+		"bus": map[string]any{"subscribers": b.Subscribers(), "dropped": b.Dropped(), "deduped": b.Deduped()}}
 	text, _ := json.Marshal(beat)
 	_, _ = s.DB.Exec("INSERT INTO meta (key, value) VALUES ('daemon', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", string(text))
 }
@@ -85,7 +87,7 @@ type daemonOpts struct {
 
 // daemonWake is what wakes the loop before its interval is over: the owner wrote (message.sent, task.*), a
 // compute request was approved, a setting changed (the stop switch), a job was queued by a lead or a CLI.
-var daemonWake = []string{"message.sent", "task.created", "task.amended", "task.status", "compute.approved", "setting", "job.add"}
+var daemonWake = []string{"message.sent", "post.question", "post.handoff", "task.created", "task.amended", "task.status", "compute.approved", "setting", "job.add"}
 
 // runBudget bounds one run's context: the harness minutes, the setup budget, verify and landing slack.
 func runBudget(s *store.Store) time.Duration {
@@ -123,7 +125,9 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	}
 	loops := 0
 	lastPruneDay := ""
+	var lastSweep time.Time
 	prevIdle := map[string]string{}
+	prevHeld := map[string]string{}
 	stamp := binaryStamp()
 	results := make(chan *dispatch, 64)
 	inflight := map[*dispatch]bool{}
@@ -310,10 +314,22 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			for _, l := range holdLines {
 				say("%s", l)
 			}
-			for _, proj := range projects {
-				// Verified branches land first, so a requeued job is planned and taken in the same loop (ADR-024).
-				for _, lr := range landPending(s, proj, actor, now, true, 0, false) {
-					say("landing %s: %s", lr.State, lr.Note)
+			// Verified branches land first, so a requeued job is planned and taken in the same loop (ADR-024);
+			// a hold (dirty or switched checkout, lock, unreadable folder, stop) is said once per change.
+			landLines, curHeld := tendLandings(s, projects, actor, now, prevHeld)
+			for _, l := range landLines {
+				say("%s", l)
+			}
+			prevHeld = curHeld
+			// Hygiene: what runs and landings left on this machine goes once nothing holds it; a run in
+			// flight keeps its clone, a branch waiting to land stays.
+			if !o.DryRun {
+				inflightJobs := map[string]bool{}
+				for d := range inflight {
+					inflightJobs[d.job.str("id")] = true
+				}
+				for _, l := range tendSweep(s, projects, now, actor, inflightJobs, &lastSweep) {
+					say("%s", l)
 				}
 			}
 			// ADR-035: a landing in the brain becomes the running binary; the build runs off the tick.

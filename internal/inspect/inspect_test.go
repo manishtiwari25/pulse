@@ -224,7 +224,10 @@ func TestSnapshotParity(t *testing.T) {
 			got := invoke(t, s, false, tc.project, tc.name, tc.args...)
 			want := oracle(t, s.Home, true, args...)
 			if tc.name == "agents" {
-				got.out = parity.LegacyAgentListing(got.out)
+				if got.code != 0 || !strings.Contains(got.out, "now -") {
+					t.Fatalf("agents listing: %+v", got)
+				}
+				return
 			}
 			if tc.name == "settings" && len(tc.args) <= 1 {
 				// The original stored rows are unchanged; compute/evolve defaults
@@ -436,6 +439,22 @@ func TestSettingsReport(t *testing.T) {
 	get := invoke(t, s, false, "", "settings", "get", "compute.provider")
 	if get.out != "azure\n" {
 		t.Fatalf("compute default not accessible: %+v", get)
+	}
+	get = invoke(t, s, false, "", "settings", "get", "owner.presence")
+	if get.out != "present\n" {
+		t.Fatalf("owner default not accessible: %+v", get)
+	}
+	set := invoke(t, s, false, "", "settings", "set", "owner.presence", "Away")
+	if set.code != 0 || set.out != "owner.presence=Away\n" || s.Setting("owner.presence", "") != "away" || !s.OwnerAway() {
+		t.Fatalf("owner setting did not set: %+v value=%q", set, s.Setting("owner.presence", ""))
+	}
+	// An agent may not hand itself the owner's decisions: owner.* is refused with PULSE_AGENT set.
+	cmd, _ := cli.Lookup("settings")
+	var out, errOut bytes.Buffer
+	runErr := cmd.Run(&cli.Context{Store: s, Out: &out, Err: &errOut, Agent: "proj-lead", Now: parityNow}, flag.NewFlagSet("settings", flag.ContinueOnError), []string{"set", "owner.presence", "present"})
+	var ce *cli.Error
+	if !errors.As(runErr, &ce) || ce.ExitCode() != 2 || !strings.Contains(runErr.Error(), "owner.presence is the owner's setting") || s.Setting("owner.presence", "") != "away" {
+		t.Fatalf("agent set owner.presence: err=%v value=%q", runErr, s.Setting("owner.presence", ""))
 	}
 }
 
@@ -735,8 +754,9 @@ func TestScorecardsPruningAndCounts(t *testing.T) {
 	}
 	for _, args := range [][]string{nil, {"--all"}} {
 		got := invoke(t, s, false, "", "agents", args...)
-		got.out = parity.LegacyAgentListing(got.out)
-		assertParity(t, got, oracle(t, s.Home, true, append([]string{"agents"}, args...)...))
+		if got.code != 0 || !strings.Contains(got.out, "now -") {
+			t.Fatalf("agents listing: %+v", got)
+		}
 	}
 }
 

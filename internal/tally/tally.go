@@ -113,17 +113,19 @@ type SVote struct {
 }
 
 type Suggestion struct {
-	Score   int    `json:"score"`
-	Date    string `json:"date"`
-	ID      string `json:"id"`
-	Key     string `json:"key"`
-	Up      int    `json:"up"`
-	Down    int    `json:"down"`
-	Voters  int    `json:"voters"`
-	Status  string `json:"status"` // closed | built | tried | eligible | expired | needs votes
-	Agent   string `json:"agent"`
-	Summary string `json:"summary"`
-	Session string `json:"session"`
+	Score     int    `json:"score"`
+	Date      string `json:"date"`
+	ID        string `json:"id"`
+	Key       string `json:"key"`
+	Up        int    `json:"up"`
+	Down      int    `json:"down"`
+	Voters    int    `json:"voters"`
+	Status    string `json:"status"` // closed | built | tried | eligible | expired | needs votes
+	Agent     string `json:"agent"`
+	Summary   string `json:"summary"`
+	Session   string `json:"session"`
+	Job       string `json:"job,omitempty"`
+	JobStatus string `json:"job_status,omitempty"`
 }
 
 type AVote struct {
@@ -209,12 +211,19 @@ type avoteInfo struct {
 }
 type propInfo struct{ id, agent, date, summary string }
 
+// OpenSuggestionJob is an open queued, leased or blocked job carrying a suggestion.
+type OpenSuggestionJob struct {
+	ID     string
+	Status string
+}
+
 // tally is the Python Tally class: every status of one project's posts.
 type tally struct {
 	now    string
 	today  int
 	params Thresholds
 	built  map[string]string
+	open   map[string]openSuggestionJob
 
 	rows   []Post
 	nokind int
@@ -240,8 +249,12 @@ type tally struct {
 
 func sameSession(a, b string) bool { return a != "" && b != "" && a == b }
 
-func newTally(rows []Post, params Thresholds, now, area string, built map[string]string) *tally {
-	t := &tally{now: now, today: dayNumber(now), params: params, built: built,
+type openSuggestionJob struct {
+	id, status, created string
+}
+
+func newTally(rows []Post, params Thresholds, now, area string, built map[string]string, open map[string]openSuggestionJob) *tally {
+	t := &tally{now: now, today: dayNumber(now), params: params, built: built, open: open,
 		nposts: map[string]int{}, last: map[string]string{}, lastsum: map[string]string{}, closed: map[string]bool{},
 		resol: map[string]string{}, resID: map[string]string{}, resDate: map[string]string{},
 		prop: newOmap[string, propInfo](), claims: newOmap[string, claimInfo](), suggs: newOmap[string, suggInfo](),
@@ -249,6 +262,9 @@ func newTally(rows []Post, params Thresholds, now, area string, built map[string
 		amends: newOmap[string, amendInfo](), avotes: newOmap[voteKey, avoteInfo]()}
 	if built == nil {
 		t.built = map[string]string{}
+	}
+	if open == nil {
+		t.open = map[string]openSuggestionJob{}
 	}
 	for _, r := range rows {
 		if area != "" && r.Area != area {
@@ -370,8 +386,12 @@ func (t *tally) suggestionRecords() []Suggestion {
 		default:
 			status = "needs votes"
 		}
-		out = append(out, Suggestion{Score: up - down, Date: s.date, ID: sid, Key: s.key, Up: up, Down: down, Voters: voters,
-			Status: status, Agent: s.agent, Summary: s.summary, Session: s.session})
+		sg := Suggestion{Score: up - down, Date: s.date, ID: sid, Key: s.key, Up: up, Down: down, Voters: voters,
+			Status: status, Agent: s.agent, Summary: s.summary, Session: s.session}
+		if j := t.open[sid]; j.id != "" {
+			sg.Job, sg.JobStatus = j.id, j.status
+		}
+		out = append(out, sg)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
@@ -502,20 +522,18 @@ func atoi(s string) int {
 
 func hasPrefix(s, p string) bool { return len(s) >= len(p) && s[:len(p)] == p }
 
-// builtSuggestions is legacy/pulse.py built_suggestions: suggestion id ->
-// "built" when a job landed it, "tried" when every job for it failed or was
-// cancelled.
-func builtSuggestions(s *store.Store) (map[string]string, error) {
+// suggestionJobs returns legacy/pulse.py built_suggestions status plus each suggestion's open job.
+func suggestionJobs(s *store.Store) (map[string]string, map[string]openSuggestionJob, error) {
 	out := map[string]string{}
 	rows, err := s.DB.Query("SELECT source, status FROM jobs WHERE source LIKE 'suggestion:%' AND status IN ('done', 'failed', 'cancelled') ORDER BY id")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var source, status string
 		if err := rows.Scan(&source, &status); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		sid := source[len("suggestion:"):]
 		if _, seen := out[sid]; status == "done" || !seen {
@@ -526,7 +544,54 @@ func builtSuggestions(s *store.Store) (map[string]string, error) {
 			}
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	open := map[string]openSuggestionJob{}
+	rows, err = s.DB.Query("SELECT id, source, status, created_at FROM jobs WHERE source LIKE 'suggestion:%' AND status IN ('queued', 'leased', 'blocked') ORDER BY id")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, source, status, created string
+		if err := rows.Scan(&id, &source, &status, &created); err != nil {
+			return nil, nil, err
+		}
+		sid := source[len("suggestion:"):]
+		candidate := openSuggestionJob{id: id, status: status, created: created}
+		if betterOpenJob(candidate, open[sid]) {
+			open[sid] = candidate
+		}
+	}
+	return out, open, rows.Err()
+}
+
+// OpenSuggestionJobs returns the open queued, leased or blocked jobs keyed by suggestion post ID.
+func OpenSuggestionJobs(s *store.Store) (map[string]OpenSuggestionJob, error) {
+	_, open, err := suggestionJobs(s)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]OpenSuggestionJob, len(open))
+	for id, job := range open {
+		out[id] = OpenSuggestionJob{ID: job.id, Status: job.status}
+	}
+	return out, nil
+}
+
+func betterOpenJob(a, b openSuggestionJob) bool {
+	if b.id == "" {
+		return true
+	}
+	rank := map[string]int{"blocked": 1, "queued": 2, "leased": 3}
+	if rank[a.status] != rank[b.status] {
+		return rank[a.status] > rank[b.status]
+	}
+	if a.created != b.created {
+		return a.created > b.created
+	}
+	return a.id > b.id
 }
 
 // projectRepo resolves the project row like current_project: "commons" is the
@@ -571,11 +636,11 @@ func Compute(s *store.Store, project, area string, th Thresholds) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
-	built, err := builtSuggestions(s)
+	built, open, err := suggestionJobs(s)
 	if err != nil {
 		return nil, err
 	}
-	t := newTally(rows, params, now, area, built)
+	t := newTally(rows, params, now, area, built, open)
 	res := &Result{Project: project, Repo: repo, Area: area, Now: now, Params: params, Posts: rows, NoKind: t.nokind}
 	for _, cid := range t.claims.keys {
 		c := t.claims.m[cid]

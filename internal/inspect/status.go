@@ -32,11 +32,20 @@ type StatusReport struct {
 	DailyCap      int                `json:"daily_cap"`
 	Runner        string             `json:"runner"`
 	Daemon        string             `json:"daemon"`
+	Bus           BusStatus          `json:"bus"`
 	Executors     string             `json:"executors"`
 	Capacity      string             `json:"capacity"`
+	Hygiene       string             `json:"hygiene"`
 	Planner       []PlannerNote      `json:"planner"`
 	Recovery      []RecoveryNote     `json:"recovery"`
+	Landing       []LandingNote      `json:"landing"`
 	Settings      []store.SettingRow `json:"settings"`
+}
+
+type BusStatus struct {
+	Subscribers int   `json:"subscribers"`
+	Dropped     int64 `json:"dropped"`
+	Deduped     int64 `json:"deduped"`
 }
 
 type PlannerNote struct {
@@ -47,6 +56,8 @@ type PlannerNote struct {
 }
 
 type RecoveryNote = PlannerNote
+
+type LandingNote = PlannerNote
 
 func statusCounts(s *store.Store, query string) ([]StatusCount, error) {
 	rows, err := s.DB.Query(query)
@@ -124,11 +135,12 @@ func RunnerStopped(s *store.Store) (string, error) {
 }
 
 type daemonBeat struct {
-	PID      *int   `json:"pid"`
-	At       string `json:"at"`
-	Loops    int    `json:"loops"`
-	Interval *int   `json:"interval"`
-	Note     string `json:"note"`
+	PID      *int      `json:"pid"`
+	At       string    `json:"at"`
+	Loops    int       `json:"loops"`
+	Interval *int      `json:"interval"`
+	Note     string    `json:"note"`
+	Bus      BusStatus `json:"bus"`
 }
 
 func readDaemonBeat(s *store.Store) (daemonBeat, bool, error) {
@@ -196,8 +208,11 @@ func DaemonStatus(s *store.Store) (string, error) {
 	return fmt.Sprintf("%s pid %s, last loop %ds ago, %d loop(s), interval %ss", state, pid, age, beat.Loops, interval), nil
 }
 
-func PlannerNotes(s *store.Store) ([]PlannerNote, error) {
-	raw, exists, err := s.Meta("planner")
+// metaNotes reads one per-project note set the daemon keeps in meta as {slug: {at, note}} - the planner's
+// idle notes, the recovery holds, the landing holds - sorted by project, each marked stale when the daemon
+// has not refreshed it for two intervals.
+func metaNotes(s *store.Store, key string) ([]PlannerNote, error) {
+	raw, exists, err := s.Meta(key)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +224,7 @@ func PlannerNotes(s *store.Store) ([]PlannerNote, error) {
 		Note string `json:"note"`
 	}
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return nil, fmt.Errorf("read planner notes: %w", err)
+		return nil, fmt.Errorf("read %s notes: %w", key, err)
 	}
 	interval, err := daemonIntervalSeconds(s)
 	if err != nil {
@@ -236,45 +251,14 @@ func PlannerNotes(s *store.Store) ([]PlannerNote, error) {
 	return out, nil
 }
 
-func RecoveryNotes(s *store.Store) ([]RecoveryNote, error) {
-	raw, exists, err := s.Meta("recovery")
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return []RecoveryNote{}, nil
-	}
-	var stored map[string]struct {
-		At   string `json:"at"`
-		Note string `json:"note"`
-	}
-	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return nil, fmt.Errorf("read recovery notes: %w", err)
-	}
-	interval, err := daemonIntervalSeconds(s)
-	if err != nil {
-		return nil, err
-	}
-	now, err := parseUTC(s.Now())
-	if err != nil {
-		return nil, err
-	}
-	projects := make([]string, 0, len(stored))
-	for project := range stored {
-		projects = append(projects, project)
-	}
-	sort.Strings(projects)
-	out := make([]RecoveryNote, 0, len(projects))
-	for _, project := range projects {
-		item := stored[project]
-		at, err := parseUTC(item.At)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, RecoveryNote{Project: project, At: item.At, Note: item.Note, Stale: now.Sub(at) > time.Duration(2*interval)*time.Second})
-	}
-	return out, nil
-}
+func PlannerNotes(s *store.Store) ([]PlannerNote, error) { return metaNotes(s, "planner") }
+
+func RecoveryNotes(s *store.Store) ([]RecoveryNote, error) { return metaNotes(s, "recovery") }
+
+// LandingNotes are the projects whose verified branches cannot land right now and why (ADR-024): the
+// checkout is off its default branch or has uncommitted changes, a lock, an unreadable folder, a stop. The
+// daemon writes one per held project and clears it when the branches land again.
+func LandingNotes(s *store.Store) ([]LandingNote, error) { return metaNotes(s, "landing") }
 
 func CapacityStatus(s *store.Store) (string, error) {
 	raw, exists, err := s.Meta("capacity")
@@ -312,6 +296,65 @@ func CapacityStatus(s *store.Store) (string, error) {
 type unfitMark struct {
 	Tool string `json:"tool"`
 	At   string `json:"at"`
+}
+
+// HygieneStatus is one line from the last sweep the daemon (or pulse sweep) ran: when, what it removed and
+// how much that freed, what it held, what it could not remove. Empty until a sweep has run.
+func HygieneStatus(s *store.Store) (string, error) {
+	raw, exists, err := s.Meta("hygiene")
+	if err != nil || !exists {
+		return "", err
+	}
+	var note struct {
+		At      string         `json:"at"`
+		Removed map[string]int `json:"removed"`
+		Held    map[string]int `json:"held"`
+		Bytes   int64          `json:"bytes"`
+		Errors  int            `json:"errors"`
+	}
+	if err := json.Unmarshal([]byte(raw), &note); err != nil {
+		return "", fmt.Errorf("read hygiene note: %w", err)
+	}
+	counts := func(m map[string]int) string {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, fmt.Sprintf("%s %d", k, m[k]))
+		}
+		return strings.Join(parts, ", ")
+	}
+	line := "last sweep " + note.At + ": "
+	if len(note.Removed) == 0 {
+		line += "nothing to remove"
+	} else {
+		line += "removed " + counts(note.Removed)
+		if note.Bytes > 0 {
+			line += fmt.Sprintf(" (%s freed)", sizeText(note.Bytes))
+		}
+	}
+	if len(note.Held) > 0 {
+		line += "; held " + counts(note.Held)
+	}
+	if note.Errors > 0 {
+		line += fmt.Sprintf("; %d error(s) - pulse sweep --dry-run shows them", note.Errors)
+	}
+	return line, nil
+}
+
+func sizeText(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/float64(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/float64(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(n)/float64(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
 }
 
 func unfitMarks(s *store.Store) (map[string]map[string]unfitMark, error) {
@@ -479,6 +522,9 @@ func Status(s *store.Store) (*StatusReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	if beat, exists, err := readDaemonBeat(s); err == nil && exists {
+		r.Bus = beat.Bus
+	}
 	r.Executors, err = ExecutorsLine(s)
 	if err != nil {
 		return nil, err
@@ -487,11 +533,19 @@ func Status(s *store.Store) (*StatusReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.Hygiene, err = HygieneStatus(s)
+	if err != nil {
+		return nil, err
+	}
 	r.Planner, err = PlannerNotes(s)
 	if err != nil {
 		return nil, err
 	}
 	r.Recovery, err = RecoveryNotes(s)
+	if err != nil {
+		return nil, err
+	}
+	r.Landing, err = LandingNotes(s)
 	if err != nil {
 		return nil, err
 	}
@@ -519,9 +573,16 @@ func (r *StatusReport) Text() string {
 	} else {
 		out.WriteString(" (no daily cap; jobs_per_day=0)\n")
 	}
-	fmt.Fprintf(&out, "runner     %s\ndaemon     %s\nexecutors  %s\n", r.Runner, r.Daemon, r.Executors)
+	fmt.Fprintf(&out, "runner     %s\ndaemon     %s\n", r.Runner, r.Daemon)
+	if r.Bus.Dropped > 0 {
+		fmt.Fprintf(&out, "events     %d event(s) dropped for slow subscribers since the daemon started\n", r.Bus.Dropped)
+	}
+	fmt.Fprintf(&out, "executors  %s\n", r.Executors)
 	if r.Capacity != "" {
 		fmt.Fprintf(&out, "capacity   %s\n", r.Capacity)
+	}
+	if r.Hygiene != "" {
+		fmt.Fprintf(&out, "hygiene    %s\n", r.Hygiene)
 	}
 	for _, note := range r.Planner {
 		stale := ""
@@ -536,6 +597,13 @@ func (r *StatusReport) Text() string {
 			stale = " (stale)"
 		}
 		fmt.Fprintf(&out, "recovery   %s: %s%s\n", note.Project, note.Note, stale)
+	}
+	for _, note := range r.Landing {
+		stale := ""
+		if note.Stale {
+			stale = " (stale)"
+		}
+		fmt.Fprintf(&out, "landing    %s: %s%s\n", note.Project, note.Note, stale)
 	}
 	settings := make([]string, len(r.Settings))
 	for i, setting := range r.Settings {

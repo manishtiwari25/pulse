@@ -2,6 +2,7 @@ package inspect
 
 import (
 	"flag"
+	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
@@ -46,6 +47,9 @@ func SettingsReport(s *store.Store) ([]SettingReport, error) {
 		}
 		if d, ok := store.LeadSettings[name]; ok {
 			def, rule = d, store.LeadRules[name]
+		}
+		if d, ok := store.OwnerSettings[name]; ok {
+			def, rule = d, store.OwnerRules[name]
 		}
 		r := SettingReport{Name: name, Value: def, Default: def, Kind: rule.Kind, Choices: rule.Choices, Description: rule.Description}
 		if rule.HasMin {
@@ -126,6 +130,9 @@ func runSettings(c *cli.Context, _ *flag.FlagSet, args []string) error {
 			if !exists {
 				value, exists = store.LeadSettings[name]
 			}
+			if !exists {
+				value, exists = store.OwnerSettings[name]
+			}
 			value = agentSettingValue(name, value)
 			if c.JSON {
 				var result any
@@ -166,6 +173,10 @@ func runSettings(c *cli.Context, _ *flag.FlagSet, args []string) error {
 	case "set":
 		if len(args) < 3 {
 			return cli.Errorf(2, "pulse: settings set NAME VALUE", "", "")
+		}
+		if strings.HasPrefix(args[1], "owner.") && c.Agent != "" && c.Agent != store.HumanAgent {
+			return cli.Errorf(2, "pulse: "+args[1]+" is the owner's setting", "it hands the owner's decisions to the leads, so only the owner sets it - in the console or here without PULSE_AGENT",
+				"pulse settings get "+args[1])
 		}
 		if err := c.Store.SetSetting(actor(c), args[1], args[2]); err != nil {
 			return inputError(err)

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/manishtiwari25/pulse/internal/board"
+	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -689,6 +692,10 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		if len(parsed.Votes) > 0 {
 			lines = append(lines, fmt.Sprintf("- Votes: %d cast of %d `VOTE:` line(s)", cast, len(parsed.Votes)))
 		}
+		decided := applyResultDecisions(s, job, parsed, log)
+		if len(parsed.Decisions) > 0 && job.str("kind") == leadKind && s.OwnerAway() {
+			lines = append(lines, fmt.Sprintf("- Decisions: %d recorded of %d DECIDE: line(s)", decided, len(parsed.Decisions)))
+		}
 		post := func(kind, area, thread, sum, text, resolution string) {
 			if _, err := createPost(s, now, postOpts{Kind: kind, Project: project.str("slug"), Area: area, Thread: thread,
 				Summary: trunc(sum, 230), Body: text, Agent: arow, Session: runID, Branch: &branch, Resolution: resolution}); err != nil {
@@ -725,6 +732,73 @@ func errMessage(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// applyResultDecisions records `DECIDE:` lines from a project's lead while the owner is away.
+func applyResultDecisions(s *store.Store, job row, rep report, log *runLog) int {
+	if len(rep.Decisions) == 0 || job == nil || job.str("kind") != leadKind || !s.OwnerAway() {
+		return 0
+	}
+	slug := job.str("project")
+	lead := leadName(slug)
+	recorded := 0
+	seen := map[string]bool{}
+	for _, d := range rep.Decisions {
+		if seen[d.PostID] {
+			log.add("decision skipped: %s was already named by this report", d.PostID)
+			continue
+		}
+		seen[d.PostID] = true
+		if strings.TrimSpace(d.Reason) == "" {
+			log.add("decision skipped: %s has no reason", d.PostID)
+			continue
+		}
+		post := mustOne(s.DB, "SELECT id, project, resolution, summary, body FROM posts WHERE id = ?", d.PostID)
+		if post == nil {
+			log.add("decision skipped: %s does not exist", d.PostID)
+			continue
+		}
+		if post.str("project") != slug {
+			log.add("decision skipped: %s belongs to %s, not %s", d.PostID, post.str("project"), slug)
+			continue
+		}
+		if post.str("resolution") != "agreed" {
+			log.add("decision skipped: %s is not an agreed proposal", d.PostID)
+			continue
+		}
+		if mustOne(s.DB, "SELECT 1 AS x FROM decisions WHERE post_id = ?", d.PostID) != nil {
+			log.add("decision skipped: %s was already decided", d.PostID)
+			continue
+		}
+		if mustOne(s.DB, "SELECT 1 AS x FROM compute_requests WHERE proposal_post = ?", d.PostID) != nil {
+			log.add("decision skipped: %s is a compute proposal", d.PostID)
+			continue
+		}
+		if leadHumanOnlyMarkerRe.MatchString(post.str("body")) {
+			log.add("decision skipped: %s has a pair/onboard marker", d.PostID)
+			continue
+		}
+		if what := board.Tier2Proposal(post.str("summary"), post.str("body")); what != "" {
+			log.add("decision skipped: %s %s: Tier 2 waits for the owner", d.PostID, what)
+			continue
+		}
+		if latest := mustOne(s.DB, "SELECT resolution FROM posts WHERE project = ? AND area = (SELECT area FROM posts WHERE id = ?) AND thread = (SELECT thread FROM posts WHERE id = ?) AND resolution <> '' ORDER BY id DESC LIMIT 1", slug, d.PostID, d.PostID); latest == nil || latest.str("resolution") != "agreed" {
+			log.add("decision skipped: %s is no longer awaiting", d.PostID)
+			continue
+		}
+		if _, err := board.Decide(s, d.PostID, d.Answer, d.Reason, lead); err != nil {
+			var refusal *cli.Error
+			if errors.As(err, &refusal) {
+				log.add("decision refused: %s: %s", d.PostID, errMessage(err))
+				continue
+			}
+			log.add("decision skipped: %s: %s", d.PostID, errMessage(err))
+			continue
+		}
+		recorded++
+	}
+	log.add("- Decisions: %d recorded of %d DECIDE: line(s)", recorded, len(rep.Decisions))
+	return recorded
 }
 
 // castResultVotes casts the `VOTE:` lines that were on this run's ballot, one per target, with a reason.

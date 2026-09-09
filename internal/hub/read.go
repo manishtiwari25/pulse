@@ -264,10 +264,10 @@ func (h *Handler) summary(view projectView) map[string]any {
 			proposals = append(proposals, pick(row, "id thread_key agent name session date status summary proposal_text rel_path"))
 		}
 	}
-	return object("slug kind brain base path remote name branch head dirty built_at board_present claims_active threads_open questions_open suggestions_eligible suggestions_needing_votes amendments_open proposals_awaiting posts posts_24h tally_mode can_decide agents identities evolution_present loop stop_present baseline last_post active_claims proposals present missing error",
+	return object("slug kind brain base path remote name branch head dirty built_at board_present claims_active threads_open questions_open suggestions_eligible suggestions_plannable suggestions_needing_votes amendments_open proposals_awaiting posts posts_24h tally_mode can_decide agents identities evolution_present loop stop_present baseline last_post active_claims proposals present missing error",
 		p.Slug, kind, p.Brain, baseFor(p.Slug), p.Path, p.Remote, d.Meta["repo_name"], d.Meta["branch"], d.Meta["head"],
 		d.Meta["dirty"] == "1", d.Meta["built_at"], d.Meta["board_present"] == "1", overview["claims_active"], overview["threads_open"], questionsOpen,
-		overview["suggestions_eligible"], overview["suggestions_needing_votes"], overview["amendments_open"], overview["proposals_awaiting"], len(d.Posts), posts24,
+		overview["suggestions_eligible"], overview["suggestions_plannable"], overview["suggestions_needing_votes"], overview["amendments_open"], overview["proposals_awaiting"], len(d.Posts), posts24,
 		"go", true, len(identities), sortedKeys(identities), evo["evolution_present"] == "1", evo["loop"], evo["stop_present"] == "1",
 		evo["baseline"], last, claims, proposals, true, false, view.Error)
 }
@@ -295,7 +295,7 @@ func (h *Handler) org(views []projectView) map[string]any {
 	}
 	identities, activeAgents := map[string]bool{}, map[string]bool{}
 	claims, proposals, ballot := []map[string]any{}, []map[string]any{}, []map[string]any{}
-	votesOpen, posts24, posts, presentCount := 0, 0, 0, 0
+	votesOpen, votesPlannable, posts24, posts, presentCount := 0, 0, 0, 0, 0
 	for _, p := range all {
 		if p["present"] != true {
 			continue
@@ -306,6 +306,7 @@ func (h *Handler) org(views []projectView) map[string]any {
 				num(p["suggestions_eligible"])+num(p["suggestions_needing_votes"]), p["amendments_open"], p["proposals_awaiting"]))
 		}
 		votesOpen += num(p["suggestions_eligible"]) + num(p["suggestions_needing_votes"]) + num(p["amendments_open"])
+		votesPlannable += num(p["suggestions_plannable"])
 		posts24 += num(p["posts_24h"])
 		posts += num(p["posts"])
 		for _, id := range p["identities"].([]string) {
@@ -342,11 +343,12 @@ func (h *Handler) org(views []projectView) map[string]any {
 		ballotVotes += num(row["suggestions"]) + num(row["amendments"])
 		ballotProposals += num(row["proposals"])
 	}
-	return object("generated_at registry tally_mode can_decide commons_dir projects commons stamp notices totals active_claims proposals",
+	return object("generated_at registry tally_mode can_decide commons_dir projects commons stamp notices totals active_claims proposals owner_presence",
 		h.Store.Now(), h.Store.Path, "go", true, commonsDir, projects, commons, strings.Join(stamps, "|"),
 		object("ballot votes_open proposals_awaiting brain brains commons_present commons_base commons_questions", ballot, ballotVotes, ballotProposals, brain, brains, commonsOK, commonsBase, noticeQuestions),
-		object("projects projects_present agents agents_active votes_open proposals_awaiting questions_open posts_24h posts brain brains",
-			len(projects), presentCount, len(identities), len(activeAgents), votesOpen, len(proposals), questions, posts24, posts, brain, brains), claims, proposals)
+		object("projects projects_present agents agents_active votes_open votes_plannable proposals_awaiting questions_open posts_24h posts brain brains",
+			len(projects), presentCount, len(identities), len(activeAgents), votesOpen, votesPlannable, len(proposals), questions, posts24, posts, brain, brains), claims, proposals,
+		h.Store.Setting("owner.presence", store.OwnerPresent))
 }
 
 func orgProposals(views []projectView) []map[string]any {

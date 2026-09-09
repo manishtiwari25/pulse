@@ -163,13 +163,18 @@ type gitResult struct {
 func (g gitResult) ok() bool { return g.Err == nil && g.Code == 0 }
 
 func gitTimeout(repo string, timeout time.Duration, args ...string) gitResult {
+	return gitTimeoutEnv(repo, timeout, nil, args...)
+}
+
+// gitTimeoutEnv is gitTimeout with extra environment entries (KEY=value) for the one command.
+func gitTimeoutEnv(repo string, timeout time.Duration, env []string, args ...string) gitResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if repo != "" {
 		args = append([]string{"-C", repo}, args...)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
 	var out, errb strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errb

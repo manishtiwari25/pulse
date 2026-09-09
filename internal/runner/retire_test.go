@@ -199,7 +199,7 @@ func TestTendRetiresOurAzureVM(t *testing.T) {
 	}
 	body := posts[0].str("body")
 	for _, want := range []string{
-		"retired vm-seven: login refused; VM pulse-cr-007 (pulse-hands) deallocated now, deleted at " + plusHours(testNow, 24) + " unless kept",
+		"retired vm-seven: login refused; Azure VM pulse-cr-007 (pulse-hands) stopped now, deleted at " + plusHours(testNow, 24) + " unless kept",
 	} {
 		if posts[0].str("summary") != want {
 			t.Fatalf("summary: %q", posts[0].str("summary"))
@@ -207,8 +207,8 @@ func TestTendRetiresOurAzureVM(t *testing.T) {
 	}
 	for _, want := range []string{
 		"What was refused: copilot refuses the login",
-		"deallocated now (" + testNow + ")",
-		"deletes the VM, its network interfaces, public IPs and OS disk at " + plusHours(testNow, 24) + " (compute.retire_grace_hours=24)",
+		"stopped now (" + testNow + ")",
+		"deletes the machine and what was created beside it at " + plusHours(testNow, 24) + " (compute.retire_grace_hours=24)",
 		"Undo: `az vm start -g pulse-hands -n pulse-cr-007` then `pulse executor activate vm-seven` before " + plusHours(testNow, 24) + " keeps it.",
 		"A Copilot-only fine-grained token placed with `pulse executor token --with-token` lets the daemon heal future machines instead.",
 	} {
@@ -216,7 +216,7 @@ func TestTendRetiresOurAzureVM(t *testing.T) {
 			t.Fatalf("body lacks %q:\n%s", want, body)
 		}
 	}
-	if len(lines) < 2 || !strings.Contains(lines[0], "no login source") || !strings.Contains(lines[1], "retired vm-seven: deallocated pulse-cr-007") {
+	if len(lines) < 2 || !strings.Contains(lines[0], "no login source") || !strings.Contains(lines[1], "retired vm-seven: stopped pulse-cr-007") {
 		t.Fatalf("lines: %q", lines)
 	}
 	if count(t, s, "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question'") != 0 {
@@ -492,7 +492,7 @@ func TestDaemonTickTendsExecutors(t *testing.T) {
 	installRetireAz(t, az)
 	stubGh(t, "")
 	log := onceDaemon(t, s, daemonOpts{WorkerCmd: "sh -c 'echo SUMMARY: nothing'"})
-	if !strings.Contains(log, "retired vm-seven: deallocated pulse-cr-007 (pulse-hands)") {
+	if !strings.Contains(log, "retired vm-seven: stopped pulse-cr-007 (pulse-hands)") {
 		t.Fatalf("log:\n%s", log)
 	}
 	if !az.has("vm deallocate -g pulse-hands -n pulse-cr-007 -o none") {

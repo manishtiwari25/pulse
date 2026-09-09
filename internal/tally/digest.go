@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -268,6 +269,23 @@ func DigestFor(s *store.Store, project, area string, th Thresholds, agent, sessi
 	}
 	if params.StopPresent {
 		w("  STOP is present: the loop and ratification are paused until the owner lifts it")
+	}
+	if agent != "" {
+		mentions, err := board.MentionsFor(s, project, agent, 10)
+		if err != nil {
+			return "", err
+		}
+		total, err := board.MentionCount(s, project, agent)
+		if err != nil {
+			return "", err
+		}
+		if total > 0 {
+			w("")
+			w("MENTIONS FOR YOU (%d)", total)
+			for _, p := range mentions {
+				w("  %-44s %-38s by %-16s %s", p.ID, p.Area+"/"+p.Thread, trunc(p.Agent, 16), trunc(p.Summary, 60))
+			}
+		}
 	}
 	w("")
 	w("ACTIVE CLAIMS (advisory, never locks; claim_hours %s)", s.Setting("claim_hours", ""))

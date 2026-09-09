@@ -78,6 +78,23 @@ func init() {
 		Run: runVote,
 	})
 	cli.Register(cli.Command{
+		Name: "thread", Group: "agents",
+		Summary: "list, show, or resolve board threads",
+		Usage: "pulse thread list --project SLUG [--status open|stale|closed] [--area A] [--json]\n" +
+			"       pulse thread show AREA/THREAD --project SLUG [--bodies]\n" +
+			"       pulse thread resolve AREA/THREAD --project SLUG --as RESOLUTION --summary TEXT [--body TEXT|--body-file PATH]",
+		Flags: func(fs *flag.FlagSet) {
+			fs.String("status", "", "list only open, stale, or closed threads")
+			fs.String("area", "", "list only one board area")
+			fs.Bool("bodies", false, "show post bodies")
+			fs.String("as", "", "resolution: "+strings.Join(Resolutions, ", "))
+			fs.String("summary", "", "one-line result summary")
+			fs.String("body", "", "the result body")
+			fs.String("body-file", "", "read the result body from a file")
+		},
+		Run: runThread,
+	})
+	cli.Register(cli.Command{
 		Name: "decide", Group: "human",
 		Summary: "the human records yes or no on a proposal (a yes queues one job, WU-022)",
 		Usage:   "pulse decide POST_ID yes|no [--words '...']",

@@ -656,12 +656,68 @@ func TestDaemonSelfUpdateSettings(t *testing.T) {
 		t.Fatalf("retry 15: %v", err)
 	}
 	names := ExtraSettingNames()
-	leadStart := len(names) - len(LeadSettings)
-	if names[leadStart-2] != "daemon.self_update" || names[leadStart-1] != "daemon.self_update_retry_minutes" {
-		t.Fatalf("ExtraSettingNames daemon segment = %v", names[leadStart-3:leadStart])
+	leadStart := len(names) - len(LeadSettings) - len(OwnerSettings)
+	segment := strings.Join(names[leadStart-len(DaemonSettings):leadStart], " ")
+	for _, name := range []string{"daemon.self_update", "daemon.self_update_retry_minutes", "landing.push"} {
+		if !strings.Contains(segment, name) {
+			t.Fatalf("ExtraSettingNames daemon segment = %v", segment)
+		}
 	}
 	if !strings.Contains(DaemonRules["daemon.self_update"].Description, "ADR-035") {
 		t.Fatal("daemon.self_update lacks its description")
+	}
+	// ADR-037: landing.push defaults off without a row, takes off or main, and nothing else.
+	if got := s.Setting("landing.push", ""); got != "off" {
+		t.Fatalf("landing.push default = %q, want off", got)
+	}
+	if err := s.SetSetting("human", "landing.push", "origin"); err == nil || !strings.Contains(err.Error(), "landing.push takes one of off, main") {
+		t.Errorf("landing.push bad value: %v", err)
+	}
+	if err := s.SetSetting("human", "landing.push", " Main "); err != nil || s.Setting("landing.push", "") != "main" {
+		t.Fatalf("landing.push main: %v %q", err, s.Setting("landing.push", ""))
+	}
+	if !strings.Contains(DaemonRules["landing.push"].Description, "ADR-037") {
+		t.Fatal("landing.push lacks its description")
+	}
+}
+
+// Hygiene: the daemon.sweep* settings default without a row and validate; grace and branch age may be 0
+// (a sweep that waits for nothing), the keep period may not.
+func TestDaemonSweepSettings(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
+	s := openTemp(t, Options{Create: true, Now: "2026-09-08T10:00:00Z"})
+	for key, want := range map[string]string{"daemon.sweep": "on", "daemon.sweep_grace_minutes": "30", "daemon.sweep_branch_days": "7", "daemon.sweep_keep_days": "30"} {
+		if got := s.Setting(key, ""); got != want {
+			t.Errorf("%s default = %q, want %s", key, got, want)
+		}
+		if !strings.Contains(" "+strings.Join(ExtraSettingNames(), " ")+" ", " "+key+" ") {
+			t.Errorf("%s missing from ExtraSettingNames", key)
+		}
+	}
+	if err := s.SetSetting("human", "daemon.sweep", "maybe"); err == nil || !strings.Contains(err.Error(), "daemon.sweep takes one of on, off") {
+		t.Errorf("daemon.sweep bad value: %v", err)
+	}
+	if err := s.SetSetting("human", "daemon.sweep", " OFF "); err != nil || s.Setting("daemon.sweep", "") != "off" {
+		t.Fatalf("daemon.sweep off: %v %q", err, s.Setting("daemon.sweep", ""))
+	}
+	for _, key := range []string{"daemon.sweep_grace_minutes", "daemon.sweep_branch_days"} {
+		if err := s.SetSetting("human", key, "0"); err != nil {
+			t.Errorf("%s 0 refused: %v", key, err)
+		}
+		if err := s.SetSetting("human", key, "-1"); err == nil {
+			t.Errorf("%s -1 accepted", key)
+		}
+	}
+	if err := s.SetSetting("human", "daemon.sweep_keep_days", "0"); err == nil {
+		t.Error("daemon.sweep_keep_days 0 accepted")
+	}
+	if err := s.SetSetting("human", "daemon.sweep_keep_days", "90"); err != nil || s.Setting("daemon.sweep_keep_days", "") != "90" {
+		t.Fatalf("keep 90: %v", err)
+	}
+	for _, key := range []string{"daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days"} {
+		if DaemonRules[key].Description == "" {
+			t.Errorf("%s lacks its description", key)
+		}
 	}
 }
 
@@ -694,7 +750,60 @@ func TestLeadIdleSettings(t *testing.T) {
 		t.Fatalf("idle max 4: %v %q", err, s.Setting("lead.idle_max_jobs", ""))
 	}
 	names := ExtraSettingNames()
-	if names[len(names)-2] != "lead.idle_hours" || names[len(names)-1] != "lead.idle_max_jobs" {
+	leadStart := len(names) - len(OwnerSettings) - len(LeadSettings)
+	if names[leadStart] != "lead.idle_hours" || names[leadStart+1] != "lead.idle_max_jobs" {
+		t.Fatalf("ExtraSettingNames lead segment = %v", names[leadStart:])
+	}
+}
+
+func TestOwnerPresenceSetting(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
+	s := openTemp(t, Options{Create: true, Now: "2026-09-08T10:00:00Z"})
+	if got := s.Setting("owner.presence", ""); got != OwnerPresent {
+		t.Fatalf("owner.presence default = %q, want present", got)
+	}
+	if s.OwnerAway() {
+		t.Fatal("OwnerAway true by default")
+	}
+	if err := s.SetSetting("human", "owner.presence", " Away "); err != nil {
+		t.Fatalf("set away: %v", err)
+	}
+	if got := s.Setting("owner.presence", ""); got != OwnerAway {
+		t.Fatalf("owner.presence stored as %q, want away", got)
+	}
+	if !s.OwnerAway() {
+		t.Fatal("OwnerAway false after setting away")
+	}
+	if err := s.SetSetting("human", "owner.presence", "sometimes"); err == nil || !strings.Contains(err.Error(), "owner.presence takes one of present, away") {
+		t.Fatalf("sometimes: %v", err)
+	}
+	// An agent's write is stored but grants nothing: only the owner hands decisions to the leads.
+	for _, actor := range []string{"proj-lead", "aurora", "daemon"} {
+		if err := s.SetSetting(actor, "owner.presence", "away"); err != nil {
+			t.Fatalf("%s sets away: %v", actor, err)
+		}
+		if s.OwnerAway() {
+			t.Fatalf("OwnerAway true after %s wrote it", actor)
+		}
+	}
+	if err := s.SetSetting("human:dashboard", "owner.presence", "away"); err != nil || !s.OwnerAway() {
+		t.Fatalf("the console's write counts: %v %v", err, s.OwnerAway())
+	}
+	for _, actor := range []string{"human", "human:dashboard", "human:cli"} {
+		if !HumanActor(actor) {
+			t.Fatalf("HumanActor(%q) false", actor)
+		}
+	}
+	for _, actor := range []string{"", "humanoid", "proj-lead", "daemon", "pulse"} {
+		if HumanActor(actor) {
+			t.Fatalf("HumanActor(%q) true", actor)
+		}
+	}
+	if _, err := ValidateSetting("owner.mood", "away"); err == nil || !strings.Contains(err.Error(), "Owner settings: owner.presence") {
+		t.Fatalf("unknown owner setting: %v", err)
+	}
+	names := ExtraSettingNames()
+	if names[len(names)-1] != "owner.presence" {
 		t.Fatalf("ExtraSettingNames tail = %v", names[len(names)-3:])
 	}
 }

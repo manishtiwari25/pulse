@@ -201,7 +201,7 @@ func TestLeadDueAnnotatesFailedTaskJobs(t *testing.T) {
 	exec1(s.DB, "UPDATE jobs SET status = 'failed', finished_at = ?, result = ? WHERE id = ?", plusHours(testNow, -1), "SUMMARY: failed", j.str("id"))
 	eventAt(s.DB, testNow, "daemon", board.JobRecoverAction, j.str("id"), map[string]any{"outcome": "requeued"})
 
-	_, due, err := leadDue(s, "proj", leadName("proj"), testNow)
+	_, due, _, err := leadDue(s, "proj", leadName("proj"), testNow)
 	if err != nil {
 		t.Fatal(err)
 	}

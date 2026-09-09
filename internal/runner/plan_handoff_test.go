@@ -119,6 +119,45 @@ func TestPlanJobsPlansHandoffsOldestFirst(t *testing.T) {
 	}
 }
 
+func TestPlanJobsSkipsBlockedSuggestionJobAndPlansNext(t *testing.T) {
+	s := newStore(t)
+	newRepo(t, s)
+	author1 := actorAgent(s, "author-one")
+	author2 := actorAgent(s, "author-two")
+	voter1 := actorAgent(s, "voter-one")
+	voter2 := actorAgent(s, "voter-two")
+	top, err := createPost(s, plusHours(testNow, -4), postOpts{Kind: "suggestion", Project: "proj", Area: "code", Thread: "top",
+		Summary: "Top blocked suggestion", Body: "first eligible card\n", Agent: author1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := createPost(s, plusHours(testNow, -3), postOpts{Kind: "suggestion", Project: "proj", Area: "code", Thread: "next",
+		Summary: "Next suggestion", Body: "second eligible card\n", Agent: author2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, card := range []row{top, next} {
+		for _, voter := range []*store.Agent{voter1, voter2} {
+			if _, err := createPost(s, plusHours(testNow, -2), postOpts{Kind: "vote", Project: "proj", Area: card.str("area"), Thread: card.str("thread"),
+				Summary: "up", Body: "ready\n", Agent: voter, On: card.str("id"), Vote: "up"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, _, err := addJob(s, "proj", "improve", "blocked top", "brief", 1, 12, "suggestion:"+top.str("id"), "daemon", true); err != nil {
+		t.Fatal(err)
+	}
+	exec1(s.DB, "UPDATE jobs SET status = 'blocked' WHERE source = ?", "suggestion:"+top.str("id"))
+
+	jobs, err := planJobs(s, "proj", testNow, "daemon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].str("source") != "suggestion:"+next.str("id") {
+		t.Fatalf("planned jobs = %+v, want next suggestion %s", jobs, next.str("id"))
+	}
+}
+
 func jobsBySource(t *testing.T, s *store.Store, source string) row {
 	t.Helper()
 	j := mustOne(s.DB, "SELECT * FROM jobs WHERE source = ?", source)

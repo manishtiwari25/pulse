@@ -214,6 +214,69 @@ func TestFireTimeout(t *testing.T) {
 	}
 }
 
+func TestRunnerCancelDoesNotKillInFlightScript(t *testing.T) {
+	s := newStore(t)
+	marker := filepath.Join(t.TempDir(), "done")
+	sh := script(t, `sleep 2; echo ok > "`+marker+`"`)
+	h, _ := Add(s, "job.add", "script", sh, "", "human")
+	b := bus.New()
+	r := &Runner{Bus: b, Store: s}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	time.Sleep(30 * time.Millisecond)
+	if _, err := bus.EmitOn(b, s, "human", "job.add", "job-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("runner did not wait for in-flight hook")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("script was killed or did not finish: %v", err)
+	}
+	deliveries, err := Deliveries(s, h.ID, 10)
+	if err != nil || len(deliveries) != 1 || deliveries[0].Status != "ok" || strings.Contains(deliveries[0].Detail, "signal: killed") {
+		t.Fatalf("deliveries %+v err %v", deliveries, err)
+	}
+}
+
+func TestRunnerRetriesFailingScriptAndEmitsFailed(t *testing.T) {
+	s := newStore(t)
+	h, _ := Add(s, "job.add", "script", script(t, "echo boom >&2; exit 3"), "", "human")
+	e, err := bus.EmitOn(nil, s, "human", "job.add", "job-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{Bus: bus.New(), Store: s}
+	r.dispatch(e)
+	r.Wait()
+	deliveries, _ := Deliveries(s, h.ID, 10)
+	if len(deliveries) != 2 || deliveries[0].Status != "pending" || deliveries[0].Attempt != 2 || deliveries[0].NextAt == "" || deliveries[1].Status != "error" {
+		t.Fatalf("first failure deliveries: %+v", deliveries)
+	}
+	ctx := context.Background()
+	r.retryDue(ctx, "2026-09-06T21:01:00Z")
+	r.Wait()
+	deliveries, _ = Deliveries(s, h.ID, 10)
+	if len(deliveries) != 3 || deliveries[0].Status != "pending" || deliveries[0].Attempt != 3 || deliveries[1].Status != "error" {
+		t.Fatalf("second failure deliveries: %+v", deliveries)
+	}
+	r.retryDue(ctx, "2026-09-06T21:06:00Z")
+	r.Wait()
+	deliveries, _ = Deliveries(s, h.ID, 10)
+	if len(deliveries) != 3 || deliveries[0].Status != "failed" || !strings.Contains(deliveries[0].Detail, "boom") {
+		t.Fatalf("failed deliveries: %+v", deliveries)
+	}
+	events, _ := bus.Since(s, 0, bus.Filter{Actions: []string{"hook.failed"}}, 0)
+	if len(events) != 1 || events[0].Subject != "1" || !strings.Contains(events[0].Detail, `"attempts": 3`) {
+		t.Fatalf("hook.failed events: %+v", events)
+	}
+}
+
 func ctxFor(s *store.Store, home string, jsonOut bool) (*cli.Context, *bytes.Buffer) {
 	out := &bytes.Buffer{}
 	return &cli.Context{Store: s, Home: home, Out: out, Err: out, JSON: jsonOut}, out

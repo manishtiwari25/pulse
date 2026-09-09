@@ -336,6 +336,7 @@ type Scorecard struct {
 	Results     int    `json:"results"`
 	N           int    `json:"n"`
 	LastPost    string `json:"last_post"`
+	Focus       *Focus `json:"focus,omitempty"`
 }
 
 // Scorecards lists agents ordered by status, last active, name with their post counts.
@@ -365,6 +366,10 @@ func Scorecards(s *store.Store, includePruned bool) ([]Scorecard, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	focuses, err := AgentFocuses(s, s.Now())
+	if err != nil {
+		return nil, err
+	}
 	out := []Scorecard{}
 	for _, n := range names {
 		a, err := s.Agent(n)
@@ -383,6 +388,9 @@ func Scorecards(s *store.Store, includePruned bool) ([]Scorecard, error) {
 		}
 		sc.Findings, sc.Suggestions, sc.Votes, sc.Answers, sc.Results = int(f.Int64), int(sg.Int64), int(v.Int64), int(an.Int64), int(r.Int64)
 		sc.LastPost = last.String
+		if focus, ok := focuses[n]; ok {
+			sc.Focus = &focus
+		}
 		out = append(out, sc)
 	}
 	return out, nil

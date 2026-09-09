@@ -132,11 +132,12 @@ func RequestCompute(s *store.Store, project, agent, size string, hours int, reas
 		return nil, input(2, "An agent is needed", "compute is requested by an agent", "pass --agent NAME or set PULSE_AGENT")
 	}
 	size = strings.TrimSpace(size)
+	sizeSetting := store.ComputeSizeSetting(s.Setting("compute.provider", ""))
 	if size == "" {
-		size = s.Setting("compute.azure.vm_size", "")
+		size = s.Setting(sizeSetting, "")
 	}
 	if size == "" {
-		return nil, input(2, "A machine size is needed", "compute.azure.vm_size is empty and --size was not given", "pulse compute request --size Standard_B2ms ...")
+		return nil, input(2, "A machine size is needed", sizeSetting+" is empty and --size was not given", "pulse compute request --size <size> ... or pulse settings set "+sizeSetting+" <size>")
 	}
 	if hours <= 0 {
 		return nil, input(2, "Hours must be at least 1", "a request names how long the machine is needed", "pulse compute request --hours 4 ...")

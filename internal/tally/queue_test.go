@@ -189,6 +189,7 @@ func TestWorkWantedBlockedEligibleAndPlannable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(q.Projects) != 1 || q.Projects[0].Plannable != 2 {
 		t.Fatalf("plannable projects: %+v", q.Projects)
 	}
@@ -218,5 +219,47 @@ func TestWorkWantedBlockedEligibleAndPlannable(t *testing.T) {
 	}
 	if !strings.Contains(text, "next: not planned: net votes <= 0: the planner takes score > 0 only; vote it up with evidence (a Signal: line naming a file or check) or close the thread") {
 		t.Fatalf("blocked next text:\n%s", text)
+	}
+}
+
+func TestWorkWantedUsesPlanGateForInFlightAndWorkerEvidence(t *testing.T) {
+	f := newFixture(t, true)
+	if _, err := f.st.DB.Exec("INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at) VALUES ('J-queued', 'fixture', 'improve', 'queued suggestion', '', ?, 'queued', ?)",
+		"suggestion:"+f.ids["eligible"], fixtureNow); err != nil {
+		t.Fatal(err)
+	}
+	worker := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: "worker-card", agent: "runner-worker/model", date: "2026-09-01T06:00:00Z", summary: "Worker card without signal", body: "No Signal line.", session: "s-worker"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "worker-card", agent: "runner-wv1/model", date: "2026-09-02T06:00:00Z", summary: "up", session: "s-wv1", on: worker, vote: "up"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "worker-card", agent: "runner-wv2/model", date: "2026-09-02T07:00:00Z", summary: "up", session: "s-wv2", on: worker, vote: "up"})
+	if _, err := f.st.DB.Exec("UPDATE agents SET kind = 'worker' WHERE name = 'runner-worker/model'"); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err := WorkWanted(f.st, []string{"fixture"}, "", Thresholds{Now: fixtureNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]WorkItem{}
+	var eligible []WorkItem
+	for _, it := range q.Work {
+		if it.Kind == WorkEligible {
+			eligible = append(eligible, it)
+			byID[it.ID] = it
+		}
+	}
+	if got := byID[f.ids["eligible"]].Blocked; got != "queued as job J-queued" {
+		t.Fatalf("in-flight Blocked = %q", got)
+	}
+	if got := byID[f.ids["eligible"]].Next; got != "already queued: wait for job J-queued" {
+		t.Fatalf("in-flight Next = %q", got)
+	}
+	if got := byID[worker].Blocked; got != GateNoEvidence {
+		t.Fatalf("worker Blocked = %q", got)
+	}
+	if got := plannableWork(eligible); got != 0 {
+		t.Fatalf("eligible plannable = %d, items %+v", got, eligible)
+	}
+	if q.Projects[0].Plannable != 1 {
+		t.Fatalf("project plannable should count only the open question, got %+v", q.Projects[0])
 	}
 }

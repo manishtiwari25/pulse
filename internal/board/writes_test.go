@@ -142,6 +142,154 @@ func TestDecideNoAndMarkers(t *testing.T) {
 	}
 }
 
+func TestOwnerAwayLeadDecideGuards(t *testing.T) {
+	_, s, _ := fixture(t)
+	if _, _, err := JoinAgent(s, JoinInput{Name: LeadName("demo"), Kind: "lead", Runner: "copilot", Model: "m", Session: "sess-lead"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := JoinAgent(s, JoinInput{Name: LeadName("other"), Kind: "lead", Runner: "copilot", Model: "m", Session: "sess-other-lead"}); err != nil {
+		t.Fatal(err)
+	}
+	sug, _, _ := seedPosts(t, s)
+	if _, err := Decide(s, sug.ID, "yes", "", LeadName("demo")); what(err) != "pulse decide is the human's call; a lead decides only while owner.presence is away" {
+		t.Fatalf("present lead decide: %v", err)
+	}
+	if err := s.SetSetting("human", "owner.presence", "away"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decide(s, sug.ID, "yes", "", "alice"); what(err) != "only a project's lead decides for the owner" {
+		t.Fatalf("non-lead decide: %v", err)
+	}
+	if _, err := Decide(s, sug.ID, "yes", "", LeadName("other")); what(err) != "only the proposal project's lead decides for the owner" {
+		t.Fatalf("wrong lead decide: %v", err)
+	}
+
+	d, err := Decide(s, sug.ID, "yes", "ship it", LeadName("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Result.Agent != LeadName("demo") || d.DecidedBy != LeadName("demo") {
+		t.Fatalf("lead result/decision: %+v", d)
+	}
+	wantBody := "The owner is away (owner.presence = away); **demo-lead** answered **yes** on the owner's behalf.\n\nship it\n\nProposal: " + sug.ID + "\n"
+	if d.Result.Body != wantBody {
+		t.Fatalf("result body:\n%s\nwant:\n%s", d.Result.Body, wantBody)
+	}
+	var decidedBy string
+	if err := s.DB.QueryRow("SELECT decided_by FROM decisions WHERE post_id = ?", sug.ID).Scan(&decidedBy); err != nil || decidedBy != LeadName("demo") {
+		t.Fatalf("decided_by = %q %v", decidedBy, err)
+	}
+	if d.Job == nil || !strings.HasPrefix(d.Job.Title, "Act on the lead's yes (owner away): ") ||
+		!strings.Contains(d.Job.Brief, "demo-lead, deciding for the owner who is away (owner.presence), answered YES") ||
+		!strings.Contains(d.Job.Brief, "the recorded decision (result "+d.Result.ID+") is the approval for what it proposes, nothing more") {
+		t.Fatalf("lead job: %+v", d.Job)
+	}
+	var detail string
+	if err := s.DB.QueryRow("SELECT detail FROM events WHERE action = 'decide' AND subject = ?", sug.ID).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(detail, `"on_behalf": "owner-away"`) {
+		t.Fatalf("event detail %q", detail)
+	}
+}
+
+func TestOwnerAwayLeadDecideStillWaitsForOwner(t *testing.T) {
+	_, s, _ := fixture(t)
+	if _, _, err := JoinAgent(s, JoinInput{Name: LeadName("demo"), Kind: "lead", Runner: "copilot", Model: "m", Session: "sess-lead"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("human", "owner.presence", "away"); err != nil {
+		t.Fatal(err)
+	}
+	compute, err := CreatePost(s, PostInput{Kind: "suggestion", Project: "demo", Area: "compute", Thread: "vm", Summary: "Rent a vm", Body: "need capacity", Agent: "alice", Date: "2026-09-06T09:30:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec("INSERT INTO compute_requests (id, project, requested_by, size, hours, reason, proposal_post, at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"CR-001", "demo", "alice", "Standard_B2ms", 1, "need capacity", compute.ID, s.Now(), s.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decide(s, compute.ID, "yes", "", LeadName("demo")); what(err) != "compute is money: it waits for the owner; compute.auto_approve and the caps pre-authorize it" {
+		t.Fatalf("compute decide: %v", err)
+	}
+
+	marker, err := CreatePost(s, PostInput{Kind: "suggestion", Project: "demo", Area: "hands", Thread: "vm", Summary: "pair the vm", Body: "pair: x\n", Agent: "alice", Date: "2026-09-06T09:31:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decide(s, marker.ID, "yes", "", LeadName("demo")); what(err) != "a proposal that authorizes a command waits for the human (ADR-021)" {
+		t.Fatalf("marker decide: %v", err)
+	}
+	if auth, err := AuthorizingDecision(s, "pair: x", "", 0); err != nil || auth != nil {
+		t.Fatalf("lead marker should not authorize: %+v %v", auth, err)
+	}
+
+	// Tier 2 is the owner's: a proposal whose summary names an ADR, or that points at an owner-only path.
+	adr, err := CreatePost(s, PostInput{Kind: "suggestion", Project: "demo", Area: "evolution", Thread: "adr", Summary: "Accept ADR-023 and start its plan", Body: "the record is ready", Agent: "alice", Date: "2026-09-06T09:32:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decide(s, adr.ID, "no", "not now", LeadName("demo")); what(err) != "a proposal that names ADR-023 is a Tier 2 decision: it waits for the owner" {
+		t.Fatalf("adr decide: %v", err)
+	}
+	paths, err := CreatePost(s, PostInput{Kind: "suggestion", Project: "demo", Area: "evolution", Thread: "ci", Summary: "Speed up CI", Body: "Edit .github/workflows/ci.yml to cache modules", Agent: "alice", Date: "2026-09-06T09:33:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decide(s, paths.ID, "yes", "cheap", LeadName("demo")); what(err) != "a proposal that points at .github/ is a Tier 2 decision: it waits for the owner" {
+		t.Fatalf("owner path decide: %v", err)
+	}
+	if n := countRows(t, s, "decisions", ""); n != 0 {
+		t.Fatalf("decisions recorded = %d", n)
+	}
+	// The human decides all of them.
+	if _, err := Decide(s, adr.ID, "yes", "go", ""); err != nil {
+		t.Fatalf("human adr decide: %v", err)
+	}
+
+	for _, tt := range []struct{ summary, body, want string }{
+		{"Retry per ADR-036", "cites the decision", "names ADR-036"},
+		{"Retry with backoff", "as ADR-036 decided; edit internal/runner", ""},
+		{"Tidy docs", "touch docs/decisions/ADR-001.md", "points at docs/decisions/"},
+		{"Kill switch", "create docs/evolution/STOP", "points at docs/evolution/STOP"},
+		{"Small fix", "internal/tally/gate.go", ""},
+	} {
+		if got := Tier2Proposal(tt.summary, tt.body); got != tt.want {
+			t.Fatalf("Tier2Proposal(%q, %q) = %q, want %q", tt.summary, tt.body, got, tt.want)
+		}
+	}
+}
+
+func TestLeadYesJobBriefNeverAcceptsAnADR(t *testing.T) {
+	_, s, _ := fixture(t)
+	if _, _, err := JoinAgent(s, JoinInput{Name: LeadName("demo"), Kind: "lead", Runner: "copilot", Model: "m", Session: "sess-lead"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("human:dashboard", "owner.presence", "away"); err != nil {
+		t.Fatal(err)
+	}
+	sug, _, _ := seedPosts(t, s)
+	d, err := Decide(s, sug.ID, "yes", "small and reversible", LeadName("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Job == nil || strings.Contains(d.Job.Brief, "If it accepts an ADR") || !strings.Contains(d.Job.Brief, "never accepts, changes or supersedes an ADR") ||
+		!strings.Contains(d.Job.Brief, "Tier 2 waits for the owner") {
+		t.Fatalf("lead yes brief: %+v", d.Job)
+	}
+	// An agent-written `away` grants nothing, even to the right lead.
+	if err := s.SetSetting(LeadName("demo"), "owner.presence", "away"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := CreatePost(s, PostInput{Kind: "suggestion", Project: "demo", Area: "evolution", Thread: "b", Summary: "Another small thing", Body: "Signal: README.md", Agent: "alice", Date: "2026-09-06T09:40:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decide(s, other.ID, "yes", "", LeadName("demo")); what(err) != "pulse decide is the human's call; a lead decides only while owner.presence is away" {
+		t.Fatalf("agent-written away: %v", err)
+	}
+}
+
 func TestJobsAddFinish(t *testing.T) {
 	noTTY(t)
 	_, s, _ := fixture(t)
@@ -503,13 +651,13 @@ func TestBoardWritesReachBusSubscribers(t *testing.T) {
 	}
 	select {
 	case e := <-ch:
-		if e.Action != "post" || e.Subject != p.ID || e.Actor != "alice" || e.ID == 0 {
+		if e.Action != "post.finding" || e.Subject != p.ID || e.Actor != "alice" || e.ID == 0 {
 			t.Fatalf("event %+v", e)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no event published in-process")
 	}
-	if n := countRows(t, s, "events", "action = 'post' AND subject = ?", p.ID); n != 1 {
+	if n := countRows(t, s, "events", "action = 'post.finding' AND subject = ?", p.ID); n != 1 {
 		t.Fatalf("%d rows for the same event", n)
 	}
 }

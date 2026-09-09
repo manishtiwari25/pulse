@@ -186,7 +186,7 @@ func TestTendTasksFollowsTheLeadsJobs(t *testing.T) {
 	if tk, _, _ = tasks.Get(s, task.ID); tk.Status != "in_progress" || len(lines) != 0 {
 		t.Fatalf("a failed job goes back to the lead first: %+v\n%v", tk, lines)
 	}
-	_, due, err := leadDue(s, "proj", "proj-lead", testNow)
+	_, due, _, err := leadDue(s, "proj", "proj-lead", testNow)
 	if err != nil || len(due) != 1 || due[0].Why != "failed" || !strings.Contains(due[0].Detail, "b failed") {
 		t.Fatalf("lead due: %+v %v", due, err)
 	}
@@ -198,7 +198,7 @@ func TestTendTasksFollowsTheLeadsJobs(t *testing.T) {
 	if tk, _, _ = tasks.Get(s, task.ID); tk.JobID != a.str("id") {
 		t.Fatalf("a failure follow-up keeps the task's first worker job: %+v", tk)
 	}
-	if _, due, _ = leadDue(s, "proj", "proj-lead", testNow); len(due) != 0 {
+	if _, due, _, _ = leadDue(s, "proj", "proj-lead", testNow); len(due) != 0 {
 		t.Fatalf("one follow-up per failure: %+v", due)
 	}
 	// The lead's follow-up runs and queues nothing: now the owner hears.
@@ -279,7 +279,7 @@ func TestTasksCloseThemselvesWhenTheirJobsLand(t *testing.T) {
 	if tk, _, _ := tasks.Get(s, fixed.ID); tk.Status != "done" {
 		t.Fatalf("a later job in a failure's place closes the task: %+v", tk)
 	}
-	if _, due, _ := leadDue(s, "proj", "proj-lead", testNow); len(due) != 0 {
+	if _, due, _, _ := leadDue(s, "proj", "proj-lead", testNow); len(due) != 0 {
 		t.Fatalf("nothing is due for a fixed task: %+v", due)
 	}
 
@@ -295,7 +295,7 @@ func TestTasksCloseThemselvesWhenTheirJobsLand(t *testing.T) {
 	if tk, _, _ := tasks.Get(s, hopeless.ID); tk.Status != "review" {
 		t.Fatalf("three failures go to the owner: %+v\n%v", tk, lines)
 	}
-	if _, due, _ := leadDue(s, "proj", "proj-lead", testNow); len(due) != 0 {
+	if _, due, _, _ := leadDue(s, "proj", "proj-lead", testNow); len(due) != 0 {
 		t.Fatalf("a task in review is not the lead's any more: %+v", due)
 	}
 }
@@ -316,7 +316,7 @@ func TestParkedTasksWakeTheLeadOnADoublingSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, due, err := leadDue(s, "proj", "proj-lead", testNow)
+	_, due, _, err := leadDue(s, "proj", "proj-lead", testNow)
 	if err != nil || len(due) != 2 || due[0].Why != "new" {
 		t.Fatalf("new tasks: %+v %v", due, err)
 	}
@@ -335,7 +335,7 @@ func TestParkedTasksWakeTheLeadOnADoublingSchedule(t *testing.T) {
 	exec1(s.DB, "UPDATE tasks SET updated_at = ?", at(1))
 	check := func(min int, want ...string) {
 		t.Helper()
-		_, due, err := leadDue(s, "proj", "proj-lead", at(min))
+		_, due, _, err := leadDue(s, "proj", "proj-lead", at(min))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -351,7 +351,7 @@ func TestParkedTasksWakeTheLeadOnADoublingSchedule(t *testing.T) {
 	check(16, urgent.ID+":parked") // urgent: 15 minutes after the lead's run
 	check(59, urgent.ID+":parked")
 	check(62, urgent.ID+":parked", normal.ID+":parked") // normal: an hour
-	_, due, _ = leadDue(s, "proj", "proj-lead", at(16))
+	_, due, _, _ = leadDue(s, "proj", "proj-lead", at(16))
 	if !strings.Contains(due[0].Detail, "owner-prepared console build") || !strings.Contains(due[0].Detail, "Re-check the blocker") {
 		t.Fatalf("the parked detail carries the last SUMMARY: %q", due[0].Detail)
 	}
@@ -637,7 +637,7 @@ func TestDaemonOnceComputeApproveToReadyToReleased(t *testing.T) {
 		t.Fatalf("vm create: %s", create)
 	}
 	paired.Lock()
-	if paired.name != "hands-cr-001" || paired.admin != "pulseadmin@pulse-cr-001-admin" || paired.opts.Projects != "proj" || !paired.opts.InstallCopilot || paired.opts.Workdir != azureWorkdir {
+	if paired.name != "hands-cr-001" || paired.admin != "pulseadmin@pulse-cr-001-admin" || paired.opts.Projects != "proj" || !paired.opts.InstallCopilot || paired.opts.Workdir != handsWorkdir {
 		t.Fatalf("pairing: %s %s %+v", paired.admin, paired.name, paired.opts)
 	}
 	paired.Unlock()
@@ -699,8 +699,14 @@ func TestDaemonOnceComputeApproveToReadyToReleased(t *testing.T) {
 	if !strings.Contains(log3, "hour(s) are up") {
 		t.Fatalf("log:\n%s", log3)
 	}
-	if exists := invokeOK(t, s, "compute", "", "providers"); !strings.Contains(exists, "azure") {
-		t.Fatalf("pulse compute providers: %q", exists)
+	exists := invokeOK(t, s, "compute", "", "providers")
+	for _, want := range []string{"azure      Azure VM; auth: az login; size: compute.azure.vm_size  (setting compute.provider)",
+		"aws        EC2 instance; auth: aws configure or aws sso login; size: compute.aws.instance_type",
+		"gcp        Compute Engine instance; auth: gcloud auth login; size: compute.gcp.machine_type",
+		"multipass  Multipass instance; auth: multipassd running locally; size: compute.multipass.size"} {
+		if !strings.Contains(exists, want+"\n") {
+			t.Fatalf("pulse compute providers lacks %q:\n%s", want, exists)
+		}
 	}
 }
 

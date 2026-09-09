@@ -67,6 +67,22 @@ func TestDaemonHeartbeatStates(t *testing.T) {
 	}
 }
 
+func TestStatusPrintsDroppedBusEvents(t *testing.T) {
+	s := temporaryStore(t)
+	execSQL(t, s, `INSERT INTO meta(key,value) VALUES
+		('daemon','{"pid":123,"at":"2026-09-06T18:59:00Z","loops":4,"interval":30,"note":"","bus":{"subscribers":2,"dropped":7,"deduped":3}}')`)
+	report, err := Status(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Bus.Subscribers != 2 || report.Bus.Dropped != 7 || report.Bus.Deduped != 3 {
+		t.Fatalf("bus status: %+v", report.Bus)
+	}
+	if !strings.Contains(report.Text(), "events     7 event(s) dropped for slow subscribers since the daemon started\n") {
+		t.Fatalf("dropped line missing:\n%s", report.Text())
+	}
+}
+
 func TestPlannerNotesTextAndStale(t *testing.T) {
 	s := temporaryStore(t)
 	execSQL(t, s, `INSERT INTO meta(key,value) VALUES
@@ -90,6 +106,36 @@ func TestPlannerNotesTextAndStale(t *testing.T) {
 	}
 	if !strings.Contains(text, "planner    old: 1 eligible suggestions, 0 plannable (1 net votes <= 0) (stale)\n") {
 		t.Fatalf("stale planner line missing:\n%s", text)
+	}
+}
+
+// The hygiene line: absent until a sweep ran, then what the last pass removed, freed, held and could not do.
+func TestHygieneStatusLine(t *testing.T) {
+	s := temporaryStore(t)
+	report, err := Status(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Hygiene != "" || strings.Contains(report.Text(), "hygiene") {
+		t.Fatalf("hygiene line before any sweep: %q", report.Hygiene)
+	}
+	execSQL(t, s, `INSERT INTO meta(key,value) VALUES
+		('hygiene','{"at":"2026-09-06T18:59:00Z","removed":{"clone":2,"scratch":5},"held":{"branch":20,"clone":8},"bytes":1503238553,"errors":1}')`)
+	report, err = Status(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "last sweep 2026-09-06T18:59:00Z: removed clone 2, scratch 5 (1.4 GB freed); held branch 20, clone 8; 1 error(s) - pulse sweep --dry-run shows them"
+	if report.Hygiene != want {
+		t.Fatalf("hygiene = %q\nwant      %q", report.Hygiene, want)
+	}
+	if !strings.Contains(report.Text(), "hygiene    "+want+"\n") {
+		t.Fatalf("hygiene line missing:\n%s", report.Text())
+	}
+	execSQL(t, s, `UPDATE meta SET value = '{"at":"2026-09-06T19:09:00Z","removed":{},"held":{},"bytes":0,"errors":0}' WHERE key = 'hygiene'`)
+	line, err := HygieneStatus(s)
+	if err != nil || line != "last sweep 2026-09-06T19:09:00Z: nothing to remove" {
+		t.Fatalf("quiet pass: %q %v", line, err)
 	}
 }
 

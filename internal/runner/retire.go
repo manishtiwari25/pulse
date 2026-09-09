@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/store"
@@ -16,18 +15,15 @@ import (
 // Heal, retire, delete (ADR-034 rules 3-5). Each daemon tick, after reprobeDue, tendExecutors looks at every
 // executor a login fault drained and the daemon has re-checked at least once since. When a login source
 // exists (token.go) and an admin route is known, the login is placed once per drain episode through
-// executorLogin; when that is impossible or refused and the VM is PULSE's (a compute_machines row, or an Azure
-// VM tagged pulse=hands with the executor's name or address), the VM is deallocated now, the executor row is
-// removed and a retired_vms row says when the VM may be deleted. The delete pass runs every tick over the
-// rows past their grace: the VM, its NICs, public IPs and OS disk go; VNets and NSGs stay (they may be
-// shared). Every act posts a finding; none waits on a proposal. Nothing here creates cost or mints a
-// credential.
+// executorLogin; when that is impossible or refused and the machine is PULSE's (a compute_machines row, or a
+// machine the configured provider finds tagged pulse=hands with the executor's name or address), the machine
+// is stopped now through its Provider, the executor row is removed and a retired_vms row says when the
+// machine may be deleted. The delete pass runs every tick over the rows past their grace: the provider deletes
+// the machine and what was created beside it (on Azure the NICs, public IPs and OS disk; VNets and NSGs stay,
+// they may be shared). Every act posts a finding; none waits on a proposal. Nothing here creates cost or mints
+// a credential.
 
-const (
-	healThread = "executors"
-	azShort    = 60 * time.Second
-	azLong     = 15 * time.Minute
-)
+const healThread = "executors"
 
 // sshHostname is what ssh would connect to for host (`ssh -G host` -> the hostname line); tests stub it.
 var sshHostname = func(host string) string {
@@ -43,10 +39,11 @@ var sshHostname = func(host string) string {
 	return host
 }
 
-// retiredVM is what the retire phase knows about an executor's machine.
+// retiredVM is what the retire phase knows about an executor's machine: the machine as its provider describes
+// it and, when the compute worker made it, the request that asked for it.
 type retiredVM struct {
-	Provider, ResourceGroup, Name, IP string
-	Request                           string // the compute request that made it, when the compute worker did
+	*Machine
+	Request string
 }
 
 // retireCandidates: executors drained by a login fault that the daemon re-checked at least once since the
@@ -63,34 +60,41 @@ func retireCandidates(s *store.Store) []row {
 	return out
 }
 
+// retireProvider is the provider the retire phase asks about machines nobody recorded: the configured one.
+func retireProvider(s *store.Store) Provider {
+	return providerNamed(strings.TrimSpace(s.Setting("compute.provider", "")))
+}
+
 // identifyVM says which machine an executor runs on and whether PULSE made it: the compute_machines row,
-// else the Azure VM tagged pulse=hands whose name is the executor's or whose public address is the
-// executor's host. Anything else - or no usable az - is not ours, with a note saying why.
+// else the machine the configured provider finds tagged pulse=hands whose name is the executor's or whose
+// public address is the executor's host. Anything else - or a provider CLI that cannot answer - is not ours,
+// with a note saying why.
 func identifyVM(s *store.Store, r row) (*retiredVM, bool, string) {
 	name := r.str("name")
 	if mrow := mustOne(s.DB, "SELECT request_id FROM compute_machines WHERE executor = ? AND released_at = '' ORDER BY created_at DESC LIMIT 1", name); mrow != nil {
 		if m, _ := loadMachine(s, mrow.str("request_id")); m != nil {
-			return &retiredVM{Provider: m.Provider, ResourceGroup: m.Detail["resource_group"], Name: m.Name, IP: m.Detail["public_ip"], Request: mrow.str("request_id")}, true, ""
+			return &retiredVM{Machine: m, Request: mrow.str("request_id")}, true, ""
 		}
 	}
 	ip := ""
 	if _, host, _, err := parseSSHAddress(r.str("address")); err == nil {
 		ip = strings.ReplaceAll(sshHostname(host), "'", "")
 	}
-	query := fmt.Sprintf("[?tags.pulse=='hands' && (name=='%s' || publicIps=='%s')].{name:name,rg:resourceGroup,ip:publicIps}", name, ip)
-	rc, out, errText, err := runAz(context.Background(), []string{"vm", "list", "-d", "--query", query, "-o", "json"}, azShort)
-	if err != nil || rc != 0 {
-		return nil, false, "the Azure CLI could not answer: " + errMessage(azErr("az vm list", rc, out, errText, err))
+	p := retireProvider(s)
+	if p == nil {
+		return nil, false, fmt.Sprintf("no compute provider %s is built in (have: %s)", pyRepr(s.Setting("compute.provider", "")), strings.Join(ProviderNames(), ", "))
 	}
-	var found []struct {
-		Name string `json:"name"`
-		RG   string `json:"rg"`
-		IP   string `json:"ip"`
+	m, err := p.Find(context.Background(), s, name, ip)
+	if err != nil {
+		return nil, false, errMessage(err)
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &found); err != nil || len(found) == 0 {
-		return nil, false, fmt.Sprintf("no Azure VM tagged pulse=hands is named %s or answers at %s", name, orDash(ip))
+	if m == nil {
+		return nil, false, fmt.Sprintf("no %s tagged pulse=hands is named %s or answers at %s", p.Kind(), name, orDash(ip))
 	}
-	return &retiredVM{Provider: "azure", ResourceGroup: found[0].RG, Name: found[0].Name, IP: found[0].IP}, true, ""
+	if m.Provider == "" {
+		m.Provider = p.Name()
+	}
+	return &retiredVM{Machine: m}, true, ""
 }
 
 // tendExecutors is the daemon phase: heal what can be healed, retire what cannot, delete what is past its grace.
@@ -126,8 +130,8 @@ func tendExecutors(s *store.Store, now, actor string) []string {
 
 // healExecutor places the login source once per drain episode (healed_at) over the admin route: executors.admin,
 // else the admin user at the executor's own ssh host (so the alias's key and options apply), else at the public
-// address of PULSE's Azure VM. The token is read from the source and handed to executorLogin as a stream; it is
-// not kept.
+// address of the machine PULSE made. The token is read from the source and handed to executorLogin as a
+// stream; it is not kept.
 func healExecutor(s *store.Store, now, actor string, r row, identify func() (*retiredVM, bool)) (bool, string) {
 	name := r.str("name")
 	tok, origin, err := loginSource(s)
@@ -139,12 +143,12 @@ func healExecutor(s *store.Store, now, actor string, r row, identify func() (*re
 	}
 	admin := r.str("admin")
 	if admin == "" {
-		if vm, ours := identify(); ours && vm.Provider == "azure" {
-			admin = adminRoute(r.str("address"), vm.IP)
+		if vm, ours := identify(); ours {
+			admin = adminRoute(r.str("address"), vm.Detail["public_ip"])
 		}
 	}
 	if admin == "" {
-		return false, fmt.Sprintf("heal %s: no admin route (no admin address on record and the VM is not PULSE's on Azure)", name)
+		return false, fmt.Sprintf("heal %s: no admin route (no admin address on record and the machine is not one PULSE made)", name)
 	}
 	exec1(s.DB, "UPDATE executors SET healed_at = ? WHERE name = ?", now, name)
 	res, err := placeLogin(s, now, name, admin, tokenReader(tok), false, false, actor)
@@ -171,9 +175,9 @@ func healExecutor(s *store.Store, now, actor string, r row, identify func() (*re
 	return true, fmt.Sprintf("healed %s: login placed from %s", name, origin)
 }
 
-// adminRoute is the admin login for a VM with no admin on record: the admin user at the host part of the
+// adminRoute is the admin login for a machine with no admin on record: the admin user at the host part of the
 // executor's address (an ssh alias keeps its IdentityFile, port and jumps; the user on the command line wins
-// over the alias's User), else at the VM's public address, else nothing.
+// over the alias's User), else at the machine's public address, else nothing.
 func adminRoute(address, ip string) string {
 	host := strings.TrimSpace(address)
 	if _, after, ok := strings.Cut(host, "@"); ok {
@@ -185,7 +189,35 @@ func adminRoute(address, ip string) string {
 	if host == "" {
 		return ""
 	}
-	return azureAdminUser + "@" + host
+	return adminUser + "@" + host
+}
+
+// machineDetail is the event detail of a machine: its provider facts, then the standard keys on top.
+func machineDetail(m *Machine, extra map[string]any) map[string]any {
+	detail := map[string]any{}
+	for k, v := range m.Detail {
+		if v != "" {
+			detail[k] = v
+		}
+	}
+	for k, v := range extra {
+		detail[k] = v
+	}
+	return detail
+}
+
+// saveRetired remembers a stopped machine so the delete pass finds it after the grace (ADR-034 rule 5).
+func saveRetired(s *store.Store, executor string, m *Machine, now, deleteAfter string) {
+	detail, _ := json.Marshal(map[string]any{"tags": m.Tags, "detail": m.Detail})
+	exec1(s.DB, "INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, deleted_at, note, detail) VALUES (?, ?, ?, ?, ?, ?, '', '', ?) "+
+		"ON CONFLICT(executor) DO UPDATE SET provider = excluded.provider, resource_group = excluded.resource_group, name = excluded.name, "+
+		"deallocated_at = excluded.deallocated_at, delete_after = excluded.delete_after, deleted_at = '', note = '', detail = excluded.detail",
+		executor, m.Provider, m.Detail["resource_group"], m.Name, now, deleteAfter, string(detail))
+}
+
+// retiredMachine rebuilds the machine a retired_vms row describes.
+func retiredMachine(r row) *Machine {
+	return machineFromDetail(r.str("provider"), r.str("name"), r.str("detail"), r.str("resource_group"))
 }
 
 // retireExecutor: the machine stops costing money now, the row is removed, and a finding says how to undo it.
@@ -206,13 +238,16 @@ func retireExecutor(s *store.Store, now, actor string, r row, vm *retiredVM, our
 		if !releaseCompute(s, actor, *req, "its login was refused ("+refused+")", say) {
 			return []string{fmt.Sprintf("retire %s postponed: releasing %s failed; the daemon retries", name, vm.Name)}
 		}
-		eventAt(s.DB, now, actor, "executor.retired", name, map[string]any{"provider": vm.Provider, "resource_group": vm.ResourceGroup, "name": vm.Name, "request": vm.Request, "released": true})
+		eventAt(s.DB, now, actor, "executor.retired", name, machineDetail(vm.Machine, map[string]any{"provider": vm.Provider, "name": vm.Name, "request": vm.Request, "released": true}))
 		return []string{fmt.Sprintf("retired %s: compute machine %s released (login refused)", name, vm.Name)}
 	}
+	var p Provider
 	if ours {
-		rc, out, errText, err := runAz(context.Background(), []string{"vm", "deallocate", "-g", vm.ResourceGroup, "-n", vm.Name, "-o", "none"}, azLong)
-		if err != nil || rc != 0 {
-			return []string{fmt.Sprintf("retire %s postponed: %s", name, errMessage(azErr("az vm deallocate "+vm.Name, rc, out, errText, err)))}
+		if p = providerNamed(vm.Provider); p == nil {
+			return []string{fmt.Sprintf("retire %s postponed: no compute provider %s is built in", name, pyRepr(vm.Provider))}
+		}
+		if err := p.Stop(context.Background(), vm.Machine); err != nil {
+			return []string{fmt.Sprintf("retire %s postponed: %s", name, redactSecrets(errMessage(err)))}
 		}
 	}
 	if _, err := board.RemoveExecutor(s, name, actor, false); err != nil {
@@ -227,17 +262,16 @@ func retireExecutor(s *store.Store, now, actor string, r row, vm *retiredVM, our
 			grace = 24
 		}
 		deleteAfter := plusHours(now, float64(grace))
-		exec1(s.DB, "INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, deleted_at, note) VALUES (?, ?, ?, ?, ?, ?, '', '') "+
-			"ON CONFLICT(executor) DO UPDATE SET provider = excluded.provider, resource_group = excluded.resource_group, name = excluded.name, "+
-			"deallocated_at = excluded.deallocated_at, delete_after = excluded.delete_after, deleted_at = '', note = ''",
-			name, vm.Provider, vm.ResourceGroup, vm.Name, now, deleteAfter)
-		detail["provider"], detail["resource_group"], detail["name"], detail["delete_after"] = vm.Provider, vm.ResourceGroup, vm.Name, deleteAfter
-		summary = fmt.Sprintf("retired %s: login refused; VM %s (%s) deallocated now, deleted at %s unless kept", name, vm.Name, vm.ResourceGroup, deleteAfter)
-		body = fmt.Sprintf("The daemon retired executor `%s` (ADR-034).\n\nWhat was refused: %s\n\nWhat the daemon did: the VM `%s` in resource group `%s` (%s), "+
-			"which PULSE created, is deallocated now (%s) and stops costing money; the executor row is removed. The daemon deletes the VM, its network "+
-			"interfaces, public IPs and OS disk at %s (compute.retire_grace_hours=%d).\n\nUndo: `az vm start -g %s -n %s` then `pulse executor activate %s` "+
-			"before %s keeps it.\n\n%s\n", name, refused, vm.Name, vm.ResourceGroup, vm.Provider, now, deleteAfter, grace, vm.ResourceGroup, vm.Name, name, deleteAfter, next)
-		line = fmt.Sprintf("retired %s: deallocated %s (%s); deleted at %s unless kept", name, vm.Name, vm.ResourceGroup, deleteAfter)
+		saveRetired(s, name, vm.Machine, now, deleteAfter)
+		place := p.Place(vm.Machine)
+		detail = machineDetail(vm.Machine, detail)
+		detail["provider"], detail["name"], detail["place"], detail["delete_after"] = vm.Provider, vm.Name, place, deleteAfter
+		summary = fmt.Sprintf("retired %s: login refused; %s %s (%s) stopped now, deleted at %s unless kept", name, p.Kind(), vm.Name, place, deleteAfter)
+		body = fmt.Sprintf("The daemon retired executor `%s` (ADR-034).\n\nWhat was refused: %s\n\nWhat the daemon did: the %s `%s` in %s (%s), "+
+			"which PULSE created, is stopped now (%s) and stops costing money; the executor row is removed. The daemon deletes the machine and what "+
+			"was created beside it at %s (compute.retire_grace_hours=%d).\n\nUndo: `%s` then `pulse executor activate %s` "+
+			"before %s keeps it.\n\n%s\n", name, refused, p.Kind(), vm.Name, place, vm.Provider, now, deleteAfter, grace, p.StartHint(vm.Machine), name, deleteAfter, next)
+		line = fmt.Sprintf("retired %s: stopped %s (%s); deleted at %s unless kept", name, vm.Name, place, deleteAfter)
 	} else {
 		detail["note"] = note
 		summary = fmt.Sprintf("retired %s: login refused; machine left running because PULSE did not create it", name)
@@ -254,128 +288,55 @@ func retireExecutor(s *store.Store, now, actor string, r row, vm *retiredVM, our
 	return []string{line}
 }
 
-// deleteRetired is the delete pass: rows past delete_after whose executor is still removed lose their VM,
-// NICs, public IPs and OS disk; a row whose executor is active again is closed as kept by the owner.
+// deleteRetired is the delete pass: rows past delete_after whose executor is still removed lose their machine
+// and what was created beside it through the provider; a row whose executor is active again is closed as kept
+// by the owner.
 func deleteRetired(s *store.Store, now, actor string) []string {
 	var lines []string
 	for _, r := range mustRows(s.DB, "SELECT * FROM retired_vms WHERE deleted_at = '' AND delete_after != '' AND delete_after <= ? ORDER BY executor", now) {
 		name := r.str("executor")
+		m := retiredMachine(r)
 		status := ""
 		if e := mustOne(s.DB, "SELECT status FROM executors WHERE name = ?", name); e != nil {
 			status = e.str("status")
 		}
 		if status == "active" {
 			exec1(s.DB, "UPDATE retired_vms SET deleted_at = ?, note = 'kept by the owner' WHERE executor = ?", now, name)
-			eventAt(s.DB, now, actor, "executor.kept", name, map[string]any{"name": r.str("name"), "resource_group": r.str("resource_group")})
-			lines = append(lines, fmt.Sprintf("kept %s: the owner activated it again; %s stays", name, r.str("name")))
+			eventAt(s.DB, now, actor, "executor.kept", name, machineDetail(m, map[string]any{"provider": m.Provider, "name": m.Name}))
+			lines = append(lines, fmt.Sprintf("kept %s: the owner activated it again; %s stays", name, m.Name))
 			continue
 		}
-		if r.str("provider") != "azure" {
-			exec1(s.DB, "UPDATE retired_vms SET deleted_at = ?, note = ? WHERE executor = ?", now, "no delete step for provider "+r.str("provider"), name)
-			lines = append(lines, fmt.Sprintf("retired %s: no delete step for provider %s", name, r.str("provider")))
+		p := providerNamed(m.Provider)
+		if p == nil {
+			exec1(s.DB, "UPDATE retired_vms SET deleted_at = ?, note = ? WHERE executor = ?", now, "no delete step for provider "+m.Provider, name)
+			lines = append(lines, fmt.Sprintf("retired %s: no delete step for provider %s", name, m.Provider))
 			continue
 		}
-		found, gone, err := azureDeleteVM(r.str("resource_group"), r.str("name"))
+		place := p.Place(m)
+		found, gone, err := p.Delete(context.Background(), m)
 		if err != nil {
-			lines = append(lines, fmt.Sprintf("delete %s postponed: %s", r.str("name"), errMessage(err)))
+			lines = append(lines, fmt.Sprintf("delete %s postponed: %s", m.Name, redactSecrets(errMessage(err))))
 			continue
 		}
-		detail := map[string]any{"provider": "azure", "resource_group": r.str("resource_group"), "name": r.str("name"), "deleted": gone}
+		detail := machineDetail(m, map[string]any{"provider": m.Provider, "name": m.Name, "place": place, "deleted": gone})
 		if !found {
 			exec1(s.DB, "UPDATE retired_vms SET deleted_at = ?, note = 'vm not found at delete time' WHERE executor = ?", now, name)
 			detail["missing"] = true
 			eventAt(s.DB, now, actor, "executor.deleted", name, detail)
-			lines = append(lines, fmt.Sprintf("retired %s: %s was already gone", name, r.str("name")))
+			lines = append(lines, fmt.Sprintf("retired %s: %s was already gone", name, m.Name))
 			continue
 		}
 		exec1(s.DB, "UPDATE retired_vms SET deleted_at = ? WHERE executor = ?", now, name)
 		eventAt(s.DB, now, actor, "executor.deleted", name, detail)
 		if proj := findingProject(s); proj != "" {
 			_, _ = createPost(s, now, postOpts{Kind: "finding", Project: proj, Area: computeArea, Thread: computeThread,
-				Summary: fmt.Sprintf("deleted %s (%s)", r.str("name"), r.str("resource_group")),
-				Body: fmt.Sprintf("The VM `%s` in resource group `%s`, deallocated on %s when executor `%s` was retired, is deleted with %s (ADR-034). "+
-					"Its virtual network and network security group stay; they may be shared. Only this finding remains of the machine.\n",
-					r.str("name"), r.str("resource_group"), r.str("deallocated_at"), name, strings.Join(gone, ", ")),
+				Summary: fmt.Sprintf("deleted %s (%s)", m.Name, place),
+				Body: fmt.Sprintf("The %s `%s` in %s, stopped on %s when executor `%s` was retired, is deleted with %s (ADR-034). "+
+					"What may be shared with other machines (on Azure the virtual network and network security group) stays. Only this finding remains of the machine.\n",
+					p.Kind(), m.Name, place, r.str("deallocated_at"), name, strings.Join(gone, ", ")),
 				Agent: actorAgent(s, actor), Date: now})
 		}
-		lines = append(lines, fmt.Sprintf("deleted %s (%s): %s", r.str("name"), r.str("resource_group"), strings.Join(gone, ", ")))
+		lines = append(lines, fmt.Sprintf("deleted %s (%s): %s", m.Name, place, strings.Join(gone, ", ")))
 	}
 	return lines
-}
-
-// azureDeleteVM: `az vm show` for the OS disk, NICs and their public IPs, `az vm delete --yes`, then the NICs,
-// public IPs and disk (best effort: `az vm create --nic-delete-option Delete` may have taken them already).
-// found is false when the VM is not there; gone names what was deleted.
-func azureDeleteVM(rg, name string) (bool, []string, error) {
-	ctx := context.Background()
-	rc, out, errText, err := runAz(ctx, []string{"vm", "show", "-g", rg, "-n", name, "-o", "json"}, azShort)
-	if err != nil {
-		return false, nil, azErr("az vm show "+name, rc, out, errText, err)
-	}
-	if rc != 0 {
-		if low := strings.ToLower(errText + out); strings.Contains(low, "notfound") || strings.Contains(low, "not found") || strings.Contains(low, "could not be found") {
-			return false, nil, nil
-		}
-		return false, nil, azErr("az vm show "+name, rc, out, errText, nil)
-	}
-	var vm struct {
-		StorageProfile struct {
-			OSDisk struct {
-				ManagedDisk struct {
-					ID string `json:"id"`
-				} `json:"managedDisk"`
-			} `json:"osDisk"`
-		} `json:"storageProfile"`
-		NetworkProfile struct {
-			NetworkInterfaces []struct {
-				ID string `json:"id"`
-			} `json:"networkInterfaces"`
-		} `json:"networkProfile"`
-	}
-	if err := json.Unmarshal([]byte(out), &vm); err != nil {
-		return false, nil, fmt.Errorf("az vm show %s: unreadable answer", name)
-	}
-	var nics, ips []string
-	for _, n := range vm.NetworkProfile.NetworkInterfaces {
-		if n.ID == "" {
-			continue
-		}
-		nics = append(nics, n.ID)
-		rc, out, _, err := runAz(ctx, []string{"network", "nic", "show", "--ids", n.ID, "-o", "json"}, azShort)
-		if err != nil || rc != 0 {
-			continue
-		}
-		var nic struct {
-			IPConfigurations []struct {
-				PublicIPAddress *struct {
-					ID string `json:"id"`
-				} `json:"publicIPAddress"`
-			} `json:"ipConfigurations"`
-		}
-		if json.Unmarshal([]byte(out), &nic) == nil {
-			for _, c := range nic.IPConfigurations {
-				if c.PublicIPAddress != nil && c.PublicIPAddress.ID != "" {
-					ips = append(ips, c.PublicIPAddress.ID)
-				}
-			}
-		}
-	}
-	rc, out, errText, err = runAz(ctx, []string{"vm", "delete", "-g", rg, "-n", name, "--yes", "-o", "none"}, azLong)
-	if err != nil || rc != 0 {
-		return true, nil, azErr("az vm delete "+name, rc, out, errText, err)
-	}
-	gone := []string{"vm " + name}
-	if len(nics) > 0 {
-		_, _, _, _ = runAz(ctx, append([]string{"network", "nic", "delete", "--ids"}, append(nics, "-o", "none")...), azLong)
-		gone = append(gone, fmt.Sprintf("%d nic(s)", len(nics)))
-	}
-	if len(ips) > 0 {
-		_, _, _, _ = runAz(ctx, append([]string{"network", "public-ip", "delete", "--ids"}, append(ips, "-o", "none")...), azLong)
-		gone = append(gone, fmt.Sprintf("%d public ip(s)", len(ips)))
-	}
-	if disk := vm.StorageProfile.OSDisk.ManagedDisk.ID; disk != "" {
-		_, _, _, _ = runAz(ctx, []string{"disk", "delete", "--ids", disk, "--yes", "-o", "none"}, azLong)
-		gone = append(gone, "os disk")
-	}
-	return true, gone, nil
 }

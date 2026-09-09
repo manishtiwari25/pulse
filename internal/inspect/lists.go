@@ -164,13 +164,14 @@ func runJobs(c *cli.Context, fs *flag.FlagSet, args []string) error {
 type AgentScorecard struct {
 	store.Agent
 	board.AgentPresence
-	Findings    int    `json:"findings"`
-	Suggestions int    `json:"suggestions"`
-	Votes       int    `json:"votes"`
-	Answers     int    `json:"answers"`
-	Results     int    `json:"results"`
-	N           int    `json:"n"`
-	LastPost    string `json:"last_post"`
+	Findings    int          `json:"findings"`
+	Suggestions int          `json:"suggestions"`
+	Votes       int          `json:"votes"`
+	Answers     int          `json:"answers"`
+	Results     int          `json:"results"`
+	N           int          `json:"n"`
+	LastPost    string       `json:"last_post"`
+	Focus       *board.Focus `json:"focus,omitempty"`
 }
 
 // AgentScorecards counts posts independently of the agent's cached posts field.
@@ -183,6 +184,10 @@ func AgentScorecards(s *store.Store, includePruned bool) ([]AgentScorecard, erro
 	if err != nil {
 		return nil, err
 	}
+	focuses, err := board.AgentFocuses(s, s.Now())
+	if err != nil {
+		return nil, err
+	}
 	out := []AgentScorecard{}
 	indices := make(map[string]int, len(agents))
 	for _, a := range agents {
@@ -190,7 +195,11 @@ func AgentScorecards(s *store.Store, includePruned bool) ([]AgentScorecard, erro
 			continue
 		}
 		indices[a.Name] = len(out)
-		out = append(out, AgentScorecard{Agent: a, AgentPresence: presence[a.Name]})
+		card := AgentScorecard{Agent: a, AgentPresence: presence[a.Name]}
+		if focus, ok := focuses[a.Name]; ok {
+			card.Focus = &focus
+		}
+		out = append(out, card)
 	}
 	rows, err := s.DB.Query(`SELECT agent, SUM(kind = 'finding'), SUM(kind = 'suggestion'), SUM(kind = 'vote'),
 		SUM(kind = 'answer'), SUM(kind = 'result'), COUNT(*), MAX(date) FROM posts GROUP BY agent`)
@@ -208,6 +217,7 @@ func AgentScorecards(s *store.Store, includePruned bool) ([]AgentScorecard, erro
 		if index, ok := indices[name]; ok {
 			stats.Agent = out[index].Agent
 			stats.AgentPresence = out[index].AgentPresence
+			stats.Focus = out[index].Focus
 			out[index] = stats
 		}
 	}
@@ -239,11 +249,34 @@ func runAgents(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		return jsonOutput(c, agents)
 	}
 	for _, a := range agents {
-		c.Printf("%-16s %-7s %-8s presence %-7s posts %-4d findings %-3d suggestions %-3d votes %-3d jobs %d/%d  last heartbeat %s  last useful %s\n",
-			a.Name, a.Status, a.Kind, a.Presence, a.Posts, a.Findings, a.Suggestions, a.Votes, a.JobsDone,
+		c.Printf("%-16s %-7s %-8s presence %-7s now %-36s posts %-4d findings %-3d suggestions %-3d votes %-3d jobs %d/%d  last heartbeat %s  last useful %s\n",
+			a.Name, a.Status, a.Kind, a.Presence, focusText(a.Focus), a.Posts, a.Findings, a.Suggestions, a.Votes, a.JobsDone,
 			a.JobsDone+a.JobsFailed, orDash(a.LastHeartbeatAt), orDash(a.LastUsefulAt))
 	}
 	return nil
+}
+
+func focusText(f *board.Focus) string {
+	if f == nil {
+		return "-"
+	}
+	if f.JobID != "" {
+		text := f.JobID
+		if f.JobKind != "" {
+			text += " " + f.JobKind
+		}
+		if f.Thread != "" {
+			text += " @ " + f.Thread
+		}
+		if f.Executor != "" {
+			text += " on " + f.Executor
+		}
+		return text
+	}
+	if len(f.Claims) > 0 {
+		return "claim " + f.Claims[0].Thread
+	}
+	return "-"
 }
 
 // Event keeps detail as the stored string, including the Python JSON spacing.

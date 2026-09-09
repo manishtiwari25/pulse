@@ -35,7 +35,7 @@ const (
 type ProvisionRequest struct {
 	ID       string       // the compute request id (CR-NNN); the machine carries the tags pulse=hands and pulse-request=<ID>
 	Project  string       // the project that asked; the executor is limited to it
-	Size     string       // the provider's machine size (compute.azure.vm_size when the request named none)
+	Size     string       // the provider's machine size (the provider's size setting, e.g. compute.azure.vm_size, when the request named none)
 	Hours    int          // how long the machine is wanted
 	Reason   string       // the agent's reason, for the machine's description
 	Executor string       // the executor name the machine registers as
@@ -46,7 +46,7 @@ type ProvisionRequest struct {
 }
 
 // Machine is a provisioned machine as the daemon remembers it (compute_machines) so a later daemon can
-// release it. Detail holds provider facts (resource group, VM name, ...), never a credential.
+// release it. Detail holds provider facts (resource group, region, zone, instance id, ...), never a credential.
 type Machine struct {
 	Provider string            `json:"provider"`
 	Name     string            `json:"name"`
@@ -56,15 +56,32 @@ type Machine struct {
 	Detail   map[string]string `json:"detail,omitempty"`
 }
 
-// Provider is one place agents get machines from. Provision creates the machine, waits until it answers,
-// registers it as an executor and returns it; when it returns an error together with a Machine, the
-// provider left resources behind and the caller releases them. Release destroys the machine (the executor
-// row is removed by the caller). Probe reports whether the machine still runs.
+// Provider is one place agents get machines from. Every provider authenticates through its own CLI's login
+// on the hub machine and never through a key in the store; every machine it makes is an Ubuntu host prepared
+// by cloud-init and registered as an executor the way `pulse pair` does (provisionFinish).
+//
+// Provision creates the machine, waits until it answers, registers it as an executor and returns it; when it
+// returns an error together with a Machine, the provider left resources behind and the caller releases them.
+// Release destroys the machine (the executor row is removed by the caller). Probe reports whether the machine
+// still runs.
+//
+// The rest serves the retire phase (ADR-034 rules 4-5, retire.go): Kind is what one machine is called in a
+// finding ("Azure VM"); Find looks for the machine PULSE made for an executor that has no compute_machines
+// row - tagged pulse=hands and named like the executor or answering at host, in the scope the compute.*
+// settings name - and returns nil, nil when there is none; Stop halts the machine so it stops costing money but keeps its disk; Delete removes the machine
+// and what was created beside it, saying whether it was still there and what went; Place says where it lives
+// (the resource group, region, zone); StartHint is the command a human runs to bring a stopped machine back.
 type Provider interface {
 	Name() string
+	Kind() string
 	Provision(ctx context.Context, req ProvisionRequest) (*Machine, error)
 	Release(ctx context.Context, m *Machine) error
 	Probe(ctx context.Context, m *Machine) error
+	Find(ctx context.Context, s *store.Store, executor, host string) (*Machine, error)
+	Stop(ctx context.Context, m *Machine) error
+	Delete(ctx context.Context, m *Machine) (found bool, gone []string, err error)
+	Place(m *Machine) string
+	StartHint(m *Machine) string
 }
 
 var (

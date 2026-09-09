@@ -32,7 +32,7 @@ func TestRunningNamesTheBuildsAndTheState(t *testing.T) {
 	beat := func(revision string) {
 		t.Helper()
 		if _, err := s.DB.Exec("INSERT INTO meta (key, value) VALUES ('daemon', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-			`{"pid":4242,"at":"2026-09-06T11:59:00Z","loops":3,"interval":300,"note":"","version":"dev-`+revision[:min(12, len(revision))]+`","revision":"`+revision+`"}`); err != nil {
+			`{"pid":4242,"at":"2026-09-06T11:59:00Z","loops":3,"interval":300,"note":"","version":"dev-`+revision[:min(12, len(revision))]+`","revision":"`+revision+`","bus":{"subscribers":2,"dropped":7,"deduped":3}}`); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -53,6 +53,10 @@ func TestRunningNamesTheBuildsAndTheState(t *testing.T) {
 	daemon := result["daemon"].(map[string]any)
 	if daemon["pid"] != 4242.0 || daemon["revision"] != head || daemon["version"] != "dev-"+head[:12] {
 		t.Fatalf("daemon view: %#v", daemon)
+	}
+	bus := daemon["bus"].(map[string]any)
+	if bus["subscribers"] != 2.0 || bus["dropped"] != 7.0 || bus["deduped"] != 3.0 {
+		t.Fatalf("bus view: %#v", bus)
 	}
 
 	beat("0123456789abcdef0123456789abcdef01234567")

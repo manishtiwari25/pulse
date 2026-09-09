@@ -2,8 +2,6 @@ package runner
 
 import (
 	"fmt"
-	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/store"
@@ -11,8 +9,6 @@ import (
 )
 
 const ballotHours = 6 // a card gets its own session's votes first; idle hands vote on what is still short after this long
-
-var signalRe = regexp.MustCompile(`(?im)^\s*(?:-\s*)?` + "`?signal`?" + `\s*:\s*(.+?)\s*$|\bsignal:\s*(\S+)`)
 
 // threadStatuses is Tally.thread_status for every thread of one project: closed, stale, or open.
 func threadStatuses(s *store.Store, rows []row, now string) map[string]string {
@@ -99,57 +95,6 @@ func ballotDue(s *store.Store, slug, now string, suggestions []tally.Suggestion)
 	return out
 }
 
-func signalTokens(text string) []string {
-	var out []string
-	for _, m := range signalRe.FindAllStringSubmatch(text, -1) {
-		raw := m[1]
-		if raw == "" {
-			raw = m[2]
-		}
-		raw = strings.Trim(strings.TrimSpace(raw), "`'\"()[],;")
-		for _, tok := range regexp.MustCompile(`[\s,;]+`).Split(raw, -1) {
-			tok = strings.Trim(tok, "`'\"()[],;.")
-			if tok != "" {
-				out = append(out, tok)
-			}
-		}
-	}
-	return out
-}
-
-func relOfToken(tok string) string {
-	rel, _, _ := strings.Cut(tok, ":")
-	rel, _, _ = strings.Cut(rel, "#")
-	return rel
-}
-
-// signalResolves: a worker's card carries evidence when a `Signal:` names something that exists.
-func signalResolves(q querier, project, post row) bool {
-	text := post.str("summary") + "\n" + post.str("body")
-	root := ""
-	if project != nil {
-		root = project.str("path")
-	}
-	for _, tok := range signalTokens(text) {
-		if strings.HasPrefix(strings.ToLower(tok), "check:") && len(tok) > 6 {
-			return true
-		}
-		if postRow(q, tok) != nil {
-			return true
-		}
-		rel := relOfToken(tok)
-		if root != "" && rel != "" && !strings.HasPrefix(rel, "/") && !contains(strings.Split(filepath.Clean(rel), "/"), "..") && fileExists(filepath.Join(root, rel)) {
-			return true
-		}
-	}
-	return false
-}
-
-func isWorkerPost(q querier, post row) bool {
-	r := agentRow(q, post.str("agent"))
-	return r != nil && r.str("kind") == "worker"
-}
-
 func isOwnerAddressedPost(post row) bool {
 	if post == nil {
 		return false
@@ -157,16 +102,16 @@ func isOwnerAddressedPost(post row) bool {
 	return tally.OwnerAddressed(post.str("summary"), post.str("thread"))
 }
 
-func ownerTargeted(post row) bool {
-	for _, tok := range signalTokens(post.str("summary") + "\n" + post.str("body")) {
-		rel := strings.TrimLeft(relOfToken(tok), "/")
-		for _, p := range ownerPaths {
-			if rel == p || strings.HasPrefix(rel, p) {
-				return true
-			}
-		}
+func tallyPost(s *store.Store, id string) *tally.Post {
+	r := postRow(s.DB, id)
+	if r == nil {
+		return nil
 	}
-	return false
+	return &tally.Post{ID: r.str("id"), Thread: r.str("thread"), Agent: r.str("agent"), Summary: r.str("summary"), Body: r.str("body")}
+}
+
+func ownerTargeted(post row) bool {
+	return tally.OwnerTargeted(post.str("summary"), post.str("body"))
 }
 
 // planJobs is plan_jobs(): the next job for a project with fewer than parallel_per_project waiting.
@@ -175,8 +120,8 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 	if waiting >= parallelPerProject(s) {
 		return nil, nil
 	}
-	project := projectBySlug(s.DB, slug)
 	// ADR-031: a project at the baseline gate gets the baseline job before anything else.
+	project := projectBySlug(s.DB, slug)
 	if job, isNew, err := planBaseline(s, project, slug, now, createdBy); err != nil {
 		return nil, err
 	} else if isNew {
@@ -219,21 +164,21 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 	suggestions := suggestionRecords(s, slug, now)
 	if len(created) == 0 {
 		for _, sg := range suggestions {
-			if sg.Status != "eligible" || sg.Score <= 0 {
+			if sg.Status != "eligible" {
 				continue
 			}
-			post := postRow(s.DB, sg.ID)
-			if isOwnerAddressedPost(post) {
+			post := tallyPost(s, sg.ID)
+			projectPath := ""
+			if project != nil {
+				projectPath = project.str("path")
+			}
+			if tally.PlanGate(s, projectPath, sg, post) != "" {
 				continue
 			}
-			if post != nil && isWorkerPost(s.DB, post) {
-				if !signalResolves(s.DB, project, post) || ownerTargeted(post) {
-					continue
-				}
-			}
+			pRow := postRow(s.DB, sg.ID)
 			brief := fmt.Sprintf("The agents voted this the top eligible suggestion (score %+d, %d voters). Thread %s.\n\n%s\n\n"+
 				"One variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:.",
-				sg.Score, sg.Voters, sg.Key, post.str("body"))
+				sg.Score, sg.Voters, sg.Key, pRow.str("body"))
 			job, isNew, err := addJob(s, slug, "improve", fmt.Sprintf("Implement suggestion %s: %s", sg.ID, sg.Summary), brief, 1,
 				10+sg.Score, "suggestion:"+sg.ID, createdBy, true)
 			if err != nil {
@@ -241,8 +186,8 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			}
 			if isNew {
 				created = append(created, job)
+				break
 			}
-			break
 		}
 	}
 	if len(created) == 0 {

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,8 +78,25 @@ func TestComputeSettings(t *testing.T) {
 	if v, err := ValidateSetting("compute.azure.location", "westeurope"); err != nil || v != "westeurope" {
 		t.Fatalf("location: %q %v", v, err)
 	}
-	if _, err := ValidateSetting("compute.provider", "aws"); err == nil {
+	if _, err := ValidateSetting("compute.provider", "moon"); err == nil {
 		t.Fatal("unknown provider accepted")
+	}
+	for _, p := range ComputeProviders {
+		if v, err := ValidateSetting("compute.provider", p); err != nil || v != p {
+			t.Fatalf("provider %s: %q %v", p, v, err)
+		}
+		if ComputeSizeSetting(p) == "" || ComputeRules[ComputeSizeSetting(p)].Kind == "" {
+			t.Fatalf("provider %s has no size setting rule", p)
+		}
+	}
+	if ComputeSizeSetting("moon") != "compute.azure.vm_size" || ComputeSizeSetting("gcp") != "compute.gcp.machine_type" {
+		t.Fatal("ComputeSizeSetting fallback mismatch")
+	}
+	if v, err := ValidateSetting("compute.aws.image", "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"); err != nil || !strings.HasPrefix(v, "/aws/") {
+		t.Fatalf("aws image path: %q %v", v, err)
+	}
+	if _, err := ValidateSetting("compute.gcp.project", "AKIAIOSFODNN7EXAMPLE1234"); err == nil {
+		t.Fatal("secret-shaped gcp project accepted")
 	}
 	if !SecretShaped("-----BEGIN RSA PRIVATE KEY-----") || SecretShaped("/usr/local/bin:/opt/homebrew/bin/some/very/long/path/that/keeps/going/on") {
 		t.Fatal("SecretShaped mismatch")
@@ -107,7 +125,7 @@ func TestComputeSettings(t *testing.T) {
 	if _, err := ValidateSetting("evolve.tolerance", "1.5"); err == nil {
 		t.Fatal("tolerance > 1 accepted")
 	}
-	if got := len(ExtraSettingNames()); got != len(ComputeSettings)+len(EvolveSettings)+len(DaemonSettings)+len(LeadSettings) {
+	if got := len(ExtraSettingNames()); got != len(ComputeSettings)+len(EvolveSettings)+len(DaemonSettings)+len(LeadSettings)+len(OwnerSettings) {
 		t.Fatalf("ExtraSettingNames = %d", got)
 	}
 	// ADR-034: self-heal, self-retire and the grace before a retired VM is deleted.

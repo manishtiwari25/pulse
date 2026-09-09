@@ -69,7 +69,7 @@ func init() {
 			"pulse compute deny CR-NNN [--words WHY]      (owner)\n" +
 			"pulse compute providers [--json]             (the providers this binary can provision with)",
 		Flags: func(fs *flag.FlagSet) {
-			fs.String("size", "", "machine size (default compute.azure.vm_size)")
+			fs.String("size", "", "machine size (default: the provider's size setting, e.g. compute.azure.vm_size)")
 			fs.Int("hours", 0, "hours the machine is needed")
 			fs.String("reason", "", "why the work needs it")
 			fs.String("status", "", "filter by status (list)")

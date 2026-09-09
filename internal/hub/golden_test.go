@@ -228,6 +228,8 @@ func documentedDifference(slug, route, path string) string {
 		switch field {
 		case "presence", "presence_reason", "last_heartbeat_at", "presence_session", "presence_checked_at", "presence_expires_at":
 			return "WU-024 adds supervised presence separately from unchanged identity, score and history fields"
+		case "current_job", "current_job_kind", "current_job_title", "current_thread", "executor", "focus_since":
+			return "agents-focus-roster adds current work fields separately from identity, score and history fields"
 		}
 	}
 	if strings.HasSuffix(path, ".head") || strings.HasSuffix(path, ".dirty") || strings.HasSuffix(path, ".branch") {
@@ -250,10 +252,38 @@ func documentedDifference(slug, route, path string) string {
 	if route == "executors" && (strings.HasSuffix(path, ".admin") || strings.HasSuffix(path, ".healed_at")) {
 		return "ADR-034 adds the admin route and the heal marker to every executor row"
 	}
+	if route == "runner" && path == "$.landing" {
+		return "ADR-024: the runner view carries the daemon's landing holds so the console can say why verified branches wait"
+	}
 	if route == "overview" && strings.HasPrefix(path, "$.evolution.") {
 		return "SQL-native evolution fields follow the revised contract, not the Python filesystem report"
 	}
+	if route == "overview" && path == "$.suggestions_plannable" {
+		return "hub adds planner gate visibility for eligible suggestions"
+	}
+	if route == "overview" && strings.Contains(path, ".open_threads[") && threadEnrichmentGoldenField(path) {
+		return "hub adds thread status enrichment for participants, last activity, open questions, handoffs, and claims"
+	}
+	if route == "threads" && strings.HasPrefix(path, "$[") && threadEnrichmentGoldenField(path) {
+		return "hub adds thread status enrichment for participants, last activity, open questions, handoffs, and claims"
+	}
+	if route == "thread" && strings.HasPrefix(path, "$.thread.") && threadEnrichmentGoldenField(path) {
+		return "hub adds thread status enrichment for participants, last activity, open questions, handoffs, and claims"
+	}
+	if route == "suggestions" && strings.HasPrefix(path, "$[") {
+		_, field, _ := strings.Cut(path, "].")
+		switch field {
+		case "job", "job_status", "gate", "plannable":
+			return "hub adds planner gate visibility for suggestion rows"
+		}
+	}
 	if slug == "org" && route == "org" {
+		if path == "$.owner_presence" || path == "$.totals.votes_plannable" {
+			return "hub adds owner-away and planner gate visibility"
+		}
+		if strings.HasSuffix(path, ".suggestions_plannable") {
+			return "hub adds planner gate visibility to project summaries"
+		}
 		for _, index := range []string{"0", "1", "2"} {
 			for _, key := range []string{"evolution_present", "loop", "stop_present", "baseline"} {
 				if path == "$.projects["+index+"]."+key {
@@ -267,7 +297,23 @@ func documentedDifference(slug, route, path string) string {
 			}
 		}
 	}
+	if slug == "org" && route == "votes" && strings.HasPrefix(path, "$.suggestions[") {
+		_, field, _ := strings.Cut(path, "].")
+		switch field {
+		case "job", "job_status", "gate", "plannable":
+			return "hub adds planner gate visibility for organization vote rows"
+		}
+	}
 	return ""
+}
+
+func threadEnrichmentGoldenField(path string) bool {
+	for _, suffix := range []string{".participants", ".last_by", ".last_kind", ".open_questions", ".open_handoffs", ".active_claims"} {
+		if strings.HasSuffix(path, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLegacySettingsRows(t *testing.T) {

@@ -243,11 +243,17 @@ func (h *Handler) runner(r *http.Request) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return object("available now daemon runner hands executors workers jobs capacity", true, h.Store.Now(), daemon,
+	// ADR-024: projects whose verified branches wait on the owner (a dirty or switched checkout, a lock, an
+	// unreadable folder), as the daemon last wrote them; empty when everything lands.
+	landing, err := inspect.LandingNotes(h.Store)
+	if err != nil {
+		return nil, err
+	}
+	return object("available now daemon runner hands executors workers jobs capacity landing", true, h.Store.Now(), daemon,
 		object("allowed reason", stopped == "", stopped),
 		object("free slots executors_active executors any_project", free, slots, active, len(executors), anyProject), executors,
 		object("pool idle busy target idle_names prune_after_days", len(workers), len(idle), len(workers)-len(idle), max(1, h.Store.SettingInt("quorum")+1), idle, h.Store.SettingInt("prune_after_days")),
-		jobs, capacity), nil
+		jobs, capacity, landing), nil
 }
 
 func newPerson(agent store.Agent) map[string]any {
@@ -263,10 +269,11 @@ func newPerson(agent store.Agent) map[string]any {
 	if name != "" {
 		names = append(names, name)
 	}
-	return object("agent name names kind status agent_status runner model session sessions session_count jobs_done jobs_failed posts store_posts pruned_at pruned_reason last_useful_at last_active_at created_at legacy_id notes votes claims questions answers suggestions findings first_seen last_seen active_claims projects days_since approximate name_shared shared_with",
+	return object("agent name names kind status agent_status runner model session sessions session_count jobs_done jobs_failed posts store_posts pruned_at pruned_reason last_useful_at last_active_at created_at legacy_id notes votes claims questions answers suggestions findings first_seen last_seen active_claims projects current_job current_job_kind current_job_title current_thread executor focus_since days_since approximate name_shared shared_with",
 		agent.Name, name, names, agent.Kind, agent.Status, agent.Status, agent.Runner, agent.Model, "", sessions, len(sessions),
 		agent.JobsDone, agent.JobsFailed, agent.Posts, agent.Posts, agent.PrunedAt, agent.PrunedReason, agent.LastUsefulAt, agent.LastActiveAt,
-		agent.CreatedAt, agent.LegacyID, agent.Notes, 0, 0, 0, 0, 0, 0, "", "", []map[string]any{}, []string{}, 0.0, false, false, []string{})
+		agent.CreatedAt, agent.LegacyID, agent.Notes, 0, 0, 0, 0, 0, 0, "", "", []map[string]any{}, []string{},
+		"", "", "", "", "", "", 0.0, false, false, []string{})
 }
 
 func (h *Handler) roster(views []projectView) ([]map[string]any, error) {
@@ -280,6 +287,10 @@ func (h *Handler) roster(views []projectView) ([]map[string]any, error) {
 	}
 	now := h.Store.Now()
 	presence, err := board.AgentPresences(h.Store, now)
+	if err != nil {
+		return nil, err
+	}
+	focuses, err := board.AgentFocuses(h.Store, now)
 	if err != nil {
 		return nil, err
 	}
@@ -359,6 +370,10 @@ func (h *Handler) roster(views []projectView) ([]map[string]any, error) {
 		row["presence"], row["presence_reason"], row["last_heartbeat_at"] = p.Presence, p.PresenceReason, p.LastHeartbeatAt
 		row["presence_session"], row["presence_checked_at"] = p.PresenceSession, p.PresenceCheckedAt
 		row["presence_expires_at"] = p.PresenceExpiresAt
+		if f, ok := focuses[str(row["agent"])]; ok {
+			row["current_job"], row["current_job_kind"], row["current_job_title"] = f.JobID, f.JobKind, f.JobTitle
+			row["current_thread"], row["executor"], row["focus_since"] = f.Thread, f.Executor, f.Since
+		}
 		if row["first_seen"] == "" {
 			row["first_seen"] = row["created_at"]
 		}

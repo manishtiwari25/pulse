@@ -45,6 +45,10 @@ func TestRosterPresenceHistoryClaimsAndSharedClock(t *testing.T) {
 			VALUES(?,'commons','task','presence',?,'leased',?,2)`, id.JobID, s.Now(), name)
 		exec(`INSERT INTO runs(id,job_id,agent,project,started_at,status)
 			VALUES(?,?,?,'commons','2026-09-06T11:50:00Z','running')`, id.RunID, id.JobID, name)
+		if name == "live" {
+			exec(`INSERT INTO posts(id,project,area,thread,kind,agent,date,expires,summary,created_at)
+				VALUES('live-claim','commons','agents','live','claim','live',?,'2026-09-06T12:30:00Z','working here',?)`, s.Now(), s.Now())
+		}
 		at := "2026-09-06T11:59:00Z"
 		if name == "offline" {
 			at = "2026-09-06T11:54:00Z"
@@ -87,6 +91,11 @@ func TestRosterPresenceHistoryClaimsAndSharedClock(t *testing.T) {
 	if byName["live"]["last_useful_at"] != "2026-09-01T00:00:00Z" || byName["live"]["last_heartbeat_at"] != "2026-09-06T11:59:00Z" ||
 		byName["live"]["presence_expires_at"] != "2026-09-06T12:04:00Z" || byName["live"]["jobs_done"] != 3 || byName["live"]["posts"] != 4 {
 		t.Fatalf("score/history and heartbeat were conflated: %+v", byName["live"])
+	}
+	if byName["live"]["current_job"] != "job-live" || byName["live"]["current_job_kind"] != "task" ||
+		byName["live"]["current_job_title"] != "presence" || byName["live"]["current_thread"] != "agents/live" ||
+		byName["live"]["executor"] != "local" || byName["live"]["focus_since"] != "2026-09-06T11:50:00Z" {
+		t.Fatalf("focus fields missing: %+v", byName["live"])
 	}
 	cards, err := board.Scorecards(s, true)
 	if err != nil {
@@ -160,7 +169,8 @@ func TestRosterGoldenKeepsIdentityAndHistoryAssertions(t *testing.T) {
 		rows[1].(map[string]any)["jobs_done"] != 3 || legacy[0].(map[string]any)["status"] != "working" {
 		t.Fatalf("legacy roster normalization changed identity/history: %+v", rows)
 	}
-	for _, field := range []string{"presence", "presence_reason", "last_heartbeat_at", "presence_session", "presence_checked_at", "presence_expires_at"} {
+	for _, field := range []string{"presence", "presence_reason", "last_heartbeat_at", "presence_session", "presence_checked_at", "presence_expires_at",
+		"current_job", "current_job_kind", "current_job_title", "current_thread", "executor", "focus_since"} {
 		if documentedDifference("org", "roster", "$[0]."+field) == "" {
 			t.Errorf("added field %s is undocumented", field)
 		}

@@ -1,10 +1,13 @@
 package board
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
@@ -118,7 +121,6 @@ func TestCreatePostRuleMatrix(t *testing.T) {
 	for _, q := range []string{
 		"SELECT kind, project, area, thread, agent, summary, body, vote, on_post, text_hash, has_read_line, resolution, session, name, origin FROM posts WHERE agent = 'bob' AND kind != 'finding' OR (agent = 'bob' AND body = 'text') ORDER BY kind, summary",
 		"SELECT name, posts, last_useful_at != '' FROM agents WHERE name = 'bob'",
-		"SELECT action, actor, detail FROM events WHERE action = 'post' AND actor = 'bob' ORDER BY seq",
 	} {
 		g, p := dumpQuery(t, s, q), dumpQuery(t, pyStore, q)
 		if g != p {
@@ -189,8 +191,61 @@ func TestPostIDCollisionSuffix(t *testing.T) {
 	if a.Posts != 3 || a.LastUsefulAt != testNow || a.LastActiveAt != testNow {
 		t.Fatalf("agent counters %+v", a)
 	}
-	if n := countRows(t, s, "events", "action = 'post' AND actor = 'alice'"); n != 3 {
+	if n := countRows(t, s, "events", "action = 'post.finding' AND actor = 'alice'"); n != 3 {
 		t.Fatalf("%d post events", n)
+	}
+}
+
+func TestCreatePostMentionsAndEvents(t *testing.T) {
+	_, s, _ := fixture(t)
+	if _, err := s.DB.Exec("UPDATE agents SET status = 'pruned' WHERE name = 'bob'"); err != nil {
+		t.Fatal(err)
+	}
+	ch, cancel := bus.Default().Subscribe(bus.Filter{}, 16)
+	defer cancel()
+	p, err := CreatePost(s, PostInput{
+		Kind:    "question",
+		Project: "demo",
+		Area:    "API",
+		Thread:  "Rate Limits",
+		Summary: "@alice @bob @cinder @owner @alice can you check?",
+		Body:    "self @alice and owner again @human",
+		Agent:   "alice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var extra struct {
+		Mentions []string `json:"mentions"`
+	}
+	if err := json.Unmarshal([]byte(p.Extra), &extra); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(extra.Mentions, ","), "human"; got != want {
+		t.Fatalf("mentions %q, want %q in extra %s", got, want, p.Extra)
+	}
+	events := make([]bus.Event, 0, 2)
+	for len(events) < 2 {
+		select {
+		case e := <-ch:
+			if e.Subject == p.ID || e.Subject == "human" {
+				events = append(events, e)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("events %v", events)
+		}
+	}
+	if events[0].Action != "post.question" || events[0].Subject != p.ID || events[0].Actor != "alice" {
+		t.Fatalf("post event %+v", events[0])
+	}
+	if events[0].Detail != `{"agent": "alice", "kind": "question", "project": "demo", "thread": "api/rate-limits"}` {
+		t.Fatalf("post detail %s", events[0].Detail)
+	}
+	if events[1].Action != "mention" || events[1].Subject != "human" || events[1].Actor != "alice" {
+		t.Fatalf("mention event %+v", events[1])
+	}
+	if events[1].Detail != `{"by": "alice", "kind": "question", "post": "`+p.ID+`", "project": "demo", "thread": "api/rate-limits"}` {
+		t.Fatalf("mention detail %s", events[1].Detail)
 	}
 }
 

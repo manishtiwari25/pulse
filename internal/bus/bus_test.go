@@ -136,8 +136,24 @@ func TestFilterMatch(t *testing.T) {
 	if (Filter{Project: "demo"}).Match(Event{Action: "project.removed", Subject: "demo", Detail: "free text"}) != true {
 		t.Error("subject equal to the project should match")
 	}
-	if !Glob("post.*", "post.amended") || Glob("post.*", "task.amended") || !Glob("*", "anything") {
-		t.Error("glob")
+	for _, tc := range []struct {
+		pattern, name string
+		want          bool
+	}{
+		{"post", "post", true},
+		{"post", "post.question", true},
+		{"post", "post-question", false},
+		{"post.question", "post.question", true},
+		{"post.question", "post.handoff", false},
+		{"task", "task.amended", true},
+		{"task.*", "task.amended", true},
+		{"task.*", "task", false},
+		{"post.*", "task.amended", false},
+		{"*", "anything", true},
+	} {
+		if got := Glob(tc.pattern, tc.name); got != tc.want {
+			t.Errorf("Glob(%q, %q) = %v, want %v", tc.pattern, tc.name, got, tc.want)
+		}
 	}
 }
 

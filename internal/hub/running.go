@@ -51,7 +51,7 @@ func (h *Handler) running(r *http.Request) (map[string]any, error) {
 	} else if ok {
 		var beat map[string]any
 		if json.Unmarshal([]byte(raw), &beat) == nil {
-			daemon = object("pid at version revision", beat["pid"], str(beat["at"]), str(beat["version"]), str(beat["revision"]))
+			daemon = object("pid at version revision bus", beat["pid"], str(beat["at"]), str(beat["version"]), str(beat["revision"]), beat["bus"])
 		}
 	}
 

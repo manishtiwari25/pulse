@@ -50,6 +50,32 @@ func TestAgentListingsKeepIdentityHistoryAndSeparateHeartbeat(t *testing.T) {
 	}
 }
 
+func TestAgentListingsShowFocus(t *testing.T) {
+	s := temporaryStore(t)
+	if _, _, err := board.JoinAgent(s, board.JoinInput{Name: "aurora", Kind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO jobs(id,project,kind,title,status,created_at,lease_agent,lease_until)
+		VALUES('job-1','proj','task','Do it','leased',?,'aurora','2026-09-06T20:00:00Z')`, parityNow); err != nil {
+		t.Fatal(err)
+	}
+	result := invoke(t, s, true, "", "agents")
+	if result.code != 0 {
+		t.Fatal(result.err)
+	}
+	var cards []AgentScorecard
+	if err := json.Unmarshal([]byte(result.out), &cards); err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) == 0 || cards[0].Focus == nil || cards[0].Focus.JobID != "job-1" || cards[0].Focus.JobKind != "task" {
+		t.Fatalf("json focus missing: %+v", cards)
+	}
+	result = invoke(t, s, false, "", "agents")
+	if !strings.Contains(result.out, "now job-1 task") {
+		t.Fatalf("table focus missing: %s", result.out)
+	}
+}
+
 func TestLegacyAgentParityOnlyRemovesAddedColumns(t *testing.T) {
 	const old = "presence         pruned  worker   posts 99   jobs 2/5  last useful old  r/m\n"
 	const current = "presence         pruned  worker   presence pruned  posts 99   jobs 2/5  last heartbeat 2026-09-06T19:00:00Z  last useful old  r/m\n"

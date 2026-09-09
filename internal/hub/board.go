@@ -161,6 +161,10 @@ func (h *Handler) snapshot(project, area string) (*boardData, error) {
 	if err != nil {
 		return nil, err
 	}
+	openJobs, err := tally.OpenSuggestionJobs(h.Store)
+	if err != nil {
+		return nil, err
+	}
 	dbPosts := make(map[string]tally.Post, len(rawPosts))
 	for _, post := range rawPosts {
 		dbPosts[post.ID] = post
@@ -227,6 +231,7 @@ func (h *Handler) snapshot(project, area string) (*boardData, error) {
 	d.Params = object("area now quorum expiry_days stale_days amend_quorum amend_majority protected_sections constitution_present stop_present",
 		params["area"], params["now"], num(params["quorum"]), num(params["expiry_days"]), num(params["stale_days"]),
 		num(params["amend_quorum"]), params["amend_majority"], params["protected"], params["constitution_present"] == "1", params["stop_present"] == "1")
+	d.enrichThreads()
 	for _, row := range d.Proposals {
 		post, decided := d.ByID[str(row["id"])], d.ByID[str(row["decided_id"])]
 		for _, key := range []string{"name", "session", "rel_path", "body", "kind"} {
@@ -266,6 +271,26 @@ func (h *Handler) snapshot(project, area string) (*boardData, error) {
 	for _, row := range d.Suggestions {
 		id := str(row["id"])
 		row["name"], row["session"] = str(d.ByID[id]["name"]), str(d.ByID[id]["session"])
+		job := openJobs[id]
+		row["job"], row["job_status"] = job.ID, job.Status
+		gate := ""
+		if row["status"] == "eligible" {
+			var post *tally.Post
+			if p, ok := dbPosts[id]; ok {
+				post = &p
+			}
+			gate = tally.PlanGate(h.Store, p.Path, tally.Suggestion{
+				Score:     num(row["score"]),
+				ID:        id,
+				Key:       str(row["thread_key"]),
+				Agent:     str(row["agent"]),
+				Summary:   str(row["summary"]),
+				Job:       str(row["job"]),
+				JobStatus: str(row["job_status"]),
+			}, post)
+		}
+		row["gate"] = gate
+		row["plannable"] = row["status"] == "eligible" && gate == ""
 		row["rank"] = nil
 		if priority(row["status"]) < 3 {
 			rank++
@@ -402,6 +427,101 @@ func (d *boardData) thread(key string) map[string]any {
 	return nil
 }
 
+func (d *boardData) enrichThreads() {
+	threads := map[string]map[string]any{}
+	for _, thread := range d.Threads {
+		key := str(thread["key"])
+		threads[key] = thread
+		thread["participants"] = []string{}
+		thread["last_by"] = ""
+		thread["last_kind"] = ""
+		thread["open_questions"] = 0
+		thread["open_handoffs"] = 0
+		thread["active_claims"] = []string{}
+	}
+	posts := append([]map[string]any{}, d.Posts...)
+	order(posts, "date", "id")
+	seen := map[string]map[string]bool{}
+	byThread := map[string][]map[string]any{}
+	for _, post := range posts {
+		key := str(post["thread_key"])
+		thread := threads[key]
+		if thread == nil {
+			continue
+		}
+		byThread[key] = append(byThread[key], post)
+		if seen[key] == nil {
+			seen[key] = map[string]bool{}
+		}
+		agent := str(post["agent"])
+		if agent != "" && !seen[key][agent] {
+			seen[key][agent] = true
+			thread["participants"] = append(thread["participants"].([]string), agent)
+		}
+		if str(post["date"]) >= str(thread["last"]) {
+			thread["last_by"] = agent
+			thread["last_kind"] = str(post["kind"])
+		}
+	}
+	for _, claim := range d.Claims {
+		if claim["status"] != "active" {
+			continue
+		}
+		key := str(claim["thread_key"])
+		if thread := threads[key]; thread != nil {
+			thread["active_claims"] = append(thread["active_claims"].([]string), str(claim["agent"]))
+		}
+	}
+	answered := map[string]bool{}
+	for _, post := range posts {
+		if post["kind"] == "answer" && str(post["on_post"]) != "" {
+			answered[str(post["on_post"])] = true
+		}
+	}
+	// Keep these rules in parity with internal/board.ThreadSummaries.
+	for key, threadPosts := range byThread {
+		thread := threads[key]
+		if thread == nil || thread["status"] == "closed" {
+			continue
+		}
+		for i, post := range threadPosts {
+			switch post["kind"] {
+			case "question":
+				if post["area"] != "jobs" && !answered[str(post["id"])] && !laterHubAnswerDate(threadPosts, i) {
+					thread["open_questions"] = num(thread["open_questions"]) + 1
+				}
+			case "handoff":
+				if !laterHubKind(threadPosts, i, "claim", "result") {
+					thread["open_handoffs"] = num(thread["open_handoffs"]) + 1
+				}
+			}
+		}
+	}
+}
+
+func laterHubKind(posts []map[string]any, index int, kinds ...string) bool {
+	want := map[string]bool{}
+	for _, kind := range kinds {
+		want[kind] = true
+	}
+	for _, post := range posts[index+1:] {
+		if want[str(post["kind"])] {
+			return true
+		}
+	}
+	return false
+}
+
+func laterHubAnswerDate(posts []map[string]any, index int) bool {
+	date := str(posts[index]["date"])
+	for _, post := range posts[index+1:] {
+		if post["kind"] == "answer" && str(post["date"]) > date {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *boardData) post(id string) map[string]any {
 	p, ok := d.ByID[id]
 	if !ok {
@@ -505,11 +625,21 @@ func (d *boardData) overview() map[string]any {
 	evo := evolutionSummary(d.Evolution)
 	missing, _ := json.Marshal(evo["missing_files"])
 	evo["missing_files"] = string(missing)
-	return object("board_present posts_without_kind quorum claims_active claims_expired threads_open threads_stale threads_closed posts posts_without_provenance suggestions_eligible suggestions_needing_votes suggestions_expired amendments_open amendments_passed proposals_awaiting proposals_decided active_claims stale_claims open_threads recent_posts evolution kinds areas agents",
+	return object("board_present posts_without_kind quorum claims_active claims_expired threads_open threads_stale threads_closed posts posts_without_provenance suggestions_eligible suggestions_plannable suggestions_needing_votes suggestions_expired amendments_open amendments_passed proposals_awaiting proposals_decided active_claims stale_claims open_threads recent_posts evolution kinds areas agents",
 		d.Meta["board_present"] == "1", num(d.Meta["posts_without_kind"]), d.Params["quorum"], len(active), len(stale), len(open),
 		countStatus(d.Threads, "stale"), countStatus(d.Threads, "closed"), len(d.Posts), withoutProvenance, countStatus(d.Suggestions, "eligible"),
-		countStatus(d.Suggestions, "needs votes"), countStatus(d.Suggestions, "expired"), amendOpen, amendPassed,
+		countPlannable(d.Suggestions), countStatus(d.Suggestions, "needs votes"), countStatus(d.Suggestions, "expired"), amendOpen, amendPassed,
 		countStatus(d.Proposals, "awaiting"), countStatus(d.Proposals, "accepted", "declined"), active, stale, open, recent, evo, kinds, sortedKeys(areas), agentRows)
+}
+
+func countPlannable(rows []map[string]any) int {
+	count := 0
+	for _, row := range rows {
+		if row["plannable"] == true {
+			count++
+		}
+	}
+	return count
 }
 
 func sortedKeys[V any](m map[string]V) []string {
