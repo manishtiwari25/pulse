@@ -74,6 +74,7 @@ type fpost struct {
 	kind, area, thread, agent, date, summary, session, body string
 	on, vote, textHash, expires, files, resolution, branch  string
 	project                                                 string // default "fixture"
+	extra                                                   string
 }
 
 func fixturePostID(date, agent string) string {
@@ -139,11 +140,15 @@ func (f *fixture) post(t *testing.T, p fpost) string {
 	if project == "" {
 		project = "fixture"
 	}
+	extra := p.extra
+	if extra == "" {
+		extra = "{}"
+	}
 	_, err := f.st.DB.Exec(`INSERT INTO posts (id, project, area, thread, kind, agent, runner, model, session, date, branch, expires,
-		on_post, vote, text_hash, has_read_line, resolution, summary, body, links, files, origin, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, 'store', ?)`,
+		on_post, vote, text_hash, has_read_line, resolution, summary, body, links, files, extra, origin, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, 'store', ?)`,
 		id, project, p.area, p.thread, p.kind, p.agent, runner, model, p.session, p.date, branch, p.expires,
-		p.on, p.vote, p.textHash, read, p.resolution, p.summary, body, p.files, p.date)
+		p.on, p.vote, p.textHash, read, p.resolution, p.summary, body, p.files, extra, p.date)
 	if err != nil {
 		t.Fatalf("insert %s: %v", id, err)
 	}

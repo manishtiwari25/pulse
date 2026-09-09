@@ -10,22 +10,45 @@ import (
 
 func votedSuggestionWithVotes(t *testing.T, s *store.Store, thread, class, file string, votes ...string) *board.Post {
 	t.Helper()
-	p, err := board.CreatePost(s, board.PostInput{
+	return votedPostWithVotes(t, s, board.PostInput{
 		Project: "demo", Area: "evolution", Thread: thread, Kind: "suggestion", Agent: "proposer",
 		Summary: "Improve " + thread, Files: file,
 		Body: "Class: " + class + "\nFile: " + file + "\nVariable: one constant\nHypothesis: " + thread + " improves the weighted score\nTier: 1\n",
-	})
+	}, votes...)
+}
+
+func votedPostWithVotes(t *testing.T, s *store.Store, in board.PostInput, votes ...string) *board.Post {
+	t.Helper()
+	p, err := board.CreatePost(s, in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i, vote := range votes {
 		agent := []string{"voter-one", "voter-two", "voter-three"}[i]
-		if _, err := board.CreatePost(s, board.PostInput{Project: "demo", Area: "evolution", Thread: thread,
+		if _, err := board.CreatePost(s, board.PostInput{Project: p.Project, Area: p.Area, Thread: p.Thread,
 			Kind: "vote", Agent: agent, Summary: "independent evidence", On: p.ID, Vote: vote}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return p
+}
+
+func TestPlanExperimentSkipsForOwner(t *testing.T) {
+	s := cycleReady(t)
+	owner := votedPostWithVotes(t, s, board.PostInput{
+		Project: "demo", Area: "evolution", Thread: "support-window", Kind: "suggestion", Agent: "proposer",
+		Summary: "Choose the support window", Files: "README.md", ForOwner: true,
+		Body: "Class: operating-layer\nFile: README.md\nVariable: one constant\nHypothesis: one constant improves the score\nTier: 1\n",
+	}, "up", "up", "up")
+	next := votedSuggestionWithVotes(t, s, "owner-review", "operating-layer", "README.md", "up", "up")
+	result, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+	if err != nil || !result.Created || result.Suggestion != next.ID || result.Question != "" {
+		t.Fatalf("planned %+v, error=%v; want %s not %s", result, err, next.ID, owner.ID)
+	}
+	var cards int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM posts WHERE kind='opinion' AND on_post=?", owner.ID).Scan(&cards); err != nil || cards != 0 {
+		t.Fatalf("created %d experiment cards for the owner post, error=%v", cards, err)
+	}
 }
 
 func TestPlanExperimentLevelGateHasNoSideEffects(t *testing.T) {

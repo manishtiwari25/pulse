@@ -108,7 +108,7 @@ func evolveHardStopGate(s *store.Store, slug, actor string) (questionID, reason 
 		return "", "", nil
 	}
 	post, err := board.CreatePost(s, board.PostInput{
-		Kind: "question", Project: slug, Area: "evolution", Thread: "loop-gate",
+		Kind: "question", Project: slug, Area: "evolution", Thread: "loop-gate", ForOwner: true,
 		AgentRow: actorAgent(s, actor), Summary: "Evolution stopped; owner review needed",
 		Body: "Experiment job " + jobID + " failed with a runner result containing a violation, hard stop, or applyerror marker.\n" +
 			"Experiments for this project wait until this question is answered. The workflow was not bypassed.",

@@ -2,12 +2,13 @@ package tally
 
 import (
 	"database/sql"
+	"fmt"
 	"sort"
 
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
-// Post is one row of the posts table, in column order.
+// Post is one row of the posts table plus parsed routing metadata.
 type Post struct {
 	ID            string `json:"id"`
 	Project       string `json:"project"`
@@ -35,6 +36,7 @@ type Post struct {
 	Extra         string `json:"extra"`
 	Origin        string `json:"origin"`
 	CreatedAt     string `json:"created_at"`
+	ForOwner      bool   `json:"for_owner,omitempty"`
 }
 
 const postCols = "id, project, area, thread, kind, agent, runner, model, session, date, branch, expires, on_post, vote, text_hash, " +
@@ -49,6 +51,11 @@ func scanPosts(rows *sql.Rows) ([]Post, error) {
 			&p.OriginProject, &p.Extra, &p.Origin, &p.CreatedAt); err != nil {
 			return nil, err
 		}
+		forOwner, err := store.PostForOwner(p.Extra)
+		if err != nil {
+			return nil, fmt.Errorf("post %s: %w", p.ID, err)
+		}
+		p.ForOwner = forOwner
 		out = append(out, p)
 	}
 	return out, rows.Err()

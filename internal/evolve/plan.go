@@ -88,7 +88,7 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 		if err != nil {
 			return PlanResult{}, err
 		}
-		if productPost(*p) && !status.ProductScope.Allowed {
+		if p.ForOwner || (productPost(*p) && !status.ProductScope.Allowed) {
 			continue
 		}
 		if questionOpenOnPost(s, project, p, opts.Agent) {

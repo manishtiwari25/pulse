@@ -217,7 +217,7 @@ func holdRecipeBranch(s *store.Store, project row, root, base, branch, actor str
 			recipePath, branch, forJob, command, branch, invalid, diffText)
 		postID := ""
 		if p, err := createPost(s, now, postOpts{Kind: "question", Project: slug, Area: "runner", Thread: "environment", Summary: summary,
-			Body: body, Agent: actorAgent(s, actor), Date: now}); err == nil {
+			Body: body, Agent: actorAgent(s, actor), Date: now, ForOwner: true}); err == nil {
 			postID = p.str("id")
 		}
 		eventAt(s.DB, now, actor, "env.held", branch, map[string]any{"project": slug, "job": jobIDOf(job), "post": postID, "valid": len(problems) == 0})

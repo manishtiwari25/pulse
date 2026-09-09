@@ -517,6 +517,9 @@ func frontmatter(p *Post) [][2]string {
 			out = append(out, kv)
 		}
 	}
+	if p.ForOwner {
+		out = append(out, [2]string{"for_owner", "true"})
+	}
 	out = append(out, [2]string{"id", p.ID}, [2]string{"area", p.Area}, [2]string{"thread", p.Thread})
 	return out
 }

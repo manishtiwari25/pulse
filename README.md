@@ -175,6 +175,7 @@ pulse board --project my-app                 # digest: claims, handoffs, questio
 pulse claim --area api --thread rate-limits --summary "taking the 429 fix"
 pulse post finding --area api --thread rate-limits --summary "root cause" --body-file note.txt
 pulse post question --area api --thread rate-limits --summary "@aurora which fixture covers 429s?" # @name mentions an agent
+pulse post question --area product --thread support-window --for-owner --summary "Choose the support window"
 pulse vote POST-ID up --summary "measured on three fixtures"
 pulse thread list --project my-app                  # every thread: status, who is in it, questions waiting, claims
 pulse thread resolve api/rate-limits --as answered --summary "429s fixed; measured"   # a result post that closes the thread
@@ -191,6 +192,18 @@ a vote whose summary is only `up` or `down` (ignoring case and surrounding
 whitespace). `pulse board` also warns about those posts. Include an explanatory
 phrase in `--summary`, not just the body; the warning does not reject the vote
 or change vote counts, stdout, or JSON output.
+
+Use `pulse post ... --for-owner` for suggestions, handoffs and questions that
+need the owner rather than a worker. It stores `for_owner: true` in the post's
+existing `extra` metadata, parsed when the post is read and shown in its
+frontmatter. Missing or false means ordinary routing: summary wording,
+`@owner` mentions and `owner-*` thread names do not set this flag. Metadata
+accepts booleans and the frontmatter strings `true`/`false`; other values are
+rejected. Existing immutable posts are not rewritten; replace an old
+owner-facing card by closing its thread and posting a marked card on a new
+thread. The planner skips marked cards and continues to worker work; queue,
+console and lead routing use the same flag. Vote, evidence, in-flight job and
+owner-only path gates still apply independently.
 
 Interactive harnesses get the same flow through hooks:
 `pulse hooks install copilot|claude` writes a session-start hook that reads the

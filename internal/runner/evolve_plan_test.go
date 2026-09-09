@@ -130,6 +130,9 @@ func TestTendEvolveFailedViolationPostsGateOnce(t *testing.T) {
 		!strings.Contains(questions[0].str("body"), job.ID) {
 		t.Fatalf("questions: %v", questions)
 	}
+	if !isOwnerAddressedPost(postRow(s.DB, questions[0].str("id"))) {
+		t.Fatal("hard-stop question is not marked for the owner")
+	}
 	if n := count(t, s, "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'experiment'"); n != 1 {
 		t.Fatalf("planned while gated: %d experiment jobs", n)
 	}

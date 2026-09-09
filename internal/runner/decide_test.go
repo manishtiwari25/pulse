@@ -176,7 +176,7 @@ func TestLeadDueAwayListsOwnerCardsOnce(t *testing.T) {
 	join(t, s, "castor")
 	setOwnerAway(t, s)
 	card, err := createPost(s, testNow, postOpts{Kind: "suggestion", Project: "proj", Area: "evolution", Thread: "owner-review",
-		Summary: "For the owner: switch the default branch", Body: "Signal: README.md", Agent: actorAgent(s, "aurora")})
+		Summary: "For the owner: switch the default branch", Body: "Signal: README.md", Agent: actorAgent(s, "aurora"), ForOwner: true})
 	if err != nil {
 		t.Fatal(err)
 	}

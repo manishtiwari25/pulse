@@ -9,7 +9,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
-// Post is one row of the posts table.
+// Post is one row of the posts table plus parsed routing metadata.
 type Post struct {
 	ID            string `json:"id"`
 	Project       string `json:"project"`
@@ -37,6 +37,7 @@ type Post struct {
 	Extra         string `json:"extra"`
 	Origin        string `json:"origin"`
 	CreatedAt     string `json:"created_at"`
+	ForOwner      bool   `json:"for_owner,omitempty"`
 }
 
 // IsBareVoteSummary reports vote posts whose summary states only a direction.
@@ -65,6 +66,11 @@ func scanPost(r scanner) (*Post, error) {
 		return nil, err
 	}
 	p.HasReadLine = read != 0
+	forOwner, err := store.PostForOwner(p.Extra)
+	if err != nil {
+		return nil, fmt.Errorf("post %s: %w", p.ID, err)
+	}
+	p.ForOwner = forOwner
 	return &p, nil
 }
 
@@ -98,12 +104,13 @@ func uniquePostID(db dbx, base string) (string, error) {
 
 // PostInput is everything create_post takes. Zero values mean "not given".
 type PostInput struct {
-	Kind    string
-	Project string // slug, or store.CommonsSlug
-	Area    string
-	Thread  string
-	Summary string
-	Body    string
+	Kind     string
+	Project  string // slug, or store.CommonsSlug
+	Area     string
+	Thread   string
+	Summary  string
+	Body     string
+	ForOwner bool
 
 	Agent    string       // the agent's name; "" falls back to $PULSE_AGENT
 	AgentRow *store.Agent // an already resolved agent (decide passes the human)
@@ -285,6 +292,9 @@ func createPost(w *writer, in PostInput) (*Post, error) {
 	for k, v := range in.Extra {
 		extra[k] = v
 	}
+	if in.ForOwner {
+		extra["for_owner"] = true
+	}
 	mentions, err := postMentions(s, agentName, summary+"\n"+in.Body)
 	if err != nil {
 		return nil, err
@@ -293,6 +303,9 @@ func createPost(w *writer, in PostInput) (*Post, error) {
 	extraText, err := store.PyJSON(extra)
 	if err != nil {
 		return nil, err
+	}
+	if _, err := store.PostForOwner(extraText); err != nil {
+		return nil, refuse(2, "%s", err)
 	}
 	readLine := 0
 	if HasReadLine(in.Body) {

@@ -85,7 +85,7 @@ func ownerQuestion(s *store.Store, project string, target *tally.Post, agent str
 		area, thread, on = target.Area, target.Thread, target.ID
 	}
 	post, err := board.CreatePost(s, board.PostInput{
-		Kind: "question", Project: project, Area: area, Thread: thread, On: on,
+		Kind: "question", Project: project, Area: area, Thread: thread, On: on, ForOwner: true,
 		Agent: agent, AgentRow: agentRow, Session: session, Summary: "Evolution stopped; owner review needed",
 		Body: reason + "\nThe workflow was not bypassed. Resolve the gate or close the unsafe thread before resuming.",
 	})

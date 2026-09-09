@@ -33,26 +33,35 @@ func TestOpenHandoffs(t *testing.T) {
 	}
 }
 
-func TestOwnerAddressed(t *testing.T) {
+func TestOwnerWordingDoesNotSetPlanGate(t *testing.T) {
+	f := newFixture(t, true)
 	tests := []struct {
 		name, summary, thread string
-		want                  bool
 	}{
-		{"owner questions", "anything", "owner-questions", true},
-		{"owner question", "anything", "owner-question", true},
-		{"owner prefix", "anything", "owner-review", true},
-		{"evaluator prefix", " evaluator proposal for the owner: adopt it", "work", true},
-		{"release candidate", "Release candidate 1", "work", true},
-		{"owner question summary", "Owner question: pick one", "work", true},
-		{"vote requested prefix", "vote requested: choose", "work", true},
-		{"for owner contains", "ready for the owner to inspect", "work", true},
-		{"vote requested contains", "please vote requested today", "work", true},
-		{"worker", "implement the cache", "ownerish", false},
+		{"owner questions", "anything", "owner-questions"},
+		{"owner question", "anything", "owner-question"},
+		{"owner prefix", "anything", "owner-review"},
+		{"evaluator prefix", " evaluator proposal for the owner: adopt it", "work"},
+		{"release candidate", "Release candidate 1", "work"},
+		{"owner question summary", "Owner question: pick one", "work"},
+		{"vote requested prefix", "vote requested: choose", "work"},
+		{"for owner contains", "ready for the owner to inspect", "work"},
+		{"vote requested contains", "please vote requested today", "work"},
+		{"worker", "implement the cache", "ownerish"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := OwnerAddressed(tt.summary, tt.thread); got != tt.want {
-				t.Fatalf("OwnerAddressed(%q, %q) = %v, want %v", tt.summary, tt.thread, got, tt.want)
+			sg := Suggestion{Score: 1, Summary: tt.summary, Key: "routing/" + tt.thread}
+			p := &Post{Summary: tt.summary, Thread: tt.thread}
+			if got := PlanGate(f.st, f.repo, sg, p); got != "" {
+				t.Fatalf("unmarked post gate=%q", got)
+			}
+			if got := PlanGate(f.st, f.repo, sg, nil); got != "" {
+				t.Fatalf("missing post gate inferred from wording: %q", got)
+			}
+			p.ForOwner = true
+			if got := PlanGate(f.st, f.repo, sg, p); got != GateOwner {
+				t.Fatalf("marked post gate=%q, want %q", got, GateOwner)
 			}
 		})
 	}
@@ -181,7 +190,7 @@ func TestWorkWantedBlockedEligibleAndPlannable(t *testing.T) {
 	zero := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: "split", agent: "runner-z/model-z", date: "2026-09-01T08:00:00Z", summary: "Split the worker queue", session: "s-z"})
 	f.post(t, fpost{kind: "vote", area: "evolution", thread: "split", agent: "runner-e/model-e", date: "2026-09-02T08:00:00Z", summary: "up", session: "s-e", on: zero, vote: "up"})
 	f.post(t, fpost{kind: "vote", area: "evolution", thread: "split", agent: "runner-f/model-f", date: "2026-09-02T09:00:00Z", summary: "down", session: "s-f", on: zero, vote: "down"})
-	owner := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: "owner-question", agent: "runner-o/model-o", date: "2026-09-01T07:00:00Z", summary: "Pick the release owner", session: "s-o"})
+	owner := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: "owner-question", agent: "runner-o/model-o", date: "2026-09-01T07:00:00Z", summary: "Pick the release owner", session: "s-o", extra: `{"for_owner":true}`})
 	f.post(t, fpost{kind: "vote", area: "evolution", thread: "owner-question", agent: "runner-g/model-g", date: "2026-09-02T07:00:00Z", summary: "up", session: "s-g", on: owner, vote: "up"})
 	f.post(t, fpost{kind: "vote", area: "evolution", thread: "owner-question", agent: "runner-h/model-h", date: "2026-09-02T07:30:00Z", summary: "up", session: "s-h", on: owner, vote: "up"})
 

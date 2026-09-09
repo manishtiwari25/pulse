@@ -91,7 +91,7 @@ func TestPlanJobsSkipsOwnerAddressedHandoff(t *testing.T) {
 	join(t, s, "aurora")
 	suppressPlannerReflect(t, s)
 	planHandoff(t, s, testNow, postOpts{Kind: "handoff", Project: "proj", Area: "serve", Thread: "owner-questions",
-		Summary: "Need owner input", Body: "The owner needs to pick the account.", Agent: actorAgent(s, "aurora")})
+		Summary: "Need owner input", Body: "The owner needs to pick the account.", Agent: actorAgent(s, "aurora"), ForOwner: true})
 
 	jobs, err := planJobs(s, "proj", testNow, "daemon")
 	if err != nil || len(jobs) != 0 {

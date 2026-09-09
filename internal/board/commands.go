@@ -49,7 +49,7 @@ func init() {
 		Name: "post", Group: "agents",
 		Summary: "write one immutable post",
 		Usage: "pulse post KIND --area A --thread T --summary S [--body TEXT | --body-file F | < stdin] [--on POST] [--vote up|down]\n" +
-			"       [--expires T] [--resolution R] [--links L] [--files F] [--text-hash H] [--origin-project P] [--claim-hours H] [--project SLUG]\n" +
+			"       [--expires T] [--resolution R] [--links L] [--files F] [--text-hash H] [--origin-project P] [--claim-hours H] [--for-owner] [--project SLUG]\n" +
 			"       kinds: " + strings.Join(Kinds, ", "),
 		Flags: postFlags,
 		Run:   runPost,
@@ -341,6 +341,7 @@ func postFlags(fs *flag.FlagSet) {
 	fs.String("text-hash", "", "an amendment's text hash")
 	fs.String("origin-project", "", "the project a commons post came from")
 	fs.Float64("claim-hours", 0, "for a claim: expiry in hours from now")
+	fs.Bool("for-owner", false, "reserve this post for the owner, not a worker job")
 }
 
 // ReadBody is pulse.py read_body: --body-file, else --body, else stdin when it is not a terminal.
@@ -401,7 +402,8 @@ func runPost(c *cli.Context, fs *flag.FlagSet, args []string) error {
 	row, err := CreatePost(c.Store, PostInput{Kind: kind, Project: proj.Slug, Area: flagString(fs, "area"), Thread: flagString(fs, "thread"),
 		Summary: flagString(fs, "summary"), Body: body, Agent: c.Agent, Session: c.Session, On: flagString(fs, "on"),
 		Vote: flagString(fs, "vote"), Expires: expires, Resolution: flagString(fs, "resolution"), Links: flagString(fs, "links"),
-		Files: flagString(fs, "files"), TextHash: flagString(fs, "text-hash"), OriginProject: flagString(fs, "origin-project")})
+		Files: flagString(fs, "files"), TextHash: flagString(fs, "text-hash"), OriginProject: flagString(fs, "origin-project"),
+		ForOwner: flagBool(fs, "for-owner")})
 	if err != nil {
 		return err
 	}

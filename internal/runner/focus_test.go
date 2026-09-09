@@ -68,7 +68,11 @@ func TestLeadBriefListsAgentsAndOwnerQuestions(t *testing.T) {
 	if _, err := leaseJob(s, "borealis", testNow, leaseOpts{JobID: other.str("id")}); err != nil {
 		t.Fatal(err)
 	}
-	q := postRunnerFocus(t, s, "q-owner", "proj", "question", "owner", "budget", "borealis", "for the owner: budget?", "")
+	q, err := board.CreatePost(s, board.PostInput{PostID: "q-owner", Project: "proj", Kind: "question", Area: "owner",
+		Thread: "budget", Agent: "borealis", Summary: "for the owner: budget?", ForOwner: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	extra := leadBriefExtra{AgentLines: focusLines(s, "proj", leadName("proj"), testNow), OwnerQuestions: ownerAddressedQuestions(s, "proj", testNow)}
 
 	present := leadBrief("proj", nil, nil, nil, extra)
@@ -100,7 +104,10 @@ func TestAwayOwnerQuestionQueuesLeadOnlyWhileAway(t *testing.T) {
 	s := newStore(t)
 	newRepo(t, s)
 	join(t, s, "borealis")
-	postRunnerFocus(t, s, "q-owner", "proj", "question", "owner", "budget", "borealis", "for the owner: budget?", "")
+	if _, err := board.CreatePost(s, board.PostInput{PostID: "q-owner", Project: "proj", Kind: "question", Area: "owner",
+		Thread: "budget", Agent: "borealis", Summary: "for the owner: budget?", ForOwner: true}); err != nil {
+		t.Fatal(err)
+	}
 
 	if lines := tendLead(s, "proj", testNow, "daemon"); len(mustRows(s.DB, "SELECT * FROM jobs WHERE kind = 'lead'")) != 0 {
 		t.Fatalf("present owner question queued a lead job: %v", lines)

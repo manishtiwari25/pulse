@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-func addEligibleSuggestion(t *testing.T, f *fixture, key, agent, thread, summary, body string, votes []string) string {
+func addEligibleSuggestion(t *testing.T, f *fixture, key, agent, thread, summary, body, extra string, votes []string) string {
 	t.Helper()
-	id := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: thread, agent: agent, date: "2026-09-01T0" + key + ":00:00Z", summary: summary, body: body, session: "s-" + key})
+	id := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: thread, agent: agent, date: "2026-09-01T0" + key + ":00:00Z", summary: summary, body: body, session: "s-" + key, extra: extra})
 	for i, vote := range votes {
 		voter := "runner-v" + key + string(rune('a'+i)) + "/model"
 		f.post(t, fpost{kind: "vote", area: "evolution", thread: thread, agent: voter, date: "2026-09-02T0" + key + ":0" + string(rune('1'+i)) + ":00Z", summary: vote, session: "s-" + voter, on: id, vote: vote})
@@ -22,11 +22,11 @@ func TestPlanGateOutcomes(t *testing.T) {
 		"suggestion:"+f.ids["eligible"], fixtureNow); err != nil {
 		t.Fatal(err)
 	}
-	net := addEligibleSuggestion(t, f, "1", "runner-net/model", "net", "Break even", "No signal needed.", []string{"up", "down"})
-	owner := addEligibleSuggestion(t, f, "2", "runner-owner/model", "owner-question", "Pick this for the owner", "No signal needed.", []string{"up", "up"})
-	noEvidence := addEligibleSuggestion(t, f, "3", "runner-worker/model", "worker-no-signal", "Worker card", "No signal line.", []string{"up", "up"})
-	ownerPath := addEligibleSuggestion(t, f, "4", "runner-worker-path/model", "worker-owner-path", "Worker owner path", "Signal: docs/decisions/adr.md", []string{"up", "up"})
-	plannable := addEligibleSuggestion(t, f, "5", "runner-plain/model", "plain", "Plain card", "No signal needed for non-workers.", []string{"up", "up"})
+	net := addEligibleSuggestion(t, f, "1", "runner-net/model", "net", "Break even", "No signal needed.", "", []string{"up", "down"})
+	owner := addEligibleSuggestion(t, f, "2", "runner-owner/model", "support-window", "Choose the support window", "No signal needed.", `{"for_owner":true}`, []string{"up", "up"})
+	noEvidence := addEligibleSuggestion(t, f, "3", "runner-worker/model", "worker-no-signal", "Worker card", "No signal line.", "", []string{"up", "up"})
+	ownerPath := addEligibleSuggestion(t, f, "4", "runner-worker-path/model", "worker-owner-path", "Worker owner path", "Signal: docs/decisions/adr.md", "", []string{"up", "up"})
+	plannable := addEligibleSuggestion(t, f, "5", "runner-plain/model", "owner-review", "Release candidate wording fix", "No signal needed for non-workers.", "", []string{"up", "up"})
 	if _, err := f.st.DB.Exec("UPDATE agents SET kind = 'worker' WHERE name IN ('runner-worker/model', 'runner-worker-path/model')"); err != nil {
 		t.Fatal(err)
 	}

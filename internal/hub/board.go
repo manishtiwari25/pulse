@@ -366,6 +366,9 @@ func postFrontmatter(p tally.Post) map[string]any {
 			fm[key] = value
 		}
 	}
+	if p.ForOwner {
+		fm["for_owner"] = "true"
+	}
 	fm["id"], fm["area"], fm["thread"], fm["path"] = p.ID, p.Area, p.Thread, "store:"+p.ID
 	return fm
 }

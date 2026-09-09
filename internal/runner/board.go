@@ -149,7 +149,21 @@ func actorAgent(s *store.Store, name string) *store.Agent {
 // ---- posts -----------------------------------------------------------------
 
 func postRow(q querier, id string) row {
-	return mustOne(q, "SELECT * FROM posts WHERE id = ?", id)
+	return parsePostRow(mustOne(q, "SELECT * FROM posts WHERE id = ?", id))
+}
+
+func parsePostRow(p row) row {
+	if p == nil {
+		return nil
+	}
+	forOwner, err := store.PostForOwner(p.str("extra"))
+	if err != nil {
+		panic(fmt.Errorf("post %s: %w", p.str("id"), err))
+	}
+	if forOwner {
+		p["for_owner"] = true
+	}
+	return p
 }
 
 // postOpts is the keyword surface of create_post() the runner uses.
@@ -160,6 +174,7 @@ type postOpts struct {
 	Links, Files, Origin, Date                 string
 	Extra                                      map[string]any
 	Branch                                     *string
+	ForOwner                                   bool
 }
 
 // createPost writes one post through board.CreatePost; `now` is the date when
@@ -175,7 +190,8 @@ func createPost(s *store.Store, now string, o postOpts) (row, error) {
 	}
 	p, err := board.CreatePost(s, board.PostInput{Kind: o.Kind, Project: o.Project, Area: o.Area, Thread: o.Thread,
 		Summary: o.Summary, Body: o.Body, AgentRow: agent, Session: o.Session, Branch: o.Branch, On: o.On, Vote: o.Vote,
-		Expires: o.Expires, Resolution: o.Resolution, Links: o.Links, Files: o.Files, Date: date, Extra: o.Extra, Origin: o.Origin})
+		Expires: o.Expires, Resolution: o.Resolution, Links: o.Links, Files: o.Files, Date: date, Extra: o.Extra, Origin: o.Origin,
+		ForOwner: o.ForOwner})
 	if err != nil {
 		return nil, err
 	}

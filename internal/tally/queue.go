@@ -219,25 +219,10 @@ func OpenHandoffs(res *Result) []Post {
 	return out
 }
 
-// OwnerAddressed reports posts the planner reserves for the owner.
-func OwnerAddressed(summary, thread string) bool {
-	thread = strings.ToLower(thread)
-	if thread == "owner-questions" || thread == "owner-question" || strings.HasPrefix(thread, "owner-") {
-		return true
-	}
-	low := strings.ToLower(strings.TrimSpace(summary))
-	for _, p := range []string{"evaluator proposal for the owner", "release candidate", "owner question", "vote requested"} {
-		if strings.HasPrefix(low, p) {
-			return true
-		}
-	}
-	return strings.Contains(low, "for the owner") || strings.Contains(low, "vote requested")
-}
-
 func plannableWork(items []WorkItem) int {
 	n := 0
 	for _, it := range items {
-		if it.Kind == WorkHandoff || it.Kind == WorkQuestion || (it.Kind == WorkEligible && it.Blocked == "") {
+		if it.Blocked == "" && (it.Kind == WorkHandoff || it.Kind == WorkQuestion || it.Kind == WorkEligible) {
 			n++
 		}
 	}
@@ -282,6 +267,9 @@ func projectWork(s *store.Store, res *Result, agent, session, now string) []Work
 		it := add(WorkHandoff, key, h.ID, h.Summary, h.Date,
 			fmt.Sprintf("read it (pulse show %s), then post a claim and continue the work", h.ID), "as the handoff states")
 		it.Agent = h.Agent
+		if h.ForOwner {
+			it.Blocked, it.Next = GateOwner, "wait for the owner; not a worker handoff"
+		}
 	}
 	// Eligible suggestions: the experiment queue, hidden while STOP is on.
 	if !res.Params.StopPresent {
@@ -333,6 +321,9 @@ func projectWork(s *store.Store, res *Result, agent, session, now string) []Work
 				fmt.Sprintf("answer it: pulse post answer --project %s --area %s --thread %s --on %s --summary '...'", slug, last.Area, last.Thread, last.ID),
 				"Tier 0 (an answer is a post)")
 			it.Agent = last.Agent
+			if last.ForOwner {
+				it.Blocked, it.Next = GateOwner, "wait for the owner; not a worker question"
+			}
 		}
 	}
 	// Ballot: what this identity may still vote on (same rule as `pulse ballot`).

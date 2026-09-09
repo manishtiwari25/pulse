@@ -173,6 +173,14 @@ func TestCycleInstructionAndScopeViolationsAskOwner(t *testing.T) {
 			if err := s.DB.QueryRow("SELECT COUNT(*) FROM posts WHERE kind='question'").Scan(&questions); err != nil || questions != 1 {
 				t.Fatal("workflow stop did not ask the owner")
 			}
+			var questionID string
+			if err := s.DB.QueryRow("SELECT id FROM posts WHERE kind='question'").Scan(&questionID); err != nil {
+				t.Fatal(err)
+			}
+			question, err := board.PostByID(s, questionID)
+			if err != nil || question == nil || !question.ForOwner {
+				t.Fatalf("workflow stop question=%+v, error=%v", question, err)
+			}
 		})
 	}
 }

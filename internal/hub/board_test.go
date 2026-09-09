@@ -176,11 +176,11 @@ func TestSuggestionRowsCarryJobsAndPlanGates(t *testing.T) {
 		}
 		agents[name] = agent
 	}
-	suggest := func(agent, thread, summary string) *board.Post {
+	suggest := func(agent, thread, summary string, forOwner bool) *board.Post {
 		t.Helper()
 		post, err := board.CreatePost(s, board.PostInput{
 			Kind: "suggestion", Project: project.Slug, Area: "product", Thread: thread, AgentRow: agents[agent],
-			Summary: summary, Body: "Suggestion body.",
+			Summary: summary, Body: "Suggestion body.", ForOwner: forOwner,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -197,16 +197,16 @@ func TestSuggestionRowsCarryJobsAndPlanGates(t *testing.T) {
 		}
 	}
 
-	netZero := suggest("alpha", "net-zero", "Use offset scans for exports")
+	netZero := suggest("alpha", "net-zero", "Use offset scans for exports", false)
 	vote("bravo", netZero, "up")
 	vote("charlie", netZero, "down")
-	plannable := suggest("bravo", "cache-prices", "Cache price lookup per request")
+	plannable := suggest("bravo", "owner-cache", "Release candidate cache fix", false)
 	vote("alpha", plannable, "up")
 	vote("charlie", plannable, "up")
-	blocked := suggest("charlie", "blocked-work", "Add retry budget to API calls")
+	blocked := suggest("charlie", "blocked-work", "Add retry budget to API calls", false)
 	vote("alpha", blocked, "up")
 	vote("bravo", blocked, "up")
-	owner := suggest("delta", "owner-priority", "Owner should choose the support window")
+	owner := suggest("delta", "support-window", "Choose the support window", true)
 	vote("alpha", owner, "up")
 	vote("bravo", owner, "up")
 	job, _, err := board.AddJob(s, board.JobInput{
@@ -238,6 +238,14 @@ func TestSuggestionRowsCarryJobsAndPlanGates(t *testing.T) {
 	}
 	if row := byID[owner.ID]; row["gate"] != tally.GateOwner || row["plannable"] != false {
 		t.Fatalf("owner gate = %#v", row)
+	}
+	for _, row := range data.Posts {
+		if str(row["id"]) == owner.ID {
+			fm, ok := row["frontmatter"].(map[string]any)
+			if !ok || fm["for_owner"] != "true" {
+				t.Fatalf("owner frontmatter = %#v", row["frontmatter"])
+			}
+		}
 	}
 	if got := data.overview()["suggestions_plannable"]; got != 1 {
 		t.Fatalf("suggestions_plannable = %v, want 1", got)

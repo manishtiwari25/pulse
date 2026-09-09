@@ -40,7 +40,11 @@ func threadStatuses(s *store.Store, rows []row, now string) map[string]string {
 }
 
 func projectPosts(q querier, slug string) []row {
-	return mustRows(q, "SELECT * FROM posts WHERE project = ? ORDER BY date, id", slug)
+	posts := mustRows(q, "SELECT * FROM posts WHERE project = ? ORDER BY date, id", slug)
+	for _, p := range posts {
+		parsePostRow(p)
+	}
+	return posts
 }
 
 // openQuestions is open_questions(): questions outside jobs/ with no answer after them in an open thread.
@@ -96,10 +100,7 @@ func ballotDue(s *store.Store, slug, now string, suggestions []tally.Suggestion)
 }
 
 func isOwnerAddressedPost(post row) bool {
-	if post == nil {
-		return false
-	}
-	return tally.OwnerAddressed(post.str("summary"), post.str("thread"))
+	return post["for_owner"] == true
 }
 
 func tallyPost(s *store.Store, id string) *tally.Post {
@@ -107,7 +108,8 @@ func tallyPost(s *store.Store, id string) *tally.Post {
 	if r == nil {
 		return nil
 	}
-	return &tally.Post{ID: r.str("id"), Thread: r.str("thread"), Agent: r.str("agent"), Summary: r.str("summary"), Body: r.str("body")}
+	return &tally.Post{ID: r.str("id"), Thread: r.str("thread"), Agent: r.str("agent"), Summary: r.str("summary"), Body: r.str("body"),
+		ForOwner: isOwnerAddressedPost(r)}
 }
 
 func ownerTargeted(post row) bool {
@@ -196,7 +198,7 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			tried[r.str("source")] = true
 		}
 		for _, q := range openQuestions(s, slug, now) {
-			if tried["question:"+q.str("id")] {
+			if tried["question:"+q.str("id")] || isOwnerAddressedPost(q) {
 				continue
 			}
 			brief := fmt.Sprintf("Question %s in thread %s/%s:\n\n%s\n\nInvestigate in the clone and write the answer as SUMMARY:; the runner posts it. "+

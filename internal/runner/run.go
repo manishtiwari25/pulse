@@ -698,7 +698,8 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		}
 		post := func(kind, area, thread, sum, text, resolution string) {
 			if _, err := createPost(s, now, postOpts{Kind: kind, Project: project.str("slug"), Area: area, Thread: thread,
-				Summary: trunc(sum, 230), Body: text, Agent: arow, Session: runID, Branch: &branch, Resolution: resolution}); err != nil {
+				Summary: trunc(sum, 230), Body: text, Agent: arow, Session: runID, Branch: &branch, Resolution: resolution,
+				ForOwner: kind == "question"}); err != nil {
 				log.add("post skipped: %s", errMessage(err))
 			}
 		}

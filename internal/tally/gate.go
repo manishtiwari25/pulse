@@ -120,15 +120,15 @@ func PlanGate(s *store.Store, projectPath string, sg Suggestion, post *Post) str
 	if sg.Score <= 0 {
 		return GateNetVotes
 	}
-	summary, body, thread, agent := sg.Summary, "", threadFromKey(sg.Key), sg.Agent
+	summary, body, agent := sg.Summary, "", sg.Agent
 	if post != nil {
+		if post.ForOwner {
+			return GateOwner
+		}
 		if post.Summary != "" {
 			summary = post.Summary
 		}
-		body, thread, agent = post.Body, post.Thread, post.Agent
-	}
-	if OwnerAddressed(summary, thread) {
-		return GateOwner
+		body, agent = post.Body, post.Agent
 	}
 	if post != nil && IsWorkerPost(s, agent) {
 		if !SignalResolves(s, projectPath, summary, body) {
@@ -139,12 +139,4 @@ func PlanGate(s *store.Store, projectPath string, sg Suggestion, post *Post) str
 		}
 	}
 	return ""
-}
-
-func threadFromKey(key string) string {
-	_, thread, ok := strings.Cut(key, "/")
-	if !ok {
-		return key
-	}
-	return thread
 }
