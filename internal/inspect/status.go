@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/runner"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -161,12 +162,12 @@ func readDaemonBeat(s *store.Store) (daemonBeat, bool, error) {
 func daemonIntervalSeconds(s *store.Store) (int, error) {
 	beat, _, err := readDaemonBeat(s)
 	if err != nil {
-		return 300, nil
+		return runner.DefaultDaemonIntervalSeconds, nil
 	}
 	if beat.Interval != nil && *beat.Interval != 0 {
 		return *beat.Interval, nil
 	}
-	return 300, nil
+	return runner.DefaultDaemonIntervalSeconds, nil
 }
 
 // DaemonStatus describes the heartbeat without probing or signaling its PID.
@@ -197,7 +198,7 @@ func DaemonStatus(s *store.Store) (string, error) {
 		return "", err
 	}
 	age := int(now.Sub(at).Seconds())
-	seconds := 300
+	seconds := runner.DefaultDaemonIntervalSeconds
 	if beat.Interval != nil && *beat.Interval != 0 {
 		seconds = *beat.Interval
 	}

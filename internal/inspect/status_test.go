@@ -4,7 +4,64 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/manishtiwari25/pulse/internal/runner"
 )
+
+func TestDaemonIntervalFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"no-heartbeat", "", runner.DefaultDaemonIntervalSeconds},
+		{"unreadable", "not json", runner.DefaultDaemonIntervalSeconds},
+		{"missing-interval", "{}", runner.DefaultDaemonIntervalSeconds},
+		{"null-interval", `{"interval":null}`, runner.DefaultDaemonIntervalSeconds},
+		{"zero-interval", `{"interval":0}`, runner.DefaultDaemonIntervalSeconds},
+		{"custom-interval", `{"interval":7}`, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := temporaryStore(t)
+			if tc.raw != "" {
+				execSQL(t, s, "INSERT INTO meta (key, value) VALUES ('daemon', ?)", tc.raw)
+			}
+			got, err := daemonIntervalSeconds(s)
+			if err != nil || got != tc.want {
+				t.Fatalf("interval = %d, %v; want %d", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDaemonHeartbeatDefaultInterval(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		extra int
+	}{
+		{"alive", 0},
+		{"silent", 1},
+	} {
+		t.Run(tc.state, func(t *testing.T) {
+			s := temporaryStore(t)
+			now, err := time.Parse(time.RFC3339, s.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			age := time.Duration(2*runner.DefaultDaemonIntervalSeconds+60+tc.extra) * time.Second
+			beat, err := json.Marshal(daemonBeat{At: now.Add(-age).Format(time.RFC3339)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			execSQL(t, s, "INSERT INTO meta (key, value) VALUES ('daemon', ?)", string(beat))
+			got, err := DaemonStatus(s)
+			if err != nil || !strings.HasPrefix(got, tc.state+" ") {
+				t.Fatalf("daemon status = %q, %v; want %s", got, err, tc.state)
+			}
+		})
+	}
+}
 
 func TestStatusRunnerCountsAndCapacity(t *testing.T) {
 	s := temporaryStore(t)

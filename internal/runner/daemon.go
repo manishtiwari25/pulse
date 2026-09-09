@@ -18,6 +18,9 @@ import (
 )
 
 const (
+	// DefaultDaemonIntervalSeconds is the default idle and runner-error retry delay.
+	DefaultDaemonIntervalSeconds = 300
+
 	dispatchTickSeconds = 15 // while runs are in flight the loop wakes this often (or when a run ends) to refill free slots
 	handsWantedMinutes  = 30 // jobs waiting this long with every slot busy is the signal that another machine would help
 )
@@ -81,8 +84,9 @@ type daemonOpts struct {
 	RestartOnChange bool
 	Grace           time.Duration // after a stop signal, how long in-flight runs may finish before their groups are killed
 	Out             io.Writer
-	HubHome         string         // the hub user's home (ssh keys, known_hosts) for pairing the machines compute provisions; "" = this user's
-	SelfUpdate      *selfUpdateEnv // ADR-035; nil = derive from the running binary (tests pass fakes)
+	Sleep           func(time.Duration) bool // nil = event-aware wait; false interrupts the loop
+	HubHome         string                   // the hub user's home (ssh keys, known_hosts) for pairing the machines compute provisions; "" = this user's
+	SelfUpdate      *selfUpdateEnv           // ADR-035; nil = derive from the running binary (tests pass fakes)
 }
 
 // daemonWake is what wakes the loop before its interval is over: the owner wrote (message.sent, task.*), a
@@ -117,7 +121,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	}
 	interval := o.Interval
 	if interval <= 0 {
-		interval = 300
+		interval = DefaultDaemonIntervalSeconds
 	}
 	actor := o.Agent
 	if actor == "" {
@@ -264,10 +268,13 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			}
 		}
 	}
+	if o.Sleep != nil {
+		sleep = o.Sleep
+	}
+	var finished []*dispatch
 	for {
 		loops++
-		now := s.Now()
-		finished := reap()
+		finished = append(finished, reap()...)
 		if len(finished) > 0 && len(inflight) == 0 {
 			allErr := true
 			for _, d := range finished {
@@ -279,6 +286,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 				return leave("interrupted", "stopping on signal")
 			}
 		}
+		finished = nil
 		if ctx.Err() != nil {
 			return leave("interrupted", "stopping on signal")
 		}
@@ -290,6 +298,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			say("pulse changed on disk; exiting with code 3 so the service restarts it")
 			return leave("restart", "restarting")
 		}
+		now := s.Now()
 		daemonHeartbeat(s, loops, interval, "")
 		var started []*dispatch
 		reason := ""
@@ -531,6 +540,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			select {
 			case d := <-results:
 				report(d)
+				finished = append(finished, d)
 			case <-time.After(dispatchTickSeconds * time.Second):
 			case <-compute.wake:
 			case _, ok := <-wakeEvents:
