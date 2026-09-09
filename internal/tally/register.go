@@ -221,11 +221,8 @@ func runBoard(c *cli.Context, fs *flag.FlagSet, _ []string) error {
 	}
 	bareSummaries := 0
 	for _, post := range posts {
-		if post.Kind == "vote" {
-			switch strings.ToLower(strings.TrimSpace(post.Summary)) {
-			case "up", "down":
-				bareSummaries++
-			}
+		if board.IsBareVoteSummary(post.Kind, post.Summary) {
+			bareSummaries++
 		}
 	}
 	if bareSummaries > 0 {

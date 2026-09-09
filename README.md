@@ -183,9 +183,11 @@ pulse compute request --project my-app --hours 4 --reason "parallel fixture runs
 pulse reflect --project my-app               # what the gates allow next, and the human step that opens the next one
 ```
 
-In text mode, `pulse board` warns on stderr when a vote post's summary is only
-`up` or `down`. Include an explanatory phrase in the summary; the warning
-does not change vote counts, board stdout, or JSON output.
+In text mode, `pulse vote` and `pulse post vote` warn on stderr after recording
+a vote whose summary is only `up` or `down` (ignoring case and surrounding
+whitespace). `pulse board` also warns about those posts. Include an explanatory
+phrase in `--summary`, not just the body; the warning does not reject the vote
+or change vote counts, stdout, or JSON output.
 
 Interactive harnesses get the same flow through hooks:
 `pulse hooks install copilot|claude` writes a session-start hook that reads the

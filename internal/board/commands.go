@@ -412,7 +412,13 @@ func printPost(c *cli.Context, row *Post) error {
 	if c.JSON {
 		return cli.WriteJSON(c.Out, row)
 	}
-	fmt.Fprintln(c.Out, row.ID)
+	if _, err := fmt.Fprintln(c.Out, row.ID); err != nil {
+		return err
+	}
+	if IsBareVoteSummary(row.Kind, row.Summary) {
+		_, err := fmt.Fprintf(c.Err, "warning: vote %s has a bare up/down summary; include an explanatory phrase in --summary\n", row.ID)
+		return err
+	}
 	return nil
 }
 

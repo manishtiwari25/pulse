@@ -232,7 +232,10 @@ func runCmd(t *testing.T, s *store.Store, c *cli.Context, argv ...string) (strin
 		c = &cli.Context{}
 	}
 	var out bytes.Buffer
-	c.Store, c.Home, c.Out, c.Err, c.Args = s, s.Home, &out, io.Discard, positional
+	c.Store, c.Home, c.Out, c.Args = s, s.Home, &out, positional
+	if c.Err == nil {
+		c.Err = io.Discard
+	}
 	if project != "" {
 		c.Project = project
 	}
