@@ -109,7 +109,7 @@ func evolveHardStopGate(s *store.Store, slug, actor string) (questionID, reason 
 	}
 	post, err := board.CreatePost(s, board.PostInput{
 		Kind: "question", Project: slug, Area: "evolution", Thread: "loop-gate", ForOwner: true,
-		AgentRow: actorAgent(s, actor), Summary: "Evolution stopped; owner review needed",
+		AgentRow: actorAgent(s, actor), Summary: evolve.StopSummary,
 		Body: "Experiment job " + jobID + " failed with a runner result containing a violation, hard stop, or applyerror marker.\n" +
 			"Experiments for this project wait until this question is answered. The workflow was not bypassed.",
 	})
@@ -131,22 +131,22 @@ func hardStopText(text string) bool {
 func unansweredEvolveQuestion(s *store.Store, slug string) bool {
 	var id string
 	err := s.DB.QueryRow(`SELECT q.id FROM posts q WHERE q.project = ? AND q.kind = 'question'
-		AND q.area = 'evolution' AND q.thread = 'loop-gate' AND q.summary = 'Evolution stopped; owner review needed'
+		AND q.area = 'evolution' AND q.thread = 'loop-gate' AND q.summary = ?
 		AND NOT EXISTS (
 			SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
 			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date
-		) ORDER BY q.date DESC, q.id DESC LIMIT 1`, slug).Scan(&id)
+		) ORDER BY q.date DESC, q.id DESC LIMIT 1`, slug, evolve.StopSummary).Scan(&id)
 	return err == nil
 }
 
 func answeredEvolveQuestionForJob(s *store.Store, slug, jobID string) bool {
 	var id string
 	err := s.DB.QueryRow(`SELECT q.id FROM posts q WHERE q.project = ? AND q.kind = 'question'
-		AND q.area = 'evolution' AND q.thread = 'loop-gate' AND q.summary = 'Evolution stopped; owner review needed'
+		AND q.area = 'evolution' AND q.thread = 'loop-gate' AND q.summary = ?
 		AND q.body LIKE ?
 		AND EXISTS (
 			SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
 			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date
-		) ORDER BY q.date DESC, q.id DESC LIMIT 1`, slug, "%"+jobID+"%").Scan(&id)
+		) ORDER BY q.date DESC, q.id DESC LIMIT 1`, slug, evolve.StopSummary, "%"+jobID+"%").Scan(&id)
 	return err == nil
 }

@@ -203,7 +203,11 @@ rejected. Existing immutable posts are not rewritten; replace an old
 owner-facing card by closing its thread and posting a marked card on a new
 thread. The planner skips marked cards and continues to worker work; queue,
 console and lead routing use the same flag. Vote, evidence, in-flight job and
-owner-only path gates still apply independently.
+owner-only path gates still apply independently. Questions the daemon or the
+evolution loop posts (its "Evolution stopped; owner review needed" gate) are
+asks for the owner by construction: the planner never sends a worker to answer
+them, flagged or not, and the loop posts such a question once per open gate,
+not once per tick.
 
 Interactive harnesses get the same flow through hooks:
 `pulse hooks install copilot|claude` writes a session-start hook that reads the
@@ -441,7 +445,9 @@ again. A structural failure - a login, a missing tool, an invalid recipe,
 the owner's paths, an identity refusal, a hard stop, an owner question or a
 worker's own SUMMARY that it stopped blocked - is held with its reason because
 another path fixes it; so is a failure whose work a later job with the same
-source already carries. Recovery adds to a project's queue only while fewer
+source already carries. An `answer` job is never recovered: a question is
+tried once, and a failed answer leaves the thread to a human or a new post.
+Recovery adds to a project's queue only while fewer
 than five jobs wait there, so recovered work interleaves with fresh work
 instead of flooding it. A chain is recovered at most `daemon.recover_limit`
 times (default 3) within `daemon.recover_days` (default 7), then held with one

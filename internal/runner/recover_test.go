@@ -447,3 +447,29 @@ func TestRecoverWaitsWhileTheQueueIsFull(t *testing.T) {
 		t.Fatalf("status = %q after the queue drained", got)
 	}
 }
+
+func TestRecoverNeverRetriesAnswerJobs(t *testing.T) {
+	s := newStore(t)
+	p, _ := newRepo(t, s)
+	// One transient and one deterministic failure of answer jobs, both past their due time: neither is
+	// queued again or re-planned, because a question is tried once.
+	insertRecoverFailedJob(t, s, "job-ans-1", "answer", "question:q-one", "runner error: connection reset", plusMinutes(testNow, -30))
+	insertRecoverFailedJob(t, s, "job-ans-2", "answer", "question:q-two", "verify exit 1", plusMinutes(testNow, -30))
+	insertRecoverFailedJob(t, s, "job-imp", "improve", "manual", "runner error: connection reset", plusMinutes(testNow, -30))
+	lines := recoverFailedJobs(s, p, testNow, "daemon")
+	if len(lines) != 1 || !strings.Contains(lines[0], "recovered job-imp (transient)") {
+		t.Fatalf("lines = %v", lines)
+	}
+	if n := count(t, s, "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'answer'"); n != 2 {
+		t.Fatalf("answer jobs = %d, want the two failed ones only", n)
+	}
+	if n := count(t, s, "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'answer' AND status <> 'failed'"); n != 0 {
+		t.Fatalf("%d answer job(s) left the failed state", n)
+	}
+	if n := count(t, s, "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject LIKE 'job-ans-%'", board.JobRecoverAction); n != 0 {
+		t.Fatalf("recover events for answer jobs = %d", n)
+	}
+	if got := recoverMeta(t, s)["proj"].Note; !strings.Contains(got, "3 failed in") || !strings.Contains(got, "2 answer(s) tried once") {
+		t.Fatalf("note = %q", got)
+	}
+}

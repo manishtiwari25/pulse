@@ -1,6 +1,10 @@
 package runner
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/manishtiwari25/pulse/internal/evolve"
+)
 
 func TestPlanJobsForOwnerMetadata(t *testing.T) {
 	cases := []struct {
@@ -115,5 +119,54 @@ func TestPostRowParsesForOwner(t *testing.T) {
 	}
 	if p := postRow(s.DB, "missing"); p != nil {
 		t.Fatalf("unknown post = %v", p)
+	}
+}
+
+// A question the daemon (or the loop) posted is an ask for the human, whether or not the for_owner flag made it
+// into the row: the planner never sends a worker to answer it. Only a person's unflagged question gets a job.
+func TestPlanJobsNeverAnswersMachineQuestions(t *testing.T) {
+	s := newStore(t)
+	newRepo(t, s)
+	suppressPlannerReflect(t, s)
+	at := plusHours(testNow, -4)
+	next := func() string {
+		at = plusMinutes(at, 5)
+		return at
+	}
+	for _, q := range []struct {
+		name, agent, summary, signal string
+	}{
+		{"legacy stop question by the daemon, unflagged", "daemon", "Evolution stopped; owner review needed", "check:owner-routing"},
+		{"daemon question with another summary", "daemon", "Which recipe should the clone use?", "check:owner-routing"},
+		{"stop summary from a worker", "kestrel", evolve.StopSummary, "check:owner-routing"},
+		{"owner-path question", "kestrel", "Should the stop file be lifted?", "docs/evolution/STOP"},
+	} {
+		if _, err := createPost(s, next(), postOpts{
+			Kind: "question", Project: "proj", Area: "german-tutor", Thread: "v8-only-site", Summary: q.summary,
+			Body: "Signal: " + q.signal + "\n" + q.name + "\n", Agent: actorAgent(s, q.agent), Session: "s-" + q.agent,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs, err := planJobs(s, "proj", testNow, "daemon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("planned %d job(s) for machine or owner questions: %s", len(jobs), jobs[0].str("source"))
+	}
+	human, err := createPost(s, next(), postOpts{
+		Kind: "question", Project: "proj", Area: "german-tutor", Thread: "vocabulary", Summary: "Why does the parser drop umlauts?",
+		Body: "Signal: check:owner-routing\n", Agent: actorAgent(s, "author-one"), Session: "s-author-one",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err = planJobs(s, "proj", testNow, "daemon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].str("source") != "question:"+human.str("id") || jobs[0].str("kind") != "answer" {
+		t.Fatalf("planned %d job(s), want one answer job for %s", len(jobs), human.str("id"))
 	}
 }

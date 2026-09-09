@@ -79,20 +79,45 @@ func emitCycle(opts CycleOptions, result CycleResult) error {
 	return nil
 }
 
+// StopSummary is the summary of the question the loop posts when a gate stops it.
+const StopSummary = "Evolution stopped; owner review needed"
+
+// ownerQuestion asks the owner once per gate: while an earlier stop question on the same target still
+// waits for an answer, its id is returned and nothing new is posted. The planner runs on every daemon
+// tick, so without this one open gate would fill the thread with an identical question per tick.
 func ownerQuestion(s *store.Store, project string, target *tally.Post, agent string, agentRow *store.Agent, session, reason string) (string, error) {
 	area, thread, on := "evolution", "loop-gate", ""
 	if target != nil {
 		area, thread, on = target.Area, target.Thread, target.ID
 	}
+	if id := openStopQuestion(s, project, area, thread, on); id != "" {
+		return id, nil
+	}
 	post, err := board.CreatePost(s, board.PostInput{
 		Kind: "question", Project: project, Area: area, Thread: thread, On: on, ForOwner: true,
-		Agent: agent, AgentRow: agentRow, Session: session, Summary: "Evolution stopped; owner review needed",
+		Agent: agent, AgentRow: agentRow, Session: session, Summary: StopSummary,
 		Body: reason + "\nThe workflow was not bypassed. Resolve the gate or close the unsafe thread before resuming.",
 	})
 	if err != nil {
 		return "", err
 	}
 	return post.ID, nil
+}
+
+// openStopQuestion is the newest stop question on a target (a post, or the loop gate when on is empty)
+// with no answer after it in its thread, whoever asked it; "" when none is open.
+func openStopQuestion(s *store.Store, project, area, thread, on string) string {
+	var id string
+	err := s.DB.QueryRow(`SELECT q.id FROM posts q WHERE q.project = ? AND q.kind = 'question' AND q.summary = ?
+		AND q.area = ? AND q.thread = ? AND q.on_post = ?
+		AND NOT EXISTS (
+			SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
+			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date
+		) ORDER BY q.date DESC, q.id DESC LIMIT 1`, project, StopSummary, area, thread, on).Scan(&id)
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 func stopCycle(s *store.Store, project string, target *tally.Post, opts CycleOptions, job, reason string) error {

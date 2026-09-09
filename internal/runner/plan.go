@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/manishtiwari25/pulse/internal/evolve"
 	"github.com/manishtiwari25/pulse/internal/store"
 	"github.com/manishtiwari25/pulse/internal/tally"
 )
@@ -103,6 +104,20 @@ func isOwnerAddressedPost(post row) bool {
 	return post["for_owner"] == true
 }
 
+// answerable says whether a worker may be sent to answer a question. Questions addressed to the owner, or
+// aimed at owner-only paths, wait for the human; questions the planner's own actor or the loop posted (the
+// gate stop, an environment hold) are machine-authored asks that a worker cannot settle: a clone run
+// always ends "owner disposition required", so planning them only burns worker hours.
+func answerable(q row, plannerActor string) bool {
+	if isOwnerAddressedPost(q) || ownerTargeted(q) {
+		return false
+	}
+	if agent := q.str("agent"); agent == plannerActor || agent == "daemon" {
+		return false
+	}
+	return q.str("summary") != evolve.StopSummary
+}
+
 func tallyPost(s *store.Store, id string) *tally.Post {
 	r := postRow(s.DB, id)
 	if r == nil {
@@ -198,7 +213,7 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			tried[r.str("source")] = true
 		}
 		for _, q := range openQuestions(s, slug, now) {
-			if tried["question:"+q.str("id")] || isOwnerAddressedPost(q) {
+			if tried["question:"+q.str("id")] || !answerable(q, createdBy) {
 				continue
 			}
 			brief := fmt.Sprintf("Question %s in thread %s/%s:\n\n%s\n\nInvestigate in the clone and write the answer as SUMMARY:; the runner posts it. "+

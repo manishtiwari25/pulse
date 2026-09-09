@@ -36,6 +36,12 @@ func recoverFailedJobs(s *store.Store, project row, now, actor string) []string 
 	var lines []string
 	actions := 0
 	for _, job := range failed {
+		// A question is answered once (planJobs): a failed answer job is neither run again nor re-planned;
+		// the thread waits for a human or a new post. Recovering it made one open question cost a run per tick.
+		if job.str("kind") == "answer" {
+			stats.once++
+			continue
+		}
 		if recoveredAfter(s, job.str("id"), job.str("finished_at")) {
 			continue
 		}
@@ -95,9 +101,9 @@ const (
 // recoveryStats is one tick's view of a project's failures: what the ledger already answered in the window,
 // what waits for the lead, the earliest retry still due, and whether the tick's cap held work back.
 type recoveryStats struct {
-	total, days, withLead, capped, queueFull int
-	ledger                                   map[string]int // outcome -> events in the window
-	next                                     string
+	total, days, withLead, once, capped, queueFull int
+	ledger                                         map[string]int // outcome -> events in the window
+	next                                           string
 }
 
 func (st *recoveryStats) nextAt(due string) {
@@ -117,6 +123,9 @@ func (st recoveryStats) note() string {
 	}
 	if st.withLead > 0 {
 		parts = append(parts, fmt.Sprintf("%d with the lead", st.withLead))
+	}
+	if st.once > 0 {
+		parts = append(parts, fmt.Sprintf("%d answer(s) tried once", st.once))
 	}
 	if st.next != "" {
 		parts = append(parts, "next at "+st.next)
