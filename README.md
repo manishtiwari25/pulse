@@ -599,6 +599,7 @@ npm run dev                                  # http://localhost:3000, talks to t
 pulse hub --no-browser --port 8787           # the API (PULSE_HUB_PORT overrides the dev proxy target)
 npm run dev:mock                             # or the mock API alone
 npm run build                                # regenerates out/, which web/hub/dist.go embeds
+npm run check                                # typecheck + lint + a scratch build (.next/check-out); leaves out/ untouched
 ```
 
 Commit `web/hub/out/` together with the source change that produced it.

@@ -5,7 +5,7 @@
     "dev:        `npm run dev` on :3000 proxies /api/* to the Go hub - run `pulse hub --no-browser --port 8787` first (PULSE_HUB_PORT overrides the port).",
     "dev:mock:   `npm run dev:mock` runs mock/server.mjs (fixtures in mock/api/**.json, writes answered in memory, SSE at /api/v1/events/stream) on :8787 and next dev on :3000. No hub needed.",
     "build:      `npm run build` = static export to out/ (commit out/ after UI changes). `npm run serve:out` serves out/ plus the mock API on :8787 (the same layout the Go hub serves) for a last look at the export.",
-    "check:      `npm run lint` (eslint) and `npm run typecheck` (tsc --noEmit). All API calls are relative /api/v1/...; the TypeScript contract lives in src/lib/api.ts.",
+    "check:      `npm run check` = typecheck (tsc --noEmit) + lint (eslint) + a build exported to the scratch dir PULSE_HUB_OUT_DIR=.next/check-out (gitignored, eslint-ignored; see next.config.ts), so verifying never rewrites the committed out/. Only `npm run build` regenerates out/. All API calls are relative /api/v1/...; the TypeScript contract lives in src/lib/api.ts.",
     "routes:     / (hub), /project/?slug=&tab=, /tasks/, /votes/?project=&status=&kind=, /records/?id=, /compute/, /settings/, /agents/ - state in search params, no dynamic segments.",
     "design:     tokens live in src/app/globals.css (oklch palette derived from .github/assets/pulse-logo.svg, shadows, radius, utilities). Inter Variable is vendored in public/fonts (latin + latin-ext, OFL.txt alongside) so the export needs no network at build or run time."
   ],
@@ -21,7 +21,7 @@
     "serve:out": "MOCK_STATIC=out PULSE_HUB_PORT=${PULSE_HUB_PORT:-8787} node mock/server.mjs",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run lint && npm run build"
+    "check": "npm run typecheck && npm run lint && PULSE_HUB_OUT_DIR=.next/check-out npm run build"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
