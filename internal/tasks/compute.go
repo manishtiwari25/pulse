@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
@@ -340,8 +341,8 @@ func SetComputeStatus(s *store.Store, id, status, executor, actor string) (*Comp
 // commit together, which board.CreatePost (its own transaction) cannot offer.
 func insertPost(tx *sql.Tx, now, project, area, thread, kind, agent, summary, body, on, resolution string) (string, bus.Event, error) {
 	summary = clean(summary)
-	if len(summary) > 240 {
-		summary = summary[:237] + "..."
+	if len(summary) > board.MaxSummaryChars {
+		summary = summary[:board.MaxSummaryChars-3] + "..."
 	}
 	base := stamp(now) + "-" + agent
 	id := base

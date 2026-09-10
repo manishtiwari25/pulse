@@ -9,6 +9,11 @@ import (
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
+// MaxSummaryChars is the most runes a post summary may hold after its
+// whitespace is collapsed to single spaces. Validation, the --summary flag
+// help and the generated-post truncation in tally and tasks all read it.
+const MaxSummaryChars = 240
+
 // Post is one row of the posts table plus parsed routing metadata.
 type Post struct {
 	ID            string `json:"id"`
@@ -155,8 +160,8 @@ func createPost(w *writer, in PostInput) (*Post, error) {
 	if summary == "" {
 		return nil, refuse(2, "A one-line --summary is required")
 	}
-	if n := len([]rune(summary)); n > 240 {
-		return nil, refuse(2, "summary is %d chars; limit 240 - move detail to --body", n)
+	if n := len([]rune(summary)); n > MaxSummaryChars {
+		return nil, refuse(2, "summary is %d chars; limit %d - move detail to --body", n, MaxSummaryChars)
 	}
 	if in.Project != store.CommonsSlug {
 		p, err := s.Project(in.Project)

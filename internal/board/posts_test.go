@@ -2,6 +2,7 @@ package board
 
 import (
 	"encoding/json"
+	"flag"
 	"regexp"
 	"strings"
 	"testing"
@@ -30,6 +31,71 @@ func seedPosts(t *testing.T, s *store.Store) (suggestion, amendment, finding *Po
 		t.Fatal(err)
 	}
 	return
+}
+
+// TestCreatePostSummaryLimit pins the MaxSummaryChars boundary: 240 runes
+// pass and 241 are refused, whether the runes are ASCII, four-byte emoji or
+// combining marks, and the count is taken after whitespace normalization.
+func TestCreatePostSummaryLimit(t *testing.T) {
+	_, s, _ := fixture(t)
+	ascii := strings.Repeat("x", MaxSummaryChars)
+	emoji := strings.Repeat("\U0001f642", MaxSummaryChars)
+	combining := strings.Repeat("e\u0301", MaxSummaryChars/2)
+	overLimit := "summary is 241 chars; limit 240 - move detail to --body"
+	body := strings.Repeat("detail ", 60)
+	for _, tc := range []struct {
+		name, summary, want, wantErr string
+	}{
+		{"ascii-below", ascii[:239], ascii[:239], ""},
+		{"ascii-at", ascii, ascii, ""},
+		{"ascii-over", ascii + "x", "", overLimit},
+		{"emoji-at", emoji, emoji, ""},
+		{"emoji-over", emoji + "\U0001f642", "", overLimit},
+		{"combining-at", combining, combining, ""},
+		{"combining-over", combining + "e", "", overLimit},
+		{"normalized-at", "\t " + ascii[:238] + " \n\t y \r\n", ascii[:238] + " y", ""},
+		{"normalized-over", "\t " + ascii[:239] + " \n\t y \r\n", "", overLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := countRows(t, s, "posts", "agent = 'alice'")
+			post, err := CreatePost(s, PostInput{
+				Kind: "finding", Project: "demo", Area: "board", Thread: "summary-limit",
+				Agent: "alice", Summary: tc.summary, Body: body,
+			})
+			if tc.wantErr != "" {
+				if post != nil || code(err) != 2 || what(err) != tc.wantErr {
+					t.Fatalf("post = %+v, error = %v; want refusal %q", post, err, tc.wantErr)
+				}
+				if after := countRows(t, s, "posts", "agent = 'alice'"); after != before {
+					t.Fatalf("rejected summary wrote a post: before %d, after %d", before, after)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if post.Summary != tc.want || post.Body != body {
+				t.Fatalf("summary = %q, body = %q; want %q and the full body", post.Summary, post.Body, tc.want)
+			}
+			if n := len([]rune(post.Summary)); n > MaxSummaryChars {
+				t.Fatalf("stored summary is %d runes, over %d", n, MaxSummaryChars)
+			}
+		})
+	}
+}
+
+// TestPostSummaryFlagHelp keeps the --summary help text on the same constant
+// as the validation it describes.
+func TestPostSummaryFlagHelp(t *testing.T) {
+	fs := flag.NewFlagSet("post", flag.ContinueOnError)
+	postFlags(fs)
+	summary := fs.Lookup("summary")
+	if summary == nil {
+		t.Fatal("missing summary flag")
+	}
+	if want := "one line, at most 240 characters"; summary.Usage != want {
+		t.Fatalf("summary help = %q, want %q", summary.Usage, want)
+	}
 }
 
 func TestCreatePostRuleMatrix(t *testing.T) {

@@ -487,8 +487,8 @@ func Ratify(s *store.Store, applied *Applied, agent string) (*board.Post, error)
 		return nil, err
 	}
 	summary := "ratified: " + am.Summary
-	if n := len([]rune(summary)); n > 240 {
-		summary = string([]rune(summary)[:237]) + "..."
+	if n := len([]rune(summary)); n > board.MaxSummaryChars {
+		summary = string([]rune(summary)[:board.MaxSummaryChars-3]) + "..."
 	}
 	in := board.PostInput{Kind: "result", Project: am.Project, Area: am.Area, Thread: am.Thread, Summary: summary,
 		Body: applied.Notice + "\n\nRecord: " + applied.RecordID + " revision " + fmt.Sprint(applied.Rev) + "\nHash: " + applied.Hash + "\n",

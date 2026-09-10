@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/parity"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
@@ -442,6 +443,43 @@ func TestApplyAmendment(t *testing.T) {
 	out, err = runCLI(t, f.st, "amend", "apply", aid, "--now", fixtureNow)
 	if err != nil || !strings.Contains(out, "already applied") {
 		t.Errorf("amend apply twice: %v\n%s", err, out)
+	}
+}
+
+// TestRatifySummaryLimit checks that the ratification result's summary is
+// trimmed to board.MaxSummaryChars by runes, not bytes: an amendment summary
+// that fits after the "ratified: " prefix is kept whole, one rune more is
+// cut to the limit with a trailing "...", for ASCII and for CJK alike.
+func TestRatifySummaryLimit(t *testing.T) {
+	f := newFixture(t, false)
+	const prefix = "ratified: "
+	const atLimit = board.MaxSummaryChars - len(prefix)
+	for _, tc := range []struct {
+		name, char string
+		count      int
+		wantCount  int
+		suffix     string
+	}{
+		{"ascii-at", "x", atLimit, atLimit, ""},
+		{"ascii-over", "x", atLimit + 1, atLimit - 3, "..."},
+		{"cjk-at", "\u754c", atLimit, atLimit, ""},
+		{"cjk-over", "\u754c", atLimit + 1, atLimit - 3, "..."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := f.post(t, fpost{
+				kind: "amendment", area: "board", thread: "summary-limit",
+				agent: "summary-" + tc.name, date: fixtureNow,
+				summary: strings.Repeat(tc.char, tc.count), body: fixtureAmendmentBody,
+			})
+			notice, err := Ratify(f.st, &Applied{PostID: id}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := prefix + strings.Repeat(tc.char, tc.wantCount) + tc.suffix
+			if notice.Summary != want || len([]rune(notice.Summary)) != board.MaxSummaryChars {
+				t.Fatalf("ratified summary = %q (%d runes), want %q (%d runes)", notice.Summary, len([]rune(notice.Summary)), want, board.MaxSummaryChars)
+			}
+		})
 	}
 }
 

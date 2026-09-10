@@ -329,7 +329,7 @@ func actorOr(c *cli.Context, def string) string {
 func postFlags(fs *flag.FlagSet) {
 	fs.String("area", "", "the board area (lowercase words with dashes)")
 	fs.String("thread", "", "the thread")
-	fs.String("summary", "", "one line, at most 240 characters")
+	fs.String("summary", "", fmt.Sprintf("one line, at most %d characters", MaxSummaryChars))
 	fs.String("body", "", "the body text")
 	fs.String("body-file", "", "read the body from a file")
 	fs.String("on", "", "the post this answers")

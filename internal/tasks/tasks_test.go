@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/store"
@@ -347,6 +348,47 @@ func TestMessagesSinceUnreadAndImmutable(t *testing.T) {
 	}
 	if _, err := s.DB.Exec("DELETE FROM messages WHERE id = ?", m1.ID); err == nil {
 		t.Fatal("message delete allowed")
+	}
+}
+
+// TestComputePostSummaryLimit checks the compute proposal post keeps a
+// summary that lands exactly on board.MaxSummaryChars and trims one over it
+// to the limit with a trailing "..." while the body still carries the whole
+// reason.
+func TestComputePostSummaryLimit(t *testing.T) {
+	const prefix = "compute request CR-001: Standard_B2ms for 1h - "
+	for _, tc := range []struct {
+		name   string
+		length int
+	}{
+		{"at", board.MaxSummaryChars},
+		{"over", board.MaxSummaryChars + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			reason := strings.Repeat("x", tc.length-len(prefix))
+			request, err := RequestCompute(s, "demo", "demo-lead", "Standard_B2ms", 1, reason)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.ProposalPost == "" {
+				t.Fatalf("no proposal post: %+v", request)
+			}
+			var summary, body string
+			if err := s.DB.QueryRow("SELECT summary, body FROM posts WHERE id = ?", request.ProposalPost).Scan(&summary, &body); err != nil {
+				t.Fatal(err)
+			}
+			want := prefix + reason
+			if tc.length > board.MaxSummaryChars {
+				want = want[:board.MaxSummaryChars-3] + "..."
+			}
+			if summary != want || len(summary) > board.MaxSummaryChars {
+				t.Fatalf("proposal summary = %q (%d), want %q", summary, len(summary), want)
+			}
+			if !strings.Contains(body, "Reason: "+reason) {
+				t.Fatalf("proposal body lost the full reason: %q", body)
+			}
+		})
 	}
 }
 
