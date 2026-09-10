@@ -251,14 +251,16 @@ var DaemonRules = map[string]SettingRule{
 // LeadSettings govern the lead's standing brief (D-C): what the lead does
 // when the owner is quiet and no work is queued for a project.
 var LeadSettings = map[string]string{
-	"lead.idle_hours":    "6",
-	"lead.idle_max_jobs": "3",
+	"lead.idle_hours":        "6",
+	"lead.idle_max_jobs":     "3",
+	"lead.stuck_thread_jobs": "3",
 }
 
 // LeadRules validate LeadSettings.
 var LeadRules = map[string]SettingRule{
-	"lead.idle_hours":    {Kind: "count", Min: 0, HasMin: true, Description: "hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; 0 turns the standing brief off"},
-	"lead.idle_max_jobs": {Kind: "count", Min: 1, HasMin: true, Description: "worker jobs one idle lead run may queue"},
+	"lead.idle_hours":        {Kind: "count", Min: 0, HasMin: true, Description: "hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; 0 turns the standing brief off"},
+	"lead.idle_max_jobs":     {Kind: "count", Min: 1, HasMin: true, Description: "worker jobs one idle lead run may queue"},
+	"lead.stuck_thread_jobs": {Kind: "count", Min: 0, HasMin: true, Description: "finished worker jobs one board thread may seed in a row (from its suggestions, handoffs and questions) that commit nothing - read-only triage, claims, questions - before the planner stops seeding that thread and asks the lead to decide it; a job from the thread that commits resets the count; 0 turns the cap off"},
 }
 
 const (

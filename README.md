@@ -225,6 +225,12 @@ them, flagged or not, and the loop posts such a question once per open gate,
 not once per tick. A thread gets one worker attempt per human turn: while an
 open question in it was already tried (the job runs, or failed), later
 questions there wait until an answer or a closing post resets the thread.
+A thread whose last `lead.stuck_thread_jobs` (default 3, `0` turns it off)
+finished worker jobs - seeded by its suggestions, handoffs and questions -
+all committed nothing is stuck: the planner seeds no more jobs from it and
+posts one question for the owner on the thread, addressed to the lead, that
+names the jobs and asks for a decision. A job from the thread that commits,
+or an answer there by the lead or the owner, restarts the count.
 
 Interactive harnesses get the same flow through hooks:
 `pulse hooks install copilot|claude` writes a session-start hook that reads the

@@ -145,6 +145,10 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 		return []row{job}, nil
 	}
 	var created []row
+	// lead.stuck_thread_jobs: a thread whose last N worker jobs all committed nothing - read-only triage, claims,
+	// questions and handoffs that pass the same open point to the next run - has stopped moving. The planner seeds
+	// no more jobs from that thread's handoffs, suggestions or questions and asks the lead once to decide it.
+	stuck := stuckThreads(s, slug, now, createdBy)
 	// A handoff is work a worker left for the next one; the queue ranks it first, and so does the planner: the
 	// oldest open handoff nobody claimed becomes one improve job, tried once (like a question), never when it
 	// is addressed to the owner or points at owner-only paths.
@@ -154,7 +158,7 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			tried[r.str("source")] = true
 		}
 		for _, p := range tally.OpenHandoffs(res) {
-			if tried["handoff:"+p.ID] {
+			if tried["handoff:"+p.ID] || stuck[p.Area+"/"+p.Thread] {
 				continue
 			}
 			post := postRow(s.DB, p.ID)
@@ -189,7 +193,7 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			if project != nil {
 				projectPath = project.str("path")
 			}
-			if tally.PlanGate(s, projectPath, sg, post) != "" {
+			if tally.PlanGate(s, projectPath, sg, post) != "" || stuck[sg.Key] {
 				continue
 			}
 			pRow := postRow(s.DB, sg.ID)
@@ -223,7 +227,8 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			}
 		}
 		for _, q := range open {
-			if tried["question:"+q.str("id")] || waiting[q.str("area")+"/"+q.str("thread")] || !answerable(q, createdBy) {
+			if tried["question:"+q.str("id")] || waiting[q.str("area")+"/"+q.str("thread")] || !answerable(q, createdBy) ||
+				stuck[q.str("area")+"/"+q.str("thread")] {
 				continue
 			}
 			brief := fmt.Sprintf("Question %s in thread %s/%s:\n\n%s\n\nInvestigate in the clone and write the answer as SUMMARY:; the runner posts it. "+
@@ -283,4 +288,82 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 		}
 	}
 	return created, nil
+}
+
+// stuckThreadSummary starts the one question the planner posts on a thread that hit lead.stuck_thread_jobs.
+const stuckThreadSummary = "Stuck thread:"
+
+// stuckThreads is the set of area/thread keys of one project whose worker jobs stopped moving it: the newest
+// lead.stuck_thread_jobs finished jobs seeded by the thread's suggestions, handoffs and questions all committed
+// nothing (each run read, claimed, asked or handed off, and the next repeated it). Such a thread costs a job per
+// tick while only the lead or the owner can decide it, so the planner seeds nothing from it and posts one question
+// for the owner on the thread - the lead's brief carries it. The count restarts when a job from the thread commits
+// (a run with commits, or a branch waiting to land) and when the lead or the owner answers on the thread: each
+// decision buys the next lead.stuck_thread_jobs attempts. 0 turns the cap off.
+func stuckThreads(s *store.Store, slug, now, actor string) map[string]bool {
+	limit := settingInt(s, "lead.stuck_thread_jobs")
+	stuck := map[string]bool{}
+	if limit <= 0 {
+		return stuck
+	}
+	resetAt := map[string]string{}
+	for _, r := range mustRows(s.DB, "SELECT area || '/' || thread AS key, MAX(date) AS d FROM posts "+
+		"WHERE project = ? AND kind = 'answer' AND agent IN (?, ?) GROUP BY area, thread", slug, leadName(slug), store.HumanAgent) {
+		resetAt[r.str("key")] = r.str("d")
+	}
+	type episode struct {
+		ids, notes []string
+		closed     bool
+	}
+	episodes := map[string]*episode{}
+	for _, r := range mustRows(s.DB, "SELECT j.id, j.status, j.result, j.finished_at, "+
+		"(j.branch != '' OR EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.commits > 0)) AS committed, "+
+		"p.area || '/' || p.thread AS key FROM jobs j JOIN posts p ON p.id = substr(j.source, instr(j.source, ':') + 1) "+
+		"WHERE j.project = ? AND j.status IN ('done', 'failed') "+
+		"AND (j.source LIKE 'suggestion:%' OR j.source LIKE 'handoff:%' OR j.source LIKE 'question:%') "+
+		"ORDER BY j.finished_at DESC, j.created_at DESC", slug) {
+		key := r.str("key")
+		ep := episodes[key]
+		if ep == nil {
+			ep = &episode{}
+			episodes[key] = ep
+		}
+		if ep.closed {
+			continue
+		}
+		if r.int("committed") != 0 || r.str("finished_at") <= resetAt[key] {
+			ep.closed = true
+			if r.str("finished_at") > resetAt[key] {
+				resetAt[key] = r.str("finished_at")
+			}
+			continue
+		}
+		ep.ids = append(ep.ids, r.str("id"))
+		ep.notes = append(ep.notes, fmt.Sprintf("- %s (%s): %s", r.str("id"), r.str("status"), trunc(r.str("result"), 120)))
+	}
+	for key, ep := range episodes {
+		if len(ep.ids) < limit {
+			continue
+		}
+		stuck[key] = true
+		area, thread, _ := strings.Cut(key, "/")
+		if mustOne(s.DB, "SELECT 1 AS x FROM posts WHERE project = ? AND area = ? AND thread = ? AND kind = 'question' AND summary LIKE ? AND date > ?",
+			slug, area, thread, stuckThreadSummary+"%", resetAt[key]) != nil {
+			continue
+		}
+		body := fmt.Sprintf("The planner seeded %d finished worker jobs from thread %s (its suggestions, handoffs and questions) and none "+
+			"committed: each run read, claimed, asked or handed off, and the next one repeated it. The planner seeds no more jobs "+
+			"from this thread (lead.stuck_thread_jobs = %d) until a job from it commits or the lead or the owner answers on it.\n\n"+
+			"@%s: decide it. Queue the one job with the decision written into its brief "+
+			"(`pulse job add --project %s --kind improve --source <suggestion:|handoff:|question:><post-id> --title \"...\" --brief \"...\" [--tier 0|1]`), "+
+			"answer on the thread with what the next worker must do differently, close the thread with an answer saying why it stops, "+
+			"or hand this question to the owner when only the owner can decide.\n\n"+
+			"Jobs that changed nothing:\n%s\n", len(ep.ids), key, limit, leadName(slug), slug, strings.Join(ep.notes, "\n"))
+		if _, err := createPost(s, now, postOpts{Kind: "question", Project: slug, Area: area, Thread: thread, ForOwner: true,
+			Agent: actorAgent(s, actor), Summary: fmt.Sprintf("%s %d worker jobs in a row changed no code; lead decision needed", stuckThreadSummary, len(ep.ids)),
+			Body: body}); err != nil {
+			eventAt(s.DB, now, actor, "plan.stuck.error", key, err.Error())
+		}
+	}
+	return stuck
 }
