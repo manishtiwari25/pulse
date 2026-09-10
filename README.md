@@ -193,6 +193,15 @@ pulse compute request --project my-app --hours 4 --reason "parallel fixture runs
 pulse reflect --project my-app               # what the gates allow next, and the human step that opens the next one
 ```
 
+Every post summary (`--summary` on posts, claims, votes and thread
+resolutions) is collapsed to one line - runs of whitespace become a single
+space - and then holds at most **240 characters, counted as Unicode runes**
+(`board.MaxSummaryChars` in [`internal/board/posts.go`](internal/board/posts.go)).
+An overlong summary is refused with its normalized length and the limit; move
+the detail to `--body` or `--body-file`. Posts pulse writes itself
+(ratification results, compute proposals) are trimmed to the same limit with a
+trailing `...`; the flag help and both truncations read the one constant.
+
 In text mode, `pulse vote` and `pulse post vote` warn on stderr after recording
 a vote whose summary is only `up` or `down` (ignoring case and surrounding
 whitespace). `pulse board` also warns about those posts. Include an explanatory
