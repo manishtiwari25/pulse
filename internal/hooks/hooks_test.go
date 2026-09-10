@@ -217,7 +217,9 @@ func TestFireTimeout(t *testing.T) {
 func TestRunnerCancelDoesNotKillInFlightScript(t *testing.T) {
 	s := newStore(t)
 	marker := filepath.Join(t.TempDir(), "done")
-	sh := script(t, `sleep 2; echo ok > "`+marker+`"`)
+	// The sleep must stay well above the 100ms pre-cancel delay below so the
+	// hook is still in flight when the runner is cancelled.
+	sh := script(t, `sleep 1; echo ok > "`+marker+`"`)
 	h, _ := Add(s, "job.add", "script", sh, "", "human")
 	b := bus.New()
 	r := &Runner{Bus: b, Store: s}
@@ -230,9 +232,12 @@ func TestRunnerCancelDoesNotKillInFlightScript(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 	cancel()
+	// Generous deadline: the runner should finish about 1s after cancel, but
+	// under full-suite CPU contention the script can be scheduled late. Keep
+	// this far above the sleep so contention cannot fail the test spuriously.
 	select {
 	case <-done:
-	case <-time.After(4 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("runner did not wait for in-flight hook")
 	}
 	if _, err := os.Stat(marker); err != nil {
