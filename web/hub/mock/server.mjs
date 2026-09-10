@@ -63,6 +63,9 @@ async function init() {
     .filter((p) => p.kind !== "commons")
     .map((p) => ({ slug: p.slug, name: p.slug, path: p.path, remote: p.remote || "", brain: !!p.brain, status: "active", verify_cmd: "", default_branch: "main", added_at: "2026-09-01T09:00:00Z", added_by: "human", last_seen: "2026-09-07T09:00:00Z", present: p.present !== false, ...gate(p) }));
   state.projects.push({ slug: "old-site", name: "old-site", path: "/home/owner/src/old-site", remote: "", brain: false, status: "inactive", verify_cmd: "", default_branch: "main", added_at: "2026-08-20T09:00:00Z", added_by: "human", last_seen: "2026-09-03T09:00:00Z", present: true, ...gate({}) });
+  // A registered checkout that vanished from disk: its path is not in TREE, so the
+  // picker shows "missing on disk" and Restore is refused like the real hub does.
+  state.projects.push({ slug: "demo-docs", name: "demo-docs", path: "/home/owner/src/demo-docs", remote: "", brain: false, status: "inactive", verify_cmd: "", default_branch: "main", added_at: "2026-08-12T09:00:00Z", added_by: "human", last_seen: "2026-08-30T09:00:00Z", present: false, ...gate({}) });
   for (const t of state.tasks) {
     try {
       t._detail = taskDetailScenario(await loadJson(`tasks/${t.id}.json`), now());
@@ -113,6 +116,28 @@ const TREE = {
   "/usr/local": [],
 };
 const CHECKOUTS = new Set(["/home/owner/src/demo-api", "/home/owner/src/demo-app", "/home/owner/src/demo-web", "/home/owner/src/demo-cli", "/home/owner/src/demo-lib", "/home/owner/src/pulse", "/home/owner/src/old-site", "/home/owner/src/experiments/spike-a"]);
+// A register path the way board.RegisterProject stores it: ~ expanded, trailing slashes dropped.
+const diskPath = (raw) => {
+  let p = raw.trim();
+  if (p === "~" || p.startsWith("~/")) p = HOME + p.slice(1);
+  return p.replace(/\/+$/, "") || "/";
+};
+// What the fake disk says about a path to register, in board.RegisterProject's
+// order: not on the disk is "Not a directory" (bare, like the CLI's refuse());
+// on the disk but outside every checkout is "Not a git checkout" with the
+// git-init hint. A checkout's subfolders pass, as `git rev-parse --show-toplevel`
+// does. `nogit` anywhere in the path forces the second refusal so the toast is
+// reachable from any folder. null means the mock registers it.
+function checkoutRefusal(path) {
+  const notGit = { error: "Not a git checkout: " + path, why: "a project is a git repository the runner can clone, branch and land into", fix: "git -C " + path + " init  (or pass the checkout's path)" };
+  if (/nogit/.test(path)) return notGit;
+  const parent = path === "/" ? "" : path.slice(0, path.lastIndexOf("/")) || "/";
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const onDisk = TREE[path] !== undefined || (TREE[parent] !== undefined && TREE[parent].includes(name));
+  if (!onDisk) return { error: "Not a directory: " + path, why: "", fix: "" };
+  if (![...CHECKOUTS].some((c) => path === c || path.startsWith(c + "/"))) return notGit;
+  return null;
+}
 // A record row with the console's decisions applied (ADR-028).
 function recordView(r) {
   const o = state.records[r.id];
@@ -120,10 +145,7 @@ function recordView(r) {
 }
 
 function folders(raw) {
-  let path = raw.trim();
-  if (path === "" ) path = HOME + "/src";
-  if (path === "~" || path.startsWith("~/")) path = HOME + path.slice(1);
-  path = path.replace(/\/+$/, "") || "/";
+  let path = raw.trim() === "" ? HOME + "/src" : diskPath(raw);
   const children = TREE[path];
   if (!children) return { error: "No folder " + path };
   const registered = (p) => state.projects.find((x) => x.path === p)?.slug || "";
@@ -406,10 +428,12 @@ async function handle(req, res) {
     // project lifecycle (ADR-027): register, remove, restore; executor remove
     if (segs[0] === "projects" && segs.length === 1) {
       if ("brain" in body) return fail(res, 400, "The brain is chosen in the terminal", "The console does not move the brain flag.", "Run pulse init PATH --brain.");
-      const path = typeof body.path === "string" ? body.path.trim() : "";
-      if (!path) return fail(res, 400, "Invalid path", "path must be a non-empty string.", "Send a JSON object with a valid path.");
-      if (!path.startsWith("/") && !path.startsWith("~")) return fail(res, 400, "Not a directory: " + path, "the path must be absolute", "pass the checkout's full path");
-      if (/nogit/.test(path)) return fail(res, 400, "Not a git checkout: " + path, "a project is a git repository the runner can clone, branch and land into", "git -C " + path + " init  (or pass the checkout's path)");
+      const raw = typeof body.path === "string" ? body.path.trim() : "";
+      if (!raw) return fail(res, 400, "Invalid path", "path must be a non-empty string.", "Send a JSON object with a valid path.");
+      if (!raw.startsWith("/") && !raw.startsWith("~")) return fail(res, 400, "Not a directory: " + raw, "the path must be absolute", "pass the checkout's full path");
+      const path = diskPath(raw);
+      const refused = checkoutRefusal(path);
+      if (refused) return fail(res, 400, refused.error, refused.why, refused.fix);
       let p = state.projects.find((x) => x.path === path);
       const created = !p;
       if (!p) {
@@ -422,6 +446,7 @@ async function handle(req, res) {
         state.projects.push(p);
       } else {
         p.status = "active";
+        p.present = true;
         p.last_seen = now();
         if (body.verify) p.verify_cmd = body.verify;
       }
@@ -434,7 +459,11 @@ async function handle(req, res) {
       if (!p) return fail(res, 404, "No project '" + segs[1] + "'", "only a registered project can be " + (segs[2] === "remove" ? "removed" : "restored"), "pulse projects");
       if (segs[2] === "restore") {
         if (p.status === "active") return fail(res, 400, "Project " + p.slug + " is already active", "restore registers an inactive project again", "pulse projects");
+        // The real hub restores through board.Init -> RegisterProject, so a checkout gone from disk is refused the same way.
+        const refused = checkoutRefusal(p.path);
+        if (refused) return fail(res, 400, refused.error, refused.why, refused.fix);
         p.status = "active";
+        p.present = true;
         p.last_seen = now();
         emit("human", "project.refresh", p.slug, p.path);
         const job = { id: "JOB-" + String(state.seq++).slice(-3), project: p.slug, kind: "onboard", title: "Onboard " + p.slug, status: "queued", created_at: now() };
