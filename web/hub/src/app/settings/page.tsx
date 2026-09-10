@@ -30,7 +30,7 @@ interface Group {
 // view.
 const RUNNER_CLUSTERS = [
   { title: "The machine", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "max_ai_credits", "runner_cmd", "prune_after_days"] },
-  { title: "The worker", keys: ["worker_model", "landing", "landing.push"] },
+  { title: "The worker", keys: ["worker_model", "light_model", "landing", "landing.push"] },
   { title: "The board", keys: ["quorum", "expiry_days", "stale_days", "claim_hours"] },
   { title: "Amendments", keys: ["amend_quorum", "amend_majority"] },
 ];
@@ -45,7 +45,7 @@ const GROUPS: Group[] = [
   {
     id: "runner",
     title: "Runner caps",
-    blurb: "How hard the daemon may work, what each job runs with, and the board's thresholds. stop halts everything at once.",
+    blurb: "How hard the daemon may work, what each job runs with, and the board's thresholds. stop halts everything at once. Two models: worker_model runs the work that changes code (task, improve and experiment jobs); light_model runs the rest - the lead, answers, ballots, reflects, onboarding - and means worker_model while empty, so a cheaper model can take the routine.",
     keys: RUNNER_CLUSTERS.flatMap((c) => c.keys),
     clusters: RUNNER_CLUSTERS,
   },
@@ -81,12 +81,13 @@ const GROUPS: Group[] = [
   },
 ];
 
-// Mirrors store.ComputeSettings, store.EvolveSettings and store.DaemonSettings in the Go store.
+// Mirrors store.ModelSettings, store.ComputeSettings, store.EvolveSettings and store.DaemonSettings in the Go store.
 // These rows are not inserted at Create, so when the hub omits one the
 // screen still lists it at its effective (default) value and the owner can
 // set it from here.
 const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "owner.presence", value: "present", default: "present", kind: "choice", min: null, choices: ["present", "away"], description: "present: proposals, compute requests and owner questions wait for you; away: each project's lead decides the board's proposals on your behalf with its best judgement, recorded as the lead's decision and never as yours - hard stops, money (compute), Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch still wait for you" },
+  { name: "light_model", value: "", default: "", kind: "text", min: null, choices: null, description: "the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model" },
   { name: "compute.provider", value: "azure", default: "azure", kind: "choice", min: null, choices: ["azure", "aws", "gcp", "multipass"], description: "where agents get more machines from: azure (az login), aws (aws configure / aws sso login), gcp (gcloud auth login) or multipass (local VMs on the hub machine); each provider reads its own compute.<provider>.* settings" },
   { name: "compute.max_vms", value: "0", default: "0", kind: "count", min: 0, choices: null, description: "VMs that may exist at once across all requests; 0 means compute is off" },
   { name: "compute.max_hours_per_day", value: "0", default: "0", kind: "count", min: 0, choices: null, description: "VM-hours the runner may approve per UTC day; 0 means none" },

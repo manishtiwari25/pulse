@@ -756,6 +756,73 @@ func TestLeadIdleSettings(t *testing.T) {
 	}
 }
 
+// light_model splits the runner's model by the weight of the work: the runs that change code keep
+// worker_model, the rest take light_model, which means worker_model while empty. It defaults without
+// a row and lists first among the extra settings.
+func TestLightModelSetting(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
+	s := openTemp(t, Options{Create: true, Now: "2026-09-08T10:00:00Z"})
+	if got := s.Setting("light_model", ""); got != "" {
+		t.Fatalf("light_model default = %q, want empty", got)
+	}
+	var n int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM settings WHERE name = 'light_model'").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("light_model written at Create: %d rows %v", n, err)
+	}
+	for _, kind := range []string{"task", "improve", "experiment", "lead", "answer", "ballot", "reflect", "onboard", "clean", "baseline"} {
+		if got := s.RunModel(kind); got != "" {
+			t.Fatalf("no models set: %s = %q, want the runner's default", kind, got)
+		}
+	}
+	if err := s.SetSetting("human", "worker_model", " claude-fable-5.1 "); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"task", "lead", "answer"} {
+		if got := s.RunModel(kind); got != "claude-fable-5.1" {
+			t.Fatalf("light_model empty: %s = %q, want worker_model", kind, got)
+		}
+	}
+	if got := s.LightModel(); got != "claude-fable-5.1" {
+		t.Fatalf("LightModel = %q, want worker_model while light_model is empty", got)
+	}
+	if err := s.SetSetting("human", "light_model", " claude-sonnet-5 "); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Setting("light_model", ""); got != "claude-sonnet-5" {
+		t.Fatalf("light_model stored as %q", got)
+	}
+	for _, kind := range ImplementationJobKinds {
+		if got := s.RunModel(kind); got != "claude-fable-5.1" {
+			t.Fatalf("%s = %q, want worker_model", kind, got)
+		}
+	}
+	for _, kind := range []string{"lead", "answer", "ballot", "reflect", "onboard", "clean", "baseline", ""} {
+		if got := s.RunModel(kind); got != "claude-sonnet-5" {
+			t.Fatalf("%s = %q, want light_model", kind, got)
+		}
+	}
+	if got := s.LightModel(); got != "claude-sonnet-5" {
+		t.Fatalf("LightModel = %q", got)
+	}
+	// Back to empty: the light runs follow worker_model again.
+	if err := s.SetSetting("human", "light_model", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.RunModel("lead"); got != "claude-fable-5.1" {
+		t.Fatalf("light_model cleared: lead = %q, want worker_model", got)
+	}
+	names := ExtraSettingNames()
+	if names[0] != "light_model" {
+		t.Fatalf("ExtraSettingNames head = %v, want light_model first", names[:3])
+	}
+	if rule, ok := ModelRules["light_model"]; !ok || rule.Kind != "text" || !strings.Contains(rule.Description, "worker_model") {
+		t.Fatalf("light_model rule = %+v", rule)
+	}
+	if !strings.Contains(SettingRules["worker_model"].Description, "light_model") {
+		t.Fatal("worker_model's description does not name light_model")
+	}
+}
+
 func TestOwnerPresenceSetting(t *testing.T) {
 	t.Setenv("PULSE_JOB", "")
 	s := openTemp(t, Options{Create: true, Now: "2026-09-08T10:00:00Z"})

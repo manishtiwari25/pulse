@@ -59,9 +59,53 @@ var SettingRules = map[string]SettingRule{
 	"amend_quorum":         {Kind: "count", Min: 1, HasMin: true, Description: "distinct sessions an amendment needs; may be raised by vote, lowered only by a human"},
 	"amend_majority":       {Kind: "fraction", Description: "share of counted votes an amendment needs, as a fraction such as 2/3"},
 	"runner_cmd":           {Kind: "command", Description: "the worker program the runner starts in each clone (copilot, or a path to a stand-in)"},
-	"worker_model":         {Kind: "text", Description: "the model the worker runs with; empty means the runner's default"},
+	"worker_model":         {Kind: "text", Description: "the model of the runs that change code - task, improve and experiment jobs - and of every other run while light_model is empty; empty means the runner's default"},
 	"stop":                 {Kind: "switch", Choices: []string{"0", "1"}, Description: "the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)"},
 	"landing":              {Kind: "choice", Choices: []string{"agents", "human"}, Description: "agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)"},
+}
+
+// ImplementationJobKinds are the job kinds whose run changes code and so
+// runs with worker_model: the owner's tasks, the board's voted improvements
+// and the loop's experiments. Every other run - the lead, answers, ballots,
+// reflects, onboarding, the sealed held-out call, the login check - is light
+// work and runs with light_model when the owner set one.
+var ImplementationJobKinds = []string{"task", "improve", "experiment"}
+
+// ModelSettings split the runner's model by the weight of the work: the
+// legacy worker_model stays the model of the runs that change code, and
+// light_model is the model of everything lighter, so the owner can put a
+// cheaper model on the routine and keep the strong one for implementation.
+// Like ComputeSettings they are not written at Create; Setting falls back
+// here, and an empty light_model means "the same as worker_model".
+var ModelSettings = map[string]string{
+	"light_model": "",
+}
+
+// ModelRules validate ModelSettings.
+var ModelRules = map[string]SettingRule{
+	"light_model": {Kind: "text", Description: "the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model"},
+}
+
+// RunModel is the model a run of the given job kind gets: worker_model for
+// the kinds that change code (ImplementationJobKinds), else LightModel. ""
+// means the runner's own default model.
+func (s *Store) RunModel(kind string) string {
+	for _, k := range ImplementationJobKinds {
+		if k == kind {
+			return strings.TrimSpace(s.Setting("worker_model", ""))
+		}
+	}
+	return s.LightModel()
+}
+
+// LightModel is the model of the light work - the lead, answers, ballots,
+// reflects, onboarding, the sealed held-out call and the login check:
+// light_model, falling back to worker_model while light_model is empty.
+func (s *Store) LightModel() string {
+	if light := strings.TrimSpace(s.Setting("light_model", "")); light != "" {
+		return light
+	}
+	return strings.TrimSpace(s.Setting("worker_model", ""))
 }
 
 // ComputeProviders are the compute providers the runner builds in, in the
@@ -275,6 +319,9 @@ func knownSetting(name string) (SettingRule, bool) {
 	if rule, ok := ComputeRules[name]; ok {
 		return rule, true
 	}
+	if rule, ok := ModelRules[name]; ok {
+		return rule, true
+	}
 	if rule, ok := EvolveRules[name]; ok {
 		return rule, true
 	}
@@ -295,6 +342,9 @@ func defaultSetting(name string) string {
 		return v
 	}
 	if v, ok := ComputeSettings[name]; ok {
+		return v
+	}
+	if v, ok := ModelSettings[name]; ok {
 		return v
 	}
 	if v, ok := EvolveSettings[name]; ok {
@@ -325,6 +375,9 @@ func SettingNames() []string {
 // ComputeSettingNames lists the compute.* settings sorted by name.
 func ComputeSettingNames() []string { return sortedKeys(ComputeSettings) }
 
+// ModelSettingNames lists the model settings that are not written at Create (light_model).
+func ModelSettingNames() []string { return sortedKeys(ModelSettings) }
+
 // EvolveSettingNames lists the evolve.* settings sorted by name.
 func EvolveSettingNames() []string { return sortedKeys(EvolveSettings) }
 
@@ -338,10 +391,12 @@ func LeadSettingNames() []string { return sortedKeys(LeadSettings) }
 func OwnerSettingNames() []string { return sortedKeys(OwnerSettings) }
 
 // ExtraSettingNames lists every setting that is not written at Create
-// (compute.*, evolve.*, daemon.*, lead.*, then owner.*); inspect and the hub
-// list these after the legacy names with their effective values.
+// (light_model, then compute.*, evolve.*, daemon.*, lead.*, then owner.*);
+// inspect and the hub list these after the legacy names with their
+// effective values.
 func ExtraSettingNames() []string {
-	return append(append(append(append(ComputeSettingNames(), EvolveSettingNames()...), DaemonSettingNames()...), LeadSettingNames()...), OwnerSettingNames()...)
+	names := append(ModelSettingNames(), ComputeSettingNames()...)
+	return append(append(append(append(names, EvolveSettingNames()...), DaemonSettingNames()...), LeadSettingNames()...), OwnerSettingNames()...)
 }
 
 func sortedKeys(m map[string]string) []string {

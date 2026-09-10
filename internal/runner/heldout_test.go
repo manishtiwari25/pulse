@@ -264,6 +264,7 @@ func TestSealedCallRunsTheRunnerCommand(t *testing.T) {
 	}
 	setSetting(t, s, "runner_cmd", script)
 	setSetting(t, s, "worker_model", "gpt-test")
+	setSetting(t, s, "light_model", "gpt-light") // the sealed call is light work
 	t.Setenv("PULSE_HOME", s.Home)
 	t.Setenv("COPILOT_TEST_FLAG", "yes")
 	t.Setenv("GH_TOKEN", "gh-test-token")
@@ -278,7 +279,7 @@ func TestSealedCallRunsTheRunnerCommand(t *testing.T) {
 	args, _ := os.ReadFile(argsFile)
 	got := strings.Split(strings.TrimRight(string(args), "\n"), "\n")
 	if len(got) != 7 || got[0] != "-p" || !strings.Contains(got[1], "Nothing changed and no commit was made") ||
-		got[2] != "--no-ask-user" || got[3] != "--disable-builtin-mcps" || got[4] != "-s" || got[5] != "--model" || got[6] != "gpt-test" {
+		got[2] != "--no-ask-user" || got[3] != "--disable-builtin-mcps" || got[4] != "-s" || got[5] != "--model" || got[6] != "gpt-light" {
 		t.Fatalf("args: %q", got)
 	}
 	env, _ := os.ReadFile(envFile)

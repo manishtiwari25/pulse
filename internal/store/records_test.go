@@ -125,7 +125,7 @@ func TestComputeSettings(t *testing.T) {
 	if _, err := ValidateSetting("evolve.tolerance", "1.5"); err == nil {
 		t.Fatal("tolerance > 1 accepted")
 	}
-	if got := len(ExtraSettingNames()); got != len(ComputeSettings)+len(EvolveSettings)+len(DaemonSettings)+len(LeadSettings)+len(OwnerSettings) {
+	if got := len(ExtraSettingNames()); got != len(ModelSettings)+len(ComputeSettings)+len(EvolveSettings)+len(DaemonSettings)+len(LeadSettings)+len(OwnerSettings) {
 		t.Fatalf("ExtraSettingNames = %d", got)
 	}
 	// ADR-034: self-heal, self-retire and the grace before a retired VM is deleted.

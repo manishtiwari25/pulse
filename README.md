@@ -136,7 +136,13 @@ Everything else happens in the console:
   provider vouches for before the first connection, and tags what it makes
   `pulse=hands`. Each executor row offers the same preview-then-remove as
   `pulse remove executor`.
-- **Settings** - runner caps, board rules, amendment quorum, the compute
+- **Settings** - runner caps, board rules, amendment quorum, the two models
+  the runs get (`worker_model` for the work that changes code - task, improve
+  and experiment jobs; `light_model` for the rest - the lead, answers,
+  ballots, reflects, onboarding, the sealed held-out call and the login check
+  - which means `worker_model` while empty, so a cheaper model can take the
+  routine: `pulse settings set worker_model claude-fable-5.1` and
+  `pulse settings set light_model claude-sonnet-5`), the compute
   provider and its target (Azure resource group / location / VM size, AWS
   region / instance type, GCP project / zone / machine type, Multipass size),
   the self-improvement loop's gates, and your presence (`owner.presence`: `present`, or `away` to let each
@@ -312,6 +318,8 @@ record, read with `pulse record show WF-evolve`.
 | --- | --- | --- |
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. |
 | `max_ai_credits` | `30` credits (minimum `30`) | Passed to Copilot workers; not automatically applied to measurement harnesses. |
+| `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
+| `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
 
 These are defaults, not the owner's effective values. Read those with

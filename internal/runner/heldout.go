@@ -46,7 +46,8 @@ func runSealedCall(ctx context.Context, s *store.Store, prompt string) (string, 
 	}
 	defer os.RemoveAll(dir)
 	args := []string{"-p", prompt, "--no-ask-user", "--disable-builtin-mcps", "-s"}
-	if model := s.Setting("worker_model", ""); model != "" {
+	// The sealed call reads one held-out record and answers a line; light work, light_model.
+	if model := s.LightModel(); model != "" {
 		args = append(args, "--model", model)
 	}
 	cmd := exec.CommandContext(ctx, runnerCmd(s), args...)

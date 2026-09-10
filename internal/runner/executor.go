@@ -597,9 +597,11 @@ func expiryWarning(expires, now string, days int) string {
 	return ""
 }
 
+// loginCheckCommand is the one-word run that proves the runner is logged in; it is light work,
+// so it runs with light_model (store.LightModel).
 func loginCheckCommand(s *store.Store) []string {
 	cmd := []string{runnerCmd(s), "-p", loginCheckPrompt, "--no-ask-user", "--disable-builtin-mcps", "-s"}
-	if model := s.Setting("worker_model", ""); model != "" {
+	if model := s.LightModel(); model != "" {
 		cmd = append(cmd, "--model", model)
 	}
 	return cmd

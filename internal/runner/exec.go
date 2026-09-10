@@ -463,8 +463,10 @@ func workerDirs(home string) []string {
 	return out
 }
 
-// workerCommand is worker_command(): the harness argv; the brief is the prompt (D-L).
-func workerCommand(s *store.Store, briefText, clone, workerCmd string, dirs []string) ([]string, bool) {
+// workerCommand is worker_command(): the harness argv; the brief is the prompt (D-L). The model
+// follows the job kind (store.RunModel): worker_model for the work that changes code, light_model
+// for the rest.
+func workerCommand(s *store.Store, kind, briefText, clone, workerCmd string, dirs []string) ([]string, bool) {
 	if workerCmd != "" {
 		return splitShell(workerCmd), true
 	}
@@ -477,7 +479,7 @@ func workerCommand(s *store.Store, briefText, clone, workerCmd string, dirs []st
 	}
 	cmd = append(cmd, "--disable-builtin-mcps", "--no-ask-user", "-s", "--max-ai-credits", s.Setting("max_ai_credits", ""))
 	cmd = append(cmd, "--autopilot")
-	if model := s.Setting("worker_model", ""); model != "" {
+	if model := s.RunModel(kind); model != "" {
 		cmd = append(cmd, "--model", model)
 	}
 	return cmd, false

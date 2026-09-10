@@ -20,6 +20,13 @@ Runner and evolution caps (built-in defaults):
     scorer. Measurement requires a positive value.
   max_ai_credits   default %s credits (minimum %d)
     Passed to Copilot workers; not automatically applied to measurement harnesses.
+  worker_model     default empty (the runner's default model)
+    Model of the runs that change code: task, improve and experiment jobs; also
+    every other run while light_model is empty.
+  light_model      default empty (the same as worker_model)
+    Model of the light runs: lead, answer, ballot, reflect, onboard and clean
+    jobs, the sealed held-out call and the executor login check. A cheaper
+    model here leaves the strong one to implementation.
   evolve.limits   default %s
     Optional loop budget: cycles=N,hours=H. none does not remove runner caps.
 
@@ -60,6 +67,9 @@ func SettingsReport(s *store.Store) ([]SettingReport, error) {
 	report := make([]SettingReport, 0, len(names))
 	for _, name := range names {
 		def, rule := store.DefaultSettings[name], store.SettingRules[name]
+		if d, ok := store.ModelSettings[name]; ok {
+			def, rule = d, store.ModelRules[name]
+		}
 		if d, ok := store.ComputeSettings[name]; ok {
 			def, rule = d, store.ComputeRules[name]
 		}
@@ -157,6 +167,9 @@ func runSettings(c *cli.Context, _ *flag.FlagSet, args []string) (retErr error) 
 			value, exists := values[name]
 			if !exists {
 				value, exists = store.DefaultSettings[name]
+			}
+			if !exists {
+				value, exists = store.ModelSettings[name]
 			}
 			if !exists {
 				value, exists = store.ComputeSettings[name]

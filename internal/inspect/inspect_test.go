@@ -446,7 +446,16 @@ func TestSettingsReport(t *testing.T) {
 	if get.out != "present\n" {
 		t.Fatalf("owner default not accessible: %+v", get)
 	}
-	set := invoke(t, s, false, "", "settings", "set", "owner.presence", "Away")
+	// light_model defaults empty without a row, so the light runs follow worker_model; set, it splits them.
+	get = invoke(t, s, false, "", "settings", "get", "light_model")
+	if get.code != 0 || get.out != "\n" {
+		t.Fatalf("light_model default not accessible: %+v", get)
+	}
+	set := invoke(t, s, false, "", "settings", "set", "light_model", "claude-sonnet-5")
+	if set.code != 0 || set.out != "light_model=claude-sonnet-5\n" || s.LightModel() != "claude-sonnet-5" || s.RunModel("task") != "" {
+		t.Fatalf("light_model did not set: %+v light=%q task=%q", set, s.LightModel(), s.RunModel("task"))
+	}
+	set = invoke(t, s, false, "", "settings", "set", "owner.presence", "Away")
 	if set.code != 0 || set.out != "owner.presence=Away\n" || s.Setting("owner.presence", "") != "away" || !s.OwnerAway() {
 		t.Fatalf("owner setting did not set: %+v value=%q", set, s.Setting("owner.presence", ""))
 	}

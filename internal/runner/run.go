@@ -237,7 +237,11 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		return runBaseline(s, job, project, agent, now, runID, logPath, ex, o)
 	}
 	if agent != humanAgent {
-		model := s.Setting("worker_model", "")
+		// The model follows the job kind (store.RunModel), so a worker or lead runs under
+		// whichever model this job gets; the agent is joined without one - joinAgent refuses a
+		// name whose recorded model differs - and its row then records the model of this run,
+		// which the posts of the run report.
+		model := s.RunModel(job.str("kind"))
 		if o.WorkerCmd != "" {
 			model = ""
 		}
@@ -245,8 +249,11 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		if a := agentRow(s.DB, agent); a != nil {
 			kind = a.str("kind")
 		}
-		if _, _, err := joinAgent(s, agent, "", model, runID, "", kind, ""); err != nil {
+		if _, _, err := joinAgent(s, agent, "", "", runID, "", kind, ""); err != nil {
 			return nil, err
+		}
+		if model != "" {
+			exec1(s.DB, "UPDATE agents SET model = ? WHERE name = ?", model, agent)
 		}
 	}
 	started := wallClock()
@@ -360,7 +367,7 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			log.put(summary)
 			return nil
 		}
-		cmd, _ := workerCommand(s, briefText, clone, o.WorkerCmd, ex.workerDirs())
+		cmd, _ := workerCommand(s, job.str("kind"), briefText, clone, o.WorkerCmd, ex.workerDirs())
 		env := map[string]string{"PULSE_JOB": job.str("id"), "PULSE_BRIEF": runID, "PULSE_CLONE": clone,
 			"PULSE_AGENT": agent, "PULSE_SESSION": runID, "PULSE_PROJECT": project.str("slug"), "GIT_TERMINAL_PROMPT": "0",
 			"PULSE_GENERATION": strconv.Itoa(job.int("generation")), "PULSE_EXECUTOR": ex.name()}
@@ -848,9 +855,9 @@ func castResultVotes(s *store.Store, slug string, arow *store.Agent, agent, now,
 }
 
 // pickWorker is pick_worker(): the next free worker, rotated; names are never reused.
-// Only workers of the current worker_model are picked or counted toward the pool: runJob
-// joins the worker with that model and joinAgent refuses a name whose recorded model
-// differs, so a worker spawned before the owner changed worker_model would fail every dispatch.
+// Every active worker is in the pool whatever model it last ran with: runJob records the model
+// of each run on the worker's row (worker_model or light_model by the job kind), so a worker
+// is never tied to one model and the pool stays at quorum+1.
 func pickWorker(s *store.Store, now, agent string, exclude []string) (string, error) {
 	if agent != "" {
 		r, err := resolveAgent(s, agent, true)
@@ -864,18 +871,16 @@ func pickWorker(s *store.Store, now, agent string, exclude []string) (string, er
 		pool = 1
 	}
 	runner, model := s.Setting("runner_cmd", ""), s.Setting("worker_model", "")
-	current := "(a.model = '' OR ? = '' OR a.model = ?) "
-	currentArgs := []any{model, model}
-	active := mustOne(s.DB, "SELECT COUNT(*) AS n FROM agents a WHERE a.status = 'active' AND a.kind = 'worker' AND "+current, currentArgs...).int("n")
+	active := mustOne(s.DB, "SELECT COUNT(*) AS n FROM agents a WHERE a.status = 'active' AND a.kind = 'worker'").int("n")
 	for active < pool {
 		if _, err := spawnAgent(s, runner, model, "worker"); err != nil {
 			return "", err
 		}
 		active++
 	}
-	q := "SELECT a.name FROM agents a WHERE a.status = 'active' AND a.kind = 'worker' AND " + current + "AND NOT EXISTS " +
+	q := "SELECT a.name FROM agents a WHERE a.status = 'active' AND a.kind = 'worker' AND NOT EXISTS " +
 		"(SELECT 1 FROM jobs j WHERE j.status = 'leased' AND j.lease_agent = a.name) "
-	args := append([]any{}, currentArgs...)
+	var args []any
 	if len(exclude) > 0 {
 		marks := make([]string, len(exclude))
 		for i, x := range exclude {

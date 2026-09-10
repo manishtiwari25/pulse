@@ -46,7 +46,9 @@ func ensureLead(s *store.Store, slug string) (*store.Agent, bool, error) {
 	if f := strings.Fields(runner); len(f) > 0 {
 		runner = f[0]
 	}
-	a, created, err := board.JoinAgent(s, board.JoinInput{Name: name, Kind: leadKind, Runner: runner, Model: s.Setting("worker_model", ""), Display: slug + " lead"})
+	// The lead reads the board and plans; light work, so its row starts with the light model
+	// (store.RunModel of a lead job), and each lead run records the model it ran with.
+	a, created, err := board.JoinAgent(s, board.JoinInput{Name: name, Kind: leadKind, Runner: runner, Model: s.RunModel("lead"), Display: slug + " lead"})
 	if err != nil {
 		return nil, false, err
 	}
