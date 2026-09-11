@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DataTable, type Column } from "@/components/pulse/data-table";
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
@@ -48,24 +49,45 @@ function duration(start?: string, end?: string, now = Date.now()): string {
   return span(Math.max(1, (e - s) / 1000));
 }
 
-function sessionTone(status: string): Tone {
+function exitKey(session: Pick<HarnessSession, "status" | "exit_status">): string {
+  return session.status === "running" ? "running" : session.exit_status || session.status;
+}
+
+function exitTone(session: Pick<HarnessSession, "status" | "exit_status">): Tone {
+  const status = exitKey(session);
   if (status === "submitted") return "ok";
   if (status === "running") return "info";
-  if (status === "lost") return "neutral";
-  if (FAILURES.includes(status as HarnessSessionStatus)) return status === "cancelled" || status === "step_limit" || status === "time_limit" ? "warn" : "bad";
+  if (status === "step_limit" || status === "time_limit" || status === "format_error") return "warn";
+  if (status === "provider_error" || status === "not_logged_in") return "bad";
+  if (status === "cancelled" || status === "lost") return "neutral";
   return statusTone(status);
 }
 
-function HarnessStatusBadge({ status }: { status: string }) {
+function HarnessStatusBadge({ session }: { session: Pick<HarnessSession, "status" | "exit_status"> }) {
+  const status = exitKey(session);
   return (
-    <ToneBadge tone={sessionTone(status)} dot={status !== "lost"} className={cn(status === "running" && "[&>span:first-child]:animate-ping")}>
+    <ToneBadge tone={exitTone(session)} dot={status !== "lost" && status !== "cancelled"} className={cn(status === "running" && "[&>span:first-child]:animate-ping")}>
       {status.replace(/_/g, " ")}
     </ToneBadge>
   );
 }
 
+const EXIT_CARD: Record<Tone, string> = {
+  neutral: "border-border bg-muted/30",
+  ok: "border-ok/40 bg-ok/10",
+  warn: "border-warn/40 bg-warn/10",
+  bad: "border-bad/40 bg-bad/10",
+  info: "border-info/40 bg-info/10",
+  accent: "border-accent-2/40 bg-accent-2/10",
+};
+
+function executorName(executor: string | undefined): string {
+  return (executor || "").trim();
+}
+
+// The badge names remote hands only; every session has some executor.
 function remoteExecutor(executor: string | undefined): string {
-  const e = (executor || "").trim();
+  const e = executorName(executor);
   return e && e !== "local" ? e : "";
 }
 
@@ -74,11 +96,12 @@ function updateSearch(pathname: string, router: ReturnType<typeof useRouter>, ne
   router.replace(pathname + query(clean), { scroll: false });
 }
 
-function Filters({ project, status, agent, projects, onChange }: { project: string; status: string; agent: string; projects: ProjectsPayload | undefined; onChange: (next: { project: string; status: string; agent: string }) => void }) {
+function Filters({ project, status, agent, executor, executors, projects, onChange, onExecutorChange, onClear }: { project: string; status: string; agent: string; executor: string; executors: string[]; projects: ProjectsPayload | undefined; onChange: (next: { project: string; status: string; agent: string }) => void; onExecutorChange: (next: string) => void; onClear: () => void }) {
   const [agentState, setAgentState] = useState({ value: agent, draft: agent });
   const agentDraft = agentState.value === agent ? agentState.draft : agent;
   const setAgentDraft = (draft: string) => setAgentState({ value: agent, draft });
   const commitAgent = () => onChange({ project, status, agent: agentDraft.trim() });
+  const hasFilters = !!(project || status || agent || executor);
   return (
     <div className="flex min-w-0 flex-wrap items-end gap-2">
       <div className="grid gap-1">
@@ -127,6 +150,27 @@ function Filters({ project, status, agent, projects, onChange }: { project: stri
           className="w-44"
         />
       </div>
+      {executors.length ? (
+        <div className="grid gap-1">
+          <Label>Executor</Label>
+          <Select value={executor || "all"} onValueChange={(v) => onExecutorChange(v === "all" ? "" : v)}>
+            <SelectTrigger className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All executors</SelectItem>
+              {executors.map((e) => (
+                <SelectItem key={e} value={e}>
+                  on {e}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
+      <Button type="button" variant="outline" size="sm" onClick={onClear} disabled={!hasFilters} className="mb-0.5">
+        Clear filters
+      </Button>
     </div>
   );
 }
@@ -135,7 +179,7 @@ function SessionList({ rows, selected, onSelect }: { rows: HarnessSession[]; sel
   const now = useNow();
   const columns = useMemo<Column<HarnessSession>[]>(
     () => [
-      { key: "status", label: "status", sort: (r) => r.status, render: (r) => <HarnessStatusBadge status={r.status} /> },
+      { key: "status", label: "status", sort: (r) => exitKey(r), render: (r) => <HarnessStatusBadge session={r} /> },
       {
         key: "job",
         label: "job",
@@ -147,6 +191,7 @@ function SessionList({ rows, selected, onSelect }: { rows: HarnessSession[]; sel
               <ProjectLink slug={r.project} className="text-xs" />
               <Mono>{r.job_id}</Mono>
               {remoteExecutor(r.executor) ? <ToneBadge tone="neutral">on {remoteExecutor(r.executor)}</ToneBadge> : null}
+              {r.id === selected ? <ToneBadge tone="info">Selected</ToneBadge> : null}
             </span>
           </span>
         ),
@@ -155,11 +200,26 @@ function SessionList({ rows, selected, onSelect }: { rows: HarnessSession[]; sel
       { key: "model", label: "model", hide: "lg", sort: (r) => r.model, render: (r) => <Mono>{r.model}</Mono> },
       { key: "steps", label: "steps", align: "right", sort: (r) => r.steps, render: (r) => compact(r.steps) + " / " + compact(r.calls) },
       { key: "tokens", label: "tokens", align: "right", hide: "md", sort: (r) => r.prompt_tokens + r.completion_tokens, render: (r) => compact(r.prompt_tokens + r.completion_tokens) },
+      {
+        key: "cost",
+        label: (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>cost</span>
+            </TooltipTrigger>
+            <TooltipContent>provider units - Copilot: premium requests</TooltipContent>
+          </Tooltip>
+        ),
+        align: "right",
+        hide: "md",
+        sort: (r) => r.cost,
+        render: (r) => (r.cost ? num(r.cost) : "—"),
+      },
       { key: "started", label: "started", nowrap: true, sort: (r) => r.started_at, render: (r) => <When d={r.started_at} /> },
       { key: "updated", label: "updated", nowrap: true, hide: "sm", sort: (r) => r.updated_at, render: (r) => rel(r.updated_at, now) },
       { key: "duration", label: "duration", align: "right", hide: "md", sort: (r) => Date.parse(r.ended_at || "") || Date.now() - (Date.parse(r.started_at) || Date.now()), render: (r) => duration(r.started_at, r.ended_at, now) },
     ],
-    [now],
+    [now, selected],
   );
   return (
     <DataTable
@@ -170,7 +230,8 @@ function SessionList({ rows, selected, onSelect }: { rows: HarnessSession[]; sel
       dense
       caption="Harness sessions"
       initialSort="updated"
-      rowClassName={(r) => (r.id === selected ? "bg-primary/5" : undefined)}
+      rowAriaSelected={(r) => r.id === selected}
+      rowClassName={(r) => (r.id === selected ? "border-l-2 border-l-info bg-primary/5" : undefined)}
       emptyText="No harness sessions match these filters."
     />
   );
@@ -267,11 +328,11 @@ function StepCard({ s, session }: { s: HarnessStep; session: HarnessSession }) {
       </article>
     );
   return (
-    <article className="rounded-xl border border-ok/40 bg-ok/10 p-3">
+    <article className={cn("rounded-xl border p-3", EXIT_CARD[exitTone(session)])}>
       {head}
       <div className="grid gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <HarnessStatusBadge status={session.status} />
+          <HarnessStatusBadge session={session} />
           <span className="font-medium">{s.content || session.exit_status || "finished"}</span>
         </div>
         {session.status === "submitted" && session.submission ? <ReportLines text={session.submission} /> : null}
@@ -337,9 +398,9 @@ function Transcript({ id }: { id: string }) {
       }
     >
       <div className="grid gap-4">
-        <div className="grid gap-3 rounded-lg border bg-muted/30 p-3">
+        <div className="grid gap-3 rounded-lg border bg-muted/30 p-3" aria-live={running ? "polite" : undefined}>
           <div className="flex flex-wrap items-center gap-2">
-            <HarnessStatusBadge status={s.status} />
+            <HarnessStatusBadge session={s} />
             <span className="font-medium">{s.agent}</span>
             {s.executor ? <span className="text-muted-foreground">on <Mono>{s.executor}</Mono></span> : null}
             <span className="text-muted-foreground">{s.job_title}</span>
@@ -381,12 +442,15 @@ export function HarnessPageClient() {
   const status = sp.get("status") || "";
   const agent = sp.get("agent") || "";
   const selected = sp.get("id") || "";
-  const path = "harness/sessions" + query({ project, status, agent, limit: 50 });
+  const [limit, setLimit] = useState(50);
+  const [executor, setExecutor] = useState("");
+  const path = "harness/sessions" + query({ project, status, agent, limit });
   const sessions = useApi<HarnessSessionsResponse>(path, { refresh: 5000 });
   const projects = useApi<ProjectsPayload>("projects", { refresh: 60000 });
   const { events } = useLiveEvents();
-  const now = useNow();
-  const rows = useMemo(() => sessions.data?.sessions ?? [], [sessions.data]);
+  const loadedRows = useMemo(() => sessions.data?.sessions ?? [], [sessions.data]);
+  const executors = useMemo(() => Array.from(new Set(loadedRows.map((r) => executorName(r.executor)).filter(Boolean))).sort(), [loadedRows]);
+  const rows = useMemo(() => (executor ? loadedRows.filter((r) => executorName(r.executor) === executor) : loadedRows), [executor, loadedRows]);
   const running = rows.filter((r) => RUNNING.includes(r.status)).length;
   const failed = rows.filter((r) => FAILURES.includes(r.status)).length;
   const submitted = rows.filter((r) => r.status === "submitted").length;
@@ -395,10 +459,8 @@ export function HarnessPageClient() {
     (id: string) => updateSearch(pathname, router, { project, status, agent, id }),
     [pathname, router, project, status, agent],
   );
-  useEffect(() => {
-    if (!selected && rows[0]) choose(rows[0].id);
-  }, [selected, rows, choose]);
   const selectedKnown = selected && rows.some((r) => r.id === selected);
+  const canLoadMore = loadedRows.length >= limit && limit < 500;
   return (
     <>
       <PageTitle
@@ -414,8 +476,15 @@ export function HarnessPageClient() {
             project={project}
             status={status}
             agent={agent}
+            executor={executor}
+            executors={executors}
             projects={projects.data}
             onChange={(next) => updateSearch(pathname, router, { ...next, id: selected })}
+            onExecutorChange={setExecutor}
+            onClear={() => {
+              setExecutor("");
+              updateSearch(pathname, router, { id: selected });
+            }}
           />
         }
       >
@@ -459,13 +528,25 @@ export function HarnessPageClient() {
               }
               dense
             >
-              <SessionList rows={rows} selected={selected} onSelect={choose} />
+              <div className="grid gap-3 p-3">
+                <SessionList rows={rows} selected={selected} onSelect={choose} />
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>
+                    Showing {num(rows.length)} of the newest {num(loadedRows.length)}
+                  </span>
+                  {canLoadMore ? (
+                    <Button type="button" size="sm" variant="outline" onClick={() => setLimit((n) => Math.min(500, n + 50))}>
+                      Load more
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
             </Panel>
             {selected && (selectedKnown || !rows.length) ? (
               <Transcript id={selected} />
             ) : (
               <Panel title="Transcript" icon={FileTextIcon}>
-                <EmptyState>Select a session to read the live transcript. Latest update was {rows[0] ? rel(rows[0].updated_at, now) : "not available"}.</EmptyState>
+                <EmptyState>Select a session to read its transcript</EmptyState>
               </Panel>
             )}
           </div>

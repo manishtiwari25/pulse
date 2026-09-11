@@ -20,7 +20,7 @@ const HIDE: Record<NonNullable<Column<unknown>["hide"]>, string> = { sm: "hidden
 
 // A sortable, dense table. Rows are clickable when onRow is given (keyboard:
 // Enter/Space). Sorting is client-side and stable.
-export function DataTable<T>({ columns, rows, rowKey, onRow, dense, caption, initialSort, initialDir = "desc", className, emptyText, rowClassName }: { columns: Column<T>[]; rows: T[]; rowKey: (row: T, i: number) => string; onRow?: (row: T) => void; dense?: boolean; caption?: string; initialSort?: string; initialDir?: "asc" | "desc"; className?: string; emptyText?: string; rowClassName?: (row: T) => string | undefined }) {
+export function DataTable<T>({ columns, rows, rowKey, onRow, dense, caption, initialSort, initialDir = "desc", className, emptyText, rowClassName, rowAriaSelected }: { columns: Column<T>[]; rows: T[]; rowKey: (row: T, i: number) => string; onRow?: (row: T) => void; dense?: boolean; caption?: string; initialSort?: string; initialDir?: "asc" | "desc"; className?: string; emptyText?: string; rowClassName?: (row: T) => string | undefined; rowAriaSelected?: (row: T) => boolean }) {
   const [sortKey, setSortKey] = useState<string>(initialSort ?? "");
   const [dir, setDir] = useState<"asc" | "desc">(initialDir);
   const sorted = useMemo(() => {
@@ -78,6 +78,7 @@ export function DataTable<T>({ columns, rows, rowKey, onRow, dense, caption, ini
               <TableRow
                 key={rowKey(r, i)}
                 tabIndex={onRow ? 0 : undefined}
+                aria-selected={rowAriaSelected ? rowAriaSelected(r) : undefined}
                 onClick={onRow ? () => onRow(r) : undefined}
                 onKeyDown={
                   onRow

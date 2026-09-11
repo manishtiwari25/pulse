@@ -10,10 +10,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ErrorNotice, Notice } from "@/components/pulse/panel";
+import { ErrorNotice, Kv, Notice } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
-import { errorText, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessStatus, type Setting } from "@/lib/api";
-import { num, rel } from "@/lib/format";
+import { errorText, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
+import { fmtDate, num, rel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -54,20 +54,47 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
   );
 }
 
-function LoginSummary({ login }: { login?: HarnessLogin }) {
-  if (!login?.logged_in) return <ToneBadge tone="warn">not signed in</ToneBadge>;
+function sourceText(source: string): { label: string; borrowed: boolean } {
+  const s = source.trim().toLowerCase();
+  if (s === "device login") return { label: "signed in here", borrowed: false };
+  if (s === "token login") return { label: "pasted token", borrowed: false };
+  if (s === "environment" || s === "editor login") return { label: "borrowed", borrowed: true };
+  return { label: source || "unknown", borrowed: false };
+}
+
+function LoginHealth({ login, runner }: { login?: HarnessLogin; runner?: Runner }) {
+  const source = sourceText(login?.source || "");
+  if (!login?.logged_in) {
+    return (
+      <div className="grid gap-2">
+        <Notice tone="warn">{login?.detail || "Not signed in."}</Notice>
+        {runner?.hold ? (
+          <Kv rows={[["why workers are held", <Notice key="hold" tone="warn" className="py-2">{runner.hold}</Notice>]]} />
+        ) : null}
+      </div>
+    );
+  }
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5">
-      <ToneBadge tone="ok" dot>
-        signed in
-      </ToneBadge>
-      <span>
-        as <b>{login.user}</b>
-      </span>
-      {login.source ? <span className="text-muted-foreground">via {login.source}</span> : null}
-      {login.plan ? <ToneBadge tone="neutral">{login.plan}</ToneBadge> : null}
-      {login.expires_at ? <span className="text-muted-foreground">expires {rel(login.expires_at)}</span> : null}
-    </span>
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <ToneBadge tone="ok" dot>
+          Signed in
+        </ToneBadge>
+        <span>
+          Signed in as <b>{login.user}</b>
+        </span>
+      </div>
+      <Kv
+        rows={[
+          ["source", source.label],
+          ...(login.plan ? [["plan", login.plan] as [React.ReactNode, React.ReactNode]] : []),
+          ...(login.expires_at ? [["expiry", rel(login.expires_at) + " (" + fmtDate(login.expires_at) + ")"] as [React.ReactNode, React.ReactNode]] : []),
+          ["why workers are held", runner?.hold ? <Notice tone="warn" className="py-2">{runner.hold}</Notice> : <span className="text-muted-foreground">Workers run on this machine</span>],
+        ]}
+      />
+      {source.borrowed ? <p className="text-xs text-muted-foreground">Borrowed logins are not shared with executors.</p> : null}
+      {login.detail ? <Notice>{login.detail}</Notice> : null}
+    </div>
   );
 }
 
@@ -324,6 +351,7 @@ function LimitInput({ s }: { s: Setting }) {
 
 export function HarnessSettingsCard({ className }: { className?: string }) {
   const h = useApi<HarnessStatus>("harness", { refresh: 15000 });
+  const runner = useApi<Runner>("runner", { refresh: 15000 });
   const models = useApi<HarnessModelsResponse>("harness/models", { refresh: 60000 });
   const d = h.data;
   const rows = d?.settings;
@@ -384,7 +412,6 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
               <h3 className="text-sm font-semibold">Provider</h3>
               <div className="flex flex-wrap items-center gap-2">
                 <span>{d.provider.label}</span>
-                <LoginSummary login={d.provider.login} />
                 {signedIn ? (
                   <Button
                     size="sm"
@@ -401,6 +428,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
                   </Button>
                 ) : null}
               </div>
+              <LoginHealth login={d.provider.login} runner={runner.data} />
               {provider ? (
                 <Select value={provider.value || d.provider.name} onValueChange={(v) => saveChoice("provider", v)}>
                   <SelectTrigger className="w-56">
