@@ -711,7 +711,7 @@ export interface HarnessSession {
   trajectory: string;
 }
 
-export type HarnessStepKind = "assistant" | "command" | "observation" | "error" | "exit";
+export type HarnessStepKind = "assistant" | "command" | "observation" | "note" | "error" | "exit";
 
 export interface HarnessStep {
   n: number;

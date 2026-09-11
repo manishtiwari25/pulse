@@ -320,6 +320,13 @@ function StepCard({ s, session }: { s: HarnessStep; session: HarnessSession }) {
       </article>
     );
   if (s.kind === "observation") return <Observation s={s} />;
+  if (s.kind === "note")
+    return (
+      <article className="rounded-xl border border-dashed bg-muted/30 p-3 text-muted-foreground">
+        {head}
+        <p className="whitespace-pre-wrap text-sm">{s.content}</p>
+      </article>
+    );
   if (s.kind === "error")
     return (
       <article className="rounded-xl border border-warn/40 bg-warn/10 p-3">

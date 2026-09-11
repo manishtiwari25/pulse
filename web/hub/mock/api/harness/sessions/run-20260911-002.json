@@ -26,7 +26,7 @@
   },
   "steps": [
     {
-      "n": 1,
+      "n": 0,
       "at": "2026-09-11T05:30:10Z",
       "kind": "assistant",
       "content": "I will implement a request-scoped cache and verify the checkout latency fixture.",
@@ -38,7 +38,7 @@
       "model": "claude-sonnet-4.5"
     },
     {
-      "n": 2,
+      "n": 1,
       "at": "2026-09-11T05:33:20Z",
       "kind": "command",
       "content": "",
@@ -50,7 +50,7 @@
       "model": ""
     },
     {
-      "n": 3,
+      "n": 2,
       "at": "2026-09-11T05:36:02Z",
       "kind": "observation",
       "content": "PASS checkout/cache.test.ts\nPASS checkout/latency.test.ts\n\nTests: 12 passed, 12 total",
@@ -62,7 +62,7 @@
       "model": ""
     },
     {
-      "n": 4,
+      "n": 3,
       "at": "2026-09-11T05:41:42Z",
       "kind": "assistant",
       "content": "The focused tests pass. I will submit the result with the measured behavior and the follow-up fixture suggestion.",
@@ -72,6 +72,18 @@
       "prompt_tokens": 5400,
       "completion_tokens": 90,
       "model": "claude-sonnet-4.5"
+    },
+    {
+      "n": 4,
+      "at": "2026-09-11T05:41:42Z",
+      "kind": "note",
+      "content": "collapsed 3 older observations to fit the context window (level 1, keep 5)",
+      "command": "",
+      "exit_code": null,
+      "duration_ms": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "model": ""
     },
     {
       "n": 5,
