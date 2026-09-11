@@ -593,6 +593,18 @@
       "value": "0.03"
     },
     {
+      "choices": null,
+      "default": "1024",
+      "description": "megabytes an executor's workdir filesystem must have free for its probe to pass; under it the probe note says `under N free on <workdir>` and the hand takes no job until space returns; 0 turns the check off",
+      "kind": "count",
+      "min": 0,
+      "name": "daemon.min_free_mb",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "1024"
+    },
+    {
       "choices": [
         "on",
         "off"
