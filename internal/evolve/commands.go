@@ -494,6 +494,10 @@ func runSeed(c *cli.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		// ADR-038: the templates the copies come from travel in the binary.
+		if _, err := records.EnsureFramework(s, actor); err != nil {
+			return err
+		}
 		type seeded struct {
 			records.SeedSummary
 			Added int `json:"added"`

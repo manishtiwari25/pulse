@@ -30,6 +30,17 @@ type Handler struct {
 	Source  TallySource
 	Project string
 	UI      fs.FS
+	// Service is true when the user service runs this hub (it passes
+	// --restart-on-change); a foreground hub hands over to the service it
+	// installs (ADR-038).
+	Service bool
+	// Port is the TCP port this hub listens on; a foreground hub hands over
+	// only when it holds the port the hub unit will bind.
+	Port int
+	// Handover is called once, after the service-install response is
+	// written, when a foreground hub installed the hub service: it must stop
+	// serving so the service's hub can bind the port, then load the unit.
+	Handover func(loadHub func() error)
 
 	providerMu    sync.Mutex
 	providerCache map[string]provider.Provider

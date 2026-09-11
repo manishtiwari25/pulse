@@ -17,8 +17,8 @@ const STATE: Record<RunningState, { tone: Tone; label: string; text: string }> =
   waiting: { tone: "warn", label: "waiting", text: "The brain checkout is dirty or off its default branch, so the daemon waits (ADR-035 rule 4). Commit or switch back and it rebuilds on the next tick." },
   unstamped: { tone: "info", label: "unstamped", text: "The installed build carries no revision (built in a worktree or from a tarball). The daemon rebuilds once from the brain on the next landing and is stamped from then on." },
   off: { tone: "neutral", label: "off", text: "daemon.self_update is off: the daemon keeps the build it has. go build -o ~/.pulse/bin/pulse ./cmd/pulse installs by hand." },
-  "no-daemon": { tone: "warn", label: "no daemon", text: "The daemon has not run yet on this store. pulse service install keeps it and the hub alive." },
-  "no-brain": { tone: "warn", label: "no brain", text: "No active project is the brain, so there is no checkout to rebuild from. pulse project add --brain names one." },
+  "no-daemon": { tone: "warn", label: "no daemon", text: "The daemon has not run yet on this store. Keep PULSE running - the card on the Hub page, or pulse service install - starts it and this console as user services." },
+  "no-brain": { tone: "neutral", label: "as built", text: "No registered project is a PULSE checkout, so this build stays as it is: the framework's records came with it and every project works. Only someone developing PULSE itself registers their checkout with pulse init PATH --brain (ADR-035), and then the daemon rebuilds from it." },
   "no-store": { tone: "bad", label: "no store", text: "This hub has no store open." },
 };
 

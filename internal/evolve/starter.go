@@ -59,9 +59,14 @@ func seedOnCreate(s *store.Store, p *store.Project, actor string) error {
 		actor = store.HumanAgent
 	}
 	var failures error
+	// ADR-038: the templates the loop's records are copied from travel in the
+	// binary; a store without a brain gets them here, before the copy.
+	if _, err := records.EnsureFramework(s, actor); err != nil {
+		failures = s.Event(actor, "records.framework.seed_failed", p.Slug, map[string]any{"project": p.Slug, "error": err.Error()})
+	}
 	if !p.Brain {
 		if _, err := records.SeedLoopRecords(s, p.Slug, actor); err != nil {
-			failures = s.Event(actor, "evolution.records.seed_failed", p.Slug, map[string]any{"project": p.Slug, "error": err.Error()})
+			failures = errors.Join(failures, s.Event(actor, "evolution.records.seed_failed", p.Slug, map[string]any{"project": p.Slug, "error": err.Error()}))
 		}
 	}
 	if _, err := SeedStarterFixtures(s, p.Slug, actor); err != nil {

@@ -760,6 +760,55 @@ export interface RunningPayload {
   signed?: boolean | null;
 }
 
+// GET /service (ADR-038): the user services that keep PULSE alive on this
+// machine - launchd or systemd --user - as `pulse service status` reads them.
+// `installed` is the daemon's unit present and loaded; `hub_is_service` says
+// whether the hub answering is the service's own (a foreground `pulse hub`
+// on the service's port hands over when it installs).
+export interface ServiceUnit {
+  name: string;
+  path: string;
+  present: boolean;
+  loaded: boolean;
+}
+
+export interface ServiceState {
+  kind: string;
+  supported: boolean;
+  installed: boolean;
+  units: ServiceUnit[];
+  binary: string;
+  logs: string;
+}
+
+export interface ServicePayload {
+  service: ServiceState;
+  hub_is_service: boolean;
+  hub_port: number;
+  hub_url: string;
+  command: string;
+}
+
+// POST /service: `dry_run` true previews the launchers and units, false
+// writes and loads them. `handover` means this hub stops serving so the
+// service's hub can take its port; the page reconnects.
+export interface ServiceInstallResult {
+  dry_run: boolean;
+  installed: boolean;
+  kind: string;
+  daemon_path: string;
+  hub_path: string;
+  output: string;
+  handover: boolean;
+  hub_url: string;
+}
+
+// Whether the inbox asks the owner to keep PULSE running: a service manager
+// exists and the daemon's unit is not installed yet. Nothing to ask elsewhere.
+export function serviceStep(p: ServicePayload | undefined | null): boolean {
+  return !!p && p.service.supported && !p.service.installed;
+}
+
 export type AgentPresence = "online" | "idle" | "offline" | "unknown" | "legacy" | "pruned";
 
 export interface RosterRow extends Who {
@@ -1266,4 +1315,6 @@ export const writes = {
   // write per fixture. The hub answers with counts only and never reads a fixture back.
   heldoutSetup: (dir: string) => post<HeldoutPayload>("heldout", { dir } satisfies HeldoutSetupInput),
   heldoutFixture: (input: HeldoutFixtureInput) => post<HeldoutPayload>("heldout/fixtures", input),
+  // Keep PULSE running (ADR-038): `pulse service install` from the console. dry_run:true previews.
+  serviceInstall: (dryRun: boolean) => post<ServiceInstallResult>("service", { dry_run: dryRun }),
 };

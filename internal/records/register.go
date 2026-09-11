@@ -31,6 +31,107 @@ func init() {
 		Usage:   "pulse migrate [--records] --repo PATH [--ref HEAD] [--project P] [--dry-run] [--force-rev]",
 		Run:     runMigrate,
 	})
+	cli.Register(cli.Command{
+		Name: "seed", Group: "records", Raw: true,
+		Summary: "the framework's records the binary carries (ADR-038): apply them to this store, export them from the brain, or compare",
+		Usage:   "pulse seed apply|status [--json] | export [--out PATH] [--json]",
+		Run:     runSeed,
+	})
+}
+
+// runSeed is `pulse seed`: apply writes every framework record this store
+// lacks (what the hub, the daemon and pulse init do on their own); export is
+// the maintainer's - it regenerates the committed bundle from the brain's
+// store; status says what the store lacks and what the brain has changed
+// since the bundle shipped.
+func runSeed(c *cli.Context, _ *flag.FlagSet, args []string) error {
+	if len(args) == 0 {
+		return inputError("Seed command required", "choose apply, export or status", "pulse help seed")
+	}
+	sub, args := args[0], args[1:]
+	fs := flag.NewFlagSet("seed "+sub, flag.ContinueOnError)
+	fs.SetOutput(c.Err)
+	jsonOut := c.JSON
+	fs.BoolVar(&jsonOut, "json", c.JSON, "print JSON")
+	var out string
+	switch sub {
+	case "export":
+		fs.StringVar(&out, "out", "", "bundle path (default: the brain checkout's "+bundleFile+")")
+	case "apply", "status":
+	default:
+		return inputError("Unknown seed command "+sub, "choose apply, export or status", "pulse help seed")
+	}
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return inputError("Unexpected seed arguments", strings.Join(fs.Args(), " "), "pulse seed "+sub)
+	}
+	switch sub {
+	case "apply":
+		result, err := EnsureFramework(c.Store, author(c))
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return cli.WriteJSON(c.Out, result)
+		}
+		if len(result.Written) == 0 {
+			c.Printf("nothing to seed: the store has all %d framework records\n", result.Kept)
+			return nil
+		}
+		c.Printf("seeded %d framework record(s) from %s (%d already present): %s\n", len(result.Written), result.From, result.Kept, strings.Join(result.Written, ", "))
+		return nil
+	case "status":
+		status, err := FrameworkStatus(c.Store)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return cli.WriteJSON(c.Out, status)
+		}
+		c.Printf("bundle: %d framework record(s); this store has %d\n", status.Records, status.Present)
+		if len(status.Missing) > 0 {
+			c.Printf("missing here (pulse seed apply writes them): %s\n", strings.Join(status.Missing, ", "))
+		}
+		if status.Brain != "" {
+			switch {
+			case len(status.Stale) == 0 && len(status.Unshipped) == 0:
+				c.Printf("brain %s: the bundle matches its framework records\n", status.Brain)
+			default:
+				c.Printf("brain %s: %d record(s) changed since the bundle shipped, %d not yet shipped; pulse seed export refreshes it\n", status.Brain, len(status.Stale), len(status.Unshipped))
+				if len(status.Stale) > 0 {
+					c.Printf("  changed: %s\n", strings.Join(status.Stale, ", "))
+				}
+				if len(status.Unshipped) > 0 {
+					c.Printf("  unshipped: %s\n", strings.Join(status.Unshipped, ", "))
+				}
+			}
+		}
+		return nil
+	}
+	path, err := BundlePath(c.Store, out)
+	if err != nil {
+		return err
+	}
+	summary, err := ExportBundle(c.Store, path)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return cli.WriteJSON(c.Out, summary)
+	}
+	c.Printf("wrote %d framework record(s) to %s\n", summary.Records, summary.Path)
+	if summary.Same() {
+		c.Println("no change against the previous bundle")
+	} else {
+		c.Printf("added %d, changed %d, removed %d, unchanged %d\n", len(summary.Added), len(summary.Changed), len(summary.Removed), summary.Unchanged)
+	}
+	if len(summary.Skipped) > 0 {
+		c.Printf("left out (retired): %s\n", strings.Join(summary.Skipped, ", "))
+	}
+	c.Println("commit the file; the next build carries it")
+	return nil
 }
 
 func runRecord(c *cli.Context, _ *flag.FlagSet, args []string) error {
@@ -323,20 +424,33 @@ func runGuide(c *cli.Context, _ *flag.FlagSet, args []string) error {
 	}
 	output := []map[string]any{}
 	var texts []string
-	if p != nil {
-		for _, slug := range slugs {
-			rec, rev, err := c.Store.GetRecord(scopedID("instruction", slug, p), 0)
+	for _, slug := range slugs {
+		// The project's own text, else the framework's (the brain's unscoped
+		// id, which the bundle seeds under the commons when there is no brain).
+		ids := []string{}
+		if p != nil {
+			ids = append(ids, scopedID("instruction", slug, p))
+		}
+		if p == nil || !p.Brain {
+			ids = append(ids, "INSTR-"+slug)
+		}
+		for _, id := range ids {
+			rec, rev, err := c.Store.GetRecord(id, 0)
 			if errors.Is(err, store.ErrNoRecord) {
 				continue
 			}
 			if err != nil {
 				return err
 			}
+			if rec.Kind != "instruction" {
+				continue
+			}
 			texts = append(texts, RenderMarkdown(rec, rev))
 			output = append(output, map[string]any{"record": rec, "frontmatter": rev.Frontmatter, "body": rev.Body})
+			break
 		}
 	}
-	hint := "No instruction records; run pulse migrate --records --repo PATH."
+	hint := "No instruction records; pulse seed apply writes the framework's, pulse migrate --records --repo PATH imports a checkout's."
 	if *jsonOut {
 		result := map[string]any{"records": output}
 		if len(output) == 0 {

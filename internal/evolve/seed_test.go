@@ -105,7 +105,13 @@ func TestRegisteringAProjectSeedsTheRecordsThenTheFixtures(t *testing.T) {
 
 func TestRecordsSeedFailureIsRecordedAndFixturesStillSeed(t *testing.T) {
 	s := testStore(t)
-	testProject(t, s, "demo") // no brain, so nothing to copy from
+	// The binary carries the templates (ADR-038), so the copy always has a
+	// source; what still fails is a committed constitution the import cannot
+	// index.
+	repo := testProject(t, s, "demo")
+	putFile(t, filepath.Join(repo, "docs", "evolution", "constitution.md"), "---\nid: [broken\n---\n\n# Demo\n", 0o644)
+	testGit(t, repo, "add", ".")
+	testGit(t, repo, "commit", "--quiet", "-m", "broken constitution")
 	p, err := s.Project("demo")
 	if err != nil {
 		t.Fatal(err)
@@ -120,8 +126,17 @@ func TestRecordsSeedFailureIsRecordedAndFixturesStillSeed(t *testing.T) {
 	if fixtures, err := ListFixtures(s, "demo", true); err != nil || len(fixtures) != 6 {
 		t.Fatalf("fixtures after a records failure: %d (%v)", len(fixtures), err)
 	}
-	if n := countRows(t, s, "records"); n != 0 {
-		t.Fatalf("records written without a template: %d", n)
+	for _, id := range []string{"EVO-constitution-demo", "EVO-evaluators-demo"} {
+		if _, _, err := s.GetRecord(id, 0); !errors.Is(err, store.ErrNoRecord) {
+			t.Fatalf("%s written after the failure: %v", id, err)
+		}
+	}
+	bundle, err := records.FrameworkBundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, s, "records"); n != len(bundle.Records) {
+		t.Fatalf("records after the failure: %d (the framework's %d and nothing else)", n, len(bundle.Records))
 	}
 	seedTemplates(t, s)
 	brain, err := s.Brain()
@@ -208,8 +223,14 @@ func TestEvolveSeedIndexesTheCheckoutsRecords(t *testing.T) {
 		!strings.Contains(rev.Body, "Hand-written scope.") || rev.Frontmatter["seeded_from"] != nil {
 		t.Fatalf("imported constitution: %+v %+v (%v)", rec, rev, err)
 	}
-	if n := countRows(t, s, "records"); n != 4 {
-		t.Fatalf("records after seeding: %d (the import must index the one file only)", n)
+	// The framework's records arrive with the command (ADR-038); the import
+	// itself must index the one file only.
+	bundle, err := records.FrameworkBundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, s, "records"); n != len(bundle.Records)+2 {
+		t.Fatalf("records after seeding: %d (the framework's %d, the constitution and the evaluators)", n, len(bundle.Records))
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/evolve"
+	"github.com/manishtiwari25/pulse/internal/records"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -89,6 +90,12 @@ func TestBaselinePlanning(t *testing.T) {
 	}
 	notDue("evolve.loop is off")
 	setSetting(t, s, "evolve.loop", "1")
+	// Registration copied the loop's records from the bundled templates
+	// (ADR-038); an emptied constitution counts as missing, and the baseline
+	// is not due.
+	if _, err := records.Amend(s, "EVO-constitution-proj", "", humanAgent, "emptied"); err != nil {
+		t.Fatal(err)
+	}
 	notDue("no EVO-constitution record")
 	loopRecords(t, s, "proj")
 	if due, why := baselineDue(s, "proj", testNow); !due || why != "" {

@@ -344,14 +344,8 @@ func cmdService(c *cli.Context, fs *flag.FlagSet, args []string) error {
 	switch action {
 	case "install":
 		dryRun := boolFlag(fs, "dry-run")
-		if !dryRun {
-			// Sign before the units load, so the first daemon to run is the one whose folder answer sticks.
-			ensureSigned(c.Out, pulseBinary())
-		}
-		for _, u := range units {
-			if _, err := installUnit(c.Out, u, c.Home, "", "", dryRun); err != nil {
-				return err
-			}
+		if _, err := InstallService(c.Out, c.Home, ServiceInstallOptions{Interval: intFlag(fs, "interval"), HubPort: intFlag(fs, "hub-port"), NoHub: boolFlag(fs, "no-hub"), DryRun: dryRun}); err != nil {
+			return err
 		}
 		if dryRun {
 			return nil

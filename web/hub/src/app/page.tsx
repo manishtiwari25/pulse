@@ -12,6 +12,7 @@ import { GateCard, foldSteps, gateStep, type GateStep } from "@/components/pulse
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, Notice, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { ServiceCard } from "@/components/pulse/service";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { AddProjectButton } from "@/components/project/project-dialogs";
 import { awaitsDecision, ProposedRecordCard } from "@/components/records/decide-record";
@@ -20,7 +21,7 @@ import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num, plural } from "@/lib/format";
-import { evolveGate, registeredProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type ProjectCardData, type ProjectsPayload, type RecordRow, type RecordsPayload, type Runner, type TasksPayload, type Timeline } from "@/lib/api";
+import { evolveGate, registeredProjects, serviceStep, type Compute, type ComputeCaps, type ComputeRequest, type Org, type ProjectCardData, type ProjectsPayload, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type TasksPayload, type Timeline } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 export default function HubPage() {
@@ -34,6 +35,8 @@ export default function HubPage() {
   const proposed = useApi<RecordsPayload>("records?kind=adr&status=Proposed", { refresh: 60000 });
   // The registry rows carry the self-improvement gates when the org rows do not (ADR-029).
   const reg = useApi<ProjectsPayload>("projects", { refresh: 60000 });
+  // Whether this machine keeps PULSE alive yet (ADR-038): the one step a shared copy asks for.
+  const service = useApi<ServicePayload>("service", { refresh: 60000 });
   const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
 
   if (org.error && !org.data)
@@ -60,8 +63,10 @@ export default function HubPage() {
   // The gate a project waits at (records, fixtures, the owner's held-out fixtures) is a human step too - it sits in the inbox with a command to copy (ADR-029). The baseline is the daemon's (ADR-031) and never a card.
   const gateOf = (p: ProjectCardData) => evolveGate(p, (reg.data?.projects ?? []).find((r) => r.slug === p.slug));
   const steps = foldSteps(projects.map((p) => gateStep(p.slug, gateOf(p))).filter((s): s is GateStep => s !== null));
+  const keepRunning = serviceStep(service.data);
   const decisions = adrs.length + awaiting.length + pendingCompute.length;
-  const inbox = decisions + steps.length;
+  const machineSteps = keepRunning ? 1 : 0;
+  const inbox = decisions + steps.length + machineSteps;
   const computeDown = !!compute.error && !compute.data;
   const decisionsDown = !!proposed.error && !proposed.data;
   const down = [decisionsDown ? "decisions could not be loaded" : "", computeDown ? "compute requests could not be loaded" : ""].filter(Boolean);
@@ -132,7 +137,7 @@ export default function HubPage() {
       {/* The inbox: everything that waits for the owner's yes or no, buttons in reach, before anything else. Decisions first, then proposals, then compute, then the steps only the owner can take. */}
       {inbox ? (
         <section id="for-you" className="mb-4" aria-label="For you">
-          <SectionHeading icon={InboxIcon} count={inbox} action={down.length ? <span className="text-warn">{down.join(" · ")}</span> : <span className="text-right">{decisions && steps.length ? "your yes or no, and steps only you can take" : steps.length ? "the steps only you can take" : "waiting for your yes or no"}</span>}>
+          <SectionHeading icon={InboxIcon} count={inbox} action={down.length ? <span className="text-warn">{down.join(" · ")}</span> : <span className="text-right">{decisions && steps.length + machineSteps ? "your yes or no, and steps only you can take" : steps.length + machineSteps ? "the steps only you can take" : "waiting for your yes or no"}</span>}>
             For you
           </SectionHeading>
           <div className="rounded-xl border border-primary/25 surface-tint p-3 shadow-card sm:p-4">
@@ -146,6 +151,7 @@ export default function HubPage() {
               {pendingCompute.map((cr) => (
                 <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
               ))}
+              {keepRunning && service.data ? <ServiceCard payload={service.data} /> : null}
               {steps.map((s) => (
                 <GateCard key={s.slug + "/" + s.kind} step={s} />
               ))}
@@ -162,7 +168,7 @@ export default function HubPage() {
       )}
 
       <KpiGrid>
-        <Kpi icon={InboxIcon} n={inbox} label="for you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length ? plural(steps.length, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
+        <Kpi icon={InboxIcon} n={inbox} label="for you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length + machineSteps ? plural(steps.length + machineSteps, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
         <Kpi icon={ListTodoIcon} n={openTasks.length} label="open tasks" sub={tasks.data ? `${num(openTasks.filter((t) => t.status === "in_progress").length)} in progress` : "loading"} href={hrefs.tasks()} />
         <Kpi icon={CpuIcon} n={pendingCompute.length} label="compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
         <Kpi icon={BotIcon} n={o.totals.agents_active} label="agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />

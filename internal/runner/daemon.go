@@ -14,6 +14,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/hooks"
+	"github.com/manishtiwari25/pulse/internal/records"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -163,6 +164,12 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	say("daemon started %s (interval %ds%s, pid %d)", s.Now(), interval, dry, os.Getpid())
 	if lost > 0 {
 		say("closed %d run(s) a previous runner left in progress as lost", lost)
+	}
+	// ADR-038: the framework's records travel in the binary; a store that lacks them gets them here.
+	if seeded, err := records.EnsureFramework(s, actor); err != nil {
+		say("framework records: %v", err)
+	} else if len(seeded.Written) > 0 {
+		say("seeded %d framework record(s) from %s", len(seeded.Written), seeded.From)
 	}
 	// ADR-035: the daemon looks after its own binary; the launcher's restore marker is read once, at start.
 	selfEnv := selfUpdateEnv{Binary: pulseBinary(), GoCmd: "go", Revision: cli.Revision(), Actor: actor}

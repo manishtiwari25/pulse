@@ -1,0 +1,27 @@
+{
+  "service": {
+    "kind": "launchd",
+    "supported": true,
+    "installed": false,
+    "units": [
+      {
+        "name": "daemon",
+        "path": "/Users/owner/Library/LaunchAgents/pulse.daemon.plist",
+        "present": false,
+        "loaded": false
+      },
+      {
+        "name": "hub",
+        "path": "/Users/owner/Library/LaunchAgents/pulse.hub.plist",
+        "present": false,
+        "loaded": false
+      }
+    ],
+    "binary": "/Users/owner/.pulse/bin/pulse",
+    "logs": "/Users/owner/.pulse/logs"
+  },
+  "hub_is_service": false,
+  "hub_port": 8787,
+  "hub_url": "http://127.0.0.1:8765",
+  "command": "pulse service install"
+}

@@ -44,7 +44,9 @@ func TestHeldoutRoutes(t *testing.T) {
 		dir = filepath.Join(real, "owner")
 	}
 	requests := []string{"Rename the greeting helper without touching the tests.", "Add a decision record for the cache.", "Replaced from the console."}
-	private := append([]string{dir, "H01", "H02"}, requests...)
+	// The seeded evaluators text names the H01.md/H02.md convention (ADR-038),
+	// so a leaked fixture id is the quoted JSON value, not the bare word.
+	private := append([]string{dir, `"H01"`, `"H02"`}, requests...)
 	assertPrivate := func(raw string) {
 		t.Helper()
 		for _, text := range private {

@@ -51,6 +51,8 @@ func (h *Handler) additions(w http.ResponseWriter, r *http.Request, route string
 		h.additionHeldout(w, r, parts)
 	case "harness":
 		h.additionHarness(w, r, parts)
+	case "service":
+		h.additionService(w, r, parts)
 	default:
 		return false
 	}

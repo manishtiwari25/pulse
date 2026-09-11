@@ -400,10 +400,12 @@ Per docs/workflows/amend.md.
 const testAmendment = "## Current text\n\n```\n| Votes per identity per suggestion | 1 (the latest wins) |\n```\n\n" +
 	"## Proposed text\n\n```\n| Votes per identity per suggestion | 1 (the latest wins; a fleet is one voter) |\n```\n\n## Why\n\nFleets voted twice.\n"
 
-// passedAmendment builds a constitution record and one amendment with a counted up-vote in project proj.
+// passedAmendment shapes proj's constitution (registration copied it from the
+// bundled template, ADR-038; this is its r2) and builds one amendment with a
+// counted up-vote.
 func passedAmendment(t *testing.T, s *store.Store) string {
 	t.Helper()
-	rec := store.Record{ID: "EVO-constitution", Project: "proj", Kind: "evolution", Slug: "constitution", Title: "Constitution",
+	rec := store.Record{ID: "EVO-constitution-proj", Project: "proj", Kind: "evolution", Slug: "constitution", Title: "Constitution",
 		Status: "active", Date: "2026-09-01", Path: "docs/evolution/constitution.md"}
 	if _, err := s.PutRecord(rec, map[string]any{"loop": "off", "limits": "none"}, testConstitution, humanAgent, "proj"); err != nil {
 		t.Fatal(err)
@@ -445,8 +447,8 @@ func TestDaemonOnceAppliesPassedAmendment(t *testing.T) {
 	if len(ratified) != 1 || ratified[0].str("agent") != tally.SystemAgent {
 		t.Fatalf("ratification: %v\n%s", ratified, log)
 	}
-	rec, rev, err := s.GetRecord("EVO-constitution", 0)
-	if err != nil || rec == nil || rev == nil || rev.Rev != 2 || !strings.Contains(rev.Body, "a fleet is one voter") {
+	rec, rev, err := s.GetRecord("EVO-constitution-proj", 0)
+	if err != nil || rec == nil || rev == nil || rev.Rev != 3 || !strings.Contains(rev.Body, "a fleet is one voter") {
 		t.Fatalf("constitution not rewritten: %v %+v %v", rec, rev, err)
 	}
 	if passed, _ := tally.PassedAmendments(s, "proj", th); len(passed) != 0 {

@@ -25,7 +25,7 @@ let agentReturnStarted = false;
 
 // ----- in-memory state for writes ----------------------------------------
 
-const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {} };
+const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {}, serviceInstalled: false };
 // The owner's private set (ADR-032) as the hub reports it: counts only, never
 // the folder. The mock keeps the folder in `dir` to refuse a second setup
 // elsewhere the way the real hub would not - it simply never sends it.
@@ -578,6 +578,30 @@ async function handle(req, res) {
       }
       return send(res, 200, preview);
     }
+    // Keep PULSE running (ADR-038): preview on dry_run true or absent, install on false; the mock never hands over.
+    if (segs[0] === "service" && segs.length === 1) {
+      if ("dry_run" in body && typeof body.dry_run !== "boolean") return fail(res, 400, "Invalid dry_run", "dry_run must be true or false.", "Send dry_run:true to preview or dry_run:false to apply.");
+      const dry = body.dry_run !== false;
+      const d = await fixture("service");
+      const [daemon, hub] = d.service.units;
+      const output = [
+        "daemon launcher: ~/.pulse/bin/pulse-daemon.sh",
+        "#!/bin/sh",
+        "# pulse daemon (ADR-035): launchd runs this script; the crash guard keeps a broken build from looping.",
+        "exec " + d.service.binary + " daemon --interval 60 &",
+        "",
+        "daemon " + d.service.kind + " service file: " + daemon.path,
+        "hub launcher: ~/.pulse/bin/pulse-hub.sh",
+        "exec " + d.service.binary + " hub --no-browser --port 8765 --restart-on-change &",
+        "",
+        "hub " + d.service.kind + " service file: " + hub.path,
+      ].join("\n");
+      if (!dry) {
+        state.serviceInstalled = true;
+        emit("human", "service.installed", d.service.kind, { units: ["daemon", "hub"] });
+      }
+      return send(res, 200, { dry_run: dry, installed: !dry, kind: d.service.kind, daemon_path: daemon.path, hub_path: hub.path, output, handover: false, hub_url: d.hub_url });
+    }
     // The human gates (ADR-028): accept, decline or defer a Proposed ADR with words.
     if (segs[0] === "records" && segs.length === 3 && (segs[2] === "accept" || segs[2] === "status")) {
       const all = (await fixture("records")).records;
@@ -760,6 +784,12 @@ async function handle(req, res) {
     const rev = q.get("rev");
     if (rev && Number(rev) !== view.record.current_rev) return send(res, 200, { ...view, body: `_(revision r${rev} of ${view.record.id} - the mock keeps only the current body)_\n\n` + view.body });
     return send(res, 200, view);
+  }
+  // Keep PULSE running (ADR-038): the fixture says not installed; a POST with dry_run:false flips it.
+  if (segs[0] === "service" && segs.length === 1) {
+    const d = await fixture("service");
+    if (!state.serviceInstalled) return send(res, 200, d);
+    return send(res, 200, { ...d, service: { ...d.service, installed: true, units: d.service.units.map((u) => ({ ...u, present: true, loaded: true })) } });
   }
   if (segs[0] === "constitution") {
     const d = await fixture("constitution");

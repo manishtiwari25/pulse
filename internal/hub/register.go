@@ -9,10 +9,13 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/records"
+	"github.com/manishtiwari25/pulse/internal/store"
 )
 
 // restartPoll is how often a service-run hub looks at its own binary; tests shorten it.
@@ -42,7 +45,14 @@ func init() {
 				if port < 0 || port > 65535 {
 					return cli.Errorf(2, "Invalid port", "The port must be between 0 and 65535", "pulse "+name+" --port 8765")
 				}
+				// ADR-038: a store the console opens has the framework's records before anything reads them.
+				if seeded, err := records.EnsureFramework(c.Store, store.HumanAgent); err != nil {
+					fmt.Fprintf(c.Err, "framework records: %v\n", err)
+				} else if len(seeded.Written) > 0 {
+					fmt.Fprintf(c.Out, "seeded %d framework record(s) from %s\n", len(seeded.Written), seeded.From)
+				}
 				h := New(c.Store, nil)
+				h.Service = fs.Lookup("restart-on-change").Value.String() == "true"
 				if name == "serve" {
 					h.Project = fs.Lookup("project").Value.String()
 					if h.Project == "" {
@@ -73,6 +83,9 @@ func init() {
 					return cli.Errorf(1, "The hub could not listen", err.Error(), "pulse "+name+" --port 0")
 				}
 				defer listener.Close()
+				if addr, ok := listener.Addr().(*net.TCPAddr); ok {
+					h.Port = addr.Port
+				}
 				address := "http://" + listener.Addr().String()
 				fmt.Fprintf(c.Out, "Serving on %s (127.0.0.1 only; writes: decide, settings, tasks, messages, compute; Ctrl-C to stop)\n", address)
 				if fs.Lookup("no-browser").Value.String() != "true" {
@@ -90,7 +103,28 @@ func init() {
 						cancel()
 					})
 				}
+				// ADR-038: the console installed the hub service from this foreground hub;
+				// stop serving so the service's hub can bind this port, then load its unit.
+				var handover func() error
+				var handoverOnce sync.Once
+				h.Handover = func(loadHub func() error) {
+					handoverOnce.Do(func() {
+						handover = loadHub
+						// Let the response reach the page before the listener closes.
+						time.Sleep(handoverDelay)
+						fmt.Fprintln(c.Out, "handing over to the pulse.hub service")
+						cancel()
+					})
+				}
 				err = Serve(ctx, listener, h)
+				if handover != nil {
+					listener.Close()
+					if loadErr := handover(); loadErr != nil {
+						return cli.Errorf(1, "The hub service did not load", loadErr.Error(), "pulse service install")
+					}
+					fmt.Fprintf(c.Out, "the pulse.hub service now serves %s; this hub exits\n", address)
+					return nil
+				}
 				select {
 				case <-changed:
 					return cli.Errorf(3, "", "", "")
@@ -101,6 +135,10 @@ func init() {
 		})
 	}
 }
+
+// handoverDelay is how long a foreground hub keeps serving after it answers the
+// service-install request, so the page receives the response before the port moves.
+var handoverDelay = 300 * time.Millisecond
 
 // watchBinary calls onChange once when the executable's stamp differs from stamp; it stops with ctx.
 func watchBinary(ctx context.Context, stamp string, onChange func()) {

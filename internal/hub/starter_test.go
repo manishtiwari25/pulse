@@ -125,14 +125,17 @@ func TestEvolutionGatesFailSoftly(t *testing.T) {
 	if len(data["fixtures"].([]map[string]any)) != 0 {
 		t.Fatalf("a raw project row invented fixtures: %#v", data["fixtures"])
 	}
-	// A project the loop knows: gates describe the missing constitution.
+	// A project the loop knows: registration copied its constitution and
+	// evaluators from the bundled templates (ADR-038), so the gates describe
+	// the next step, the baseline.
 	s2, slug := starterStore(t)
 	data, err = New(s2, nil).evolution(slug)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertEvolutionShape(t, data)
-	if gates := data["gates"].(map[string]any); gates["reason"] != "constitution record is missing or empty" || !strings.Contains(gates["next_human_step"].(string), "record new") {
+	if gates := data["gates"].(map[string]any); gates["constitution"] != true || gates["evaluators"] != true ||
+		gates["reason"] != "no baseline measured yet; the daemon records it once the loop is on" || !strings.Contains(gates["next_human_step"].(string), "evolve.loop") {
 		t.Fatalf("gates for a fresh project: %#v", gates)
 	}
 	// The commons is not a project the loop describes: gates nil, the message says why.
@@ -174,8 +177,12 @@ func TestProjectRowsCarryTheLoopPosition(t *testing.T) {
 			t.Fatalf("row %s carries a baseline job nobody queued: %#v", row["slug"], row)
 		}
 	}
+	// Registration seeded the loop's records from the bundled templates (ADR-038).
+	constitution, _ := seeded["constitution"].(map[string]any)
+	evaluators, _ := seeded["evaluators"].(map[string]any)
 	if seeded["fixtures_enabled"] != float64(6) || seeded["baseline"] != false || seeded["evolve_level"] != "B" ||
-		!strings.Contains(seeded["evolve_next"].(string), "record new") || seeded["constitution"] != nil || seeded["evaluators"] != nil {
+		!strings.Contains(seeded["evolve_next"].(string), "evolve.loop") || constitution["seeded_from"] != store.CommonsSlug+"/TPL-evolution-constitution@r1" ||
+		evaluators["seeded_from"] != store.CommonsSlug+"/TPL-evolution-evaluators@r1" {
 		t.Fatalf("seeded row: %#v", seeded)
 	}
 	if raw["fixtures_enabled"] != float64(0) || raw["baseline"] != false || raw["evolve_level"] != "B" || raw["evolve_next"] == "" {
@@ -279,15 +286,18 @@ func TestProjectRowsCarryTheBaselineJob(t *testing.T) {
 func templateStore(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	s := additionsStore(t, false)
+	// Registering the brain seeds the framework's records from the bundle
+	// (ADR-038), the templates at r1 under the commons; the owner's shaping
+	// of them is their r2.
 	if _, err := board.AddProject(s, lifecycleRepo(t), "Brain", "", true, "", "human", "brain"); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"constitution", "evaluators"} {
 		title := "<Project> Evolution " + strings.ToUpper(name[:1]) + name[1:]
-		rec := store.Record{ID: "TPL-evolution-" + name, Project: "brain", Kind: "template", Slug: "evolution-" + name, Title: title, Status: "Active",
-			Path: "docs/evolution/_template-" + name + ".md", Origin: "markdown:docs/evolution/_template-" + name + ".md@0000000"}
+		rec := store.Record{ID: "TPL-evolution-" + name, Project: store.CommonsSlug, Kind: "template", Slug: "evolution-" + name, Title: title, Status: "Active",
+			Path: "docs/evolution/_template-" + name + ".md"}
 		if _, err := s.PutRecord(rec, map[string]any{"id": strings.ToUpper(name), "title": title, "status": "Active", "loop": "off"},
-			"# "+title+"\n\nThe <Project> loop.\n", "human", "import"); err != nil {
+			"# "+title+"\n\nThe <Project> loop.\n", "human", "shaped"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -321,11 +331,11 @@ func TestProjectRowsAndEvolutionTellSeededRecordsApart(t *testing.T) {
 	}
 	constitution := loopRecord(rows[slug], "constitution")
 	if constitution["id"] != "EVO-constitution-lamplitlabs" || constitution["rev"] != float64(1) || constitution["seeded"] != true ||
-		constitution["seeded_from"] != "brain/TPL-evolution-constitution@r1" {
+		constitution["seeded_from"] != store.CommonsSlug+"/TPL-evolution-constitution@r2" {
 		t.Fatalf("seeded constitution: %#v", constitution)
 	}
 	if evaluators := loopRecord(rows[slug], "evaluators"); evaluators["id"] != "EVO-evaluators-lamplitlabs" || evaluators["seeded"] != true ||
-		evaluators["seeded_from"] != "brain/TPL-evolution-evaluators@r1" {
+		evaluators["seeded_from"] != store.CommonsSlug+"/TPL-evolution-evaluators@r2" {
 		t.Fatalf("seeded evaluators: %#v", evaluators)
 	}
 	if rows["raw"]["constitution"] != nil || rows["raw"]["evaluators"] != nil || rows["brain"]["constitution"] != nil {
@@ -340,11 +350,11 @@ func TestProjectRowsAndEvolutionTellSeededRecordsApart(t *testing.T) {
 	}
 	assertEvolutionShape(t, data)
 	doc := data["constitution"].(map[string]any)
-	if doc["seeded"] != true || doc["seeded_from"] != "brain/TPL-evolution-constitution@r1" ||
+	if doc["seeded"] != true || doc["seeded_from"] != store.CommonsSlug+"/TPL-evolution-constitution@r2" ||
 		!strings.Contains(doc["body"].(string), "The Lamplit Labs loop.") {
 		t.Fatalf("evolution constitution: %#v", doc)
 	}
-	if doc := data["evaluators"].(map[string]any); doc["seeded"] != true || doc["seeded_from"] != "brain/TPL-evolution-evaluators@r1" {
+	if doc := data["evaluators"].(map[string]any); doc["seeded"] != true || doc["seeded_from"] != store.CommonsSlug+"/TPL-evolution-evaluators@r2" {
 		t.Fatalf("evolution evaluators: %#v", doc)
 	}
 	// The owner's first edit makes the record theirs: still marked where it
@@ -359,13 +369,13 @@ func TestProjectRowsAndEvolutionTellSeededRecordsApart(t *testing.T) {
 			continue
 		}
 		constitution, evaluators := loopRecord(row, "constitution"), loopRecord(row, "evaluators")
-		if constitution["rev"] != float64(2) || constitution["seeded"] != false || constitution["seeded_from"] != "brain/TPL-evolution-constitution@r1" ||
+		if constitution["rev"] != float64(2) || constitution["seeded"] != false || constitution["seeded_from"] != store.CommonsSlug+"/TPL-evolution-constitution@r2" ||
 			evaluators["seeded"] != true {
 			t.Fatalf("rows after the owner's edit: %#v %#v", constitution, evaluators)
 		}
 	}
 	_, data = additionsRequest(t, h, "GET", "/api/v1/projects/"+slug+"/evolution", "")
-	if doc := data["constitution"].(map[string]any); doc["seeded"] != false || doc["seeded_from"] != "brain/TPL-evolution-constitution@r1" {
+	if doc := data["constitution"].(map[string]any); doc["seeded"] != false || doc["seeded_from"] != store.CommonsSlug+"/TPL-evolution-constitution@r2" {
 		t.Fatalf("evolution constitution after the owner's edit: %#v", doc)
 	}
 	// A hand-written record was never seeded: no mark, not seeded.

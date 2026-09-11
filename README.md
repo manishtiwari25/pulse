@@ -46,11 +46,18 @@ The store lives in `$PULSE_HOME` (default `~/.pulse`). Every command accepts
 ## The owner's path
 
 ```bash
-cd ~/src/my-app
-pulse init --name my-app --verify 'npm test'   # register the checkout, queue onboarding
-pulse service install                          # the runner and the console as user services (launchd / systemd --user)
-open http://127.0.0.1:8765                     # the console; `pulse hub` runs one by hand instead (--no-hub above)
+pulse hub                                      # the console opens at http://127.0.0.1:8765
 ```
+
+Everything else happens in the console. **Add project** registers a checkout
+and queues its onboarding (`pulse init --name my-app --verify 'npm test'` in
+the checkout is the same step from a terminal). The first card under **For
+you**, **Keep PULSE running**, installs the daemon and the console as user
+services (launchd / systemd --user) so neither dies with a terminal; the
+`pulse hub` you started hands over to the service's at the same address
+(`pulse service install` in a terminal does the same). A fresh copy carries
+the framework's records inside the binary, so nothing has to be imported
+first (see [Share PULSE](#share-pulse)).
 
 Then sign in once: **Settings → Harness → Sign in with GitHub** shows a code,
 you enter it on github.com, and every worker on this machine runs with that
@@ -189,6 +196,33 @@ useful output are separate; an unexpired claim alone does not mean working now.
 Each card and `pulse agents` show what an agent is doing now: the job it holds,
 the thread it claimed and the executor it runs on.
 
+## Share PULSE
+
+A copy of PULSE is the binary. The framework's records - the operating guide
+agents read (`pulse guide`), the skills, workflows and prompts, the templates
+every ADR, plan and constitution is copied from - travel inside it
+(`internal/records/seed/bundle.json`, embedded at build; ADR-038). The first
+`pulse hub`, `pulse daemon` or `pulse init` on a machine writes the records
+the store lacks under the commons, once; a record already there, whatever
+its text, is kept. So someone who clones this repository and builds it has a
+working PULSE with no checkout of PULSE registered: their projects onboard,
+their loops seed a constitution from the bundled template, their agents read
+the same guide.
+
+```bash
+git clone https://github.com/manishtiwari25/pulse.git && cd pulse
+go build -o ~/.pulse/bin/pulse ./cmd/pulse
+pulse hub                # add a project, click Keep PULSE running - that is the whole setup
+pulse seed status        # what this build carries against what the store has
+pulse seed apply         # write what is missing by hand (the hub and the daemon do it on start)
+```
+
+The brain - a registered PULSE checkout (`pulse init PATH --brain`) - is for
+developing PULSE itself: with one, the daemon rebuilds from its `main`
+(ADR-035) and `pulse seed export` refreshes the bundle from its records so
+the next build carries them. Without one, **Settings → Running** says *as
+built* and nothing waits.
+
 ## The agents' path
 
 ```bash
@@ -264,6 +298,7 @@ pulse record accept ADR-019 --words 'Approved because ...'   # or Accept in the 
 pulse record deliver ADR-019 delivered
 pulse record lead-time --project my-app       # proposed-to-delivered days
 pulse migrate --records --repo . --ref HEAD    # import a repository's committed Markdown records once
+pulse seed apply                               # write the framework's bundled records a store lacks (ADR-038)
 pulse export --db ~/pulse-backup.sqlite        # a copy outside every project
 ```
 
@@ -720,6 +755,11 @@ npm run check                                # typecheck + lint + a scratch buil
 ```
 
 Commit `web/hub/out/` together with the source change that produced it.
+When a framework record changes in the brain (a guide, skill, workflow,
+prompt or template), run `pulse seed export` and commit
+`internal/records/seed/bundle.json` with it: that file is what a fresh copy
+seeds from, and `pulse seed status` names the records that drifted
+(`TestFrameworkBundleCarriesTheFramework` checks the file is in export form).
 The existing mock includes live, idle, offline, legacy, pruned and multi-session
 roster cases. `MOCK_AGENT_RETURN_MS=12000` exercises a returning worker twelve
 seconds after the first roster read; use a free loopback port via

@@ -90,7 +90,7 @@ export function CommandBox({ command, copy, className }: { command: string; copy
 
 // The same step as a command, kept under the console's own button (ADR-032):
 // quieter, still copyable, so the terminal stays the owner's other way.
-function TerminalAlternative({ command, className }: { command: string; className?: string }) {
+export function TerminalAlternative({ command, className }: { command: string; className?: string }) {
   return (
     <div className={cn("grid gap-1", className)}>
       <span className="text-[11px] text-muted-foreground">or in a terminal:</span>

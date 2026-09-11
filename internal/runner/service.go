@@ -282,6 +282,17 @@ func installService(out io.Writer, interval int, pulseHome, system, userHome str
 // byte-identical to what it would write and the unit is already loaded, nothing is reloaded, so running
 // `pulse service install` again never restarts a daemon in the middle of a run.
 func installUnit(out io.Writer, u serviceUnit, pulseHome, system, userHome string, dryRun bool) (string, error) {
+	path, load, err := prepareUnit(out, u, pulseHome, system, userHome, dryRun)
+	if err != nil || load == nil {
+		return path, err
+	}
+	return path, load()
+}
+
+// prepareUnit writes the unit's launcher and file and returns the step that loads it, or nil when there is
+// nothing to load (a dry run, or a unit unchanged and already loaded). Splitting the write from the load
+// lets a foreground hub install the hub unit and load it only after it has stopped listening (ADR-038).
+func prepareUnit(out io.Writer, u serviceUnit, pulseHome, system, userHome string, dryRun bool) (string, func() error, error) {
 	kind, path := unitPaths(u, system, userHome)
 	logDir := filepath.Join(pulseHome, "logs")
 	_ = os.MkdirAll(logDir, 0o755)
@@ -296,26 +307,31 @@ func installUnit(out io.Writer, u serviceUnit, pulseHome, system, userHome strin
 	if dryRun {
 		fmt.Fprintln(out, launcher)
 		fmt.Fprintln(out, text)
-		return path, nil
+		return path, nil, nil
 	}
 	if sameFile(path, text) && sameFile(launcherFile, launcher) {
 		if rc, _ := runService(unitCommands(u, kind, path, "status")[0]); rc == 0 {
 			fmt.Fprintf(out, "%s: unchanged and loaded; left running\n", u.name)
-			return path, nil
+			return path, nil, nil
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(launcherFile), 0o755); err != nil {
-		return path, err
+		return path, nil, err
 	}
 	if err := os.WriteFile(launcherFile, []byte(launcher), 0o755); err != nil {
-		return path, err
+		return path, nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return path, err
+		return path, nil, err
 	}
 	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
-		return path, err
+		return path, nil, err
 	}
+	return path, func() error { return loadUnit(out, u, kind, path) }, nil
+}
+
+// loadUnit runs the service manager's install commands for a written unit.
+func loadUnit(out io.Writer, u serviceUnit, kind, path string) error {
 	for i, cmd := range unitCommands(u, kind, path, "install") {
 		rc, text := runService(cmd)
 		if kind == "launchd" && i == 1 && rc == 5 {
@@ -335,10 +351,121 @@ func installUnit(out io.Writer, u serviceUnit, pulseHome, system, userHome strin
 		}
 		fmt.Fprintf(out, "%s%s\n", strings.Join(cmd, " "), suffix)
 		if rc != 0 && !tolerated {
-			return path, fail(1, "could not load the %s service; the file is written, load it by hand: %s", u.name, strings.Join(cmd, " "))
+			return fail(1, "could not load the %s service; the file is written, load it by hand: %s", u.name, strings.Join(cmd, " "))
 		}
 	}
-	return path, nil
+	return nil
+}
+
+// ServiceInstallOptions is what `pulse service install` and the console's Keep PULSE running (ADR-038) ask for.
+type ServiceInstallOptions struct {
+	Interval int  // the daemon's idle wait in seconds; 0 is the default
+	HubPort  int  // the hub service's port; 0 is 8765
+	NoHub    bool // the daemon only
+	DryRun   bool // print the launchers and units, write nothing
+	// DeferHub writes the hub's unit but leaves its load to the caller (LoadHub in the result): a foreground
+	// hub on the same port must stop listening first, or the service's hub cannot bind.
+	DeferHub bool
+}
+
+// ServiceInstall is what InstallService did.
+type ServiceInstall struct {
+	Kind       string       `json:"kind"`        // launchd or systemd
+	DaemonPath string       `json:"daemon_path"` // the daemon's unit file
+	HubPath    string       `json:"hub_path"`    // the hub's unit file, "" with NoHub
+	Output     string       `json:"output"`      // the lines `pulse service install` prints
+	LoadHub    func() error `json:"-"`           // set with DeferHub when the hub unit was written and awaits its load
+}
+
+// InstallService is `pulse service install` as a function: it signs the binary (macOS, ADR-035 rule 8),
+// writes and loads the daemon's unit and, unless NoHub, the hub's. out receives what the command prints;
+// the same text comes back in Output. The console calls it through its service route (ADR-038).
+func InstallService(out io.Writer, pulseHome string, o ServiceInstallOptions) (*ServiceInstall, error) {
+	if pulseHome == "" {
+		pulseHome = homeDir()
+	}
+	if o.Interval <= 0 {
+		o.Interval = DefaultDaemonIntervalSeconds
+	}
+	if o.HubPort <= 0 {
+		o.HubPort = hubPort
+	}
+	var buf strings.Builder
+	w := io.Writer(&buf)
+	if out != nil {
+		w = io.MultiWriter(out, &buf)
+	}
+	kind, daemonPath := servicePaths("", "")
+	result := &ServiceInstall{Kind: kind, DaemonPath: daemonPath}
+	if !o.DryRun {
+		// Sign before the units load, so the first daemon to run is the one whose folder answer sticks.
+		ensureSigned(w, pulseBinary())
+	}
+	for _, u := range serviceUnits(o.Interval, o.HubPort, o.NoHub) {
+		path, load, err := prepareUnit(w, u, pulseHome, "", "", o.DryRun)
+		if u.name == "hub" {
+			result.HubPath = path
+		}
+		if err != nil {
+			result.Output = buf.String()
+			return result, err
+		}
+		if load == nil {
+			continue
+		}
+		if u.name == "hub" && o.DeferHub {
+			result.LoadHub = load
+			continue
+		}
+		if err := load(); err != nil {
+			result.Output = buf.String()
+			return result, err
+		}
+	}
+	result.Output = buf.String()
+	return result, nil
+}
+
+// UnitState is one user service as the console reads it (ADR-038).
+type UnitState struct {
+	Name    string `json:"name"`    // daemon or hub
+	Path    string `json:"path"`    // the unit file
+	Present bool   `json:"present"` // the file exists
+	Loaded  bool   `json:"loaded"`  // the service manager knows it (launchctl print / systemctl status exit 0)
+}
+
+// ServiceState is what `pulse service status` knows, for the console: the service manager, each unit's file
+// and load state, and whether the daemon is kept alive (its unit present and loaded).
+type ServiceState struct {
+	Kind      string      `json:"kind"`
+	Supported bool        `json:"supported"` // launchd or systemd --user exists on this system
+	Installed bool        `json:"installed"`
+	Units     []UnitState `json:"units"`
+	Binary    string      `json:"binary"`
+	Logs      string      `json:"logs"`
+}
+
+// ServiceStatus reads the units without changing anything.
+func ServiceStatus(pulseHome string) ServiceState {
+	if pulseHome == "" {
+		pulseHome = homeDir()
+	}
+	kind, _ := servicePaths("", "")
+	state := ServiceState{Kind: kind, Supported: runtime.GOOS == "darwin" || runtime.GOOS == "linux", Units: []UnitState{},
+		Binary: pulseBinary(), Logs: filepath.Join(pulseHome, "logs")}
+	for _, u := range serviceUnits(0, 0, false) {
+		_, path := unitPaths(u, "", "")
+		unit := UnitState{Name: u.name, Path: path, Present: fileExists(path)}
+		if unit.Present {
+			rc, _ := runService(unitCommands(u, kind, path, "status")[0])
+			unit.Loaded = rc == 0
+		}
+		if u.name == "daemon" {
+			state.Installed = unit.Present && unit.Loaded
+		}
+		state.Units = append(state.Units, unit)
+	}
+	return state
 }
 
 // sameFile reports whether path holds exactly text.

@@ -102,6 +102,8 @@ func onboardRepo(t *testing.T, name string, files map[string]string) string {
 
 // onboardTemplates registers a brain and gives the store the template-owned
 // records a registration copies (ADR-030).
+// onboardTemplates registers the brain and shapes the bundled templates
+// (ADR-038 seeded them at r1 under the commons): their r2 is the owner's text.
 func onboardTemplates(t *testing.T, s *store.Store) {
 	t.Helper()
 	if _, err := onboardProject(s, onboardRepo(t, "brain", map[string]string{}), testNow, onboardOpts{Actor: humanAgent, Brain: true}); err != nil {
@@ -109,17 +111,19 @@ func onboardTemplates(t *testing.T, s *store.Store) {
 	}
 	for _, name := range []string{"constitution", "evaluators"} {
 		title := "<Project> Evolution " + strings.ToUpper(name[:1]) + name[1:]
-		rec := store.Record{ID: "TPL-evolution-" + name, Project: "brain", Kind: "template", Slug: "evolution-" + name, Title: title, Status: "Active",
-			Path: "docs/evolution/_template-" + name + ".md", Origin: "markdown:docs/evolution/_template-" + name + ".md@0000000"}
+		rec := store.Record{ID: "TPL-evolution-" + name, Project: store.CommonsSlug, Kind: "template", Slug: "evolution-" + name, Title: title, Status: "Active",
+			Path: "docs/evolution/_template-" + name + ".md"}
 		if _, err := s.PutRecord(rec, map[string]any{"id": strings.ToUpper(name), "title": title, "status": "Active", "loop": "off"},
-			"# "+title+"\n\nThe <Project> loop.\n", humanAgent, "import"); err != nil {
+			"# "+title+"\n\nThe <Project> loop.\n", humanAgent, "shaped"); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
 // ADR-030: onboarding reports the loop's records as registration seeded them
-// and stops naming the constitution as the human's first step.
+// and stops naming the constitution as the human's first step. The templates
+// the copies come from travel in the binary (ADR-038), so a store without a
+// brain seeds them too.
 func TestOnboardReportsTheSeededRecords(t *testing.T) {
 	s := newStore(t)
 	dir := onboardRepo(t, "bare", map[string]string{})
@@ -130,8 +134,8 @@ func TestOnboardReportsTheSeededRecords(t *testing.T) {
 	text := strings.Join(lines, "\n")
 	for _, want := range []string{
 		"no docs/evolution/ scaffold written: the loop's constitution and evaluators live as records",
-		"constitution: absent: pulse evolve seed --project bare",
-		"evaluators: absent: pulse evolve seed --project bare",
+		"constitution: copied from TPL-evolution-constitution@r1 (EVO-constitution-bare)",
+		"evaluators: copied from TPL-evolution-evaluators@r1 (EVO-evaluators-bare)",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
@@ -145,8 +149,8 @@ func TestOnboardReportsTheSeededRecords(t *testing.T) {
 	}
 	text = strings.Join(lines, "\n")
 	for _, want := range []string{
-		"constitution: copied from TPL-evolution-constitution@r1 (EVO-constitution-lamplit-labs)",
-		"evaluators: copied from TPL-evolution-evaluators@r1 (EVO-evaluators-lamplit-labs)",
+		"constitution: copied from TPL-evolution-constitution@r2 (EVO-constitution-lamplit-labs)",
+		"evaluators: copied from TPL-evolution-evaluators@r2 (EVO-evaluators-lamplit-labs)",
 		"seeded 6 starter fixtures (pulse evolve fixture list --project lamplit-labs)",
 		"3. set loop: on in the constitution record",
 	} {
@@ -172,7 +176,7 @@ func TestOnboardReportsTheSeededRecords(t *testing.T) {
 	}
 	text = strings.Join(lines, "\n")
 	if !strings.Contains(text, "constitution: present (EVO-constitution-lamplit-labs r2)") ||
-		!strings.Contains(text, "evaluators: copied from TPL-evolution-evaluators@r1 (EVO-evaluators-lamplit-labs)") {
+		!strings.Contains(text, "evaluators: copied from TPL-evolution-evaluators@r2 (EVO-evaluators-lamplit-labs)") {
 		t.Fatalf("refresh after the owner's edit:\n%s", text)
 	}
 
