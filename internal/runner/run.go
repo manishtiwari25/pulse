@@ -382,6 +382,11 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		if !ex.remote() {
 			if exe, err := os.Executable(); err == nil {
 				env["PULSE_CLI"] = exe
+				// The brief tells the worker to run `pulse claim`, `pulse vote` and `pulse job finish`;
+				// make sure the binary that launched this run is actually on the worker's PATH.
+				if p := cliOnPath(os.Getenv("PATH"), exe); p != "" {
+					env["PATH"] = p
+				}
 			}
 			env["PULSE_HOME"] = home
 			for _, kv := range workerEnv {
@@ -1018,4 +1023,28 @@ func releaseLostJob(s *store.Store, now, jobID, agent string) {
 	}
 	exec1(s.DB, "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?", jobID)
 	eventAt(s.DB, now, "runner", "job.requeue", jobID, "run lost: the runner stopped while it was in progress")
+}
+
+// cliOnPath returns pathEnv with the directory of exe prepended when no entry of pathEnv
+// already resolves a `pulse` binary, and "" when pathEnv already exposes one (nothing to change).
+// Workers read the brief's `pulse ...` instructions literally, so the runner's own binary must be
+// reachable by name in every local clone, whatever the login shell's PATH looks like.
+func cliOnPath(pathEnv, exe string) string {
+	if exe == "" {
+		return ""
+	}
+	name := filepath.Base(exe)
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" {
+			continue
+		}
+		if st, err := os.Stat(filepath.Join(dir, name)); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return ""
+		}
+	}
+	dir := filepath.Dir(exe)
+	if pathEnv == "" {
+		return dir
+	}
+	return dir + string(os.PathListSeparator) + pathEnv
 }
