@@ -479,7 +479,10 @@ model submitted; `1` a limit (`step_limit`, `time_limit`, `format_error`,
 not signed in - one stderr line beginning `not logged in:` names the reason
 (no login, a token GitHub rejected, an account without a Copilot seat, a
 token that is not Copilot-enabled) and the fix. The runner marks a `4` as a
-login fault of the machine, never of the job.
+login fault of the machine, never of the job - and while this machine has no
+login the daemon starts no worker here at all: the `capacity` line of `pulse
+status` and the console say why, one daily finding lands on the brain's
+board, and remote hands keep working.
 
 Each run is a **session** in the store (`harness_sessions`, `harness_steps`)
 keyed by the run id, streamed step by step while it runs - the console's

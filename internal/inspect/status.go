@@ -313,6 +313,7 @@ func CapacityStatus(s *store.Store) (string, error) {
 		Slots        int    `json:"slots"`
 		Inflight     int    `json:"inflight"`
 		StarvedSince string `json:"starved_since"`
+		Held         string `json:"held"`
 	}
 	if err := json.Unmarshal([]byte(raw), &note); err != nil {
 		return "", fmt.Errorf("read capacity heartbeat: %w", err)
@@ -321,6 +322,10 @@ func CapacityStatus(s *store.Store) (string, error) {
 		return "", nil
 	}
 	line := fmt.Sprintf("%d job(s) queued, %d slot(s), %d in flight", note.Queued, note.Slots, note.Inflight)
+	if note.Held != "" {
+		// The daemon's login gate: this machine starts no worker until someone signs in.
+		line += "; " + note.Held
+	}
 	if note.StarvedSince != "" {
 		start, err := parseUTC(note.StarvedSince)
 		if err != nil {

@@ -43,8 +43,8 @@ func daemonHeartbeat(s *store.Store, loops, interval int, note string) {
 	_, _ = s.DB.Exec("INSERT INTO meta (key, value) VALUES ('daemon', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", string(text))
 }
 
-func capacityNote(s *store.Store, queued, slots, inflight int, starvedSince, now string) {
-	note := map[string]any{"at": now, "queued": queued, "slots": slots, "inflight": inflight, "starved_since": starvedSince}
+func capacityNote(s *store.Store, queued, slots, inflight int, starvedSince, held, now string) {
+	note := map[string]any{"at": now, "queued": queued, "slots": slots, "inflight": inflight, "starved_since": starvedSince, "held": held}
 	text, _ := json.Marshal(note)
 	_, _ = s.DB.Exec("INSERT INTO meta (key, value) VALUES ('capacity', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", string(text))
 }
@@ -432,9 +432,15 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			for d := range inflight {
 				busy[d.slot]++
 			}
-			slots = executorSlots(s, now, busy)
+			// The login gate: with the native harness and no sign-in here, this machine's slots stay
+			// closed rather than launching workers that die at once (login_gate.go).
+			gate := loginGate(s)
+			slots = executorSlots(s, now, busy, gate != "")
 			if len(slots) == 0 {
 				reason = "every executor slot is busy"
+				if gate != "" {
+					reason = gate
+				}
 			} else {
 				// Executors limited to some projects lease first so an unrestricted one cannot starve them.
 				rows := map[string]row{}
@@ -522,7 +528,12 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			} else {
 				starvedSince = ""
 			}
-			capacityNote(s, queued, totalSlots, len(inflight), starvedSince, now)
+			capacityNote(s, queued, totalSlots, len(inflight), starvedSince, gate, now)
+			if gate != "" {
+				if post := loginWanted(s, brainProject(s.DB), queued, gate, now, actor); post != nil {
+					say("%s", post.str("summary"))
+				}
+			}
 			if starvedSince != "" {
 				waited := int(mustISO(now).Sub(mustISO(starvedSince)).Minutes())
 				if waited >= handsWantedMinutes {

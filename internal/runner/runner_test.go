@@ -508,6 +508,9 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
+	// The login gate would ask the real provider about this machine's sign-in; tests that exercise it
+	// call localLoginGate with a fake provider (login_gate_test.go) or swap loginGate themselves.
+	loginGate = func(*store.Store) string { return "" }
 	// ADR-034: no test asks the hub's gh for a token or reaches GitHub; tests that need answers swap githubHTTP.
 	ghAuthToken = func() (string, error) { return "", nil }
 	githubHTTP = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

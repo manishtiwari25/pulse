@@ -907,13 +907,17 @@ func pickWorker(s *store.Store, now, agent string, exclude []string) (string, er
 }
 
 // executorSlots is executor_slots(): one entry per free slot, remotes first, this machine last.
-func executorSlots(s *store.Store, now string, busy map[string]int) []string {
+// localClosed holds this machine's slots back (the login gate, login_gate.go).
+func executorSlots(s *store.Store, now string, busy map[string]int, localClosed bool) []string {
 	var slots []string
 	remotes := executorRows(s, false)
 	for _, r := range remotes {
 		for i := 0; i < executorFreeSlots(s, r, now, busy[r.str("name")]); i++ {
 			slots = append(slots, r.str("name"))
 		}
+	}
+	if localClosed {
+		return slots
 	}
 	local := localExecutorRow(s)
 	for i := 0; i < executorFreeSlots(s, local, now, busy[localExecutor]); i++ {
