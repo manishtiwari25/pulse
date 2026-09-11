@@ -245,7 +245,7 @@ func loginSource(s *store.Store) ([]byte, string, error) {
 		return nil, loginSourceNone, err
 	}
 	if s.HarnessNative() {
-		p, err := localProvider(s.Home, s.Setting("provider", provider.Default))
+		p, err := localProvider(s.Home, s.Setting("provider", provider.Default), s.ProviderSettings())
 		if err != nil {
 			return nil, loginSourceNone, err
 		}

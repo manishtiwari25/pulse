@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +31,7 @@ func localLoginGate(s *store.Store) string {
 	if !s.HarnessNative() {
 		return ""
 	}
-	p, err := localProvider(s.Home, s.Setting("provider", provider.Default))
+	p, err := localProvider(s.Home, s.Setting("provider", provider.Default), s.ProviderSettings())
 	if err != nil {
 		return ""
 	}
@@ -54,19 +55,35 @@ var (
 
 // localProvider keeps one provider per home and name so its status caches
 // (a refused token, a looked-up user) survive from tick to tick.
-func localProvider(home, name string) (provider.Provider, error) {
+func localProvider(home, name string, settings map[string]string) (provider.Provider, error) {
 	key := home + "\x00" + name
+	if settings != nil {
+		key += "\x00" + providerSettingsKey(settings)
+	}
 	localProviderMu.Lock()
 	defer localProviderMu.Unlock()
 	if p, ok := localProviders[key]; ok {
 		return p, nil
 	}
-	p, err := provider.Open(name, provider.Options{Home: home})
+	p, err := provider.Open(name, provider.Options{Home: home, Settings: settings})
 	if err != nil {
 		return nil, err
 	}
 	localProviders[key] = p
 	return p, nil
+}
+
+func providerSettingsKey(settings map[string]string) string {
+	keys := make([]string, 0, len(settings))
+	for key := range settings {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+settings[key])
+	}
+	return strings.Join(parts, "\x00")
 }
 
 // loginWanted: once a day, while jobs wait behind the login gate, one finding on the brain's board

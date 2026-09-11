@@ -90,14 +90,14 @@ func TestLocalLoginGateClosesOnlyForNativeWithoutLogin(t *testing.T) {
 	if state.calls != before+2 {
 		t.Fatalf("status calls = %d, want %d", state.calls, before+2)
 	}
-	if a, _ := localProvider(s.Home, "gatefake"); a != mustProvider(t, s.Home) {
+	if a, _ := localProvider(s.Home, "gatefake", nil); a != mustProvider(t, s.Home) {
 		t.Fatal("localProvider did not reuse the instance")
 	}
 }
 
 func mustProvider(t *testing.T, home string) provider.Provider {
 	t.Helper()
-	p, err := localProvider(home, "gatefake")
+	p, err := localProvider(home, "gatefake", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

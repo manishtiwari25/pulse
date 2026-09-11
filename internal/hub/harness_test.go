@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/manishtiwari25/pulse/internal/provider"
+	_ "github.com/manishtiwari25/pulse/internal/provider/openai"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -28,6 +29,8 @@ type hubFakeState struct {
 var (
 	hubFakeOnce   sync.Once
 	hubFakeStates sync.Map
+	hubCacheOnce  sync.Once
+	hubCacheSeen  sync.Map
 )
 
 func registerHubFakeProvider() {
@@ -37,6 +40,16 @@ func registerHubFakeProvider() {
 				LoggedIn: true, User: "octocat", Source: "device login", Plan: "individual", ExpiresAt: "2026-09-07T12:00:00Z",
 			}})
 			return &hubFakeProvider{home: o.Home, state: stateAny.(*hubFakeState)}, nil
+		})
+	})
+}
+
+func registerHubCacheProvider() {
+	hubCacheOnce.Do(func() {
+		provider.Register("hubcachefake", "Hub Cache Fake", func(o provider.Options) (provider.Provider, error) {
+			p := &hubFakeProvider{home: o.Home, state: &hubFakeState{}}
+			hubCacheSeen.Store(o.Settings["provider.openai.base_url"], p)
+			return p, nil
 		})
 	})
 }
@@ -124,6 +137,7 @@ func TestAdditionHarnessStatusAndSettings(t *testing.T) {
 	if err := s.BeginHarnessSession(store.HarnessSession{ID: "HS-running", JobID: "JOB-1", Agent: "alice", Project: "demo"}); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := s.BeginHarnessSession(store.HarnessSession{ID: "HS-failed", JobID: "JOB-2", Agent: "bob", Project: "demo"}); err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +192,62 @@ func TestAdditionHarnessStatusAndSettings(t *testing.T) {
 	}
 	if !foundMaxSteps {
 		t.Fatalf("harness.max_steps missing from /settings: %#v", result["settings"])
+	}
+}
+
+func TestHarnessProviderSummariesIncludeOpenAITokenLogin(t *testing.T) {
+	s := harnessStore(t)
+	h := New(s, nil)
+	providers := h.harnessProviderSummaries()
+	for _, row := range providers {
+		if row["name"] == "openai" {
+			if row["label"] != "OpenAI-compatible" || row["device_login"] != false || row["token_login"] != true {
+				t.Fatalf("openai row: %#v", row)
+			}
+			return
+		}
+	}
+	t.Fatalf("openai provider missing: %#v", providers)
+}
+
+func TestHarnessProviderCacheUsesProviderSettingsFingerprint(t *testing.T) {
+	registerHubCacheProvider()
+	s := harnessStore(t)
+	h := New(s, nil)
+	if err := s.SetSetting("human", "provider.openai.base_url", "https://one.test/v1"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := h.harnessProvider("hubcachefake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := h.harnessProvider("hubcachefake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != again {
+		t.Fatal("same settings did not reuse cached provider")
+	}
+	if err := s.SetSetting("human", "provider.openai.base_url", "https://two.test/v1"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := h.harnessProvider("hubcachefake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == first {
+		t.Fatal("changed provider settings reused stale provider")
+	}
+	h.invalidateHarnessProvider("hubcachefake")
+	third, err := h.harnessProvider("hubcachefake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third == second {
+		t.Fatal("logout invalidation did not remove settings-keyed provider")
+	}
+	if _, ok := hubCacheSeen.Load("https://two.test/v1"); !ok {
+		t.Fatal("provider did not receive store provider settings")
 	}
 }
 

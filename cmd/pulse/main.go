@@ -21,6 +21,7 @@ import (
 	_ "github.com/manishtiwari25/pulse/internal/hub"
 	_ "github.com/manishtiwari25/pulse/internal/inspect"
 	_ "github.com/manishtiwari25/pulse/internal/provider/copilot"
+	_ "github.com/manishtiwari25/pulse/internal/provider/openai"
 	_ "github.com/manishtiwari25/pulse/internal/records"
 	_ "github.com/manishtiwari25/pulse/internal/runner"
 	_ "github.com/manishtiwari25/pulse/internal/tally"

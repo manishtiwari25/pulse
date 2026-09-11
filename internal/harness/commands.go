@@ -161,7 +161,7 @@ func harnessRun(c *cli.Context, args []string) error {
 			providerName = provider.Default
 		}
 	}
-	p, err := provider.Open(providerName, provider.Options{Home: c.Home})
+	p, err := provider.Open(providerName, harnessProviderOptions(c, st))
 	if err != nil {
 		return cli.Errorf(2, "pulse harness run: "+err.Error(), "", "pass --provider P")
 	}
@@ -319,7 +319,14 @@ func harnessLogin(c *cli.Context, args []string) error {
 	if fs.NArg() != 0 {
 		return cli.Errorf(2, "pulse harness login: unrecognized arguments: "+strings.Join(fs.Args(), " "), "", "")
 	}
-	p, err := provider.Open(providerName, provider.Options{Home: c.Home})
+	st, closeStore, err := openHarnessStore(c, false)
+	if err != nil {
+		return err
+	}
+	if closeStore != nil {
+		defer closeStore()
+	}
+	p, err := provider.Open(providerName, harnessProviderOptions(c, st))
 	if err != nil {
 		return cli.Errorf(2, "pulse harness login: "+err.Error(), "", "pass --provider P")
 	}
@@ -423,7 +430,7 @@ func harnessStatus(c *cli.Context, args []string) error {
 			providerName = st.Setting("provider", provider.Default)
 		}
 	}
-	p, err := provider.Open(providerName, provider.Options{Home: c.Home})
+	p, err := provider.Open(providerName, harnessProviderOptions(c, st))
 	if err != nil {
 		return cli.Errorf(2, "pulse harness status: "+err.Error(), "", "pass --provider P")
 	}
@@ -451,7 +458,14 @@ func harnessModels(c *cli.Context, args []string) error {
 	if fs.NArg() != 0 {
 		return cli.Errorf(2, "pulse harness models: unrecognized arguments: "+strings.Join(fs.Args(), " "), "", "")
 	}
-	p, err := provider.Open(providerName, provider.Options{Home: c.Home})
+	st, closeStore, err := openHarnessStore(c, false)
+	if err != nil {
+		return err
+	}
+	if closeStore != nil {
+		defer closeStore()
+	}
+	p, err := provider.Open(providerName, harnessProviderOptions(c, st))
 	if err != nil {
 		return cli.Errorf(2, "pulse harness models: "+err.Error(), "", "pass --provider P")
 	}
@@ -494,7 +508,14 @@ func harnessLogout(c *cli.Context, args []string) error {
 	if fs.NArg() != 0 {
 		return cli.Errorf(2, "pulse harness logout: unrecognized arguments: "+strings.Join(fs.Args(), " "), "", "")
 	}
-	p, err := provider.Open(providerName, provider.Options{Home: c.Home})
+	st, closeStore, err := openHarnessStore(c, false)
+	if err != nil {
+		return err
+	}
+	if closeStore != nil {
+		defer closeStore()
+	}
+	p, err := provider.Open(providerName, harnessProviderOptions(c, st))
 	if err != nil {
 		return cli.Errorf(2, "pulse harness logout: "+err.Error(), "", "pass --provider P")
 	}
@@ -645,6 +666,14 @@ func openHarnessStore(c *cli.Context, noStore bool) (*store.Store, func(), error
 		return nil, nil, err
 	}
 	return st, func() { _ = st.Close() }, nil
+}
+
+func harnessProviderOptions(c *cli.Context, st *store.Store) provider.Options {
+	o := provider.Options{Home: c.Home}
+	if st != nil {
+		o.Settings = st.ProviderSettings()
+	}
+	return o
 }
 
 func requireHarnessStore(c *cli.Context) (*store.Store, func(), error) {

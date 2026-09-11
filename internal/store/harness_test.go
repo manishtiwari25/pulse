@@ -32,11 +32,29 @@ func TestHarnessSettings(t *testing.T) {
 	if err := s.SetSetting("human", "harness", "moon"); err == nil || !strings.Contains(err.Error(), "harness takes one of native, copilot-cli") {
 		t.Fatalf("bad harness choice: %v", err)
 	}
-	if _, err := ValidateSetting("harness.mode", "native"); err == nil || !strings.Contains(err.Error(), "Harness settings: harness, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, provider") {
+	if _, err := ValidateSetting("harness.mode", "native"); err == nil || !strings.Contains(err.Error(), "Harness settings: harness, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, provider, provider.openai.base_url") {
 		t.Fatalf("unknown harness hint: %v", err)
 	}
 	if v, err := ValidateSetting("provider", "Copilot"); err != nil || v != "copilot" {
 		t.Fatalf("provider: %q %v", v, err)
+	}
+	if v, err := ValidateSetting("provider", "OpenAI"); err != nil || v != "openai" {
+		t.Fatalf("openai provider: %q %v", v, err)
+	}
+	if !reflect.DeepEqual(HarnessRules["provider"].Choices, []string{"copilot", "openai"}) {
+		t.Fatalf("provider choices = %v", HarnessRules["provider"].Choices)
+	}
+	if got := s.Setting("provider.openai.base_url", ""); got != "https://api.openai.com/v1" {
+		t.Fatalf("openai base default = %q", got)
+	}
+	if got := s.ProviderSettings(); !reflect.DeepEqual(got, map[string]string{"provider.openai.base_url": "https://api.openai.com/v1"}) {
+		t.Fatalf("provider settings default = %#v", got)
+	}
+	if err := s.SetSetting("human", "provider.openai.base_url", "http://127.0.0.1:11434/v1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ProviderSettings(); got["provider.openai.base_url"] != "http://127.0.0.1:11434/v1" {
+		t.Fatalf("provider settings stored = %#v", got)
 	}
 	for _, tc := range []struct {
 		name string
@@ -73,7 +91,7 @@ func TestHarnessSettings(t *testing.T) {
 	if !strings.Contains(SettingRules["max_ai_credits"].Description, "copilot CLI") {
 		t.Fatal("max_ai_credits does not describe the copilot CLI")
 	}
-	if names := HarnessSettingNames(); !reflect.DeepEqual(names, []string{"harness", "harness.keep_observations", "harness.max_cost", "harness.max_steps", "harness.output_limit", "harness.step_timeout", "provider"}) {
+	if names := HarnessSettingNames(); !reflect.DeepEqual(names, []string{"harness", "harness.keep_observations", "harness.max_cost", "harness.max_steps", "harness.output_limit", "harness.step_timeout", "provider", "provider.openai.base_url"}) {
 		t.Fatalf("HarnessSettingNames = %v", names)
 	}
 }

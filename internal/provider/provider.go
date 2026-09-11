@@ -189,6 +189,9 @@ func (e *Error) Error() string {
 type Options struct {
 	// Home is the PULSE home; a provider's private files live under <Home>/private/providers.
 	Home string
+	// Settings are store settings the provider may read, keyed as stored
+	// (for example provider.openai.base_url). Providers must work with nil.
+	Settings map[string]string
 	// HTTP is the client to use; nil means a default with sane timeouts.
 	HTTP *http.Client
 	// Env reads an environment variable; nil means os.Getenv.

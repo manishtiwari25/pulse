@@ -15,6 +15,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/evolve"
 	"github.com/manishtiwari25/pulse/internal/provider"
 	_ "github.com/manishtiwari25/pulse/internal/provider/copilot"
+	_ "github.com/manishtiwari25/pulse/internal/provider/openai"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -43,7 +44,7 @@ var sealedCall = runSealedCall
 
 func runSealedCall(ctx context.Context, s *store.Store, prompt string) (string, error) {
 	if s.HarnessNative() {
-		p, err := provider.Open(s.Setting("provider", provider.Default), provider.Options{Home: s.Home})
+		p, err := provider.Open(s.Setting("provider", provider.Default), provider.Options{Home: s.Home, Settings: s.ProviderSettings()})
 		if err != nil {
 			return "", err
 		}

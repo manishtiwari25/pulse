@@ -7,6 +7,8 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/provider"
+	_ "github.com/manishtiwari25/pulse/internal/provider/openai"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -128,6 +131,58 @@ func invokeHarness(t *testing.T, home string, args ...string) (string, string, i
 		}
 	}
 	return out.String(), errb.String(), code
+}
+
+func TestHarnessOpenAIProviderLoginStatusModelsAndLogout(t *testing.T) {
+	s := harnessCommandStore(t)
+	const token = "sk-cli-smoke-abcdefghijklmnop"
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("auth = %q", r.Header.Get("Authorization"))
+		}
+		if r.URL.Path != "/models" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]any{"id": "gpt-4o-mini", "owned_by": "openai"}}})
+	}))
+	defer srv.Close()
+	if err := s.SetSetting("human", "provider.openai.base_url", srv.URL+"/"); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(w, token+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	os.Stdin = r
+	out, stderr, code := invokeHarness(t, s.Home, "login", "--provider", "openai", "--with-token")
+	os.Stdin = oldStdin
+	_ = r.Close()
+	if code != 0 || !strings.Contains(out, "Signed in as …mnop (OpenAI-compatible)") {
+		t.Fatalf("login = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	out, stderr, code = invokeHarness(t, s.Home, "status", "--provider", "openai", "--json")
+	if code != 0 || !strings.Contains(out, `"name": "openai"`) || !strings.Contains(out, `"logged_in": true`) {
+		t.Fatalf("status = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	out, stderr, code = invokeHarness(t, s.Home, "models", "--provider", "openai")
+	if code != 0 || !strings.Contains(out, "gpt-4o-mini *") {
+		t.Fatalf("models = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	out, stderr, code = invokeHarness(t, s.Home, "logout", "--provider", "openai")
+	if code != 0 || !strings.Contains(out, "removed stored OpenAI-compatible login") {
+		t.Fatalf("logout = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("models endpoint calls = %v", paths)
+	}
 }
 
 func TestHarnessRunRecordsSubmissionAndTrajectory(t *testing.T) {

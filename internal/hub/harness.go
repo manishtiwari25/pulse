@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -339,14 +340,19 @@ func (h *Handler) harnessProvider(name string) (provider.Provider, error) {
 	if h.providerCache == nil {
 		h.providerCache = map[string]provider.Provider{}
 	}
-	if p := h.providerCache[name]; p != nil {
+	settings := h.Store.ProviderSettings()
+	key := name + "\x00" + providerSettingsFingerprint(settings)
+	if p := h.providerCache[key]; p != nil {
 		return p, nil
 	}
-	p, err := provider.Open(name, provider.Options{Home: h.Store.Home})
+	p, err := provider.Open(name, provider.Options{
+		Home:     h.Store.Home,
+		Settings: settings,
+	})
 	if err != nil {
 		return nil, err
 	}
-	h.providerCache[name] = p
+	h.providerCache[key] = p
 	return p, nil
 }
 
@@ -354,8 +360,26 @@ func (h *Handler) invalidateHarnessProvider(name string) {
 	h.providerMu.Lock()
 	defer h.providerMu.Unlock()
 	if h.providerCache != nil {
-		delete(h.providerCache, name)
+		prefix := strings.TrimSpace(name) + "\x00"
+		for key := range h.providerCache {
+			if key == name || strings.HasPrefix(key, prefix) {
+				delete(h.providerCache, key)
+			}
+		}
 	}
+}
+
+func providerSettingsFingerprint(settings map[string]string) string {
+	keys := make([]string, 0, len(settings))
+	for key := range settings {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+settings[key])
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func (h *Handler) harnessProviderStatus(ctx context.Context, p provider.Provider, timeout time.Duration) provider.Login {
@@ -387,7 +411,7 @@ func (h *Handler) harnessProviderSummaries() []map[string]any {
 }
 
 func (h *Handler) harnessSettings() []map[string]any {
-	names := []string{"harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "worker_model", "light_model"}
+	names := []string{"harness", "provider", "provider.openai.base_url", "harness.max_steps", "harness.max_cost", "harness.keep_observations", "harness.step_timeout", "harness.output_limit", "worker_model", "light_model"}
 	out := make([]map[string]any, 0, len(names))
 	for _, name := range names {
 		rule := store.SettingRules[name]

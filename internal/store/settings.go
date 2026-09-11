@@ -91,6 +91,7 @@ var ModelRules = map[string]SettingRule{
 var HarnessSettings = map[string]string{
 	"harness":                   "native",
 	"provider":                  "copilot",
+	"provider.openai.base_url":  "https://api.openai.com/v1",
 	"harness.max_steps":         "60",
 	"harness.max_cost":          "0",
 	"harness.keep_observations": "5",
@@ -101,7 +102,8 @@ var HarnessSettings = map[string]string{
 // HarnessRules validate HarnessSettings.
 var HarnessRules = map[string]SettingRule{
 	"harness":                   {Kind: "choice", Choices: []string{"native", "copilot-cli"}, Description: "native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone"},
-	"provider":                  {Kind: "choice", Choices: []string{"copilot"}, Description: "the model provider of the native harness; the login lives on this machine (Settings -> Harness -> Sign in, or pulse harness login), never in the store"},
+	"provider":                  {Kind: "choice", Choices: []string{"copilot", "openai"}, Description: "the model provider of the native harness; copilot signs in with GitHub; openai takes an API key and a base URL; the login lives on this machine, never in the store"},
+	"provider.openai.base_url":  {Kind: "text", Description: "the OpenAI-compatible endpoint the openai provider calls: OpenAI, Azure OpenAI, Ollama (http://127.0.0.1:11434/v1), LM Studio, OpenRouter"},
 	"harness.max_steps":         {Kind: "count", Min: 1, HasMin: true, Description: "model calls one native-harness run may make before it stops"},
 	"harness.max_cost":          {Kind: "number", Min: 0, HasMin: true, Description: "provider-reported cost one native-harness run may spend before it stops (0 = no cap); the unit is the provider's - Copilot reports usage.cost only when the vendor sends it"},
 	"harness.keep_observations": {Kind: "count", Min: 1, HasMin: true, Description: "observations kept verbatim in the model's context; older ones collapse to their first and last lines"},
@@ -129,6 +131,22 @@ func (s *Store) LightModel() string {
 		return light
 	}
 	return strings.TrimSpace(s.Setting("worker_model", ""))
+}
+
+// ProviderSettings returns provider.* settings with defaults applied, keyed as stored.
+func (s *Store) ProviderSettings() map[string]string {
+	out := map[string]string{}
+	for name := range SettingRules {
+		if strings.HasPrefix(name, "provider.") {
+			out[name] = s.Setting(name, "")
+		}
+	}
+	for name := range HarnessRules {
+		if strings.HasPrefix(name, "provider.") {
+			out[name] = s.Setting(name, "")
+		}
+	}
+	return out
 }
 
 // HarnessNative reports whether runs should use the built-in harness instead
