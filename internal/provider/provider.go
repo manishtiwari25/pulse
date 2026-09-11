@@ -154,6 +154,12 @@ type TokenLoginer interface {
 	LoginWithToken(ctx context.Context, token string) (Login, error)
 }
 
+// LoginExporter hands out the login this machine holds so another machine can use it. Only a login the
+// human placed through PULSE is exportable; borrowed tokens (environment, editor, other CLIs) are not.
+type LoginExporter interface {
+	ExportLogin() (token string, login Login, err error)
+}
+
 // Logouter forgets the stored login.
 type Logouter interface {
 	Logout() error

@@ -321,7 +321,11 @@ type Column struct {
 }
 
 // AdditiveColumns lists every column EnsureRecords adds to existing tables.
-func AdditiveColumns() []Column { return RunnerColumns }
+func AdditiveColumns() []Column {
+	out := append([]Column{}, RunnerColumns...)
+	out = append(out, HarnessColumns...)
+	return out
+}
 
 // hasColumn reports whether table has a column of that name.
 func hasColumn(q querier, table, column string) (bool, error) {

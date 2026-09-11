@@ -263,7 +263,7 @@ func (h *hands) probe() error {
 		}
 		return strings.Join(list, ",")
 	}
-	fmt.Fprintf(h.stdout, "hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s harness=%s pulse=%s remotes=%d keys_ok=%s disk_free_mb=%s jobs=%s keys=%s heartbeat=1\n",
+	fmt.Fprintf(h.stdout, "hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s harness=%s pulse=%s remotes=%d keys_ok=%s disk_free_mb=%s jobs=%s keys=%s heartbeat=1 steps=1\n",
 		name, h.workdir, gitv, copv, loggedIn, harnessLogin, pulsev, remotes, keysOK, freeMB, dash(jobs), dash(keys))
 	return nil
 }
@@ -586,6 +586,11 @@ func (h *hands) handsMain(args []string) error {
 			return err
 		}
 		return h.heartbeat(rest[0], rest[1])
+	case "steps":
+		if err := need(3, "steps JOB SESSION OFFSET"); err != nil {
+			return err
+		}
+		return h.steps(rest[0], rest[1], rest[2])
 	case "prepare":
 		if err := need(3, "prepare JOB BRANCH AGENT"); err != nil {
 			return err

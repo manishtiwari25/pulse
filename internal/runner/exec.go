@@ -299,8 +299,13 @@ func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]st
 	id := e.execution(env)
 	identityErr := id.Validate()
 	heartbeatReporter(e.log)(identityErr)
-	capable := identityErr == nil && e.heartbeatCapable(ctx)
-	if capable {
+	fields := map[string]string(nil)
+	if identityErr == nil {
+		fields = e.probeCapabilities(ctx)
+	}
+	heartbeats := identityErr == nil && fields != nil && e.heartbeatCapableFrom(fields)
+	steps := identityErr == nil && fields != nil && stepsCapable(fields) && env["PULSE_HARNESS_STEPS"] != ""
+	if heartbeats {
 		env = maps.Clone(env)
 		env["PULSE_HEARTBEAT"] = "1"
 	}
@@ -315,11 +320,21 @@ func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]st
 	args = append(append(args, "--"), cmd...)
 	e.begun = true
 	var watching chan struct{}
-	if capable {
+	if heartbeats {
 		watching = make(chan struct{})
 		go func() {
 			defer close(watching)
 			e.watchRemote(ctx, id)
+		}()
+	}
+	var stepsMirror *remoteStepsMirror
+	var mirroring chan struct{}
+	if steps {
+		stepsMirror = newRemoteStepsMirror(e, id.Session)
+		mirroring = make(chan struct{})
+		go func() {
+			defer close(mirroring)
+			stepsMirror.watch(ctx)
 		}()
 	}
 	rc, out, errText, err := sshRunContext(ctx, e.row, args, nil, time.Duration(minutes*60+120)*time.Second)
@@ -328,20 +343,39 @@ func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]st
 		<-watching
 		e.stopHeartbeat(id, heartbeatReporter(e.log))
 	}
+	if mirroring != nil {
+		<-mirroring
+		stepsMirror.fetch(context.Background())
+	}
 	e.log.add("$ ssh %s run %s %s -- <worker>\n", e.row.str("address"), e.job.str("id"), budget)
 	if ctx.Err() != nil && err != nil && (err == context.Canceled || err == context.DeadlineExceeded) {
-		return outcome{Timeout: true, ExitCode: -1, Stdout: out, Stderr: errText}, nil
+		result := outcome{Timeout: true, ExitCode: -1, Stdout: out, Stderr: errText}
+		if stepsMirror != nil {
+			stepsMirror.finishIfMissing(result, err)
+		}
+		return result, nil
 	}
 	if err != nil {
+		if stepsMirror != nil {
+			stepsMirror.finishIfMissing(outcome{ExitCode: -1}, err)
+		}
 		return outcome{ExitCode: -1}, err
 	}
 
 	text := out
 	e.lastOut = &text
 	if rc == remoteExitTimeout {
-		return outcome{Timeout: true, ExitCode: -1, Stdout: out, Stderr: errText}, nil
+		result := outcome{Timeout: true, ExitCode: -1, Stdout: out, Stderr: errText}
+		if stepsMirror != nil {
+			stepsMirror.finishIfMissing(result, nil)
+		}
+		return result, nil
 	}
-	return outcome{ExitCode: rc, Stdout: out, Stderr: errText}, nil
+	result := outcome{ExitCode: rc, Stdout: out, Stderr: errText}
+	if stepsMirror != nil {
+		stepsMirror.finishIfMissing(result, nil)
+	}
+	return result, nil
 }
 
 // resultText prefers a PULSE_RESULT.md the hands still serve (a worker briefed by

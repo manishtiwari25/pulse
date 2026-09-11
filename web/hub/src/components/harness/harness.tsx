@@ -64,6 +64,11 @@ function HarnessStatusBadge({ status }: { status: string }) {
   );
 }
 
+function remoteExecutor(executor: string | undefined): string {
+  const e = (executor || "").trim();
+  return e && e !== "local" ? e : "";
+}
+
 function updateSearch(pathname: string, router: ReturnType<typeof useRouter>, next: Record<string, string>) {
   const clean = Object.fromEntries(Object.entries(next).filter(([, v]) => v && v !== "all"));
   router.replace(pathname + query(clean), { scroll: false });
@@ -141,6 +146,7 @@ function SessionList({ rows, selected, onSelect }: { rows: HarnessSession[]; sel
             <span className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
               <ProjectLink slug={r.project} className="text-xs" />
               <Mono>{r.job_id}</Mono>
+              {remoteExecutor(r.executor) ? <ToneBadge tone="neutral">on {remoteExecutor(r.executor)}</ToneBadge> : null}
             </span>
           </span>
         ),
@@ -335,6 +341,7 @@ function Transcript({ id }: { id: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <HarnessStatusBadge status={s.status} />
             <span className="font-medium">{s.agent}</span>
+            {s.executor ? <span className="text-muted-foreground">on <Mono>{s.executor}</Mono></span> : null}
             <span className="text-muted-foreground">{s.job_title}</span>
           </div>
           <Kv
@@ -342,7 +349,7 @@ function Transcript({ id }: { id: string }) {
               ["project", <ProjectLink key="p" slug={s.project} />],
               ["job", <Mono key="j">{s.job_id}</Mono>],
               ["model", <span key="m" className="inline-flex flex-wrap gap-1.5"><Mono>{s.provider}</Mono><Mono>{s.model}</Mono></span>],
-              ["executor", <Mono key="e">{s.executor}</Mono>],
+              ...(s.executor ? [["executor", <Mono key="e">{s.executor}</Mono>] as [React.ReactNode, React.ReactNode]] : []),
               ["cwd", <Mono key="cwd">{s.cwd}</Mono>],
               [
                 "trajectory",

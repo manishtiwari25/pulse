@@ -318,7 +318,11 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   eligible is a ballot state, not a job: every tick the daemon takes each
   project's top eligible suggestion by net score that passes four gates and
   queues one worker job for it (source `suggestion:<id>`), one new job per
-  project per tick and only while fewer than `parallel_per_project` jobs wait.
+  project per tick and only while fewer than `parallel_per_project` ordinary
+  jobs wait. When `evolve.loop=1` and the project is at Level D, the evolution
+  loop gets first pick as a measured experiment and the planner builds the
+  rest; the daemon says `plan <slug>: left suggestion <id> to the evolution
+  loop` when it defers that card.
   The gates, in order: a suggestion already carried by a queued, leased or
   blocked job waits for that job; net votes must be > 0; it must not be
   addressed to the owner (`owner-*` threads, "for the owner" / "vote
@@ -481,20 +485,28 @@ not signed in - one stderr line beginning `not logged in:` names the reason
 token that is not Copilot-enabled) and the fix. The runner marks a `4` as a
 login fault of the machine, never of the job - and while this machine has no
 login the daemon starts no worker here at all: the `capacity` line of `pulse
-status` and the console say why, one daily finding lands on the brain's
-board, and remote hands keep working.
+status` and the console's **The machine** panel say why (`workers held: …`
+with a **Sign in** link to Settings → Harness), one daily finding lands on
+the brain's board, and remote hands keep working.
 
 Each run is a **session** in the store (`harness_sessions`, `harness_steps`)
 keyed by the run id, streamed step by step while it runs - the console's
 **Harness** page and `pulse harness sessions` / `pulse harness show ID` read
-them - and a trajectory JSON under `~/.pulse/harness/<session>.json` holds
-the full messages for replay or evaluation.
+them. A run on a remote hand streams the same way: the harness there appends
+begin, step and finish JSONL events to a steps file (`--steps-file PATH`, or
+`PULSE_HARNESS_STEPS`, which the runner sets for remote jobs), the hands
+serve it by offset (`steps JOB SESSION OFFSET`, next to the heartbeat
+snapshot), and the daemon mirrors the lines into the brain's store as they
+arrive, tagged with the executor's name - so the Harness page shows every
+executor's steps before the job finishes. A trajectory JSON under
+`~/.pulse/harness/<session>.json` holds the full messages for replay or
+evaluation.
 
 ```bash
 pulse harness login                     # device flow: open the URL, type the code; --with-token reads a token on stdin
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness logout                    # forget the stored login
 ```
@@ -554,9 +566,10 @@ run` process (the daemon's own binary here; on a paired hand the shipped
 the clone, the limits and the model from Settings, one minute less than
 `minutes_per_job` so it can stop with a report of its own, and the run id as
 its session; its stdout is the report the runner reads. A paired hand needs
-the same sign-in once: `pulse executor login NAME --admin admin@host
---with-token` pipes a GitHub token to `pulse harness login --with-token` as
-the hand's `pulse` user (`--remove` forgets it), and the hand's probe reports
+the same sign-in once: the native harness reuses the brain's stored provider
+login during heal/provision, and `pulse executor login NAME --admin
+admin@host` copies that login to the hand's `pulse` user (`--with-token`
+still reads a token from stdin; `--remove` forgets it). The hand's probe reports
 `harness=yes|no` and the `pulse` build it runs. The probe also refuses a hand
 whose workdir filesystem has under `daemon.min_free_mb` (default 1024) megabytes
 free and names that path in its note; 0 turns the check off. The login check the daemon

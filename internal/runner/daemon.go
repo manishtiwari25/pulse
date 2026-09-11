@@ -379,22 +379,27 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			}
 			// D-J: every active project is planned before the first lease.
 			slugs := make([]string, 0, len(projects))
-			planned := map[string]int{}
 			for _, proj := range projects {
-				slug := proj.str("slug")
-				slugs = append(slugs, slug)
-				jobs, err := planJobs(s, slug, now, actor)
-				if err != nil {
-					say("planning %s: %s", slug, errMessage(err))
-				}
-				planned[slug] = len(jobs)
-				for _, job := range jobs {
-					say("planned %s %s: %s", job.str("kind"), job.str("id"), job.str("title"))
-				}
+				slugs = append(slugs, proj.str("slug"))
 			}
 			if !o.DryRun {
 				for _, l := range tendEvolve(s, now, actor, slugs) {
 					say("%s", l)
+				}
+			}
+			planned := map[string]int{}
+			for _, slug := range slugs {
+				beforePlan := lastEventSeq(s)
+				jobs, err := planJobs(s, slug, now, actor)
+				if err != nil {
+					say("planning %s: %s", slug, errMessage(err))
+				}
+				for _, l := range planDeferredLinesSince(s, beforePlan) {
+					say("%s", l)
+				}
+				planned[slug] = len(jobs)
+				for _, job := range jobs {
+					say("planned %s %s: %s", job.str("kind"), job.str("id"), job.str("title"))
 				}
 			}
 			// D-J/D-M: if the planner made no leaseable work, keep the why in status and log it once per

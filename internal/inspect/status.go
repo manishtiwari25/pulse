@@ -303,20 +303,30 @@ func RecoveryNotes(s *store.Store) ([]RecoveryNote, error) { return metaNotes(s,
 // daemon writes one per held project and clears it when the branches land again.
 func LandingNotes(s *store.Store) ([]LandingNote, error) { return metaNotes(s, "landing") }
 
-func CapacityStatus(s *store.Store) (string, error) {
+type capacityNote struct {
+	Queued       int    `json:"queued"`
+	Slots        int    `json:"slots"`
+	Inflight     int    `json:"inflight"`
+	StarvedSince string `json:"starved_since"`
+	Held         string `json:"held"`
+}
+
+func readCapacityNote(s *store.Store) (capacityNote, bool, error) {
 	raw, exists, err := s.Meta("capacity")
 	if err != nil || !exists {
-		return "", err
+		return capacityNote{}, exists, err
 	}
-	var note struct {
-		Queued       int    `json:"queued"`
-		Slots        int    `json:"slots"`
-		Inflight     int    `json:"inflight"`
-		StarvedSince string `json:"starved_since"`
-		Held         string `json:"held"`
-	}
+	var note capacityNote
 	if err := json.Unmarshal([]byte(raw), &note); err != nil {
-		return "", fmt.Errorf("read capacity heartbeat: %w", err)
+		return capacityNote{}, true, fmt.Errorf("read capacity heartbeat: %w", err)
+	}
+	return note, true, nil
+}
+
+func CapacityStatus(s *store.Store) (string, error) {
+	note, exists, err := readCapacityNote(s)
+	if err != nil || !exists {
+		return "", err
 	}
 	if note.Queued == 0 {
 		return "", nil
@@ -339,6 +349,14 @@ func CapacityStatus(s *store.Store) (string, error) {
 		line += fmt.Sprintf("; every slot busy for %d min - another machine would help (pulse pair; pulse record show WF-executors)", minutes)
 	}
 	return line, nil
+}
+
+func CapacityHold(s *store.Store) (string, error) {
+	note, exists, err := readCapacityNote(s)
+	if err != nil || !exists {
+		return "", err
+	}
+	return note.Held, nil
 }
 
 type unfitMark struct {

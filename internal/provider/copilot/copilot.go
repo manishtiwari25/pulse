@@ -302,6 +302,19 @@ func (p *copilot) Status(ctx context.Context) (provider.Login, error) {
 	return login, nil
 }
 
+func (p *copilot) ExportLogin() (string, provider.Login, error) {
+	s, ok, err := p.readStored()
+	if err != nil {
+		return "", provider.Login{}, err
+	}
+	if !ok || strings.TrimSpace(s.GitHubToken) == "" {
+		return "", provider.Login{}, providerError(0, "no_stored_login", "no stored GitHub Copilot login; sign in with GitHub in Settings -> Harness or run pulse harness login", false)
+	}
+	token := strings.TrimSpace(s.GitHubToken)
+	rememberSecret(token)
+	return token, provider.Login{LoggedIn: true, User: s.User, Source: "stored"}, nil
+}
+
 // copilotAccess exchanges the GitHub token for a Copilot session token (cached
 // until it nears expiry) and reports the plan; a refusal is remembered for
 // statusCacheTTL so status polling stays quiet.

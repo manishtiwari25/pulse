@@ -11,6 +11,32 @@ import (
 
 const ballotHours = 6 // a card gets its own session's votes first; idle hands vote on what is still short after this long
 
+func recordPlanDeferred(s *store.Store, slug, now, actor, suggestionID string) {
+	if planDeferredEventExists(s, slug, suggestionID) {
+		return
+	}
+	eventAt(s.DB, now, actor, "plan.deferred", suggestionID, map[string]any{"project": slug, "reason": "left to the evolution loop"})
+}
+
+func planDeferredEventExists(s *store.Store, slug, suggestionID string) bool {
+	return mustOne(s.DB, `SELECT COUNT(*) AS n FROM events WHERE action = 'plan.deferred' AND subject = ?
+		AND json_valid(detail) AND json_extract(detail, '$.project') = ?`, suggestionID, slug).int("n") != 0
+}
+
+func lastEventSeq(s *store.Store) int {
+	return mustOne(s.DB, "SELECT COALESCE(MAX(seq), 0) AS n FROM events").int("n")
+}
+
+func planDeferredLinesSince(s *store.Store, seq int) []string {
+	rows := mustRows(s.DB, `SELECT subject, json_extract(detail, '$.project') AS project FROM events
+		WHERE seq > ? AND action = 'plan.deferred' AND json_valid(detail) ORDER BY seq`, seq)
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		lines = append(lines, fmt.Sprintf("plan %s: left suggestion %s to the evolution loop", r.str("project"), r.str("subject")))
+	}
+	return lines
+}
+
 // threadStatuses is Tally.thread_status for every thread of one project: closed, stale, or open.
 func threadStatuses(s *store.Store, rows []row, now string) map[string]string {
 	staleDays := settingInt(s, "stale_days")
@@ -133,7 +159,7 @@ func ownerTargeted(post row) bool {
 
 // planJobs is plan_jobs(): the next job for a project with fewer than parallel_per_project waiting.
 func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
-	waiting := mustOne(s.DB, "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND status IN ('queued', 'leased')", slug).int("n")
+	waiting := mustOne(s.DB, "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND kind != 'experiment' AND status IN ('queued', 'leased')", slug).int("n")
 	if waiting >= parallelPerProject(s) {
 		return nil, nil
 	}
@@ -183,9 +209,19 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 		}
 	}
 	suggestions := suggestionRecords(s, slug, now)
+	loopPick := ""
+	if pick, _, err := evolve.LoopPickForAgent(s, slug, createdBy); err != nil {
+		return created, err
+	} else {
+		loopPick = pick
+	}
 	if len(created) == 0 {
 		for _, sg := range suggestions {
 			if sg.Status != "eligible" {
+				continue
+			}
+			if sg.ID == loopPick {
+				recordPlanDeferred(s, slug, now, createdBy, sg.ID)
 				continue
 			}
 			post := tallyPost(s, sg.ID)

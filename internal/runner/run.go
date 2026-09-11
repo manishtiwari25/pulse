@@ -367,10 +367,13 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			log.put(summary)
 			return nil
 		}
-		cmd, _ := workerCommand(s, job.str("kind"), briefText, clone, o.WorkerCmd, ex.workerDirs(), ex.remote())
+		cmd, customWorker := workerCommand(s, job.str("kind"), briefText, clone, o.WorkerCmd, ex.workerDirs(), ex.remote())
 		env := map[string]string{"PULSE_JOB": job.str("id"), "PULSE_BRIEF": runID, "PULSE_CLONE": clone,
 			"PULSE_AGENT": agent, "PULSE_SESSION": runID, "PULSE_PROJECT": project.str("slug"), "GIT_TERMINAL_PROMPT": "0",
 			"PULSE_GENERATION": strconv.Itoa(job.int("generation")), "PULSE_EXECUTOR": ex.name()}
+		if ex.remote() && s.HarnessNative() && !customWorker {
+			env["PULSE_HARNESS_STEPS"] = filepath.Join(ex.workerDirs()[0], "harness-steps-"+runID+".jsonl")
+		}
 		if !ex.remote() {
 			if exe, err := os.Executable(); err == nil {
 				env["PULSE_CLI"] = exe

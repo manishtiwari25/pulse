@@ -3,6 +3,7 @@ package evolve
 import (
 	"database/sql"
 	"errors"
+	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/cli"
@@ -28,6 +29,57 @@ type PlanResult struct {
 // measurement, archive, and landing (D-M).
 func PlanExperiment(s *store.Store, project string, opts PlanOptions) (PlanResult, error) {
 	return planExperiment(s, project, opts, nil)
+}
+
+func LoopPick(s *store.Store, project string) (suggestionID string, reason string, err error) {
+	return LoopPickForAgent(s, project, "daemon")
+}
+
+func LoopPickForAgent(s *store.Store, project, agent string) (suggestionID string, reason string, err error) {
+	if s.Setting("evolve.loop", "") != "1" {
+		return "", "", nil
+	}
+	if agent == "" {
+		agent = "daemon"
+	}
+	status, err := Status(s, project)
+	if err != nil {
+		return "", "", err
+	}
+	if status.Level != "D" {
+		return "", status.Reason + "; owner: " + status.NextHumanStep, nil
+	}
+	if id, ok, err := inFlightExperiment(s, project, true); err != nil {
+		return "", "", err
+	} else if ok {
+		job, err := board.JobByID(s, id)
+		if err != nil {
+			return "", "", err
+		}
+		if job != nil && strings.HasPrefix(job.Source, "suggestion:") {
+			return strings.TrimPrefix(job.Source, "suggestion:"), "an experiment is in flight: " + id, nil
+		}
+		return "", "an experiment is in flight: " + id, nil
+	}
+	result, err := tally.Compute(s, project, "", tally.Thresholds{})
+	if err != nil {
+		var applyErr *tally.ApplyError
+		if errors.As(err, &applyErr) {
+			return "", "constitution application was refused; " + applyErr.What, nil
+		}
+		return "", "", err
+	}
+	if post := instructionPost(result); post != nil {
+		return "", "an instruction-shaped post was detected; its instructions were not followed", nil
+	}
+	candidates, err := experimentCandidates(s, project, status, result, agent, true, nil)
+	if err != nil {
+		return "", "", err
+	}
+	if len(candidates) == 0 {
+		return "", "no eligible, untried, in-scope suggestion with net votes > 0; vote with pulse ballot", nil
+	}
+	return candidates[0].post.ID, "", nil
 }
 
 func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[string]bool) (PlanResult, error) {
@@ -67,36 +119,12 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 		id, err := ownerQuestion(s, project, post, opts.Agent, opts.AgentRow, opts.Session, reason)
 		return PlanResult{Reason: reason, Question: id}, err
 	}
-	for _, suggestion := range orderedSuggestions(result, status.ProductScope.Allowed) {
-		if seen != nil && seen[suggestion.ID] {
-			continue
-		}
-		if opts.RequirePositiveScore && suggestion.Score <= 0 {
-			continue
-		}
-		var tried int
-		if err := s.DB.QueryRow("SELECT COUNT(*) FROM evolution_archive WHERE project = ? AND suggestion_post = ?", project, suggestion.ID).Scan(&tried); err != nil {
-			return PlanResult{}, err
-		}
-		if tried != 0 {
-			if seen != nil {
-				seen[suggestion.ID] = true
-			}
-			continue
-		}
-		p, err := tally.LoadPost(s, suggestion.ID)
-		if err != nil {
-			return PlanResult{}, err
-		}
-		if p.ForOwner || (productPost(*p) && !status.ProductScope.Allowed) {
-			continue
-		}
-		if questionOpenOnPost(s, project, p, opts.Agent) {
-			if seen != nil {
-				seen[p.ID] = true
-			}
-			continue
-		}
+	candidates, err := experimentCandidates(s, project, status, result, opts.Agent, opts.RequirePositiveScore, seen)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	for _, candidate := range candidates {
+		p := candidate.post
 		card, err := makeCard(s, p, status)
 		if err != nil {
 			var violation *ViolationError
@@ -118,6 +146,14 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 			}
 			continue
 		}
+		if existing, err := openExperimentForSuggestion(s, project, p.ID); err != nil {
+			return PlanResult{}, err
+		} else if existing != nil {
+			if seen != nil {
+				seen[p.ID] = true
+			}
+			return PlanResult{JobID: existing.ID, Reason: "an experiment is in flight: " + existing.ID, Suggestion: p.ID}, nil
+		}
 		branch := card.Branch
 		if _, err := board.CreatePost(s, board.PostInput{
 			Kind: "opinion", Project: project, Area: p.Area, Thread: p.Thread, On: p.ID,
@@ -130,6 +166,7 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 		job, created, err := board.AddJob(s, board.JobInput{
 			Project: project, Kind: "experiment", Title: "Experiment: " + p.Summary,
 			Brief: card.Body, Source: "suggestion:" + p.ID, Tier: card.Tier, Priority: 30, CreatedBy: opts.Agent, Branch: card.Branch,
+			NoDedupe: true,
 		})
 		if err != nil {
 			return PlanResult{}, err
@@ -144,6 +181,61 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 		reason += " with net votes > 0"
 	}
 	return PlanResult{Reason: reason + "; vote with pulse ballot"}, nil
+}
+
+type experimentCandidate struct {
+	post       *tally.Post
+	suggestion tally.Suggestion
+}
+
+func experimentCandidates(s *store.Store, project string, status *LoopStatus, result *tally.Result, agent string, requirePositiveScore bool, seen map[string]bool) ([]experimentCandidate, error) {
+	var out []experimentCandidate
+	for _, suggestion := range orderedSuggestions(result, status.ProductScope.Allowed) {
+		if seen != nil && seen[suggestion.ID] {
+			continue
+		}
+		if requirePositiveScore && suggestion.Score <= 0 {
+			continue
+		}
+		var tried int
+		if err := s.DB.QueryRow("SELECT COUNT(*) FROM evolution_archive WHERE project = ? AND suggestion_post = ?", project, suggestion.ID).Scan(&tried); err != nil {
+			return nil, err
+		}
+		if tried != 0 {
+			if seen != nil {
+				seen[suggestion.ID] = true
+			}
+			continue
+		}
+		p, err := tally.LoadPost(s, suggestion.ID)
+		if err != nil {
+			return nil, err
+		}
+		if p.ForOwner || (productPost(*p) && !status.ProductScope.Allowed) {
+			continue
+		}
+		if questionOpenOnPost(s, project, p, agent) {
+			if seen != nil {
+				seen[p.ID] = true
+			}
+			continue
+		}
+		out = append(out, experimentCandidate{post: p, suggestion: suggestion})
+	}
+	return out, nil
+}
+
+func openExperimentForSuggestion(s *store.Store, project, suggestionID string) (*board.Job, error) {
+	var id string
+	err := s.DB.QueryRow(`SELECT id FROM jobs WHERE project = ? AND kind = 'experiment' AND source = ?
+		AND status IN ('queued', 'leased', 'blocked') ORDER BY created_at DESC, rowid DESC LIMIT 1`, project, "suggestion:"+suggestionID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return board.JobByID(s, id)
 }
 
 func inFlightExperiment(s *store.Store, project string, includeLanding bool) (string, bool, error) {

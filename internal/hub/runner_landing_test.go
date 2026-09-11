@@ -37,3 +37,21 @@ func TestRunnerViewCarriesLandingHolds(t *testing.T) {
 		t.Fatalf("landing hold: %#v", note)
 	}
 }
+
+func TestRunnerViewCarriesCapacityHold(t *testing.T) {
+	s := additionsStore(t, true)
+	h := New(s, nil)
+	const hold = "workers on this machine wait for a GitHub Copilot login: Sign in with GitHub (Settings -> Harness) or run pulse harness login"
+	if _, err := s.DB.Exec(`INSERT INTO meta(key,value) VALUES
+		('capacity','{"queued":2,"slots":0,"inflight":0,"starved_since":"","held":"` + hold + `"}')`); err != nil {
+		t.Fatal(err)
+	}
+	code, body := additionsRequest(t, h, http.MethodGet, "/api/v1/runner", "")
+	if code != http.StatusOK {
+		t.Fatalf("runner: %d %v", code, body)
+	}
+	wantCapacity := "2 job(s) queued, 0 slot(s), 0 in flight; " + hold
+	if body["capacity"] != wantCapacity || body["hold"] != hold {
+		t.Fatalf("capacity hold: capacity=%#v hold=%#v", body["capacity"], body["hold"])
+	}
+}

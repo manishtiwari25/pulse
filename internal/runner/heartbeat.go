@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -70,16 +71,29 @@ func (e *localExec) stopHeartbeat(id board.ExecutionIdentity, report func(error)
 }
 
 func (e *sshExec) heartbeatCapable(ctx context.Context) bool {
+	fields := e.probeCapabilities(ctx)
+	return fields != nil && e.heartbeatCapableFrom(fields)
+}
+
+func (e *sshExec) probeCapabilities(ctx context.Context) map[string]string {
 	rc, out, _, err := sshRunContext(ctx, e.row, []string{"probe"}, nil, 10*time.Second)
 	if err != nil || rc != 0 {
 		e.log.add("presence unavailable: hands capability probe failed (exit %d): %v", rc, err)
-		return false
+		return nil
 	}
-	if parseProbe(out)["heartbeat"] != "1" {
+	return parseProbe(out)
+}
+
+func (e *sshExec) heartbeatCapableFrom(fields map[string]string) bool {
+	if fields["heartbeat"] != "1" {
 		e.log.add("presence unavailable: these hands do not acknowledge supervised heartbeats")
 		return false
 	}
 	return true
+}
+
+func stepsCapable(fields map[string]string) bool {
+	return fields["steps"] == "1"
 }
 
 // The SSH client being alive is not evidence. Read only snapshots written by
@@ -145,6 +159,13 @@ func handsHeartbeatPath(dir, session string) (string, error) {
 		return "", handsDie("bad heartbeat session")
 	}
 	return filepath.Join(dir, "presence-"+session+".json"), nil
+}
+
+func handsStepsPath(dir, session string) (string, error) {
+	if !handsJobRe.MatchString(session) || session == "." || session == ".." || len(session) > 160 {
+		return "", handsDie("bad steps session")
+	}
+	return filepath.Join(dir, "harness-steps-"+session+".jsonl"), nil
 }
 
 // A session-specific, atomically replaced snapshot stays outside the clone and
@@ -235,6 +256,43 @@ func (h *hands) heartbeat(job, session string) error {
 	if len(data) > 4096 || json.Unmarshal(data, &beat) != nil || beat.Validate() != nil ||
 		beat.JobID != job || beat.Session != session {
 		return handsDie("invalid heartbeat evidence")
+	}
+	_, err = h.stdout.Write(data)
+	return err
+}
+
+func (h *hands) steps(job, session, offsetText string) error {
+	dir, err := h.jobDir(job)
+	if err != nil {
+		return err
+	}
+	path, err := handsStepsPath(dir, session)
+	if err != nil {
+		return err
+	}
+	offset, err := strconv.ParseInt(offsetText, 10, 64)
+	if err != nil || offset < 0 {
+		return handsDie("bad steps offset")
+	}
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return &handsExit{3}
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 1024*1024))
+	if err != nil {
+		return err
+	}
+	if i := bytes.LastIndexByte(data, '\n'); i >= 0 {
+		data = data[:i+1]
+	} else {
+		data = nil
 	}
 	_, err = h.stdout.Write(data)
 	return err

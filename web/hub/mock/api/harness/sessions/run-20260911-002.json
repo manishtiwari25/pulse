@@ -6,7 +6,7 @@
     "job_title": "Cache the price lookup",
     "agent": "aurora",
     "project": "demo-app",
-    "executor": "pulse-vm1",
+    "executor": "vm-seven",
     "provider": "copilot",
     "model": "claude-sonnet-4.5",
     "cwd": "/home/owner/.pulse/work/job-price-cache",

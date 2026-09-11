@@ -225,6 +225,7 @@ func TestLoginSourcePrecedenceAndCache(t *testing.T) {
 	}
 
 	// The hub's gh token counts only after passing the same checks; the answer is cached for ten minutes.
+	setSetting(t, s, "harness", "copilot-cli")
 	stubGh(t, "gho_hubtoken00000000000000000000000000")
 	tok, origin, _ = loginSource(s)
 	if string(tok) != "gho_hubtoken00000000000000000000000000" || origin != loginSourceHubLogin {

@@ -6,7 +6,7 @@
     "job_title": "Fix the 429 retry",
     "agent": "fable-worker-1",
     "project": "demo-app",
-    "executor": "local",
+    "executor": "",
     "provider": "copilot",
     "model": "claude-sonnet-4.5",
     "cwd": "/home/owner/.pulse/work/job-429-retry",

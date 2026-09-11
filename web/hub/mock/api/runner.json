@@ -1,6 +1,7 @@
 {
   "available": true,
-  "capacity": "",
+  "capacity": "2 job(s) queued, 0 slot(s), 0 in flight; workers on this machine wait for a GitHub Copilot login: Sign in with GitHub (Settings -> Harness) or run pulse harness login",
+  "hold": "workers on this machine wait for a GitHub Copilot login: Sign in with GitHub (Settings -> Harness) or run pulse harness login",
   "daemon": {
     "state": "never started",
     "text": "never started"

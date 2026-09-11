@@ -797,7 +797,7 @@ func executorLogin(s *store.Store, now, name, adminAddress string, token io.Read
 	if _, _, _, err := parseSSHAddress(adminAddress); err != nil {
 		return loginResult{}, err
 	}
-	if (token == nil) == !remove {
+	if remove && token != nil {
 		return loginResult{}, fail(2, "executor login needs exactly one of --with-token or --remove")
 	}
 	setExecutorAdmin(s, name, adminAddress)
@@ -854,7 +854,18 @@ func executorLogin(s *store.Store, now, name, adminAddress string, token io.Read
 		logEvent(nil)
 		return res, nil
 	}
-	if isTTY {
+	source := ""
+	if token == nil {
+		tok, origin, err := loginSource(s)
+		if err != nil {
+			return res, err
+		}
+		if len(tok) == 0 {
+			return res, fail(2, "executor login needs a token source; fix: sign in on the brain in Settings -> Harness or with `pulse harness login`, place an executor token with `pulse executor token --with-token`, or pipe one with `pulse executor login %s --admin %s --with-token`", name, adminAddress)
+		}
+		source = origin
+		token = tokenReader(tok)
+	} else if isTTY {
 		return res, fail(2, "the token must be piped, not typed")
 	}
 	raw, _ := io.ReadAll(token)
@@ -864,6 +875,9 @@ func executorLogin(s *store.Store, now, name, adminAddress string, token io.Read
 		return res, err
 	}
 	res.Kind = kind
+	if source != "" {
+		res.Lines = append(res.Lines, "login source: "+source)
+	}
 	facts := githubTokenFacts(tok, "")
 	res.Lines = append(res.Lines, facts.Note)
 	if facts.OK != nil && !*facts.OK {
@@ -940,6 +954,9 @@ func executorLogin(s *store.Store, now, name, adminAddress string, token io.Read
 		res.Lines = append(res.Lines, lastLines(out+errText, 5)...)
 	}
 	extra := map[string]any{}
+	if source != "" {
+		extra["source"] = source
+	}
 	if facts.Expires != "" {
 		extra["expires"] = facts.Expires
 	}

@@ -526,10 +526,12 @@ export function MachinePanel({ r }: { r: Runner | undefined | null }) {
           ["slots", r.hands.free + " free of " + r.hands.slots + " on " + plural(r.hands.executors_active, "active executor")],
           ["workers", r.workers.busy + " busy · " + r.workers.idle + " idle" + (r.workers.idle_names.length ? " (" + r.workers.idle_names.join(", ") + ")" : "") + " · target " + r.workers.target],
           ["jobs", r.jobs.queued + " queued · " + r.jobs.leased + " leased · " + r.jobs.running + " running" + (r.jobs.blocked ? " · " + r.jobs.blocked + " blocked" : "")],
+          ...(r.capacity ? [["capacity", r.capacity] as [React.ReactNode, React.ReactNode]] : []),
           ["runs today", r.jobs.runs_today + (r.jobs.cap ? " of " + r.jobs.cap : " (no daily cap)")],
         ]}
       />
       {stopped ? <p className="mt-2 text-xs text-bad">{"The runner is stopped: " + (r.runner?.reason || "the stop switch is on") + "."}</p> : null}
+      <WorkerHold hold={r.hold} />
       <LandingHolds holds={r.landing} />
       {r.executors.length ? (
         <ul className="mt-3 grid gap-1.5">
@@ -539,6 +541,19 @@ export function MachinePanel({ r }: { r: Runner | undefined | null }) {
         </ul>
       ) : null}
     </Panel>
+  );
+}
+
+function WorkerHold({ hold }: { hold: string | undefined }) {
+  if (!hold) return null;
+  return (
+    <p className="mt-2 text-xs text-warn" aria-label="workers held">
+      <span className="font-medium">workers held: </span>
+      {hold}{" "}
+      <Link href={hrefs.settings("harness")} className="font-medium underline-offset-2 hover:underline">
+        Sign in
+      </Link>
+    </p>
   );
 }
 

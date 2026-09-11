@@ -243,17 +243,21 @@ func (h *Handler) runner(r *http.Request) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	hold, err := inspect.CapacityHold(h.Store)
+	if err != nil {
+		return nil, err
+	}
 	// ADR-024: projects whose verified branches wait on the owner (a dirty or switched checkout, a lock, an
 	// unreadable folder), as the daemon last wrote them; empty when everything lands.
 	landing, err := inspect.LandingNotes(h.Store)
 	if err != nil {
 		return nil, err
 	}
-	return object("available now daemon runner hands executors workers jobs capacity landing", true, h.Store.Now(), daemon,
+	return object("available now daemon runner hands executors workers jobs capacity hold landing", true, h.Store.Now(), daemon,
 		object("allowed reason", stopped == "", stopped),
 		object("free slots executors_active executors any_project", free, slots, active, len(executors), anyProject), executors,
 		object("pool idle busy target idle_names prune_after_days", len(workers), len(idle), len(workers)-len(idle), max(1, h.Store.SettingInt("quorum")+1), idle, h.Store.SettingInt("prune_after_days")),
-		jobs, capacity, landing), nil
+		jobs, capacity, hold, landing), nil
 }
 
 func newPerson(agent store.Agent) map[string]any {

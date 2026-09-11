@@ -44,3 +44,9 @@ var HarnessDDL = []string{
   PRIMARY KEY (session_id, n)
 )`,
 }
+
+// HarnessColumns are additive columns for stores that already created an older
+// harness_sessions table before the current harness schema.
+var HarnessColumns = []Column{
+	{Table: "harness_sessions", Name: "executor", DDL: "TEXT NOT NULL DEFAULT ''"},
+}

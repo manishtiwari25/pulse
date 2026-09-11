@@ -579,7 +579,9 @@ export interface Runner {
   executors: Executor[];
   workers: { pool: number; idle: number; busy: number; target: number; idle_names: string[]; prune_after_days: number };
   jobs: { queued: number; leased: number; blocked: number; running: number; runs_today: number; cap: number };
+  // Capacity is the CLI-compatible status line; hold is the structured login gate sentence from the same heartbeat.
   capacity?: string;
+  hold?: string;
   // Projects whose verified branches cannot land right now and why (ADR-024:
   // the checkout is dirty or off its default branch, a lock, an unreadable
   // folder). Written by the daemon once per change; empty when everything lands.
@@ -689,6 +691,7 @@ export interface HarnessSession {
   job_title: string;
   agent: string;
   project: string;
+  // Executor that ran or mirrored this harness session; empty when the hub did not know.
   executor: string;
   provider: string;
   model: string;

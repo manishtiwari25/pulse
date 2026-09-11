@@ -103,7 +103,13 @@ func TestStatusRunnerCountsAndCapacity(t *testing.T) {
 	if held, err := CapacityStatus(s); err != nil || held != "3 job(s) queued, 0 slot(s), 0 in flight; workers on this machine wait for a GitHub Copilot login: sign in with GitHub (Settings -> Harness)" {
 		t.Fatalf("held capacity: %q %v", held, err)
 	}
+	if hold, err := CapacityHold(s); err != nil || hold != "workers on this machine wait for a GitHub Copilot login: sign in with GitHub (Settings -> Harness)" {
+		t.Fatalf("capacity hold: %q %v", hold, err)
+	}
 	execSQL(t, s, `UPDATE meta SET value = '{"queued":3,"slots":2,"inflight":2,"starved_since":"2026-09-06T18:29:01Z"}' WHERE key = 'capacity'`)
+	if hold, err := CapacityHold(s); err != nil || hold != "" {
+		t.Fatalf("capacity hold without held: %q %v", hold, err)
+	}
 	if !strings.Contains(report.Harness, "native \u00b7 GitHub Copilot \u00b7") || !strings.Contains(report.Text(), "\nharness    "+report.Harness+"\n") {
 		t.Fatalf("harness line missing: %q\n%s", report.Harness, report.Text())
 	}

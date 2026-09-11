@@ -71,14 +71,14 @@ func init() {
 			fs.Bool("dry-run", false, "print the units or plists instead of installing")
 		}, Run: cmdService})
 	cli.Register(cli.Command{Name: "executor", Group: "runner", Summary: "list, add, probe, drain, activate, remove or log in the executors (remote hands)",
-		Usage: "pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | login NAME --admin admin@host (--with-token | --remove) | token [--with-token | --remove]",
+		Usage: "pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]",
 		Flags: func(fs *flag.FlagSet) {
 			fs.String("ssh", "", "user@host[:port] of the executor")
 			fs.String("workdir", "", "absolute work directory on the executor")
 			fs.Int("workers", 1, "parallel workers there")
 			fs.String("projects", "*", "comma-separated project slugs or *")
 			fs.String("admin", "", "admin ssh address for login")
-			fs.Bool("with-token", false, "read a GitHub token from stdin and place the worker login")
+			fs.Bool("with-token", false, "read a GitHub token from stdin instead of reusing the brain's login source")
 			fs.Bool("remove", false, "remove the worker login")
 			fs.Bool("login", false, "probe: also run the login check")
 		}, Run: cmdExecutor})
@@ -550,8 +550,11 @@ func cmdExecutor(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		c.Printf("%s removed; the machine, its key, and its login are yours to retire\n", name)
 	case "login":
 		withToken, remove := boolFlag(fs, "with-token"), boolFlag(fs, "remove")
-		if strFlag(fs, "admin") == "" || withToken == remove {
-			return fail(2, "executor login needs --admin admin@host[:port] and exactly one of --with-token or --remove")
+		if strFlag(fs, "admin") == "" {
+			return fail(2, "executor login needs --admin admin@host[:port]")
+		}
+		if withToken && remove {
+			return fail(2, "executor login needs exactly one of --with-token or --remove")
 		}
 		var token io.Reader
 		if withToken {

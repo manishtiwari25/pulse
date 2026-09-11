@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/manishtiwari25/pulse/internal/provider"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -27,6 +28,7 @@ const (
 	ghSourceCacheMins   = 10
 	loginSourceToken    = "executor token"
 	loginSourceHubLogin = "hub login"
+	loginSourceProvider = "provider login"
 	loginSourceNone     = "none"
 )
 
@@ -187,7 +189,10 @@ type ghSourceCache struct {
 	fetchedAt time.Time
 }
 
-var ghSource ghSourceCache
+var (
+	ghSource       ghSourceCache
+	providerSource ghSourceCache
+)
 
 func (c *ghSourceCache) forget() {
 	c.mu.Lock()
@@ -225,9 +230,10 @@ func (c *ghSourceCache) passes(tok string) bool {
 	return c.ok
 }
 
-// loginSource (ADR-034 rule 2): the executor token on file, else the hub's `gh auth token` when it too
-// reaches no repository, else none. The file is trusted after classifyToken alone (it was checked when
-// placed); the gh token is checked against GitHub and cached per process for ghSourceCacheMins.
+// loginSource (ADR-034 rule 2): the executor token on file, else (native) the stored provider login or
+// (legacy) the hub's `gh auth token` when the source reaches no repository, else none. The file is trusted
+// after classifyToken alone (it was checked when placed); borrowed sources are checked against GitHub and
+// cached per process for ghSourceCacheMins.
 func loginSource(s *store.Store) ([]byte, string, error) {
 	data, err := os.ReadFile(executorTokenPath(s))
 	if err == nil {
@@ -238,6 +244,28 @@ func loginSource(s *store.Store) ([]byte, string, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, loginSourceNone, err
 	}
+	if s.HarnessNative() {
+		p, err := localProvider(s.Home, s.Setting("provider", provider.Default))
+		if err != nil {
+			return nil, loginSourceNone, err
+		}
+		exporter, ok := p.(provider.LoginExporter)
+		if !ok {
+			return nil, loginSourceNone, nil
+		}
+		tok, _, err := exporter.ExportLogin()
+		if err != nil {
+			if isNoStoredLogin(err) {
+				return nil, loginSourceNone, nil
+			}
+			return nil, loginSourceNone, err
+		}
+		tok = strings.TrimSpace(tok)
+		if tok != "" && providerSource.passes(tok) {
+			return []byte(tok), loginSourceProvider, nil
+		}
+		return nil, loginSourceNone, nil
+	}
 	tok, err := ghSource.fetch()
 	if err != nil {
 		return nil, loginSourceNone, err
@@ -246,6 +274,11 @@ func loginSource(s *store.Store) ([]byte, string, error) {
 		return []byte(tok), loginSourceHubLogin, nil
 	}
 	return nil, loginSourceNone, nil
+}
+
+func isNoStoredLogin(err error) bool {
+	var perr *provider.Error
+	return errors.As(err, &perr) && perr.Code == "no_stored_login"
 }
 
 // hasLoginSource is the yes/no the compute gate asks (ADR-034 rule 6).

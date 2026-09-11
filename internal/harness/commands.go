@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,7 +25,7 @@ import (
 )
 
 const (
-	harnessUsage = "pulse harness run -p TEXT [-C DIR] [--model M] ... | login [--with-token] | status | models | logout | sessions | show ID"
+	harnessUsage = "pulse harness run -p TEXT [-C DIR] [--model M] [--steps-file PATH] ... | login [--with-token] | status | models | logout | sessions | show ID"
 	loginFix     = "sign in with GitHub in the console (Settings \u2192 Harness) or run pulse harness login"
 )
 
@@ -91,7 +92,7 @@ func unknownHarnessVerb(verb string) error {
 func harnessRun(c *cli.Context, args []string) error {
 	fs := flag.NewFlagSet("harness run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var taskText, taskFile, cwd, modelName, providerName, sessionID, trajectory string
+	var taskText, taskFile, cwd, modelName, providerName, sessionID, trajectory, stepsFile string
 	var maxSteps, stepTimeout, outputLimit, minutes int
 	var noStore bool
 	fs.StringVar(&taskText, "p", "", "task text")
@@ -106,6 +107,7 @@ func harnessRun(c *cli.Context, args []string) error {
 	fs.IntVar(&minutes, "minutes", 0, "wall-clock cap in minutes")
 	fs.StringVar(&sessionID, "session", "", "harness session id")
 	fs.StringVar(&trajectory, "trajectory", "", "trajectory path, or none")
+	fs.StringVar(&stepsFile, "steps-file", "", "append newline-delimited harness events to PATH")
 	fs.BoolVar(&noStore, "no-store", false, "do not open the PULSE store")
 	bindRawGlobals(c, fs)
 	if err := fs.Parse(args); err != nil {
@@ -127,6 +129,13 @@ func harnessRun(c *cli.Context, args []string) error {
 	}
 	if sessionID == "" {
 		sessionID = newHarnessSessionID()
+	}
+	if stepsFile == "" {
+		stepsFile = os.Getenv("PULSE_HARNESS_STEPS")
+	}
+	var stepLog *stepsFileSink
+	if stepsFile != "" {
+		stepLog = &stepsFileSink{c: c, path: stepsFile, session: sessionID}
 	}
 	st, closeStore, err := openHarnessStore(c, noStore)
 	if err != nil {
@@ -154,6 +163,10 @@ func harnessRun(c *cli.Context, args []string) error {
 		if errors.Is(err, provider.ErrNotLoggedIn) {
 			result := Result{ExitStatus: ExitNotLoggedIn, Error: err.Error()}
 			fmt.Fprintln(c.Err, notLoggedInLine(err))
+			if stepLog != nil {
+				stepLog.begin(providerName, "", absCwd)
+				stepLog.finish(result)
+			}
 			if st != nil {
 				// Record the attempt so the console shows why nothing ran.
 				rec := &storeSink{c: c, s: st, id: sessionID}
@@ -208,6 +221,10 @@ func harnessRun(c *cli.Context, args []string) error {
 	if !c.Quiet {
 		sinks = append(sinks, progressSink(c.Err, progressStart))
 	}
+	if stepLog != nil {
+		sinks = append(sinks, stepLog)
+		stepLog.begin(providerName, modelName, absCwd)
+	}
 	if st != nil {
 		rec = &storeSink{c: c, s: st, id: sessionID}
 		sinks = append(sinks, rec)
@@ -240,6 +257,9 @@ func harnessRun(c *cli.Context, args []string) error {
 		if err := rec.finish(result, trajectoryPath); err != nil {
 			fmt.Fprintf(c.Err, "pulse harness: store warning: %v\n", err)
 		}
+	}
+	if stepLog != nil {
+		stepLog.finish(result)
 	}
 	if result.ExitStatus == ExitNotLoggedIn {
 		fmt.Fprintln(c.Err, notLoggedInLine(errors.New(result.Error)))
@@ -723,6 +743,77 @@ func (s *storeSink) warn(err error) {
 	}
 	s.warned = true
 	fmt.Fprintf(s.c.Err, "pulse harness: store warning: %v\n", err)
+}
+
+type stepsFileSink struct {
+	c        *cli.Context
+	path     string
+	session  string
+	provider string
+	model    string
+	warned   bool
+	count    int
+}
+
+func (s *stepsFileSink) begin(providerName, model, cwd string) {
+	s.provider, s.model = providerName, model
+	s.write(map[string]any{
+		"event": "begin", "session": s.session, "run_id": os.Getenv("PULSE_SESSION"), "job_id": os.Getenv("PULSE_JOB"),
+		"agent": os.Getenv("PULSE_AGENT"), "provider": providerName, "model": model, "cwd": cwd,
+		"at": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *stepsFileSink) Step(step Step) {
+	s.count++
+	ev := struct {
+		Event string `json:"event"`
+		Step
+	}{Event: "step", Step: step}
+	s.write(ev)
+}
+
+func (s *stepsFileSink) finish(result Result) {
+	s.write(map[string]any{
+		"event": "finish", "exit_status": result.ExitStatus, "submission": result.Submission, "error": result.Error,
+		"cost": result.Usage.Cost, "steps": s.count, "at": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *stepsFileSink) write(v any) {
+	if s.warned || s.path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		s.warn(err)
+		return
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		s.warn(err)
+		return
+	}
+	data = append(data, '\n')
+	f, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		s.warn(err)
+		return
+	}
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if werr != nil {
+		s.warn(werr)
+	} else if cerr != nil {
+		s.warn(cerr)
+	}
+}
+
+func (s *stepsFileSink) warn(err error) {
+	if s.warned || err == nil {
+		return
+	}
+	s.warned = true
+	fmt.Fprintf(s.c.Err, "pulse harness: steps-file warning: %v\n", err)
 }
 
 func actorOf(c *cli.Context) string {

@@ -6,7 +6,7 @@
     "job_title": "Add events subject index",
     "agent": "fjord",
     "project": "pulse",
-    "executor": "local",
+    "executor": "",
     "provider": "copilot",
     "model": "gpt-4.1",
     "cwd": "/home/owner/.pulse/work/job-schema-index",
