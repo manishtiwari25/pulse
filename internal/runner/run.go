@@ -407,6 +407,9 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 				shown = append(shown, shellQuote(c))
 			}
 		}
+		if !ex.remote() {
+			log.add("%s", preflightLine(pulseOnPath(envWith(environ(), env)), env["PULSE_CLI"]))
+		}
 		log.add("$ %s", strings.Join(shown, " "))
 		launched := wallClock()
 		out, err := ex.runWorker(ctx, cmd, env, minutes)
