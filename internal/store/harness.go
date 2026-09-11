@@ -145,6 +145,24 @@ WHERE id = ?`, s.Now(), step.SessionID, step.SessionID, step.SessionID, step.Ses
 	return tx.Commit()
 }
 
+// HarnessSteps returns steps after a sequence number, ordered by step number.
+func (s *Store) HarnessSteps(id string, after int) ([]HarnessStep, error) {
+	rows, err := s.DB.Query("SELECT "+harnessStepCols+" FROM harness_steps WHERE session_id = ? AND n > ? ORDER BY n", id, after)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var steps []HarnessStep
+	for rows.Next() {
+		step, err := scanHarnessStep(rows)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, *step)
+	}
+	return steps, rows.Err()
+}
+
 // FinishHarnessSession records the final status and cost of a harness run.
 func (s *Store) FinishHarnessSession(id, status, exitStatus, submission, errText string, cost float64, trajectory string) error {
 	if strings.TrimSpace(id) == "" {
@@ -211,14 +229,24 @@ func (s *Store) HarnessSessions(f HarnessSessionFilter) ([]HarnessSession, error
 	return out, rows.Err()
 }
 
-// HarnessSession returns a session with its ordered steps, or nils when absent.
-func (s *Store) HarnessSession(id string) (*HarnessSession, []HarnessStep, error) {
+// HarnessSessionHead returns a session row without loading its steps, or nil
+// when absent.
+func (s *Store) HarnessSessionHead(id string) (*HarnessSession, error) {
 	h, err := scanHarnessSession(s.DB.QueryRow("SELECT "+harnessSessionCols+" FROM harness_sessions WHERE id = ?", id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
+	}
+	return h, nil
+}
+
+// HarnessSession returns a session with its ordered steps, or nils when absent.
+func (s *Store) HarnessSession(id string) (*HarnessSession, []HarnessStep, error) {
+	h, err := s.HarnessSessionHead(id)
+	if err != nil || h == nil {
+		return h, nil, err
 	}
 	rows, err := s.DB.Query("SELECT "+harnessStepCols+" FROM harness_steps WHERE session_id = ? ORDER BY n", id)
 	if err != nil {

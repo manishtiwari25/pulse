@@ -20,6 +20,8 @@ export function hint(s: Setting): string {
       return "a whole number, or none";
     case "credits":
       return "a whole number, at least " + (s.min ?? 30);
+    case "number":
+      return "a number, decimals allowed" + (s.min !== undefined && s.min !== null ? ", at least " + s.min : "");
     case "fraction":
       return "a fraction such as 2/3";
     case "command":
@@ -111,7 +113,7 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
             ) : (
               <Input
                 type={secret ? "password" : "text"}
-                inputMode={s.kind === "count" || s.kind === "credits" ? "numeric" : undefined}
+                inputMode={s.kind === "count" || s.kind === "credits" ? "numeric" : s.kind === "number" ? "decimal" : undefined}
                 aria-label={s.name}
                 value={secret && !dirty ? "" : draft}
                 disabled={!canEdit}
@@ -125,7 +127,7 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
                   }
                   if (e.key === "Escape") setDraft(s.value);
                 }}
-                className={cn("h-8", s.kind === "count" || s.kind === "count-or-none" || s.kind === "credits" ? "w-32 shrink-0 tnum" : wide ? "w-64 max-w-full" : "w-32 shrink-0")}
+                className={cn("h-8", s.kind === "count" || s.kind === "count-or-none" || s.kind === "credits" || s.kind === "number" ? "w-32 shrink-0 tnum" : wide ? "w-64 max-w-full" : "w-32 shrink-0")}
               />
             )}
             <Button size="sm" variant={dirty ? "default" : "outline"} disabled={!canEdit || !dirty} onClick={() => setPending(draft)}>

@@ -21,6 +21,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/provider"
+	"github.com/manishtiwari25/pulse/internal/provider/fake"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -57,6 +58,9 @@ func init() {
 }
 
 func runHarnessCommand(c *cli.Context, _ *flag.FlagSet, args []string) error {
+	if os.Getenv("PULSE_HARNESS_FAKE") == "1" {
+		fake.Register()
+	}
 	if len(args) == 0 {
 		return unknownHarnessVerb("")
 	}
@@ -93,7 +97,8 @@ func harnessRun(c *cli.Context, args []string) error {
 	fs := flag.NewFlagSet("harness run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var taskText, taskFile, cwd, modelName, providerName, sessionID, trajectory, stepsFile string
-	var maxSteps, stepTimeout, outputLimit, minutes int
+	var maxSteps, stepTimeout, outputLimit, minutes, keepObservations int
+	var maxCost float64
 	var noStore bool
 	fs.StringVar(&taskText, "p", "", "task text")
 	fs.StringVar(&taskText, "task", "", "task text")
@@ -102,8 +107,10 @@ func harnessRun(c *cli.Context, args []string) error {
 	fs.StringVar(&modelName, "model", "", "model id")
 	fs.StringVar(&providerName, "provider", "", "provider name")
 	fs.IntVar(&maxSteps, "max-steps", 0, "maximum model calls")
+	fs.Float64Var(&maxCost, "max-cost", 0, "maximum provider-reported cost")
 	fs.IntVar(&stepTimeout, "step-timeout", 0, "per-command timeout in seconds")
 	fs.IntVar(&outputLimit, "output-limit", 0, "characters of command output kept")
+	fs.IntVar(&keepObservations, "keep-observations", 0, "observations kept verbatim in context")
 	fs.IntVar(&minutes, "minutes", 0, "wall-clock cap in minutes")
 	fs.StringVar(&sessionID, "session", "", "harness session id")
 	fs.StringVar(&trajectory, "trajectory", "", "trajectory path, or none")
@@ -193,6 +200,9 @@ func harnessRun(c *cli.Context, args []string) error {
 			maxSteps = st.SettingInt("harness.max_steps")
 		}
 	}
+	if maxCost == 0 && st != nil {
+		maxCost = st.SettingFloat("harness.max_cost")
+	}
 	if stepTimeout == 0 {
 		stepTimeout = int(DefaultStepTimeout.Seconds())
 		if st != nil {
@@ -205,6 +215,13 @@ func harnessRun(c *cli.Context, args []string) error {
 			outputLimit = st.SettingInt("harness.output_limit")
 		}
 	}
+	if keepObservations == 0 {
+		keepObservations = DefaultKeepObservations
+		if st != nil {
+			keepObservations = st.SettingInt("harness.keep_observations")
+		}
+	}
+	contextWindow := modelContextWindow(context.Background(), p, modelName)
 	trajectoryPath := ""
 	if trajectory != "none" {
 		if trajectory == "" {
@@ -232,11 +249,16 @@ func harnessRun(c *cli.Context, args []string) error {
 			fmt.Fprintf(c.Err, "pulse harness: store warning: %v\n", err)
 		}
 	}
+	var trajectoryLog *trajectorySink
+	if trajectoryPath != "" {
+		trajectoryLog = &trajectorySink{c: c, path: trajectoryPath}
+		sinks = append(sinks, trajectoryLog)
+	}
 	env := append(os.Environ(), "PULSE_HARNESS=1", "PULSE_HARNESS_SESSION="+sessionID, "GIT_TERMINAL_PROMPT=0")
 	cfg := Config{
 		Model: modelName, Task: task, Cwd: absCwd, Env: env, Provider: providerName,
 		MaxSteps: maxSteps, StepTimeout: time.Duration(stepTimeout) * time.Second,
-		OutputLimit: outputLimit,
+		MaxCost: maxCost, OutputLimit: outputLimit, KeepObservations: keepObservations, ContextWindow: contextWindow,
 	}
 	if minutes > 0 {
 		cfg.WallTime = time.Duration(minutes) * time.Minute
@@ -244,6 +266,9 @@ func harnessRun(c *cli.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	agent := New(p, NewLocalEnv(absCwd, env), cfg, sinks...)
+	if trajectoryLog != nil {
+		trajectoryLog.agent = agent
+	}
 	result, runErr := agent.Run(ctx)
 	if runErr != nil {
 		return runErr
@@ -659,6 +684,19 @@ func defaultRunModel(ctx context.Context, st *store.Store, p provider.Provider) 
 	return "", cli.Errorf(2, "pulse harness run: no default chat model available", "", "pass --model M")
 }
 
+func modelContextWindow(ctx context.Context, p provider.Provider, model string) int {
+	models, err := p.Models(ctx)
+	if err != nil {
+		return 0
+	}
+	for _, m := range models {
+		if m.ID == model {
+			return m.ContextWindow
+		}
+	}
+	return 0
+}
+
 func newHarnessSessionID() string {
 	var b [3]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -682,6 +720,8 @@ func progressSink(w io.Writer, start time.Time) Sink {
 				code = *s.ExitCode
 			}
 			fmt.Fprintf(w, "%sexit %d in %dms (%d chars)\n", prefix, code, s.DurationMS, len(s.Content))
+		case StepNote:
+			fmt.Fprintf(w, "%snote: %s\n", prefix, oneLine(s.Content, 160))
 		case StepError:
 			fmt.Fprintf(w, "%serror: %s\n", prefix, oneLine(s.Content, 160))
 		case StepExit:
@@ -723,6 +763,20 @@ func (s *storeSink) Step(step Step) {
 	})
 	if err != nil {
 		s.warn(err)
+		return
+	}
+	payload := map[string]any{"session": s.id, "n": step.N, "kind": string(step.Kind)}
+	if step.ExitCode != nil {
+		payload["exit_code"] = *step.ExitCode
+	}
+	if job := os.Getenv("PULSE_JOB"); job != "" {
+		payload["job"] = job
+	}
+	if runID := os.Getenv("PULSE_SESSION"); runID != "" {
+		payload["run_id"] = runID
+	}
+	if _, err := bus.Emit(s.s, actorOf(s.c), "harness.step", s.id, payload); err != nil {
+		s.warn(err)
 	}
 }
 
@@ -753,6 +807,32 @@ type stepsFileSink struct {
 	model    string
 	warned   bool
 	count    int
+}
+
+type trajectorySink struct {
+	c      *cli.Context
+	path   string
+	agent  *Agent
+	warned bool
+}
+
+func (s *trajectorySink) Step(Step) {
+	if s.agent == nil || s.path == "" || s.warned {
+		return
+	}
+	if err := WriteTrajectory(s.path, s.agent.Trajectory()); err != nil {
+		s.warn(err)
+	}
+}
+
+func (s *trajectorySink) warn(err error) {
+	if s.warned || err == nil {
+		return
+	}
+	s.warned = true
+	if s.c != nil {
+		fmt.Fprintf(s.c.Err, "pulse harness: trajectory warning: %v\n", err)
+	}
 }
 
 func (s *stepsFileSink) begin(providerName, model, cwd string) {
@@ -863,7 +943,7 @@ func exitCodeFor(status string) int {
 		return 3
 	case ExitNotLoggedIn:
 		return 4
-	case ExitStepLimit, ExitTimeLimit, ExitFormatError, ExitCancelled:
+	case ExitStepLimit, ExitTimeLimit, ExitCostLimit, ExitFormatError, ExitCancelled:
 		return 1
 	default:
 		return 1
@@ -882,9 +962,10 @@ type harnessStatusReport struct {
 		Light  string `json:"light"`
 	} `json:"models"`
 	Limits struct {
-		MaxSteps           int `json:"max_steps"`
-		StepTimeoutSeconds int `json:"step_timeout_seconds"`
-		OutputLimit        int `json:"output_limit"`
+		MaxSteps           int     `json:"max_steps"`
+		MaxCost            float64 `json:"max_cost"`
+		StepTimeoutSeconds int     `json:"step_timeout_seconds"`
+		OutputLimit        int     `json:"output_limit"`
 	} `json:"limits"`
 	Sessions *struct {
 		Running     int `json:"running"`
@@ -899,6 +980,7 @@ func statusReport(st *store.Store, p provider.Provider, login provider.Login, lo
 	r.Provider.Name, r.Provider.Label, r.Provider.Login = p.Name(), p.Label(), login
 	r.Models.Worker, r.Models.Light = "", "same as worker"
 	r.Limits.MaxSteps = DefaultMaxSteps
+	r.Limits.MaxCost = 0
 	r.Limits.StepTimeoutSeconds = int(DefaultStepTimeout.Seconds())
 	r.Limits.OutputLimit = DefaultOutputLimit
 	if st != nil {
@@ -908,6 +990,7 @@ func statusReport(st *store.Store, p provider.Provider, login provider.Login, lo
 			r.Models.Light = light
 		}
 		r.Limits.MaxSteps = st.SettingInt("harness.max_steps")
+		r.Limits.MaxCost = st.SettingFloat("harness.max_cost")
 		r.Limits.StepTimeoutSeconds = st.SettingInt("harness.step_timeout")
 		r.Limits.OutputLimit = st.SettingInt("harness.output_limit")
 		if running, today, failed, err := st.HarnessSessionCounts(); err == nil {
@@ -938,7 +1021,7 @@ func writeHarnessStatus(w io.Writer, r harnessStatusReport) {
 	}
 	fmt.Fprintf(w, "harness  %s\nprovider %s (%s)\nlogin    %s\n", r.Harness, r.Provider.Label, r.Provider.Name, login)
 	fmt.Fprintf(w, "models   worker=%s, light=%s\n", orDefault(r.Models.Worker, "provider default"), r.Models.Light)
-	fmt.Fprintf(w, "limits   max_steps=%d, step_timeout=%ds, output_limit=%d\n", r.Limits.MaxSteps, r.Limits.StepTimeoutSeconds, r.Limits.OutputLimit)
+	fmt.Fprintf(w, "limits   max_steps=%d, max_cost=%s, step_timeout=%ds, output_limit=%d\n", r.Limits.MaxSteps, strconv.FormatFloat(r.Limits.MaxCost, 'f', -1, 64), r.Limits.StepTimeoutSeconds, r.Limits.OutputLimit)
 	if r.Sessions != nil {
 		fmt.Fprintf(w, "sessions running=%d, today=%d, failed_today=%d\n", r.Sessions.Running, r.Sessions.Today, r.Sessions.FailedToday)
 	}

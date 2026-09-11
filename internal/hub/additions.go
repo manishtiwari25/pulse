@@ -779,7 +779,7 @@ type additionEvent struct {
 // first: a cursor gets what it missed, no cursor gets the recent window, and
 // neither walks the log from its first row.
 func (h *Handler) additionReadEvents(r *http.Request, since int64, limit int64) ([]additionEvent, error) {
-	events, err := bus.Latest(h.Store, since, bus.Filter{Project: h.additionProject(r)}, int(limit))
+	events, err := bus.Latest(h.Store, since, h.additionEventFilter(r), int(limit))
 	if err != nil {
 		return nil, err
 	}
@@ -797,6 +797,21 @@ func additionBusEvent(event bus.Event) additionEvent {
 		out.Detail = event.Detail
 	}
 	return privateSettingEvent(out)
+}
+
+func (h *Handler) additionEventFilter(r *http.Request) bus.Filter {
+	query := r.URL.Query()
+	var actions []string
+	for _, key := range []string{"kind", "action", "kinds", "actions"} {
+		for _, value := range query[key] {
+			for _, action := range strings.Split(value, ",") {
+				if action = strings.TrimSpace(action); action != "" {
+					actions = append(actions, action)
+				}
+			}
+		}
+	}
+	return bus.Filter{Actions: actions, Project: h.additionProject(r), Subject: query.Get("subject")}
 }
 
 func (h *Handler) additionEvents(w http.ResponseWriter, r *http.Request, parts []string) {
@@ -887,7 +902,7 @@ func (h *Handler) additionEvents(w http.ResponseWriter, r *http.Request, parts [
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	tail := bus.Tail(ctx, h.Store, head, bus.Filter{Project: h.additionProject(r)}, time.Second)
+	tail := bus.Tail(ctx, h.Store, head, h.additionEventFilter(r), time.Second)
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	for {

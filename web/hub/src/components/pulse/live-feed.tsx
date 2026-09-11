@@ -59,6 +59,8 @@ export function LiveFeed({ project, limit = 40, title = "Live", height }: { proj
     const out: StoreEvent[] = [];
     for (const e of [...live, ...(data?.events ?? [])]) {
       if (seen.has(e.id)) continue;
+      // Step events belong to the Harness page; here they would bury everything else.
+      if (e.action === "harness.step") continue;
       if (project && !matchesProject(e, project)) continue;
       seen.add(e.id);
       out.push(e);

@@ -149,6 +149,20 @@ func TestHarnessRunRecordsSubmissionAndTrajectory(t *testing.T) {
 	if len(steps) < 2 || steps[0].Kind != string(StepAssistant) || steps[len(steps)-1].Kind != string(StepExit) {
 		t.Fatalf("steps not recorded: %+v", steps)
 	}
+	var detail string
+	if err := s.DB.QueryRow("SELECT detail FROM events WHERE action = 'harness.step' AND subject = 'hs-test' ORDER BY seq LIMIT 1").Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]any
+	if err := json.Unmarshal([]byte(detail), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["session"] != "hs-test" || event["n"] != float64(steps[0].N) || event["kind"] != string(StepAssistant) {
+		t.Fatalf("harness.step payload: %#v", event)
+	}
+	if _, ok := event["exit_code"]; ok {
+		t.Fatalf("nil exit_code should be omitted: %#v", event)
+	}
 	data, err := os.ReadFile(trajectory)
 	if err != nil {
 		t.Fatal(err)

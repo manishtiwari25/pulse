@@ -287,6 +287,34 @@ func TestAdditionHarnessSessions(t *testing.T) {
 	}
 }
 
+func TestSessionAfter(t *testing.T) {
+	s := harnessStore(t)
+	h := New(s, nil)
+	if err := s.BeginHarnessSession(store.HarnessSession{ID: "HS-after", JobID: "JOB-after", Agent: "alice", Project: "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	for i, kind := range []string{"assistant", "command", "observation"} {
+		if err := s.AppendHarnessStep(store.HarnessStep{SessionID: "HS-after", N: i + 1, Kind: kind, Content: kind}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, result := additionsRequest(t, h, http.MethodGet, "/api/v1/harness/sessions/HS-after?after=1", "")
+	if status != http.StatusOK {
+		t.Fatalf("session after: %d %#v", status, result)
+	}
+	if result["after"] != float64(1) {
+		t.Fatalf("after echo: %#v", result)
+	}
+	steps := result["steps"].([]any)
+	if len(steps) != 2 || steps[0].(map[string]any)["n"] != float64(2) || steps[1].(map[string]any)["n"] != float64(3) {
+		t.Fatalf("steps after 1: %#v", steps)
+	}
+	status, result = additionsRequest(t, h, http.MethodGet, "/api/v1/harness/sessions/HS-after?after=x", "")
+	if status != http.StatusBadRequest || result["error"] != "Invalid after" {
+		t.Fatalf("invalid after: %d %#v", status, result)
+	}
+}
+
 func TestAdditionHarnessMethods(t *testing.T) {
 	h := New(harnessStore(t), nil)
 	for _, path := range []string{

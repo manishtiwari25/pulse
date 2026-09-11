@@ -258,6 +258,16 @@ func TestAdditionsEventsPolling(t *testing.T) {
 	if subjects := additionsEventSubjects(result["events"].([]any)); status != 200 || strings.Join(subjects, ",") != "one-4,one-5" {
 		t.Fatalf("a cursor with a limit should also prefer the newest events, got %d %v", status, subjects)
 	}
+	if err := s.Event("human", "harness.step", "HS-1", map[string]any{"project": "one", "session": "HS-1", "n": 1, "kind": "assistant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Event("human", "harness.step", "HS-2", map[string]any{"project": "one", "session": "HS-2", "n": 1, "kind": "assistant"}); err != nil {
+		t.Fatal(err)
+	}
+	status, result = additionsRequest(t, h, "GET", "/api/v1/events?project=one&kind=harness.step&subject=HS-1", "")
+	if subjects := additionsEventSubjects(result["events"].([]any)); status != 200 || strings.Join(subjects, ",") != "HS-1" {
+		t.Fatalf("kind and subject filter: %d %v", status, subjects)
+	}
 	for _, query := range []string{"since=-1", "since=no", "limit=0", "limit=1001", "limit=2.5"} {
 		status, _ := additionsRequest(t, h, "GET", "/api/v1/events?"+query, "")
 		if status != 400 {
@@ -375,7 +385,7 @@ func TestAdditionsEventsStreamAfterConnection(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", server.URL+"/api/v1/events/stream?project=one", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", server.URL+"/api/v1/events/stream?project=one&kind=message.sent&subject=included", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,6 +399,12 @@ func TestAdditionsEventsStreamAfterConnection(t *testing.T) {
 		t.Fatalf("stream response: %d %v", response.StatusCode, response.Header)
 	}
 	if err := s.Event("human", "message.sent", "excluded", map[string]any{"project": "two"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Event("human", "task.amended", "included", map[string]any{"project": "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Event("human", "message.sent", "other-subject", map[string]any{"project": "one"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Event("human", "message.sent", "included", map[string]any{"project": "one"}); err != nil {

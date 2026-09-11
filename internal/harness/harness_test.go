@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/provider"
+	providerfake "github.com/manishtiwari25/pulse/internal/provider/fake"
 )
 
 type fakeProvider struct {
@@ -36,14 +38,15 @@ func (p *fakeProvider) Models(context.Context) ([]provider.Model, error) { retur
 func (p *fakeProvider) Status(context.Context) (provider.Login, error)   { return provider.Login{}, nil }
 
 type fakeEnv struct {
-	observations []Observation
-	commands     []string
+	observations  []Observation
+	commands      []string
+	defaultOutput string
 }
 
 func (e *fakeEnv) Execute(ctx context.Context, command string, timeout time.Duration) Observation {
 	e.commands = append(e.commands, command)
 	if len(e.observations) == 0 {
-		return Observation{Output: "", ExitCode: 0}
+		return Observation{Output: e.defaultOutput, ExitCode: 0}
 	}
 	obs := e.observations[0]
 	e.observations = e.observations[1:]
@@ -183,6 +186,104 @@ func TestLimits(t *testing.T) {
 	})
 }
 
+func TestCostLimitStopsRun(t *testing.T) {
+	p := providerfake.New(providerfake.Script{
+		Replies: []providerfake.Reply{{Command: "echo one", Usage: provider.Usage{Cost: 0.6}}},
+		Loop:    true,
+	})
+	cfg := baseConfig()
+	cfg.MaxCost = 1
+	env := &fakeEnv{observations: []Observation{{Output: "one\n", ExitCode: 0}, {Output: "one\n", ExitCode: 0}}}
+	got, err := New(p, env, cfg).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitStatus != ExitCostLimit || got.Calls != 2 || !strings.Contains(got.Error, "cost budget") {
+		t.Fatalf("unexpected result: %+v", got)
+	}
+}
+
+func TestLongRunStaysUnderWindow(t *testing.T) {
+	var replies []providerfake.Reply
+	for i := 0; i < 80; i++ {
+		replies = append(replies, providerfake.Reply{Command: "yes | head -c 20000"})
+	}
+	replies = append(replies, providerfake.Reply{Report: "SUMMARY: done"})
+	p := providerfake.New(providerfake.Script{Replies: replies, TokensPerChar: 0.25})
+	cfg := baseConfig()
+	cfg.MaxSteps = 100
+	cfg.ContextWindow = 128000
+	cfg.OutputLimit = 20000
+	env := &fakeEnv{defaultOutput: strings.Repeat("x\n", 10000)}
+	var steps []Step
+	got, err := New(p, env, cfg, SinkFunc(func(s Step) { steps = append(steps, s) })).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitStatus != ExitSubmitted {
+		t.Fatalf("exit = %s", got.ExitStatus)
+	}
+	limit := int(0.8 * float64(cfg.ContextWindow))
+	for i, req := range p.Requests() {
+		if i < 6 {
+			continue
+		}
+		chars := requestCharsForTest(req)
+		if int(float64(chars)*0.25) > limit {
+			t.Fatalf("request %d has %d chars (~%d tokens), over limit %d", i, chars, int(float64(chars)*0.25), limit)
+		}
+	}
+	notes := 0
+	for _, step := range steps {
+		if step.Kind == StepNote {
+			notes++
+		}
+	}
+	if notes == 0 {
+		t.Fatal("no prune note emitted")
+	}
+}
+
+func TestPruneNoteEmittedOncePerLevel(t *testing.T) {
+	replies := []providerfake.Reply{
+		{Command: "long"}, {Command: "long"}, {Command: "long"}, {Command: "long"}, {Report: "SUMMARY: done"},
+	}
+	p := providerfake.New(providerfake.Script{Replies: replies})
+	cfg := baseConfig()
+	cfg.KeepObservations = 1
+	cfg.MaxSteps = 10
+	env := &fakeEnv{defaultOutput: strings.Repeat("x\n", 20)}
+	var notes []Step
+	got, err := New(p, env, cfg, SinkFunc(func(s Step) {
+		if s.Kind == StepNote {
+			notes = append(notes, s)
+		}
+	})).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitStatus != ExitSubmitted {
+		t.Fatalf("exit = %s", got.ExitStatus)
+	}
+	if len(notes) != 1 {
+		t.Fatalf("notes = %d, want 1: %+v", len(notes), notes)
+	}
+	if !strings.Contains(notes[0].Content, "level 1, keep 1") {
+		t.Fatalf("note content = %q", notes[0].Content)
+	}
+}
+
+func requestCharsForTest(req provider.Request) int {
+	total := 0
+	for _, msg := range req.Messages {
+		total += len(msg.Content)
+		for _, call := range msg.ToolCalls {
+			total += len(call.Arguments)
+		}
+	}
+	return total
+}
+
 func TestDenyRefusesWithoutExecuting(t *testing.T) {
 	env := &fakeEnv{}
 	h := New(&fakeProvider{responses: []provider.Response{
@@ -260,6 +361,62 @@ func TestWriteTrajectory(t *testing.T) {
 	if !strings.Contains(string(data), `"trajectory_format": "pulse-harness-1"`) || !strings.Contains(string(data), `"exit_status": "submitted"`) {
 		t.Fatalf("bad trajectory: %s", data)
 	}
+}
+
+func TestTrajectoryWrittenEveryStep(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trajectory.json")
+	p := &fakeProvider{responses: []provider.Response{
+		{Message: provider.Message{ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "bash", Arguments: `{"command":"echo hi"}`}}}},
+		{Message: provider.Message{Content: "SUMMARY: done"}},
+	}}
+	env := &fakeEnv{observations: []Observation{{Output: "hi\n", ExitCode: 0}}}
+	trajectoryLog := &trajectorySink{path: path}
+	sawCheckpoint := false
+	var agent *Agent
+	check := SinkFunc(func(s Step) {
+		if s.N != 1 {
+			return
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var traj Trajectory
+		if err := json.Unmarshal(data, &traj); err != nil {
+			t.Fatal(err)
+		}
+		if len(traj.Steps) < 2 {
+			t.Fatalf("checkpoint has %d steps, want at least 2", len(traj.Steps))
+		}
+		sawCheckpoint = true
+	})
+	agent = New(p, env, baseConfig(), trajectoryLog, check)
+	trajectoryLog.agent = agent
+	got, err := agent.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitStatus != ExitSubmitted {
+		t.Fatalf("exit = %s", got.ExitStatus)
+	}
+	if !sawCheckpoint {
+		t.Fatal("checkpoint was not observed after the second step")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var traj Trajectory
+	if err := json.Unmarshal(data, &traj); err != nil {
+		t.Fatal(err)
+	}
+	if len(traj.Steps) != len(agent.Trajectory().Steps) {
+		t.Fatalf("final trajectory steps = %d, want %d", len(traj.Steps), len(agent.Trajectory().Steps))
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("tmp file left behind: %v", err)
+	}
+	_ = agent
 	st, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)

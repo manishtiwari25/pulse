@@ -281,6 +281,33 @@ func (h *Handler) additionHarnessSessions(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) additionHarnessSession(w http.ResponseWriter, r *http.Request, id string) {
+	if _, present := r.URL.Query()["after"]; present {
+		after, ok := additionInteger(w, r.URL.Query().Get("after"), "after", 0, 0)
+		if !ok {
+			return
+		}
+		session, err := h.Store.HarnessSessionHead(id)
+		if err != nil {
+			additionFailure(w, err)
+			return
+		}
+		if session == nil {
+			additionFailure(w, sql.ErrNoRows)
+			return
+		}
+		title, err := h.harnessJobTitle(r.Context(), session.JobID)
+		if err != nil {
+			additionFailure(w, err)
+			return
+		}
+		steps, err := h.Store.HarnessSteps(id, int(after))
+		if err != nil {
+			additionFailure(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, object("session steps after", harnessSessionRow{HarnessSession: *session, JobTitle: title}, steps, after))
+		return
+	}
 	session, steps, err := h.Store.HarnessSession(id)
 	if err != nil {
 		additionFailure(w, err)

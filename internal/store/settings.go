@@ -89,20 +89,24 @@ var ModelRules = map[string]SettingRule{
 // HarnessSettings configure the native agent harness. They are not written at
 // Create; Setting falls back here so legacy stores keep their original rows.
 var HarnessSettings = map[string]string{
-	"harness":              "native",
-	"provider":             "copilot",
-	"harness.max_steps":    "60",
-	"harness.step_timeout": "300",
-	"harness.output_limit": "20000",
+	"harness":                   "native",
+	"provider":                  "copilot",
+	"harness.max_steps":         "60",
+	"harness.max_cost":          "0",
+	"harness.keep_observations": "5",
+	"harness.step_timeout":      "300",
+	"harness.output_limit":      "20000",
 }
 
 // HarnessRules validate HarnessSettings.
 var HarnessRules = map[string]SettingRule{
-	"harness":              {Kind: "choice", Choices: []string{"native", "copilot-cli"}, Description: "native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone"},
-	"provider":             {Kind: "choice", Choices: []string{"copilot"}, Description: "the model provider of the native harness; the login lives on this machine (Settings -> Harness -> Sign in, or pulse harness login), never in the store"},
-	"harness.max_steps":    {Kind: "count", Min: 1, HasMin: true, Description: "model calls one native-harness run may make before it stops"},
-	"harness.step_timeout": {Kind: "count", Min: 10, HasMin: true, Description: "seconds one command of a native-harness run may take before it is killed"},
-	"harness.output_limit": {Kind: "count", Min: 1000, HasMin: true, Description: "characters of one command's output kept for the model; longer output is cut in the middle"},
+	"harness":                   {Kind: "choice", Choices: []string{"native", "copilot-cli"}, Description: "native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone"},
+	"provider":                  {Kind: "choice", Choices: []string{"copilot"}, Description: "the model provider of the native harness; the login lives on this machine (Settings -> Harness -> Sign in, or pulse harness login), never in the store"},
+	"harness.max_steps":         {Kind: "count", Min: 1, HasMin: true, Description: "model calls one native-harness run may make before it stops"},
+	"harness.max_cost":          {Kind: "number", Min: 0, HasMin: true, Description: "provider-reported cost one native-harness run may spend before it stops (0 = no cap); the unit is the provider's - Copilot reports usage.cost only when the vendor sends it"},
+	"harness.keep_observations": {Kind: "count", Min: 1, HasMin: true, Description: "observations kept verbatim in the model's context; older ones collapse to their first and last lines"},
+	"harness.step_timeout":      {Kind: "count", Min: 10, HasMin: true, Description: "seconds one command of a native-harness run may take before it is killed"},
+	"harness.output_limit":      {Kind: "count", Min: 1000, HasMin: true, Description: "characters of one command's output kept for the model; longer output is cut in the middle"},
 }
 
 // RunModel is the model a run of the given job kind gets: worker_model for
@@ -534,6 +538,15 @@ func ValidateSetting(name, value string) (string, error) {
 			return "", inputErr("%s is a share: it cannot exceed %s, not %s", name, strconv.FormatFloat(rule.Max, 'f', -1, 64), text)
 		}
 		return strconv.FormatFloat(f, 'f', -1, 64), nil
+	case "number":
+		f, err := strconv.ParseFloat(text, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return "", inputErr("%s takes a number, not %s", name, pyRepr(text))
+		}
+		if rule.HasMin && f < float64(rule.Min) {
+			return "", inputErr("%s must be at least %d, not %s", name, rule.Min, text)
+		}
+		return strconv.FormatFloat(f, 'f', -1, 64), nil
 	case "switch", "choice":
 		lower := strings.ToLower(text)
 		for _, c := range rule.Choices {
@@ -574,6 +587,15 @@ func (s *Store) SettingInt(key string) int {
 		return n
 	}
 	n, _ := strconv.Atoi(defaultSetting(key))
+	return n
+}
+
+// SettingFloat is Setting parsed as a float, falling back to the default.
+func (s *Store) SettingFloat(key string) float64 {
+	if n, err := strconv.ParseFloat(s.Setting(key, ""), 64); err == nil {
+		return n
+	}
+	n, _ := strconv.ParseFloat(defaultSetting(key), 64)
 	return n
 }
 

@@ -202,7 +202,7 @@ func TestWorkerCommandNativeAndLegacyArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := []string{exe, "harness", "run", "-p", "brief text", "-C", "/tmp/clone", "--max-steps", "60", "--step-timeout", "300", "--output-limit", "20000", "--minutes", "9", "--model", "heavy-test"}
+	wantPrefix := []string{exe, "harness", "run", "-p", "brief text", "-C", "/tmp/clone", "--max-steps", "60", "--step-timeout", "300", "--output-limit", "20000", "--max-cost", "0", "--keep-observations", "5", "--minutes", "9", "--model", "heavy-test"}
 	if strings.Join(cmd, "\x00") != strings.Join(wantPrefix, "\x00") {
 		t.Fatalf("native local argv:\n got %q\nwant %q", cmd, wantPrefix)
 	}

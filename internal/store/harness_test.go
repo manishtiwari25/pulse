@@ -17,7 +17,7 @@ func TestHarnessSettings(t *testing.T) {
 		}
 	}
 	var stored int
-	if err := s.DB.QueryRow("SELECT COUNT(*) FROM settings WHERE name IN ('harness', 'provider', 'harness.max_steps', 'harness.step_timeout', 'harness.output_limit')").Scan(&stored); err != nil || stored != 0 {
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM settings WHERE name IN ('harness', 'provider', 'harness.max_steps', 'harness.max_cost', 'harness.keep_observations', 'harness.step_timeout', 'harness.output_limit')").Scan(&stored); err != nil || stored != 0 {
 		t.Fatalf("harness settings written at Create: %d %v", stored, err)
 	}
 	if !s.HarnessNative() {
@@ -32,7 +32,7 @@ func TestHarnessSettings(t *testing.T) {
 	if err := s.SetSetting("human", "harness", "moon"); err == nil || !strings.Contains(err.Error(), "harness takes one of native, copilot-cli") {
 		t.Fatalf("bad harness choice: %v", err)
 	}
-	if _, err := ValidateSetting("harness.mode", "native"); err == nil || !strings.Contains(err.Error(), "Harness settings: harness, harness.max_steps, harness.output_limit, harness.step_timeout, provider") {
+	if _, err := ValidateSetting("harness.mode", "native"); err == nil || !strings.Contains(err.Error(), "Harness settings: harness, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, provider") {
 		t.Fatalf("unknown harness hint: %v", err)
 	}
 	if v, err := ValidateSetting("provider", "Copilot"); err != nil || v != "copilot" {
@@ -44,11 +44,21 @@ func TestHarnessSettings(t *testing.T) {
 		good string
 	}{
 		{"harness.max_steps", "0", "1"},
+		{"harness.keep_observations", "0", "1"},
 		{"harness.step_timeout", "9", "10"},
 		{"harness.output_limit", "999", "1000"},
 	} {
 		if err := s.SetSetting("human", tc.name, tc.bad); err == nil || !strings.Contains(err.Error(), tc.name+" must be at least") {
 			t.Fatalf("%s bad value: %v", tc.name, err)
+		}
+		if v, err := ValidateSetting("harness.max_cost", "0.5"); err != nil || v != "0.5" {
+			t.Fatalf("harness.max_cost valid: %q %v", v, err)
+		}
+		if _, err := ValidateSetting("harness.max_cost", "abc"); err == nil || !strings.Contains(err.Error(), "harness.max_cost takes a number") {
+			t.Fatalf("harness.max_cost invalid text: %v", err)
+		}
+		if _, err := ValidateSetting("harness.max_cost", "-0.1"); err == nil || !strings.Contains(err.Error(), "harness.max_cost must be at least") {
+			t.Fatalf("harness.max_cost below min: %v", err)
 		}
 		if err := s.SetSetting("human", tc.name, tc.good); err != nil {
 			t.Fatalf("%s good value: %v", tc.name, err)
@@ -63,7 +73,7 @@ func TestHarnessSettings(t *testing.T) {
 	if !strings.Contains(SettingRules["max_ai_credits"].Description, "copilot CLI") {
 		t.Fatal("max_ai_credits does not describe the copilot CLI")
 	}
-	if names := HarnessSettingNames(); !reflect.DeepEqual(names, []string{"harness", "harness.max_steps", "harness.output_limit", "harness.step_timeout", "provider"}) {
+	if names := HarnessSettingNames(); !reflect.DeepEqual(names, []string{"harness", "harness.keep_observations", "harness.max_cost", "harness.max_steps", "harness.output_limit", "harness.step_timeout", "provider"}) {
 		t.Fatalf("HarnessSettingNames = %v", names)
 	}
 }
@@ -104,8 +114,22 @@ func TestHarnessSessionAccessors(t *testing.T) {
 	if h.Steps != 1 || h.Calls != 1 || h.PromptTokens != 14 || h.CompletionTokens != 7 {
 		t.Fatalf("session totals: %+v", h)
 	}
+	head, err := s.HarnessSessionHead("hs-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head == nil || head.ID != "hs-1" || head.Steps != 1 || head.Calls != 1 {
+		t.Fatalf("session head: %+v", head)
+	}
 	if got := stepNumbers(steps); !reflect.DeepEqual(got, []int{1, 2, 3, 4}) {
 		t.Fatalf("steps ordered by n: %v", got)
+	}
+	after, err := s.HarnessSteps("hs-1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stepNumbers(after); !reflect.DeepEqual(got, []int{2, 3, 4}) {
+		t.Fatalf("steps after 1 = %v", got)
 	}
 	if steps[3].ExitCode == nil || *steps[3].ExitCode != 0 || steps[3].DurationMS != 1500 {
 		t.Fatalf("observation scan: %+v", steps[3])
@@ -120,8 +144,21 @@ func TestHarnessSessionAccessors(t *testing.T) {
 	if h.PromptTokens != 8 || h.CompletionTokens != 2 || h.Calls != 1 {
 		t.Fatalf("replacement double-counted: %+v", h)
 	}
+	if err := s.AppendHarnessStep(HarnessStep{SessionID: "hs-1", N: 5, Kind: "note", Content: "collapsed observations"}); err != nil {
+		t.Fatal(err)
+	}
+	h, _, err = s.HarnessSession("hs-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Steps != 1 || h.Calls != 1 {
+		t.Fatalf("note changed command/call counts: %+v", h)
+	}
 	if missing, missingSteps, err := s.HarnessSession("missing"); err != nil || missing != nil || missingSteps != nil {
 		t.Fatalf("missing session = %+v %+v %v", missing, missingSteps, err)
+	}
+	if missing, err := s.HarnessSessionHead("missing"); err != nil || missing != nil {
+		t.Fatalf("missing session head = %+v %v", missing, err)
 	}
 	if err := s.FinishHarnessSession("hs-1", "submitted", "0", "large submission", "", 1.25, "/tmp/traj.json"); err != nil {
 		t.Fatal(err)

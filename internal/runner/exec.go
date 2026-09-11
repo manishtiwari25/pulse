@@ -516,7 +516,9 @@ func workerCommand(s *store.Store, kind, briefText, clone, workerCmd string, dir
 		cmd := []string{bin, "harness", "run", "-p", briefText, "-C", clone,
 			"--max-steps", s.Setting("harness.max_steps", ""),
 			"--step-timeout", s.Setting("harness.step_timeout", ""),
-			"--output-limit", s.Setting("harness.output_limit", "")}
+			"--output-limit", s.Setting("harness.output_limit", ""),
+			"--max-cost", s.Setting("harness.max_cost", ""),
+			"--keep-observations", s.Setting("harness.keep_observations", "")}
 		// One minute under the runner's kill, so the harness stops on its own
 		// with a SUMMARY line and a finished session instead of a lost one.
 		if minutes := settingInt(s, "minutes_per_job"); minutes > 1 {

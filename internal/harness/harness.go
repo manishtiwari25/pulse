@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,10 +17,11 @@ import (
 )
 
 const (
-	DefaultMaxSteps        = 60
-	DefaultStepTimeout     = 5 * time.Minute
-	DefaultOutputLimit     = 20000
-	DefaultMaxFormatErrors = 3
+	DefaultMaxSteps         = 60
+	DefaultStepTimeout      = 5 * time.Minute
+	DefaultOutputLimit      = 20000
+	DefaultKeepObservations = 5
+	DefaultMaxFormatErrors  = 3
 )
 
 var BashTool = provider.Tool{
@@ -36,18 +38,21 @@ var DefaultDeny = []string{
 }
 
 type Config struct {
-	Model           string
-	Task            string
-	SystemPrompt    string
-	Cwd             string
-	Env             []string
-	MaxSteps        int
-	StepTimeout     time.Duration
-	WallTime        time.Duration
-	OutputLimit     int
-	MaxFormatErrors int
-	Deny            []string
-	Provider        string
+	Model            string
+	Task             string
+	SystemPrompt     string
+	Cwd              string
+	Env              []string
+	MaxSteps         int
+	StepTimeout      time.Duration
+	WallTime         time.Duration
+	MaxCost          float64
+	OutputLimit      int
+	KeepObservations int
+	ContextWindow    int
+	MaxFormatErrors  int
+	Deny             []string
+	Provider         string
 }
 
 type StepKind string
@@ -56,6 +61,7 @@ const (
 	StepAssistant   StepKind = "assistant"
 	StepCommand     StepKind = "command"
 	StepObservation StepKind = "observation"
+	StepNote        StepKind = "note"
 	StepError       StepKind = "error"
 	StepExit        StepKind = "exit"
 )
@@ -81,6 +87,7 @@ const (
 	ExitSubmitted     = "submitted"
 	ExitStepLimit     = "step_limit"
 	ExitTimeLimit     = "time_limit"
+	ExitCostLimit     = "cost_limit"
 	ExitFormatError   = "format_error"
 	ExitProviderError = "provider_error"
 	ExitNotLoggedIn   = "not_logged_in"
@@ -173,16 +180,37 @@ func (a *Agent) Run(ctx context.Context) (Result, error) {
 	}
 	initiator := "user"
 	formatErrors := 0
+	keepObservations := a.cfg.KeepObservations
+	lastPromptTokens := 0
+	lastPruneLevel := 0
+	emittedPruneNotes := map[string]bool{}
 	for {
 		if status := a.limitStatus(ctx); status != "" {
-			return a.finish(status, "", ""), nil
+			return a.finish(status, "", a.limitError(status)), nil
+		}
+		if a.result.Calls > 0 {
+			level := 1
+			if a.cfg.ContextWindow > 0 && lastPromptTokens > int(0.8*float64(a.cfg.ContextWindow)) {
+				level = 2
+				if lastPruneLevel == 2 && keepObservations > 1 {
+					keepObservations = max(1, keepObservations/2)
+				}
+			}
+			next, changed := pruneHistory(a.msgs, keepObservations, level)
+			a.msgs = next
+			key := fmt.Sprintf("%d/%d", level, keepObservations)
+			if changed > 0 && !emittedPruneNotes[key] {
+				a.emit(Step{Kind: StepNote, Content: fmt.Sprintf("collapsed %d older observations to fit the context window (level %d, keep %d)", changed, level, keepObservations)})
+				emittedPruneNotes[key] = true
+			}
+			lastPruneLevel = level
 		}
 		req := provider.Request{Model: a.cfg.Model, Messages: cloneMessages(a.msgs), Tools: []provider.Tool{BashTool}, Initiator: initiator}
 		resp, err := a.p.Chat(runCtx, req)
 		a.result.Calls++
 		if err != nil {
 			if a.cfg.WallTime > 0 && time.Since(a.started) >= a.cfg.WallTime {
-				return a.finish(ExitTimeLimit, "", ""), nil
+				return a.finish(ExitTimeLimit, "", a.limitError(ExitTimeLimit)), nil
 			}
 			status := ExitProviderError
 			if errors.Is(err, provider.ErrNotLoggedIn) {
@@ -194,6 +222,7 @@ func (a *Agent) Run(ctx context.Context) (Result, error) {
 		}
 		initiator = "agent"
 		a.result.Usage.Add(resp.Usage)
+		lastPromptTokens = resp.Usage.PromptTokens
 		msg := resp.Message
 		msg.Role = provider.RoleAssistant
 		a.msgs = append(a.msgs, msg)
@@ -281,7 +310,11 @@ func WriteTrajectory(path string, t Trajectory) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0600)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func DefaultSystemPrompt(info map[string]string, cfg Config) string {
@@ -307,6 +340,7 @@ Chain setup and use with &&, or use absolute paths.
 Commands time out after %s.
 Keep outputs small with head, tail, grep, and focused test selectors.
 Output over %d characters is cut in the middle.
+Older command outputs are shortened to their first and last lines as the conversation grows; rerun a command if you need its full output again.
 Never run interactive programs: editors, pagers, watch modes, or foreground servers.
 To edit files, use heredocs, sed -i, or a small python3 -c script.
 Verify your work by running the project's own checks.
@@ -327,6 +361,9 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.OutputLimit == 0 {
 		cfg.OutputLimit = DefaultOutputLimit
+	}
+	if cfg.KeepObservations == 0 {
+		cfg.KeepObservations = DefaultKeepObservations
 	}
 	if cfg.MaxFormatErrors == 0 {
 		cfg.MaxFormatErrors = DefaultMaxFormatErrors
@@ -358,7 +395,23 @@ func (a *Agent) limitStatus(ctx context.Context) string {
 	if a.cfg.WallTime > 0 && time.Since(a.started) >= a.cfg.WallTime {
 		return ExitTimeLimit
 	}
+	if a.cfg.MaxCost > 0 && a.result.Usage.Cost >= a.cfg.MaxCost {
+		return ExitCostLimit
+	}
 	return ""
+}
+
+func (a *Agent) limitError(status string) string {
+	switch status {
+	case ExitStepLimit:
+		return fmt.Sprintf("stopped at the step budget: %d model calls", a.cfg.MaxSteps)
+	case ExitTimeLimit:
+		return fmt.Sprintf("stopped at the time budget: %dm", int(a.cfg.WallTime.Round(time.Minute).Minutes()))
+	case ExitCostLimit:
+		return fmt.Sprintf("stopped at the cost budget: %.2f of %s (provider units)", a.result.Usage.Cost, strconv.FormatFloat(a.cfg.MaxCost, 'f', -1, 64))
+	default:
+		return ""
+	}
 }
 
 func (a *Agent) handleAssistant(ctx context.Context, msg provider.Message) (clean, submitted bool, submission string) {
