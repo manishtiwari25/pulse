@@ -472,14 +472,55 @@ The final report is what the runner has always read - `SUMMARY:`,
 briefs, planning, landing, lessons and the board are unchanged. A run that
 hits a limit still reports: `SUMMARY: harness stopped: step_limit after 60
 model calls and 41 commands` and the model's last message as a `FINDING:`.
+
+**Three budgets** bound every run, all owner settings (Settings → Harness,
+or `pulse settings set`): `harness.max_steps` model calls (60), the wall
+clock (`minutes_per_job`, the harness stops one minute before the runner
+would kill it), and `harness.max_cost` - the provider-reported cost one run
+may spend, `0` meaning no cap. The unit is the provider's: Copilot sends
+`usage.cost` only for some models, so a session's cost column shows `—`
+rather than a number when the vendor did not say - and a run whose provider
+reports no cost is bounded by the other two budgets alone. Whichever budget
+trips ends the
+run with `cost_limit`, `step_limit` or `time_limit` and a one-line reason on
+the session (`stopped at the cost budget: 2.10 of 2`).
+
+**Context discipline.** Command output is what fills a context window, so
+the harness keeps only the last `harness.keep_observations` (5) outputs
+verbatim; older ones collapse to their first and last lines around a marker
+(`[1840 characters elided - rerun the command to see them]`) - the model is
+told this in its prompt and simply reruns a command when it needs the full
+output again. Past 80% of the model's context window the collapsed outputs
+become one-liners and the kept count halves. Each collapse leaves a `note`
+step in the transcript (`collapsed 4 older observations …`) so the console
+shows what the model no longer sees; notes never count as calls or commands,
+and nothing is ever summarised by a model.
+
+The trajectory JSON under `~/.pulse/harness/<session>.json` is rewritten
+atomically after every step, so a run that was killed still leaves a readable
+file for replay. Every stored step also emits a `harness.step` event on the
+bus (session, step number, kind, exit code, job) - the console's Harness page
+refreshes on it, `GET /api/v1/harness/sessions/ID?after=N` returns only the
+steps after `N`, and `/api/v1/events?kind=harness.step&subject=ID` (or the
+`…/events/stream` SSE endpoint with the same filters) follows one session
+cheaply. The dashboard's Live panel leaves step events out; they belong on
+the Harness page.
+
+**Testing the loop without a login.** `PULSE_HARNESS_FAKE=1` registers a
+scripted provider, `fake`: `pulse harness run --provider fake --model fake-1
+-p 'say hi' -C "$(mktemp -d)" --no-store` walks the whole loop on a built-in
+two-reply script, and `PULSE_HARNESS_FAKE_SCRIPT=path.json` supplies your own
+(`{"replies":[{"command":"echo hi"},{"report":"SUMMARY: done"}]}`; add
+`"loop":true` to repeat the last reply). It never appears in Settings; it is
+for tests and demos.
 Commands that would leave the clone (`git push`, changing `git remote`, any
 `gh` call) or touch credentials (`~/.ssh`, `.netrc`, `~/.pulse/private`,
 `~/.copilot`, `~/.config/gh`) are refused without being run; the model is
 told why and continues.
 
 Exit codes tell the runner what happened without parsing prose: `0` the
-model submitted; `1` a limit (`step_limit`, `time_limit`, `format_error`,
-`cancelled`); `3` the provider failed after retries (`provider_error`); `4`
+model submitted; `1` a limit (`step_limit`, `time_limit`, `cost_limit`,
+`format_error`, `cancelled`); `3` the provider failed after retries (`provider_error`); `4`
 not signed in - one stderr line beginning `not logged in:` names the reason
 (no login, a token GitHub rejected, an account without a Copilot seat, a
 token that is not Copilot-enabled) and the fix. The runner marks a `4` as a
@@ -506,7 +547,7 @@ evaluation.
 pulse harness login                     # device flow: open the URL, type the code; --with-token reads a token on stdin
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness logout                    # forget the stored login
 ```
