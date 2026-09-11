@@ -1020,8 +1020,19 @@ func probeExecutor(s *store.Store, name, actor, now string) (bool, string, error
 			if _, has := fields["keys"]; !has {
 				problems = append(problems, fmt.Sprintf("hands predate ADR-022 (no keys= field); refresh them with `pulse pair <admin@host> --name %s`", name))
 			}
-			if n, err := strconv.Atoi(get("disk_free_mb", "0")); err == nil && n < 1024 {
-				problems = append(problems, "under 1 GiB free")
+			if minFree := settingInt(s, "daemon.min_free_mb"); minFree > 0 {
+				if n, err := strconv.Atoi(get("disk_free_mb", "0")); err == nil && n < minFree {
+					want := fmt.Sprintf("%d MB", minFree)
+					if minFree%1024 == 0 {
+						want = fmt.Sprintf("%d GiB", minFree/1024)
+					}
+					// disk_free_mb is measured at the hand's workdir (df on it), so that is the path named
+					where := fields["workdir"]
+					if where == "" {
+						where = r.str("workdir")
+					}
+					problems = append(problems, fmt.Sprintf("under %s free on %s", want, where))
+				}
 			}
 		}
 		ok = len(problems) == 0

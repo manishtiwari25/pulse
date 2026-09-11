@@ -618,3 +618,58 @@ func TestProbeExecutorNativeUsesHarnessLogin(t *testing.T) {
 		t.Fatalf("native probe note: %q", note)
 	}
 }
+
+// The probe's low-disk check reads daemon.min_free_mb (default 1024, i.e. the old inline 1 GiB), and
+// the problem it reports names the path df measured: the hand's workdir.
+func TestProbeExecutorMinFreeMB(t *testing.T) {
+	cases := []struct {
+		name     string
+		setting  string // daemon.min_free_mb; "" leaves the default
+		workdir  string
+		freeMB   int
+		wantOK   bool
+		wantNote string
+	}{
+		{name: "default threshold passes at 1 GiB", workdir: "/srv/pulse", freeMB: 1024, wantOK: true},
+		{name: "default threshold fails under 1 GiB", workdir: "/srv/pulse", freeMB: 1023, wantNote: "under 1 GiB free on /srv/pulse"},
+		{name: "lower threshold passes what the default refused", setting: "512", workdir: "/srv/pulse", freeMB: 600, wantOK: true},
+		{name: "lower threshold fails in MB", setting: "512", workdir: "/srv/pulse", freeMB: 500, wantNote: "under 512 MB free on /srv/pulse"},
+		{name: "higher threshold fails what the default passed", setting: "4096", workdir: "/srv/pulse", freeMB: 4000, wantNote: "under 4 GiB free on /srv/pulse"},
+		{name: "problem names the probed mount", setting: "2048", workdir: "/mnt/data/pulse", freeMB: 10, wantNote: "under 2 GiB free on /mnt/data/pulse"},
+		{name: "zero turns the check off", setting: "0", workdir: "/srv/pulse", freeMB: 1, wantOK: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			if got := settingInt(s, "daemon.min_free_mb"); got != 1024 {
+				t.Fatalf("daemon.min_free_mb default = %d, want 1024", got)
+			}
+			if tc.setting != "" {
+				if err := s.SetSetting(humanAgent, "daemon.min_free_mb", tc.setting); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := addExecutor(s, testNow, "hands", "pulse@hands", tc.workdir, 1, "*", humanAgent); err != nil {
+				t.Fatal(err)
+			}
+			old := runSSH
+			t.Cleanup(func() { runSSH = old })
+			runSSH = func(_ context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
+				return 0, fmt.Sprintf("hands=ok user=pulse workdir=%s git=2.40 copilot=ok logged_in=yes harness=yes pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=%d jobs=- keys=- heartbeat=1\n", tc.workdir, tc.freeMB), "", nil
+			}
+			ok, note, err := probeExecutor(s, "hands", humanAgent, testNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok != tc.wantOK {
+				t.Fatalf("probe ok = %v, want %v (note %q)", ok, tc.wantOK, note)
+			}
+			if tc.wantNote != "" && !strings.Contains(note, tc.wantNote) {
+				t.Fatalf("probe note %q lacks %q", note, tc.wantNote)
+			}
+			if tc.wantOK && strings.Contains(note, "free on") {
+				t.Fatalf("passing probe still reports low disk: %q", note)
+			}
+		})
+	}
+}

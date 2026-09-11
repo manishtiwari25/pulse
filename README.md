@@ -557,7 +557,9 @@ its session; its stdout is the report the runner reads. A paired hand needs
 the same sign-in once: `pulse executor login NAME --admin admin@host
 --with-token` pipes a GitHub token to `pulse harness login --with-token` as
 the hand's `pulse` user (`--remove` forgets it), and the hand's probe reports
-`harness=yes|no` and the `pulse` build it runs. The login check the daemon
+`harness=yes|no` and the `pulse` build it runs. The probe also refuses a hand
+whose workdir filesystem has under `daemon.min_free_mb` (default 1024) megabytes
+free and names that path in its note; 0 turns the check off. The login check the daemon
 runs on an executor is a two-step harness run that must answer `SUMMARY: ok`. Landing waits while the checkout is
 on another branch or has uncommitted changes, so your work in progress is
 never touched; the hold shows in `pulse status` and the hub as `landing`
