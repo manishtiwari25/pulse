@@ -24,7 +24,7 @@ var mockSettingGroups = []struct {
 // store knows (daemon.*, evolve.*, lead.*, owner.*, harness), with the store's kind and default, so a
 // new setting without a mock row fails here rather than in the browser. The mock name set is the one
 // variable: a mock row under a group prefix the store does not know fails too.
-func TestMockSettingsListEveryDaemonSetting(t *testing.T) {
+func TestMockSettingsListEveryStoreSetting(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "hub", "mock", "api", "settings.json"))
 	if err != nil {
 		t.Skipf("hub mock not present: %v", err)
