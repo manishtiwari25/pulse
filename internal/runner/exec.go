@@ -135,7 +135,7 @@ func (e *localExec) runWorker(ctx context.Context, cmd []string, env map[string]
 	if minutes <= 0 {
 		budget = time.Second
 	}
-	out, err := runGroupObserved(ctx, cmd, e.cloneDir, envWith(environ(), env), nil, budget, e.observer(e.execution(env)))
+	out, err := runGroupObserved(ctx, cmd, e.cloneDir, workerEnvWithCLIPath(environ(), env), nil, budget, e.observer(e.execution(env)))
 	if err != nil {
 		return out, fail(1, "worker command not found: %s (setting runner_cmd=%s)", cmd[0], e.s.Setting("runner_cmd", ""))
 	}
@@ -542,4 +542,39 @@ func workerCommand(s *store.Store, kind, briefText, clone, workerCmd string, dir
 		cmd = append(cmd, "--model", model)
 	}
 	return cmd, false
+}
+
+// workerEnvWithCLIPath builds the worker environment from base plus extra and,
+// when extra carries PULSE_CLI, prepends its directory to PATH once so `pulse`
+// resolves by bare name in worker shells. Without PULSE_CLI it is envWith.
+func workerEnvWithCLIPath(base []string, extra map[string]string) []string {
+	cli := extra["PULSE_CLI"]
+	if cli == "" {
+		return envWith(base, extra)
+	}
+	dir := filepath.Dir(cli)
+	path, ok := extra["PATH"]
+	if !ok {
+		for _, kv := range base {
+			if strings.HasPrefix(kv, "PATH=") {
+				path = kv[len("PATH="):]
+				break
+			}
+		}
+	}
+	for _, p := range filepath.SplitList(path) {
+		if p == dir {
+			return envWith(base, extra)
+		}
+	}
+	merged := make(map[string]string, len(extra)+1)
+	for k, v := range extra {
+		merged[k] = v
+	}
+	if path == "" {
+		merged["PATH"] = dir
+	} else {
+		merged["PATH"] = dir + string(os.PathListSeparator) + path
+	}
+	return envWith(base, merged)
 }
