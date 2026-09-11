@@ -98,6 +98,25 @@ func TestToolCallPathSubmits(t *testing.T) {
 	}
 }
 
+func TestDefaultPromptTemplateRendersLikeDefaultSystemPrompt(t *testing.T) {
+	cfg := Config{Cwd: "/repo", Model: "m", Provider: "fake", MaxSteps: 2, StepTimeout: 15 * time.Second, OutputLimit: 1234}
+	info := map[string]string{"cwd": "/work", "os": "testos", "shell": "/bin/zsh"}
+	rendered, err := RenderPrompt(DefaultPromptTemplate, promptData(info, cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rendered != DefaultSystemPrompt(info, cfg) || !strings.Contains(rendered, "Commands time out after 15s.") || !strings.Contains(rendered, "Output over 1234 characters") {
+		t.Fatalf("rendered prompt mismatch:\n%s", rendered)
+	}
+	custom, err := RenderPrompt("{{.Cwd}} {{.Provider}} {{.Model}} {{.Info.shell}}", promptData(info, cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if custom != "/work fake m /bin/zsh" {
+		t.Fatalf("custom prompt = %q", custom)
+	}
+}
+
 func TestTextModePathAndTwoBlockFormatError(t *testing.T) {
 	t.Run("one block runs and appends user observation", func(t *testing.T) {
 		h := New(&fakeProvider{responses: []provider.Response{
@@ -338,6 +357,30 @@ func TestProviderErrors(t *testing.T) {
 				t.Fatalf("unexpected result: %+v", got)
 			}
 		})
+	}
+}
+
+func TestCancellationReportsOwnerReason(t *testing.T) {
+	cancelFile := filepath.Join(t.TempDir(), "cancel")
+	if err := os.WriteFile(cancelFile, []byte("stop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(&fakeProvider{}, &fakeEnv{}, Config{Model: "m", Task: "do it", SystemPrompt: "system", CancelFile: cancelFile}).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitStatus != ExitCancelled || got.Error != "cancelled by the owner" {
+		t.Fatalf("cancel file result: %+v", got)
+	}
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrOwnerCancelled)
+	got, err = New(&fakeProvider{}, &fakeEnv{}, Config{Model: "m", Task: "do it", SystemPrompt: "system"}).Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitStatus != ExitCancelled || got.Error != "cancelled by the owner" {
+		t.Fatalf("cancel cause result: %+v", got)
 	}
 }
 

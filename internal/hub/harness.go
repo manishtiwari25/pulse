@@ -4,12 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/bus"
+	harnesspkg "github.com/manishtiwari25/pulse/internal/harness"
 	"github.com/manishtiwari25/pulse/internal/provider"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
@@ -20,7 +25,7 @@ type harnessSessionRow struct {
 }
 
 func (h *Handler) additionHarness(w http.ResponseWriter, r *http.Request, parts []string) {
-	if len(parts) < 1 || parts[0] != "harness" || len(parts) > 3 {
+	if len(parts) < 1 || parts[0] != "harness" || len(parts) > 4 {
 		additionNotFound(w)
 		return
 	}
@@ -38,6 +43,11 @@ func (h *Handler) additionHarness(w http.ResponseWriter, r *http.Request, parts 
 			return
 		}
 		h.additionHarnessModels(w, r)
+	case len(parts) == 2 && parts[1] == "prompt":
+		if !additionMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.additionHarnessPrompt(w, r)
 	case len(parts) == 2 && parts[1] == "login":
 		if !additionMethod(w, r, http.MethodPost) {
 			return
@@ -68,6 +78,16 @@ func (h *Handler) additionHarness(w http.ResponseWriter, r *http.Request, parts 
 			return
 		}
 		h.additionHarnessSession(w, r, parts[2])
+	case len(parts) == 4 && parts[1] == "sessions" && parts[3] == "cancel":
+		if !additionMethod(w, r, http.MethodPost) {
+			return
+		}
+		h.additionHarnessCancel(w, r, parts[2])
+	case len(parts) == 4 && parts[1] == "sessions" && parts[3] == "trajectory":
+		if !additionMethod(w, r, http.MethodGet) {
+			return
+		}
+		h.additionHarnessTrajectory(w, r, parts[2])
 	default:
 		additionNotFound(w)
 	}
@@ -80,7 +100,7 @@ func (h *Handler) additionHarnessStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	login := h.harnessProviderStatus(r.Context(), p, 5*time.Second)
-	running, today, failedToday, err := h.Store.HarnessSessionCounts()
+	counts, err := h.Store.HarnessSessionCounts()
 	if err != nil {
 		additionFailure(w, err)
 		return
@@ -93,9 +113,29 @@ func (h *Handler) additionHarnessStatus(w http.ResponseWriter, r *http.Request) 
 		object("max_steps step_timeout_seconds output_limit minutes_per_job",
 			h.Store.SettingInt("harness.max_steps"), h.Store.SettingInt("harness.step_timeout"),
 			h.Store.SettingInt("harness.output_limit"), h.Store.SettingInt("minutes_per_job")),
-		object("running today failed_today", running, today, failedToday),
+		object("running today failed_today submitted_today cost_today", counts.Running, counts.Today, counts.FailedToday, counts.SubmittedToday, counts.CostToday),
 		h.harnessSettings(),
 	))
+}
+
+func (h *Handler) additionHarnessPrompt(w http.ResponseWriter, r *http.Request) {
+	tmpl := h.Store.Setting("harness.system_prompt", "")
+	renderTemplate := tmpl
+	if renderTemplate == "" {
+		renderTemplate = harnesspkg.DefaultPromptTemplate
+	}
+	data := harnesspkg.PromptData{
+		Cwd: "<project clone>", Provider: h.Store.Setting("provider", provider.Default), Model: h.Store.RunModel("task"),
+		StepTimeout: (time.Duration(h.Store.SettingInt("harness.step_timeout")) * time.Second).String(),
+		OutputLimit: h.Store.SettingInt("harness.output_limit"), MaxSteps: h.Store.SettingInt("harness.max_steps"), Info: map[string]string{},
+	}
+	rendered, renderErr := harnesspkg.RenderPrompt(renderTemplate, data)
+	out := object("template default custom rendered", tmpl, harnesspkg.DefaultPromptTemplate, tmpl != "", rendered)
+	if renderErr != nil {
+		out["rendered"] = ""
+		out["error"] = renderErr.Error()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) additionHarnessModels(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +300,7 @@ func (h *Handler) additionHarnessSessions(w http.ResponseWriter, r *http.Request
 		Agent:   r.URL.Query().Get("agent"),
 		Status:  r.URL.Query().Get("status"),
 		JobID:   r.URL.Query().Get("job"),
+		Before:  r.URL.Query().Get("before"),
 		Limit:   int(limit),
 	})
 	if err != nil {
@@ -278,7 +319,16 @@ func (h *Handler) additionHarnessSessions(w http.ResponseWriter, r *http.Request
 		}
 		out = append(out, harnessSessionRow{HarnessSession: session, JobTitle: titles[session.JobID]})
 	}
-	writeJSON(w, http.StatusOK, object("sessions", out))
+	counts, err := h.Store.HarnessSessionCounts()
+	if err != nil {
+		additionFailure(w, err)
+		return
+	}
+	payload := object("sessions counts", out, counts)
+	if len(sessions) == int(limit) && len(sessions) > 0 {
+		payload["next_before"] = store.HarnessSessionCursor(sessions[len(sessions)-1])
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (h *Handler) additionHarnessSession(w http.ResponseWriter, r *http.Request, id string) {
@@ -324,6 +374,85 @@ func (h *Handler) additionHarnessSession(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	writeJSON(w, http.StatusOK, object("session steps", harnessSessionRow{HarnessSession: *session, JobTitle: title}, steps))
+}
+
+func (h *Handler) additionHarnessCancel(w http.ResponseWriter, r *http.Request, id string) {
+	if _, ok := readPayload(w, r); !ok {
+		return
+	}
+	additionWrites.Lock()
+	defer additionWrites.Unlock()
+	ok, err := h.Store.RequestHarnessCancel(id)
+	// A repeat while the first request is still pending is the same wish: answer it, emit nothing new.
+	pending := errors.Is(err, store.ErrHarnessCancelPending)
+	if err != nil && !pending {
+		additionFailure(w, err)
+		return
+	}
+	if !ok && !pending {
+		writeError(w, http.StatusConflict, "session is not running", "The harness session is not running.", "Select a running session.")
+		return
+	}
+	session, err := h.Store.HarnessSessionHead(id)
+	if err != nil {
+		additionFailure(w, err)
+		return
+	}
+	if !pending {
+		if _, err := bus.Emit(h.Store, store.HumanAgent, "harness.cancel", id, map[string]string{"session": id, "job": session.JobID}); err != nil {
+			additionFailure(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, object("cancelled pending session", true, pending, session))
+}
+
+func (h *Handler) additionHarnessTrajectory(w http.ResponseWriter, r *http.Request, id string) {
+	session, err := h.Store.HarnessSessionHead(id)
+	if err != nil {
+		additionFailure(w, err)
+		return
+	}
+	if session == nil || session.Trajectory == "" {
+		additionFailure(w, sql.ErrNoRows)
+		return
+	}
+	path, ok := h.safeHarnessTrajectory(session.Trajectory)
+	if !ok {
+		additionFailure(w, sql.ErrNoRows)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		additionFailure(w, sql.ErrNoRows)
+		return
+	}
+	defer f.Close()
+	if _, err := f.Stat(); err != nil {
+		additionFailure(w, sql.ErrNoRows)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.json"`, strings.ReplaceAll(id, `"`, "")))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, f)
+}
+
+func (h *Handler) safeHarnessTrajectory(path string) (string, bool) {
+	base, err := filepath.Abs(filepath.Join(h.Store.Home, "harness"))
+	if err != nil {
+		return "", false
+	}
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(base, abs)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return abs, true
 }
 
 func (h *Handler) harnessProvider(name string) (provider.Provider, error) {
@@ -411,7 +540,7 @@ func (h *Handler) harnessProviderSummaries() []map[string]any {
 }
 
 func (h *Handler) harnessSettings() []map[string]any {
-	names := []string{"harness", "provider", "provider.openai.base_url", "harness.max_steps", "harness.max_cost", "harness.keep_observations", "harness.step_timeout", "harness.output_limit", "worker_model", "light_model"}
+	names := []string{"harness", "provider", "provider.openai.base_url", "harness.max_steps", "minutes_per_job", "harness.max_cost", "harness.keep_observations", "harness.system_prompt", "harness.step_timeout", "harness.output_limit", "worker_model", "light_model"}
 	out := make([]map[string]any, 0, len(names))
 	for _, name := range names {
 		rule := store.SettingRules[name]

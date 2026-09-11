@@ -207,6 +207,29 @@ func TestRecoverDedupeOpenCorrectedJob(t *testing.T) {
 	}
 }
 
+func TestRecoverHoldsOwnerCancelledJobs(t *testing.T) {
+	s := newStore(t)
+	p, _ := newRepo(t, s)
+	job := insertRecoverFailedJob(t, s, "job-cancelled", "task", "manual", "cancelled by the owner: stopped after cancel", plusMinutes(testNow, -30))
+	insertRecoverRun(t, s, job.str("id"), "run-cancelled", "failed", "cancelled by the owner: stopped after cancel", "", "")
+
+	lines := recoverFailedJobs(s, p, testNow, "daemon")
+	if len(lines) != 0 {
+		t.Fatalf("lines = %v", lines)
+	}
+	after := jobRow(s.DB, job.str("id"))
+	if after.str("status") != "failed" {
+		t.Fatalf("cancelled job changed: %v", after)
+	}
+	detail := recoverDetail(t, s, job.str("id"))
+	if detail["outcome"] != "held" || detail["why"] != "cancelled by the owner" {
+		t.Fatalf("detail = %#v", detail)
+	}
+	if got := recoverMeta(t, s)["proj"].Note; !strings.Contains(got, "cancelled by the owner") {
+		t.Fatalf("note = %q", got)
+	}
+}
+
 func TestRecoverTaskOwnedDeterministicWaitsForLead(t *testing.T) {
 	s := newStore(t)
 	p, _ := newRepo(t, s)

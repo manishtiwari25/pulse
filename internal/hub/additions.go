@@ -333,8 +333,9 @@ func (h *Handler) additionTasks(w http.ResponseWriter, r *http.Request, parts []
 		return
 	}
 	jobs, err := h.additionRows(r, `SELECT id,project,kind,tier,title,brief,source,priority,status,created_at,created_by,
-		lease_agent AS agent,lease_until,generation,attempts,finished_at,result,branch FROM jobs
-		WHERE project=? AND (source=? OR (? != '' AND id=?)) ORDER BY created_at,id`, task["project"], "task:"+parts[1], task["job_id"], task["job_id"])
+		lease_agent AS agent,lease_until,generation,attempts,finished_at,result,branch,
+		(SELECT hs.id FROM harness_sessions hs WHERE hs.job_id = jobs.id ORDER BY hs.started_at DESC LIMIT 1) AS harness_session
+		FROM jobs WHERE project=? AND (source=? OR (? != '' AND id=?)) ORDER BY created_at,id`, task["project"], "task:"+parts[1], task["job_id"], task["job_id"])
 	if err != nil {
 		additionFailure(w, err)
 		return

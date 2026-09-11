@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -17,7 +18,7 @@ func TestHarnessSettings(t *testing.T) {
 		}
 	}
 	var stored int
-	if err := s.DB.QueryRow("SELECT COUNT(*) FROM settings WHERE name IN ('harness', 'provider', 'harness.max_steps', 'harness.max_cost', 'harness.keep_observations', 'harness.step_timeout', 'harness.output_limit')").Scan(&stored); err != nil || stored != 0 {
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM settings WHERE name IN ('harness', 'provider', 'harness.max_steps', 'harness.max_cost', 'harness.keep_observations', 'harness.system_prompt', 'harness.step_timeout', 'harness.output_limit')").Scan(&stored); err != nil || stored != 0 {
 		t.Fatalf("harness settings written at Create: %d %v", stored, err)
 	}
 	if !s.HarnessNative() {
@@ -32,7 +33,7 @@ func TestHarnessSettings(t *testing.T) {
 	if err := s.SetSetting("human", "harness", "moon"); err == nil || !strings.Contains(err.Error(), "harness takes one of native, copilot-cli") {
 		t.Fatalf("bad harness choice: %v", err)
 	}
-	if _, err := ValidateSetting("harness.mode", "native"); err == nil || !strings.Contains(err.Error(), "Harness settings: harness, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, provider, provider.openai.base_url") {
+	if _, err := ValidateSetting("harness.mode", "native"); err == nil || !strings.Contains(err.Error(), "Harness settings: harness, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, harness.system_prompt, provider, provider.openai.base_url") {
 		t.Fatalf("unknown harness hint: %v", err)
 	}
 	if v, err := ValidateSetting("provider", "Copilot"); err != nil || v != "copilot" {
@@ -85,13 +86,19 @@ func TestHarnessSettings(t *testing.T) {
 			t.Fatalf("%s stored %q, want %q", tc.name, got, tc.good)
 		}
 	}
+	if v, err := ValidateSetting("harness.system_prompt", "Hello {{.Cwd}}"); err != nil || v != "Hello {{.Cwd}}" {
+		t.Fatalf("harness.system_prompt valid: %q %v", v, err)
+	}
+	if _, err := ValidateSetting("harness.system_prompt", "{{if}}"); err == nil || !strings.Contains(err.Error(), "harness.system_prompt is not a valid Go text/template") {
+		t.Fatalf("harness.system_prompt invalid: %v", err)
+	}
 	if !strings.Contains(SettingRules["runner_cmd"].Description, "copilot-cli") {
 		t.Fatal("runner_cmd does not describe the copilot-cli harness")
 	}
 	if !strings.Contains(SettingRules["max_ai_credits"].Description, "copilot CLI") {
 		t.Fatal("max_ai_credits does not describe the copilot CLI")
 	}
-	if names := HarnessSettingNames(); !reflect.DeepEqual(names, []string{"harness", "harness.keep_observations", "harness.max_cost", "harness.max_steps", "harness.output_limit", "harness.step_timeout", "provider", "provider.openai.base_url"}) {
+	if names := HarnessSettingNames(); !reflect.DeepEqual(names, []string{"harness", "harness.keep_observations", "harness.max_cost", "harness.max_steps", "harness.output_limit", "harness.step_timeout", "harness.system_prompt", "provider", "provider.openai.base_url"}) {
 		t.Fatalf("HarnessSettingNames = %v", names)
 	}
 }
@@ -128,6 +135,9 @@ func TestHarnessSessionAccessors(t *testing.T) {
 	}
 	if h == nil || h.Status != "running" || h.StartedAt != "2026-09-11T05:00:00Z" || h.UpdatedAt != "2026-09-11T05:00:00Z" {
 		t.Fatalf("session timestamps/status: %+v", h)
+	}
+	if h.CancelRequestedAt != "" {
+		t.Fatalf("fresh session has cancel_requested_at = %q", h.CancelRequestedAt)
 	}
 	if h.Steps != 1 || h.Calls != 1 || h.PromptTokens != 14 || h.CompletionTokens != 7 {
 		t.Fatalf("session totals: %+v", h)
@@ -190,6 +200,43 @@ func TestHarnessSessionAccessors(t *testing.T) {
 	}
 }
 
+func TestRequestHarnessCancel(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
+	s := openTemp(t, Options{Create: true, Now: "2026-09-11T05:00:00Z"})
+	if err := s.BeginHarnessSession(HarnessSession{ID: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.RequestHarnessCancel("running")
+	if err != nil || !ok {
+		t.Fatalf("cancel running = %v %v", ok, err)
+	}
+	h, err := s.HarnessSessionHead("running")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.CancelRequestedAt != "2026-09-11T05:00:00Z" {
+		t.Fatalf("cancel timestamp = %q", h.CancelRequestedAt)
+	}
+	ok, err = s.RequestHarnessCancel("running")
+	if !errors.Is(err, ErrHarnessCancelPending) || ok {
+		t.Fatalf("cancel twice = %v %v", ok, err)
+	}
+	if err := s.BeginHarnessSession(HarnessSession{ID: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishHarnessSession("done", "submitted", "submitted", "SUMMARY: done", "", 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = s.RequestHarnessCancel("done")
+	if err != nil || ok {
+		t.Fatalf("cancel done = %v %v", ok, err)
+	}
+	ok, err = s.RequestHarnessCancel("missing")
+	if !errors.Is(err, sql.ErrNoRows) || ok {
+		t.Fatalf("cancel missing = %v %v", ok, err)
+	}
+}
+
 func TestHarnessSessionListCountsAndLost(t *testing.T) {
 	t.Setenv("PULSE_JOB", "")
 	s := openTemp(t, Options{Create: true, Now: "2026-09-11T05:00:00Z"})
@@ -221,12 +268,12 @@ func TestHarnessSessionListCountsAndLost(t *testing.T) {
 	if got := sessionIDs(list); !reflect.DeepEqual(got, []string{"today-running"}) {
 		t.Fatalf("filtered sessions = %v", got)
 	}
-	running, today, failedToday, err := s.HarnessSessionCounts()
+	counts, err := s.HarnessSessionCounts()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running != 3 || today != 3 || failedToday != 1 {
-		t.Fatalf("counts = %d %d %d", running, today, failedToday)
+	if counts.Running != 3 || counts.Today != 3 || counts.FailedToday != 1 || counts.SubmittedToday != 0 || counts.CostToday != 0 {
+		t.Fatalf("counts = %+v", counts)
 	}
 	changed, err := s.MarkLostHarnessSessions("2026-09-11T00:00:00Z")
 	if err != nil {
@@ -242,12 +289,63 @@ func TestHarnessSessionListCountsAndLost(t *testing.T) {
 	if lost.Status != "lost" || lost.EndedAt != "2026-09-11T05:00:00Z" {
 		t.Fatalf("lost session: %+v", lost)
 	}
-	running, today, failedToday, err = s.HarnessSessionCounts()
+	counts, err = s.HarnessSessionCounts()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running != 2 || today != 3 || failedToday != 1 {
-		t.Fatalf("counts after lost = %d %d %d", running, today, failedToday)
+	if counts.Running != 2 || counts.Today != 3 || counts.FailedToday != 1 {
+		t.Fatalf("counts after lost = %+v", counts)
+	}
+}
+
+func TestHarnessSessionsBeforeAndKPIs(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
+	s := openTemp(t, Options{Create: true, Now: "2026-09-11T05:00:00Z"})
+	for _, h := range []HarnessSession{
+		{ID: "new", StartedAt: "2026-09-11T04:00:00Z", UpdatedAt: "2026-09-11T04:00:00Z"},
+		{ID: "submitted", StartedAt: "2026-09-11T03:00:00Z", UpdatedAt: "2026-09-11T03:00:00Z"},
+		{ID: "old", StartedAt: "2026-09-11T02:00:00Z", UpdatedAt: "2026-09-11T02:00:00Z"},
+	} {
+		if err := s.BeginHarnessSession(h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.FinishHarnessSession("submitted", "submitted", "submitted", "SUMMARY: done", "", 3.5, ""); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.HarnessSessions(HarnessSessionFilter{Before: "2026-09-11T04:00:00Z", Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionIDs(page); !reflect.DeepEqual(got, []string{"submitted", "old"}) {
+		t.Fatalf("before page = %v", got)
+	}
+	// Same-second starts: the (started_at, id) cursor pages past siblings instead of skipping them.
+	for _, id := range []string{"twin-a", "twin-b", "twin-c"} {
+		if err := s.BeginHarnessSession(HarnessSession{ID: id, StartedAt: "2026-09-11T01:00:00Z", UpdatedAt: "2026-09-11T01:00:00Z"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err = s.HarnessSessions(HarnessSessionFilter{Before: HarnessSessionCursor(HarnessSession{ID: "old", StartedAt: "2026-09-11T02:00:00Z"}), Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionIDs(page); !reflect.DeepEqual(got, []string{"twin-c", "twin-b"}) {
+		t.Fatalf("twin page 1 = %v", got)
+	}
+	page, err = s.HarnessSessions(HarnessSessionFilter{Before: HarnessSessionCursor(page[len(page)-1]), Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionIDs(page); !reflect.DeepEqual(got, []string{"twin-a"}) {
+		t.Fatalf("twin page 2 = %v", got)
+	}
+	counts, err := s.HarnessSessionCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Running != 5 || counts.Today != 6 || counts.FailedToday != 0 || counts.SubmittedToday != 1 || counts.CostToday != 3.5 {
+		t.Fatalf("counts = %+v", counts)
 	}
 }
 

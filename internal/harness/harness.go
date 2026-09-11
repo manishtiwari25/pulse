@@ -2,6 +2,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/provider"
@@ -38,21 +40,23 @@ var DefaultDeny = []string{
 }
 
 type Config struct {
-	Model            string
-	Task             string
-	SystemPrompt     string
-	Cwd              string
-	Env              []string
-	MaxSteps         int
-	StepTimeout      time.Duration
-	WallTime         time.Duration
-	MaxCost          float64
-	OutputLimit      int
-	KeepObservations int
-	ContextWindow    int
-	MaxFormatErrors  int
-	Deny             []string
-	Provider         string
+	Model                string
+	Task                 string
+	SystemPrompt         string
+	SystemPromptTemplate string
+	Cwd                  string
+	Env                  []string
+	MaxSteps             int
+	StepTimeout          time.Duration
+	WallTime             time.Duration
+	MaxCost              float64
+	OutputLimit          int
+	KeepObservations     int
+	ContextWindow        int
+	MaxFormatErrors      int
+	Deny                 []string
+	Provider             string
+	CancelFile           string
 }
 
 type StepKind string
@@ -117,18 +121,21 @@ type Environment interface {
 }
 
 type Agent struct {
-	p       provider.Provider
-	env     Environment
-	cfg     Config
-	sinks   []Sink
-	deny    []denyRule
-	msgs    []provider.Message
-	steps   []Step
-	nextN   int
-	ran     bool
-	result  Result
-	started time.Time
+	p            provider.Provider
+	env          Environment
+	cfg          Config
+	sinks        []Sink
+	deny         []denyRule
+	msgs         []provider.Message
+	steps        []Step
+	nextN        int
+	ran          bool
+	result       Result
+	started      time.Time
+	cancelReason string
 }
+
+var ErrOwnerCancelled = errors.New("cancelled by the owner")
 
 type denyRule struct {
 	raw         string
@@ -163,7 +170,15 @@ func (a *Agent) Run(ctx context.Context) (Result, error) {
 	}
 	a.started = time.Now()
 	if a.cfg.SystemPrompt == "" {
-		a.cfg.SystemPrompt = DefaultSystemPrompt(a.env.Info(), a.cfg)
+		tmpl := a.cfg.SystemPromptTemplate
+		if tmpl == "" {
+			tmpl = DefaultPromptTemplate
+		}
+		prompt, err := RenderPrompt(tmpl, promptData(a.env.Info(), a.cfg))
+		if err != nil {
+			return Result{}, err
+		}
+		a.cfg.SystemPrompt = prompt
 	}
 	if err := a.compileDeny(); err != nil {
 		return Result{}, err
@@ -317,29 +332,15 @@ func WriteTrajectory(path string, t Trajectory) error {
 	return os.Rename(tmp, path)
 }
 
-func DefaultSystemPrompt(info map[string]string, cfg Config) string {
-	cfg = applyDefaults(cfg)
-	cwd := info["cwd"]
-	if cwd == "" {
-		cwd = cfg.Cwd
-	}
-	osName := info["os"]
-	if osName == "" {
-		osName = "this system"
-	}
-	shell := info["shell"]
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	return fmt.Sprintf(`You are an autonomous software engineering agent working in %s on %s.
+const DefaultPromptTemplate = `You are an autonomous software engineering agent working in {{.Info.cwd}} on {{.Info.os}}.
 You have exactly one tool: bash. Call it with a JSON object containing a command string.
-If you cannot call tools, write exactly one fenced `+"```bash"+` or `+"```sh"+` block per message.
-Each command runs in a fresh non-interactive %s in the working directory.
+If you cannot call tools, write exactly one fenced ` + "```bash" + ` or ` + "```sh" + ` block per message.
+Each command runs in a fresh non-interactive {{.Info.shell}} in the working directory.
 No state survives between commands: cd, exports, aliases, and shell variables are lost.
 Chain setup and use with &&, or use absolute paths.
-Commands time out after %s.
+Commands time out after {{.StepTimeout}}.
 Keep outputs small with head, tail, grep, and focused test selectors.
-Output over %d characters is cut in the middle.
+Output over {{.OutputLimit}} characters is cut in the middle.
 Older command outputs are shortened to their first and last lines as the conversation grows; rerun a command if you need its full output again.
 Never run interactive programs: editors, pagers, watch modes, or foreground servers.
 To edit files, use heredocs, sed -i, or a small python3 -c script.
@@ -348,8 +349,91 @@ When done, or when you cannot continue, reply with no command and a plain-text f
 The report must include a SUMMARY: line and any FINDING:, SUGGESTION:, QUESTION:, or VOTE: lines the task asked for.
 Those key words must start their lines because a program reads the report.
 A message with neither a command nor a report wastes a step.
-You have at most %d model calls.
-The task follows in the next message and its rules apply in full.`, cwd, osName, shell, cfg.StepTimeout, cfg.OutputLimit, cfg.MaxSteps)
+You have at most {{.MaxSteps}} model calls.
+The task follows in the next message and its rules apply in full.`
+
+type PromptData struct {
+	Cwd         string
+	Model       string
+	Provider    string
+	StepTimeout string
+	OutputLimit int
+	MaxSteps    int
+	Info        map[string]string
+}
+
+func RenderPrompt(tmpl string, data PromptData) (string, error) {
+	data = normalizePromptData(data)
+	parsed, err := template.New("prompt").Option("missingkey=error").Parse(tmpl)
+	if err != nil {
+		return "", err
+	}
+	var out bytes.Buffer
+	if err := parsed.Execute(&out, data); err != nil {
+		return "", err
+	}
+	return out.String(), nil
+}
+
+func normalizePromptData(data PromptData) PromptData {
+	if data.Info == nil {
+		data.Info = map[string]string{}
+	}
+	cp := map[string]string{}
+	for k, v := range data.Info {
+		cp[k] = v
+	}
+	if cp["cwd"] == "" {
+		cp["cwd"] = data.Cwd
+	}
+	if cp["cwd"] == "" {
+		cp["cwd"] = "."
+	}
+	if data.Cwd == "" {
+		data.Cwd = cp["cwd"]
+	}
+	if cp["os"] == "" {
+		cp["os"] = "this system"
+	}
+	if cp["shell"] == "" {
+		cp["shell"] = "/bin/sh"
+	}
+	data.Info = cp
+	return data
+}
+
+func promptData(info map[string]string, cfg Config) PromptData {
+	cfg = applyDefaults(cfg)
+	cp := map[string]string{}
+	for k, v := range info {
+		cp[k] = v
+	}
+	cwd := cp["cwd"]
+	if cwd == "" {
+		cwd = cfg.Cwd
+	}
+	if cwd == "" {
+		cwd = "."
+	}
+	cp["cwd"] = cwd
+	if cp["os"] == "" {
+		cp["os"] = "this system"
+	}
+	if cp["shell"] == "" {
+		cp["shell"] = "/bin/sh"
+	}
+	return normalizePromptData(PromptData{
+		Cwd: cwd, Model: cfg.Model, Provider: cfg.Provider, StepTimeout: cfg.StepTimeout.String(),
+		OutputLimit: cfg.OutputLimit, MaxSteps: cfg.MaxSteps, Info: cp,
+	})
+}
+
+func DefaultSystemPrompt(info map[string]string, cfg Config) string {
+	prompt, err := RenderPrompt(DefaultPromptTemplate, promptData(info, cfg))
+	if err != nil {
+		return ""
+	}
+	return prompt
 }
 
 func applyDefaults(cfg Config) Config {
@@ -386,7 +470,16 @@ func (a *Agent) compileDeny() error {
 }
 
 func (a *Agent) limitStatus(ctx context.Context) string {
+	if a.cfg.CancelFile != "" {
+		if _, err := os.Stat(a.cfg.CancelFile); err == nil {
+			a.cancelReason = ErrOwnerCancelled.Error()
+			return ExitCancelled
+		}
+	}
 	if err := ctx.Err(); err != nil {
+		if errors.Is(context.Cause(ctx), ErrOwnerCancelled) {
+			a.cancelReason = ErrOwnerCancelled.Error()
+		}
 		return ExitCancelled
 	}
 	if a.result.Calls >= a.cfg.MaxSteps {
@@ -409,6 +502,8 @@ func (a *Agent) limitError(status string) string {
 		return fmt.Sprintf("stopped at the time budget: %dm", int(a.cfg.WallTime.Round(time.Minute).Minutes()))
 	case ExitCostLimit:
 		return fmt.Sprintf("stopped at the cost budget: %.2f of %s (provider units)", a.result.Usage.Cost, strconv.FormatFloat(a.cfg.MaxCost, 'f', -1, 64))
+	case ExitCancelled:
+		return a.cancelReason
 	default:
 		return ""
 	}

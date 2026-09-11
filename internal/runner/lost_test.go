@@ -7,8 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/manishtiwari25/pulse/internal/store"
 )
 
 // A lost run must not keep its job leased for the rest of minutes_per_job.
@@ -163,6 +166,50 @@ func TestWorkerExitSummaryIncludesHarnessStopReason(t *testing.T) {
 	want := "worker exited 1: harness stopped: step_limit after 2 steps"
 	if r.str("status") != "failed" || r.str("summary") != want {
 		t.Fatalf("run %s: %s, want failed: %s", r.str("status"), r.str("summary"), want)
+	}
+}
+
+func TestWorkerExitFiveIsOwnerCancelledFailure(t *testing.T) {
+	s := newStore(t)
+	newRepo(t, s)
+	join(t, s, "aurora")
+	job, _, err := addJob(s, "proj", "task", "t", "do it", 1, 0, "test", humanAgent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, reason, err := workOnce(s, "aurora", "", "", testNow, runOpts{WorkerCmd: "sh -c 'echo \"SUMMARY: stopped after cancel\"; exit 5'"})
+	if err != nil || r == nil {
+		t.Fatalf("work: %v %q %v", r, reason, err)
+	}
+	if r.str("status") != "failed" || r.str("summary") != "cancelled by the owner: stopped after cancel" || r.int("exit_code") != 5 {
+		t.Fatalf("run after cancel exit: %v", r)
+	}
+	if j := jobRow(s.DB, job.str("id")); j.str("status") != "failed" || j.str("result") != "cancelled by the owner: stopped after cancel" {
+		t.Fatalf("job after cancel exit: %v", j)
+	}
+}
+
+func TestRunHarnessCancelWatcherCancelsContext(t *testing.T) {
+	s := newStore(t)
+	if err := s.BeginHarnessSession(store.HarnessSession{ID: "run-cancel"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	workerCtx, cancel := context.WithCancel(ctx)
+	var ownerCancelled atomic.Bool
+	done := watchRunHarnessCancelEvery(ctx, s, "run-cancel", cancel, &ownerCancelled, time.Millisecond)
+	defer done()
+	if ok, err := s.RequestHarnessCancel("run-cancel"); err != nil || !ok {
+		t.Fatalf("request cancel = %v %v", ok, err)
+	}
+	select {
+	case <-workerCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("worker context was not cancelled")
+	}
+	if !ownerCancelled.Load() {
+		t.Fatal("owner cancellation flag was not set")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,7 +27,7 @@ import (
 )
 
 const (
-	harnessUsage = "pulse harness run -p TEXT [-C DIR] [--model M] [--steps-file PATH] ... | login [--with-token] | status | models | logout | sessions | show ID"
+	harnessUsage = "pulse harness run -p TEXT [-C DIR] [--model M] [--steps-file PATH] ... | login [--with-token] | status | models | logout | sessions | show ID | cancel ID | prompt"
 	loginFix     = "sign in with GitHub in the console (Settings \u2192 Harness) or run pulse harness login"
 )
 
@@ -80,6 +81,10 @@ func runHarnessCommand(c *cli.Context, _ *flag.FlagSet, args []string) error {
 		return harnessSessions(c, rest)
 	case "show":
 		return harnessShow(c, rest)
+	case "cancel":
+		return harnessCancel(c, rest)
+	case "prompt":
+		return harnessPrompt(c, rest)
 	default:
 		return unknownHarnessVerb(verb)
 	}
@@ -90,13 +95,13 @@ func unknownHarnessVerb(verb string) error {
 	if verb != "" {
 		what = fmt.Sprintf("pulse harness: unknown verb %q", verb)
 	}
-	return cli.Errorf(2, what, "", "pulse harness run|login|status|models|logout|sessions|show")
+	return cli.Errorf(2, what, "", "pulse harness run|login|status|models|logout|sessions|show|cancel|prompt")
 }
 
 func harnessRun(c *cli.Context, args []string) error {
 	fs := flag.NewFlagSet("harness run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var taskText, taskFile, cwd, modelName, providerName, sessionID, trajectory, stepsFile string
+	var taskText, taskFile, cwd, modelName, providerName, sessionID, trajectory, stepsFile, cancelFile, promptFile string
 	var maxSteps, stepTimeout, outputLimit, minutes, keepObservations int
 	var maxCost float64
 	var noStore bool
@@ -115,6 +120,8 @@ func harnessRun(c *cli.Context, args []string) error {
 	fs.StringVar(&sessionID, "session", "", "harness session id")
 	fs.StringVar(&trajectory, "trajectory", "", "trajectory path, or none")
 	fs.StringVar(&stepsFile, "steps-file", "", "append newline-delimited harness events to PATH")
+	fs.StringVar(&cancelFile, "cancel-file", "", "stop when PATH exists")
+	fs.StringVar(&promptFile, "prompt-file", "", "read the system prompt template from PATH")
 	fs.BoolVar(&noStore, "no-store", false, "do not open the PULSE store")
 	bindRawGlobals(c, fs)
 	if err := fs.Parse(args); err != nil {
@@ -139,6 +146,12 @@ func harnessRun(c *cli.Context, args []string) error {
 	}
 	if stepsFile == "" {
 		stepsFile = os.Getenv("PULSE_HARNESS_STEPS")
+	}
+	if cancelFile == "" {
+		cancelFile = os.Getenv("PULSE_HARNESS_CANCEL")
+	}
+	if promptFile == "" {
+		promptFile = os.Getenv("PULSE_HARNESS_PROMPT_FILE")
 	}
 	var stepLog *stepsFileSink
 	if stepsFile != "" {
@@ -221,6 +234,17 @@ func harnessRun(c *cli.Context, args []string) error {
 			keepObservations = st.SettingInt("harness.keep_observations")
 		}
 	}
+	systemPromptTemplate := ""
+	if st != nil {
+		systemPromptTemplate = st.Setting("harness.system_prompt", "")
+	}
+	if promptFile != "" {
+		data, err := os.ReadFile(promptFile)
+		if err != nil {
+			return cli.Errorf(2, "pulse harness run: read prompt file: "+err.Error(), "", "pass --prompt-file PATH")
+		}
+		systemPromptTemplate = string(data)
+	}
 	contextWindow := modelContextWindow(context.Background(), p, modelName)
 	trajectoryPath := ""
 	if trajectory != "none" {
@@ -259,12 +283,27 @@ func harnessRun(c *cli.Context, args []string) error {
 		Model: modelName, Task: task, Cwd: absCwd, Env: env, Provider: providerName,
 		MaxSteps: maxSteps, StepTimeout: time.Duration(stepTimeout) * time.Second,
 		MaxCost: maxCost, OutputLimit: outputLimit, KeepObservations: keepObservations, ContextWindow: contextWindow,
+		SystemPromptTemplate: systemPromptTemplate, CancelFile: cancelFile,
 	}
 	if minutes > 0 {
 		cfg.WallTime = time.Duration(minutes) * time.Minute
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	if cfg.SystemPromptTemplate != "" {
+		prompt, err := RenderPrompt(cfg.SystemPromptTemplate, promptData(NewLocalEnv(absCwd, env).Info(), cfg))
+		if err != nil {
+			return cli.Errorf(2, "pulse harness run: harness.system_prompt render failed: "+err.Error(), "", "fix harness.system_prompt or pass --prompt-file")
+		}
+		cfg.SystemPrompt = prompt
+	}
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancelOwner := context.WithCancelCause(signalCtx)
+	defer cancelOwner(nil)
+	cancelWatcher := func() {}
+	if st != nil {
+		cancelWatcher = watchHarnessCancel(ctx, st, sessionID, cancelOwner, 2*time.Second)
+	}
+	defer cancelWatcher()
 	agent := New(p, NewLocalEnv(absCwd, env), cfg, sinks...)
 	if trajectoryLog != nil {
 		trajectoryLog.agent = agent
@@ -303,6 +342,41 @@ func harnessRun(c *cli.Context, args []string) error {
 		return nil
 	}
 	return cli.Errorf(exitCodeFor(result.ExitStatus), "", "", "")
+}
+
+func watchHarnessCancel(ctx context.Context, st *store.Store, sessionID string, cancel context.CancelCauseFunc, interval time.Duration) func() {
+	watchCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	check := func() bool {
+		session, err := st.HarnessSessionHead(sessionID)
+		if err == nil && session != nil && session.CancelRequestedAt != "" {
+			cancel(ErrOwnerCancelled)
+			return true
+		}
+		return false
+	}
+	go func() {
+		defer close(done)
+		if check() {
+			return
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if check() {
+					return
+				}
+			case <-watchCtx.Done():
+				return
+			}
+		}
+	}()
+	return func() {
+		stop()
+		<-done
+	}
 }
 
 func harnessLogin(c *cli.Context, args []string) error {
@@ -598,6 +672,105 @@ func harnessShow(c *cli.Context, args []string) error {
 		}{session, steps})
 	}
 	writeHarnessTranscript(c.Out, *session, steps)
+	return nil
+}
+
+func harnessCancel(c *cli.Context, args []string) error {
+	fs := flag.NewFlagSet("harness cancel", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	bindRawGlobals(c, fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return cli.Errorf(2, "pulse harness cancel: expected SESSION_ID", "", "pulse harness cancel SESSION_ID")
+	}
+	st, closeStore, err := requireHarnessStore(c)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	id := fs.Arg(0)
+	ok, err := st.RequestHarnessCancel(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return cli.Errorf(2, "pulse harness cancel: no harness session "+id, "", "pulse harness sessions")
+	}
+	if errors.Is(err, store.ErrHarnessCancelPending) {
+		fmt.Fprintf(c.Out, "cancel already requested for %s\n", id)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Fprintf(c.Err, "pulse harness cancel: session is not running: %s\n", id)
+		return cli.Errorf(1, "", "", "")
+	}
+	fmt.Fprintf(c.Out, "cancel requested for %s\n", id)
+	return nil
+}
+
+func harnessPrompt(c *cli.Context, args []string) error {
+	fs := flag.NewFlagSet("harness prompt", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var cwd, providerName, modelName string
+	var printDefault, raw bool
+	fs.StringVar(&cwd, "C", ".", "working directory")
+	fs.StringVar(&providerName, "provider", "", "provider name")
+	fs.StringVar(&modelName, "model", "", "model id")
+	fs.BoolVar(&printDefault, "default", false, "print the built-in prompt template")
+	fs.BoolVar(&raw, "raw", false, "print the stored prompt template without rendering")
+	bindRawGlobals(c, fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return cli.Errorf(2, "pulse harness prompt: unrecognized arguments: "+strings.Join(fs.Args(), " "), "", "")
+	}
+	if printDefault {
+		fmt.Fprintln(c.Out, DefaultPromptTemplate)
+		return nil
+	}
+	st, closeStore, err := openHarnessStore(c, false)
+	if err != nil {
+		return err
+	}
+	if closeStore != nil {
+		defer closeStore()
+	}
+	tmpl := ""
+	if st != nil {
+		tmpl = st.Setting("harness.system_prompt", "")
+	}
+	if raw {
+		fmt.Fprintln(c.Out, tmpl)
+		if strings.TrimSpace(tmpl) == "" {
+			fmt.Fprintln(c.Err, "built-in")
+		}
+		return nil
+	}
+	if tmpl == "" {
+		tmpl = DefaultPromptTemplate
+	}
+	absCwd, err := existingDir(cwd)
+	if err != nil {
+		return err
+	}
+	if providerName == "" {
+		providerName = provider.Default
+		if st != nil {
+			providerName = st.Setting("provider", provider.Default)
+		}
+	}
+	if modelName == "" && st != nil {
+		modelName = st.RunModel("task")
+	}
+	cfg := applyDefaults(Config{Cwd: absCwd, Provider: providerName, Model: modelName})
+	prompt, err := RenderPrompt(tmpl, promptData(NewLocalEnv(absCwd, nil).Info(), cfg))
+	if err != nil {
+		return cli.Errorf(2, "pulse harness prompt: harness.system_prompt render failed: "+err.Error(), "", "fix harness.system_prompt")
+	}
+	fmt.Fprintln(c.Out, prompt)
 	return nil
 }
 
@@ -972,7 +1145,9 @@ func exitCodeFor(status string) int {
 		return 3
 	case ExitNotLoggedIn:
 		return 4
-	case ExitStepLimit, ExitTimeLimit, ExitCostLimit, ExitFormatError, ExitCancelled:
+	case ExitCancelled:
+		return 5
+	case ExitStepLimit, ExitTimeLimit, ExitCostLimit, ExitFormatError:
 		return 1
 	default:
 		return 1
@@ -997,9 +1172,11 @@ type harnessStatusReport struct {
 		OutputLimit        int     `json:"output_limit"`
 	} `json:"limits"`
 	Sessions *struct {
-		Running     int `json:"running"`
-		Today       int `json:"today"`
-		FailedToday int `json:"failed_today"`
+		Running        int     `json:"running"`
+		Today          int     `json:"today"`
+		FailedToday    int     `json:"failed_today"`
+		SubmittedToday int     `json:"submitted_today"`
+		CostToday      float64 `json:"cost_today"`
 	} `json:"sessions,omitempty"`
 }
 
@@ -1022,12 +1199,14 @@ func statusReport(st *store.Store, p provider.Provider, login provider.Login, lo
 		r.Limits.MaxCost = st.SettingFloat("harness.max_cost")
 		r.Limits.StepTimeoutSeconds = st.SettingInt("harness.step_timeout")
 		r.Limits.OutputLimit = st.SettingInt("harness.output_limit")
-		if running, today, failed, err := st.HarnessSessionCounts(); err == nil {
+		if counts, err := st.HarnessSessionCounts(); err == nil {
 			r.Sessions = &struct {
-				Running     int `json:"running"`
-				Today       int `json:"today"`
-				FailedToday int `json:"failed_today"`
-			}{running, today, failed}
+				Running        int     `json:"running"`
+				Today          int     `json:"today"`
+				FailedToday    int     `json:"failed_today"`
+				SubmittedToday int     `json:"submitted_today"`
+				CostToday      float64 `json:"cost_today"`
+			}{counts.Running, counts.Today, counts.FailedToday, counts.SubmittedToday, counts.CostToday}
 		}
 	}
 	if loginErr != nil {
@@ -1052,7 +1231,8 @@ func writeHarnessStatus(w io.Writer, r harnessStatusReport) {
 	fmt.Fprintf(w, "models   worker=%s, light=%s\n", orDefault(r.Models.Worker, "provider default"), r.Models.Light)
 	fmt.Fprintf(w, "limits   max_steps=%d, max_cost=%s, step_timeout=%ds, output_limit=%d\n", r.Limits.MaxSteps, strconv.FormatFloat(r.Limits.MaxCost, 'f', -1, 64), r.Limits.StepTimeoutSeconds, r.Limits.OutputLimit)
 	if r.Sessions != nil {
-		fmt.Fprintf(w, "sessions running=%d, today=%d, failed_today=%d\n", r.Sessions.Running, r.Sessions.Today, r.Sessions.FailedToday)
+		fmt.Fprintf(w, "sessions running=%d, today=%d, submitted_today=%d, failed_today=%d, cost_today=%s\n",
+			r.Sessions.Running, r.Sessions.Today, r.Sessions.SubmittedToday, r.Sessions.FailedToday, strconv.FormatFloat(r.Sessions.CostToday, 'f', -1, 64))
 	}
 }
 

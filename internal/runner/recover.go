@@ -46,6 +46,13 @@ func recoverFailedJobs(s *store.Store, project row, now, actor string) []string 
 			continue
 		}
 		run := lastRecoveryRun(s, job.str("id"))
+		if ownerCancelledFailure(job.str("result"), rowStr(run, "summary")) {
+			stats.cancelled++
+			f := failure{Class: failureStructural, Reason: "cancelled by the owner", Signature: failureSignature(failureStructural, "cancelled by the owner")}
+			root, n := recoveryChain(s, job)
+			recoveryEvent(s, now, actor, job.str("id"), "held", f, root, n, "")
+			continue
+		}
 		f := classifyFailure(job.str("result"), rowStr(run, "status"), rowStr(run, "summary"), recoveryQuestionAsked(s, slug, job.str("id")))
 		root, n := recoveryChain(s, job)
 		// Work a later job with the same source already carries (the lead re-planned it, or it landed) is not done twice.
@@ -101,9 +108,9 @@ const (
 // recoveryStats is one tick's view of a project's failures: what the ledger already answered in the window,
 // what waits for the lead, the earliest retry still due, and whether the tick's cap held work back.
 type recoveryStats struct {
-	total, days, withLead, once, capped, queueFull int
-	ledger                                         map[string]int // outcome -> events in the window
-	next                                           string
+	total, days, withLead, once, cancelled, capped, queueFull int
+	ledger                                                    map[string]int // outcome -> events in the window
+	next                                                      string
 }
 
 func (st *recoveryStats) nextAt(due string) {
@@ -127,6 +134,9 @@ func (st recoveryStats) note() string {
 	if st.once > 0 {
 		parts = append(parts, fmt.Sprintf("%d answer(s) tried once", st.once))
 	}
+	if st.cancelled > 0 {
+		parts = append(parts, fmt.Sprintf("%d cancelled by the owner", st.cancelled))
+	}
 	if st.next != "" {
 		parts = append(parts, "next at "+st.next)
 	}
@@ -140,6 +150,11 @@ func (st recoveryStats) note() string {
 		parts = append(parts, "waiting")
 	}
 	return fmt.Sprintf("%d failed in %dd: %s", st.total, st.days, strings.Join(parts, ", "))
+}
+
+func ownerCancelledFailure(result, summary string) bool {
+	return strings.HasPrefix(strings.TrimSpace(result), "cancelled by the owner") ||
+		strings.HasPrefix(strings.TrimSpace(summary), "cancelled by the owner")
 }
 
 // recoveryLedger counts the window's job.recover events of the project by outcome.

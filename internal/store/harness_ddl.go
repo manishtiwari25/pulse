@@ -25,7 +25,8 @@ var HarnessDDL = []string{
   started_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   ended_at TEXT NOT NULL DEFAULT '',
-  trajectory TEXT NOT NULL DEFAULT ''
+  trajectory TEXT NOT NULL DEFAULT '',
+  cancel_requested_at TEXT NOT NULL DEFAULT ''
 )`,
 	`CREATE INDEX IF NOT EXISTS harness_sessions_project ON harness_sessions(project, started_at)`,
 	`CREATE INDEX IF NOT EXISTS harness_sessions_status ON harness_sessions(status, started_at)`,
@@ -49,4 +50,5 @@ var HarnessDDL = []string{
 // harness_sessions table before the current harness schema.
 var HarnessColumns = []Column{
 	{Table: "harness_sessions", Name: "executor", DDL: "TEXT NOT NULL DEFAULT ''"},
+	{Table: "harness_sessions", Name: "cancel_requested_at", DDL: "TEXT NOT NULL DEFAULT ''"},
 }

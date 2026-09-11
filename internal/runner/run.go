@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/board"
@@ -232,6 +233,10 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 	exec1(s.DB, "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) "+
 		"VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)", runID, job.str("id"), agent, project.str("slug"), now, clone, logPath, mode, ex.name())
 	eventAt(s.DB, now, agent, "run.start", runID, map[string]any{"job": job.str("id"), "mode": mode, "executor": ex.name()})
+	ctx, cancelRun := context.WithCancel(ctx)
+	var ownerCancelled atomic.Bool
+	stopCancelWatch := watchRunHarnessCancel(ctx, s, runID, cancelRun, &ownerCancelled)
+	defer stopCancelWatch()
 	if job.str("kind") == "baseline" {
 		// ADR-031: the runner measures the default branch itself; no clone, brief, worker or landing.
 		return runBaseline(s, job, project, agent, now, runID, logPath, ex, o)
@@ -432,9 +437,14 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		}
 		rescued := false
 		if out.Timeout {
-			status, exitCode = "timeout", nil
+			if ownerCancelled.Load() {
+				status, summary = "failed", "cancelled by the owner"
+				setInt(5)
+			} else {
+				status, exitCode = "timeout", nil
+			}
 			log.add("timeout after %d minutes", minutes)
-			if ex.commitCount(base) > 0 {
+			if status == "timeout" && ex.commitCount(base) > 0 {
 				rescued = true
 				setInt(0)
 				if !parsed.Found {
@@ -482,6 +492,12 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 					} else {
 						summary += " - the Copilot login on this machine, not the job; log in again as the daemon's user (`copilot` then `/login`, or `gh auth login`)"
 					}
+				}
+			case code == 5:
+				status = "failed"
+				summary = "cancelled by the owner"
+				if parsed.Summary != "" {
+					summary = "cancelled by the owner: " + parsed.Summary
 				}
 			case code != 0:
 				status = "failed"
@@ -742,6 +758,48 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 	}
 	finishEvent(status, branch)
 	return runRow(), nil
+}
+
+func watchRunHarnessCancel(ctx context.Context, s *store.Store, runID string, cancel context.CancelFunc, ownerCancelled *atomic.Bool) func() {
+	return watchRunHarnessCancelEvery(ctx, s, runID, cancel, ownerCancelled, 3*time.Second)
+}
+
+func watchRunHarnessCancelEvery(ctx context.Context, s *store.Store, runID string, cancel context.CancelFunc, ownerCancelled *atomic.Bool, interval time.Duration) func() {
+	watchCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	check := func() bool {
+		session, err := s.HarnessSessionHead(runID)
+		if err == nil && session != nil && session.CancelRequestedAt != "" {
+			if ownerCancelled != nil {
+				ownerCancelled.Store(true)
+			}
+			cancel()
+			return true
+		}
+		return false
+	}
+	go func() {
+		defer close(done)
+		if check() {
+			return
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if check() {
+					return
+				}
+			case <-watchCtx.Done():
+				return
+			}
+		}
+	}()
+	return func() {
+		stop()
+		<-done
+	}
 }
 
 func errMessage(err error) string {

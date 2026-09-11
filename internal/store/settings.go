@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"text/template"
 )
 
 // DefaultSettings mirrors legacy/pulse.py DEFAULT_SETTINGS.
@@ -95,6 +96,7 @@ var HarnessSettings = map[string]string{
 	"harness.max_steps":         "60",
 	"harness.max_cost":          "0",
 	"harness.keep_observations": "5",
+	"harness.system_prompt":     "",
 	"harness.step_timeout":      "300",
 	"harness.output_limit":      "20000",
 }
@@ -107,6 +109,7 @@ var HarnessRules = map[string]SettingRule{
 	"harness.max_steps":         {Kind: "count", Min: 1, HasMin: true, Description: "model calls one native-harness run may make before it stops"},
 	"harness.max_cost":          {Kind: "number", Min: 0, HasMin: true, Description: "provider-reported cost one native-harness run may spend before it stops (0 = no cap); the unit is the provider's - Copilot reports usage.cost only when the vendor sends it"},
 	"harness.keep_observations": {Kind: "count", Min: 1, HasMin: true, Description: "observations kept verbatim in the model's context; older ones collapse to their first and last lines"},
+	"harness.system_prompt":     {Kind: "text", Description: "Go text/template for the harness system prompt; empty = the built-in one (pulse harness prompt --default prints it)"},
 	"harness.step_timeout":      {Kind: "count", Min: 10, HasMin: true, Description: "seconds one command of a native-harness run may take before it is killed"},
 	"harness.output_limit":      {Kind: "count", Min: 1000, HasMin: true, Description: "characters of one command's output kept for the model; longer output is cut in the middle"},
 }
@@ -513,6 +516,11 @@ func ValidateSetting(name, value string) (string, error) {
 		return "", inputErr("Unknown setting %s. Known: %s", pyRepr(name), strings.Join(SettingNames(), ", "))
 	}
 	text := strings.TrimSpace(value)
+	if name == "harness.system_prompt" && text != "" {
+		if _, err := template.New("prompt").Option("missingkey=error").Parse(text); err != nil {
+			return "", inputErr("harness.system_prompt is not a valid Go text/template: %s", err)
+		}
+	}
 	switch rule.Kind {
 	case "count", "count-or-none", "credits":
 		lower := strings.ToLower(text)

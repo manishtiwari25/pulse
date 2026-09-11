@@ -30,10 +30,11 @@ var (
 )
 
 type commandFakeProvider struct {
-	label  string
-	models []provider.Model
-	login  provider.Login
-	err    error
+	label    string
+	models   []provider.Model
+	login    provider.Login
+	err      error
+	requests []provider.Request
 }
 
 func (p *commandFakeProvider) Name() string { return fakeProviderName }
@@ -43,7 +44,8 @@ func (p *commandFakeProvider) Label() string {
 	}
 	return p.label
 }
-func (p *commandFakeProvider) Chat(context.Context, provider.Request) (provider.Response, error) {
+func (p *commandFakeProvider) Chat(_ context.Context, req provider.Request) (provider.Response, error) {
+	p.requests = append(p.requests, req)
 	if p.err != nil {
 		return provider.Response{}, p.err
 	}
@@ -96,7 +98,7 @@ func setFakeProvider(t *testing.T, p *commandFakeProvider) {
 func harnessCommandStore(t *testing.T) *store.Store {
 	t.Helper()
 	home := t.TempDir()
-	for _, name := range []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT", "PULSE_EXECUTOR", "PULSE_NOW"} {
+	for _, name := range []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT", "PULSE_EXECUTOR", "PULSE_NOW", "PULSE_HARNESS_CANCEL", "PULSE_HARNESS_PROMPT_FILE"} {
 		t.Setenv(name, "")
 	}
 	t.Setenv("PULSE_HOME", home)
@@ -228,6 +230,45 @@ func TestHarnessRunRecordsSubmissionAndTrajectory(t *testing.T) {
 	}
 }
 
+func TestHarnessRunUsesStoredPromptTemplate(t *testing.T) {
+	s := harnessCommandStore(t)
+	p := &commandFakeProvider{}
+	setFakeProvider(t, p)
+	if err := s.SetSetting("human", "harness.system_prompt", "CUSTOM {{.Cwd}} {{.Model}}"); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code := invokeHarness(t, s.Home, "run", "-p", "do it", "-C", t.TempDir(),
+		"--provider", fakeProviderName, "--session", "hs-prompt", "--trajectory", "none", "--quiet")
+	if code != 0 || !strings.Contains(out, "SUMMARY: fake complete") || stderr != "" {
+		t.Fatalf("run = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	if len(p.requests) != 1 || !strings.HasPrefix(p.requests[0].Messages[0].Content, "CUSTOM ") || !strings.Contains(p.requests[0].Messages[0].Content, "fake-model") {
+		t.Fatalf("prompt request = %+v", p.requests)
+	}
+}
+
+func TestHarnessRunPromptFileOverridesInvalidStoredTemplate(t *testing.T) {
+	s := harnessCommandStore(t)
+	setFakeProvider(t, &commandFakeProvider{})
+	if _, err := s.DB.Exec(`INSERT INTO settings(name,value,updated_at,updated_by) VALUES('harness.system_prompt','{{.Missing}}',?,'test')`, s.Now()); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code := invokeHarness(t, s.Home, "run", "-p", "do it", "-C", t.TempDir(),
+		"--provider", fakeProviderName, "--session", "hs-bad-prompt", "--trajectory", "none", "--quiet")
+	if code != 2 || !strings.Contains(stderr, "harness.system_prompt render failed") || out != "" {
+		t.Fatalf("bad prompt = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	file := filepath.Join(t.TempDir(), "prompt.txt")
+	if err := os.WriteFile(file, []byte("FILE {{.Cwd}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code = invokeHarness(t, s.Home, "run", "-p", "do it", "-C", t.TempDir(),
+		"--provider", fakeProviderName, "--session", "hs-file-prompt", "--prompt-file", file, "--trajectory", "none", "--quiet")
+	if code != 0 || !strings.Contains(out, "SUMMARY: fake complete") || stderr != "" {
+		t.Fatalf("file prompt = code %d stdout %q stderr %q", code, out, stderr)
+	}
+}
+
 func TestHarnessRunNotLoggedInExit(t *testing.T) {
 	s := harnessCommandStore(t)
 	setFakeProvider(t, &commandFakeProvider{err: provider.ErrNotLoggedIn})
@@ -299,6 +340,59 @@ func TestHarnessStatusJSONShape(t *testing.T) {
 	}
 	if got.Harness != "native" || got.Provider.Name != fakeProviderName || got.Provider.Login.User != "octocat" || got.Limits.MaxSteps == 0 {
 		t.Fatalf("bad status JSON: %+v", got)
+	}
+}
+
+func TestHarnessCancelCommand(t *testing.T) {
+	s := harnessCommandStore(t)
+	if err := s.BeginHarnessSession(store.HarnessSession{ID: "hs-cancel"}); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code := invokeHarness(t, s.Home, "cancel", "hs-cancel")
+	if code != 0 || out != "cancel requested for hs-cancel\n" || stderr != "" {
+		t.Fatalf("cancel running = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	h, err := s.HarnessSessionHead("hs-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.CancelRequestedAt == "" {
+		t.Fatalf("cancel not recorded: %+v", h)
+	}
+	out, stderr, code = invokeHarness(t, s.Home, "cancel", "hs-cancel")
+	if code != 0 || out != "cancel already requested for hs-cancel\n" || stderr != "" {
+		t.Fatalf("cancel twice = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	if err := s.FinishHarnessSession("hs-cancel", "cancelled", "cancelled", "", "cancelled by the owner", 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code = invokeHarness(t, s.Home, "cancel", "hs-cancel")
+	if code != 1 || out != "" || !strings.Contains(stderr, "session is not running") {
+		t.Fatalf("cancel finished = code %d stdout %q stderr %q", code, out, stderr)
+	}
+}
+
+func TestHarnessPromptCommand(t *testing.T) {
+	s := harnessCommandStore(t)
+	out, stderr, code := invokeHarness(t, s.Home, "prompt", "--default")
+	if code != 0 || stderr != "" || !strings.Contains(out, "You are an autonomous software engineering agent") || !strings.Contains(out, "{{.StepTimeout}}") {
+		t.Fatalf("prompt default = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	out, stderr, code = invokeHarness(t, s.Home, "prompt", "--raw")
+	if code != 0 || out != "\n" || strings.TrimSpace(stderr) != "built-in" {
+		t.Fatalf("prompt raw built-in = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	if err := s.SetSetting("human", "harness.system_prompt", "Stored {{.Cwd}} {{.Provider}}"); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	out, stderr, code = invokeHarness(t, s.Home, "prompt", "-C", dir, "--provider", "hubfake")
+	if code != 0 || stderr != "" || !strings.Contains(out, "Stored "+dir+" hubfake") {
+		t.Fatalf("prompt rendered = code %d stdout %q stderr %q", code, out, stderr)
+	}
+	out, stderr, code = invokeHarness(t, s.Home, "prompt", "--raw")
+	if code != 0 || stderr != "" || out != "Stored {{.Cwd}} {{.Provider}}\n" {
+		t.Fatalf("prompt raw custom = code %d stdout %q stderr %q", code, out, stderr)
 	}
 }
 

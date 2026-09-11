@@ -8,28 +8,29 @@ import (
 
 // HarnessSession is one native-harness run recorded by the runner.
 type HarnessSession struct {
-	ID               string  `json:"id"`
-	RunID            string  `json:"run_id"`
-	JobID            string  `json:"job_id"`
-	Agent            string  `json:"agent"`
-	Project          string  `json:"project"`
-	Executor         string  `json:"executor"`
-	Provider         string  `json:"provider"`
-	Model            string  `json:"model"`
-	Cwd              string  `json:"cwd"`
-	Status           string  `json:"status"`
-	ExitStatus       string  `json:"exit_status"`
-	Submission       string  `json:"submission"`
-	Error            string  `json:"error"`
-	Steps            int     `json:"steps"`
-	Calls            int     `json:"calls"`
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
-	Cost             float64 `json:"cost"`
-	StartedAt        string  `json:"started_at"`
-	UpdatedAt        string  `json:"updated_at"`
-	EndedAt          string  `json:"ended_at"`
-	Trajectory       string  `json:"trajectory"`
+	ID                string  `json:"id"`
+	RunID             string  `json:"run_id"`
+	JobID             string  `json:"job_id"`
+	Agent             string  `json:"agent"`
+	Project           string  `json:"project"`
+	Executor          string  `json:"executor"`
+	Provider          string  `json:"provider"`
+	Model             string  `json:"model"`
+	Cwd               string  `json:"cwd"`
+	Status            string  `json:"status"`
+	ExitStatus        string  `json:"exit_status"`
+	Submission        string  `json:"submission"`
+	Error             string  `json:"error"`
+	Steps             int     `json:"steps"`
+	Calls             int     `json:"calls"`
+	PromptTokens      int     `json:"prompt_tokens"`
+	CompletionTokens  int     `json:"completion_tokens"`
+	Cost              float64 `json:"cost"`
+	StartedAt         string  `json:"started_at"`
+	UpdatedAt         string  `json:"updated_at"`
+	EndedAt           string  `json:"ended_at"`
+	Trajectory        string  `json:"trajectory"`
+	CancelRequestedAt string  `json:"cancel_requested_at,omitempty"`
 }
 
 // HarnessStep is one trajectory step from a native-harness run.
@@ -48,23 +49,49 @@ type HarnessStep struct {
 }
 
 // HarnessSessionFilter limits the harness session list. Limit 0 means 50 and
-// values above 500 are capped to keep status pages bounded.
+// values above 500 are capped to keep status pages bounded. Before is a page
+// cursor from HarnessSessionCursor: rows strictly older than it in the list's
+// (started_at, id) order, so sessions that started in the same second are
+// never skipped between pages.
 type HarnessSessionFilter struct {
 	Project string
 	Agent   string
 	Status  string
 	JobID   string
+	Before  string
 	Limit   int
 }
 
-const harnessSessionCols = "id, run_id, job_id, agent, project, executor, provider, model, cwd, status, exit_status, submission, error, steps, calls, prompt_tokens, completion_tokens, cost, started_at, updated_at, ended_at, trajectory"
+// HarnessSessionCursor is the opaque page cursor for a session row.
+func HarnessSessionCursor(h HarnessSession) string {
+	return h.StartedAt + "|" + h.ID
+}
+
+// parseHarnessCursor splits a cursor into its started_at and id parts; a bare
+// timestamp (no id) pages on started_at alone.
+func parseHarnessCursor(cursor string) (startedAt, id string) {
+	if i := strings.LastIndex(cursor, "|"); i >= 0 {
+		return cursor[:i], cursor[i+1:]
+	}
+	return cursor, ""
+}
+
+type HarnessCounts struct {
+	Running        int     `json:"running"`
+	Today          int     `json:"today"`
+	FailedToday    int     `json:"failed_today"`
+	SubmittedToday int     `json:"submitted_today"`
+	CostToday      float64 `json:"cost_today"`
+}
+
+const harnessSessionCols = "id, run_id, job_id, agent, project, executor, provider, model, cwd, status, exit_status, submission, error, steps, calls, prompt_tokens, completion_tokens, cost, started_at, updated_at, ended_at, trajectory, cancel_requested_at"
 const harnessStepCols = "session_id, n, at, kind, content, command, exit_code, duration_ms, prompt_tokens, completion_tokens, model"
 
 func scanHarnessSession(r scanner) (*HarnessSession, error) {
 	var h HarnessSession
 	if err := r.Scan(&h.ID, &h.RunID, &h.JobID, &h.Agent, &h.Project, &h.Executor, &h.Provider, &h.Model, &h.Cwd,
 		&h.Status, &h.ExitStatus, &h.Submission, &h.Error, &h.Steps, &h.Calls, &h.PromptTokens,
-		&h.CompletionTokens, &h.Cost, &h.StartedAt, &h.UpdatedAt, &h.EndedAt, &h.Trajectory); err != nil {
+		&h.CompletionTokens, &h.Cost, &h.StartedAt, &h.UpdatedAt, &h.EndedAt, &h.Trajectory, &h.CancelRequestedAt); err != nil {
 		return nil, err
 	}
 	return &h, nil
@@ -97,10 +124,10 @@ func (s *Store) BeginHarnessSession(h HarnessSession) error {
 		h.UpdatedAt = now
 	}
 	h.Status = "running"
-	_, err := s.DB.Exec("INSERT OR REPLACE INTO harness_sessions ("+harnessSessionCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := s.DB.Exec("INSERT OR REPLACE INTO harness_sessions ("+harnessSessionCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		h.ID, h.RunID, h.JobID, h.Agent, h.Project, h.Executor, h.Provider, h.Model, h.Cwd, h.Status, h.ExitStatus,
 		h.Submission, h.Error, h.Steps, h.Calls, h.PromptTokens, h.CompletionTokens, h.Cost, h.StartedAt, h.UpdatedAt,
-		h.EndedAt, h.Trajectory)
+		h.EndedAt, h.Trajectory, h.CancelRequestedAt)
 	return err
 }
 
@@ -209,6 +236,16 @@ func (s *Store) HarnessSessions(f HarnessSessionFilter) ([]HarnessSession, error
 		where = append(where, "job_id = ?")
 		args = append(args, f.JobID)
 	}
+	if f.Before != "" {
+		startedAt, id := parseHarnessCursor(f.Before)
+		if id != "" {
+			where = append(where, "(started_at < ? OR (started_at = ? AND id < ?))")
+			args = append(args, startedAt, startedAt, id)
+		} else {
+			where = append(where, "started_at < ?")
+			args = append(args, startedAt)
+		}
+	}
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -227,6 +264,37 @@ func (s *Store) HarnessSessions(f HarnessSessionFilter) ([]HarnessSession, error
 		out = append(out, *h)
 	}
 	return out, rows.Err()
+}
+
+// ErrHarnessCancelPending reports a cancel request that is already recorded on
+// a session that is still running; callers treat a repeat as done.
+var ErrHarnessCancelPending = errors.New("cancel already requested")
+
+// RequestHarnessCancel records an owner cancellation request for a running
+// session. Unknown sessions return sql.ErrNoRows; a session that already has a
+// pending request returns ErrHarnessCancelPending; known non-running sessions
+// return ok=false.
+func (s *Store) RequestHarnessCancel(id string) (bool, error) {
+	h, err := s.HarnessSessionHead(id)
+	if err != nil {
+		return false, err
+	}
+	if h == nil {
+		return false, sql.ErrNoRows
+	}
+	if h.Status != "running" {
+		return false, nil
+	}
+	if h.CancelRequestedAt != "" {
+		return false, ErrHarnessCancelPending
+	}
+	res, err := s.DB.Exec("UPDATE harness_sessions SET cancel_requested_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND cancel_requested_at = ''",
+		s.Now(), s.Now(), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // HarnessSessionHead returns a session row without loading its steps, or nil
@@ -265,16 +333,23 @@ func (s *Store) HarnessSession(id string) (*HarnessSession, []HarnessStep, error
 }
 
 // HarnessSessionCounts summarizes active and same-day harness runs.
-func (s *Store) HarnessSessionCounts() (running, today, failedToday int, err error) {
+func (s *Store) HarnessSessionCounts() (HarnessCounts, error) {
+	var counts HarnessCounts
 	dayStart := s.Now()[:10] + "T00:00:00Z"
-	if err = s.DB.QueryRow("SELECT COUNT(*) FROM harness_sessions WHERE status = 'running'").Scan(&running); err != nil {
-		return 0, 0, 0, err
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM harness_sessions WHERE status = 'running'").Scan(&counts.Running); err != nil {
+		return HarnessCounts{}, err
 	}
-	if err = s.DB.QueryRow("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ?", dayStart).Scan(&today); err != nil {
-		return 0, 0, 0, err
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ?", dayStart).Scan(&counts.Today); err != nil {
+		return HarnessCounts{}, err
 	}
-	err = s.DB.QueryRow("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ? AND status NOT IN ('running', 'submitted')", dayStart).Scan(&failedToday)
-	return running, today, failedToday, err
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ? AND status NOT IN ('running', 'submitted')", dayStart).Scan(&counts.FailedToday); err != nil {
+		return HarnessCounts{}, err
+	}
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ? AND status = 'submitted'", dayStart).Scan(&counts.SubmittedToday); err != nil {
+		return HarnessCounts{}, err
+	}
+	err := s.DB.QueryRow("SELECT COALESCE(SUM(cost), 0) FROM harness_sessions WHERE started_at >= ?", dayStart).Scan(&counts.CostToday)
+	return counts, err
 }
 
 // MarkLostHarnessSessions closes running sessions whose heartbeat is too old.

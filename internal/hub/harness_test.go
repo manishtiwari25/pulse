@@ -2,8 +2,13 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -164,26 +169,26 @@ func TestAdditionHarnessStatusAndSettings(t *testing.T) {
 		t.Fatalf("limits: %#v", limits)
 	}
 	sessions := result["sessions"].(map[string]any)
-	if sessions["running"] != float64(1) || sessions["today"] != float64(2) || sessions["failed_today"] != float64(1) {
+	if sessions["running"] != float64(1) || sessions["today"] != float64(2) || sessions["failed_today"] != float64(1) || sessions["submitted_today"] != float64(0) || sessions["cost_today"] != float64(0) {
 		t.Fatalf("session counts: %#v", sessions)
 	}
 	settings := result["settings"].([]any)
-	foundMaxSteps := false
+	found := map[string]bool{}
 	for _, raw := range settings {
 		row := raw.(map[string]any)
-		if row["name"] == "harness.max_steps" && row["value"] == "60" && row["kind"] == "count" && row["description"] != "" {
-			foundMaxSteps = true
-		}
+		found[row["name"].(string)] = row["value"] != nil && row["kind"] != nil && row["description"] != ""
 	}
-	if !foundMaxSteps {
-		t.Fatalf("harness.max_steps missing from /harness settings: %#v", settings)
+	for _, name := range []string{"harness.max_steps", "minutes_per_job", "harness.max_cost", "harness.keep_observations", "harness.system_prompt"} {
+		if !found[name] {
+			t.Fatalf("%s missing from /harness settings: %#v", name, settings)
+		}
 	}
 
 	status, result = additionsRequest(t, h, http.MethodGet, "/api/v1/settings", "")
 	if status != http.StatusOK {
 		t.Fatalf("GET /settings: %d %#v", status, result)
 	}
-	foundMaxSteps = false
+	foundMaxSteps := false
 	for _, raw := range result["settings"].([]any) {
 		row := raw.(map[string]any)
 		if row["name"] == "harness.max_steps" {
@@ -331,6 +336,9 @@ func TestAdditionHarnessSessions(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("sessions list: %d %#v", status, result)
 	}
+	if result["counts"] == nil {
+		t.Fatalf("sessions list lacks counts: %#v", result)
+	}
 	rows := result["sessions"].([]any)
 	if len(rows) != 1 {
 		t.Fatalf("session rows: %#v", rows)
@@ -354,6 +362,137 @@ func TestAdditionHarnessSessions(t *testing.T) {
 	status, result = additionsRequest(t, h, http.MethodGet, "/api/v1/harness/sessions/missing", "")
 	if status != http.StatusNotFound || result["error"] != "not found" {
 		t.Fatalf("missing session: %d %#v", status, result)
+	}
+}
+
+func TestAdditionHarnessSessionsPaging(t *testing.T) {
+	s := harnessStore(t)
+	h := New(s, nil)
+	for _, session := range []store.HarnessSession{
+		{ID: "HS-new", StartedAt: "2026-09-06T04:00:00Z", UpdatedAt: "2026-09-06T04:00:00Z"},
+		{ID: "HS-mid", StartedAt: "2026-09-06T03:00:00Z", UpdatedAt: "2026-09-06T03:00:00Z"},
+		{ID: "HS-old", StartedAt: "2026-09-06T02:00:00Z", UpdatedAt: "2026-09-06T02:00:00Z"},
+	} {
+		if err := s.BeginHarnessSession(session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, result := additionsRequest(t, h, http.MethodGet, "/api/v1/harness/sessions?limit=2", "")
+	if status != http.StatusOK {
+		t.Fatalf("first page: %d %#v", status, result)
+	}
+	rows := result["sessions"].([]any)
+	if len(rows) != 2 || rows[0].(map[string]any)["id"] != "HS-new" || rows[1].(map[string]any)["id"] != "HS-mid" || result["next_before"] != "2026-09-06T03:00:00Z|HS-mid" {
+		t.Fatalf("first page rows: %#v", result)
+	}
+	status, result = additionsRequest(t, h, http.MethodGet, "/api/v1/harness/sessions?limit=2&before="+url.QueryEscape("2026-09-06T03:00:00Z|HS-mid"), "")
+	if status != http.StatusOK {
+		t.Fatalf("second page: %d %#v", status, result)
+	}
+	rows = result["sessions"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["id"] != "HS-old" || result["next_before"] != nil {
+		t.Fatalf("second page rows: %#v", result)
+	}
+}
+
+func TestAdditionHarnessCancel(t *testing.T) {
+	s := harnessStore(t)
+	h := New(s, nil)
+	if err := s.BeginHarnessSession(store.HarnessSession{ID: "HS-run", JobID: "JOB-1"}); err != nil {
+		t.Fatal(err)
+	}
+	status, result := additionsRequest(t, h, http.MethodPost, "/api/v1/harness/sessions/HS-run/cancel", `{}`)
+	if status != http.StatusOK || result["cancelled"] != true {
+		t.Fatalf("cancel running: %d %#v", status, result)
+	}
+	session := result["session"].(map[string]any)
+	if session["cancel_requested_at"] == "" {
+		t.Fatalf("cancel timestamp missing: %#v", session)
+	}
+	var detail string
+	if err := s.DB.QueryRow("SELECT detail FROM events WHERE action = 'harness.cancel' AND subject = 'HS-run'").Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]string
+	if err := json.Unmarshal([]byte(detail), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["session"] != "HS-run" || event["job"] != "JOB-1" {
+		t.Fatalf("cancel event = %#v", event)
+	}
+	status, result = additionsRequest(t, h, http.MethodPost, "/api/v1/harness/sessions/HS-run/cancel", `{}`)
+	if status != http.StatusOK || result["cancelled"] != true || result["pending"] != true {
+		t.Fatalf("cancel again: %d %#v", status, result)
+	}
+	var cancelEvents int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM events WHERE action = 'harness.cancel' AND subject = 'HS-run'").Scan(&cancelEvents); err != nil {
+		t.Fatal(err)
+	}
+	if cancelEvents != 1 {
+		t.Fatalf("repeat cancel emitted %d events, want 1", cancelEvents)
+	}
+	if err := s.FinishHarnessSession("HS-run", "cancelled", "cancelled", "", "cancelled by the owner", 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	status, result = additionsRequest(t, h, http.MethodPost, "/api/v1/harness/sessions/HS-run/cancel", `{}`)
+	if status != http.StatusConflict || result["error"] != "session is not running" {
+		t.Fatalf("cancel finished: %d %#v", status, result)
+	}
+	status, result = additionsRequest(t, h, http.MethodPost, "/api/v1/harness/sessions/missing/cancel", `{}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("cancel missing: %d %#v", status, result)
+	}
+}
+
+func TestAdditionHarnessPrompt(t *testing.T) {
+	s := harnessStore(t)
+	h := New(s, nil)
+	status, result := additionsRequest(t, h, http.MethodGet, "/api/v1/harness/prompt", "")
+	if status != http.StatusOK || result["template"] != "" || result["custom"] != false || result["default"] == "" || !strings.Contains(result["rendered"].(string), "<project clone>") {
+		t.Fatalf("default prompt: %d %#v", status, result)
+	}
+	if err := s.SetSetting("human", "harness.system_prompt", "Hello {{.Cwd}} {{.Provider}}"); err != nil {
+		t.Fatal(err)
+	}
+	status, result = additionsRequest(t, h, http.MethodGet, "/api/v1/harness/prompt", "")
+	if status != http.StatusOK || result["custom"] != true || result["rendered"] != "Hello <project clone> hubfake" {
+		t.Fatalf("custom prompt: %d %#v", status, result)
+	}
+	if _, err := s.DB.Exec(`UPDATE settings SET value='{{.Missing}}' WHERE name='harness.system_prompt'`); err != nil {
+		t.Fatal(err)
+	}
+	status, result = additionsRequest(t, h, http.MethodGet, "/api/v1/harness/prompt", "")
+	if status != http.StatusOK || result["rendered"] != "" || result["error"] == nil {
+		t.Fatalf("bad prompt: %d %#v", status, result)
+	}
+}
+
+func TestAdditionHarnessTrajectoryDownload(t *testing.T) {
+	s := harnessStore(t)
+	h := New(s, nil)
+	dir := filepath.Join(s.Home, "harness")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "HS-traj.json")
+	if err := os.WriteFile(path, []byte(`{"ok":true}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BeginHarnessSession(store.HarnessSession{ID: "HS-traj", Trajectory: path}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/harness/sessions/HS-traj/trajectory", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" || rec.Header().Get("Content-Disposition") != `attachment; filename="HS-traj.json"` || rec.Body.String() != "{\"ok\":true}\n" {
+		t.Fatalf("trajectory download: %d %q %q %q", rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Content-Disposition"), rec.Body.String())
+	}
+	if err := s.BeginHarnessSession(store.HarnessSession{ID: "HS-outside", Trajectory: filepath.Join(t.TempDir(), "x.json")}); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := additionsRequest(t, h, http.MethodGet, "/api/v1/harness/sessions/HS-outside/trajectory", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("outside trajectory status = %d", status)
 	}
 }
 
