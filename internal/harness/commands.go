@@ -706,6 +706,12 @@ func harnessCancel(c *cli.Context, args []string) error {
 		fmt.Fprintf(c.Err, "pulse harness cancel: session is not running: %s\n", id)
 		return cli.Errorf(1, "", "", "")
 	}
+	// The same event the console's cancel button emits, so the feed shows CLI cancels too.
+	if head, err := st.HarnessSessionHead(id); err == nil && head != nil {
+		if _, err := bus.Emit(st, actorOf(c), "harness.cancel", id, map[string]string{"session": id, "job": head.JobID}); err != nil {
+			return err
+		}
+	}
 	fmt.Fprintf(c.Out, "cancel requested for %s\n", id)
 	return nil
 }

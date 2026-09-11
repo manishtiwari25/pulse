@@ -359,6 +359,13 @@ func TestHarnessCancelCommand(t *testing.T) {
 	if h.CancelRequestedAt == "" {
 		t.Fatalf("cancel not recorded: %+v", h)
 	}
+	var cancelEvents int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM events WHERE action = 'harness.cancel' AND subject = 'hs-cancel'").Scan(&cancelEvents); err != nil {
+		t.Fatal(err)
+	}
+	if cancelEvents != 1 {
+		t.Fatalf("harness.cancel events = %d, want 1", cancelEvents)
+	}
 	out, stderr, code = invokeHarness(t, s.Home, "cancel", "hs-cancel")
 	if code != 0 || out != "cancel already requested for hs-cancel\n" || stderr != "" {
 		t.Fatalf("cancel twice = code %d stdout %q stderr %q", code, out, stderr)
