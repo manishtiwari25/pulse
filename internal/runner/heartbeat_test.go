@@ -184,6 +184,13 @@ func runnerHeartbeatFixture(t *testing.T, s *store.Store, executor string) (*loc
 		"PULSE_GENERATION": strconv.Itoa(id.Generation), "PULSE_EXECUTOR": id.Executor}
 	e := newLocalExec(row{"name": executor, "address": "pulse@synthetic-hands"}, s, s.Home, job, row{}, id.Agent, &runLog{})
 	e.cloneDir = t.TempDir()
+	// runWorker preflights the per-run signing key (ADR-022); give the fixture one.
+	if err := os.MkdirAll(filepath.Dir(e.key), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.key, []byte("synthetic run key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return e, id, env
 }
 
