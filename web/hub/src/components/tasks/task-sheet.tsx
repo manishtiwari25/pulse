@@ -170,6 +170,11 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
                     {j.agent ? <Who row={{ agent: j.agent }} compact className="ml-auto" /> : <span className="ml-auto text-muted-foreground">no agent yet</span>}
                   </div>
                   <div className="text-[13px] leading-snug anywhere">{j.title}</div>
+                  {j.harness_session ? (
+                    <Link href={hrefs.harness({ id: j.harness_session })} className="w-fit text-xs font-medium underline-offset-2 hover:underline">
+                      session <Mono>{j.harness_session}</Mono>
+                    </Link>
+                  ) : null}
                   {worker ? (
                     <div className="text-xs text-muted-foreground">
                       {"· "}

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { BotIcon, ClipboardIcon, ClockIcon, CopyIcon, FileTextIcon, PlayIcon, TerminalIcon } from "lucide-react";
+import { BanIcon, BotIcon, CheckIcon, ClipboardIcon, ClockIcon, CopyIcon, DownloadIcon, FileTextIcon, PlayIcon, TerminalIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,11 +14,11 @@ import { DataTable, type Column } from "@/components/pulse/data-table";
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
 import { Mono, ProjectLink, ToneBadge, When } from "@/components/pulse/who";
-import type { HarnessSession, HarnessSessionResponse, HarnessSessionStatus, HarnessSessionsResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
-import { enc, query } from "@/lib/api";
+import type { HarnessModel, HarnessModelsResponse, HarnessSession, HarnessSessionResponse, HarnessSessionStatus, HarnessSessionsResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
+import { api, apiHref, enc, errorText, query, writes } from "@/lib/api";
 import { num, parseDate, rel, span, statusTone, truncate, type Tone } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { useApi, useLiveEvents, useNow } from "@/lib/use-api";
+import { invalidate, useApi, useLiveEvents, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
 const RUNNING: HarnessSessionStatus[] = ["running"];
@@ -63,8 +63,15 @@ function exitTone(session: Pick<HarnessSession, "status" | "exit_status">): Tone
   return statusTone(status);
 }
 
-function HarnessStatusBadge({ session }: { session: Pick<HarnessSession, "status" | "exit_status"> }) {
+function HarnessStatusBadge({ session }: { session: Pick<HarnessSession, "status" | "exit_status" | "cancel_requested_at"> }) {
   const status = exitKey(session);
+  if (session.cancel_requested_at && status === "running") {
+    return (
+      <ToneBadge tone="warn" dot className="[&>span:first-child]:animate-ping">
+        cancelling…
+      </ToneBadge>
+    );
+  }
   return (
     <ToneBadge tone={exitTone(session)} dot={status !== "lost" && status !== "cancelled"} className={cn(status === "running" && "[&>span:first-child]:animate-ping")}>
       {status.replace(/_/g, " ")}
@@ -94,6 +101,26 @@ function remoteExecutor(executor: string | undefined): string {
 function updateSearch(pathname: string, router: ReturnType<typeof useRouter>, next: Record<string, string>) {
   const clean = Object.fromEntries(Object.entries(next).filter(([, v]) => v && v !== "all"));
   router.replace(pathname + query(clean), { scroll: false });
+}
+
+function ModelChips({ model, models, compact }: { model: string; models: HarnessModel[]; compact?: boolean }) {
+  const found = models.find((m) => m.id === model);
+  if (!found) return <Mono>{model}</Mono>;
+  const context = found.context_window >= 1000 ? Math.round(found.context_window / 1000) + "k" : String(found.context_window);
+  return (
+    <span className="inline-flex min-w-0 flex-wrap items-center gap-1">
+      <Mono>{compact ? found.id : found.name || found.id}</Mono>
+      {found.tool_calls ? <ToneBadge tone="neutral">tools</ToneBadge> : null}
+      {found.premium ? <ToneBadge tone="accent">{"premium ×" + found.premium}</ToneBadge> : null}
+      {found.context_window ? <ToneBadge tone="neutral">{"context " + context}</ToneBadge> : null}
+      {found.preview ? <ToneBadge tone="warn">preview</ToneBadge> : null}
+    </span>
+  );
+}
+
+function jobHref(s: Pick<HarnessSession, "project" | "job_id">): string {
+  if (s.project && /^TASK-/.test(s.job_id)) return hrefs.task(s.project, s.job_id);
+  return hrefs.tasks(s.project ? { project: s.project } : {});
 }
 
 function Filters({ project, status, agent, executor, executors, projects, onChange, onExecutorChange, onClear }: { project: string; status: string; agent: string; executor: string; executors: string[]; projects: ProjectsPayload | undefined; onChange: (next: { project: string; status: string; agent: string }) => void; onExecutorChange: (next: string) => void; onClear: () => void }) {
@@ -175,7 +202,7 @@ function Filters({ project, status, agent, executor, executors, projects, onChan
   );
 }
 
-function SessionList({ rows, selected, onSelect }: { rows: HarnessSession[]; selected: string; onSelect: (id: string) => void }) {
+function SessionList({ rows, selected, onSelect, models }: { rows: HarnessSession[]; selected: string; onSelect: (id: string) => void; models: HarnessModel[] }) {
   const now = useNow();
   const columns = useMemo<Column<HarnessSession>[]>(
     () => [
@@ -186,18 +213,27 @@ function SessionList({ rows, selected, onSelect }: { rows: HarnessSession[]; sel
         sort: (r) => r.job_title,
         render: (r) => (
           <span className="grid gap-0.5">
-            <span className="font-medium text-foreground">{r.project && r.job_id && /^TASK-/.test(r.job_id) ? <Link href={hrefs.task(r.project, r.job_id)} className="hover:underline">{truncate(r.job_title || r.job_id, 72)}</Link> : truncate(r.job_title || r.job_id, 72)}</span>
+            <span className="font-medium text-foreground">
+              {r.project && r.job_id ? (
+                <Link href={jobHref(r)} className="hover:underline" onClick={(e) => e.stopPropagation()}>
+                  {truncate(r.job_title || r.job_id, 72)}
+                </Link>
+              ) : (
+                truncate(r.job_title || r.job_id, 72)
+              )}
+            </span>
             <span className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
               <ProjectLink slug={r.project} className="text-xs" />
               <Mono>{r.job_id}</Mono>
               {remoteExecutor(r.executor) ? <ToneBadge tone="neutral">on {remoteExecutor(r.executor)}</ToneBadge> : null}
+              {r.cancel_requested_at && r.status === "running" ? <ToneBadge tone="warn">cancelling…</ToneBadge> : null}
               {r.id === selected ? <ToneBadge tone="info">Selected</ToneBadge> : null}
             </span>
           </span>
         ),
       },
       { key: "agent", label: "agent", sort: (r) => r.agent, render: (r) => <span className="text-xs">{r.agent}</span> },
-      { key: "model", label: "model", hide: "lg", sort: (r) => r.model, render: (r) => <Mono>{r.model}</Mono> },
+      { key: "model", label: "model", hide: "lg", sort: (r) => r.model, render: (r) => <ModelChips model={r.model} models={models} compact /> },
       { key: "steps", label: "steps", align: "right", sort: (r) => r.steps, render: (r) => compact(r.steps) + " / " + compact(r.calls) },
       { key: "tokens", label: "tokens", align: "right", hide: "md", sort: (r) => r.prompt_tokens + r.completion_tokens, render: (r) => compact(r.prompt_tokens + r.completion_tokens) },
       {
@@ -219,7 +255,7 @@ function SessionList({ rows, selected, onSelect }: { rows: HarnessSession[]; sel
       { key: "updated", label: "updated", nowrap: true, hide: "sm", sort: (r) => r.updated_at, render: (r) => rel(r.updated_at, now) },
       { key: "duration", label: "duration", align: "right", hide: "md", sort: (r) => Date.parse(r.ended_at || "") || Date.now() - (Date.parse(r.started_at) || Date.now()), render: (r) => duration(r.started_at, r.ended_at, now) },
     ],
-    [now, selected],
+    [now, selected, models],
   );
   return (
     <DataTable
@@ -366,29 +402,154 @@ function transcriptText(d: HarnessSessionResponse): string {
   return lines.join("\n");
 }
 
-function Transcript({ id }: { id: string }) {
-  const q = useApi<HarnessSessionResponse>(id ? "harness/sessions/" + enc(id) : null, { refresh: 5000 });
-  const [follow, setFollow] = useState(true);
+function CancelRunButton({ session, onDone }: { session: HarnessSession; onDone: () => Promise<void> }) {
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (session.status !== "running") return null;
+  const cancel = () => {
+    setBusy(true);
+    setError("");
+    writes
+      .harnessCancel(session.id)
+      .then(() => {
+        setConfirm(false);
+        invalidate("harness/sessions");
+        return onDone();
+      })
+      .catch((e: unknown) => {
+        const t = errorText(e);
+        setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
+      })
+      .finally(() => setBusy(false));
+  };
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {confirm ? (
+        <>
+          <span className="text-xs text-muted-foreground">Cancel this run?</span>
+          <Button type="button" size="xs" variant="destructive" onClick={cancel} disabled={busy} aria-label={"Confirm cancel " + session.id}>
+            <CheckIcon /> Yes
+          </Button>
+          <Button type="button" size="xs" variant="ghost" onClick={() => setConfirm(false)} disabled={busy} aria-label={"Do not cancel " + session.id}>
+            <XIcon /> No
+          </Button>
+        </>
+      ) : (
+        <Button type="button" size="sm" variant="destructive" onClick={() => setConfirm(true)} disabled={busy || !!session.cancel_requested_at} aria-label={"Cancel harness run " + session.id}>
+          <BanIcon /> Cancel
+        </Button>
+      )}
+      {error ? <span className="basis-full text-xs text-bad">{error}</span> : null}
+    </span>
+  );
+}
+
+function mergeSteps(current: HarnessStep[], next: HarnessStep[]): HarnessStep[] {
+  const seen = new Map<number, HarnessStep>();
+  for (const s of current) seen.set(s.n, s);
+  for (const s of next) seen.set(s.n, s);
+  return [...seen.values()].sort((a, b) => a.n - b.n);
+}
+
+function dedupeSessions(rows: HarnessSession[]): HarnessSession[] {
+  const seen = new Set<string>();
+  const out: HarnessSession[] = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    out.push(row);
+  }
+  return out;
+}
+
+function Transcript({ id, models }: { id: string; models: HarnessModel[] }) {
+  const live = useLiveEvents();
+  const q = useApi<HarnessSessionResponse>(id ? "harness/sessions/" + enc(id) : null, { refresh: live.state === "polling" ? 5000 : 30000 });
+  const [extra, setExtra] = useState<{ id: string; steps: HarnessStep[] }>({ id: "", steps: [] });
+  const [followState, setFollowState] = useState({ id, follow: true, atBottom: true });
+  const lastEvent = useRef({ id, eventId: 0 });
+  const scroll = useRef<HTMLDivElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
-  const d = q.data;
+  const follow = followState.id === id ? followState.follow : true;
+  const atBottom = followState.id === id ? followState.atBottom : true;
+  const d = useMemo(() => {
+    if (!q.data) return undefined;
+    return { ...q.data, steps: mergeSteps(q.data.steps, extra.id === id ? extra.steps : []) };
+  }, [extra, id, q.data]);
   const running = d?.session.status === "running";
   const now = useNow();
+
   useEffect(() => {
-    if (follow && running) bottom.current?.scrollIntoView({ block: "end" });
-  }, [d?.steps.length, follow, running]);
+    const timer = setTimeout(() => {
+      setExtra((cur) => {
+        if (cur.id !== id) return { id, steps: [] };
+        const full = q.data?.steps;
+        if (!full?.length || !cur.steps.length) return cur;
+        const fullNs = new Set(full.map((s) => s.n));
+        const steps = cur.steps.filter((s) => !fullNs.has(s.n));
+        return steps.length === cur.steps.length ? cur : { id, steps };
+      });
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [id, q.data?.steps, q.updatedAt]);
+
+  useEffect(() => {
+    if (follow && atBottom && running) bottom.current?.scrollIntoView({ block: "end" });
+  }, [d?.steps.length, follow, atBottom, running]);
+
+  const onScroll = () => {
+    const el = scroll.current;
+    if (!el) return;
+    setFollowState((cur) => ({ id, follow: cur.id === id ? cur.follow : true, atBottom: el.scrollHeight - el.scrollTop - el.clientHeight < 96 }));
+  };
+
+  useEffect(() => {
+    if (!id || !d) return;
+    const lastSeen = lastEvent.current.id === id ? lastEvent.current.eventId : 0;
+    const hit = live.events
+      .filter((e) => e.id > lastSeen && e.subject === id && (e.action === "harness.step" || e.action === "harness.finish" || e.action === "harness.cancel"))
+      .sort((a, b) => a.id - b.id);
+    if (!hit.length) return;
+    lastEvent.current = { id, eventId: hit[hit.length - 1].id };
+    const lastN = d.steps.reduce((max, s) => Math.max(max, s.n), -1);
+    const path = "harness/sessions/" + enc(id);
+    const finished = hit.some((e) => e.action === "harness.finish" || e.action === "harness.cancel");
+    api<HarnessSessionResponse>(path + "?after=" + lastN)
+      .then((r) => {
+        setExtra((cur) => ({ id, steps: mergeSteps(cur.id === id ? cur.steps : [], r.steps) }));
+        if (finished) void q.reload();
+      })
+      .catch(() => {
+        void q.reload();
+      });
+  }, [d, id, live.events, q]);
+
   if (q.error && !d) return <ErrorNotice error={q.error} onRetry={() => void q.reload()} />;
   if (!d) return <SkeletonPage rows={2} />;
   const s = d.session;
   const totalTokens = s.prompt_tokens + s.completion_tokens;
+  const trajectoryHref = s.trajectory ? apiHref("harness/sessions/" + enc(s.id) + "/trajectory") : "";
   return (
     <Panel
       title="Transcript"
       icon={FileTextIcon}
       actions={
         <>
-          <Button size="sm" variant={follow ? "secondary" : "outline"} onClick={() => setFollow((v) => !v)}>
+          <span aria-live="polite">
+            <ToneBadge tone={live.state === "live" ? "ok" : live.state === "polling" ? "warn" : "info"}>{live.state === "live" ? "live" : live.state}</ToneBadge>
+          </span>
+          <Button size="sm" variant={follow ? "secondary" : "outline"} onClick={() => setFollowState((cur) => ({ id, follow: cur.id === id ? !cur.follow : false, atBottom: cur.id === id ? cur.atBottom : true }))}>
             <PlayIcon /> {follow ? "Following" : "Follow"}
           </Button>
+          <CancelRunButton session={s} onDone={q.reload} />
+          {trajectoryHref ? (
+            <Button size="sm" variant="outline" asChild>
+              <a href={trajectoryHref} download>
+                <DownloadIcon /> Download trajectory
+              </a>
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="outline"
@@ -404,28 +565,31 @@ function Transcript({ id }: { id: string }) {
         </>
       }
     >
-      <div className="grid gap-4">
+      <div ref={scroll} onScroll={onScroll} className="grid max-h-[calc(100vh-12rem)] gap-4 overflow-y-auto pr-1">
         <div className="grid gap-3 rounded-lg border bg-muted/30 p-3" aria-live={running ? "polite" : undefined}>
           <div className="flex flex-wrap items-center gap-2">
             <HarnessStatusBadge session={s} />
             <span className="font-medium">{s.agent}</span>
             {s.executor ? <span className="text-muted-foreground">on <Mono>{s.executor}</Mono></span> : null}
             <span className="text-muted-foreground">{s.job_title}</span>
+            {s.cancel_requested_at && s.status === "running" ? <ToneBadge tone="warn">cancelling…</ToneBadge> : null}
           </div>
           <Kv
             rows={[
               ["project", <ProjectLink key="p" slug={s.project} />],
-              ["job", <Mono key="j">{s.job_id}</Mono>],
-              ["model", <span key="m" className="inline-flex flex-wrap gap-1.5"><Mono>{s.provider}</Mono><Mono>{s.model}</Mono></span>],
+              ["job", <Link key="j" href={jobHref(s)} className="inline-flex items-center gap-1.5 hover:underline"><Mono>{s.job_id}</Mono></Link>],
+              ["model", <span key="m" className="inline-flex flex-wrap gap-1.5"><Mono>{s.provider}</Mono><ModelChips model={s.model} models={models} /></span>],
               ...(s.executor ? [["executor", <Mono key="e">{s.executor}</Mono>] as [React.ReactNode, React.ReactNode]] : []),
               ["cwd", <Mono key="cwd">{s.cwd}</Mono>],
               [
                 "trajectory",
                 <span key="t" className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
-                  <Mono>{s.trajectory}</Mono>
-                  <Button size="icon-xs" variant="ghost" aria-label="Copy trajectory path" onClick={() => navigator.clipboard.writeText(s.trajectory).then(() => toast.success("Trajectory path copied."))}>
-                    <ClipboardIcon />
-                  </Button>
+                  <Mono>{s.trajectory || "not recorded"}</Mono>
+                  {s.trajectory ? (
+                    <Button size="icon-xs" variant="ghost" aria-label="Copy trajectory path" onClick={() => navigator.clipboard.writeText(s.trajectory).then(() => toast.success("Trajectory path copied."))}>
+                      <ClipboardIcon />
+                    </Button>
+                  ) : null}
                 </span>,
               ],
               ["elapsed", <span key="el" className="tnum">{duration(s.started_at, s.ended_at, now)}</span>],
@@ -449,13 +613,21 @@ export function HarnessPageClient() {
   const status = sp.get("status") || "";
   const agent = sp.get("agent") || "";
   const selected = sp.get("id") || "";
-  const [limit, setLimit] = useState(50);
+  const limit = 50;
   const [executor, setExecutor] = useState("");
+  const [olderState, setOlderState] = useState<{ key: string; pages: HarnessSessionsResponse[]; loading: boolean; error: string }>({ key: "", pages: [], loading: false, error: "" });
+  const filterKey = [project, status, agent].join("\n");
+  const older = useMemo(() => (olderState.key === filterKey ? olderState.pages : []), [filterKey, olderState.key, olderState.pages]);
+  const olderLoading = olderState.key === filterKey && olderState.loading;
+  const olderError = olderState.key === filterKey ? olderState.error : "";
   const path = "harness/sessions" + query({ project, status, agent, limit });
   const sessions = useApi<HarnessSessionsResponse>(path, { refresh: 5000 });
+  const models = useApi<HarnessModelsResponse>("harness/models", { refresh: 60000 });
   const projects = useApi<ProjectsPayload>("projects", { refresh: 60000 });
   const { events } = useLiveEvents();
-  const loadedRows = useMemo(() => sessions.data?.sessions ?? [], [sessions.data]);
+  const loadedPages = useMemo(() => (sessions.data ? [sessions.data, ...older] : older), [older, sessions.data]);
+  const loadedRows = useMemo(() => dedupeSessions(loadedPages.flatMap((p) => p.sessions)), [loadedPages]);
+  const counts = sessions.data?.counts;
   const executors = useMemo(() => Array.from(new Set(loadedRows.map((r) => executorName(r.executor)).filter(Boolean))).sort(), [loadedRows]);
   const rows = useMemo(() => (executor ? loadedRows.filter((r) => executorName(r.executor) === executor) : loadedRows), [executor, loadedRows]);
   const running = rows.filter((r) => RUNNING.includes(r.status)).length;
@@ -467,7 +639,20 @@ export function HarnessPageClient() {
     [pathname, router, project, status, agent],
   );
   const selectedKnown = selected && rows.some((r) => r.id === selected);
-  const canLoadMore = loadedRows.length >= limit && limit < 500;
+  const lastPage = loadedPages[loadedPages.length - 1];
+  const canLoadMore = !!lastPage?.next_before;
+  const modelRows = models.data?.models ?? [];
+  const loadOlder = () => {
+    const before = lastPage?.next_before;
+    if (!before || olderLoading) return;
+    setOlderState((cur) => ({ key: filterKey, pages: cur.key === filterKey ? cur.pages : [], loading: true, error: "" }));
+    api<HarnessSessionsResponse>("harness/sessions" + query({ project, status, agent, limit, before }))
+      .then((page) => setOlderState((cur) => ({ key: filterKey, pages: [...(cur.key === filterKey ? cur.pages : []), page], loading: false, error: "" })))
+      .catch((e: unknown) => {
+        const t = errorText(e);
+        setOlderState((cur) => ({ key: filterKey, pages: cur.key === filterKey ? cur.pages : [], loading: false, error: [t.error, t.why, t.fix].filter(Boolean).join(" ") }));
+      });
+  };
   return (
     <>
       <PageTitle
@@ -515,10 +700,24 @@ export function HarnessPageClient() {
       ) : (
         <div className="grid gap-4">
           <KpiGrid>
-            <Kpi n={rows.length} label="sessions shown" icon={FileTextIcon} />
-            <Kpi n={running} label="running" tone={running ? "info" : "neutral"} icon={PlayIcon} />
-            <Kpi n={submitted} label="submitted" tone={submitted ? "ok" : "neutral"} icon={ClipboardIcon} />
-            <Kpi n={failed} label="attention" tone={failed ? "bad" : "neutral"} icon={ClockIcon} />
+            <Kpi n={counts?.running ?? 0} label="running" tone={counts?.running ? "info" : "neutral"} icon={PlayIcon} sub={running !== (counts?.running ?? 0) ? num(running) + " in view" : undefined} />
+            <Kpi n={counts?.today ?? 0} label="today" icon={FileTextIcon} sub={rows.length ? num(rows.length) + " in view" : undefined} />
+            <Kpi n={counts?.submitted_today ?? 0} label="submitted today" tone={counts?.submitted_today ? "ok" : "neutral"} icon={ClipboardIcon} sub={submitted !== (counts?.submitted_today ?? 0) ? num(submitted) + " in view" : undefined} />
+            <Kpi n={counts?.failed_today ?? 0} label="failed today" tone={counts?.failed_today ? "bad" : "neutral"} icon={ClockIcon} sub={failed !== (counts?.failed_today ?? 0) ? num(failed) + " in view" : undefined} />
+            <Kpi
+              n={num(counts?.cost_today ?? 0)}
+              label="cost today"
+              tone={counts?.cost_today ? "accent" : "neutral"}
+              icon={TerminalIcon}
+              sub={
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span tabIndex={0}>provider units</span>
+                  </TooltipTrigger>
+                  <TooltipContent>provider units - Copilot: premium requests</TooltipContent>
+                </Tooltip>
+              }
+            />
           </KpiGrid>
           <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(420px,1.05fr)]">
             <Panel
@@ -536,21 +735,22 @@ export function HarnessPageClient() {
               dense
             >
               <div className="grid gap-3 p-3">
-                <SessionList rows={rows} selected={selected} onSelect={choose} />
+                <SessionList rows={rows} selected={selected} onSelect={choose} models={modelRows} />
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>
-                    Showing {num(rows.length)} of the newest {num(loadedRows.length)}
+                    Showing {num(rows.length)} of {num(loadedRows.length)} loaded
                   </span>
+                  {olderError ? <span className="text-bad">{olderError}</span> : null}
                   {canLoadMore ? (
-                    <Button type="button" size="sm" variant="outline" onClick={() => setLimit((n) => Math.min(500, n + 50))}>
-                      Load more
+                    <Button type="button" size="sm" variant="outline" onClick={loadOlder} disabled={olderLoading}>
+                      {olderLoading ? "Loading…" : "Load more"}
                     </Button>
                   ) : null}
                 </div>
               </div>
             </Panel>
             {selected && (selectedKnown || !rows.length) ? (
-              <Transcript id={selected} />
+              <Transcript id={selected} models={modelRows} />
             ) : (
               <Panel title="Transcript" icon={FileTextIcon}>
                 <EmptyState>Select a session to read its transcript</EmptyState>

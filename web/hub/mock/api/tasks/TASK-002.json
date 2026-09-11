@@ -38,7 +38,8 @@
       "source": "task:TASK-002",
       "status": "leased",
       "tier": 0,
-      "title": "Await the price lookup before reading the total"
+      "title": "Await the price lookup before reading the total",
+      "harness_session": "run-20260911-001"
     }
   ],
   "messages": [
@@ -95,7 +96,8 @@
         "title": "Await the price lookup before reading the total",
         "agent": "cinder",
         "since": "2026-09-07T08:51:00.000Z",
-        "executor": "local"
+        "executor": "local",
+        "harness_session": "run-20260911-001"
       }
     ]
   }

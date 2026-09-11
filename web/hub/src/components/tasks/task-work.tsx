@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { Mono, ToneBadge, When, Who } from "@/components/pulse/who";
 import { taskProgress, type Task, type TaskWorker } from "@/lib/api";
 import { truncate } from "@/lib/format";
+import { hrefs } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
 export function isLeadPlanning(t: Pick<Task, "lead">, w: Pick<TaskWorker, "agent" | "kind">): boolean {
@@ -18,6 +20,11 @@ export function TaskWorkerInline({ t, w, compact }: { t: Pick<Task, "lead">; w: 
       {!planning ? <ToneBadge tone="info">{w.kind}</ToneBadge> : null}
       <span className="min-w-0 truncate text-foreground">{truncate(w.title || w.job, compact ? 42 : 72)}</span>
       <Mono>{w.job}</Mono>
+      {w.harness_session ? (
+        <Link href={hrefs.harness({ id: w.harness_session })} className="font-medium text-foreground underline-offset-2 hover:underline">
+          session
+        </Link>
+      ) : null}
       {w.since ? (
         <span className="text-muted-foreground">
           since <When d={w.since} />

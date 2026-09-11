@@ -30,12 +30,16 @@
     "max_steps": 60,
     "step_timeout_seconds": 300,
     "output_limit": 20000,
-    "minutes_per_job": 10
+    "minutes_per_job": 10,
+    "max_cost": 80,
+    "keep_observations": 5
   },
   "sessions": {
     "running": 1,
     "today": 5,
-    "failed_today": 3
+    "failed_today": 3,
+    "submitted_today": 1,
+    "cost_today": 20
   },
   "settings": [
     {
@@ -96,6 +100,42 @@
       "description": "characters of command output kept in the prompt and transcript",
       "updated_at": "2026-09-11T07:00:00Z",
       "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.max_cost",
+      "value": "80",
+      "default": "0",
+      "kind": "number",
+      "min": 0,
+      "choices": null,
+      "description": "provider units one harness run may spend before the harness stops it; 0 means no cap",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.keep_observations",
+      "value": "5",
+      "default": "5",
+      "kind": "count",
+      "min": 0,
+      "choices": null,
+      "description": "recent command observations kept in the model prompt when older output is summarized",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.system_prompt",
+      "value": "",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "custom harness system prompt template; empty uses the built-in default",
+      "updated_at": "",
+      "updated_by": "default",
       "secret": false
     },
     {

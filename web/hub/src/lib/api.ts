@@ -40,7 +40,11 @@ async function readJson<T>(r: Response): Promise<T> {
 export const enc = encodeURIComponent;
 
 export function api<T>(path: string, init?: RequestInit): Promise<T> {
-  return fetch("/api/v1/" + path.replace(/^\/+/, ""), { cache: "no-store", ...init }).then((r) => readJson<T>(r));
+  return fetch(apiHref(path), { cache: "no-store", ...init }).then((r) => readJson<T>(r));
+}
+
+export function apiHref(path: string): string {
+  return "/api/v1/" + path.replace(/^\/+/, "");
 }
 
 // The decide/settings routes kept their explicit intent headers from the
@@ -646,9 +650,17 @@ export interface HarnessStatus {
   provider: HarnessProviderInfo;
   providers: HarnessProviderInfo[];
   models: { worker: string; light: string };
-  limits: { max_steps: number; step_timeout_seconds: number; output_limit: number; minutes_per_job: number };
-  sessions: { running: number; today: number; failed_today: number };
+  limits: { max_steps: number; step_timeout_seconds: number; output_limit: number; minutes_per_job: number; max_cost?: number; keep_observations?: number };
+  sessions: { running: number; today: number; failed_today: number; submitted_today: number; cost_today: number };
   settings: Setting[];
+}
+
+export interface HarnessPrompt {
+  template: string;
+  default: string;
+  custom: boolean;
+  rendered: string;
+  error?: string;
 }
 
 export interface HarnessModel {
@@ -709,6 +721,7 @@ export interface HarnessSession {
   updated_at: string;
   ended_at: string;
   trajectory: string;
+  cancel_requested_at: string;
 }
 
 export type HarnessStepKind = "assistant" | "command" | "observation" | "note" | "error" | "exit";
@@ -728,11 +741,14 @@ export interface HarnessStep {
 
 export interface HarnessSessionsResponse {
   sessions: HarnessSession[];
+  counts: { running: number; today: number; failed_today: number; submitted_today: number; cost_today: number };
+  next_before?: string;
 }
 
 export interface HarnessSessionResponse {
   session: HarnessSession;
   steps: HarnessStep[];
+  after?: number;
 }
 
 // GET /api/v1/running (ADR-035): which pulse runs where, against the brain's
@@ -1085,6 +1101,7 @@ export interface TaskWorker {
   agent: string;
   since: string;
   executor: string;
+  harness_session?: string;
 }
 
 export function taskProgress(t: Task): { total: number; done: number; failed: number; running: number; queued: number; blocked: number; working: TaskWorker[] } {
@@ -1125,6 +1142,7 @@ export interface TaskJob {
   updated_at?: string;
   leased_at?: string;
   finished_at?: string;
+  harness_session?: string;
 }
 
 export interface Message {
@@ -1279,6 +1297,7 @@ export interface StoreEvent {
   action: string; // e.g. post.question, mention, hook.failed, task.amended, settings.set, compute.approved
   subject: string;
   detail: unknown;
+  payload?: unknown;
 }
 
 export interface EventsPayload {
@@ -1302,6 +1321,7 @@ export const writes = {
   harnessLoginPoll: (device_code: string) => post<HarnessPollResponse>("harness/login/poll", { device_code }),
   harnessLoginToken: (token: string) => post<{ login: HarnessLogin }>("harness/login/token", { token }),
   harnessLogout: () => post<{ ok: boolean; login: HarnessLogin }>("harness/logout", {}),
+  harnessCancel: (id: string) => post<{ cancelled: boolean; session: HarnessSession }>("harness/sessions/" + enc(id) + "/cancel", {}),
   newTask: (input: NewTaskInput) => post<{ task: Task }>("tasks", input),
   amendTask: (id: string, input: AmendTaskInput) => post<{ task: Task }>("tasks/" + enc(id) + "/amend", input),
   cancelTask: (id: string, reason: string) => post<{ task: Task }>("tasks/" + enc(id) + "/cancel", { reason }),

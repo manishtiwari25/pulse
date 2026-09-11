@@ -22,7 +22,8 @@
     "started_at": "2026-09-11T03:10:00Z",
     "updated_at": "2026-09-11T03:18:00Z",
     "ended_at": "2026-09-11T03:18:00Z",
-    "trajectory": "/home/owner/.pulse/harness/run-20260911-004.json"
+    "trajectory": "/home/owner/.pulse/harness/run-20260911-004.json",
+    "cancel_requested_at": ""
   },
   "steps": [
     {

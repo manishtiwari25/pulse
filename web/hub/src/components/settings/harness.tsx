@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { CheckIcon, ClipboardIcon, ExternalLinkIcon, LogOutIcon, RefreshCwIcon, TerminalIcon } from "lucide-react";
+import { CheckIcon, ClipboardIcon, ExternalLinkIcon, LogOutIcon, RefreshCwIcon, RotateCcwIcon, TerminalIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,15 +10,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { ErrorNotice, Kv, Notice } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
-import { errorText, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
+import { errorText, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessPrompt, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
 import { fmtDate, num, rel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
-const SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "worker_model", "light_model"];
+const SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.system_prompt", "worker_model", "light_model"];
 const SAME_MODEL = "__same__";
 
 function setting(rows: Setting[] | undefined, name: string): Setting | undefined {
@@ -314,8 +315,8 @@ function LimitInput({ s }: { s: Setting }) {
   const setDraft = (value: string) => setDraftState({ name: s.name, value: s.value, draft: value });
   const save = () => {
     if (draft === s.value) return;
-    if (!/^\d+$/.test(draft)) {
-      setError("Enter digits only.");
+    if (s.kind === "number" ? !/^\d+(\.\d+)?$/.test(draft) : !/^\d+$/.test(draft)) {
+      setError(s.kind === "number" ? "Enter a number." : "Enter digits only.");
       return;
     }
     if (s.min !== null && Number(draft) < s.min) {
@@ -334,7 +335,7 @@ function LimitInput({ s }: { s: Setting }) {
       <Input
         id={"harness-" + s.name}
         value={draft}
-        inputMode="numeric"
+        inputMode={s.kind === "number" ? "decimal" : "numeric"}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={save}
         onKeyDown={(e) => {
@@ -349,6 +350,80 @@ function LimitInput({ s }: { s: Setting }) {
   );
 }
 
+function PromptEditor() {
+  const prompt = useApi<HarnessPrompt>("harness/prompt", { refresh: 30000 });
+  const [draftState, setDraftState] = useState({ marker: "", draft: "" });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const d = prompt.data;
+  const marker = d ? (d.custom ? "custom:" + d.template : "default:" + d.default) : "";
+  const draft = draftState.marker === marker ? draftState.draft : d?.custom ? d.template : d?.default || "";
+  const dirty = !!d && draft !== (d.custom ? d.template : d.default);
+  const save = (value: string, label: string) => {
+    setSaving(true);
+    setError("");
+    writes
+      .setSetting("harness.system_prompt", value)
+      .then(() => {
+        toast.success(label);
+        invalidate("harness");
+        invalidate("harness/prompt");
+        invalidate("settings");
+        return prompt.reload();
+      })
+      .catch((e: unknown) => {
+        const t = errorText(e);
+        setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
+      })
+      .finally(() => setSaving(false));
+  };
+  return (
+    <section className="grid gap-3 rounded-lg border bg-muted/20 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold">System prompt</h3>
+          <p className="text-xs text-muted-foreground">The harness renders this server-side for each run; leave it empty to use the built-in default.</p>
+        </div>
+        {d ? <ToneBadge tone={d.custom ? "accent" : "neutral"}>{d.custom ? "custom" : "built-in"}</ToneBadge> : null}
+      </div>
+      {prompt.error && !d ? <ErrorNotice error={prompt.error} onRetry={() => void prompt.reload()} /> : null}
+      {d ? (
+        <>
+          <Textarea
+            aria-label="Harness system prompt template"
+            value={draft}
+            onChange={(e) => {
+              setDraftState({ marker, draft: e.target.value });
+              setError("");
+            }}
+            rows={10}
+            spellCheck={false}
+            className={cn("min-h-48 font-mono text-[12.5px] leading-relaxed", !d.custom && !dirty && "bg-muted/40 text-muted-foreground")}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" size="sm" onClick={() => save(draft, "Harness prompt saved.")} disabled={saving || !dirty}>
+              {saving ? <RefreshCwIcon className="animate-spin" /> : <CheckIcon />} Save
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => save("", "Harness prompt reset to built-in.")} disabled={saving || (!d.custom && !dirty)}>
+              <RotateCcwIcon /> Reset to built-in
+            </Button>
+            {dirty ? (
+              <Button type="button" size="sm" variant="ghost" onClick={() => setDraftState({ marker, draft: d.custom ? d.template : d.default })} disabled={saving}>
+                Undo changes
+              </Button>
+            ) : null}
+          </div>
+          {d.error || error ? <Notice tone="bad">{error || d.error}</Notice> : null}
+          <details className="rounded-lg border bg-card px-3 py-2 text-sm">
+            <summary className="cursor-pointer font-medium">Preview</summary>
+            <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs leading-relaxed">{d.rendered || "(empty)"}</pre>
+          </details>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 export function HarnessSettingsCard({ className }: { className?: string }) {
   const h = useApi<HarnessStatus>("harness", { refresh: 15000 });
   const runner = useApi<Runner>("runner", { refresh: 15000 });
@@ -357,7 +432,8 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const rows = d?.settings;
   const mode = setting(rows, "harness");
   const provider = setting(rows, "provider");
-  const limits = ["harness.max_steps", "harness.step_timeout", "harness.output_limit"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
+  const budgets = ["harness.max_steps", "minutes_per_job", "harness.max_cost"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
+  const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const signedIn = d?.provider.login?.logged_in === true;
   const currentModels = models.data?.models ?? [];
   const modelError = models.error && !models.data ? models.error : "";
@@ -471,15 +547,27 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
             </section>
 
             <section className="grid gap-3">
-              <h3 className="text-sm font-semibold">Limits</h3>
+              <div>
+                <h3 className="text-sm font-semibold">Budgets</h3>
+                <p className="text-xs text-muted-foreground">Steps cap model/tool turns, minutes cap wall-clock time per job, and cost caps provider units with 0 meaning no cap.</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">{budgets.map((s) => <LimitInput key={s.name} s={s} />)}</div>
+            </section>
+
+            <section className="grid gap-3">
+              <h3 className="text-sm font-semibold">Transcript limits</h3>
               <div className="grid gap-3 sm:grid-cols-3">{limits.map((s) => <LimitInput key={s.name} s={s} />)}</div>
             </section>
+
+            <PromptEditor />
 
             <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2">
               <div>
                 <h3 className="text-sm font-semibold">Activity</h3>
                 <p className="text-xs text-muted-foreground">
                   {num(d.sessions.running)} running · {num(d.sessions.today)} today · {num(d.sessions.failed_today)} failed today
+                  {" · "}
+                  {num(d.sessions.submitted_today)} submitted today · {num(d.sessions.cost_today)} provider units
                 </p>
               </div>
               <Button asChild size="sm" variant="outline">

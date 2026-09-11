@@ -23,7 +23,8 @@
       "started_at": "2026-09-11T06:58:00Z",
       "updated_at": "2026-09-11T07:24:00Z",
       "ended_at": "",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-001.json"
+      "trajectory": "/home/owner/.pulse/harness/run-20260911-001.json",
+      "cancel_requested_at": "2026-09-11T07:25:00Z"
     },
     {
       "id": "run-20260911-002",
@@ -48,7 +49,8 @@
       "started_at": "2026-09-11T05:30:00Z",
       "updated_at": "2026-09-11T05:42:00Z",
       "ended_at": "2026-09-11T05:42:00Z",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-002.json"
+      "trajectory": "/home/owner/.pulse/harness/run-20260911-002.json",
+      "cancel_requested_at": ""
     },
     {
       "id": "run-20260911-003",
@@ -73,7 +75,8 @@
       "started_at": "2026-09-11T04:00:00Z",
       "updated_at": "2026-09-11T04:47:00Z",
       "ended_at": "2026-09-11T04:47:00Z",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-003.json"
+      "trajectory": "/home/owner/.pulse/harness/run-20260911-003.json",
+      "cancel_requested_at": ""
     },
     {
       "id": "run-20260911-004",
@@ -98,7 +101,8 @@
       "started_at": "2026-09-11T03:10:00Z",
       "updated_at": "2026-09-11T03:18:00Z",
       "ended_at": "2026-09-11T03:18:00Z",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-004.json"
+      "trajectory": "/home/owner/.pulse/harness/run-20260911-004.json",
+      "cancel_requested_at": ""
     },
     {
       "id": "run-20260911-005",
@@ -123,7 +127,8 @@
       "started_at": "2026-09-11T02:00:00Z",
       "updated_at": "2026-09-11T02:04:00Z",
       "ended_at": "2026-09-11T02:04:00Z",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-005.json"
+      "trajectory": "/home/owner/.pulse/harness/run-20260911-005.json",
+      "cancel_requested_at": "2026-09-11T02:03:00Z"
     },
     {
       "id": "run-20260911-006",
@@ -148,7 +153,16 @@
       "started_at": "2026-09-11T01:00:00Z",
       "updated_at": "2026-09-11T01:04:00Z",
       "ended_at": "",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-006.json"
+      "trajectory": "/home/owner/.pulse/harness/run-20260911-006.json",
+      "cancel_requested_at": ""
     }
-  ]
+  ],
+  "counts": {
+    "running": 1,
+    "today": 6,
+    "submitted_today": 1,
+    "failed_today": 4,
+    "cost_today": 20
+  },
+  "next_before": "2026-09-11T01:00:00Z|run-20260911-006"
 }

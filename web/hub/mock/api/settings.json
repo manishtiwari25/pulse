@@ -103,6 +103,42 @@
     },
     {
       "choices": null,
+      "default": "0",
+      "description": "provider units one harness run may spend before the harness stops it; 0 means no cap",
+      "kind": "number",
+      "min": 0,
+      "name": "harness.max_cost",
+      "secret": false,
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "value": "80"
+    },
+    {
+      "choices": null,
+      "default": "5",
+      "description": "recent command observations kept in the model prompt when older output is summarized",
+      "kind": "count",
+      "min": 0,
+      "name": "harness.keep_observations",
+      "secret": false,
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "value": "5"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "custom harness system prompt template; empty uses the built-in default",
+      "kind": "text",
+      "min": null,
+      "name": "harness.system_prompt",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
+    },
+    {
+      "choices": null,
       "default": "1",
       "description": "leased jobs one project may have in flight at once; 1 is one at a time",
       "kind": "count",
