@@ -52,12 +52,16 @@ type countingCall struct {
 	reply   string
 	err     error
 	prompts []string
+	started chan struct{}
 	block   chan struct{}
 }
 
 func (c *countingCall) call(ctx context.Context, _ *store.Store, prompt string) (string, error) {
 	c.Lock()
 	c.prompts = append(c.prompts, prompt)
+	if len(c.prompts) == 1 && c.started != nil {
+		close(c.started)
+	}
 	block := c.block
 	c.Unlock()
 	if block != nil {
@@ -156,14 +160,23 @@ func TestTendHeldoutGuards(t *testing.T) {
 	t.Run("in flight", func(t *testing.T) {
 		resetHeldout(t)
 		s := autoStore(t)
-		stub := &countingCall{reply: sealedReply, block: make(chan struct{})}
+		stub := &countingCall{reply: sealedReply, started: make(chan struct{}), block: make(chan struct{})}
+		release := sync.OnceFunc(func() { close(stub.block) })
+		t.Cleanup(func() {
+			release()
+			waitHeldoutIdle(t)
+		})
 		sealedCall = stub.call
 		tendHeldout(s, testNow)
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-stub.started:
+		case <-time.After(10 * time.Second):
+			t.Fatal("held-out generation did not start")
+		}
 		if lines := tendHeldout(s, plusMinutes(testNow, 5)); len(lines) != 0 || stub.calls() != 1 {
 			t.Fatalf("a second generation started beside the first: %q %d", lines, stub.calls())
 		}
-		close(stub.block)
+		release()
 		waitHeldoutIdle(t)
 		if lines := tendHeldout(s, plusMinutes(testNow, 10)); len(lines) != 1 || !strings.HasPrefix(lines[0], "held-out: generated fixture 1 of 2") {
 			t.Fatalf("after release: %q", lines)
