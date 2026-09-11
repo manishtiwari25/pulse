@@ -1,0 +1,126 @@
+{
+  "harness": "native",
+  "provider": {
+    "name": "copilot",
+    "label": "GitHub Copilot",
+    "device_login": true,
+    "token_login": true,
+    "login": {
+      "logged_in": true,
+      "user": "octocat",
+      "source": "device login",
+      "plan": "individual",
+      "expires_at": "2026-09-11T12:00:00Z",
+      "detail": ""
+    }
+  },
+  "providers": [
+    {
+      "name": "copilot",
+      "label": "GitHub Copilot",
+      "device_login": true,
+      "token_login": true
+    }
+  ],
+  "models": {
+    "worker": "claude-sonnet-4.5",
+    "light": "gpt-4.1"
+  },
+  "limits": {
+    "max_steps": 60,
+    "step_timeout_seconds": 300,
+    "output_limit": 20000,
+    "minutes_per_job": 10
+  },
+  "sessions": {
+    "running": 1,
+    "today": 5,
+    "failed_today": 3
+  },
+  "settings": [
+    {
+      "name": "harness",
+      "value": "native",
+      "default": "native",
+      "kind": "choice",
+      "min": null,
+      "choices": ["native", "copilot-cli"],
+      "description": "native runs jobs through the built-in PULSE harness; copilot-cli keeps the legacy npm CLI path",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "provider",
+      "value": "copilot",
+      "default": "copilot",
+      "kind": "choice",
+      "min": null,
+      "choices": ["copilot"],
+      "description": "model provider the native harness uses",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.max_steps",
+      "value": "60",
+      "default": "60",
+      "kind": "count",
+      "min": 1,
+      "choices": null,
+      "description": "maximum tool/model steps a harness run may take",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.step_timeout",
+      "value": "300",
+      "default": "300",
+      "kind": "count",
+      "min": 30,
+      "choices": null,
+      "description": "seconds one command or provider step may run before the harness stops it",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.output_limit",
+      "value": "20000",
+      "default": "20000",
+      "kind": "count",
+      "min": 1000,
+      "choices": null,
+      "description": "characters of command output kept in the prompt and transcript",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "worker_model",
+      "value": "claude-sonnet-4.5",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "model used for implementation runs",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "light_model",
+      "value": "gpt-4.1",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "model used for lead, reflect and other light runs; empty means worker_model",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    }
+  ]
+}

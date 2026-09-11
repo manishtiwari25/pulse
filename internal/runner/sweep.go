@@ -613,5 +613,10 @@ func tendSweep(s *store.Store, projects []row, now, actor string, inflight map[s
 	*last = wallClock()
 	rep := sweep(s, projects, now, sweepOpts{Actor: actor, Inflight: inflight})
 	recordSweep(s, rep, now, actor)
-	return sweepLines(rep)
+	lines := sweepLines(rep)
+	olderThan := plusMinutes(now, -float64(settingInt(s, "minutes_per_job")*2+10))
+	if n, err := s.MarkLostHarnessSessions(olderThan); err == nil && n > 0 {
+		lines = append(lines, fmt.Sprintf("closed %d harness session(s) left running before %s", n, olderThan))
+	}
+	return lines
 }

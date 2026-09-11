@@ -29,6 +29,7 @@ const (
 	sshExitUnreach    = 255
 	remoteExitTimeout = 124
 	loginCheckPrompt  = "Reply with exactly the word ok and nothing else."
+	nativeLoginPrompt = "Reply with exactly one line: SUMMARY: ok"
 	loginCheckMinutes = 2
 	loginExpiryWarn   = 7
 	githubAPI         = "https://api.github.com"
@@ -38,7 +39,7 @@ var (
 	executorStatuses  = []string{"active", "drained", "unreachable"}
 	loginBackoffMins  = [2]int{15, 360}
 	sshOptions        = []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ClearAllForwardings=yes"}
-	loginFaultRe      = regexp.MustCompile(`(?i)re-?authenticat|not logged in|authenticat|unauthori[sz]ed|\b401\b|Copilot Requests|log ?in`)
+	loginFaultRe      = regexp.MustCompile(`(?i)(^|\n)not logged in:|not_logged_in|re-?authenticat|not logged in|authenticat|unauthori[sz]ed|\b401\b|Copilot Requests|log ?in`)
 	tokenRe           = regexp.MustCompile(`(github_pat_|gho_|ghu_|ghp_|ghs_|ghr_)[A-Za-z0-9_]+`)
 	jobDirRe          = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	sshAddressRe      = regexp.MustCompile(`^([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::([0-9]{1,5}))?$`)
@@ -600,6 +601,13 @@ func expiryWarning(expires, now string, days int) string {
 // loginCheckCommand is the one-word run that proves the runner is logged in; it is light work,
 // so it runs with light_model (store.LightModel).
 func loginCheckCommand(s *store.Store) []string {
+	if s.HarnessNative() {
+		cmd := []string{"pulse", "harness", "run", "-p", nativeLoginPrompt, "--max-steps", "2", "--no-store", "--quiet"}
+		if model := s.LightModel(); model != "" {
+			cmd = append(cmd, "--model", model)
+		}
+		return cmd
+	}
 	cmd := []string{runnerCmd(s), "-p", loginCheckPrompt, "--no-ask-user", "--disable-builtin-mcps", "-s"}
 	if model := s.LightModel(); model != "" {
 		cmd = append(cmd, "--model", model)
@@ -635,7 +643,7 @@ func tinyBundle() ([]byte, error) {
 	return os.ReadFile(bundle)
 }
 
-// loginCheck is login_check(): one real copilot call through the hands.
+// loginCheck is login_check(): one real model call through the hands.
 func loginCheck(s *store.Store, name, actor, now string, apply bool) (bool, string, error) {
 	r := executorRow(s, name)
 	if r == nil || name == localExecutor {
@@ -671,28 +679,43 @@ func loginCheck(s *store.Store, name, actor, now string, apply bool) (bool, stri
 			return false, "", err
 		} else {
 			said = faultLine(errText+"\n"+out, 200)
-			switch {
-			case rc == 0 && !loginFault(said):
-				ok, kind = true, "ok"
-			case loginFault(said):
-				kind = "refused"
-			default:
-				kind = "failed"
+			if s.HarnessNative() {
+				switch {
+				case rc == 0 && strings.Contains(out, "SUMMARY:"):
+					ok, kind = true, "ok"
+				case rc == 4 || strings.HasPrefix(strings.ToLower(strings.TrimSpace(errText)), "not logged in:") || loginFault(said):
+					kind = "refused"
+				default:
+					kind = "failed"
+				}
+			} else {
+				switch {
+				case rc == 0 && !loginFault(said):
+					ok, kind = true, "ok"
+				case loginFault(said):
+					kind = "refused"
+				default:
+					kind = "failed"
+				}
 			}
 		}
 		_, _, _, _ = sshRun(r, []string{"clean", job}, nil, 60*time.Second)
 	}
 	seconds := int(time.Since(started).Seconds())
 	var note string
+	worker := "copilot"
+	if s.HarnessNative() {
+		worker = "harness"
+	}
 	switch {
 	case ok:
-		note = fmt.Sprintf("login ok: copilot answered in %ds", seconds)
+		note = fmt.Sprintf("login ok: %s answered in %ds", worker, seconds)
 	case kind == "refused":
-		note = fmt.Sprintf("copilot refuses the login on %s: %s - GitHub accepts the token but Copilot does not: a fine-grained token needs "+
+		note = fmt.Sprintf("%s refuses the login on %s: %s - GitHub accepts the token but Copilot does not: a fine-grained token needs "+
 			"the Copilot Requests permission, and the account needs Copilot; fix the token on GitHub or place a new one with "+
-			"`pulse executor login %s --admin <admin@host> --with-token`", name, said, name)
+			"`pulse executor login %s --admin <admin@host> --with-token`", worker, name, said, name)
 	case kind == "failed":
-		note = fmt.Sprintf("copilot failed on %s (exit %d): %s", name, rc, said)
+		note = fmt.Sprintf("%s failed on %s (exit %d): %s", worker, name, rc, said)
 	default:
 		note = fmt.Sprintf("%s: %s", kind, cut(redactTokens(said), 200))
 	}
@@ -765,7 +788,7 @@ func lastLines(text string, n int) []string {
 // placeLogin is executorLogin as the daemon calls it (heal, Provision); tests swap it for a stub.
 var placeLogin = executorLogin
 
-// executorLogin is executor_login(): place or remove the copilot login over the admin session.
+// executorLogin is executor_login(): place or remove the worker login over the admin session.
 func executorLogin(s *store.Store, now, name, adminAddress string, token io.Reader, isTTY, remove bool, actor string) (loginResult, error) {
 	r := executorRow(s, name)
 	if r == nil || name == localExecutor {
@@ -789,7 +812,11 @@ func executorLogin(s *store.Store, now, name, adminAddress string, token io.Read
 	var unreach *ExecutorUnreachable
 	if remove {
 		res.Kind = "removed"
-		rc, out, errText, err := adminSSHRun(adminAddress, `sudo -n -u pulse -H sh -c 'rm -rf -- "$HOME/.copilot"'`, nil, 120*time.Second, "")
+		removeCommand := `sudo -n -u pulse -H sh -c 'rm -rf -- "$HOME/.copilot"'`
+		if s.HarnessNative() {
+			removeCommand = `sudo -n -u pulse -H sh -c 'rm -f -- "$HOME/.pulse/private/providers/copilot.json"'`
+		}
+		rc, out, errText, err := adminSSHRun(adminAddress, removeCommand, nil, 120*time.Second, "")
 		if errors.As(err, &unreach) {
 			res.RC = sshExitUnreach
 			res.Lines = append(res.Lines, fmt.Sprintf("%s unreachable: %s", name, unreach.Msg))
@@ -847,30 +874,36 @@ func executorLogin(s *store.Store, now, name, adminAddress string, token io.Read
 	if warn := expiryWarning(facts.Expires, now, loginExpiryWarn); warn != "" {
 		res.Lines = append(res.Lines, "warning: "+warn)
 	}
-	prepRC, prepOut, prepErr, err := adminSSHRun(adminAddress, loginPrepCommand, nil, 120*time.Second, "")
-	if errors.As(err, &unreach) {
-		res.RC = sshExitUnreach
-		res.Lines = append(res.Lines, fmt.Sprintf("%s unreachable: %s", name, unreach.Msg))
-		logEvent(nil)
-		return res, nil
-	} else if err != nil {
-		return res, err
-	}
-	if prepRC != 0 {
-		res.RC = prepRC
-		res.Lines = append(res.Lines, fmt.Sprintf("preparing ~/.copilot/settings.json for user pulse on %s failed (exit %d); the token was not sent", name, prepRC))
-		res.Lines = append(res.Lines, lastLines(prepOut+prepErr, 5)...)
-		logEvent(map[string]any{"step": "settings"})
-		return res, nil
-	}
 	settingsNote := "settings=unknown"
-	for _, l := range strings.Split(prepOut, "\n") {
-		if strings.HasPrefix(l, "settings=") {
-			settingsNote = strings.TrimSpace(l)
-			break
+	loginCmd := loginCommand
+	if s.HarnessNative() {
+		settingsNote = "settings=native"
+		loginCmd = "sudo -n -u pulse -H timeout 90 pulse harness login --with-token"
+	} else {
+		prepRC, prepOut, prepErr, err := adminSSHRun(adminAddress, loginPrepCommand, nil, 120*time.Second, "")
+		if errors.As(err, &unreach) {
+			res.RC = sshExitUnreach
+			res.Lines = append(res.Lines, fmt.Sprintf("%s unreachable: %s", name, unreach.Msg))
+			logEvent(nil)
+			return res, nil
+		} else if err != nil {
+			return res, err
+		}
+		if prepRC != 0 {
+			res.RC = prepRC
+			res.Lines = append(res.Lines, fmt.Sprintf("preparing ~/.copilot/settings.json for user pulse on %s failed (exit %d); the token was not sent", name, prepRC))
+			res.Lines = append(res.Lines, lastLines(prepOut+prepErr, 5)...)
+			logEvent(map[string]any{"step": "settings"})
+			return res, nil
+		}
+		for _, l := range strings.Split(prepOut, "\n") {
+			if strings.HasPrefix(l, "settings=") {
+				settingsNote = strings.TrimSpace(l)
+				break
+			}
 		}
 	}
-	rc, out, errText, err := adminSSHRun(adminAddress, loginCommand, append([]byte(tok), '\n'), 120*time.Second, "")
+	rc, out, errText, err := adminSSHRun(adminAddress, loginCmd, append([]byte(tok), '\n'), 120*time.Second, "")
 	if errors.As(err, &unreach) {
 		res.RC = sshExitUnreach
 		res.Lines = append(res.Lines, fmt.Sprintf("%s unreachable: %s", name, unreach.Msg))
@@ -965,7 +998,11 @@ func probeExecutor(s *store.Store, name, actor, now string) (bool, string, error
 			if get("git", "missing") == "missing" {
 				problems = append(problems, "git missing")
 			}
-			if get("copilot", "missing") == "missing" {
+			if s.HarnessNative() {
+				if get("harness", "no") != "yes" {
+					problems = append(problems, fmt.Sprintf("harness login missing (run `pulse executor login %s --admin <admin@host> --with-token`)", name))
+				}
+			} else if get("copilot", "missing") == "missing" {
 				problems = append(problems, "copilot missing")
 			}
 			if fields["keys_ok"] != "yes" {
@@ -977,7 +1014,7 @@ func probeExecutor(s *store.Store, name, actor, now string) (bool, string, error
 			if fields["workdir"] != "" && strings.TrimRight(fields["workdir"], "/") != strings.TrimRight(r.str("workdir"), "/") {
 				problems = append(problems, fmt.Sprintf("workdir is %s not %s", fields["workdir"], r.str("workdir")))
 			}
-			if get("logged_in", "yes") != "yes" {
+			if !s.HarnessNative() && get("logged_in", "yes") != "yes" {
 				problems = append(problems, "copilot is not logged in (run `copilot login` as the executor user)")
 			}
 			if _, has := fields["keys"]; !has {

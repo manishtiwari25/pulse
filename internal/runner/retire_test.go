@@ -400,7 +400,7 @@ func TestTendDeletesAfterGraceAndKeepsWhatTheOwnerRevived(t *testing.T) {
 	oldProbe := runSSH
 	t.Cleanup(func() { runSSH = oldProbe })
 	runSSH = func(_ context.Context, argv []string, stdin []byte, _ time.Duration) (int, string, string, error) {
-		return 0, "hands=ok git=ok copilot=ok keys=- keys_ok=yes remotes=0 workdir=/srv/pulse logged_in=yes disk_free_mb=20000\n", "", nil
+		return 0, "hands=ok git=ok copilot=ok keys=- keys_ok=yes remotes=0 workdir=/srv/pulse logged_in=yes harness=yes pulse=1.2.3 disk_free_mb=20000\n", "", nil
 	}
 	if out := invokeOK(t, s, "executor", "", "activate", "vm-nine"); !strings.Contains(out, "vm-nine") {
 		t.Fatalf("activate: %q", out)

@@ -593,3 +593,28 @@ func TestLauncherRestoresThePreviousPulseAfterThreeEarlyExits(t *testing.T) {
 		t.Fatalf("without prev: %v\n%s", err, out)
 	}
 }
+
+func TestProbeExecutorNativeUsesHarnessLogin(t *testing.T) {
+	s := newStore(t)
+	if _, err := addExecutor(s, testNow, "hands", "pulse@hands", "/srv/pulse", 1, "*", humanAgent); err != nil {
+		t.Fatal(err)
+	}
+	old := runSSH
+	t.Cleanup(func() { runSSH = old })
+	runSSH = func(_ context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
+		if len(argv) == 0 || !strings.HasPrefix(argv[len(argv)-1], "b64 ") {
+			t.Fatalf("unexpected ssh argv %v", argv)
+		}
+		return 0, "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=missing logged_in=no harness=no pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=4096 jobs=- keys=- heartbeat=1\n", "", nil
+	}
+	ok, note, err := probeExecutor(s, "hands", humanAgent, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatalf("probe passed without harness login: %s", note)
+	}
+	if !strings.Contains(note, "harness login missing") || strings.Contains(note, "copilot missing") || strings.Contains(note, "copilot is not logged in") {
+		t.Fatalf("native probe note: %q", note)
+	}
+}

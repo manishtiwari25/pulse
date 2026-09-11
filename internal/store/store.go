@@ -310,7 +310,7 @@ func initSchema(db *sql.DB, now string) error {
 // AdditiveDDL lists, in order, every statement list EnsureRecords runs:
 // the records tables plus the lists other packages own in this directory.
 func AdditiveDDL() [][]string {
-	return [][]string{RecordsDDL, TasksDDL, HooksDDL, RunnerDDL, EvolveDDL}
+	return [][]string{RecordsDDL, TasksDDL, HooksDDL, RunnerDDL, EvolveDDL, HarnessDDL}
 }
 
 // Column is one column an additive list adds to a schema-3 table after the

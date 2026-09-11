@@ -205,7 +205,7 @@ func lessonParagraph(verifyCmd string, f failure, n int) string {
 	case failureStructural:
 		switch {
 		case strings.Contains(reason, "login"), strings.Contains(reason, "copilot requests"), strings.Contains(reason, "logged in"), strings.Contains(reason, "token"):
-			return "Refresh the login before retrying: run `pulse executor token` for an executor or `copilot /login` locally, then queue the next job."
+			return "Refresh the worker login before retrying: run `pulse executor login NAME --admin <admin@host> --with-token` for an executor or `pulse harness login` locally, then queue the next job."
 		case strings.Contains(reason, "is not installed there"):
 			tool := lessonMissingTool(f.Reason)
 			return fmt.Sprintf("Install %s on the executor or pin it in the recipe before retrying; another worker cannot use a tool the machine does not provide.", tool)

@@ -577,7 +577,7 @@ var toolHints = map[string]string{
 	"uv":                "curl -LsSf https://astral.sh/uv/install.sh | sh   (installs to ~/.local/bin, which the hands put on PATH)",
 	"poetry":            "curl -sSL https://install.python-poetry.org | python3 -",
 	"pipenv":            "python3 -m pip install --user pipenv",
-	"corepack":          "corepack ships with Node 22 (the copilot install); if missing: npm install -g corepack",
+	"corepack":          "corepack ships with Node 22; if missing: npm install -g corepack",
 	"npm":               "install Node 22 (pulse pair prints the nodesource steps)",
 	"bun":               "curl -fsSL https://bun.sh/install | bash",
 	"go":                "sudo apt-get install -y golang-go",

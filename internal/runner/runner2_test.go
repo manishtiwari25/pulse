@@ -115,11 +115,14 @@ func TestPairDryRunOverFakeSSH(t *testing.T) {
 	}
 	text := strings.Join(rep.Lines, "\n")
 	for _, want := range []string{"pairing executor hands-two", "would generate hub key", "inspection:", "  uname=Linux", "  arch=x86_64",
-		"hint: copilot is missing", "remote script (would run as root", "undo script (the exact inverse):", "local changes that would be made:",
+		"remote script (would run as root", "undo script (the exact inverse):", "local changes that would be made:",
 		"Host hands-two", "known_hosts: 10.0.0.5 ssh-ed25519 AAAB host", "executor add hands-two --ssh pulse@hands-two --workdir /srv/pulse --workers 2 --projects *", "probe hands-two"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("dry run lacks %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "hint: copilot is missing") {
+		t.Fatalf("native dry run should not warn about missing copilot:\n%s", text)
 	}
 	if len(scripts) != 1 || !strings.Contains(scripts[0], "printf 'uname=%s\\n'") {
 		t.Fatalf("only the inspection may run in a dry run: %d", len(scripts))

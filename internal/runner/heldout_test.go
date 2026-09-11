@@ -263,6 +263,7 @@ func TestSealedCallRunsTheRunnerCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	setSetting(t, s, "runner_cmd", script)
+	setSetting(t, s, "harness", "copilot-cli")
 	setSetting(t, s, "worker_model", "gpt-test")
 	setSetting(t, s, "light_model", "gpt-light") // the sealed call is light work
 	t.Setenv("PULSE_HOME", s.Home)
@@ -318,6 +319,7 @@ func TestSealedCallRunsTheRunnerCommand(t *testing.T) {
 	}
 	s = autoStore(t)
 	setSetting(t, s, "runner_cmd", failing)
+	setSetting(t, s, "harness", "copilot-cli")
 	tendHeldout(s, plusMinutes(testNow, 2))
 	waitHeldoutIdle(t)
 	lines = tendHeldout(s, plusMinutes(testNow, 3))

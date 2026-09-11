@@ -25,7 +25,7 @@ let agentReturnStarted = false;
 
 // ----- in-memory state for writes ----------------------------------------
 
-const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, records: {}, seq: 5000, heldout: null };
+const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {} };
 // The owner's private set (ADR-032) as the hub reports it: counts only, never
 // the folder. The mock keeps the folder in `dir` to refuse a second setup
 // elsewhere the way the real hub would not - it simply never sends it.
@@ -54,6 +54,17 @@ async function init() {
   state.messages = (await loadJson("messages.json")).messages;
   state.compute = await loadJson("compute.json");
   state.settings = await loadJson("settings.json");
+  state.harness = await loadJson("harness.json");
+  state.harnessModels = await loadJson("harness/models.json");
+  state.harnessSessions = (await loadJson("harness/sessions.json")).sessions;
+  for (const s of state.harness.settings) if (!state.settings.settings.some((x) => x.name === s.name)) state.settings.settings.push({ ...s });
+  for (const s of state.harnessSessions) {
+    try {
+      state.harnessDetails[s.id] = await loadJson(`harness/sessions/${s.id}.json`);
+    } catch {
+      state.harnessDetails[s.id] = { session: s, steps: [] };
+    }
+  }
   state.proposals = await loadJson("proposals.json");
   state.events = (await loadJson("events.json")).events;
   const org = await loadJson("org.json");
@@ -206,6 +217,31 @@ function send(res, code, body, headers = {}) {
   res.end(text);
 }
 const fail = (res, code, error, why, fix) => send(res, code, { error, why, fix });
+
+function harnessLoggedIn() {
+  return state.harness?.provider?.login?.logged_in === true;
+}
+
+function syncHarnessSetting(name, value) {
+  const hs = state.harness?.settings?.find((x) => x.name === name);
+  if (hs) {
+    hs.value = value;
+    hs.updated_at = now();
+    hs.updated_by = "owner";
+  }
+  if (!state.harness) return;
+  if (name === "harness") state.harness.harness = value;
+  if (name === "provider") state.harness.provider.name = value;
+  if (name === "worker_model") state.harness.models.worker = value;
+  if (name === "light_model") state.harness.models.light = value;
+  if (name === "harness.max_steps") state.harness.limits.max_steps = Number(value);
+  if (name === "harness.step_timeout") state.harness.limits.step_timeout_seconds = Number(value);
+  if (name === "harness.output_limit") state.harness.limits.output_limit = Number(value);
+}
+
+function setHarnessLogin(login) {
+  state.harness.provider.login = login;
+}
 
 async function readBody(req) {
   const chunks = [];
@@ -375,6 +411,37 @@ async function handle(req, res) {
       emit("human", "proposal.decided", p.id, { answer: body.answer, words: body.words || "" });
       return send(res, 200, { ok: true, decided: p });
     }
+    // native harness auth
+    if (segs[0] === "harness" && segs[1] === "login" && segs.length === 2) {
+      const device_code = "mock-device-" + state.seq;
+      state.harnessPolls[device_code] = 0;
+      return send(res, 200, { device_code, user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", interval: 1, expires_in: 900 });
+    }
+    if (segs[0] === "harness" && segs[1] === "login" && segs[2] === "poll") {
+      const code = String(body.device_code || "");
+      if (!code || !(code in state.harnessPolls)) return send(res, 200, { status: "expired" });
+      state.harnessPolls[code] += 1;
+      if (state.harnessPolls[code] === 2) return send(res, 200, { status: "slow_down" });
+      if (state.harnessPolls[code] < 3) return send(res, 200, { status: "pending" });
+      const login = { logged_in: true, user: "octocat", source: "device login", plan: "individual", expires_at: "2026-09-11T12:00:00Z", detail: "" };
+      setHarnessLogin(login);
+      emit("owner", "harness.login", "copilot", { user: login.user });
+      return send(res, 200, { status: "complete", login });
+    }
+    if (segs[0] === "harness" && segs[1] === "login" && segs[2] === "token") {
+      const token = String(body.token || "");
+      if (!/^gh[opsuhr]_/.test(token)) return fail(res, 400, "invalid token", "the mock accepts GitHub-shaped tokens only", "paste a token beginning with gho_ or ghp_");
+      const login = { logged_in: true, user: "octocat", source: "token", plan: "individual", expires_at: "", detail: "" };
+      setHarnessLogin(login);
+      emit("owner", "harness.login", "copilot", { user: login.user, source: "token" });
+      return send(res, 200, { login });
+    }
+    if (segs[0] === "harness" && segs[1] === "logout") {
+      const login = { logged_in: false, user: "", source: "", plan: "", expires_at: "", detail: "" };
+      setHarnessLogin(login);
+      emit("owner", "harness.logout", "copilot", {});
+      return send(res, 200, { ok: true, login });
+    }
     // settings
     if (segs[0] === "settings") {
       const s = state.settings.settings.find((x) => x.name === body.name);
@@ -395,6 +462,7 @@ async function handle(req, res) {
       if (s.name === "compute.budget_credits") state.compute.caps.budget_credits = Number(v);
       if (s.name === "compute.auto_approve") state.compute.caps.auto_approve = v === "1";
       if (s.name === "compute.provider") state.compute.caps.provider = v;
+      syncHarnessSetting(s.name, v);
       // Owner-private settings: the event names the key only and the echo masks
       // the value exactly like the Go hub ("[owner-private]" when set, "" when cleared).
       emit("owner", "settings.set", s.name, s.secret ? { masked: true } : { value: v, previous });
@@ -580,6 +648,36 @@ async function handle(req, res) {
   }
 
   // GET - live state first, fixtures second
+  if (segs[0] === "harness" && segs.length === 1) {
+    const failed = new Set(["step_limit", "time_limit", "format_error", "provider_error", "not_logged_in", "cancelled", "lost"]);
+    state.harness.sessions = {
+      running: state.harnessSessions.filter((s) => s.status === "running").length,
+      today: state.harnessSessions.length,
+      failed_today: state.harnessSessions.filter((s) => failed.has(s.status)).length,
+    };
+    return send(res, 200, state.harness);
+  }
+  if (segs[0] === "harness" && segs[1] === "models") {
+    if (!harnessLoggedIn()) return fail(res, 503, "not signed in", "GitHub Copilot models are available after the provider login succeeds.", "Sign in with GitHub.");
+    return send(res, 200, { ...state.harnessModels, fetched_at: now() });
+  }
+  if (segs[0] === "harness" && segs[1] === "sessions" && segs.length === 2) {
+    const p = q.get("project");
+    const st = q.get("status");
+    const agent = (q.get("agent") || "").toLowerCase();
+    const limit = Number(q.get("limit") || 50);
+    const sessions = state.harnessSessions
+      .filter((s) => (!p || s.project === p) && (!st || s.status === st) && (!agent || s.agent.toLowerCase().includes(agent)))
+      .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
+      .slice(0, limit);
+    return send(res, 200, { sessions });
+  }
+  if (segs[0] === "harness" && segs[1] === "sessions" && segs.length === 3) {
+    const d = state.harnessDetails[segs[2]];
+    if (!d) return fail(res, 404, "no such harness session", segs[2] + " is not in the mock store", "open it from the Harness page");
+    const row = state.harnessSessions.find((s) => s.id === segs[2]) || d.session;
+    return send(res, 200, { ...d, session: row });
+  }
   if (segs[0] === "roster" && segs.length === 1) {
     if (!agentReturned && !agentReturnStarted) {
       agentReturnStarted = true;

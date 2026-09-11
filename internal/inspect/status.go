@@ -1,6 +1,7 @@
 package inspect
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,8 +14,11 @@ import (
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/provider"
 	"github.com/manishtiwari25/pulse/internal/runner"
 	"github.com/manishtiwari25/pulse/internal/store"
+
+	_ "github.com/manishtiwari25/pulse/internal/provider/copilot"
 )
 
 type StatusCount struct {
@@ -32,6 +36,7 @@ type StatusReport struct {
 	RunsToday     int                `json:"runs_today"`
 	DailyCap      int                `json:"daily_cap"`
 	Runner        string             `json:"runner"`
+	Harness       string             `json:"harness"`
 	Daemon        string             `json:"daemon"`
 	Bus           BusStatus          `json:"bus"`
 	Executors     string             `json:"executors"`
@@ -133,6 +138,43 @@ func RunnerStopped(s *store.Store) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func HarnessLine(s *store.Store) string {
+	mode := s.Setting("harness", "native")
+	if mode == "copilot-cli" {
+		return "copilot-cli (legacy: runner_cmd=" + s.Setting("runner_cmd", "copilot") + ")"
+	}
+	name := s.Setting("provider", provider.Default)
+	label := provider.LabelOf(name)
+	if label == "" {
+		label = name
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p, err := provider.Open(name, provider.Options{Home: s.Home})
+	if err != nil {
+		return "native \u00b7 " + label + " \u00b7 status unknown (" + oneStatusLine(err.Error(), 200) + ")"
+	}
+	login, err := p.Status(ctx)
+	if err != nil {
+		return "native \u00b7 " + p.Label() + " \u00b7 status unknown (" + oneStatusLine(err.Error(), 200) + ")"
+	}
+	if login.LoggedIn {
+		return "native \u00b7 " + p.Label() + " \u00b7 signed in as " + login.User
+	}
+	if login.Detail != "" {
+		return "native \u00b7 " + p.Label() + " \u00b7 not signed in - " + oneStatusLine(login.Detail, 240)
+	}
+	return "native \u00b7 " + p.Label() + " \u00b7 not signed in - open Settings \u2192 Harness or run pulse harness login"
+}
+
+func oneStatusLine(s string, limit int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > limit {
+		return s[:limit]
+	}
+	return s
 }
 
 type daemonBeat struct {
@@ -519,6 +561,7 @@ func Status(s *store.Store) (*StatusReport, error) {
 	if r.Runner == "" {
 		r.Runner = "running allowed"
 	}
+	r.Harness = HarnessLine(s)
 	r.Daemon, err = DaemonStatus(s)
 	if err != nil {
 		return nil, err
@@ -574,7 +617,7 @@ func (r *StatusReport) Text() string {
 	} else {
 		out.WriteString(" (no daily cap; jobs_per_day=0)\n")
 	}
-	fmt.Fprintf(&out, "runner     %s\ndaemon     %s\n", r.Runner, r.Daemon)
+	fmt.Fprintf(&out, "runner     %s\nharness    %s\ndaemon     %s\n", r.Runner, r.Harness, r.Daemon)
 	if r.Bus.Dropped > 0 {
 		fmt.Fprintf(&out, "events     %d event(s) dropped for slow subscribers since the daemon started\n", r.Bus.Dropped)
 	}

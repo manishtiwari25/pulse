@@ -548,7 +548,7 @@ func TestEnsureRecordsUpgrades(t *testing.T) {
 	t.Setenv("PULSE_JOB", "")
 	home := t.TempDir()
 	s := openTemp(t, Options{Home: home, Create: true})
-	for _, table := range []string{"record_revisions", "tasks", "hooks", "briefs"} {
+	for _, table := range []string{"record_revisions", "tasks", "hooks", "briefs", "harness_sessions", "harness_steps"} {
 		if !tableExists(t, s, table) {
 			t.Fatalf("%s missing after create", table)
 		}

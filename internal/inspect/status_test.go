@@ -98,6 +98,9 @@ func TestStatusRunnerCountsAndCapacity(t *testing.T) {
 	if report.Capacity != "3 job(s) queued, 2 slot(s), 2 in flight; every slot busy for 30 min - another machine would help (pulse pair; pulse record show WF-executors)" {
 		t.Fatalf("wrong capacity: %q", report.Capacity)
 	}
+	if !strings.Contains(report.Harness, "native \u00b7 GitHub Copilot \u00b7") || !strings.Contains(report.Text(), "\nharness    "+report.Harness+"\n") {
+		t.Fatalf("harness line missing: %q\n%s", report.Harness, report.Text())
+	}
 	assertParity(t, invoke(t, s, false, "", "status"), oracle(t, s.Home, true, "status"))
 	asJSON := invoke(t, s, true, "", "status")
 	var decoded StatusReport

@@ -16,9 +16,11 @@ import (
 	"path"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/manishtiwari25/pulse/internal/provider"
 	"github.com/manishtiwari25/pulse/internal/store"
 	webhub "github.com/manishtiwari25/pulse/web/hub"
 )
@@ -28,6 +30,9 @@ type Handler struct {
 	Source  TallySource
 	Project string
 	UI      fs.FS
+
+	providerMu    sync.Mutex
+	providerCache map[string]provider.Provider
 }
 
 func New(s *store.Store, source TallySource) *Handler {

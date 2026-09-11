@@ -26,6 +26,7 @@ import (
 const (
 	pairDropinPath = "/etc/ssh/sshd_config.d/60-pulse-hands.conf"
 	pairHandsPath  = "/usr/local/bin/pulse-hands"
+	pairPulsePath  = "/usr/local/bin/pulse"
 )
 
 func validName(name string) bool { return validNameRe.MatchString(name) }
@@ -215,6 +216,8 @@ printf 'remotes=%s\n' "$remotes"
 if command -v apt-get >/dev/null 2>&1; then echo apt=yes; else echo apt=no; fi
 if command -v copilot >/dev/null 2>&1; then echo copilot=present; else echo copilot=missing; fi
 if command -v node >/dev/null 2>&1; then echo node=present; else echo node=missing; fi
+if command -v pulse >/dev/null 2>&1; then echo pulse=present; else echo pulse=missing; fi
+if [ -n "${COPILOT_GITHUB_TOKEN:-}${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] || su -s /bin/sh pulse -c 'test -f "$HOME/.pulse/private/providers/copilot.json"' >/dev/null 2>&1; then echo harness=yes; else echo harness=no; fi
 if command -v git >/dev/null 2>&1; then echo git=present; else echo git=missing; fi
 if su -s /bin/sh pulse -c 'command -v mise >/dev/null 2>&1 || test -x "$HOME/.local/bin/mise"' >/dev/null 2>&1; then
   printf 'mise=%s\n' "$(su -s /bin/sh pulse -c 'PATH="$HOME/.local/bin:$PATH" mise version 2>/dev/null' | awk '{print $1}' | head -1)"
@@ -313,6 +316,8 @@ else
   rm -f ` + pairHandsPath + `.tmp
   step hands done
 fi
+ln -sf ` + pairHandsPath + ` ` + pairPulsePath + `
+step pulse done
 if [ -d "$WORKDIR" ]; then
   chown pulse:pulse "$WORKDIR"
   chmod 0750 "$WORKDIR"
@@ -556,7 +561,7 @@ func pairCloseControlMaster(admin, controlPath string) {
 
 func pairInspectionSummary(insp map[string]string, hands []byte) []string {
 	keys := []string{"uname", "arch", "sudo", "user", "hands", "workdir", "workdir_owner", "authorized_keys",
-		"authorized_keys_lines", "dropin", "dropin_dir", "remotes", "apt", "copilot", "node", "git", "gitconfig"}
+		"authorized_keys_lines", "dropin", "dropin_dir", "remotes", "apt", "copilot", "node", "pulse", "harness", "git", "gitconfig"}
 	out := []string{"inspection:"}
 	for _, k := range keys {
 		value := insp[k]
@@ -761,7 +766,7 @@ func pairExecutor(s *store.Store, admin, name, now string, o pairOpts) (*pairRep
 	if handsFrom != "" {
 		*lines = append(*lines, fmt.Sprintf("hands binary: linux/%s, %d bytes, from %s", arch, len(hands), handsFrom))
 	}
-	if insp["copilot"] == "missing" && !o.InstallCopilot {
+	if insp["copilot"] == "missing" && !o.InstallCopilot && !s.HarnessNative() {
 		*lines = append(*lines, "hint: copilot is missing; the final probe may leave this executor drained until a human installs or logs it in")
 	}
 	if refusal := pairRefusalsFromInspection(insp, o.InstallCopilot); len(refusal) > 0 {

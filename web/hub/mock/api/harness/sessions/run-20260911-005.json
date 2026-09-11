@@ -1,0 +1,65 @@
+{
+  "session": {
+    "id": "run-20260911-005",
+    "run_id": "run-20260911-005",
+    "job_id": "job-legacy-docs",
+    "job_title": "Refresh legacy docs",
+    "agent": "delta",
+    "project": "demo-lib",
+    "executor": "retired-vm",
+    "provider": "copilot",
+    "model": "gpt-4.1",
+    "cwd": "/home/owner/.pulse/work/job-legacy-docs",
+    "status": "lost",
+    "exit_status": "lost",
+    "submission": "",
+    "error": "The executor stopped heartbeating before the run closed.",
+    "steps": 3,
+    "calls": 2,
+    "prompt_tokens": 9000,
+    "completion_tokens": 900,
+    "cost": 0,
+    "started_at": "2026-09-11T02:00:00Z",
+    "updated_at": "2026-09-11T02:04:00Z",
+    "ended_at": "",
+    "trajectory": "/home/owner/.pulse/harness/run-20260911-005.json"
+  },
+  "steps": [
+    {
+      "n": 1,
+      "at": "2026-09-11T02:00:12Z",
+      "kind": "assistant",
+      "content": "I will refresh the old docs links.",
+      "command": "",
+      "exit_code": null,
+      "duration_ms": 0,
+      "prompt_tokens": 800,
+      "completion_tokens": 24,
+      "model": "gpt-4.1"
+    },
+    {
+      "n": 2,
+      "at": "2026-09-11T02:03:56Z",
+      "kind": "command",
+      "content": "",
+      "command": "npm run docs:check",
+      "exit_code": null,
+      "duration_ms": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "model": ""
+    },
+    {
+      "n": 3,
+      "at": "2026-09-11T02:04:00Z",
+      "kind": "error",
+      "content": "lost: executor retired-vm stopped heartbeating.",
+      "command": "",
+      "exit_code": null,
+      "duration_ms": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "model": ""
+    }
+  ]
+}

@@ -13,6 +13,8 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/evolve"
+	"github.com/manishtiwari25/pulse/internal/provider"
+	_ "github.com/manishtiwari25/pulse/internal/provider/copilot"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -40,6 +42,22 @@ var heldoutGen struct {
 var sealedCall = runSealedCall
 
 func runSealedCall(ctx context.Context, s *store.Store, prompt string) (string, error) {
+	if s.HarnessNative() {
+		p, err := provider.Open(s.Setting("provider", provider.Default), provider.Options{Home: s.Home})
+		if err != nil {
+			return "", err
+		}
+		resp, err := p.Chat(ctx, provider.Request{
+			Model:     s.LightModel(),
+			Messages:  []provider.Message{{Role: provider.RoleUser, Content: prompt}},
+			Tools:     nil,
+			Initiator: "user",
+		})
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(resp.Message.Content), nil
+	}
 	dir, err := os.MkdirTemp("", "pulse-heldout-")
 	if err != nil {
 		return "", errors.New("cannot create an empty working directory")

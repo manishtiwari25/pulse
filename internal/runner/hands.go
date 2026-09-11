@@ -52,6 +52,16 @@ type hands struct {
 	stderr  io.Writer
 }
 
+func handsAllowedWorker(rest []string) bool {
+	switch filepath.Base(rest[0]) {
+	case "copilot":
+		return true
+	case "pulse":
+		return len(rest) >= 3 && rest[1] == "harness" && rest[2] == "run"
+	}
+	return false
+}
+
 func newHands(stdin io.Reader, stdout, stderr io.Writer) *hands {
 	wd := os.Getenv("PULSE_HANDS_WORKDIR")
 	if wd == "" {
@@ -169,11 +179,31 @@ func (h *hands) probe() error {
 			}
 		}
 	}
+	harnessLogin := "no"
+	if os.Getenv("COPILOT_GITHUB_TOKEN")+os.Getenv("GH_TOKEN")+os.Getenv("GITHUB_TOKEN") != "" {
+		harnessLogin = "yes"
+	} else if st, err := os.Stat(filepath.Join(h.home, ".pulse", "private", "providers", "copilot.json")); err == nil && !st.IsDir() {
+		harnessLogin = "yes"
+	}
+	pulsev := "missing"
+	if path, err := exec.LookPath("pulse"); err == nil {
+		pulsev = "present"
+		if out, err := exec.Command(path, "version").Output(); err == nil {
+			first, _, _ := strings.Cut(string(out), "\n")
+			if v := strings.TrimSpace(first); v != "" {
+				pulsev = v
+			}
+		}
+	}
 	if os.Getenv("PULSE_HANDS_ALLOW_ANY_WORKER") == "1" {
 		if copv == "missing" {
 			copv = "test"
 		}
 		loggedIn = "yes"
+		if pulsev == "missing" {
+			pulsev = "test"
+		}
+		harnessLogin = "yes"
 	}
 	remotes := 0
 	entries, _ := os.ReadDir(h.workdir)
@@ -233,8 +263,8 @@ func (h *hands) probe() error {
 		}
 		return strings.Join(list, ",")
 	}
-	fmt.Fprintf(h.stdout, "hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s remotes=%d keys_ok=%s disk_free_mb=%s jobs=%s keys=%s heartbeat=1\n",
-		name, h.workdir, gitv, copv, loggedIn, remotes, keysOK, freeMB, dash(jobs), dash(keys))
+	fmt.Fprintf(h.stdout, "hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s harness=%s pulse=%s remotes=%d keys_ok=%s disk_free_mb=%s jobs=%s keys=%s heartbeat=1\n",
+		name, h.workdir, gitv, copv, loggedIn, harnessLogin, pulsev, remotes, keysOK, freeMB, dash(jobs), dash(keys))
 	return nil
 }
 
@@ -372,8 +402,8 @@ func (h *hands) run(job, minutes string, rest []string) error {
 	if len(rest) == 0 {
 		return handsDie("run needs a worker command")
 	}
-	if os.Getenv("PULSE_HANDS_ALLOW_ANY_WORKER") != "1" && filepath.Base(rest[0]) != "copilot" {
-		return handsDie("only the copilot worker may run here")
+	if os.Getenv("PULSE_HANDS_ALLOW_ANY_WORKER") != "1" && !handsAllowedWorker(rest) {
+		return handsDie("only the copilot or pulse harness worker may run here")
 	}
 	budget, err := handsBudget(minutes)
 	if err != nil {

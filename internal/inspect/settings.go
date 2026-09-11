@@ -70,6 +70,9 @@ func SettingsReport(s *store.Store) ([]SettingReport, error) {
 		if d, ok := store.ModelSettings[name]; ok {
 			def, rule = d, store.ModelRules[name]
 		}
+		if d, ok := store.HarnessSettings[name]; ok {
+			def, rule = d, store.HarnessRules[name]
+		}
 		if d, ok := store.ComputeSettings[name]; ok {
 			def, rule = d, store.ComputeRules[name]
 		}
@@ -170,6 +173,9 @@ func runSettings(c *cli.Context, _ *flag.FlagSet, args []string) (retErr error) 
 			}
 			if !exists {
 				value, exists = store.ModelSettings[name]
+			}
+			if !exists {
+				value, exists = store.HarnessSettings[name]
 			}
 			if !exists {
 				value, exists = store.ComputeSettings[name]

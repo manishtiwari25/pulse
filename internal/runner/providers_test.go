@@ -158,7 +158,7 @@ func (h *computeHarness) provisionAndRelease(t *testing.T, s *store.Store, provi
 		t.Fatalf("after provisioning: %+v %v\n%s", got, err, log)
 	}
 	h.paired.Lock()
-	if h.paired.name != "hands-cr-001" || h.paired.admin != "pulseadmin@pulse-cr-001-admin" || h.paired.opts.Projects != "proj" || !h.paired.opts.InstallCopilot || h.paired.opts.Workdir != handsWorkdir {
+	if h.paired.name != "hands-cr-001" || h.paired.admin != "pulseadmin@pulse-cr-001-admin" || h.paired.opts.Projects != "proj" || h.paired.opts.InstallCopilot || h.paired.opts.Workdir != handsWorkdir {
 		t.Fatalf("pairing: %s %s %+v", h.paired.admin, h.paired.name, h.paired.opts)
 	}
 	h.paired.Unlock()
@@ -245,20 +245,29 @@ func TestHostKeyLines(t *testing.T) {
 
 func TestCloudInitConfigAdminKey(t *testing.T) {
 	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUB pulse-hub"
-	with := cloudInitConfig(key)
+	with := cloudInitConfig(key, true)
 	for _, want := range []string{"#cloud-config", "name: " + adminUser, "- " + key, "ALL=(ALL) NOPASSWD:ALL", hostkeyMarker, "/dev/console", "mkdir -p " + handsWorkdir, "@github/copilot"} {
 		if !strings.Contains(with, want) {
 			t.Fatalf("cloud-init lacks %q:\n%s", want, with)
 		}
 	}
-	without := cloudInitConfig("")
+	without := cloudInitConfig("", true)
 	if strings.Contains(without, "name: "+adminUser) || strings.Contains(without, "ssh_authorized_keys") {
 		t.Fatalf("cloud-init without a key still adds a user:\n%s", without)
 	}
 	if !strings.Contains(without, hostkeyMarker) {
 		t.Fatal("host key line missing without a key")
 	}
-	path, err := writeCloudInit(key)
+	native := cloudInitConfig(key, false)
+	for _, absent := range []string{"deb.nodesource.com", "apt-get install -y nodejs", "npm install -g @github/copilot"} {
+		if strings.Contains(native, absent) {
+			t.Fatalf("native cloud-init has legacy install line %q:\n%s", absent, native)
+		}
+	}
+	if !strings.Contains(native, "mkdir -p "+handsWorkdir) || !strings.Contains(native, hostkeyMarker) {
+		t.Fatalf("native cloud-init lacks base setup:\n%s", native)
+	}
+	path, err := writeCloudInit(key, true)
 	if err != nil {
 		t.Fatal(err)
 	}

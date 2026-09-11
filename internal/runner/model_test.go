@@ -30,10 +30,11 @@ func TestWorkerCommandModelFollowsTheJobKind(t *testing.T) {
 	setSetting(t, s, "worker_model", "heavy-test")
 	setSetting(t, s, "light_model", "light-test")
 	for _, kind := range board.JobKinds {
-		cmd, custom := workerCommand(s, kind, "brief", "/tmp/clone", "", nil)
+		cmd, custom := workerCommand(s, kind, "brief", "/tmp/clone", "", nil, false)
 		if custom {
 			t.Fatalf("%s: a custom command without worker_cmd", kind)
 		}
+
 		want := "light-test"
 		for _, k := range store.ImplementationJobKinds {
 			if k == kind {
@@ -45,7 +46,7 @@ func TestWorkerCommandModelFollowsTheJobKind(t *testing.T) {
 		}
 	}
 	// A custom worker command is run as given; no model is appended.
-	if cmd, custom := workerCommand(s, "task", "brief", "/tmp/clone", "sh -c 'echo hi'", nil); !custom || modelArg(cmd) != "" {
+	if cmd, custom := workerCommand(s, "task", "brief", "/tmp/clone", "sh -c 'echo hi'", nil, false); !custom || modelArg(cmd) != "" {
 		t.Fatalf("custom command: %v %v", cmd, custom)
 	}
 }
@@ -98,6 +99,7 @@ func TestRunJobRecordsTheModelOfEachRunOnTheAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	setSetting(t, s, "runner_cmd", script)
+	setSetting(t, s, "harness", "copilot-cli")
 	setSetting(t, s, "worker_model", "heavy-test")
 	setSetting(t, s, "light_model", "light-test")
 
@@ -144,7 +146,7 @@ func TestLeadRunsWithTheLightModel(t *testing.T) {
 		t.Fatalf("lead: %+v %v %v", lead, created, err)
 	}
 	setSetting(t, s, "light_model", "light-test")
-	cmd, _ := workerCommand(s, "lead", "brief", "/tmp/clone", "", nil)
+	cmd, _ := workerCommand(s, "lead", "brief", "/tmp/clone", "", nil, false)
 	if got := modelArg(cmd); got != "light-test" {
 		t.Fatalf("lead job --model %q, want light_model", got)
 	}
@@ -162,6 +164,7 @@ func TestPickWorkerKeepsWorkersOfEveryModel(t *testing.T) {
 	s := newStore(t)
 	setSetting(t, s, "quorum", "1")
 	setSetting(t, s, "runner_cmd", "copilot")
+	setSetting(t, s, "harness", "copilot-cli")
 	setSetting(t, s, "worker_model", "gpt-5-mini")
 	var old []string
 	for i := 0; i < 2; i++ {
@@ -185,5 +188,43 @@ func TestPickWorkerKeepsWorkersOfEveryModel(t *testing.T) {
 	// The pool stays at quorum+1 = 2; nothing is spawned for the new model.
 	if n := mustOne(s.DB, "SELECT COUNT(*) AS n FROM agents WHERE status = 'active' AND kind = 'worker'").int("n"); n != 2 {
 		t.Fatalf("%d active workers, want the pool of 2", n)
+	}
+}
+
+func TestWorkerCommandNativeAndLegacyArgv(t *testing.T) {
+	s := newStore(t)
+	setSetting(t, s, "worker_model", "heavy-test")
+	cmd, custom := workerCommand(s, "task", "brief text", "/tmp/clone", "", nil, false)
+	if custom {
+		t.Fatal("native worker is not custom")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := []string{exe, "harness", "run", "-p", "brief text", "-C", "/tmp/clone", "--max-steps", "60", "--step-timeout", "300", "--output-limit", "20000", "--minutes", "9", "--model", "heavy-test"}
+	if strings.Join(cmd, "\x00") != strings.Join(wantPrefix, "\x00") {
+		t.Fatalf("native local argv:\n got %q\nwant %q", cmd, wantPrefix)
+	}
+	cmd, custom = workerCommand(s, "lead", "brief text", "/tmp/clone", "", nil, true)
+	if custom || len(cmd) < 3 || cmd[0] != "pulse" || strings.Join(cmd[1:3], " ") != "harness run" {
+		t.Fatalf("native remote argv: %v custom=%t", cmd, custom)
+	}
+	setSetting(t, s, "harness", "copilot-cli")
+	cmd, custom = workerCommand(s, "task", "brief text", "/tmp/clone", "", []string{"/tmp", "/work"}, false)
+	if custom {
+		t.Fatal("legacy default worker is not custom")
+	}
+	joined := strings.Join(cmd, " ")
+	for _, want := range []string{"copilot", "-p brief text", "-C /tmp/clone", "--allow-all-tools", "--add-dir /tmp", "--add-dir /work", "--disable-builtin-mcps", "--no-ask-user", "--autopilot", "--model heavy-test"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("legacy argv lacks %q: %v", want, cmd)
+		}
+	}
+}
+
+func TestLoginFaultMatchesNativeHarnessErrors(t *testing.T) {
+	if !loginFault("not logged in: sign in with GitHub") || !loginFault("not_logged_in") {
+		t.Fatal("native harness login errors were not classified as login faults")
 	}
 }

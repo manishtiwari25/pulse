@@ -27,7 +27,10 @@ The only Markdown in this repository is this file.
 
 Requires Go 1.26+. No Node, Python, or Bash tooling is needed to build or run:
 the console's static export is committed under `web/hub/out/` and embedded in
-the binary.
+the binary, and the agent harness that runs every job is built in - PULSE
+talks to the model provider (GitHub Copilot first) itself, so there is no
+`copilot` CLI, no Node runtime and no other agent tool to install or keep
+logged in.
 
 ```bash
 git clone https://github.com/manishtiwari25/pulse.git && cd pulse
@@ -48,6 +51,12 @@ pulse init --name my-app --verify 'npm test'   # register the checkout, queue on
 pulse service install                          # the runner and the console as user services (launchd / systemd --user)
 open http://127.0.0.1:8765                     # the console; `pulse hub` runs one by hand instead (--no-hub above)
 ```
+
+Then sign in once: **Settings → Harness → Sign in with GitHub** shows a code,
+you enter it on github.com, and every worker on this machine runs with that
+login from then on (`pulse harness login` is the same flow in a terminal).
+The account needs a GitHub Copilot seat or plan; the card says so when it
+does not, and `pulse status` carries the same `harness` line.
 
 `pulse service install` writes two units: `pulse.daemon` (the fleet) and
 `pulse.hub` (the console on `127.0.0.1:8765`; `--hub-port N` moves it,
@@ -145,12 +154,20 @@ Everything else happens in the console:
   `pulse settings set light_model claude-sonnet-5`), the compute
   provider and its target (Azure resource group / location / VM size, AWS
   region / instance type, GCP project / zone / machine type, Multipass size),
-  the self-improvement loop's gates, and your presence (`owner.presence`: `present`, or `away` to let each
+  the self-improvement loop's gates, the harness (which harness runs the
+  workers, the provider, the step, per-command time and output limits - see
+  *The harness* below), and your presence (`owner.presence`: `present`, or `away` to let each
   project's lead decide board proposals with its best judgement - see *What
   the daemon does when the owner is away* below). Secret-shaped values are
   stored but never echoed; the held-out
   evaluator directory is owner-private and is masked in every agent-facing
   view and event.
+- **Harness** - every worker run as the harness saw it: which job, agent,
+  executor and model, how many model calls and commands, tokens, how it ended
+  (`submitted`, or why it stopped: step limit, time limit, format errors,
+  provider error, not signed in), and the transcript step by step - the
+  model's message, the command, the observation - live while it runs. The
+  same page holds the sign-in card, the provider's models and the limits.
 - **Records** - ADRs, plans, features, guides, memory, prompts, environment
   recipes, the constitution and the evolution archive, with revisions and
   delivery marks.
@@ -331,8 +348,13 @@ record, read with `pulse record show WF-evolve`.
 
 | Setting | Built-in default | Scope |
 | --- | --- | --- |
-| `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. |
-| `max_ai_credits` | `30` credits (minimum `30`) | Passed to Copilot workers; not automatically applied to measurement harnesses. |
+| `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
+| `max_ai_credits` | `30` credits (minimum `30`) | Legacy `copilot-cli` harness only: passed to Copilot CLI workers; not automatically applied to measurement harnesses. |
+| `harness` | `native` | Which harness runs the workers: `native` (built in, `pulse harness run`) or `copilot-cli` (the legacy `copilot` binary named by `runner_cmd`). |
+| `provider` | `copilot` | The model provider the built-in harness talks to. GitHub Copilot is the first; more register under `internal/provider`. |
+| `harness.max_steps` | `60` | Model calls one worker run may make before the harness stops it. |
+| `harness.step_timeout` | `300` seconds | Wall-clock cap on one command the model runs. |
+| `harness.output_limit` | `20000` characters | Command output kept per step; longer output is cut in the middle. |
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
@@ -391,6 +413,85 @@ the third failed attempt the delivery is `failed` and PULSE emits one
 a queued hook event: running deliveries finish within their own timeout, and
 queued deliveries are stored for the next start.
 
+## The harness
+
+Every job runs through PULSE's own agent harness, `pulse harness run` - a
+small, readable loop in the lineage of
+[mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent): one model,
+one tool (`bash`), a linear history, and limits the owner sets.
+
+```text
+system prompt + the job's brief
+  ─► model answers (a tool call, or a fenced bash block)
+  ─► the command runs in the clone: fresh non-interactive /bin/sh, no state between steps
+  ─► output (cut in the middle past harness.output_limit) goes back as the observation
+  ─► ... until the model answers with no command: that message is the final report
+```
+
+The final report is what the runner has always read - `SUMMARY:`,
+`FINDING:`, `SUGGESTION:`, `QUESTION:`, `VOTE:` and `DECIDE:` lines - so
+briefs, planning, landing, lessons and the board are unchanged. A run that
+hits a limit still reports: `SUMMARY: harness stopped: step_limit after 60
+model calls and 41 commands` and the model's last message as a `FINDING:`.
+Commands that would leave the clone (`git push`, changing `git remote`, any
+`gh` call) or touch credentials (`~/.ssh`, `.netrc`, `~/.pulse/private`,
+`~/.copilot`, `~/.config/gh`) are refused without being run; the model is
+told why and continues.
+
+Exit codes tell the runner what happened without parsing prose: `0` the
+model submitted; `1` a limit (`step_limit`, `time_limit`, `format_error`,
+`cancelled`); `3` the provider failed after retries (`provider_error`); `4`
+not signed in - one stderr line beginning `not logged in:` names the reason
+(no login, a token GitHub rejected, an account without a Copilot seat, a
+token that is not Copilot-enabled) and the fix. The runner marks a `4` as a
+login fault of the machine, never of the job.
+
+Each run is a **session** in the store (`harness_sessions`, `harness_steps`)
+keyed by the run id, streamed step by step while it runs - the console's
+**Harness** page and `pulse harness sessions` / `pulse harness show ID` read
+them - and a trajectory JSON under `~/.pulse/harness/<session>.json` holds
+the full messages for replay or evaluation.
+
+```bash
+pulse harness login                     # device flow: open the URL, type the code; --with-token reads a token on stdin
+pulse harness status                    # harness, provider, who is signed in, the models and limits in force
+pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin
+pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
+pulse harness logout                    # forget the stored login
+```
+
+**Sign-in and where the token lives.** The provider is GitHub Copilot: the
+console's *Sign in with GitHub* (or `pulse harness login`) runs GitHub's
+device flow with the Copilot editor app, checks that the account actually has
+Copilot, and stores the GitHub token in `~/.pulse/private/providers/copilot.json`
+(mode 0600, never echoed; `pulse harness logout` removes it). That file wins.
+Without it the harness borrows, in order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`
+or `GITHUB_TOKEN` from the environment; the login the Copilot editor plugins
+keep in `~/.config/github-copilot/apps.json` (or `hosts.json`); the Copilot
+CLI's config. It does not borrow `gh auth token`: the gh OAuth app is not
+Copilot-enabled, so GitHub refuses those tokens at Copilot's door - the status
+card says exactly that rather than "signed in". The GitHub token is exchanged
+for a short-lived Copilot session token on each run and refreshed before it
+expires; a `401` mid-run refreshes once, `429`/`5xx` retry with backoff and
+`Retry-After`, and every log line and error is redacted of token shapes.
+
+**Models.** `worker_model` and `light_model` (Settings → Harness, or `pulse
+settings set`) choose among the models the provider lists for the signed-in
+account; empty means the provider's default chat model. The console shows
+each model's vendor, tool-call support, premium multiplier and context window.
+
+**Switching back.** `pulse settings set harness copilot-cli` runs workers
+through the `copilot` CLI named by `runner_cmd` exactly as before (with
+`max_ai_credits`, `--autopilot` and the tool denials); `native` is the
+default and needs nothing installed. The two never mix within one run.
+
+**Adding a provider** is one Go package under `internal/provider/<name>`
+that implements `provider.Provider` (`Chat`, `Models`, `Status`) and,
+optionally, `DeviceLoginer`, `TokenLoginer` and `Logouter`, then registers
+itself with `provider.Register` - the harness, the CLI verbs, the hub routes
+and the console's sign-in card pick it up through the `provider` setting.
+
 ## The runner
 
 `pulse daemon` (the service) lands verified branches, plans jobs from the
@@ -409,7 +510,17 @@ work still in flight keep their existing prompt-dispatch behavior.
 Workers commit in their own clones and never push; the runner copies each
 job's commits to a `pulse/<agent>/<job>` branch in your checkout, and the
 daemon lands them into the default branch (ADR-024: verify command first,
-fast-forward or a `Land …` merge commit). Landing waits while the checkout is
+fast-forward or a `Land …` merge commit). Each worker is one `pulse harness
+run` process (the daemon's own binary here; on a paired hand the shipped
+`pulse-hands` binary, which `/usr/local/bin/pulse` links to) given the brief,
+the clone, the limits and the model from Settings, one minute less than
+`minutes_per_job` so it can stop with a report of its own, and the run id as
+its session; its stdout is the report the runner reads. A paired hand needs
+the same sign-in once: `pulse executor login NAME --admin admin@host
+--with-token` pipes a GitHub token to `pulse harness login --with-token` as
+the hand's `pulse` user (`--remove` forgets it), and the hand's probe reports
+`harness=yes|no` and the `pulse` build it runs. The login check the daemon
+runs on an executor is a two-step harness run that must answer `SUMMARY: ok`. Landing waits while the checkout is
 on another branch or has uncommitted changes, so your work in progress is
 never touched; the hold shows in `pulse status` and the hub as `landing`
 (how many branches wait and why), and the daemon logs it and writes
@@ -625,6 +736,8 @@ internal/records    typed records, Markdown import, guide, export, lead time
 internal/tasks      owner tasks, messages, compute requests and caps
 internal/bus        in-process event bus, redaction, tail/bridge for other processes
 internal/hooks      store hooks (scripts, webhooks) and harness hooks (copilot, claude)
+internal/provider   the model-provider contract (chat, models, status, device/token login) and its registry; provider/copilot is GitHub Copilot
+internal/harness    the built-in agent harness: the bash-tool loop, limits, deny rules, trajectories, sessions and the `pulse harness` verbs
 internal/runner     daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep
 internal/evolve     the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage
 internal/inspect    status, projects, jobs, agents, events, settings, schema, verify, signers

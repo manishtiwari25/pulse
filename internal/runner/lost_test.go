@@ -120,6 +120,52 @@ func TestLaunchRejectionOnLocalIsRunnerError(t *testing.T) {
 	}
 }
 
+func TestNativeNotLoggedInExitFourIsRunnerErrorAfterSlowStart(t *testing.T) {
+	s := newStore(t)
+	newRepo(t, s)
+	join(t, s, "aurora")
+	job, _, err := addJob(s, "proj", "task", "t", "do it", 1, 0, "test", humanAgent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldClock := wallClock
+	base := time.Now()
+	calls := 0
+	wallClock = func() time.Time {
+		calls++
+		return base.Add(time.Duration(calls) * launchSeconds * time.Second)
+	}
+	t.Cleanup(func() { wallClock = oldClock })
+	r, reason, err := workOnce(s, "aurora", "", "", testNow, runOpts{WorkerCmd: "sh -c 'echo \"not logged in: sign in first\" >&2; exit 4'"})
+	if err != nil || r == nil {
+		t.Fatalf("work: %v %q %v", r, reason, err)
+	}
+	if r.str("status") != "error" || !strings.Contains(r.str("summary"), "provider login on this machine") {
+		t.Fatalf("run %s: %s", r.str("status"), r.str("summary"))
+	}
+	if j := jobRow(s.DB, job.str("id")); j.str("status") != "queued" || j.int("attempts") != 0 {
+		t.Fatalf("job after login fault: %s attempts=%d", j.str("status"), j.int("attempts"))
+	}
+}
+
+func TestWorkerExitSummaryIncludesHarnessStopReason(t *testing.T) {
+	s := newStore(t)
+	newRepo(t, s)
+	join(t, s, "aurora")
+	_, _, err := addJob(s, "proj", "task", "t", "do it", 1, 0, "test", humanAgent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, reason, err := workOnce(s, "aurora", "", "", testNow, runOpts{WorkerCmd: "sh -c 'echo \"SUMMARY: harness stopped: step_limit after 2 steps\"; exit 1'"})
+	if err != nil || r == nil {
+		t.Fatalf("work: %v %q %v", r, reason, err)
+	}
+	want := "worker exited 1: harness stopped: step_limit after 2 steps"
+	if r.str("status") != "failed" || r.str("summary") != want {
+		t.Fatalf("run %s: %s, want failed: %s", r.str("status"), r.str("summary"), want)
+	}
+}
+
 // On remote hands the same rejection is the executor's fault: it drains, the job
 // keeps its attempt.
 func TestLaunchRejectionOnRemoteDrainsExecutor(t *testing.T) {

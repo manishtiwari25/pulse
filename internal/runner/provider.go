@@ -98,14 +98,14 @@ func notFoundAnswer(stdout, stderr string) bool {
 	return false
 }
 
-// cloudInitConfig is the cloud-config every provisioned hand boots with: git and the harness prerequisites
-// (Node.js 22 and the copilot CLI), the work directory, and its host key printed on the serial console behind
+// cloudInitConfig is the cloud-config every provisioned hand boots with: git and, for legacy workers,
+// Node.js 22 and the copilot CLI, the work directory, and its host key printed on the serial console behind
 // hostkeyMarker so a provider without a run-command channel (aws, gcp) still learns it without trusting the
 // first ssh connection. adminKey, when given, creates the admin user with that key for the providers whose CLI
 // does not place one itself (aws, gcp, multipass); Azure passes the key to `az vm create` and leaves it empty.
 // The hands user, its forced-command key, the linux pulse binary and the sshd drop-in are placed by the
 // pairing step, so nothing secret is rendered here.
-func cloudInitConfig(adminKey string) string {
+func cloudInitConfig(adminKey string, installCopilot bool) string {
 	var b strings.Builder
 	b.WriteString(`#cloud-config
 # PULSE compute machine (agents' hands) - Ubuntu 24.04 (ADR-020, D-D). Prepared for ` + "`pulse pair`" + `, which
@@ -133,14 +133,18 @@ users:
 	b.WriteString(`runcmd:
   # The host key on the serial console: the channel the provider vouches for (aws, gcp read it back).
   - sh -c 'echo "` + hostkeyMarker + `$(cat /etc/ssh/ssh_host_ed25519_key.pub)" > /dev/console'
-  # Node.js 22 and the copilot CLI, for every user (the harness prerequisites).
+`)
+	if installCopilot {
+		b.WriteString(`  # Node.js 22 and the copilot CLI, for every user (the legacy worker prerequisites).
   - mkdir -p /etc/apt/keyrings
   - curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
   - echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
   - apt-get update
   - apt-get install -y nodejs
   - npm install -g @github/copilot
-  # The work directory the forced command roots every path in; pairing sets the owner.
+`)
+	}
+	b.WriteString(`  # The work directory the forced command roots every path in; pairing sets the owner.
   - mkdir -p ` + handsWorkdir + `
 final_message: "pulse compute machine ready after $UPTIME seconds"
 `)
@@ -148,12 +152,12 @@ final_message: "pulse compute machine ready after $UPTIME seconds"
 }
 
 // writeCloudInit renders the cloud-config into a temp file the CLI reads; the caller removes it.
-func writeCloudInit(adminKey string) (string, error) {
+func writeCloudInit(adminKey string, installCopilot bool) (string, error) {
 	f, err := os.CreateTemp("", "pulse-cloud-init-*.yaml")
 	if err != nil {
 		return "", err
 	}
-	if _, err := f.WriteString(cloudInitConfig(adminKey)); err != nil {
+	if _, err := f.WriteString(cloudInitConfig(adminKey, installCopilot)); err != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return "", err
@@ -305,7 +309,7 @@ func provisionFinish(ctx context.Context, req ProvisionRequest, m *Machine, hubH
 		return err
 	}
 	rep, err := pairHands(s, admin, req.Executor, s.Now(), pairOpts{Workdir: handsWorkdir, Workers: 1, Projects: req.Project,
-		InstallCopilot: true, Actor: humanAgent, HubHome: hubHome})
+		InstallCopilot: !s.HarnessNative(), Actor: humanAgent, HubHome: hubHome})
 	if err != nil {
 		return fmt.Errorf("pairing %s: %s", req.Executor, redactSecrets(errMessage(err)))
 	}
@@ -334,7 +338,7 @@ func provisionFinish(ctx context.Context, req ProvisionRequest, m *Machine, hubH
 			return fmt.Errorf("the %s was refused on %s; the machine cannot work", origin, req.Executor)
 		}
 	} else {
-		log("no login source: %s starts without a copilot login", req.Executor)
+		log("no login source: %s starts without a worker login", req.Executor)
 	}
 	return nil
 }

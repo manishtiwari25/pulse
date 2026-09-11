@@ -50,7 +50,7 @@ var SettingRules = map[string]SettingRule{
 	"minutes_per_job":      {Kind: "count", Min: 0, HasMin: true, Description: "wall-clock minutes one worker run may take before the runner stops it"},
 	"workers":              {Kind: "count", Min: 0, HasMin: true, Description: "parallel slots on this machine (the local executor); 0 keeps it idle while remote hands exist"},
 	"parallel_per_project": {Kind: "count", Min: 1, HasMin: true, Description: "leased jobs one project may have in flight at once; 1 is one at a time"},
-	"max_ai_credits":       {Kind: "credits", Min: 30, HasMin: true, Description: "AI credits one worker run may spend; the copilot CLI refuses anything below 30"},
+	"max_ai_credits":       {Kind: "credits", Min: 30, HasMin: true, Description: "AI credits one copilot CLI worker run may spend; the copilot CLI refuses anything below 30"},
 	"prune_after_days":     {Kind: "count", Min: 1, HasMin: true, Description: "days without useful output after which an agent is pruned (its history stays)"},
 	"claim_hours":          {Kind: "count", Min: 1, HasMin: true, Description: "hours a board claim stays active before it is treated as stale"},
 	"quorum":               {Kind: "count", Min: 1, HasMin: true, Description: "distinct voters a suggestion needs before it is eligible for the queue"},
@@ -58,7 +58,7 @@ var SettingRules = map[string]SettingRule{
 	"stale_days":           {Kind: "count", Min: 1, HasMin: true, Description: "days after which an untouched thread counts as stale"},
 	"amend_quorum":         {Kind: "count", Min: 1, HasMin: true, Description: "distinct sessions an amendment needs; may be raised by vote, lowered only by a human"},
 	"amend_majority":       {Kind: "fraction", Description: "share of counted votes an amendment needs, as a fraction such as 2/3"},
-	"runner_cmd":           {Kind: "command", Description: "the worker program the runner starts in each clone (copilot, or a path to a stand-in)"},
+	"runner_cmd":           {Kind: "command", Description: "the worker program the runner starts in each clone when harness is copilot-cli (copilot, or a path to a stand-in)"},
 	"worker_model":         {Kind: "text", Description: "the model of the runs that change code - task, improve and experiment jobs - and of every other run while light_model is empty; empty means the runner's default"},
 	"stop":                 {Kind: "switch", Choices: []string{"0", "1"}, Description: "the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)"},
 	"landing":              {Kind: "choice", Choices: []string{"agents", "human"}, Description: "agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)"},
@@ -86,6 +86,25 @@ var ModelRules = map[string]SettingRule{
 	"light_model": {Kind: "text", Description: "the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model"},
 }
 
+// HarnessSettings configure the native agent harness. They are not written at
+// Create; Setting falls back here so legacy stores keep their original rows.
+var HarnessSettings = map[string]string{
+	"harness":              "native",
+	"provider":             "copilot",
+	"harness.max_steps":    "60",
+	"harness.step_timeout": "300",
+	"harness.output_limit": "20000",
+}
+
+// HarnessRules validate HarnessSettings.
+var HarnessRules = map[string]SettingRule{
+	"harness":              {Kind: "choice", Choices: []string{"native", "copilot-cli"}, Description: "native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone"},
+	"provider":             {Kind: "choice", Choices: []string{"copilot"}, Description: "the model provider of the native harness; the login lives on this machine (Settings -> Harness -> Sign in, or pulse harness login), never in the store"},
+	"harness.max_steps":    {Kind: "count", Min: 1, HasMin: true, Description: "model calls one native-harness run may make before it stops"},
+	"harness.step_timeout": {Kind: "count", Min: 10, HasMin: true, Description: "seconds one command of a native-harness run may take before it is killed"},
+	"harness.output_limit": {Kind: "count", Min: 1000, HasMin: true, Description: "characters of one command's output kept for the model; longer output is cut in the middle"},
+}
+
 // RunModel is the model a run of the given job kind gets: worker_model for
 // the kinds that change code (ImplementationJobKinds), else LightModel. ""
 // means the runner's own default model.
@@ -106,6 +125,12 @@ func (s *Store) LightModel() string {
 		return light
 	}
 	return strings.TrimSpace(s.Setting("worker_model", ""))
+}
+
+// HarnessNative reports whether runs should use the built-in harness instead
+// of the legacy copilot CLI runner command.
+func (s *Store) HarnessNative() bool {
+	return s.Setting("harness", "") == "native"
 }
 
 // ComputeProviders are the compute providers the runner builds in, in the
@@ -324,6 +349,9 @@ func knownSetting(name string) (SettingRule, bool) {
 	if rule, ok := ModelRules[name]; ok {
 		return rule, true
 	}
+	if rule, ok := HarnessRules[name]; ok {
+		return rule, true
+	}
 	if rule, ok := EvolveRules[name]; ok {
 		return rule, true
 	}
@@ -347,6 +375,9 @@ func defaultSetting(name string) string {
 		return v
 	}
 	if v, ok := ModelSettings[name]; ok {
+		return v
+	}
+	if v, ok := HarnessSettings[name]; ok {
 		return v
 	}
 	if v, ok := EvolveSettings[name]; ok {
@@ -380,6 +411,9 @@ func ComputeSettingNames() []string { return sortedKeys(ComputeSettings) }
 // ModelSettingNames lists the model settings that are not written at Create (light_model).
 func ModelSettingNames() []string { return sortedKeys(ModelSettings) }
 
+// HarnessSettingNames lists the harness settings that are not written at Create.
+func HarnessSettingNames() []string { return sortedKeys(HarnessSettings) }
+
 // EvolveSettingNames lists the evolve.* settings sorted by name.
 func EvolveSettingNames() []string { return sortedKeys(EvolveSettings) }
 
@@ -393,11 +427,12 @@ func LeadSettingNames() []string { return sortedKeys(LeadSettings) }
 func OwnerSettingNames() []string { return sortedKeys(OwnerSettings) }
 
 // ExtraSettingNames lists every setting that is not written at Create
-// (light_model, then compute.*, evolve.*, daemon.*, lead.*, then owner.*);
+// (light_model, then harness settings, compute.*, evolve.*, daemon.*, lead.*, then owner.*);
 // inspect and the hub list these after the legacy names with their
 // effective values.
 func ExtraSettingNames() []string {
-	names := append(ModelSettingNames(), ComputeSettingNames()...)
+	names := append(ModelSettingNames(), HarnessSettingNames()...)
+	names = append(names, ComputeSettingNames()...)
 	return append(append(append(append(names, EvolveSettingNames()...), DaemonSettingNames()...), LeadSettingNames()...), OwnerSettingNames()...)
 }
 
@@ -441,6 +476,9 @@ func ValidateSetting(name, value string) (string, error) {
 	if !ok {
 		if strings.HasPrefix(name, "compute.") {
 			return "", inputErr("Unknown setting %s. Compute settings: %s", pyRepr(name), strings.Join(ComputeSettingNames(), ", "))
+		}
+		if strings.HasPrefix(name, "harness.") {
+			return "", inputErr("Unknown setting %s. Harness settings: %s", pyRepr(name), strings.Join(HarnessSettingNames(), ", "))
 		}
 		if strings.HasPrefix(name, "evolve.") {
 			return "", inputErr("Unknown setting %s. Evolve settings: %s", pyRepr(name), strings.Join(EvolveSettingNames(), ", "))

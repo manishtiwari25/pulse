@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonPage } from "@/components/pulse/panel";
 import { Mono } from "@/components/pulse/who";
 import { RunningStrip } from "@/components/settings/running";
+import { HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
 import { SettingRow } from "@/components/settings/setting-row";
 import type { Setting, SettingsPayload } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -226,7 +227,7 @@ export default function SettingsPage() {
   }, [q.data]);
   const groups = useMemo(() => {
     const all = q.data ? withExtraDefaults(q.data.settings) : [];
-    const used = new Set<string>();
+    const used = new Set<string>(all.filter((s) => isHarnessSetting(s.name)).map((s) => s.name));
     const out: { g: Group; rows: Setting[] }[] = [];
     for (const g of GROUPS) {
       const rows: Setting[] = [];
@@ -258,6 +259,7 @@ export default function SettingsPage() {
   const stopped = stop?.value === "1";
   const needle = find.trim().toLowerCase();
   const match = (s: Setting) => !needle || s.name.toLowerCase().includes(needle) || s.description.toLowerCase().includes(needle);
+  const harnessShown = !needle || "harness built-in native copilot github model provider login max steps timeout output limit".includes(needle);
   // The kill switch has its own card at the top, so it leaves the runner cluster.
   const killShown = !!stop && match(stop);
   const base = groups.map(({ g, rows }) => ({ g, rows: stop ? rows.filter((s) => s.name !== "stop") : rows }));
@@ -298,6 +300,9 @@ export default function SettingsPage() {
                 {g.title}
               </a>
             ))}
+            <a href="#harness" className={cn(PILL, !harnessShown && "pointer-events-none opacity-40")} aria-disabled={!harnessShown || undefined}>
+              Harness
+            </a>
           </nav>
         }
       >
@@ -314,6 +319,7 @@ export default function SettingsPage() {
             </SectionCard>
           </section>
         ) : null}
+        {harnessShown ? <HarnessSettingsCard /> : null}
         {shown.map(({ g, rows, all }) => (
           <section key={g.id} id={g.id} className={ANCHOR}>
             <SectionCard

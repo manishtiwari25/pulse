@@ -637,7 +637,7 @@ func TestDaemonOnceComputeApproveToReadyToReleased(t *testing.T) {
 		t.Fatalf("vm create: %s", create)
 	}
 	paired.Lock()
-	if paired.name != "hands-cr-001" || paired.admin != "pulseadmin@pulse-cr-001-admin" || paired.opts.Projects != "proj" || !paired.opts.InstallCopilot || paired.opts.Workdir != handsWorkdir {
+	if paired.name != "hands-cr-001" || paired.admin != "pulseadmin@pulse-cr-001-admin" || paired.opts.Projects != "proj" || paired.opts.InstallCopilot || paired.opts.Workdir != handsWorkdir {
 		t.Fatalf("pairing: %s %s %+v", paired.admin, paired.name, paired.opts)
 	}
 	paired.Unlock()

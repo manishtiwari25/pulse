@@ -632,3 +632,49 @@ func TestHandsVerbsRoundTrip(t *testing.T) {
 func b64(argv ...string) string {
 	return base64Std(strings.Join(argv, "\x00"))
 }
+
+func TestHandsRunWorkerWhitelistAllowsNativeHarness(t *testing.T) {
+	bin := buildPulse(t)
+	s := newStore(t)
+	_, repo := newRepo(t, s)
+	workdir := filepath.Join(t.TempDir(), "srv")
+	home := t.TempDir()
+	fakes := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakes, "pulse"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "PULSE_TEST_HANDS=1", "PULSE_HANDS_WORKDIR="+workdir, "HOME="+home, "PULSE_HANDS_KEYS_OK=yes", "PATH="+fakes+string(os.PathListSeparator)+os.Getenv("PATH"))
+	hands := func(stdin []byte, args ...string) (int, string, string) {
+		cmd := exec.Command(bin, args...)
+		cmd.Env = env
+		cmd.Stdin = bytes.NewReader(stdin)
+		var out, errb bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &errb
+		err := cmd.Run()
+		rc := 0
+		if ee, ok := err.(*exec.ExitError); ok {
+			rc = ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return rc, out.String(), errb.String()
+	}
+	bundle := filepath.Join(t.TempDir(), "repo.bundle")
+	run(t, repo, "git", "bundle", "create", bundle, "--all")
+	data, _ := os.ReadFile(bundle)
+	if rc, out, errText := hands(data, "prepare", "JOB-1", "main", "aurora"); rc != 0 || !shaRe.MatchString(strings.TrimSpace(out)) {
+		t.Fatalf("prepare rc=%d out=%q err=%q", rc, out, errText)
+	}
+	if rc, _, errText := hands(nil, "run", "JOB-1", "1", "--", "pulse", "harness", "run", "-p", "SUMMARY: ok"); rc != 0 {
+		t.Fatalf("native harness rejected: rc=%d err=%q", rc, errText)
+	}
+	for _, bad := range [][]string{
+		{"pulse", "hands", "probe"},
+		{"bash", "-lc", "true"},
+	} {
+		args := append([]string{"run", "JOB-1", "1", "--"}, bad...)
+		if rc, _, errText := hands(nil, args...); rc != 2 || !strings.Contains(errText, "only the copilot or pulse harness worker may run here") {
+			t.Fatalf("%v accepted or wrong error: rc=%d err=%q", bad, rc, errText)
+		}
+	}
+}

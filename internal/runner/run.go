@@ -367,7 +367,7 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			log.put(summary)
 			return nil
 		}
-		cmd, _ := workerCommand(s, job.str("kind"), briefText, clone, o.WorkerCmd, ex.workerDirs())
+		cmd, _ := workerCommand(s, job.str("kind"), briefText, clone, o.WorkerCmd, ex.workerDirs(), ex.remote())
 		env := map[string]string{"PULSE_JOB": job.str("id"), "PULSE_BRIEF": runID, "PULSE_CLONE": clone,
 			"PULSE_AGENT": agent, "PULSE_SESSION": runID, "PULSE_PROJECT": project.str("slug"), "GIT_TERMINAL_PROMPT": "0",
 			"PULSE_GENERATION": strconv.Itoa(job.int("generation")), "PULSE_EXECUTOR": ex.name()}
@@ -460,7 +460,7 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 				code = *exitCode
 			}
 			switch {
-			case code != 0 && !parsed.reported() && commits == 0 && elapsed < launchSeconds*time.Second:
+			case code != 0 && !parsed.reported() && commits == 0 && (elapsed < launchSeconds*time.Second || (code == 4 && loginFault(out.Stderr+"\n"+out.Stdout))):
 				// The harness died before any work: no report line, no commit, seconds in.
 				// (parsed.Found is true whenever the harness produced output, D-L.)
 				status = "error"
@@ -473,6 +473,9 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 					if ex.remote() {
 						fault = true
 						summary += fmt.Sprintf(" - the login on %s, not the job; run `pulse executor login %s --admin <admin@host> --with-token`", ex.name(), ex.name())
+					} else if s.HarnessNative() {
+						fault = true
+						summary += " - the provider login on this machine, not the job; sign in with GitHub in the console (Settings -> Harness) or run `pulse harness login`"
 					} else {
 						summary += " - the Copilot login on this machine, not the job; log in again as the daemon's user (`copilot` then `/login`, or `gh auth login`)"
 					}
@@ -480,6 +483,9 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			case code != 0:
 				status = "failed"
 				summary = fmt.Sprintf("worker exited %d", code)
+				if parsed.Summary != "" {
+					summary = fmt.Sprintf("worker exited %d: %s", code, parsed.Summary)
+				}
 			case workerReported == "failed":
 				status = "failed"
 				summary = parsed.Summary

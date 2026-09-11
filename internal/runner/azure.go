@@ -120,7 +120,7 @@ func (p azureProvider) Provision(ctx context.Context, req ProvisionRequest) (*Ma
 		}
 		log("created resource group %s in %s", cfg.ResourceGroup, cfg.Location)
 	}
-	rendered, err := writeCloudInit("")
+	rendered, err := writeCloudInit("", !req.Store.HarnessNative())
 	if err != nil {
 		return nil, err
 	}

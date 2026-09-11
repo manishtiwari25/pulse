@@ -289,7 +289,7 @@ func (p awsProvider) Provision(ctx context.Context, req ProvisionRequest) (*Mach
 		if err != nil {
 			return nil, err
 		}
-		rendered, err := writeCloudInit(pubkey)
+		rendered, err := writeCloudInit(pubkey, !req.Store.HarnessNative())
 		if err != nil {
 			return nil, err
 		}

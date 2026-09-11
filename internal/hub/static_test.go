@@ -13,7 +13,7 @@ import (
 func TestStaticExportSlashlessPages(t *testing.T) {
 	h := New(nil, nil)
 	const query = "?slug=demo-app&tab=board&filter=a%2Fb&empty="
-	for _, route := range []string{"/project", "/tasks", "/votes", "/records", "/compute", "/settings", "/agents"} {
+	for _, route := range []string{"/project", "/tasks", "/votes", "/records", "/compute", "/settings", "/agents", "/harness"} {
 		wantBody, err := fs.ReadFile(h.UI, strings.TrimPrefix(route, "/")+"/index.html")
 		if err != nil {
 			t.Fatal(err)

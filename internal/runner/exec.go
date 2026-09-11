@@ -466,9 +466,32 @@ func workerDirs(home string) []string {
 // workerCommand is worker_command(): the harness argv; the brief is the prompt (D-L). The model
 // follows the job kind (store.RunModel): worker_model for the work that changes code, light_model
 // for the rest.
-func workerCommand(s *store.Store, kind, briefText, clone, workerCmd string, dirs []string) ([]string, bool) {
+func workerCommand(s *store.Store, kind, briefText, clone, workerCmd string, dirs []string, remote bool) ([]string, bool) {
 	if workerCmd != "" {
 		return splitShell(workerCmd), true
+	}
+	if s.HarnessNative() {
+		bin := "pulse"
+		if !remote {
+			var err error
+			bin, err = os.Executable()
+			if err != nil {
+				bin = "pulse"
+			}
+		}
+		cmd := []string{bin, "harness", "run", "-p", briefText, "-C", clone,
+			"--max-steps", s.Setting("harness.max_steps", ""),
+			"--step-timeout", s.Setting("harness.step_timeout", ""),
+			"--output-limit", s.Setting("harness.output_limit", "")}
+		// One minute under the runner's kill, so the harness stops on its own
+		// with a SUMMARY line and a finished session instead of a lost one.
+		if minutes := settingInt(s, "minutes_per_job"); minutes > 1 {
+			cmd = append(cmd, "--minutes", strconv.Itoa(minutes-1))
+		}
+		if model := s.RunModel(kind); model != "" {
+			cmd = append(cmd, "--model", model)
+		}
+		return cmd, false
 	}
 	cmd := []string{runnerCmd(s), "-p", briefText, "-C", clone, "--allow-all-tools"}
 	for _, p := range deniedTools {

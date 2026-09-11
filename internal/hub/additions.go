@@ -49,6 +49,8 @@ func (h *Handler) additions(w http.ResponseWriter, r *http.Request, route string
 		h.additionFolders(w, r, parts)
 	case "heldout":
 		h.additionHeldout(w, r, parts)
+	case "harness":
+		h.additionHarness(w, r, parts)
 	default:
 		return false
 	}

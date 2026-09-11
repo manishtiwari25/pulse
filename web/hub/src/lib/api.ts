@@ -618,6 +618,120 @@ export interface SettingsPayload {
   settings: Setting[];
 }
 
+// ----- native harness ----------------------------------------------------
+
+export type HarnessKind = "native" | "copilot-cli";
+
+export interface HarnessLogin {
+  logged_in: boolean;
+  user: string;
+  source: string;
+  plan: string;
+  expires_at: string;
+  detail: string;
+}
+
+export interface HarnessProviderInfo {
+  name: string;
+  label: string;
+  device_login: boolean;
+  token_login: boolean;
+  login?: HarnessLogin;
+}
+
+export interface HarnessStatus {
+  harness: HarnessKind;
+  provider: HarnessProviderInfo;
+  providers: HarnessProviderInfo[];
+  models: { worker: string; light: string };
+  limits: { max_steps: number; step_timeout_seconds: number; output_limit: number; minutes_per_job: number };
+  sessions: { running: number; today: number; failed_today: number };
+  settings: Setting[];
+}
+
+export interface HarnessModel {
+  id: string;
+  name: string;
+  vendor: string;
+  chat: boolean;
+  tool_calls: boolean;
+  premium: number;
+  preview: boolean;
+  context_window: number;
+  max_output: number;
+  default: boolean;
+}
+
+export interface HarnessModelsResponse {
+  models: HarnessModel[];
+  fetched_at: string;
+}
+
+export interface HarnessDeviceFlow {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  interval: number;
+  expires_in: number;
+}
+
+export interface HarnessPollResponse {
+  status: "pending" | "slow_down" | "complete" | "expired" | "denied";
+  login?: HarnessLogin;
+}
+
+export type HarnessSessionStatus = "running" | "submitted" | "step_limit" | "time_limit" | "format_error" | "provider_error" | "not_logged_in" | "cancelled" | "lost";
+
+export interface HarnessSession {
+  id: string;
+  run_id: string;
+  job_id: string;
+  job_title: string;
+  agent: string;
+  project: string;
+  executor: string;
+  provider: string;
+  model: string;
+  cwd: string;
+  status: HarnessSessionStatus;
+  exit_status: string;
+  submission: string;
+  error: string;
+  steps: number;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost: number;
+  started_at: string;
+  updated_at: string;
+  ended_at: string;
+  trajectory: string;
+}
+
+export type HarnessStepKind = "assistant" | "command" | "observation" | "error" | "exit";
+
+export interface HarnessStep {
+  n: number;
+  at: string;
+  kind: HarnessStepKind;
+  content: string;
+  command: string;
+  exit_code: number | null;
+  duration_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  model: string;
+}
+
+export interface HarnessSessionsResponse {
+  sessions: HarnessSession[];
+}
+
+export interface HarnessSessionResponse {
+  session: HarnessSession;
+  steps: HarnessStep[];
+}
+
 // GET /api/v1/running (ADR-035): which pulse runs where, against the brain's
 // HEAD. `state` is one word: off, no-daemon, no-brain, current, unstamped,
 // behind, waiting (see internal/hub/running.go). `daemon` comes from the
@@ -1132,6 +1246,10 @@ export const writes = {
   // `id` is the contract field; `post_id` is what the Python hub read - the Go hub accepts both.
   decide: (id: string, answer: "yes" | "no", words: string) => post<{ ok?: boolean; decided?: unknown }>("decide", { id, post_id: id, answer, words }),
   setSetting: (name: string, value: string) => post<{ ok?: boolean; setting?: Setting }>("settings", { name, value }),
+  harnessLogin: () => post<HarnessDeviceFlow>("harness/login", {}),
+  harnessLoginPoll: (device_code: string) => post<HarnessPollResponse>("harness/login/poll", { device_code }),
+  harnessLoginToken: (token: string) => post<{ login: HarnessLogin }>("harness/login/token", { token }),
+  harnessLogout: () => post<{ ok: boolean; login: HarnessLogin }>("harness/logout", {}),
   newTask: (input: NewTaskInput) => post<{ task: Task }>("tasks", input),
   amendTask: (id: string, input: AmendTaskInput) => post<{ task: Task }>("tasks/" + enc(id) + "/amend", input),
   cancelTask: (id: string, reason: string) => post<{ task: Task }>("tasks/" + enc(id) + "/cancel", { reason }),

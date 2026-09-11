@@ -251,7 +251,7 @@ func (p gcpProvider) Provision(ctx context.Context, req ProvisionRequest) (*Mach
 		if err := gcpFirewallRule(ctx, cfg, log); err != nil {
 			return nil, err
 		}
-		rendered, err := writeCloudInit(pubkey)
+		rendered, err := writeCloudInit(pubkey, !req.Store.HarnessNative())
 		if err != nil {
 			return nil, err
 		}
