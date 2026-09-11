@@ -473,8 +473,8 @@ briefs, planning, landing, lessons and the board are unchanged. A run that
 hits a limit still reports: `SUMMARY: harness stopped: step_limit after 60
 model calls and 41 commands` and the model's last message as a `FINDING:`.
 
-**Three budgets** bound every run, all owner settings (Settings → Harness,
-or `pulse settings set`): `harness.max_steps` model calls (60), the wall
+**Three budgets** bound every run, all owner settings (Settings → Harness
+**Budgets**, or `pulse settings set`): `harness.max_steps` model calls (60), the wall
 clock (`minutes_per_job`, the harness stops one minute before the runner
 would kill it), and `harness.max_cost` - the provider-reported cost one run
 may spend, `0` meaning no cap. The unit is the provider's: Copilot sends
@@ -486,8 +486,9 @@ run with `cost_limit`, `step_limit` or `time_limit` and a one-line reason on
 the session (`stopped at the cost budget: 2.10 of 2`).
 
 **Context discipline.** Command output is what fills a context window, so
-the harness keeps only the last `harness.keep_observations` (5) outputs
-verbatim; older ones collapse to their first and last lines around a marker
+the harness keeps only the last `harness.keep_observations` (5; Settings →
+Harness **Transcript limits**, next to `step_timeout` and `output_limit`)
+outputs verbatim; older ones collapse to their first and last lines around a marker
 (`[1840 characters elided - rerun the command to see them]`) - the model is
 told this in its prompt and simply reruns a command when it needs the full
 output again. Past 80% of the model's context window the collapsed outputs
@@ -520,7 +521,7 @@ told why and continues.
 
 Exit codes tell the runner what happened without parsing prose: `0` the
 model submitted; `1` a limit (`step_limit`, `time_limit`, `cost_limit`,
-`format_error`, `cancelled`); `3` the provider failed after retries (`provider_error`); `4`
+`format_error`); `3` the provider failed after retries (`provider_error`); `4`
 not signed in - one stderr line beginning `not logged in:` names the reason
 (no login, a token GitHub rejected, an account without a Copilot seat, a
 token that is not Copilot-enabled) and the fix. The runner marks a `4` as a
@@ -528,7 +529,36 @@ login fault of the machine, never of the job - and while this machine has no
 login the daemon starts no worker here at all: the `capacity` line of `pulse
 status` and the console's **The machine** panel say why (`workers held: …`
 with a **Sign in** link to Settings → Harness), one daily finding lands on
-the brain's board, and remote hands keep working.
+the brain's board, and remote hands keep working. `5` means the owner
+cancelled the run (`cancelled`, below).
+
+**Stopping a run.** The **Cancel run** button on a session (a click, then a
+confirm - it posts `POST /api/v1/harness/sessions/ID/cancel`) or `pulse
+harness cancel ID` writes `cancel_requested_at` on the session and emits a
+`harness.cancel` event. The harness polls its own session row every two
+seconds and stops between steps with exit status `cancelled` - the in-flight
+command is killed, the session is finished with `cancelled by the owner`, and
+the transcript stays readable. The daemon watches the row too, so a worker
+that cannot reach the store is stopped from outside. The job fails as
+`cancelled by the owner` and **recovery leaves it alone** (no automatic
+retry; the recovery note counts it as `cancelled by the owner`) - cancel the
+task, or queue it again, when you want. A second click while the first is
+pending answers `pending`; a session that already ended answers `409`. Off
+the store, `--cancel-file PATH` (or `PULSE_HARNESS_CANCEL=PATH`) stops a run
+when the file appears.
+
+**The system prompt is a setting.** `harness.system_prompt` holds the Go
+`text/template` the harness renders before every run; empty means the
+built-in one. `pulse harness prompt --default` prints the template, `pulse
+harness prompt` the rendered prompt for the current settings and directory,
+`--raw` the stored template, and `GET /api/v1/harness/prompt` returns all of
+those for the console's **System prompt** editor (Settings → Harness:
+Save, Reset to default, Undo, Preview). Available fields: `{{.Cwd}}`, `{{.Info.cwd}}`,
+`{{.Info.os}}`, `{{.Info.shell}}`, `{{.Model}}`, `{{.Provider}}`,
+`{{.StepTimeout}}`, `{{.OutputLimit}}`, `{{.MaxSteps}}`. A template that does
+not parse is refused when saved; one that fails to render fails the run with
+the template error rather than a silent default. `--prompt-file PATH` (or
+`PULSE_HARNESS_PROMPT_FILE`) overrides the setting for one run.
 
 Each run is a **session** in the store (`harness_sessions`, `harness_steps`)
 keyed by the run id, streamed step by step while it runs - the console's
@@ -541,7 +571,22 @@ snapshot), and the daemon mirrors the lines into the brain's store as they
 arrive, tagged with the executor's name - so the Harness page shows every
 executor's steps before the job finishes. A trajectory JSON under
 `~/.pulse/harness/<session>.json` holds the full messages for replay or
-evaluation.
+evaluation; **Download trajectory** on a session (`GET
+/api/v1/harness/sessions/ID/trajectory`, confined to that folder) hands you
+the file.
+
+The **Harness** page opens with the day's numbers - running, today,
+submitted, failed, and cost (a dash for providers that report none) - from
+the `counts` object every sessions list carries (`pulse harness status`
+prints the same `submitted_today` and `cost_today`). The list pages backwards
+on a `(started_at, id)` cursor (`?before=…` from the previous page's
+`next_before`; **Load more**), so a fleet whose sessions all started in the
+same second never loses a row between pages; the first page stays live,
+older pages are snapshots. A session's transcript follows `harness.step`
+events and fetches only the new steps (`?after=N`), shows whether it is live
+or polling, and keeps following while you are at the bottom. Job rows on a
+task carry `harness_session`, so a task links straight to the run that
+worked it.
 
 ```bash
 pulse harness login                     # device flow: open the URL, type the code; --with-token reads a token on stdin; --provider openai for an API key
@@ -549,6 +594,8 @@ pulse harness status                    # harness, provider, who is signed in, t
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
 pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
+pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
+pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one
 pulse harness logout                    # forget the stored login
 ```
 
