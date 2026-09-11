@@ -544,7 +544,7 @@ executor's steps before the job finishes. A trajectory JSON under
 evaluation.
 
 ```bash
-pulse harness login                     # device flow: open the URL, type the code; --with-token reads a token on stdin
+pulse harness login                     # device flow: open the URL, type the code; --with-token reads a token on stdin; --provider openai for an API key
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
 pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets
@@ -552,7 +552,7 @@ pulse harness sessions --project my-app # recent sessions; pulse harness show ID
 pulse harness logout                    # forget the stored login
 ```
 
-**Sign-in and where the token lives.** The provider is GitHub Copilot: the
+**Sign-in and where the token lives.** The default provider is GitHub Copilot: the
 console's *Sign in with GitHub* (or `pulse harness login`) runs GitHub's
 device flow with the Copilot editor app, checks that the account actually has
 Copilot, and stores the GitHub token in `~/.pulse/private/providers/copilot.json`
@@ -582,6 +582,22 @@ that implements `provider.Provider` (`Chat`, `Models`, `Status`) and,
 optionally, `DeviceLoginer`, `TokenLoginer` and `Logouter`, then registers
 itself with `provider.Register` - the harness, the CLI verbs, the hub routes
 and the console's sign-in card pick it up through the `provider` setting.
+A provider's own settings are named `provider.<name>.*`; `Store.ProviderSettings()`
+hands all of them to `provider.Open` in one map.
+
+**Any OpenAI-compatible endpoint.** `pulse settings set provider openai`
+switches the harness to the `openai` provider, which speaks the chat
+completions API with the same one bash tool: OpenAI itself, Azure OpenAI,
+OpenRouter, or a local Ollama / LM Studio (`pulse settings set
+provider.openai.base_url http://127.0.0.1:11434/v1`). Sign in with an API key
+- `pulse harness login --provider openai --with-token` reads it on stdin, or
+the console's Harness card - stored in
+`~/.pulse/private/providers/openai.json` (0600); `OPENAI_API_KEY` and
+`OPENAI_BASE_URL` in the environment work for one-off runs. `pulse harness
+models --provider openai` lists what the endpoint serves. These endpoints
+report no cost, so `harness.max_cost` does not apply to them - the step and
+time budgets do - and most report no context window, so context discipline
+stays at its first level (collapsed, never one-liners).
 
 ## The runner
 
