@@ -102,6 +102,84 @@
       "value": "10"
     },
     {
+      "choices": [
+        "native",
+        "copilot-cli"
+      ],
+      "default": "native",
+      "description": "native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone",
+      "kind": "choice",
+      "min": null,
+      "name": "harness",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "native"
+    },
+    {
+      "choices": [
+        "copilot",
+        "openai"
+      ],
+      "default": "copilot",
+      "description": "the model provider of the native harness; copilot signs in with GitHub; openai takes an API key and a base URL; the login lives on this machine, never in the store",
+      "kind": "choice",
+      "min": null,
+      "name": "provider",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "copilot"
+    },
+    {
+      "choices": null,
+      "default": "https://api.openai.com/v1",
+      "description": "the OpenAI-compatible endpoint the openai provider calls: OpenAI, Azure OpenAI, Ollama (http://127.0.0.1:11434/v1), LM Studio, OpenRouter",
+      "kind": "text",
+      "min": null,
+      "name": "provider.openai.base_url",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "https://api.openai.com/v1"
+    },
+    {
+      "choices": null,
+      "default": "60",
+      "description": "model calls one native-harness run may make before it stops",
+      "kind": "count",
+      "min": 1,
+      "name": "harness.max_steps",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "60"
+    },
+    {
+      "choices": null,
+      "default": "300",
+      "description": "seconds one command of a native-harness run may take before it is killed",
+      "kind": "count",
+      "min": 10,
+      "name": "harness.step_timeout",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "300"
+    },
+    {
+      "choices": null,
+      "default": "20000",
+      "description": "characters of one command's output kept for the model; longer output is cut in the middle",
+      "kind": "count",
+      "min": 1000,
+      "name": "harness.output_limit",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "20000"
+    },
+    {
       "choices": null,
       "default": "0",
       "description": "provider units one harness run may spend before the harness stops it; 0 means no cap",
@@ -791,6 +869,18 @@
       "kind": "count",
       "min": 1,
       "name": "lead.idle_max_jobs",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "3"
+    },
+    {
+      "choices": null,
+      "default": "3",
+      "description": "finished worker jobs one board thread may seed in a row (from its suggestions, handoffs and questions) that commit nothing - read-only triage, claims, questions - before the planner stops seeding that thread and asks the lead to decide it; a job from the thread that commits resets the count; 0 turns the cap off",
+      "kind": "count",
+      "min": 0,
+      "name": "lead.stuck_thread_jobs",
       "secret": false,
       "updated_at": "",
       "updated_by": "default",
