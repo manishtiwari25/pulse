@@ -28,8 +28,8 @@ func TestCLIOnPath(t *testing.T) {
 }
 
 // TestCLIOnPathExecutableDir locks the PATH fix for real: with a PATH that does not resolve the
-// running binary, the worker env built the way run.go builds it for localExec.runWorker
-// (cliOnPath + envWith over the inherited environ) leads with the directory of os.Executable()
+// running binary, the worker env built by the production helpers run.go and exec.go use for
+// localExec.runWorker (workerCLIEnv + workerEnvWithCLIPath) leads with the directory of os.Executable()
 // and keeps the inherited PATH entries behind it.
 func TestCLIOnPathExecutableDir(t *testing.T) {
 	exe, err := os.Executable()
@@ -39,11 +39,12 @@ func TestCLIOnPathExecutableDir(t *testing.T) {
 	inherited := t.TempDir()
 	t.Setenv("PATH", inherited)
 	env := map[string]string{}
-	if p := cliOnPath(os.Getenv("PATH"), exe); p != "" {
-		env["PATH"] = p
+	workerCLIEnv(env, exe)
+	if env["PULSE_CLI"] != exe {
+		t.Fatalf("PULSE_CLI = %q, want %q", env["PULSE_CLI"], exe)
 	}
 	var got string
-	for _, kv := range envWith(environ(), env) {
+	for _, kv := range workerEnvWithCLIPath(environ(), env) {
 		if len(kv) > 5 && kv[:5] == "PATH=" {
 			got = kv[5:]
 		}

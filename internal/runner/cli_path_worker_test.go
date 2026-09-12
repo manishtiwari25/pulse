@@ -10,7 +10,7 @@ import (
 
 // TestCLIOnPathWorkerProcess locks the pulse-CLI-on-PATH fix at the variable that
 // matters: the PATH the process spawned by localExec.runWorker actually observes.
-// The env is built the way run.go builds it (PULSE_CLI + cliOnPath) and the worker
+// The env is built by workerCLIEnv, the helper run.go uses, and the worker
 // itself prints $PATH, so a regression in runWorker's env plumbing fails here even
 // if the helpers still pass their unit tests.
 func TestCLIOnPathWorkerProcess(t *testing.T) {
@@ -22,10 +22,7 @@ func TestCLIOnPathWorkerProcess(t *testing.T) {
 	t.Setenv("PATH", inherited)
 	s := newStore(t)
 	e, _, env := runnerHeartbeatFixture(t, s, "local")
-	env["PULSE_CLI"] = exe
-	if p := cliOnPath(os.Getenv("PATH"), exe); p != "" {
-		env["PATH"] = p
-	}
+	workerCLIEnv(env, exe)
 	out, err := e.runWorker(context.Background(), []string{"/bin/sh", "-c", `printf 'PATH=%s\n' "$PATH"`}, env, 1)
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("worker: %+v %v", out, err)

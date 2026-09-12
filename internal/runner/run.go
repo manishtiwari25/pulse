@@ -387,14 +387,7 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			env["PULSE_HARNESS_STEPS"] = filepath.Join(ex.workerDirs()[0], "harness-steps-"+runID+".jsonl")
 		}
 		if !ex.remote() {
-			if exe := localCLI(home); exe != "" {
-				env["PULSE_CLI"] = exe
-				// The brief tells the worker to run `pulse claim`, `pulse vote` and `pulse job finish`;
-				// make sure the binary that launched this run is actually on the worker's PATH.
-				if p := cliOnPath(os.Getenv("PATH"), exe); p != "" {
-					env["PATH"] = p
-				}
-			}
+			workerCLIEnv(env, localCLI(home))
 			env["PULSE_HOME"] = home
 			for _, kv := range workerEnv {
 				env[kv[0]] = kv[1]
@@ -1123,6 +1116,21 @@ func releaseLostJob(s *store.Store, now, jobID, agent string) {
 	}
 	exec1(s.DB, "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?", jobID)
 	eventAt(s.DB, now, "runner", "job.requeue", jobID, "run lost: the runner stopped while it was in progress")
+}
+
+// workerCLIEnv is the PULSE_CLI + PATH construction localExec.runWorker's env gets in run.go:
+// when exe (the binary that launched this run, see localCLI) is known, PULSE_CLI names it and
+// PATH is the runner's PATH with exe's directory prepended unless `pulse` already resolves there.
+// The brief tells the worker to run `pulse claim`, `pulse vote` and `pulse job finish`; tests
+// call this exact function so they cannot drift from what run.go does.
+func workerCLIEnv(env map[string]string, exe string) {
+	if exe == "" {
+		return
+	}
+	env["PULSE_CLI"] = exe
+	if p := cliOnPath(os.Getenv("PATH"), exe); p != "" {
+		env["PATH"] = p
+	}
 }
 
 // cliOnPath returns pathEnv with the directory of exe prepended when no entry of pathEnv
