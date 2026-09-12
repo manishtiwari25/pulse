@@ -279,6 +279,12 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			return err
 		}
 		exec1(s.DB, "UPDATE runs SET signing_pubkey = ? WHERE id = ?", pubkey, runID)
+		// A missing or empty key is a setup-error before any clone exists, on
+		// both the local and the ssh branch; the later checks before runWorker
+		// catch a key that vanishes in between.
+		if err := preflightRunKey(ex.keyPath()); err != nil {
+			return err
+		}
 		base, err := ex.prepare(ctx)
 		if err != nil {
 			return err
