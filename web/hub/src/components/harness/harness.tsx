@@ -294,7 +294,7 @@ function Observation({ s }: { s: HarnessStep }) {
     <article className="rounded-lg border bg-muted/30">
       <header className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
         <span className="flex min-w-0 items-center gap-2">
-          <TerminalIcon className="size-4 text-muted-foreground" />
+          <TerminalIcon className="size-4 shrink-0 text-muted-foreground" />
           <Mono className="truncate">{s.command || "observation"}</Mono>
         </span>
         <span className="flex items-center gap-1.5">
@@ -302,7 +302,7 @@ function Observation({ s }: { s: HarnessStep }) {
           {s.exit_code !== null ? <ToneBadge tone={bad ? "bad" : "ok"}>{"exit " + s.exit_code}</ToneBadge> : null}
         </span>
       </header>
-      <pre className="max-h-[52vh] overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs leading-relaxed">{shown || "(no output)"}</pre>
+      <pre className="max-h-[52vh] overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-relaxed anywhere">{shown || "(no output)"}</pre>
       {long ? (
         <button type="button" className="border-t px-3 py-2 text-xs text-muted-foreground hover:text-foreground" onClick={() => setOpen((v) => !v)}>
           {open ? "Collapse output" : "Show all " + num(lines.length) + " lines"}
@@ -343,14 +343,14 @@ function StepCard({ s, session }: { s: HarnessStep; session: HarnessSession }) {
     return (
       <article className="rounded-xl border bg-card p-3 shadow-card">
         {head}
-        <Markdown source={s.content} />
+        <Markdown source={s.content} className="[&_pre]:whitespace-pre-wrap" />
       </article>
     );
   if (s.kind === "command")
     return (
       <article className="rounded-xl border bg-zinc-950 p-3 text-zinc-100 shadow-card dark:bg-black">
         {head}
-        <pre className="whitespace-pre-wrap break-words font-mono text-xs">
+        <pre className="whitespace-pre-wrap font-mono text-xs anywhere">
           <span className="text-emerald-300">$</span> {s.command}
         </pre>
       </article>
@@ -565,7 +565,7 @@ function Transcript({ id, models }: { id: string; models: HarnessModel[] }) {
         </>
       }
     >
-      <div ref={scroll} onScroll={onScroll} className="grid max-h-[calc(100vh-12rem)] gap-4 overflow-y-auto pr-1">
+      <div ref={scroll} onScroll={onScroll} className="grid min-w-0 grid-cols-1 max-h-[calc(100vh-12rem)] gap-4 overflow-y-auto pr-1 anywhere">
         <div className="grid gap-3 rounded-lg border bg-muted/30 p-3" aria-live={running ? "polite" : undefined}>
           <div className="flex flex-wrap items-center gap-2">
             <HarnessStatusBadge session={s} />
@@ -598,7 +598,7 @@ function Transcript({ id, models }: { id: string; models: HarnessModel[] }) {
           />
           {s.error ? <p className="rounded-md border border-bad/30 bg-bad/10 px-2 py-1.5 text-sm text-bad">{s.error}</p> : null}
         </div>
-        <div className="grid gap-3">{d.steps.map((step) => <StepCard key={step.n} s={step} session={s} />)}</div>
+        <div className="grid min-w-0 grid-cols-1 gap-3">{d.steps.map((step) => <StepCard key={step.n} s={step} session={s} />)}</div>
         <div ref={bottom} />
       </div>
     </Panel>
