@@ -1092,6 +1092,11 @@ func probeExecutor(s *store.Store, name, actor, now string) (bool, string, error
 				parts[i] = k + "=" + fields[k]
 			}
 			note = "ok: " + strings.Join(parts, " ")
+			if fields["pulse"] == "present" {
+				// Hands built before the probe learned to report the resolved pulse path (or version)
+				// say only "present"; the runner then cannot hand PULSE_CLI to workers on a bare PATH.
+				note += fmt.Sprintf("; warning: hands predate pulse path reporting (pulse=present); refresh them with `pulse pair <admin@host> --name %s`", name)
+			}
 		} else {
 			note = strings.Join(problems, "; ")
 		}
