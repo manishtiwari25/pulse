@@ -308,3 +308,27 @@ func TestPlanExperimentDoesNotRepostGateWithinCooldown(t *testing.T) {
 		t.Fatalf("an answer bypassed the gate: %d experiment jobs", got)
 	}
 }
+
+func TestPlanExperimentSkipsCardQuestionWhenThreadHasCard(t *testing.T) {
+	s := cycleReady(t)
+	// A voted suggestion without a card, then a re-filed card on the same thread that has not reached quorum.
+	noCard := votedPostWithVotes(t, s, board.PostInput{
+		Project: "demo", Area: "evolution", Thread: "candidate", Kind: "suggestion", Agent: "proposer",
+		Summary: "Improve candidate", Body: "Class: product\nHypothesis: candidate improves\nTier: 1\n",
+	}, "up", "up")
+	if _, err := board.CreatePost(s, board.PostInput{Project: "demo", Area: "evolution", Thread: "candidate",
+		Kind: "suggestion", Agent: "proposer", Summary: "One-file experiment", Files: "value.txt",
+		Body: "Class: product\nFile: value.txt\nVariable: one constant\nHypothesis: candidate improves\nTier: 1\n"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Created || res.Suggestion == noCard.ID {
+		t.Fatalf("plan = %+v; the card-less post must neither run nor be planned", res)
+	}
+	if got := countRows(t, s, "posts WHERE kind = 'question'"); got != 0 {
+		t.Fatalf("card question re-posted on a thread that already holds a card: %d questions, want 0", got)
+	}
+}

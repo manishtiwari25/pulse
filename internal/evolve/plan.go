@@ -138,8 +138,14 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 				return PlanResult{}, err
 			}
 			reason := input.What + "; " + input.Why + "; owner: " + input.Fix
-			if _, err := ownerQuestion(s, project, p, opts.Agent, opts.AgentRow, opts.Session, reason); err != nil {
+			satisfied, err := threadHasCard(s, project, p, status)
+			if err != nil {
 				return PlanResult{}, err
+			}
+			if !satisfied {
+				if _, err := ownerQuestion(s, project, p, opts.Agent, opts.AgentRow, opts.Session, reason); err != nil {
+					return PlanResult{}, err
+				}
 			}
 			if seen != nil {
 				seen[p.ID] = true
@@ -254,6 +260,39 @@ func inFlightExperiment(s *store.Store, project string, includeLanding bool) (st
 		return "", false, err
 	}
 	return id, true, nil
+}
+
+// threadHasCard reports whether another suggestion on the same thread as p already carries a valid
+// experiment card, so the card gate p fails is already satisfied and asking the owner again on that
+// thread would only repeat an answered question.
+func threadHasCard(s *store.Store, project string, p *tally.Post, status *LoopStatus) (bool, error) {
+	rows, err := s.DB.Query(`SELECT id FROM posts WHERE project = ? AND kind = 'suggestion'
+		AND area = ? AND thread = ? AND id != ? ORDER BY date DESC, id DESC`, project, p.Area, p.Thread, p.ID)
+	if err != nil {
+		return false, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return false, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		other, err := tally.LoadPost(s, id)
+		if err != nil {
+			return false, err
+		}
+		if _, err := makeCard(s, other, status); err == nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func questionOpenOnPost(s *store.Store, project string, p *tally.Post, agent string) bool {
