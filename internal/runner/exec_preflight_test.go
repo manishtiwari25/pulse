@@ -72,3 +72,15 @@ func TestPreflightRunKeyRemoteResult(t *testing.T) {
 		}
 	}
 }
+
+// TestPreflightRunKeyAfterMakeRunKey: the key makeRunKey writes passes the
+// preflight that run.go applies right after it, before clone creation.
+func TestPreflightRunKeyAfterMakeRunKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.key")
+	if _, err := makeRunKey(path, "juniper", "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := preflightRunKey(path); err != nil {
+		t.Fatalf("fresh run key rejected: %v", err)
+	}
+}
