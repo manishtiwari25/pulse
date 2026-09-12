@@ -129,7 +129,21 @@ func (e *localExec) prepare(ctx context.Context) (string, error) {
 	return strings.TrimSpace(head.Stdout), nil
 }
 
+// preflightRunKey fails before the worker starts when the per-run signing key
+// is gone: without it every commit the worker makes is unsignable and the
+// finished work is lost at the end (ADR-022). Failing here is a setup error
+// that sends the job back to the queue with nothing spent.
+func preflightRunKey(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fail(1, "setup-error: the run's signing key %s is missing (%v); the worker was not started so no work is lost (ADR-022)", path, err)
+	}
+	return nil
+}
+
 func (e *localExec) runWorker(ctx context.Context, cmd []string, env map[string]string, minutes int) (outcome, error) {
+	if err := preflightRunKey(e.key); err != nil {
+		return outcome{}, err
+	}
 	e.begun = true
 	budget := time.Duration(minutes) * time.Minute
 	if minutes <= 0 {
