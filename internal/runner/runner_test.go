@@ -444,6 +444,7 @@ func TestDaemonOnceRunsAJob(t *testing.T) {
 }
 
 func TestDaemonStopsGracefullyOnCancel(t *testing.T) {
+	skipSlow(t)
 	s := newStore(t)
 	newRepo(t, s)
 	join(t, s, "aurora")
@@ -534,6 +535,7 @@ func buildPulse(t *testing.T) string {
 }
 
 func TestHandsVerbsRoundTrip(t *testing.T) {
+	skipSlow(t)
 	bin := buildPulse(t)
 	s := newStore(t)
 	_, repo := newRepo(t, s)

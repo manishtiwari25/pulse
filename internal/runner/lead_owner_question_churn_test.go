@@ -96,6 +96,7 @@ func TestAwayOwnerQuestionUsesExistingSixHourPacing(t *testing.T) {
 }
 
 func TestFreshOwnerWorkWakesLeadWithStopContext(t *testing.T) {
+	skipSlow(t)
 	for _, tt := range []struct {
 		name, work string
 		away       bool

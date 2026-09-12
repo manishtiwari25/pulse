@@ -43,6 +43,7 @@ func TestParseResultTextDecisions(t *testing.T) {
 }
 
 func TestLeadDueAwayProposalPacingAndExclusions(t *testing.T) {
+	skipSlow(t)
 	tests := []struct {
 		name  string
 		away  bool
@@ -209,6 +210,7 @@ func TestLeadDueAwayListsOwnerCardsOnce(t *testing.T) {
 }
 
 func TestApplyResultDecisionsGuards(t *testing.T) {
+	skipSlow(t)
 	tests := []struct {
 		name       string
 		ownerAway  bool

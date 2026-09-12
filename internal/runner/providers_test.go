@@ -910,6 +910,7 @@ func TestComputeFailsWhenTheProviderCLIIsMissing(t *testing.T) {
 // polling pause is longer than one daemon loop tick must still reach ready when the once-daemon leaves,
 // because compute outlives the loop by the grace instead of dying with loopCtx.
 func TestDaemonOnceComputeSlowProvision(t *testing.T) {
+	skipSlow(t)
 	s := newStore(t)
 	h := newComputeHarness(t, s, map[string]string{"compute.provider": "multipass"})
 	// newComputeHarness shortens provisionWait to 5ms; make it longer than the 1s loop interval onceDaemon uses.

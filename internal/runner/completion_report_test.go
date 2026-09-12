@@ -101,6 +101,7 @@ func TestCompletionWorkerProcess(t *testing.T) {
 }
 
 func TestCompletionRejectsUnreportedSuccess(t *testing.T) {
+	skipSlow(t)
 	for name, output := range map[string]string{
 		"empty":        "",
 		"unstructured": "Starting work; everything looks fine.\n",
@@ -121,6 +122,7 @@ func TestCompletionRejectsUnreportedSuccess(t *testing.T) {
 }
 
 func TestCompletionSummaryOnlyKinds(t *testing.T) {
+	skipSlow(t)
 	for _, kind := range []string{"answer", "ballot", leadKind, "task"} {
 		t.Run(kind, func(t *testing.T) {
 			s, job, _, agent := newCompletionJob(t, kind)
@@ -134,6 +136,7 @@ func TestCompletionSummaryOnlyKinds(t *testing.T) {
 }
 
 func TestCompletionWorkerFinishAuthoritative(t *testing.T) {
+	skipSlow(t)
 	for _, tc := range []struct {
 		name, kind, status, result, output, want string
 		exit                                     int

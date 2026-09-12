@@ -16,6 +16,7 @@ import (
 // on the next tick while nothing changed; when the checkout is clean again the branches land, the note is
 // cleared and land.resumed is written once.
 func TestLandingHoldSaidOncePerChange(t *testing.T) {
+	skipSlow(t)
 	bus.ResetDefault()
 	s := newStore(t)
 	proj, dir := newRepo(t, s)

@@ -190,6 +190,7 @@ func TestPairCommandRefusals(t *testing.T) {
 }
 
 func TestWorkerCommitLandsThroughLand(t *testing.T) {
+	skipSlow(t)
 	if _, err := os.Stat("/usr/bin/ssh-keygen"); err != nil {
 		if _, err := os.Stat("/usr/local/bin/ssh-keygen"); err != nil {
 			t.Skip("no ssh-keygen")

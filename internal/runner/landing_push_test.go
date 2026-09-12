@@ -52,6 +52,7 @@ func bareRef(t *testing.T, bare, ref string) string {
 }
 
 func TestLandingPushesMainWhenAsked(t *testing.T) {
+	skipSlow(t)
 	bus.ResetDefault()
 	s := newStore(t)
 	proj, repo, bare := pushFixture(t, s)
@@ -110,6 +111,7 @@ func TestLandingPushesMainWhenAsked(t *testing.T) {
 }
 
 func TestLandingPushFailureIsANoteNotAnUndo(t *testing.T) {
+	skipSlow(t)
 	bus.ResetDefault()
 	s := newStore(t)
 	proj, repo, bare := pushFixture(t, s)

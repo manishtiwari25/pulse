@@ -7,6 +7,7 @@ import (
 )
 
 func TestPlanJobsForOwnerMetadata(t *testing.T) {
+	skipSlow(t)
 	cases := []struct {
 		name, thread, summary string
 		extra                 map[string]any

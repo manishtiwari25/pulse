@@ -828,6 +828,7 @@ func experimentJob(t *testing.T, s *store.Store, dir, file string) (job row, sug
 }
 
 func TestExperimentLandingKeptDroppedUnavailable(t *testing.T) {
+	skipSlow(t)
 	bus.ResetDefault()
 	s := newStore(t)
 	proj, dir := newRepo(t, s)
