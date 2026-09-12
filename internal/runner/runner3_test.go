@@ -673,3 +673,34 @@ func TestProbeExecutorMinFreeMB(t *testing.T) {
 		})
 	}
 }
+
+// Pre-path hands answer pulse=present instead of a version or path; the doctor keeps the executor
+// usable but warns and points at `pulse pair` so the hands get refreshed.
+func TestExecutorDoctorWarnsOnPrePathHands(t *testing.T) {
+	s := newStore(t)
+	if _, err := addExecutor(s, testNow, "hands", "pulse@hands", "/srv/pulse", 1, "*", humanAgent); err != nil {
+		t.Fatal(err)
+	}
+	old := runSSH
+	t.Cleanup(func() { runSSH = old })
+	runSSH = func(_ context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
+		return 0, "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=ok logged_in=yes harness=yes pulse=present remotes=0 keys_ok=yes disk_free_mb=4096 jobs=- keys=- heartbeat=1\n", "", nil
+	}
+	ok, note, err := probeExecutor(s, "hands", humanAgent, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("pulse=present must stay a warning, not a failure: %s", note)
+	}
+	if !strings.Contains(note, "warning: hands predate pulse path reporting") || !strings.Contains(note, "pulse pair <admin@host> --name hands") {
+		t.Fatalf("doctor note: %q", note)
+	}
+	runSSH = func(_ context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
+		return 0, "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=ok logged_in=yes harness=yes pulse=/usr/local/bin/pulse remotes=0 keys_ok=yes disk_free_mb=4096 jobs=- keys=- heartbeat=1\n", "", nil
+	}
+	ok, note, err = probeExecutor(s, "hands", humanAgent, testNow)
+	if err != nil || !ok || strings.Contains(note, "warning") {
+		t.Fatalf("path-reporting hands must not warn: ok=%v note=%q err=%v", ok, note, err)
+	}
+}
