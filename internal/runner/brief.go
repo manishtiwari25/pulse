@@ -233,7 +233,7 @@ func writeFocusBriefSection(b *[]string, s *store.Store, project, agent, now str
 	if remote {
 		*b = append(*b, "", "Do not redo work listed here. This machine has no PULSE store; report any overlap and the narrow help needed through a FINDING: line addressed to your lead.", "")
 	} else {
-		*b = append(*b, "", "Claim your thread before you start (pulse claim --area A --thread T --summary ...) and do not redo work listed here; if your job overlaps one of them, post a handoff or a question on that thread instead.", "")
+		*b = append(*b, "", "Claim your thread before you start (pulse claim --area A --thread T --summary ...; if `pulse` is not on PATH, run the binary named by $PULSE_CLI) and do not redo work listed here; if your job overlaps one of them, post a handoff or a question on that thread instead.", "")
 	}
 }
 
