@@ -56,3 +56,48 @@ func TestCLIOnPathExecutableDir(t *testing.T) {
 		t.Fatalf("worker PATH %q dropped the inherited entry %q", got, inherited)
 	}
 }
+
+// TestCLIOnPathFallback locks the fallback localCLI takes when os.Executable()
+// cannot be used: the binary named by PULSE_CLI, then <home>/bin/pulse, and
+// only executables count. Here os.Executable() resolves (the test binary), so
+// the fallbacks are exercised directly through localCLIFallback.
+func TestCLIOnPathFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PULSE_CLI", "")
+	if got := localCLIFallback(home); got != "" {
+		t.Fatalf("no candidates: got %q", got)
+	}
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	homeCLI := filepath.Join(bin, "pulse")
+	if err := os.WriteFile(homeCLI, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := localCLIFallback(home); got != "" {
+		t.Fatalf("non-executable ~/.pulse/bin/pulse accepted: %q", got)
+	}
+	if err := os.Chmod(homeCLI, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := localCLIFallback(home); got != homeCLI {
+		t.Fatalf("home fallback: got %q want %q", got, homeCLI)
+	}
+	other := filepath.Join(t.TempDir(), "pulse")
+	if err := os.WriteFile(other, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PULSE_CLI", other)
+	if got := localCLIFallback(home); got != other {
+		t.Fatalf("PULSE_CLI fallback: got %q want %q", got, other)
+	}
+	if p := cliOnPath(t.TempDir(), other); p == "" || filepath.SplitList(p)[0] != filepath.Dir(other) {
+		t.Fatalf("worker PATH does not lead with fallback dir: %q", p)
+	}
+	if exe, err := os.Executable(); err == nil {
+		if got := localCLI(home); got != exe {
+			t.Fatalf("localCLI prefers os.Executable: got %q want %q", got, exe)
+		}
+	}
+}

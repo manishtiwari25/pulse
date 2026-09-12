@@ -380,7 +380,7 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			env["PULSE_HARNESS_STEPS"] = filepath.Join(ex.workerDirs()[0], "harness-steps-"+runID+".jsonl")
 		}
 		if !ex.remote() {
-			if exe, err := os.Executable(); err == nil {
+			if exe := localCLI(home); exe != "" {
 				env["PULSE_CLI"] = exe
 				// The brief tells the worker to run `pulse claim`, `pulse vote` and `pulse job finish`;
 				// make sure the binary that launched this run is actually on the worker's PATH.
