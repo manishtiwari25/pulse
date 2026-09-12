@@ -94,3 +94,37 @@ func TestSigningGivesEveryBuildTheSameRequirement(t *testing.T) {
 		t.Fatalf("running-binary sign: %q signed=%v", out.String(), signed(build))
 	}
 }
+
+// TestSigningKeyMustExistBeforeIdentity: pointing user.signingkey at a missing key would only
+// surface when the worker commits, losing finished work; the runner must fail early instead.
+func TestSigningKeyMustExistBeforeIdentity(t *testing.T) {
+	clone := t.TempDir()
+	run(t, clone, "git", "init", "-q")
+	missing := filepath.Join(t.TempDir(), "missing.key")
+	err := configureCloneIdentity(clone, "aurora", missing, provenanceHook("aurora", "JOB-1", localExecutor))
+	if err == nil {
+		t.Fatal("identity configured with a missing signing key")
+	}
+	if !strings.Contains(err.Error(), "signing key") {
+		t.Fatalf("unclear error: %v", err)
+	}
+	cmd := exec.Command("git", "config", "--local", "--get", "user.signingkey")
+	cmd.Dir = clone
+	if out, err := cmd.Output(); err == nil {
+		t.Fatalf("user.signingkey set despite missing key: %q", out)
+	}
+}
+
+// TestSigningKeyCreatesWorkDir: makeRunKey writes the key even when PULSE_HOME/work is not there yet.
+func TestSigningKeyCreatesWorkDir(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("no ssh-keygen")
+	}
+	keyPath := filepath.Join(t.TempDir(), "work", "job.key")
+	if _, err := makeRunKey(keyPath, "aurora", "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !fileExists(keyPath) {
+		t.Fatal("key not written")
+	}
+}

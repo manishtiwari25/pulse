@@ -25,6 +25,9 @@ func makeRunKey(path, agent, runID string) (string, error) {
 	for _, stale := range []string{path, pub} {
 		_ = os.Remove(stale)
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fail(1, "cannot make the directory for the run's signing key: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", agent+" "+runID, "-f", path)
@@ -37,6 +40,9 @@ func makeRunKey(path, agent, runID string) (string, error) {
 		return "", fail(1, "cannot make the run's signing key: %s", strings.TrimSpace(errb.String()))
 	}
 	_ = os.Chmod(path, 0o600)
+	if !fileExists(path) {
+		return "", fail(1, "the run's signing key was not written at %s; commits would fail at commit time (ADR-022)", path)
+	}
 	fields := strings.Fields(readFile(pub))
 	if len(fields) > 2 {
 		fields = fields[:2]
@@ -61,6 +67,11 @@ func provenanceHook(agent, jobID, executor string) string {
 }
 
 func configureCloneIdentity(clone, agent, keyPath, hookText string) error {
+	// The key must exist before user.signingkey points at it: otherwise every commit the worker
+	// makes fails at commit time and finished work is lost (ADR-022). Fail the run early instead.
+	if !fileExists(keyPath) {
+		return fail(1, "the run's signing key %s does not exist; refusing to configure user.signingkey (ADR-022)", keyPath)
+	}
 	hooks := filepath.Join(clone, ".git", "hooks")
 	for _, kv := range [][2]string{{"user.name", agent}, {"user.email", agentEmail(agent)},
 		{"gpg.format", "ssh"}, {"gpg.ssh.program", "ssh-keygen"},
