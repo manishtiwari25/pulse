@@ -585,6 +585,31 @@ func workerCommand(s *store.Store, kind, briefText, clone, workerCmd string, dir
 	return cmd, false
 }
 
+// localCLI names the pulse binary a local worker should reach: os.Executable()
+// when it resolves, otherwise the binary the environment already names in
+// PULSE_CLI, otherwise <home>/bin/pulse (the ~/.pulse/bin install location).
+// It returns "" when none of those is an executable file, so run.go leaves
+// PATH alone rather than pointing the worker at a binary that is not there.
+func localCLI(home string) string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	return localCLIFallback(home)
+}
+
+// localCLIFallback is localCLI without os.Executable(): PULSE_CLI, then <home>/bin/pulse.
+func localCLIFallback(home string) string {
+	for _, cand := range []string{os.Getenv("PULSE_CLI"), filepath.Join(home, "bin", "pulse")} {
+		if cand == "" {
+			continue
+		}
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return cand
+		}
+	}
+	return ""
+}
+
 // workerEnvWithCLIPath builds the worker environment from base plus extra and,
 // when extra carries PULSE_CLI, prepends its directory to PATH once so `pulse`
 // resolves by bare name in worker shells. Without PULSE_CLI it is envWith.
