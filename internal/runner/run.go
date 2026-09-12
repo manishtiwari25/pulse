@@ -430,7 +430,13 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			}
 		}
 		if !ex.remote() {
-			log.add("%s", preflightLine(pulseOnPath(envWith(environ(), env)), env["PULSE_CLI"]))
+			found := pulseOnPath(envWith(environ(), env))
+			log.add("%s", preflightLine(found, env["PULSE_CLI"]))
+			// The brief tells the worker to claim, vote and finish through `pulse`;
+			// a worker that cannot reach it can only fail late, so refuse to start it.
+			if err := preflightPulseCLI(found, env["PULSE_CLI"]); err != nil {
+				return err
+			}
 		} else if r, ok := ex.(interface{ preflightRemoteRunKey(string) error }); ok {
 			// Same preflightRunKey check as localExec.runWorker, run on the host:
 			// the key uploaded in prepare must still be there right before the
