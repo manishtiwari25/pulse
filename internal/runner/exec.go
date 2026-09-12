@@ -308,19 +308,34 @@ func (e *sshExec) prepare(ctx context.Context) (string, error) {
 	// Same non-empty check as preflightRunKey on the hub side: the hands wrote the
 	// key under the job dir, so confirm the host-side copy exists and is not empty
 	// before the worker starts and signs with it (ADR-022).
-	rc, out, errText, err = e.call([]string{"verify", e.job.str("id"), "1", "--", remoteKeyCheckCmd(e.remoteKeyPath())}, nil, 120*time.Second)
-	if err != nil {
+	if err := e.preflightRemoteRunKey("after upload"); err != nil {
 		return "", err
 	}
-	if rc != 0 {
-		src = errText
-		if src == "" {
-			src = out
-		}
-		return "", fail(1, "setup-error: the run's signing key %s on %s is missing or empty after upload (exit %d): %s; the worker was not started so no work is lost (ADR-022)",
-			e.remoteKeyPath(), e.name(), rc, tail(strings.Join(strings.Fields(src), " "), 300))
-	}
 	return base, nil
+}
+
+// preflightRemoteRunKey runs `test -s` on the host-side run key through the
+// hands `verify` verb; when is a short phrase naming the moment of the check.
+func (e *sshExec) preflightRemoteRunKey(when string) error {
+	rc, out, errText, err := e.call([]string{"verify", e.job.str("id"), "1", "--", remoteKeyCheckCmd(e.remoteKeyPath())}, nil, 120*time.Second)
+	if err != nil {
+		return err
+	}
+	return remoteKeyCheckResult(e.remoteKeyPath(), e.name(), when, rc, out, errText)
+}
+
+// remoteKeyCheckResult maps the exit of remoteKeyCheckCmd to the same
+// setup-error preflightRunKey reports locally, or nil when the key is present.
+func remoteKeyCheckResult(path, host, when string, rc int, out, errText string) error {
+	if rc == 0 {
+		return nil
+	}
+	src := errText
+	if src == "" {
+		src = out
+	}
+	return fail(1, "setup-error: the run's signing key %s on %s is missing or empty %s (exit %d): %s; the worker was not started so no work is lost (ADR-022)",
+		path, host, when, rc, tail(strings.Join(strings.Fields(src), " "), 300))
 }
 
 // remoteKeyPath is where the hands `key` verb stores the per-run signing key.
