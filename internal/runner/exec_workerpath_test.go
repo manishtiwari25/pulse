@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func lookupEnv(env []string, key string) string {
@@ -43,5 +44,25 @@ func TestLocalExecWorkerPath(t *testing.T) {
 	got = workerEnvWithCLIPath([]string{"HOME=/h"}, map[string]string{"PULSE_CLI": "/opt/p/pulse"})
 	if p := lookupEnv(got, "PATH"); p != "/opt/p" {
 		t.Fatalf("PATH without base: %q", p)
+	}
+}
+
+// TestSSHExecWorkerPath: the remote branch launches the worker through hands
+// `run`, so the same dir(PULSE_CLI) prefix must apply there when run.go passes
+// PULSE_CLI as a K=V argument.
+func TestSSHExecWorkerPath(t *testing.T) {
+	dir := t.TempDir()
+	cli := dir + "/pulse"
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	h := &hands{stdout: &out, stderr: &out}
+	rc := h.withTimeout(time.Minute, dir, []string{"/bin/sh", "-c", "printf %s \"$PATH\""}, map[string]string{"PULSE_CLI": cli})
+	if rc != 0 {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+	if !strings.HasPrefix(out.String(), dir+string(os.PathListSeparator)) {
+		t.Fatalf("remote worker PATH not prefixed with dir(PULSE_CLI): %q", out.String())
 	}
 }
