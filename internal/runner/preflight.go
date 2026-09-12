@@ -41,3 +41,20 @@ func preflightLine(found, cli string) string {
 	}
 	return "preflight: pulse missing from worker PATH and no PULSE_CLI set"
 }
+
+// preflightPulseCLI is the fail-fast partner of preflightLine: it returns nil
+// when `pulse` resolved on the worker PATH or PULSE_CLI names an executable
+// file, and a setup-error otherwise so the worker is never launched with a
+// brief it cannot follow (no `pulse claim`, `pulse vote` or `pulse job finish`).
+func preflightPulseCLI(found, cli string) error {
+	if found != "" {
+		return nil
+	}
+	if cli != "" {
+		if st, err := os.Stat(cli); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return nil
+		}
+		return fail(1, "setup-error: pulse is missing from the worker PATH and PULSE_CLI=%s is not an executable file; the worker was not started so no work is lost", cli)
+	}
+	return fail(1, "setup-error: pulse is missing from the worker PATH and no PULSE_CLI is set; the worker was not started so no work is lost")
+}
