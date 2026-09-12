@@ -148,12 +148,16 @@ func (e *localExec) runWorker(ctx context.Context, cmd []string, env map[string]
 	if err := preflightRunKey(e.key); err != nil {
 		return outcome{}, err
 	}
+	workerEnv := workerEnvWithCLIPath(environ(), env)
+	if err := preflightTmpSpace(workerTmpDir(workerEnv), minTmpSpace); err != nil {
+		return outcome{}, err
+	}
 	e.begun = true
 	budget := time.Duration(minutes) * time.Minute
 	if minutes <= 0 {
 		budget = time.Second
 	}
-	out, err := runGroupObserved(ctx, cmd, e.cloneDir, workerEnvWithCLIPath(environ(), env), nil, budget, e.observer(e.execution(env)))
+	out, err := runGroupObserved(ctx, cmd, e.cloneDir, workerEnv, nil, budget, e.observer(e.execution(env)))
 	if err != nil {
 		return out, fail(1, "worker command not found: %s (setting runner_cmd=%s)", cmd[0], e.s.Setting("runner_cmd", ""))
 	}
