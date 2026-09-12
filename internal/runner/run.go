@@ -421,10 +421,21 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		parsed = parseResultText(ex.resultText())
 		// D-L: a worker that already ran `pulse job finish` reported through the store, not a file.
 		if j := jobRow(s.DB, job.str("id")); j != nil && j.int("generation") == job.int("generation") &&
-			j.str("lease_agent") == agent && (j.str("status") == "done" || j.str("status") == "failed") {
+			j.str("lease_agent") == agent && (j.str("status") == "done" || j.str("status") == "failed" || j.str("status") == "cancelled") {
 			workerReported = j.str("status")
-			if !parsed.Found || parsed.Summary == "" {
-				parsed.Found, parsed.Summary = true, j.str("result")
+			result := j.str("result")
+			stored := parseResultText(&result)
+			if parsed.Summary == "" {
+				parsed.Summary = stored.Summary
+				if !stored.reported() {
+					parsed.Summary = strings.TrimSpace(result)
+				}
+			}
+			parsed.Found = true
+			for _, question := range stored.Questions {
+				if !contains(parsed.Questions, question) {
+					parsed.Questions = append(parsed.Questions, question)
+				}
 			}
 			log.add("the worker finished job %s itself (%s): %s", job.str("id"), j.str("status"), j.str("result"))
 		}
@@ -473,7 +484,13 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 				code = *exitCode
 			}
 			switch {
-			case code != 0 && !parsed.reported() && commits == 0 && (elapsed < launchSeconds*time.Second || (code == 4 && loginFault(out.Stderr+"\n"+out.Stdout))):
+			case code == 5 || ownerCancelled.Load() || workerReported == "cancelled":
+				status = "failed"
+				summary = "cancelled by the owner"
+				if parsed.Summary != "" {
+					summary = "cancelled by the owner: " + parsed.Summary
+				}
+			case code != 0 && !parsed.reported() && workerReported == "" && commits == 0 && (elapsed < launchSeconds*time.Second || (code == 4 && loginFault(out.Stderr+"\n"+out.Stdout))):
 				// The harness died before any work: no report line, no commit, seconds in.
 				// (parsed.Found is true whenever the harness produced output, D-L.)
 				status = "error"
@@ -493,12 +510,6 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 						summary += " - the Copilot login on this machine, not the job; log in again as the daemon's user (`copilot` then `/login`, or `gh auth login`)"
 					}
 				}
-			case code == 5:
-				status = "failed"
-				summary = "cancelled by the owner"
-				if parsed.Summary != "" {
-					summary = "cancelled by the owner: " + parsed.Summary
-				}
 			case code != 0:
 				status = "failed"
 				summary = fmt.Sprintf("worker exited %d", code)
@@ -511,7 +522,9 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 				if summary == "" {
 					summary = "the worker reported failure"
 				}
-			case !parsed.Found:
+			case parsed.incomplete():
+				status, summary = "failed", parsed.Summary
+			case !parsed.reported() && workerReported == "":
 				status = "failed"
 				summary = "worker wrote no report (no `pulse job finish`, no SUMMARY line); nothing to land"
 			case commits == 0:
@@ -638,6 +651,9 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			log.put(summary)
 		}
 	}()
+	if status != "done" {
+		branch = ""
+	}
 	seconds := float64(int(wallClock().Sub(started).Seconds()*10+0.5)) / 10
 	func() {
 		defer func() {
@@ -652,8 +668,10 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 	if exitCode != nil {
 		exitVal = *exitCode
 	}
-	exec1(s.DB, "UPDATE runs SET finished_at = ?, status = ?, exit_code = ?, seconds = ?, branch = ?, commits = ?, summary = ?, verify = ? WHERE id = ?",
-		s.Now(), status, exitVal, seconds, branch, commits, summary, verifyNote, runID)
+	recordRun := func() {
+		exec1(s.DB, "UPDATE runs SET finished_at = ?, status = ?, exit_code = ?, seconds = ?, branch = ?, commits = ?, summary = ?, verify = ? WHERE id = ?",
+			s.Now(), status, exitVal, seconds, branch, commits, summary, verifyNote, runID)
+	}
 	noteExecutorRun(s, now, ex.name(), status, summary, transportError, fault)
 	if unfit != nil {
 		markUnfit(s.DB, now, ex.name(), unfit.Project, unfit.Tool)
@@ -668,6 +686,7 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		eventAt(s.DB, now, agent, "run.finish", runID, detail)
 	}
 	if status == "stale" {
+		recordRun()
 		finishEvent(status, "")
 		return runRow(), nil
 	}
@@ -691,13 +710,20 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			summary = fmt.Sprintf("failed after %d runner errors; last: %s", job.int("attempts"), summary)
 		}
 	}
-	if _, err := finishJob(s, job.str("id"), agent, jobStatus, summary, branch, job.int("generation")); err != nil {
+	finalBranch := branch
+	if jobStatus == "queued" {
+		finalBranch = job.str("branch")
+	}
+	if _, err := board.FinishRunJob(s, board.RunJobResult{RunID: runID, JobID: job.str("id"), Agent: agent,
+		Status: jobStatus, Result: summary, Branch: finalBranch, Generation: job.int("generation")}); err != nil {
 		log.put(errMessage(err))
 		_ = os.WriteFile(logPath, []byte(log.text()), 0o644)
-		exec1(s.DB, "UPDATE runs SET status = 'stale', summary = ? WHERE id = ?", fmt.Sprintf("%s (%s)", summary, errMessage(err)), runID)
+		status, summary = "stale", fmt.Sprintf("%s (%s)", summary, errMessage(err))
+		recordRun()
 		finishEvent("stale", branch)
 		return runRow(), nil
 	}
+	recordRun()
 	if jobStatus == "done" {
 		exec1(s.DB, "UPDATE agents SET jobs_done = jobs_done + 1 WHERE name = ?", agent)
 		touchAgent(s, agent, commits > 0, now)
@@ -740,6 +766,11 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			res = "tested"
 		}
 		post("result", "jobs", job.str("id"), fmt.Sprintf("%s: %s", status, summary), strings.Join(lines, "\n")+"\n", res)
+		if jobStatus == "done" {
+			if err := postResultAnswer(s, job, agent, now, runID, branch, parsed); err != nil {
+				log.add("answer skipped: %s", errMessage(err))
+			}
+		}
 		for _, q := range parsed.Questions {
 			post("question", "jobs", job.str("id"), q, "The worker stopped because this needs a real decision or crosses a hard stop.\n\n"+q+"\n", "")
 		}
@@ -758,6 +789,48 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 	}
 	finishEvent(status, branch)
 	return runRow(), nil
+}
+
+func postResultAnswer(s *store.Store, job row, agent, now, runID, branch string, rep report) error {
+	if job.str("kind") != "answer" || len(rep.Questions) != 0 || strings.TrimSpace(rep.Summary) == "" {
+		return nil
+	}
+	if hardStopText(rep.Summary) {
+		return fail(2, "job %s reported a hard stop", job.str("id"))
+	}
+	id, ok := strings.CutPrefix(job.str("source"), "question:")
+	if !ok || id == "" {
+		return fail(2, "job %s has no question source", job.str("id"))
+	}
+	q := postRow(s.DB, id)
+	if q == nil || q.str("kind") != "question" || q.str("project") != job.str("project") {
+		return fail(2, "job %s does not name a question in its project", job.str("id"))
+	}
+	if !answerable(q, job.str("created_by")) || board.Tier2Proposal(q.str("summary"), q.str("body")) != "" ||
+		hardStopText(q.str("summary")+"\n"+q.str("body")) {
+		return fail(2, "question %s requires the owner", id)
+	}
+	open := false
+	for _, candidate := range openQuestions(s, job.str("project"), now) {
+		if candidate.str("id") == id {
+			open = true
+			break
+		}
+	}
+	if !open {
+		return nil
+	}
+	// Unlinked replies can share the question's timestamp. Only a reply
+	// inserted after this question can stand in for its answer.
+	if mustOne(s.DB, `SELECT 1 FROM posts a JOIN posts q ON q.id = ?
+		WHERE a.project = q.project AND a.kind = 'answer' AND a.area = q.area
+		AND a.thread = q.thread AND a.date = q.date AND a.rowid > q.rowid LIMIT 1`, id) != nil {
+		return nil
+	}
+	_, err := createPost(s, now, postOpts{Kind: "answer", Project: q.str("project"), Area: q.str("area"), Thread: q.str("thread"),
+		Summary: trunc(rep.Summary, 230), Body: strings.TrimSpace(rep.Summary) + "\n", On: id,
+		Agent: actorAgent(s, agent), Session: runID, Branch: &branch})
+	return err
 }
 
 func watchRunHarnessCancel(ctx context.Context, s *store.Store, runID string, cancel context.CancelFunc, ownerCancelled *atomic.Bool) func() {
@@ -946,7 +1019,7 @@ func pickWorker(s *store.Store, now, agent string, exclude []string) (string, er
 		active++
 	}
 	q := "SELECT a.name FROM agents a WHERE a.status = 'active' AND a.kind = 'worker' AND NOT EXISTS " +
-		"(SELECT 1 FROM jobs j WHERE j.status = 'leased' AND j.lease_agent = a.name) "
+		"(SELECT 1 FROM jobs k WHERE k.lease_agent = a.name AND " + occupiedJobSQL + ") "
 	var args []any
 	if len(exclude) > 0 {
 		marks := make([]string, len(exclude))

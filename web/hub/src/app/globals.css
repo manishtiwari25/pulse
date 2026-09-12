@@ -16,7 +16,8 @@
   Every colour is oklch so light and dark stay perceptually matched.
 
   Utilities added here: tnum, anywhere, bg-brand, text-brand, shadow-card,
-  shadow-pop, surface-tint. Everything else is stock Tailwind v4 + shadcn.
+  shadow-pop, surface-tint, surface-glass, surface-hero.
+  Everything else is stock Tailwind v4 + shadcn.
 */
 
 @font-face {
@@ -100,7 +101,7 @@
   --gradient-brand: linear-gradient(135deg, var(--brand-mint) 0%, var(--brand-sky) 52%, var(--brand-violet) 100%);
 
   /* surfaces: cool off-white page, white cards, quiet borders */
-  --background: oklch(0.984 0.003 260);
+  --background: oklch(0.982 0.006 260);
   --foreground: oklch(0.2 0.02 262);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.2 0.02 262);
@@ -116,9 +117,10 @@
   --accent-foreground: oklch(0.25 0.03 270);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.905 0.008 260);
-  --input: oklch(0.905 0.008 260);
+  --input: oklch(0.86 0.015 260);
   --ring: oklch(0.53 0.2 275);
   --radius: 0.75rem;
+  --glass-surface: color-mix(in oklch, var(--card) 88%, transparent);
 
   /* semantic tones */
   --ok: oklch(0.6 0.16 155);
@@ -142,18 +144,18 @@
   --sidebar-ring: oklch(0.53 0.2 275);
 
   /* shadows */
-  --sh-card: 0 1px 2px 0 oklch(0.2 0.03 262 / 0.05), 0 1px 3px 1px oklch(0.2 0.03 262 / 0.03);
-  --sh-pop: 0 10px 30px -10px oklch(0.2 0.03 262 / 0.22), 0 2px 8px -2px oklch(0.2 0.03 262 / 0.08);
+  --sh-card: 0 1px 2px 0 oklch(0.2 0.03 262 / 0.04), 0 4px 14px -6px oklch(0.2 0.03 262 / 0.08);
+  --sh-pop: 0 18px 42px -16px oklch(0.2 0.03 262 / 0.23), 0 3px 10px -4px oklch(0.2 0.03 262 / 0.1);
   --sh-glow: 0 0 0 4px oklch(0.53 0.2 275 / 0.12);
 }
 
 .dark {
   /* navy-charcoal from the logo background, lifted so cards read as layers */
-  --background: oklch(0.155 0.018 262);
+  --background: oklch(0.16 0.023 262);
   --foreground: oklch(0.96 0.005 260);
-  --card: oklch(0.2 0.02 262);
+  --card: oklch(0.208 0.026 262);
   --card-foreground: oklch(0.96 0.005 260);
-  --popover: oklch(0.215 0.02 262);
+  --popover: oklch(0.24 0.027 262);
   --popover-foreground: oklch(0.96 0.005 260);
   --primary: oklch(0.78 0.13 275);
   --primary-foreground: oklch(0.18 0.03 265);
@@ -164,9 +166,10 @@
   --accent: oklch(0.28 0.03 270);
   --accent-foreground: oklch(0.96 0.005 260);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 9%);
-  --input: oklch(1 0 0 / 12%);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 16%);
   --ring: oklch(0.7 0.13 275);
+  --glass-surface: color-mix(in oklch, var(--card) 92%, transparent);
 
   --ok: oklch(0.74 0.15 155);
   --warn: oklch(0.8 0.14 78);
@@ -179,16 +182,16 @@
   --chart-4: oklch(0.74 0.13 225);
   --chart-5: oklch(0.7 0.19 25);
 
-  --sidebar: oklch(0.2 0.02 262);
+  --sidebar: oklch(0.188 0.026 262);
   --sidebar-foreground: oklch(0.96 0.005 260);
   --sidebar-primary: oklch(0.78 0.13 275);
   --sidebar-primary-foreground: oklch(0.18 0.03 265);
   --sidebar-accent: oklch(0.28 0.03 270);
   --sidebar-accent-foreground: oklch(0.96 0.005 260);
-  --sidebar-border: oklch(1 0 0 / 9%);
+  --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.7 0.13 275);
 
-  --sh-card: 0 1px 2px 0 oklch(0 0 0 / 0.35), 0 0 0 1px oklch(1 0 0 / 0.02);
+  --sh-card: 0 1px 2px 0 oklch(0 0 0 / 0.32), 0 6px 18px -8px oklch(0 0 0 / 0.24), inset 0 1px 0 oklch(1 0 0 / 0.025);
   --sh-pop: 0 14px 36px -12px oklch(0 0 0 / 0.6), 0 2px 8px -2px oklch(0 0 0 / 0.4);
   --sh-glow: 0 0 0 4px oklch(0.78 0.13 275 / 0.16);
 }
@@ -200,11 +203,21 @@
   html {
     @apply font-sans;
     scrollbar-gutter: stable;
+    /* Keep focus scrolling and anchor jumps clear of the fixed shell. */
+    scroll-padding-top: calc(5rem + env(safe-area-inset-top));
+    scroll-padding-bottom: calc(5rem + env(safe-area-inset-bottom));
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
+    @media (min-width: 64rem) {
+      scroll-padding-bottom: 2rem;
+    }
   }
   body {
     @apply bg-background text-foreground;
+    background-image:
+      radial-gradient(ellipse 70rem 30rem at 5% 0%, color-mix(in oklch, var(--brand-sky) 5%, transparent), transparent 72%),
+      radial-gradient(ellipse 56rem 26rem at 100% 0%, color-mix(in oklch, var(--brand-violet) 4%, transparent), transparent 72%);
+    background-repeat: no-repeat;
   }
   button:not(:disabled),
   [role="button"]:not(:disabled) {
@@ -249,6 +262,29 @@
 /* A faint primary wash for the surface that matters most on a page (the owner's inbox). */
 @utility surface-tint {
   background-color: color-mix(in oklch, var(--primary) 4%, var(--card));
+}
+
+/* Glass stays opaque when blur is unavailable or transparency is reduced. */
+@utility surface-glass {
+  background-color: var(--card);
+  @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+    background-color: var(--glass-surface);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    background-color: var(--card);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@utility surface-hero {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(ellipse at 0% 0%, color-mix(in oklch, var(--brand-mint) 12%, transparent), transparent 55%),
+    radial-gradient(ellipse at 100% 0%, color-mix(in oklch, var(--brand-violet) 10%, transparent), transparent 60%),
+    linear-gradient(120deg, color-mix(in oklch, var(--brand-sky) 4%, transparent), transparent);
 }
 
 /* Markdown bodies (records, briefs, chat). Dense but readable. */

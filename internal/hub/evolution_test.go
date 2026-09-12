@@ -141,8 +141,12 @@ func TestEvolutionArchiveAndHeldoutPrivacy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	encodedSummary, err := json.Marshal(evolutionSummary(data))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, canary := range []string{private, "private-canary", "Never quote this request."} {
-		if strings.Contains(string(encoded), canary) {
+		if strings.Contains(string(encoded), canary) || strings.Contains(string(encodedSummary), canary) {
 			t.Fatalf("evolution exposed owner-private data %q", canary)
 		}
 	}

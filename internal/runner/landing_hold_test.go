@@ -39,7 +39,7 @@ func TestLandingHoldSaidOncePerChange(t *testing.T) {
 
 	projects := []row{proj}
 	lines, held := tendLandings(s, projects, "daemon", testNow, map[string]string{})
-	want := "landing held proj: 2 branches waiting; deferred: the checkout of " + dir + " has uncommitted changes"
+	want := "landing held proj: 2 pending landing jobs; deferred: the checkout of " + dir + " has uncommitted changes"
 	if len(lines) != 1 || lines[0] != want {
 		t.Fatalf("first tick lines: %q", lines)
 	}
@@ -117,7 +117,7 @@ func TestDaemonLogsLandingHoldOnce(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# proj\n\nedited\n"), 0o644)
 
 	log := onceDaemon(t, s, daemonOpts{WorkerCmd: "sh -c 'echo SUMMARY: ran'"})
-	if strings.Count(log, "landing held proj: 1 branch waiting; deferred: the checkout of "+dir+" has uncommitted changes") != 1 || strings.Contains(log, "landing deferred") {
+	if strings.Count(log, "landing held proj: 1 pending landing job; deferred: the checkout of "+dir+" has uncommitted changes") != 1 || strings.Contains(log, "landing deferred") {
 		t.Fatalf("daemon log:\n%s", log)
 	}
 	if r := jobRow(s.DB, j.ID); r.str("branch") != "pulse/aurora/x" {

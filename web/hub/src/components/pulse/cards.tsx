@@ -30,14 +30,14 @@ const FOOTER_TONE = {
 
 function ProjectAvatar({ slug }: { slug: string }) {
   return (
-    <span className="flex size-9 shrink-0 items-center justify-center rounded-lg font-semibold text-white shadow-card" style={{ background: `oklch(0.62 0.12 ${hashHue(slug)})` }} aria-hidden>
+    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl text-sm font-semibold text-white shadow-card" style={{ background: `oklch(0.62 0.12 ${hashHue(slug)})` }} aria-hidden>
       {initials(slug)}
     </span>
   );
 }
 
 function AttentionLine({ tone = "neutral", children }: { tone?: keyof typeof FOOTER_TONE; children: React.ReactNode }) {
-  return <p className={cn("rounded-md border px-2.5 py-1.5 text-xs leading-snug anywhere", FOOTER_TONE[tone])}>{children}</p>;
+  return <p className={cn("rounded-lg border px-3 py-2 text-xs leading-relaxed anywhere", FOOTER_TONE[tone])}>{children}</p>;
 }
 
 // `gate` overrides what the org row says about the self-improvement gates
@@ -67,31 +67,33 @@ export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: nu
           ? { tone: "warn" as const, text: "No board yet - pulse init registers this checkout." }
           : null;
   return (
-    <ItemCard href={hrefs.project(p.slug)} highlight={attention} ariaLabel={"Project " + p.slug}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-start gap-2.5">
+    <ItemCard href={hrefs.project(p.slug)} highlight={attention} ariaLabel={"Project " + p.slug} className="@container/project gap-3.5">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
           <ProjectAvatar slug={p.slug} />
-          <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="truncate text-[15px] font-semibold tracking-tight">{p.slug}</span>
-            {p.brain ? <Badge variant="secondary">framework</Badge> : null}
-            {!p.present ? <Badge variant="destructive">missing on disk</Badge> : null}
-            {p.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
-          </div>
-          <div className="truncate text-xs text-muted-foreground">
-            {p.branch ? <Mono>{p.branch}</Mono> : null}
-            {p.head ? <Mono className="ml-1.5 text-muted-foreground">{p.head}</Mono> : null}
-            {p.dirty ? <span className="ml-1.5 text-warn">dirty</span> : null}
-          </div>
+          <div className="min-w-0 flex-1">
+            <h3 title={p.slug} className="line-clamp-2 text-base font-semibold leading-snug tracking-tight anywhere">{p.slug}</h3>
+            {p.brain || !p.present || p.stop_present ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                {p.brain ? <Badge variant="secondary">framework</Badge> : null}
+                {!p.present ? <Badge variant="destructive">missing on disk</Badge> : null}
+                {p.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
+              </div>
+            ) : null}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2 text-muted-foreground">
-          {spark?.length ? <Sparkline values={spark} w={72} h={20} /> : null}
-          <ChevronRightIcon className="size-4 opacity-40 transition-transform group-hover/item:translate-x-0.5" />
+        <ChevronRightIcon className="mt-1 size-4 shrink-0 text-muted-foreground opacity-50 transition-[transform,opacity] group-hover/item:opacity-100 group-focus-visible/item:opacity-100 motion-safe:group-hover/item:translate-x-0.5 motion-reduce:transition-none" aria-hidden />
+      </div>
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div title={[p.branch, p.head, p.dirty ? "dirty" : ""].filter(Boolean).join(" · ")} className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          {p.branch ? <Mono>{p.branch}</Mono> : null}
+          {p.head ? <Mono className="ml-1.5 text-muted-foreground">{p.head}</Mono> : null}
+          {p.dirty ? <span className="ml-1.5 text-warn">dirty</span> : null}
         </div>
+        {spark?.length ? <Sparkline values={spark} w={72} h={20} className="shrink-0" /> : null}
       </div>
       {/* Tiles from sm up; one quiet line on phones so four cards fit a screen. */}
-      <div className="hidden grid-cols-6 gap-1.5 sm:grid">
+      <div className="hidden grid-cols-3 gap-2 sm:grid @lg/project:grid-cols-6">
         {facts.map((f) => (
           <Fact key={f.label} n={num(f.n)} label={f.label} tone={f.tone} />
         ))}
@@ -106,9 +108,9 @@ export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: nu
       {/* The self-improvement gates (ADR-029): why the loop runs or waits, in a few chips - the baseline one reports the daemon's progress (ADR-031). Hidden when the hub does not report them. */}
       {g ? <EvolveBadges g={g} /> : null}
       {p.last_post ? (
-        <p className="truncate text-xs text-muted-foreground">
+        <ItemCardBody clamp={1} className="text-xs">
           <KindBadge kind={p.last_post.kind} /> <span className="ml-1">{p.last_post.summary}</span>
-        </p>
+        </ItemCardBody>
       ) : footer ? (
         <AttentionLine tone={footer.tone}>{footer.text}</AttentionLine>
       ) : (
@@ -131,28 +133,28 @@ export function CommonsCard({ c, spark }: { c: ProjectCardData; spark?: number[]
     { n: c.agents, label: "agents" },
   ];
   return (
-    <ItemCard href={hrefs.project(c.slug)} ariaLabel="Commons - the board every project shares">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-start gap-2.5">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary shadow-card" aria-hidden>
-            <UsersIcon className="size-4" />
+    <ItemCard href={hrefs.project(c.slug)} ariaLabel="Commons - the board every project shares" className="@container/commons gap-3.5">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-primary/10 bg-primary/8 text-primary" aria-hidden>
+            <UsersIcon className="size-[18px]" />
           </span>
-          <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[15px] font-semibold tracking-tight">Commons</span>
-            <Badge variant="outline">shared board</Badge>
-            {!c.present ? <Badge variant="secondary">not created yet</Badge> : null}
-          </div>
-          <p className="text-xs text-muted-foreground">{COMMONS_HINT}</p>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-base font-semibold leading-snug tracking-tight">Commons</h3>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <Badge variant="outline">shared board</Badge>
+              {!c.present ? <Badge variant="secondary">not created yet</Badge> : null}
+            </div>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2 text-muted-foreground">
-          {spark?.length ? <Sparkline values={spark} w={72} h={20} /> : null}
-          <ChevronRightIcon className="size-4 opacity-40 transition-transform group-hover/item:translate-x-0.5" />
-        </div>
+        <ChevronRightIcon className="mt-1 size-4 shrink-0 text-muted-foreground opacity-50 transition-[transform,opacity] group-hover/item:opacity-100 group-focus-visible/item:opacity-100 motion-safe:group-hover/item:translate-x-0.5 motion-reduce:transition-none" aria-hidden />
+      </div>
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground anywhere">{COMMONS_HINT}</p>
+        {spark?.length ? <Sparkline values={spark} w={72} h={20} className="shrink-0" /> : null}
       </div>
       {c.present && c.error ? <p className="text-xs text-bad anywhere">{c.error}</p> : null}
-      <div className="hidden grid-cols-4 gap-1.5 sm:grid">
+      <div className="hidden grid-cols-2 gap-2 sm:grid @md/commons:grid-cols-4">
         {facts.map((f) => (
           <Fact key={f.label} n={num(f.n)} label={f.label} tone={f.tone} />
         ))}
@@ -170,7 +172,7 @@ export function CommonsCard({ c, spark }: { c: ProjectCardData; spark?: number[]
           <KindBadge kind={c.last_post.kind} /> <span className="ml-1">{c.last_post.summary}</span>
         </ItemCardBody>
       ) : (
-        <p className="text-xs text-muted-foreground">{c.present ? "No posts yet." : "The first post that concerns more than one project creates it" + (c.path ? " at " + c.path : "") + "."}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground anywhere">{c.present ? "No posts yet." : "The first post that concerns more than one project creates it" + (c.path ? " at " + c.path : "") + "."}</p>
       )}
     </ItemCard>
   );
@@ -259,13 +261,13 @@ export function SuggestionCard({ s, quorum, slug, detail }: { s: Suggestion; quo
   const planned = s.status === "eligible" ? (s.job ? s.gate || "job " + s.job + (s.job_status ? " is " + s.job_status : "") : s.gate ? "not planned: " + s.gate : s.plannable ? "plannable — the daemon queues it at its next tick" : "") : "";
   const plannedTone = s.job ? "text-muted-foreground" : s.gate ? "text-warn" : "text-ok";
   return (
-    <article className="rounded-lg border bg-card p-3.5 shadow-xs">
-      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+    <ItemCard className="gap-0">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs anywhere">
         <StatusBadge status={s.status} />
         {s.rank ? <ToneBadge tone="neutral">#{s.rank}</ToneBadge> : null}
         {s.slug && s.slug !== slug ? <ProjectLink slug={s.slug} /> : null}
         <ThreadLink slug={s.slug || slug} k={s.thread_key} />
-        <span className="ml-auto flex items-center gap-2 text-muted-foreground">
+        <span className="ml-auto flex min-w-0 max-w-full flex-wrap items-center gap-2 text-muted-foreground">
           <Who row={s} compact />
           <When d={s.date} />
         </span>
@@ -289,20 +291,20 @@ export function SuggestionCard({ s, quorum, slug, detail }: { s: Suggestion; quo
       </div>
       {planned ? <p className={cn("mt-1.5 text-xs leading-snug", plannedTone)}>{s.job ? "▸ " : ""}{planned}</p> : null}
       {detail}
-    </article>
+    </ItemCard>
   );
 }
 
 export function AmendmentCard({ a, slug, detail }: { a: Amendment; slug: string; detail?: React.ReactNode }) {
   const uncounted = a.uncounted_self + a.uncounted_hash_mismatch + a.uncounted_no_read_line;
   return (
-    <article className="rounded-lg border bg-card p-3.5 shadow-xs">
-      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+    <ItemCard className="gap-0">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs anywhere">
         <StatusBadge status={a.status} />
         {a.section ? <ToneBadge tone="warn">{"section: " + a.section}</ToneBadge> : null}
         {a.slug && a.slug !== slug ? <ProjectLink slug={a.slug} /> : null}
         <ThreadLink slug={a.slug || slug} k={a.thread_key} />
-        <span className="ml-auto flex items-center gap-2 text-muted-foreground">
+        <span className="ml-auto flex min-w-0 max-w-full flex-wrap items-center gap-2 text-muted-foreground">
           <Who row={a} compact />
           <When d={a.date} />
         </span>
@@ -323,7 +325,7 @@ export function AmendmentCard({ a, slug, detail }: { a: Amendment; slug: string;
         <Mono className="text-muted-foreground">{"hash " + a.text_hash.slice(0, 12)}</Mono>
       </div>
       {detail}
-    </article>
+    </ItemCard>
   );
 }
 
@@ -333,7 +335,7 @@ export function FeedList({ rows, slug, limit }: { rows: PostRef[]; slug?: string
   const list = limit ? rows.slice(0, limit) : rows;
   if (!list.length) return <EmptyState>No posts yet. Agents post claims, findings, suggestions and votes with the CLI.</EmptyState>;
   return (
-    <ul className="divide-y">
+    <ul className="divide-y divide-border/70">
       {list.map((p) => {
         const s = p.slug || slug || "";
         return (
@@ -447,7 +449,7 @@ function WorkingRowItem({ r, slug }: { r: WorkingRow; slug?: string }) {
   // The panel lives in a narrow column: the agent leads the header line instead of taking a side column, so
   // the summary - the answer to "on what?" - gets the full width.
   return (
-    <li className="py-2 first:pt-0 last:pb-0 text-[13px]">
+    <li className="min-w-0 py-3 text-[13px] first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
         <Who row={{ agent: r.agent }} compact className="max-w-[45%] font-medium" />
         {r.task ? (
@@ -467,12 +469,12 @@ function WorkingRowItem({ r, slug }: { r: WorkingRow; slug?: string }) {
         {when}
       </div>
       {r.task ? (
-        <p className="mt-0.5 line-clamp-2 leading-snug anywhere">
+        <p className="mt-1.5 line-clamp-2 leading-relaxed anywhere">
           <Link href={hrefs.task(r.task.t.project, r.task.t.id)} className="hover:underline">{truncate(r.task.t.title, 90)}</Link>
           <span className="text-muted-foreground"> - {r.task.w.title ? truncate(r.task.w.title, 96) : r.task.w.job}</span>
         </p>
       ) : latest ? (
-        <p className="mt-0.5 line-clamp-2 leading-snug anywhere">
+        <p className="mt-1.5 line-clamp-2 leading-relaxed anywhere">
           <PostLink slug={s} id={latest.id} label={latest.summary} />
         </p>
       ) : null}

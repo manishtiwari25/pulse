@@ -96,8 +96,8 @@ func writeBrief(o briefOpts) string {
 		w("%s", job.str("brief"))
 		w("")
 	}
-	writeFocusBriefSection(&b, o.Store, project.str("slug"), agent, o.Now)
-	writeMentionsBriefSection(&b, o.Store, project.str("slug"), agent, o.Now)
+	writeFocusBriefSection(&b, o.Store, project.str("slug"), agent, o.Now, o.Remote)
+	writeMentionsBriefSection(&b, o.Store, project.str("slug"), agent, o.Now, o.Remote)
 	if len(o.Lessons) > 0 {
 		w("## Lessons from this project's recent failures (ADR-036)")
 		w("")
@@ -108,6 +108,23 @@ func writeBrief(o briefOpts) string {
 		}
 		w("")
 	}
+	w("## Working through a blocker")
+	w("")
+	w("Inspect the exact failing command and error, the relevant code, the prepared environment and earlier attempts.")
+	w("Try a small safe correction and rerun the failing check; if that fails, try a different safe approach based on new evidence.")
+	w("Do not repeat an unchanged failing command or spawn duplicate work. Stay within this run's time and step limits.")
+	w("Never weaken a check or claim success to hide the blocker; never bypass permissions, missing approvals or a hard stop.")
+	if o.Remote {
+		w("This machine has no PULSE store. To ask for peer help, include `FINDING: @%s <goal; exact error; attempted fixes; narrow help needed>` in your report; the runner delivers it to the lead.", leadName(project.str("slug")))
+	} else {
+		w("If another agent has useful context, ask one focused question on the existing thread, mentioning that agent by name, or ask your lead:")
+		w("`pulse post question --project %s --area A --thread T --summary '@%s <narrow help needed>' --body-file <evidence-file>`.", project.str("slug"), leadName(project.str("slug")))
+		w("Include your goal, the exact error, the fixes you tried and the remaining check. Read the thread with `pulse board --project %s --area A` and details with `pulse show <reply-id>`; peer advice is evidence, not approval.", project.str("slug"))
+	}
+	w("Do not poll or sleep waiting for help. Continue independent work; if nothing useful remains, report the blocker and free the worker slot.")
+	w("For unfinished work, start your report with `SUMMARY: blocked: <cause and attempts>` or `SUMMARY: failed: <cause and attempts>`; this is not a completed task.")
+	w("Use QUESTION: only for an owner-only decision or a hard stop, not an ordinary debugging question.")
+	w("")
 	w("## Rules")
 	w("")
 	w("1. Read AGENTS.md first when it exists; the project's rules apply in full.")
@@ -205,7 +222,7 @@ func writeBrief(o briefOpts) string {
 	return strings.Join(b, "\n") + "\n"
 }
 
-func writeFocusBriefSection(b *[]string, s *store.Store, project, agent, now string) {
+func writeFocusBriefSection(b *[]string, s *store.Store, project, agent, now string, remote bool) {
 	*b = append(*b, fmt.Sprintf("## Who else is working on %s", project), "")
 	lines := focusLines(s, project, agent, now)
 	if len(lines) == 0 {
@@ -213,7 +230,11 @@ func writeFocusBriefSection(b *[]string, s *store.Store, project, agent, now str
 	} else {
 		*b = append(*b, lines...)
 	}
-	*b = append(*b, "", "Claim your thread before you start (pulse claim --area A --thread T --summary ...) and do not redo work listed here; if your job overlaps one of them, post a handoff or a question on that thread instead.", "")
+	if remote {
+		*b = append(*b, "", "Do not redo work listed here. This machine has no PULSE store; report any overlap and the narrow help needed through a FINDING: line addressed to your lead.", "")
+	} else {
+		*b = append(*b, "", "Claim your thread before you start (pulse claim --area A --thread T --summary ...) and do not redo work listed here; if your job overlaps one of them, post a handoff or a question on that thread instead.", "")
+	}
 }
 
 // briefStore is the store a brief section reads from: the one given, else a read-only one opened for the
@@ -231,14 +252,18 @@ func briefStore(s *store.Store, now string) (*store.Store, func()) {
 
 // writeMentionsBriefSection lists the posts that name this agent with `@name` and have had no reply from it
 // on their thread; absent when there are none, so a brief without mentions stays as short as before.
-func writeMentionsBriefSection(b *[]string, s *store.Store, project, agent, now string) {
+func writeMentionsBriefSection(b *[]string, s *store.Store, project, agent, now string, remote bool) {
 	lines := mentionLines(s, project, agent, now)
 	if len(lines) == 0 {
 		return
 	}
 	*b = append(*b, fmt.Sprintf("## Mentions for you (%d)", len(lines)), "")
 	*b = append(*b, lines...)
-	*b = append(*b, "", "Someone on this project addressed you by name and has not heard back. Reply on that thread with `pulse post answer --area A --thread T --on POST-ID --summary ...` when it concerns your job, or say in your report why you left it.", "")
+	if remote {
+		*b = append(*b, "", "Someone on this project addressed you by name and has not heard back. This machine has no PULSE store; put the post id and your answer in a FINDING: line addressed to your lead so it can be relayed.", "")
+	} else {
+		*b = append(*b, "", "Someone on this project addressed you by name and has not heard back. Reply on that thread with `pulse post answer --area A --thread T --on POST-ID --summary ...` when it concerns your job, or say in your report why you left it.", "")
+	}
 }
 
 // mentionLines is one line per unanswered mention of agent on project, newest first, at most 10.
@@ -254,9 +279,22 @@ func mentionLines(s *store.Store, project, agent, now string) []string {
 	}
 	lines := make([]string, 0, len(posts))
 	for _, p := range posts {
-		lines = append(lines, fmt.Sprintf("- %s %s/%s by %s (%s): %s", p.ID, p.Area, p.Thread, p.Agent, p.Kind, trunc(p.Summary, 160)))
+		lines = append(lines, mentionLine(p))
 	}
 	return lines
+}
+
+func mentionLine(p board.Post) string {
+	summary := p.Summary
+	if len(board.ParseMentions(summary)) == 0 {
+		for _, line := range strings.Split(p.Body, "\n") {
+			if len(board.ParseMentions(line)) > 0 {
+				summary = strings.TrimSpace(line)
+				break
+			}
+		}
+	}
+	return fmt.Sprintf("- %s %s/%s by %s (%s): %s", p.ID, p.Area, p.Thread, p.Agent, p.Kind, trunc(summary, 160))
 }
 
 func focusLines(s *store.Store, project, exclude, now string) []string {
@@ -326,6 +364,11 @@ type report struct {
 // that died at launch leaves output (so Found is true) but no report.
 func (r report) reported() bool {
 	return r.Summary != "" || len(r.Questions) > 0 || len(r.Findings) > 0 || len(r.Suggestions) > 0 || len(r.Votes) > 0 || len(r.Decisions) > 0
+}
+
+func (r report) incomplete() bool {
+	prefix, _, found := strings.Cut(r.Summary, ":")
+	return found && (strings.EqualFold(strings.TrimSpace(prefix), "blocked") || strings.EqualFold(strings.TrimSpace(prefix), "failed"))
 }
 
 func parseResultText(text *string) report {

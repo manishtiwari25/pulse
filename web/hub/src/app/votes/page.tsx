@@ -61,7 +61,7 @@ function patchQuery(sp: URLSearchParams, pathname: string, patch: Record<string,
 }
 
 function TabCount({ n }: { n: number }) {
-  return <span className="tnum rounded-full bg-muted px-1.5 text-[10.5px] text-muted-foreground">{num(n)}</span>;
+  return <span className="tnum shrink-0 rounded-full bg-muted px-1.5 text-[10.5px] text-muted-foreground">{num(n)}</span>;
 }
 
 function SuggestionVoteCard({ s, quorum }: { s: Suggestion; quorum: number }) {
@@ -256,13 +256,13 @@ function VotesScreen() {
       ) : !q.data ? (
         <SkeletonRows n={6} />
       ) : (
-        <Tabs value={kind} onValueChange={(v) => setParams({ kind: v === "suggestions" ? null : v })}>
-          <TabsList aria-label="Vote kinds" className="mb-1">
-            <TabsTrigger value="suggestions" className="gap-1.5 px-2">
-              Suggestions in vote <TabCount n={suggestions.length} />
+        <Tabs value={kind} onValueChange={(v) => setParams({ kind: v === "suggestions" ? null : v })} className="min-w-0">
+          <TabsList aria-label="Vote kinds" className="mb-1 grid w-full grid-cols-2 group-data-horizontal/tabs:h-auto sm:w-fit">
+            <TabsTrigger value="suggestions" className="min-h-11 min-w-0 gap-1.5 whitespace-normal px-2 sm:min-h-8">
+              <span className="min-w-0 anywhere">Suggestions in vote</span> <TabCount n={suggestions.length} />
             </TabsTrigger>
-            <TabsTrigger value="amendments" className="gap-1.5 px-2">
-              Amendments open <TabCount n={amendmentsScope.length} />
+            <TabsTrigger value="amendments" className="min-h-11 min-w-0 gap-1.5 whitespace-normal px-2 sm:min-h-8">
+              <span className="min-w-0 anywhere">Amendments open</span> <TabCount n={amendmentsScope.length} />
             </TabsTrigger>
           </TabsList>
           <TabsContent value="suggestions">

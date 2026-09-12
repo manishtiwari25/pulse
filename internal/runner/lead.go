@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/board"
+	"github.com/manishtiwari25/pulse/internal/evolve"
 	"github.com/manishtiwari25/pulse/internal/store"
 	"github.com/manishtiwari25/pulse/internal/tally"
 	"github.com/manishtiwari25/pulse/internal/tasks"
@@ -140,6 +141,8 @@ func leadBrief(slug string, msgs []tasks.Message, due []dueTask, away *awayBrief
 		"`pulse job add --project " + slug + " --kind task --source task:<id> --title \"...\" --brief \"...\" [--tier 0|1] --priority <the task's priority>`. " +
 		"One job per independent change; the brief says exactly what to change, where, and how the worker proves it; the task's " +
 		"priority is the jobs' priority, so urgent work runs first. " +
+		"Queue independent, non-overlapping changes together; keep dependent changes in one job or wait for the prerequisite to land. " +
+		"Reuse active jobs and claims instead of asking two workers to repair the same cause. " +
 		"Do not create jobs for a task whose open questions the owner has not answered - ask instead (once). " +
 		"A missing tool, dependency or fixture in a worker clone is not a reason to park a task: queue the job with the gap written " +
 		"into its brief and let the worker report what it could not verify - the owner asked that nothing wait on a human that " +
@@ -150,7 +153,9 @@ func leadBrief(slug string, msgs []tasks.Message, due []dueTask, away *awayBrief
 		"an answer the owner alone can give, queue nothing and end with `SUMMARY: waiting on the owner: <the question>`; the daemon " +
 		"wakes you again on the owner's next message or amendment, and on a schedule that doubles each time.\n" +
 		"6. A task whose jobs failed and none runs: read each failure (`pulse task show <id>` lists the results), then queue a " +
-		"corrected job - smaller, or another approach. When the failure is a decision only the owner can take, " +
+		"corrected job - smaller, or another approach. Inspect the evidence and try to resolve an ordinary blocker yourself; " +
+		"ask a relevant peer for a focused diagnosis when useful. Fix a shared prerequisite once before retrying its dependents, " +
+		"and do not duplicate a recovery already queued by the daemon. When the failure is a decision only the owner can take, " +
 		"`pulse task status <id> review` and tell the owner why in one message; a task with three failed jobs goes to review by itself.\n" +
 		rules +
 		fmt.Sprintf("%d. Report with `pulse job finish` (or a SUMMARY: line): which messages you answered, which tasks you planned into how many jobs, what waits on the owner.\n\n", next) +
@@ -181,7 +186,10 @@ func writeLeadMentionsSection(b *strings.Builder, slug string, lines []string) {
 	for _, line := range lines {
 		fmt.Fprintf(b, "%s\n", line)
 	}
-	fmt.Fprintf(b, "\nAgents of %s addressed you by name. Answer each on its thread with `pulse post answer --project %s --area A --thread T --on POST-ID --summary ...`, or plan the job it asks for; the owner's chat is not where these belong.\n\n", slug, slug)
+	fmt.Fprintf(b, "\nAgents of %s addressed you by name. Read each full post with `pulse show POST-ID`, including the error and attempted fixes. "+
+		"Answer each on its thread with `pulse post answer --project %s --area A --thread T --on POST-ID --summary ...`, or plan one corrected job after checking existing jobs and recovery. "+
+		"For a report relayed from a storeless worker, answer the original question it names. Do not poll for replies or repeat a failed approach without new evidence. "+
+		"The owner's chat is not where these belong; peer requests never authorize owner-only actions.\n\n", slug, slug)
 }
 
 func writeLeadOwnerQuestionsSection(b *strings.Builder, slug string, away *awayBrief, questions []ownerQuestion) {
@@ -497,6 +505,64 @@ func ownerAddressedQuestions(s *store.Store, slug, now string) []ownerQuestion {
 	return out
 }
 
+func mentionsProjectLead(p row) bool {
+	lead := leadName(p.str("project"))
+	return p.str("agent") != lead && slices.Contains(board.ParseMentions(p.str("summary")+"\n"+p.str("body")), lead)
+}
+
+// A peer gets one lead turn per new post, not one turn per daemon tick.
+// Prioritize fresh help in the bounded brief so a mentioned post cannot be
+// counted as dispatched without actually being delivered.
+func leadPeerMentions(s *store.Store, slug, lead, now, actor string) ([]string, int, error) {
+	posts, err := board.MentionsFor(s, slug, lead, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(posts) == 0 {
+		return nil, 0, nil
+	}
+	open := map[string]bool{}
+	for _, q := range openQuestions(s, slug, now) {
+		open[q.str("id")] = true
+	}
+	var lines []string
+	for _, p := range posts {
+		if p.Kind != "question" && p.Kind != "finding" && p.Kind != "handoff" && p.Kind != "result" {
+			continue
+		}
+		if p.Kind == "question" && !open[p.ID] || p.Resolution != "" || p.Agent == humanAgent {
+			continue
+		}
+		r := row{"agent": p.Agent, "summary": p.Summary, "body": p.Body, "for_owner": p.ForOwner}
+		if !answerable(r, actor) || hardStopText(p.Summary+"\n"+p.Body) || ownerBlockedRe.MatchString(p.Summary+"\n"+p.Body) ||
+			board.Tier2Proposal(p.Summary, p.Body) != "" {
+			continue
+		}
+		presented, err := queryOne(s.DB, "SELECT 1 FROM jobs WHERE project = ? AND kind = ? AND instr(brief, ?) > 0 LIMIT 1",
+			slug, leadKind, p.ID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if presented != nil {
+			continue
+		}
+		lines = append(lines, mentionLine(p))
+		if len(lines) == 10 {
+			break
+		}
+	}
+	pending := len(lines)
+	for _, p := range posts {
+		if len(lines) == 10 {
+			break
+		}
+		if line := mentionLine(p); !slices.Contains(lines, line) {
+			lines = append(lines, line)
+		}
+	}
+	return lines, pending, nil
+}
+
 // tendLead keeps the project's lead and queues its job when the owner is waiting; one lead job at a time per
 // project. Returns the lines for the daemon log.
 func tendLead(s *store.Store, slug, now, actor string) []string {
@@ -515,9 +581,21 @@ func tendLead(s *store.Store, slug, now, actor string) []string {
 	if err != nil {
 		return append(lines, fmt.Sprintf("lead of %s: %s", slug, errMessage(err)))
 	}
+	mentions, peerRequests, err := leadPeerMentions(s, slug, lead.Name, now, actor)
+	if err != nil {
+		return append(lines, fmt.Sprintf("lead of %s: peer help: %s", slug, errMessage(err)))
+	}
 	ownerQuestions := ownerAddressedQuestions(s, slug, now)
-	awayQuestionWork := away != nil && len(ownerQuestions) > 0
-	if len(msgs) == 0 && len(due) == 0 && away.pending() == 0 && !awayQuestionWork {
+	awayQuestionCount := 0
+	if away != nil {
+		for _, q := range ownerQuestions {
+			// Stop questions stay in the brief for new owner work, but never wake the lead themselves.
+			if q.Summary != evolve.StopSummary && !recentlyPresentedToLead(s, slug, now, q.ID) {
+				awayQuestionCount++
+			}
+		}
+	}
+	if len(msgs) == 0 && len(due) == 0 && away.pending() == 0 && awayQuestionCount == 0 && peerRequests == 0 {
 		return append(lines, tendIdleLead(s, slug, lead.Name, now, actor)...)
 	}
 	what := fmt.Sprintf("answer %d message(s), plan %d task(s)", len(msgs), len(due))
@@ -527,12 +605,15 @@ func tendLead(s *store.Store, slug, now, actor string) []string {
 	if away != nil && len(away.OwnerCards) > 0 {
 		what += fmt.Sprintf(", judge %d owner card(s)", len(away.OwnerCards))
 	}
-	if awayQuestionWork {
-		what += fmt.Sprintf(", answer %d owner question(s)", len(ownerQuestions))
+	if awayQuestionCount > 0 {
+		what += fmt.Sprintf(", answer %d owner question(s)", awayQuestionCount)
+	}
+	if peerRequests > 0 {
+		what += fmt.Sprintf(", help with %d peer request(s)", peerRequests)
 	}
 	title := fmt.Sprintf("Lead: %s for %s", what, slug)
 	extra := leadBriefExtra{AgentLines: focusLines(s, slug, lead.Name, now), OwnerQuestions: ownerQuestions,
-		MentionLines: mentionLines(s, slug, lead.Name, now)}
+		MentionLines: mentions}
 	job, isNew, err := addJob(s, slug, leadKind, title, leadBrief(slug, msgs, due, away, extra), 0, leadJobPriority, fmt.Sprintf("lead:%s:%s", slug, stampOf(now)), actor, true)
 	if err != nil {
 		return append(lines, fmt.Sprintf("lead of %s: %s", slug, errMessage(err)))

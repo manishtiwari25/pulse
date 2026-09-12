@@ -377,6 +377,26 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 
+**Readiness is not delivery.** Level D means the general evolution gates are
+open, not that a supported candidate exists or that product experiments are
+authorized. Product scope is a separate owner-controlled gate. Starter
+fixtures measure agent safety, not the quality of the project's product;
+baseline rows are not completed improvement cycles. The console reports
+baselines and variants separately.
+
+A `done` job or `built` suggestion is not a promise that code shipped:
+answers, ballots and leads can legitimately finish without commits.
+Pending landing jobs count job records, not distinct verified patches.
+The controller must finish accepting a worker's artifacts before its job can
+enter landing; local landing and remote publication remain separate steps.
+Dirty checkouts, Git locks and missing upstreams still hold delivery.
+
+When the owner is away, ordinary owner-addressed questions are paced like
+other lead work. Evolution stop questions remain visible for the owner but
+do not repeatedly wake the lead on their own. A reply does not authorize
+bypassing the underlying stop, and new owner messages and tasks still wake
+the lead promptly.
+
 #### Evolution runner caps
 
 `pulse settings help` explains the supported caps without opening a store
@@ -472,6 +492,15 @@ The final report is what the runner has always read - `SUMMARY:`,
 briefs, planning, landing, lessons and the board are unchanged. A run that
 hits a limit still reports: `SUMMARY: harness stopped: step_limit after 60
 model calls and 41 commands` and the model's last message as a `FINDING:`.
+Exit status zero alone is not a completion report: empty or unstructured
+output without an explicit job-completion record is rejected. A successful
+answer job writes its summary back to the original, still-unanswered worker
+question; failed, owner-only or still-blocked answers do not close questions.
+An explicit `SUMMARY: blocked: ...` or `SUMMARY: failed: ...` also fails the
+job, even when the worker exits zero, so unfinished work reaches recovery
+instead of silently closing a task. A command's completion marker is accepted
+only when that command succeeds without timing out; otherwise the error
+returns to the agent for diagnosis.
 
 **Three budgets** bound every run, all owner settings (Settings → Harness
 **Budgets**, or `pulse settings set`): `harness.max_steps` model calls (60), the wall
@@ -661,6 +690,14 @@ is 300 seconds; zero or negative values use that default. Store events can
 wake the loop early, and cancellation stops the wait. Successful runs and
 work still in flight keep their existing prompt-dispatch behavior.
 
+Worker selection and leasing agree on occupied capacity: one current lease
+per agent, and a provisional completion does not free the worker or project
+slot until its controller run ends. Idle workers are reused instead of
+repeatedly selecting a busy identity. Project fairness includes lease
+reservations before the worker goroutine records its start, so dispatch can
+spread work across projects without waiting for their processes to launch.
+Configured concurrency, daily limits and lead priority remain unchanged.
+
 Workers commit in their own clones and never push; the runner copies each
 job's commits to a `pulse/<agent>/<job>` branch in your checkout, and the
 daemon lands them into the default branch (ADR-024: verify command first,
@@ -747,7 +784,16 @@ times (default 3) within `daemon.recover_days` (default 7), then held with one
 finding; `pulse status` shows one `recovery   <slug>: ...`
 line per project with failures, `pulse jobs --all` shows each failed job's
 recovery state, and `pulse job retry JOB_ID [--as-new] [--brief TEXT]` is the
-by-hand alternative. A cause that fails twice becomes a memory record
+by-hand alternative. Recovery rechecks the current failure and waits for
+active controller runs before acting. Job changes and their recovery ledger
+commit together; failed writes stay retryable and count toward the per-tick
+budget. Branch cleanup accepts only `pulse/<agent>/<this-job>` branches,
+never unrelated work. A failed write of the recovery-cap finding is retried
+without repeating the recovery itself. Corrected briefs keep the original
+instructions and human retry notes while bounding old failure summaries and
+log excerpts; unavailable logs are reported explicitly.
+
+A cause that fails twice becomes a memory record
 (`MEM-failure-pattern-...`, `pulse record list memory`) the daemon writes and
 amends itself, and every later worker brief of that project opens with those
 lessons so the cause is not repeated. Every worker brief also says who else
@@ -758,6 +804,24 @@ mentions, and the questions still
 addressed to the owner, answering what it can when `owner.presence` is `away`.
 `daemon.recover off` keeps failed jobs
 failed until you retry them.
+
+Worker briefs require an error-driven recovery sequence: inspect the failing
+command and prior attempts, make a small safe correction, rerun the targeted
+check, then try a different evidence-based approach if needed. They must not
+repeat an unchanged failure, weaken a check, bypass approvals, or spend their
+remaining budget polling for help. Leads queue non-overlapping work together
+and repair a shared prerequisite once before retrying dependent jobs.
+
+For peer help, a worker posts one focused question on the existing thread,
+mentioning the relevant agent or `@<project>-lead`, with the error, attempted
+fixes and a narrow question. A storeless hand uses
+`FINDING: @<project>-lead ...` in its report instead. An actionable unanswered
+mention wakes the lead even without a new owner task; it gets one lead turn
+per post, with at most ten mentions in a brief. New evidence can be posted
+for another turn. Lead-directed questions do not also spawn ordinary answer
+workers, and owner-only decisions and hard stops stay with the owner.
+Workers continue independent work or report `SUMMARY: blocked: ...` and
+release their slot rather than wait.
 
 What the daemon does on its own to keep this machine clean: every run and
 landing leaves things that matter only while it is in flight - a clone with

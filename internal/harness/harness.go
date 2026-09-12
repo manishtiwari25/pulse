@@ -345,6 +345,10 @@ Older command outputs are shortened to their first and last lines as the convers
 Never run interactive programs: editors, pagers, watch modes, or foreground servers.
 To edit files, use heredocs, sed -i, or a small python3 -c script.
 Verify your work by running the project's own checks.
+On a command failure, inspect the cause, make a small safe correction and rerun the targeted check.
+If it still fails, try a different evidence-based approach or use the task's peer-help channel; do not repeat an unchanged failure or poll while waiting for help.
+Never bypass a policy refusal or approval boundary, weaken a check, or report unfinished work as completed.
+An unfinished task is reported as SUMMARY: blocked: <cause and attempted fixes> or SUMMARY: failed: <cause and attempted fixes>.
 When done, or when you cannot continue, reply with no command and a plain-text final report.
 The report must include a SUMMARY: line and any FINDING:, SUGGESTION:, QUESTION:, or VOTE: lines the task asked for.
 Those key words must start their lines because a program reads the report.
@@ -603,8 +607,10 @@ func (a *Agent) runCommand(ctx context.Context, command string) (string, Observa
 	obs := a.env.Execute(ctx, command, a.cfg.StepTimeout)
 	a.emitObservation(command, obs)
 	formatted := formatObservation(obs, a.cfg.OutputLimit)
-	if sub, ok := submissionFromObservation(obs.Output); ok {
-		return formatted, obs, true, sub
+	if obs.ExitCode == 0 && !obs.TimedOut {
+		if sub, ok := submissionFromObservation(obs.Output); ok {
+			return formatted, obs, true, sub
+		}
 	}
 	return formatted, obs, false, ""
 }
@@ -651,7 +657,7 @@ func formatObservation(obs Observation, limit int) string {
 		if secs <= 0 {
 			secs = 1
 		}
-		line := fmt.Sprintf("The command timed out after %ds and was killed; run long commands in the background or with a smaller scope.", secs)
+		line := fmt.Sprintf("The command timed out after %ds and was killed; inspect partial output and retry only with a smaller scope or a different safe approach, within the run's remaining budget. Do not leave unsupervised background work.", secs)
 		if out == "" {
 			out = line
 		} else {

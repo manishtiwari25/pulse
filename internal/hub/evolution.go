@@ -168,20 +168,50 @@ func evolutionSummary(evolution map[string]any) map[string]any {
 	loop := evolution["loop"].(map[string]any)
 	archive := evolution["archive"].(map[string]any)
 	rows := archive["rows"].([]map[string]any)
+	gates, _ := evolution["gates"].(map[string]any)
+	baselines := 0
+	for _, row := range rows {
+		if evolve.IsBaselineRow(str(row["hypothesis"]), str(row["suggestion_post"])) {
+			baselines++
+		}
+	}
 	present := evolution["constitution"] != nil || evolution["evaluators"] != nil || archive["record"] != nil || len(rows) > 0
 	loopName := "off"
 	if loop["loop"] == "1" {
 		loopName = "on"
 	}
 	summary := object("evolution_present stop_present missing_files loop limits limits_note baseline count_baselines count_variants count_incidents product_classes_ok product_evaluators_ok product_verdict hygiene_git last",
-		strconv.Itoa(flagInt(present)), loop["stop"], []string{}, loopName, loop["limits"], "", "", "0", strconv.Itoa(len(rows)), "0",
-		"0", strconv.Itoa(flagInt(evolution["evaluators"] != nil)), "", "", "5")
+		strconv.Itoa(flagInt(present)), loop["stop"], []string{}, loopName, loop["limits"], "", "", strconv.Itoa(baselines), strconv.Itoa(len(rows)-baselines), "0",
+		"0", "0", "", "", "5")
 	if present {
 		for _, slug := range []string{"constitution", "evaluators"} {
-			if evolution[slug] == nil {
+			if (gates != nil && gates[slug] != true) || (gates == nil && evolution[slug] == nil) {
 				summary["missing_files"] = append(summary["missing_files"].([]string), "EVO-"+slug)
 			}
 		}
 	}
+	if gates == nil {
+		note := "evolution gates unavailable"
+		if detail := str(evolution["gates_error"]); detail != "" {
+			note += ": " + detail
+		}
+		summary["limits_note"], summary["product_verdict"] = note, note
+		return summary
+	}
+	summary["limits_note"] = str(gates["limit_problem"])
+	if gates["baseline"] != nil {
+		summary["baseline"] = str(gates["baseline_id"])
+	}
+	scope, _ := gates["product_scope"].(map[string]any)
+	allowed, known := scope["allowed"].(bool)
+	if !known {
+		summary["product_verdict"] = "product scope unavailable"
+		return summary
+	}
+	// These legacy flags describe configured product scope, not permission
+	// for a particular experiment. Level D alone does not grant that scope.
+	summary["product_classes_ok"] = strconv.Itoa(flagInt(allowed && gates["constitution"] == true))
+	summary["product_evaluators_ok"] = strconv.Itoa(flagInt(allowed && gates["evaluators"] == true))
+	summary["product_verdict"] = str(scope["reason"])
 	return summary
 }

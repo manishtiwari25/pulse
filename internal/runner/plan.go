@@ -67,7 +67,7 @@ func threadStatuses(s *store.Store, rows []row, now string) map[string]string {
 }
 
 func projectPosts(q querier, slug string) []row {
-	posts := mustRows(q, "SELECT * FROM posts WHERE project = ? ORDER BY date, id", slug)
+	posts := mustRows(q, "SELECT rowid AS post_order, * FROM posts WHERE project = ? ORDER BY date, rowid", slug)
 	for _, p := range posts {
 		parsePostRow(p)
 	}
@@ -79,9 +79,18 @@ func openQuestions(s *store.Store, slug, now string) []row {
 	rows := projectPosts(s.DB, slug)
 	status := threadStatuses(s, rows, now)
 	answered := map[string]bool{}
+	answeredAt := map[string]string{}
+	threadAnswers := map[string]row{}
 	for _, r := range rows {
-		if r.str("kind") == "answer" && r.str("on_post") != "" {
+		if r.str("kind") != "answer" {
+			continue
+		}
+		key := r.str("area") + "/" + r.str("thread")
+		answeredAt[key] = r.str("date")
+		if r.str("on_post") != "" {
 			answered[r.str("on_post")] = true
+		} else {
+			threadAnswers[key] = r
 		}
 	}
 	var out []row
@@ -90,17 +99,12 @@ func openQuestions(s *store.Store, slug, now string) []row {
 			continue
 		}
 		key := r.str("area") + "/" + r.str("thread")
-		if status[key] == "closed" || answered[r.str("id")] {
+		if status[key] == "closed" || answered[r.str("id")] || answeredAt[key] > r.str("date") {
 			continue
 		}
-		later := false
-		for _, x := range rows {
-			if x.str("kind") == "answer" && x.str("area") == r.str("area") && x.str("thread") == r.str("thread") && x.str("date") > r.str("date") {
-				later = true
-				break
-			}
-		}
-		if later {
+		// A later dated answer resets the thread's turn. Within one timestamp,
+		// an explicit link answers that question; an unlinked reply uses order.
+		if a := threadAnswers[key]; a != nil && a.str("date") == r.str("date") && a.int("post_order") > r.int("post_order") {
 			continue
 		}
 		out = append(out, r)
@@ -263,7 +267,7 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			}
 		}
 		for _, q := range open {
-			if tried["question:"+q.str("id")] || waiting[q.str("area")+"/"+q.str("thread")] || !answerable(q, createdBy) ||
+			if tried["question:"+q.str("id")] || waiting[q.str("area")+"/"+q.str("thread")] || !answerable(q, createdBy) || mentionsProjectLead(q) ||
 				stuck[q.str("area")+"/"+q.str("thread")] {
 				continue
 			}

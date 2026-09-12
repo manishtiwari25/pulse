@@ -494,7 +494,9 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 }
 
 func pendingLandings(q querier, slug string) []row {
-	return mustRows(q, "SELECT * FROM jobs WHERE project = ? AND status = 'done' AND branch != '' ORDER BY finished_at, created_at", slug)
+	return mustRows(q, `SELECT j.* FROM jobs j WHERE j.project = ? AND j.status = 'done' AND j.branch != ''
+		AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.status = 'running')
+		ORDER BY j.finished_at, j.created_at`, slug)
 }
 
 type landResult struct{ State, Note string }

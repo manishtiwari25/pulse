@@ -140,10 +140,51 @@ func addJob(w *writer, in JobInput) (*Job, bool, error) {
 
 // FinishJob ends (or requeues) a job. generation nil skips the stale-lease check.
 func FinishJob(s *store.Store, jobID, agent, status, result, branch string, generation *int) (*Job, error) {
+	return finishJob(direct(s), jobID, agent, status, result, branch, generation, false)
+}
+
+// RunJobResult is the controller's outcome, not the worker's provisional finish.
+type RunJobResult struct {
+	RunID, JobID, Agent, Status, Result, Branch string
+	Generation                                  int
+}
+
+// FinishRunJob replaces the job's branch even when no artifact was produced.
+// The caller keeps the run running until this authoritative write completes.
+func FinishRunJob(s *store.Store, in RunJobResult) (*Job, error) {
+	w, err := begin(s)
+	if err != nil {
+		return nil, err
+	}
+	defer w.rollback()
+	var status string
+	err = w.db.QueryRow(`SELECT j.status FROM jobs j JOIN runs r ON r.job_id = j.id
+		WHERE r.id = ? AND j.id = ? AND r.agent = ? AND r.project = j.project AND r.status = 'running'
+		AND j.lease_agent = ? AND j.generation = ?`, in.RunID, in.JobID, in.Agent, in.Agent, in.Generation).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, refuse(2, "Stale run: job %s is no longer owned by run %s", in.JobID, in.RunID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if in.Status == "done" && (status == "cancelled" || status == "failed") {
+		return nil, refuse(2, "Job %s was %s before the controller finished", in.JobID, status)
+	}
+	job, err := finishJob(w, in.JobID, in.Agent, in.Status, in.Result, in.Branch, &in.Generation, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.commit(); err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
+func finishJob(w *writer, jobID, agent, status, result, branch string, generation *int, replaceBranch bool) (*Job, error) {
 	if !contains(JobEndStates, status) {
 		return nil, refuse(2, "A job ends done, failed, cancelled, blocked, or back to queued")
 	}
-	job, err := JobByID(s, jobID)
+	job, err := jobByID(w.db, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,19 +197,23 @@ func FinishJob(s *store.Store, jobID, agent, status, result, branch string, gene
 	if generation != nil && job.Generation != *generation {
 		return nil, refuse(2, "Stale lease: job %s is on generation %d, this result is from generation %d", jobID, job.Generation, *generation)
 	}
-	finished := s.Now()
+	finished := w.s.Now()
 	if status == "queued" {
 		finished = ""
 	}
-	if _, err := s.DB.Exec("UPDATE jobs SET status = ?, result = ?, branch = COALESCE(NULLIF(?, ''), branch), finished_at = ?, "+
+	branchExpr := "COALESCE(NULLIF(?, ''), branch)"
+	if replaceBranch {
+		branchExpr = "?"
+	}
+	if _, err := w.db.Exec("UPDATE jobs SET status = ?, result = ?, branch = "+branchExpr+", finished_at = ?, "+
 		"lease_agent = CASE WHEN ? = 'queued' THEN '' ELSE lease_agent END, lease_until = '' WHERE id = ?",
 		status, result, branch, finished, status, jobID); err != nil {
 		return nil, err
 	}
-	if err := event(s, agent, "job."+status, jobID, trunc400(result)); err != nil {
+	if err := w.event(agent, "job."+status, jobID, trunc400(result)); err != nil {
 		return nil, err
 	}
-	return JobByID(s, jobID)
+	return jobByID(w.db, jobID)
 }
 
 // RetryJob queues a failed or cancelled job again, in place or as one corrected copy.

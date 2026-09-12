@@ -180,8 +180,14 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	for _, l := range checkRestored(s, selfEnv) {
 		say("%s", l)
 	}
+	// Keep the batch outcome until every slot drains, even across dispatch ticks.
+	completed, allErrors := false, true
 	report := func(d *dispatch) {
 		delete(inflight, d)
+		completed = true
+		if d.run != nil && d.run.str("status") != "error" {
+			allErrors = false
+		}
 		if d.run != nil {
 			say("%s %s %s on %s: %s", d.run.str("status"), d.run.str("job_id"), d.run.str("agent"), d.slot, d.run.str("summary"))
 		} else if d.reason != "" {
@@ -189,15 +195,13 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 		}
 	}
 	// reap collects the runs whose goroutines ended without waiting.
-	reap := func() []*dispatch {
-		var finished []*dispatch
+	reap := func() {
 		for {
 			select {
 			case d := <-results:
 				report(d)
-				finished = append(finished, d)
 			default:
-				return finished
+				return
 			}
 		}
 	}
@@ -278,22 +282,15 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	if o.Sleep != nil {
 		sleep = o.Sleep
 	}
-	var finished []*dispatch
 	for {
 		loops++
-		finished = append(finished, reap()...)
-		if len(finished) > 0 && len(inflight) == 0 {
-			allErr := true
-			for _, d := range finished {
-				if d.run != nil && d.run.str("status") != "error" {
-					allErr = false
-				}
-			}
-			if allErr && !sleep(time.Duration(interval)*time.Second) {
+		reap()
+		if completed && len(inflight) == 0 {
+			if allErrors && !sleep(time.Duration(interval)*time.Second) {
 				return leave("interrupted", "stopping on signal")
 			}
+			completed, allErrors = false, true
 		}
-		finished = nil
 		if ctx.Err() != nil {
 			return leave("interrupted", "stopping on signal")
 		}
@@ -563,7 +560,6 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			select {
 			case d := <-results:
 				report(d)
-				finished = append(finished, d)
 			case <-time.After(dispatchTickSeconds * time.Second):
 			case <-compute.wake:
 			case _, ok := <-wakeEvents:

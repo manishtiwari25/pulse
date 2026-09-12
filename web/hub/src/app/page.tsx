@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ActivityIcon, BotIcon, CheckIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon, ExternalLinkIcon } from "lucide-react";
+import { ActivityIcon, AlertTriangleIcon, ArrowUpRightIcon, BotIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
 import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
@@ -79,7 +79,7 @@ export default function HubPage() {
     const s = tl.data?.series?.find((x) => x.slug === slug);
     return s ? lastDays(s, 14) : undefined;
   };
-  const metaChipBase = "items-center gap-1 whitespace-nowrap rounded-full border bg-card px-2 py-0.5 text-xs text-muted-foreground";
+  const metaChipBase = "min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border/60 bg-card/70 px-2 py-1 text-[11px] leading-4 text-muted-foreground";
   const metaChip = "inline-flex " + metaChipBase;
 
   return (
@@ -88,28 +88,28 @@ export default function HubPage() {
         icon={HomeIcon}
         badge={
           inbox > 0 ? (
-            <a href="#for-you" className="inline-flex items-center rounded-full bg-primary px-2 py-0.5 text-[11.5px] font-medium text-primary-foreground shadow-card hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <a href="#for-you" className="inline-flex min-h-7 items-center rounded-full bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground shadow-card transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none">
               {num(inbox) + " for you"}
             </a>
           ) : null
         }
         sub={
-          <span className="flex flex-wrap items-center gap-1.5">
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5">
             <span className={metaChip}>{plural(o.totals.projects, "project")}</span>
             {o.totals.brain ? (
-              <span className={metaChip}>
-                brain <Mono>{o.totals.brain}</Mono>
+              <span className={metaChip} title={"brain " + o.totals.brain}>
+                brain <Mono className="min-w-0 truncate">{o.totals.brain}</Mono>
               </span>
             ) : null}
-            <span className={metaChip}>
-              tally <Mono>{o.tally_mode}</Mono>
+            <span className={metaChip} title={"tally " + o.tally_mode}>
+              tally <Mono className="min-w-0 truncate">{o.tally_mode}</Mono>
             </span>
             {o.binary_version ? (
-              <span className={metaChip}>
-                pulse <Mono>{o.binary_version}</Mono>
+              <span className={metaChip} title={"pulse " + o.binary_version}>
+                pulse <Mono className="min-w-0 truncate">{o.binary_version}</Mono>
               </span>
             ) : null}
-            <span title={o.store || o.registry} className={"hidden min-w-0 max-w-[min(42vw,28rem)] sm:inline-flex " + metaChipBase}>
+            <span title={o.store || o.registry} className={"hidden sm:inline-flex sm:max-w-[min(42vw,28rem)] " + metaChipBase}>
               store <Mono className="min-w-0 truncate text-muted-foreground">{o.store || o.registry}</Mono>
             </span>
           </span>
@@ -123,10 +123,10 @@ export default function HubPage() {
           </>
         }
       >
-        Hub
+        Your workspace
       </PageTitle>
       {o.owner_presence === "away" ? (
-        <Notice tone="warn" className="mb-3">
+        <Notice tone="warn" className="mb-5">
           You&apos;re marked away — each project&apos;s lead decides proposals on your behalf. Hard stops, ADRs and compute requests still wait for you.{" "}
           <Link href={hrefs.settings("owner")} className="font-medium underline underline-offset-2">
             Settings
@@ -136,50 +136,51 @@ export default function HubPage() {
 
       {/* The inbox: everything that waits for the owner's yes or no, buttons in reach, before anything else. Decisions first, then proposals, then compute, then the steps only the owner can take. */}
       {inbox ? (
-        <section id="for-you" className="mb-4" aria-label="For you">
-          <SectionHeading icon={InboxIcon} count={inbox} action={down.length ? <span className="text-warn">{down.join(" · ")}</span> : <span className="text-right">{decisions && steps.length + machineSteps ? "your yes or no, and steps only you can take" : steps.length + machineSteps ? "the steps only you can take" : "waiting for your yes or no"}</span>}>
+        <section id="for-you" className="mb-7 scroll-mt-32 rounded-2xl border border-primary/20 surface-hero p-4 shadow-card sm:p-5" aria-label="For you">
+          <SectionHeading icon={InboxIcon} count={inbox} action={down.length ? <span className="text-warn">{down.join(" · ")}</span> : <span>{decisions && steps.length + machineSteps ? "Your decisions and next steps" : steps.length + machineSteps ? "The steps only you can take" : "Waiting for your yes or no"}</span>}>
             For you
           </SectionHeading>
-          <div className="rounded-xl border border-primary/25 surface-tint p-3 shadow-card sm:p-4">
-            <CardGrid cols={2}>
-              {adrs.map((r) => (
-                <ProposedRecordCard key={r.project + "/" + r.id} r={r} onOpen={setOpenRecord} />
-              ))}
-              {awaiting.map((p) => (
-                <ProposalCard key={p.id} r={p} slug={p.slug || o.totals.brain} canDecide={o.can_decide} />
-              ))}
-              {pendingCompute.map((cr) => (
-                <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
-              ))}
-              {keepRunning && service.data ? <ServiceCard payload={service.data} /> : null}
-              {steps.map((s) => (
-                <GateCard key={s.slug + "/" + s.kind} step={s} />
-              ))}
-            </CardGrid>
-          </div>
+          <CardGrid cols={2}>
+            {adrs.map((r) => (
+              <ProposedRecordCard key={r.project + "/" + r.id} r={r} onOpen={setOpenRecord} />
+            ))}
+            {awaiting.map((p) => (
+              <ProposalCard key={p.id} r={p} slug={p.slug || o.totals.brain} canDecide={o.can_decide} />
+            ))}
+            {pendingCompute.map((cr) => (
+              <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
+            ))}
+            {keepRunning && service.data ? <ServiceCard payload={service.data} /> : null}
+            {steps.map((s) => (
+              <GateCard key={s.slug + "/" + s.kind} step={s} />
+            ))}
+          </CardGrid>
         </section>
       ) : (
-        <p id="for-you" className="mb-4 flex items-center gap-2 rounded-lg border bg-card px-3.5 py-2.5 text-sm text-muted-foreground">
-          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-ok/10 text-ok" aria-hidden>
-            <CheckIcon className="size-3.5" />
+        <p id="for-you" className="mb-7 flex scroll-mt-32 items-center gap-3 rounded-xl border surface-glass px-4 py-3 text-sm leading-relaxed text-muted-foreground">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground" aria-hidden>
+            <InboxIcon className="size-4" />
           </span>
-          <span>{downWhy.length ? "No proposal waits for you - " + downWhy.join("; ") + "." : checking.length ? "No proposal waits for you - checking " + checking.join(" and ") + "…" : "Nothing waits for you right now."}</span>
+          <span className="min-w-0 anywhere">{downWhy.length ? "No proposal waits for you - " + downWhy.join("; ") + "." : checking.length ? "No proposal waits for you - checking " + checking.join(" and ") + "…" : "Nothing waits for you right now."}</span>
         </p>
       )}
 
-      <KpiGrid>
-        <Kpi icon={InboxIcon} n={inbox} label="for you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length + machineSteps ? plural(steps.length + machineSteps, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
-        <Kpi icon={ListTodoIcon} n={openTasks.length} label="open tasks" sub={tasks.data ? `${num(openTasks.filter((t) => t.status === "in_progress").length)} in progress` : "loading"} href={hrefs.tasks()} />
-        <Kpi icon={CpuIcon} n={pendingCompute.length} label="compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
-        <Kpi icon={BotIcon} n={o.totals.agents_active} label="agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
-        <Kpi icon={VoteIcon} n={o.totals.votes_open} label="in vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} href={hrefs.votes()} />
-        <Kpi icon={MessageCircleQuestionIcon} n={o.totals.questions_open} label="open questions" sub="across the boards" />
-        <Kpi icon={MessageSquareIcon} n={o.totals.posts_24h} label="posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
-        <Kpi icon={daemonOn ? PowerIcon : ActivityIcon} n={r ? (daemonOn ? "on" : "off") : "…"} label="daemon" sub={r ? (r.runner?.allowed === false ? r.runner.reason : (r.daemon.state || "off") + " · " + num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued") : "loading"} tone={r ? (daemonOn ? "ok" : "warn") : "neutral"} href={hrefs.agents()} />
-      </KpiGrid>
+      <section aria-label="Workspace overview" className="mb-7">
+        <SectionHeading>At a glance</SectionHeading>
+        <KpiGrid className="mb-0">
+          <Kpi icon={InboxIcon} n={inbox} label="For you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length + machineSteps ? plural(steps.length + machineSteps, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
+          <Kpi icon={ListTodoIcon} n={openTasks.length} label="Open tasks" sub={tasks.data ? `${num(openTasks.filter((t) => t.status === "in_progress").length)} in progress` : "loading"} href={hrefs.tasks()} />
+          <Kpi icon={CpuIcon} n={pendingCompute.length} label="Compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
+          <Kpi icon={BotIcon} n={o.totals.agents_active} label="Agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
+          <Kpi icon={VoteIcon} n={o.totals.votes_open} label="In vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} href={hrefs.votes()} />
+          <Kpi icon={MessageCircleQuestionIcon} n={o.totals.questions_open} label="Open questions" sub="across the boards" />
+          <Kpi icon={MessageSquareIcon} n={o.totals.posts_24h} label="Posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
+          <Kpi icon={daemonOn ? PowerIcon : ActivityIcon} n={r ? (daemonOn ? "on" : "off") : "…"} label="Daemon" sub={r ? (r.runner?.allowed === false ? r.runner.reason : (r.daemon.state || "off") + " · " + num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued") : "loading"} tone={r ? (daemonOn ? "ok" : "warn") : "neutral"} href={hrefs.agents()} />
+        </KpiGrid>
+      </section>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-        <div className="grid min-w-0 grid-cols-1 content-start gap-6">
+      <div className="grid min-w-0 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_20rem] 2xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="grid min-w-0 grid-cols-1 content-start gap-7">
           <section aria-label="Projects">
             <SectionHeading icon={FolderIcon} count={projects.length} action={<AddProjectButton size="sm" variant="outline" onRegistered={(r) => router.push(hrefs.project(r.project.slug))} />}>
               Projects
@@ -191,7 +192,7 @@ export default function HubPage() {
                 ))}
               </CardGrid>
             ) : (
-              <EmptyState>
+              <EmptyState icon={<FolderIcon className="size-[18px]" />} title="A place for your projects">
                 No project registered yet. Add one with the button above or run <Mono>pulse init</Mono> in a checkout.
               </EmptyState>
             )}
@@ -207,9 +208,11 @@ export default function HubPage() {
               icon={ListTodoIcon}
               count={tasks.data ? openTasks.length : undefined}
               action={
-                <Link href={hrefs.tasks()} className="hover:underline">
-                  all
-                </Link>
+                <Button asChild variant="ghost" size="sm">
+                  <Link href={hrefs.tasks()}>
+                    View all <ArrowUpRightIcon />
+                  </Link>
+                </Button>
               }
             >
               Open tasks
@@ -223,19 +226,19 @@ export default function HubPage() {
               <SkeletonRows n={2} />
             )}
           </section>
-          {tl.data ? <ActivityChart tl={tl.data} bys={["total", "project", "kind"]} height={180} /> : null}
+          {tl.data ? <ActivityChart tl={tl.data} bys={["total", "project", "kind"]} height={200} /> : null}
         </div>
-        <div className="grid min-w-0 grid-cols-1 content-start gap-4">
+        <aside aria-label="Workspace activity and runtime" className="grid min-w-0 grid-cols-1 content-start gap-5 sm:grid-cols-2 xl:grid-cols-1">
           <LiveFeed limit={40} height={320} />
           <MachinePanel r={r} />
           <Panel title="Working now" icon={ActivityIcon} actions={<span className="tnum">{workingSummary(working, o.active_claims.length)}</span>}>
             <WorkingNow claims={o.active_claims} tasks={openTasks} />
           </Panel>
           {attention.length ? (
-            <Panel title="Needs attention">
-              <ul className="grid gap-1.5 text-[13px]">
+            <Panel title="Needs attention" icon={AlertTriangleIcon}>
+              <ul className="grid gap-3 text-[13px] leading-relaxed">
                 {attention.map((p) => (
-                  <li key={p.slug} className="anywhere">
+                  <li key={p.slug} className="min-w-0 anywhere">
                     <ProjectLink slug={p.slug} />{" "}
                     <span className="text-muted-foreground">{p.stop_present ? "STOP is set - the evolution loop halts until it is removed." : p.missing || !p.present ? "is registered but missing on disk - re-clone it at " + p.path + " or unregister." : !p.board_present ? "has no board yet - run pulse init in its checkout." : p.error}</span>
                   </li>
@@ -243,7 +246,7 @@ export default function HubPage() {
               </ul>
             </Panel>
           ) : null}
-        </div>
+        </aside>
       </div>
       {/* Read on an inbox card opens the record here; its header carries the same three answers. */}
       <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />

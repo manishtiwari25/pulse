@@ -141,8 +141,8 @@ const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Reco
   "evolve.loop": { on: "on - cycles run back to back", off: "off - the loop waits" },
 };
 
-// The sticky stack above the content: 48px app bar + the title row and the
-// section pills. Anchored sections scroll to sit just under it.
+// Section margins complement the shell's scroll padding so headings clear
+// the sticky page title and section pills.
 const ANCHOR = "scroll-mt-32";
 const PILL = "inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-xs hover:bg-muted";
 const SECTION_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {

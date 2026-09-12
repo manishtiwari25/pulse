@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { ActivityIcon } from "lucide-react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Panel } from "./panel";
@@ -11,9 +12,9 @@ export type Range = "24h" | "7d" | "30d";
 export type By = "total" | "kind" | "project";
 
 const COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)", "oklch(0.7 0.1 200)", "oklch(0.65 0.12 30)", "oklch(0.55 0.1 120)"];
-const segmented = "inline-flex h-auto rounded-lg border bg-muted/40 p-0.5";
-const segment = "h-6 rounded-md px-2 text-xs data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-card";
-const tooltipStyle = { background: "var(--popover)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "0.375rem 0.625rem", color: "var(--popover-foreground)", fontSize: 12, boxShadow: "var(--sh-pop)" };
+const segmented = "inline-flex h-auto max-w-full rounded-lg border border-border/70 bg-muted/40 p-1";
+const segment = "h-8 rounded-md px-2.5 text-xs transition-colors data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-card motion-reduce:transition-none";
+const tooltipStyle = { background: "var(--popover)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "0.625rem 0.75rem", color: "var(--popover-foreground)", fontSize: 12, boxShadow: "var(--sh-pop)" };
 
 export function lastDays(tl: Timeline, n: number): number[] {
   return (tl.days || []).slice(-n).map((b) => b.n);
@@ -61,12 +62,13 @@ export function ActivityChart({ tl, bys, title = "Activity", height = 200 }: { t
   return (
     <Panel
       title={title}
+      icon={ActivityIcon}
       actions={
-        <div className="flex items-center gap-2">
-          <span className="tnum hidden sm:inline">{num(total) + " posts"}</span>
+        <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+          <span className="tnum mr-1 text-xs">{num(total) + " posts"}</span>
           {bys.length > 1 ? (
             <Tabs value={by} onValueChange={(v) => setBy(v as By)}>
-              <TabsList className={segmented}>
+              <TabsList className={segmented} aria-label="Group activity by">
                 {bys.map((b) => (
                   <TabsTrigger key={b} value={b} className={segment}>
                     {b}
@@ -76,7 +78,7 @@ export function ActivityChart({ tl, bys, title = "Activity", height = 200 }: { t
             </Tabs>
           ) : null}
           <Tabs value={range} onValueChange={(v) => setRange(v as Range)}>
-            <TabsList className={segmented}>
+            <TabsList className={segmented} aria-label="Activity time range">
               {(["24h", "7d", "30d"] as Range[]).map((r) => (
                 <TabsTrigger key={r} value={r} className={segment}>
                   {r}
@@ -87,29 +89,29 @@ export function ActivityChart({ tl, bys, title = "Activity", height = 200 }: { t
         </div>
       }
     >
-      <div style={{ height }} className="text-xs">
+      <div style={{ height }} className="min-w-0 rounded-xl border border-border/50 bg-muted/15 px-1 pt-2 text-xs">
         <ResponsiveContainer width="100%" height="100%">
           {by === "total" ? (
             <AreaChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
               <defs>
                 <linearGradient id="activity-fill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.35} />
+                  <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.24} />
                   <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="t" tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={24} />
+              <CartesianGrid strokeDasharray="3 5" stroke="var(--border)" vertical={false} />
+              <XAxis dataKey="t" tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={24} tickMargin={8} />
               <YAxis tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
               <ChartTooltip contentStyle={tooltipStyle} labelStyle={{ color: "var(--muted-foreground)" }} wrapperClassName="!outline-none" cursor={{ stroke: "var(--border)" }} />
               <Area type="monotone" dataKey="posts" stroke="var(--chart-1)" fill="url(#activity-fill)" strokeWidth={2} isAnimationActive={false} />
             </AreaChart>
           ) : (
             <BarChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="t" tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={24} />
+              <CartesianGrid strokeDasharray="3 5" stroke="var(--border)" vertical={false} />
+              <XAxis dataKey="t" tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={24} tickMargin={8} />
               <YAxis tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
               <ChartTooltip contentStyle={tooltipStyle} labelStyle={{ color: "var(--muted-foreground)" }} wrapperClassName="!outline-none" cursor={{ fill: "var(--muted)", opacity: 0.5 }} />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
+              <Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 11, overflowWrap: "anywhere" }} />
               {keys.map((k, i) => (
                 <Bar key={k} dataKey={k} stackId="a" fill={COLORS[i % COLORS.length]} isAnimationActive={false} radius={i === keys.length - 1 ? [3, 3, 0, 0] : 0} />
               ))}

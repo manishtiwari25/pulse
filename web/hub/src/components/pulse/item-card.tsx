@@ -10,15 +10,17 @@ import { cn } from "@/lib/utils";
 // a line or two of context and its actions in reach - no horizontal scroll
 // to find a button in the last column of a table.
 
+// Cap the column count while letting the available width, not the viewport,
+// decide when a card needs its own row (including beside the dashboard rail).
 const COLS = {
   1: "grid-cols-1",
-  2: "grid-cols-1 md:grid-cols-2",
-  3: "grid-cols-1 md:grid-cols-2 xl:grid-cols-3",
-  4: "grid-cols-1 sm:grid-cols-2 xl:grid-cols-4",
+  2: "grid-cols-[repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_1rem)/2))),1fr))]",
+  3: "grid-cols-[repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_2rem)/3))),1fr))]",
+  4: "grid-cols-[repeat(auto-fit,minmax(min(100%,max(18rem,calc((100%_-_3rem)/4))),1fr))]",
 } as const;
 
 export function CardGrid({ children, cols = 2, className }: { children: React.ReactNode; cols?: keyof typeof COLS; className?: string }) {
-  return <div className={cn("grid gap-3", COLS[cols], className)}>{children}</div>;
+  return <div className={cn("grid min-w-0 gap-4", COLS[cols], className)}>{children}</div>;
 }
 
 // A click that starts on a control inside the card (a link, a button, a menu
@@ -40,9 +42,9 @@ const OpenContext = createContext<{ open: () => void; label?: string } | null>(n
 
 export function ItemCard({ children, href, onOpen, active, highlight, className, ariaLabel }: { children: React.ReactNode; href?: string; onOpen?: () => void; active?: boolean; highlight?: boolean; className?: string; ariaLabel?: string }) {
   const cls = cn(
-    "group/item relative flex flex-col gap-2 rounded-lg border bg-card p-4 text-left shadow-card transition-all duration-200",
-    (href || onOpen) && "cursor-pointer hover:border-foreground/15 hover:shadow-pop",
-    href && !onOpen && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    "group/item relative flex min-w-0 flex-col gap-2.5 rounded-xl border bg-card p-4 text-left shadow-card",
+    (href || onOpen) && "cursor-pointer transition-[border-color,box-shadow,background-color] duration-200 hover:border-primary/30 hover:shadow-pop motion-reduce:transition-none",
+    href && !onOpen && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
     onOpen && "has-[[data-open]:focus-visible]:ring-2 has-[[data-open]:focus-visible]:ring-ring",
     highlight && "border-primary/40 surface-tint",
     active && "ring-2 ring-ring",
@@ -77,9 +79,9 @@ export function ItemCard({ children, href, onOpen, active, highlight, className,
 // Top line: badges on the left, the quiet meta (who, when) on the right.
 export function ItemCardHeader({ children, right, className }: { children: React.ReactNode; right?: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", className)}>
+    <div className={cn("flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 text-xs leading-relaxed anywhere", className)}>
       {children}
-      {right ? <span className="ml-auto flex items-center gap-2 text-muted-foreground">{right}</span> : null}
+      {right ? <span className="ml-auto flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">{right}</span> : null}
     </div>
   );
 }
@@ -90,17 +92,17 @@ export function ItemCardTitle({ children, className, chevron }: { children: Reac
   const inner = (
     <>
       <span className="min-w-0 flex-1">{children}</span>
-      {chevron ? <ChevronRightIcon className="mt-0.5 size-4 shrink-0 opacity-40 transition-transform group-hover/item:translate-x-0.5 group-hover/item:opacity-70" /> : null}
+      {chevron ? <ChevronRightIcon className="mt-0.5 size-4 shrink-0 opacity-40 transition-[transform,opacity] group-hover/item:opacity-70 group-focus-within/item:opacity-70 motion-safe:group-hover/item:translate-x-0.5 motion-reduce:transition-none" aria-hidden /> : null}
     </>
   );
   return (
-    <h3 className={cn("text-[15px] font-semibold leading-snug anywhere", className)}>
+    <h3 className={cn("min-w-0 text-[15px] font-semibold leading-snug tracking-tight anywhere", className)}>
       {ctx ? (
         <button
           type="button"
           data-open
           aria-label={ctx.label}
-          className="flex w-full items-start gap-2 text-left focus-visible:outline-none"
+          className="flex w-full min-w-0 items-start gap-2 text-left focus-visible:outline-none"
           onClick={(e) => {
             e.stopPropagation();
             ctx.open();
@@ -116,19 +118,19 @@ export function ItemCardTitle({ children, className, chevron }: { children: Reac
 }
 
 export function ItemCardBody({ children, className, clamp = 2 }: { children: React.ReactNode; className?: string; clamp?: 0 | 1 | 2 | 3 | 5 }) {
-  return <div className={cn("text-[13.5px] leading-relaxed text-muted-foreground anywhere", clamp === 1 && "line-clamp-1", clamp === 2 && "line-clamp-2", clamp === 3 && "line-clamp-3", clamp === 5 && "line-clamp-5", className)}>{children}</div>;
+  return <div className={cn("min-w-0 text-[13.5px] leading-relaxed text-muted-foreground anywhere", clamp === 1 && "line-clamp-1", clamp === 2 && "line-clamp-2", clamp === 3 && "line-clamp-3", clamp === 5 && "line-clamp-5", className)}>{children}</div>;
 }
 
 // Small facts in a row: "3 posts · quorum 2 · expires in 4 d".
 export function ItemCardMeta({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground", className)}>{children}</div>;
+  return <div className={cn("flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs leading-relaxed text-muted-foreground anywhere", className)}>{children}</div>;
 }
 
 // Bottom line with the card's buttons. Clicks here never open the card.
 export function ItemCardActions({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
     <div
-      className={cn("mt-auto flex flex-wrap items-center gap-2 pt-1", className)}
+      className={cn("mt-auto flex min-w-0 flex-wrap items-center gap-2 pt-2", className)}
       onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") e.stopPropagation();
@@ -142,9 +144,9 @@ export function ItemCardActions({ children, className }: { children: React.React
 // A compact fact tile for the inside of a card (used by project cards).
 export function Fact({ n, label, tone, className }: { n: React.ReactNode; label: string; tone?: "ok" | "warn" | "bad" | "accent" | "info"; className?: string }) {
   return (
-    <div className={cn("rounded-md bg-muted/50 px-2 py-2 text-center", className)}>
-      <div className={cn("tnum text-base font-semibold leading-none", tone === "ok" && "text-ok", tone === "warn" && "text-warn", tone === "bad" && "text-bad", tone === "accent" && "text-accent-2", tone === "info" && "text-info")}>{n}</div>
-      <div className="mt-1 text-[10.5px] uppercase tracking-wider text-muted-foreground">{label}</div>
+    <div className={cn("min-w-0 rounded-lg border border-border/50 bg-muted/35 px-2 py-2.5 text-center", className)}>
+      <div className={cn("tnum text-base font-semibold leading-tight tracking-tight anywhere", tone === "ok" && "text-ok", tone === "warn" && "text-warn", tone === "bad" && "text-bad", tone === "accent" && "text-accent-2", tone === "info" && "text-info")}>{n}</div>
+      <div className="mt-1 text-[11px] leading-tight text-muted-foreground anywhere">{label}</div>
     </div>
   );
 }
@@ -152,13 +154,13 @@ export function Fact({ n, label, tone, className }: { n: React.ReactNode; label:
 // Section heading for a card group: title, count, and an optional link.
 export function SectionHeading({ children, count, action, className, icon: Icon }: { children: React.ReactNode; count?: number | string; action?: React.ReactNode; className?: string; icon?: React.ComponentType<{ className?: string }> }) {
   return (
-    <div className={cn("mb-2 flex items-center justify-between gap-2", className)}>
-      <h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold tracking-tight">
-        {Icon ? <Icon className="size-4 shrink-0 text-muted-foreground" /> : null}
+    <div className={cn("mb-3 flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2", className)}>
+      <h2 className="flex min-w-0 items-center gap-2 text-[15px] font-semibold leading-snug tracking-tight anywhere">
+        {Icon ? <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden /> : null}
         {children}
-        {count !== undefined && count !== "" ? <span className="tnum rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{count}</span> : null}
+        {count !== undefined && count !== "" ? <span className="tnum rounded-full border border-border/70 bg-card/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{count}</span> : null}
       </h2>
-      {action ? <div className="text-xs text-muted-foreground">{action}</div> : null}
+      {action ? <div className="min-w-0 max-w-full text-xs leading-relaxed text-muted-foreground anywhere">{action}</div> : null}
     </div>
   );
 }

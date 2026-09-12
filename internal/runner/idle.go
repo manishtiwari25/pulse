@@ -163,9 +163,10 @@ func ballotIdlePart(s *store.Store, slug, now string, suggestions []tally.Sugges
 
 func reflectIdlePart(s *store.Store, slug, now string) string {
 	source := fmt.Sprintf("reflect:%s:%s", slug, now[:10])
-	if mustOne(s.DB, "SELECT 1 AS x FROM jobs WHERE project = ? AND kind = 'reflect' AND (source = ? OR (source = ? AND created_at LIKE ?))",
-		slug, source, "onboard-reflect:"+slug, now[:10]+"%") != nil {
-		return "reflect done today"
+	if job := mustOne(s.DB, `SELECT status FROM jobs WHERE project = ? AND kind = 'reflect'
+		AND (source = ? OR (source = ? AND created_at LIKE ?)) ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+		slug, source, "onboard-reflect:"+slug, now[:10]+"%"); job != nil {
+		return "reflect " + job.str("status") + " today"
 	}
 	return "reflect due"
 }

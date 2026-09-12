@@ -49,12 +49,8 @@ func tendLandings(s *store.Store, projects []row, actor, now string, prev map[st
 				continue
 			}
 			n := len(pendingLandings(s.DB, slug))
-			noun := "branches"
-			if n == 1 {
-				noun = "branch"
-			}
 			waiting[slug], states[slug] = n, lr.State
-			cur[slug] = fmt.Sprintf("%d %s waiting; %s: %s", n, noun, lr.State, lr.Note)
+			cur[slug] = fmt.Sprintf("%d pending landing %s; %s: %s", n, plural(n, "job"), lr.State, lr.Note)
 		}
 		// ADR-037: what landed goes to the remote when the owner said so; a push that did not happen is a
 		// note beside the landing hold, said once per change and retried next tick.
