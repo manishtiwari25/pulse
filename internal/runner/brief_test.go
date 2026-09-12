@@ -74,3 +74,31 @@ func TestWorkerBriefRemoteReporting(t *testing.T) {
 		t.Fatal("remote brief requires a store-backed finish command")
 	}
 }
+
+func TestWorkerBriefClaimMentionsPulseCLIFallback(t *testing.T) {
+	s := newStore(t)
+	project, dir := newRepo(t, s)
+	join(t, s, "aurora")
+	t.Setenv("PULSE_AGENT", "aurora")
+	job, _, err := addJob(s, "proj", "task", "Repair a typo", "Fix the typo.", 0, 0, "test", humanAgent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leased, err := leaseJob(s, "aurora", testNow, leaseOpts{JobID: job.str("id"), Minutes: 10}); err != nil || leased == nil {
+		t.Fatalf("lease: %v, %v", leased, err)
+	}
+	brief := writeBrief(briefOpts{
+		Job: job, Project: project, Agent: "aurora", Clone: dir, Minutes: 10, Store: s, Now: testNow,
+	})
+	_, rest, found := strings.Cut(brief, "Claim your thread before you start (")
+	if !found {
+		t.Fatal("missing claim instruction")
+	}
+	claim, _, found := strings.Cut(rest, ")")
+	if !found {
+		t.Fatal("unterminated claim instruction")
+	}
+	if !strings.Contains(claim, "pulse claim --area A --thread T") || !strings.Contains(claim, "$PULSE_CLI") {
+		t.Fatalf("claim instruction lacks the $PULSE_CLI fallback: %q", claim)
+	}
+}
