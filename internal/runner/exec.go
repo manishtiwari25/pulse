@@ -317,6 +317,11 @@ func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]st
 	if identityErr == nil {
 		fields = e.probeCapabilities(ctx)
 	}
+	if fields != nil && fields["pulse"] == "missing" {
+		// Same preflight as the local branch: a worker whose shell cannot resolve `pulse`
+		// cannot claim, post or finish, so fail before the clone and the harness start.
+		return outcome{}, &ExecutorFault{fmt.Sprintf("pulse is not on PATH on %s (hands probe reported pulse=missing) - install the pulse CLI for the executor user or fix its login PATH; probe it with `pulse executor probe %s`", e.name(), e.name())}
+	}
 	heartbeats := identityErr == nil && fields != nil && e.heartbeatCapableFrom(fields)
 	steps := identityErr == nil && fields != nil && stepsCapable(fields) && env["PULSE_HARNESS_STEPS"] != ""
 	if heartbeats {
