@@ -32,7 +32,7 @@ func TestWorkerBriefListsOtherFocusAndExcludesSelf(t *testing.T) {
 		"## Who else is working on proj",
 		"- borealis: " + other.str("id") + " (improve) \"Other job\"",
 		"- borealis claims area/thread until 2026-09-06T11:00:00Z: working here",
-		"Claim your thread before you start (pulse claim --area A --thread T --summary ...)",
+		"Claim your thread before you start (pulse claim --area A --thread T --summary ...; if `pulse` is not on PATH, run the binary named by $PULSE_CLI)",
 	} {
 		if !strings.Contains(brief, want) {
 			t.Fatalf("brief lacks %q:\n%s", want, brief)
