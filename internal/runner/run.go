@@ -398,6 +398,9 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 				}
 				cmd = append(miseExecArgv(pins), cmd...)
 			}
+		} else if cli := recipePulseCLI(recipe); cli != "" {
+			// A recipe-only PULSE_CLI names the pulse binary on the host; the hands allow PULSE_* through (WU-021).
+			env["PULSE_CLI"] = cli
 		}
 		var shown []string
 		for _, c := range cmd {

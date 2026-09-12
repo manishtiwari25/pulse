@@ -935,3 +935,12 @@ func short(s string, n int) string {
 }
 
 var _ = os.Getenv
+
+// recipePulseCLI returns the pulse binary the recipe names in PULSE_CLI, or "" when the recipe leaves it to the host.
+// Remote workers get only PULSE_* variables through the hands, so this is the one recipe variable that reaches them.
+func recipePulseCLI(r *Recipe) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Env["PULSE_CLI"])
+}
