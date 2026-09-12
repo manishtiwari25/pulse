@@ -301,8 +301,30 @@ func (e *sshExec) prepare(ctx context.Context) (string, error) {
 		return "", &ExecutorFault{fmt.Sprintf("remote key failed on %s (exit %d): %s - the machine cannot take a signing key; probe it with `pulse executor probe %s`",
 			e.name(), rc, tail(strings.Join(strings.Fields(src), " "), 300), e.name())}
 	}
+	// Same non-empty check as preflightRunKey on the hub side: the hands wrote the
+	// key under the job dir, so confirm the host-side copy exists and is not empty
+	// before the worker starts and signs with it (ADR-022).
+	rc, out, errText, err = e.call([]string{"verify", e.job.str("id"), "1", "--", remoteKeyCheckCmd(e.remoteKeyPath())}, nil, 120*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if rc != 0 {
+		src = errText
+		if src == "" {
+			src = out
+		}
+		return "", fail(1, "setup-error: the run's signing key %s on %s is missing or empty after upload (exit %d): %s; the worker was not started so no work is lost (ADR-022)",
+			e.remoteKeyPath(), e.name(), rc, tail(strings.Join(strings.Fields(src), " "), 300))
+	}
 	return base, nil
 }
+
+// remoteKeyPath is where the hands `key` verb stores the per-run signing key.
+func (e *sshExec) remoteKeyPath() string { return e.jobDir + "/run.key" }
+
+// remoteKeyCheckCmd is the shell command run on the host after the key upload;
+// `test -s` fails for a missing or empty file, mirroring preflightRunKey.
+func remoteKeyCheckCmd(path string) string { return "test -s " + shellQuote(path) }
 
 func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]string, minutes int) (outcome, error) {
 	if ctx == nil {
