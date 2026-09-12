@@ -134,8 +134,12 @@ func (e *localExec) prepare(ctx context.Context) (string, error) {
 // finished work is lost at the end (ADR-022). Failing here is a setup error
 // that sends the job back to the queue with nothing spent.
 func preflightRunKey(path string) error {
-	if _, err := os.Stat(path); err != nil {
+	st, err := os.Stat(path)
+	if err != nil {
 		return fail(1, "setup-error: the run's signing key %s is missing (%v); the worker was not started so no work is lost (ADR-022)", path, err)
+	}
+	if st.Size() == 0 {
+		return fail(1, "setup-error: the run's signing key %s is empty; the worker was not started so no work is lost (ADR-022)", path)
 	}
 	return nil
 }
