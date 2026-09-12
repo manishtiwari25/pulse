@@ -84,3 +84,54 @@ func TestPreflightRunKeyAfterMakeRunKey(t *testing.T) {
 		t.Fatalf("fresh run key rejected: %v", err)
 	}
 }
+
+func TestPreflightRemoteCLICheckCmd(t *testing.T) {
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "pulse")
+	run := func() error {
+		return exec.Command("/bin/sh", "-c", remoteCLICheckCmd(cli)).Run()
+	}
+	if err := run(); err == nil {
+		t.Fatal("missing PULSE_CLI must fail test -x")
+	}
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); err == nil {
+		t.Fatal("non-executable PULSE_CLI must fail test -x")
+	}
+	if err := os.Chmod(cli, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("executable PULSE_CLI must pass: %v", err)
+	}
+	if cmd := remoteCLICheckCmd("/usr/local/bin/my pulse"); !strings.Contains(cmd, "'/usr/local/bin/my pulse'") {
+		t.Fatalf("path must be shell-quoted, got %q", cmd)
+	}
+}
+
+func TestPreflightRemoteCLIResult(t *testing.T) {
+	if err := remoteCLICheckResult("/usr/local/bin/pulse", "box", 0, "", ""); err != nil {
+		t.Fatalf("exit 0 must pass: %v", err)
+	}
+	err := remoteCLICheckResult("/usr/local/bin/pulse", "box", 1, "", "no such file")
+	if err == nil {
+		t.Fatal("non-zero exit must be a setup error")
+	}
+	for _, want := range []string{"setup-error", "PULSE_CLI", "/usr/local/bin/pulse", "box", "no such file", "not started"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q should contain %q", err.Error(), want)
+		}
+	}
+}
+
+// stageLocalPulse points the remote worker's PULSE_CLI fallback at bin for the test:
+// the fake hands run on this machine, where nothing is staged at pairPulsePath, and
+// sshExec's `test -x $PULSE_CLI` preflight would otherwise fail at setup.
+func stageLocalPulse(t *testing.T, bin string) {
+	t.Helper()
+	prev := stagedPulsePath
+	stagedPulsePath = bin
+	t.Cleanup(func() { stagedPulsePath = prev })
+}

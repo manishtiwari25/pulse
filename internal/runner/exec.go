@@ -349,6 +349,36 @@ func (e *sshExec) remoteKeyPath() string { return e.jobDir + "/run.key" }
 // `test -s` fails for a missing or empty file, mirroring preflightRunKey.
 func remoteKeyCheckCmd(path string) string { return "test -s " + shellQuote(path) }
 
+// preflightRemoteCLI runs `test -x` on the PULSE_CLI path through the hands
+// `verify` verb and logs the check, so a missing staged binary fails at setup.
+func (e *sshExec) preflightRemoteCLI(path string) error {
+	cmd := remoteCLICheckCmd(path)
+	e.log.add("$ ssh %s verify %s -- %s\n", e.row.str("address"), e.job.str("id"), cmd)
+	rc, out, errText, err := e.call([]string{"verify", e.job.str("id"), "1", "--", cmd}, nil, 120*time.Second)
+	if err != nil {
+		return err
+	}
+	return remoteCLICheckResult(path, e.name(), rc, out, errText)
+}
+
+// remoteCLICheckCmd is the shell command run on the host before the worker
+// starts; `test -x` fails for a missing or non-executable PULSE_CLI.
+func remoteCLICheckCmd(path string) string { return "test -x " + shellQuote(path) }
+
+// remoteCLICheckResult maps the exit of remoteCLICheckCmd to a setup-error, or
+// nil when the staged pulse binary is executable.
+func remoteCLICheckResult(path, host string, rc int, out, errText string) error {
+	if rc == 0 {
+		return nil
+	}
+	src := errText
+	if src == "" {
+		src = out
+	}
+	return fail(1, "setup-error: PULSE_CLI %s on %s is missing or not executable (exit %d): %s; the worker was not started so no work is lost - stage the pulse binary there or fix the recipe's PULSE_CLI",
+		path, host, rc, tail(strings.Join(strings.Fields(src), " "), 300))
+}
+
 func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]string, minutes int) (outcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -372,6 +402,14 @@ func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]st
 			looked = "PATH=" + strings.ReplaceAll(looked, "%20", " ")
 		}
 		return outcome{}, &ExecutorFault{fmt.Sprintf("pulse is not on PATH on %s (hands probe reported pulse=missing, looked in %s) - install the pulse CLI for the executor user or fix its login PATH; probe it with `pulse executor probe %s`", e.name(), looked, e.name())}
+	}
+	if cli := env["PULSE_CLI"]; cli != "" {
+		// Preflight the staged binary the brief's fallback names: `test -x` on the
+		// remote host fails at setup when it is missing or not executable, instead
+		// of when the worker first calls `pulse claim`.
+		if err := e.preflightRemoteCLI(cli); err != nil {
+			return outcome{}, err
+		}
 	}
 	heartbeats := identityErr == nil && fields != nil && e.heartbeatCapableFrom(fields)
 	steps := identityErr == nil && fields != nil && stepsCapable(fields) && env["PULSE_HARNESS_STEPS"] != ""

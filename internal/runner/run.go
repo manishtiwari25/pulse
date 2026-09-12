@@ -1163,5 +1163,9 @@ func remotePulseCLI(recipe *Recipe) string {
 	if cli := recipePulseCLI(recipe); cli != "" {
 		return cli
 	}
-	return pairPulsePath
+	return stagedPulsePath
 }
+
+// stagedPulsePath is where `pulse pair` leaves the pulse binary on every executor;
+// tests that run the hands on this machine point it at a local executable.
+var stagedPulsePath = pairPulsePath

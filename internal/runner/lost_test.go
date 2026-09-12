@@ -220,6 +220,7 @@ func TestLaunchRejectionOnRemoteDrainsExecutor(t *testing.T) {
 		t.Skip("no ssh-keygen")
 	}
 	bin := buildPulse(t)
+	stageLocalPulse(t, bin)
 	s := newStore(t)
 	newRepo(t, s)
 	join(t, s, "aurora")
