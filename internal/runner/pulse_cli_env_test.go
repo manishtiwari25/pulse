@@ -23,3 +23,17 @@ func TestPulseOnPath(t *testing.T) {
 		t.Fatalf("recipe without PULSE_CLI: got %q", got)
 	}
 }
+
+// TestRemotePulseCLI: remote workers always get a PULSE_CLI - the recipe's, else the staged /usr/local/bin/pulse.
+func TestRemotePulseCLI(t *testing.T) {
+	if got := remotePulseCLI(nil); got != pairPulsePath {
+		t.Fatalf("no recipe: got %q, want %q", got, pairPulsePath)
+	}
+	r, problems := parseRecipe(recipeWith(nil, nil, nil, [][2]string{{"PULSE_CLI", "/opt/pulse/bin/pulse"}}, ""))
+	if len(problems) != 0 {
+		t.Fatalf("recipe problems: %v", problems)
+	}
+	if got := remotePulseCLI(r); got != "/opt/pulse/bin/pulse" {
+		t.Fatalf("recipe PULSE_CLI: got %q", got)
+	}
+}
