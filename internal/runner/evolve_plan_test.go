@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/evolve"
@@ -75,6 +76,7 @@ func TestTendEvolveLoopOffDoesNothing(t *testing.T) {
 }
 
 func TestTendEvolvePlansOneExperiment(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	resetEvolvePlanReasons()
 	s := newStore(t)
 	newRepo(t, s)

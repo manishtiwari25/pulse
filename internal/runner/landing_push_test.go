@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/bus"
@@ -52,6 +53,7 @@ func bareRef(t *testing.T, bare, ref string) string {
 }
 
 func TestLandingPushesMainWhenAsked(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	skipSlow(t)
 	bus.ResetDefault()
 	s := newStore(t)

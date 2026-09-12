@@ -80,9 +80,11 @@ func TestNewStoreWithRunnerEnvironment(t *testing.T) {
 
 func run(t *testing.T, dir string, argv ...string) string {
 	t.Helper()
-	cmd := exec.Command(argv[0], argv[1:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x", "GIT_CONFIG_GLOBAL=/dev/null")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x", "GIT_CONFIG_GLOBAL=/dev/null")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s: %v\n%s", strings.Join(argv, " "), err, out)
