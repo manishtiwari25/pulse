@@ -278,6 +278,13 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		if err != nil {
 			return err
 		}
+		// One hub-side check shared by both branches: the key just written must
+		// exist and be non-empty before anything else is spent on the run
+		// (ADR-022). localExec.runWorker and sshExec repeat it later at the
+		// moment the worker starts.
+		if err := preflightRunKey(ex.keyPath()); err != nil {
+			return err
+		}
 		exec1(s.DB, "UPDATE runs SET signing_pubkey = ? WHERE id = ?", pubkey, runID)
 		base, err := ex.prepare(ctx)
 		if err != nil {
