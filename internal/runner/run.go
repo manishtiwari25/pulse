@@ -417,6 +417,13 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 		}
 		if !ex.remote() {
 			log.add("%s", preflightLine(pulseOnPath(envWith(environ(), env)), env["PULSE_CLI"]))
+		} else if r, ok := ex.(interface{ preflightRemoteRunKey(string) error }); ok {
+			// Same preflightRunKey check as localExec.runWorker, run on the host:
+			// the key uploaded in prepare must still be there right before the
+			// worker starts and signs with it (ADR-022).
+			if err := r.preflightRemoteRunKey("before the worker starts"); err != nil {
+				return err
+			}
 		}
 		log.add("$ %s", strings.Join(shown, " "))
 		launched := wallClock()

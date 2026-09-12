@@ -51,3 +51,18 @@ func TestPreflightRunKeyRemoteCheckCmd(t *testing.T) {
 		t.Fatalf("path must be shell-quoted, got %q", cmd)
 	}
 }
+
+func TestPreflightRunKeyRemoteResult(t *testing.T) {
+	if err := remoteKeyCheckResult("/w/j/run.key", "box", "before the worker starts", 0, "", ""); err != nil {
+		t.Fatalf("exit 0 must pass: %v", err)
+	}
+	err := remoteKeyCheckResult("/w/j/run.key", "box", "before the worker starts", 1, "", "no such file")
+	if err == nil {
+		t.Fatal("non-zero exit must be a setup error")
+	}
+	for _, want := range []string{"setup-error", "/w/j/run.key", "box", "before the worker starts", "no such file"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q should contain %q", err.Error(), want)
+		}
+	}
+}
