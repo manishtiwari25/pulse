@@ -40,6 +40,7 @@ func completionQuestion(t *testing.T, s *store.Store, job row, opts postOpts) ro
 }
 
 func TestCompletionAnswerDeliveredToSource(t *testing.T) {
+	skipSlow(t)
 	for _, transport := range []string{"stdout", "finish-summary", "finish-raw"} {
 		t.Run(transport, func(t *testing.T) {
 			s, job, _, agent := newCompletionJob(t, "answer")
@@ -89,6 +90,7 @@ func TestCompletionAnswerDeliveredToSource(t *testing.T) {
 }
 
 func TestCompletionAnswerGuards(t *testing.T) {
+	skipSlow(t)
 	for _, name := range []string{
 		"owner flag", "owner path", "owner path signal", "daemon question", "loop stop", "hard stop", "tier two", "closed thread", "jobs area",
 		"missing source", "empty source", "malformed source", "wrong prefix", "wrong kind", "cross project",
@@ -169,6 +171,7 @@ func TestCompletionAnswerGuards(t *testing.T) {
 }
 
 func TestCompletionAnswerPreservesExistingAnswer(t *testing.T) {
+	skipSlow(t)
 	for _, mode := range []string{"linked", "thread", "same-time-thread", "worker-linked", "worker-thread"} {
 		t.Run(mode, func(t *testing.T) {
 			s, job, _, agent := newCompletionJob(t, "answer")

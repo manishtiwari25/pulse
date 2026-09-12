@@ -86,6 +86,7 @@ func TestLightModelFallsBackToWorkerModel(t *testing.T) {
 // One worker serves both models: each run records the model it ran with on the worker's row (the model
 // its posts report) and a worker that last ran a light job is still joined for a heavy one and back.
 func TestRunJobRecordsTheModelOfEachRunOnTheAgent(t *testing.T) {
+	skipSlow(t)
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
 	}

@@ -216,6 +216,7 @@ func TestRunHarnessCancelWatcherCancelsContext(t *testing.T) {
 // On remote hands the same rejection is the executor's fault: it drains, the job
 // keeps its attempt.
 func TestLaunchRejectionOnRemoteDrainsExecutor(t *testing.T) {
+	skipSlow(t)
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
 	}

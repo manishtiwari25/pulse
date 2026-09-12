@@ -58,6 +58,7 @@ func daemonRetryFixture(t *testing.T) (*store.Store, row) {
 }
 
 func TestDaemonRunnerErrorWait(t *testing.T) {
+	skipSlow(t)
 	for _, tc := range []struct {
 		name     string
 		interval int

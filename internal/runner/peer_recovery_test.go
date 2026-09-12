@@ -103,6 +103,7 @@ func TestPeerHelpWakesLeadOnceWithoutDuplicateWorker(t *testing.T) {
 }
 
 func TestPeerHelpDoesNotBypassOwnerGates(t *testing.T) {
+	skipSlow(t)
 	for _, mode := range []string{"owner flag", "owner paths", "tier two", "hard stop", "loop stop", "daemon", "answered", "closed", "owner report"} {
 		t.Run(mode, func(t *testing.T) {
 			s := newStore(t)

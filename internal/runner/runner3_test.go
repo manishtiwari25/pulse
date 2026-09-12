@@ -420,6 +420,7 @@ func TestWorkOnceDryRunAndIdle(t *testing.T) {
 // -- remote hands through the Go executor and the Go hands verbs over the wire protocol ----------------------
 
 func TestRemoteRunThroughLocalHands(t *testing.T) {
+	skipSlow(t)
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
 	}
@@ -546,6 +547,7 @@ func TestLauncherReturnsTheChildExitAndForwardsTerm(t *testing.T) {
 // pulse.failed, log the restore and leave the marker the daemon reads at start. Without a pulse.prev the
 // launcher gives up with the child's code, as before.
 func TestLauncherRestoresThePreviousPulseAfterThreeEarlyExits(t *testing.T) {
+	skipSlow(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
 	}

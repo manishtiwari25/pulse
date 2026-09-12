@@ -134,6 +134,7 @@ func assertLifecyclePresence(t *testing.T, s *store.Store, now time.Time, want s
 }
 
 func TestWorkerLifecycleDelayedSuggestion(t *testing.T) {
+	skipSlow(t)
 	const startupFailure = "injected missed startup heartbeat"
 	for _, tc := range []struct {
 		name          string
