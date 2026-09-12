@@ -403,9 +403,10 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 				}
 				cmd = append(miseExecArgv(pins), cmd...)
 			}
-		} else if cli := recipePulseCLI(recipe); cli != "" {
+		} else {
 			// A recipe-only PULSE_CLI names the pulse binary on the host; the hands allow PULSE_* through (WU-021).
-			env["PULSE_CLI"] = cli
+			// Without one, point at the binary `pulse pair` stages so the brief's `$PULSE_CLI` fallback holds remotely.
+			env["PULSE_CLI"] = remotePulseCLI(recipe)
 		}
 		var shown []string
 		for _, c := range cmd {
@@ -1126,4 +1127,13 @@ func cliOnPath(pathEnv, exe string) string {
 		return dir
 	}
 	return dir + string(os.PathListSeparator) + pathEnv
+}
+
+// remotePulseCLI is the PULSE_CLI a remote worker gets: the recipe's value when set, else the
+// pulse binary `pulse pair` stages on every executor (pairPulsePath), so the brief's fallback holds there.
+func remotePulseCLI(recipe *Recipe) string {
+	if cli := recipePulseCLI(recipe); cli != "" {
+		return cli
+	}
+	return pairPulsePath
 }
