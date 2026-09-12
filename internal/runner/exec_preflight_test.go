@@ -18,6 +18,12 @@ func TestPreflightRunKeyMissingIsSetupError(t *testing.T) {
 	if !strings.Contains(err.Error(), "setup-error") || !strings.Contains(err.Error(), missing) {
 		t.Fatalf("error should name setup-error and the key path, got %q", err.Error())
 	}
+	if err := os.WriteFile(missing, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preflightRunKey(missing); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty key must be a setup-error naming 'empty', got %v", err)
+	}
 	if err := os.WriteFile(missing, []byte("k"), 0o600); err != nil {
 		t.Fatal(err)
 	}
