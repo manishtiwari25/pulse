@@ -905,3 +905,27 @@ func TestComputeFailsWhenTheProviderCLIIsMissing(t *testing.T) {
 		t.Fatal("an executor was registered without a machine")
 	}
 }
+
+// TestDaemonOnceComputeSlowProvision guards the loopCtx/computeCtx split in daemon.go: a provision whose
+// polling pause is longer than one daemon loop tick must still reach ready when the once-daemon leaves,
+// because compute outlives the loop by the grace instead of dying with loopCtx.
+func TestDaemonOnceComputeSlowProvision(t *testing.T) {
+	s := newStore(t)
+	h := newComputeHarness(t, s, map[string]string{"compute.provider": "multipass"})
+	// newComputeHarness shortens provisionWait to 5ms; make it longer than the 1s loop interval onceDaemon uses.
+	provisionWait = 1500 * time.Millisecond
+	mp := newFakeMultipass()
+	installFake(t, &runMultipass, mp.run)
+	req, err := tasks.RequestCompute(s, "proj", "aurora", "", 2, "the fixtures take an hour here")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Approve(s, req.ID, "go ahead", humanAgent); err != nil {
+		t.Fatal(err)
+	}
+	log := onceDaemon(t, s, daemonOpts{WorkerCmd: "sh -c 'echo SUMMARY: nothing'", HubHome: h.hubHome})
+	got, err := tasks.GetCompute(s, req.ID)
+	if err != nil || got.Status != "ready" || got.Executor != "hands-cr-001" {
+		t.Fatalf("slow provision after once-daemon: %+v %v\n%s", got, err, log)
+	}
+}

@@ -146,6 +146,10 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	defer stopLoop()
 	runCtx, killRuns := context.WithCancel(context.Background())
 	defer killRuns()
+	// computeCtx outlives loopCtx too: a provision whose polling pause spans a loop tick must not die with
+	// the loop; leave cancels it after compute.wait(grace) has had its say.
+	computeCtx, killCompute := context.WithCancel(context.Background())
+	defer killCompute()
 	hooksRunner := &hooks.Runner{Bus: bus.Default(), Store: s, Log: func(format string, a ...any) { say("hook: "+format, a...) }}
 	hooksDone := make(chan struct{})
 	go func() {
@@ -153,7 +157,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 		hooksRunner.Run(loopCtx)
 	}()
 	bridgeDone := bus.Bridge(loopCtx, s, 0)
-	compute := newComputeWorker(loopCtx, s, computeOpts{Actor: actor, HubHome: o.HubHome})
+	compute := newComputeWorker(computeCtx, s, computeOpts{Actor: actor, HubHome: o.HubHome})
 	wakeEvents, cancelWake := bus.Default().Subscribe(bus.Filter{Actions: daemonWake}, 32)
 	defer cancelWake()
 	lost := sweepLostRuns(s, s.Now())
@@ -246,6 +250,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			say("%s: waiting for %d compute operation(s) in flight", note, compute.busy())
 		}
 		compute.wait(grace)
+		killCompute()
 		for _, l := range compute.drain() {
 			say("%s", l)
 		}
@@ -416,7 +421,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			}
 			recordIdleNotes(s, curIdle, now)
 			prevIdle = curIdle
-			for _, l := range compute.tick(loopCtx, now) {
+			for _, l := range compute.tick(computeCtx, now) {
 				say("%s", l)
 			}
 			// ADR-033: the private held-out set writes itself, one sealed call per tick.
