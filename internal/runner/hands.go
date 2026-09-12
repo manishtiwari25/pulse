@@ -187,14 +187,20 @@ func (h *hands) probe() error {
 	} else if st, err := os.Stat(filepath.Join(h.home, ".pulse", "private", "providers", "copilot.json")); err == nil && !st.IsDir() {
 		harnessLogin = "yes"
 	}
+	// pulse= carries the resolved CLI path so the runner can hand it to workers as PULSE_CLI
+	// and the doctor can say where it lives; pulse_lookup= names the PATH searched when it is
+	// missing so the remote fault can say where the CLI was looked for.
 	pulsev := "missing"
+	pulseLookup := ""
 	if path, err := exec.LookPath("pulse"); err == nil {
-		pulsev = "present"
-		if out, err := exec.Command(path, "version").Output(); err == nil {
-			first, _, _ := strings.Cut(string(out), "\n")
-			if v := strings.TrimSpace(first); v != "" {
-				pulsev = v
-			}
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		pulsev = path
+	} else {
+		pulseLookup = strings.ReplaceAll(os.Getenv("PATH"), " ", "%20")
+		if pulseLookup == "" {
+			pulseLookup = "-"
 		}
 	}
 	if os.Getenv("PULSE_HANDS_ALLOW_ANY_WORKER") == "1" {
@@ -259,14 +265,18 @@ func (h *hands) probe() error {
 	if u, err := user.Current(); err == nil {
 		name = u.Username
 	}
+	lookup := ""
+	if pulseLookup != "" {
+		lookup = " pulse_lookup=" + pulseLookup
+	}
 	dash := func(list []string) string {
 		if len(list) == 0 {
 			return "-"
 		}
 		return strings.Join(list, ",")
 	}
-	fmt.Fprintf(h.stdout, "hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s harness=%s pulse=%s remotes=%d keys_ok=%s disk_free_mb=%s jobs=%s keys=%s heartbeat=1 steps=1\n",
-		name, h.workdir, gitv, copv, loggedIn, harnessLogin, pulsev, remotes, keysOK, freeMB, dash(jobs), dash(keys))
+	fmt.Fprintf(h.stdout, "hands=ok user=%s workdir=%s git=%s copilot=%s logged_in=%s harness=%s pulse=%s%s remotes=%d keys_ok=%s disk_free_mb=%s jobs=%s keys=%s heartbeat=1 steps=1\n",
+		name, h.workdir, gitv, copv, loggedIn, harnessLogin, pulsev, lookup, remotes, keysOK, freeMB, dash(jobs), dash(keys))
 	return nil
 }
 

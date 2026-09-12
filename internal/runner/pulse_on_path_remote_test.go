@@ -21,7 +21,7 @@ func TestPulseOnPathRemotePreflight(t *testing.T) {
 		args := heartbeatSSHArgs(t, argv)
 		switch args[0] {
 		case "probe":
-			return 0, "hands=ok pulse=missing heartbeat=1", "", nil
+			return 0, "hands=ok pulse=missing pulse_lookup=/usr/bin:/bin heartbeat=1", "", nil
 		case "run":
 			ran = true
 			return 0, "", "", nil
@@ -30,7 +30,7 @@ func TestPulseOnPathRemotePreflight(t *testing.T) {
 	}
 	_, err := e.runWorker(context.Background(), []string{"copilot"}, env, 1)
 	var fault *ExecutorFault
-	if err == nil || !errors.As(err, &fault) || !strings.Contains(err.Error(), "pulse is not on PATH") {
+	if err == nil || !errors.As(err, &fault) || !strings.Contains(err.Error(), "pulse is not on PATH") || !strings.Contains(err.Error(), "looked in PATH=/usr/bin:/bin") {
 		t.Fatalf("expected ExecutorFault about pulse on PATH, got %v", err)
 	}
 	if ran {
