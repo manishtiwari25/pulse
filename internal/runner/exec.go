@@ -119,6 +119,12 @@ func (e *localExec) prepare(ctx context.Context) (string, error) {
 		return "", fail(1, "clone failed: %s", strings.TrimSpace(out.Stderr))
 	}
 	git(e.cloneDir, "remote", "remove", "origin")
+	// Same point as sshExec.prepare's host-side `test -s`: check the run key
+	// before the clone is configured to sign with it, so both executors fail at
+	// prepare time with the setup-error rather than only at runWorker (ADR-022).
+	if err := preflightRunKey(e.key); err != nil {
+		return "", err
+	}
 	if err := configureCloneIdentity(e.cloneDir, e.agent, e.key, provenanceHook(e.agent, e.job.str("id"), e.name())); err != nil {
 		return "", err
 	}
