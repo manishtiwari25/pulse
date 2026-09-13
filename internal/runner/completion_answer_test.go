@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -91,6 +93,13 @@ func TestCompletionAnswerDeliveredToSource(t *testing.T) {
 
 func TestCompletionAnswerGuards(t *testing.T) {
 	skipSlow(t)
+	// One store, checkout and agent for every case: only the job (and the posts it guards
+	// against) differ per row, so the clone+signing setup is not repeated 23 times.
+	base := newStore(t)
+	completionFixture(t, base, "answer")
+	snap := snapshotCompletionStore(t, base)
+	t.Cleanup(func() { snap.s.Close() })
+	agent := "aurora"
 	for _, name := range []string{
 		"owner flag", "owner path", "owner path signal", "daemon question", "loop stop", "hard stop", "tier two", "closed thread", "jobs area",
 		"missing source", "empty source", "malformed source", "wrong prefix", "wrong kind", "cross project",
@@ -101,7 +110,8 @@ func TestCompletionAnswerGuards(t *testing.T) {
 			if name == "non-answer job" {
 				kind = "task"
 			}
-			s, job, _, agent := newCompletionJob(t, kind)
+			s := snap.reset(t)
+			job := completionJob(t, s, kind)
 			opts := postOpts{}
 			switch name {
 			case "owner flag":
@@ -125,8 +135,10 @@ func TestCompletionAnswerGuards(t *testing.T) {
 			case "wrong kind":
 				opts.Kind = "finding"
 			case "cross project":
-				dir := t.TempDir()
-				run(t, dir, "git", "init", "-q", "-b", "main")
+				dir := filepath.Join(t.TempDir(), "other")
+				if err := os.CopyFS(dir, os.DirFS(templateRepo(t))); err != nil {
+					t.Fatal(err)
+				}
 				if _, _, err := addProject(s, dir, "Other", "", false, "", humanAgent, "other"); err != nil {
 					t.Fatal(err)
 				}
