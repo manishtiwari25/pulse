@@ -3,6 +3,7 @@ package runner
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manishtiwari25/pulse/internal/tasks"
 )
@@ -12,6 +13,7 @@ func idleLeadJobRows(s querier) []row {
 }
 
 func TestIdleLeadQueuesStandingBrief(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	s := newStore(t)
 	newRepo(t, s)
 	join(t, s, "aurora")
@@ -40,6 +42,7 @@ func TestIdleLeadQueuesStandingBrief(t *testing.T) {
 }
 
 func TestIdleLeadCanBeDisabled(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	s := newStore(t)
 	newRepo(t, s)
 	setSetting(t, s, "lead.idle_hours", "0")
@@ -51,6 +54,7 @@ func TestIdleLeadCanBeDisabled(t *testing.T) {
 }
 
 func TestIdleLeadStaysQuietWhenProjectHasQueuedJob(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	s := newStore(t)
 	newRepo(t, s)
 	setSetting(t, s, "lead.idle_hours", "6")
@@ -65,6 +69,7 @@ func TestIdleLeadStaysQuietWhenProjectHasQueuedJob(t *testing.T) {
 }
 
 func TestIdleLeadUsesRecentCreatedJobAsQuietWindow(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	s := newStore(t)
 	newRepo(t, s)
 	j, _, err := addJob(s, "proj", "task", "recently done", "done", 1, 5, "test:recent", humanAgent, false)
@@ -85,6 +90,7 @@ func TestIdleLeadUsesRecentCreatedJobAsQuietWindow(t *testing.T) {
 }
 
 func TestOwnerMessageBeatsIdleLead(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	s := newStore(t)
 	newRepo(t, s)
 	setSetting(t, s, "lead.idle_hours", "6")
@@ -103,6 +109,7 @@ func TestOwnerMessageBeatsIdleLead(t *testing.T) {
 }
 
 func TestIdleLeadDoesNotQueueTwiceImmediately(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	s := newStore(t)
 	newRepo(t, s)
 	setSetting(t, s, "lead.idle_hours", "6")
@@ -115,6 +122,7 @@ func TestIdleLeadDoesNotQueueTwiceImmediately(t *testing.T) {
 }
 
 func TestIdleLeadBriefListsBoardAndFailures(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	s := newStore(t)
 	newRepo(t, s)
 	join(t, s, "aurora")
