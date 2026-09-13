@@ -18,6 +18,7 @@ import (
 // -- provenance: a signed, trailered commit lands; a foreign one does not (ADR-024) -------------------------
 
 func TestProvenanceRoundTrip(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
 	}
@@ -420,6 +421,7 @@ func TestWorkOnceDryRunAndIdle(t *testing.T) {
 // -- remote hands through the Go executor and the Go hands verbs over the wire protocol ----------------------
 
 func TestRemoteRunThroughLocalHands(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	skipSlow(t)
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
@@ -500,6 +502,7 @@ func TestSSHCommandWireFormat(t *testing.T) {
 
 // The launcher keeps pulse a child, returns its exit code and forwards TERM; a shell runs it for real.
 func TestLauncherReturnsTheChildExitAndForwardsTerm(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
 	}
@@ -548,6 +551,7 @@ func TestLauncherReturnsTheChildExitAndForwardsTerm(t *testing.T) {
 // pulse.failed, log the restore and leave the marker the daemon reads at start. Without a pulse.prev the
 // launcher gives up with the child's code, as before.
 func TestLauncherRestoresThePreviousPulseAfterThreeEarlyExits(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	skipSlow(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")

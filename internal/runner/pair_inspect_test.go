@@ -133,6 +133,7 @@ func TestPairHandsBuildVersion(t *testing.T) {
 }
 
 func TestPairInspectHandsScript(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	buildInfo := "mod\t" + pairHandsModule + "\t(devel)\t\n" +
 		"build\t-ldflags=\"-X " + pairHandsModule + "/internal/cli.version=v3.2.1\"\n" +
 		"build\tvcs.revision=" + strings.Repeat("ab", 20) + "\n" +
@@ -270,6 +271,7 @@ func TestPairInspectAlias(t *testing.T) {
 }
 
 func TestPairHandsGoBinaryMetadata(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755); err != nil {
 		t.Fatal(err)

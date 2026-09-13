@@ -537,6 +537,7 @@ func buildPulse(t *testing.T) string {
 }
 
 func TestHandsVerbsRoundTrip(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	skipSlow(t)
 	bin := buildPulse(t)
 	s := newStore(t)
@@ -641,6 +642,7 @@ func b64(argv ...string) string {
 }
 
 func TestHandsRunWorkerWhitelistAllowsNativeHarness(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	bin := buildPulse(t)
 	s := newStore(t)
 	_, repo := newRepo(t, s)

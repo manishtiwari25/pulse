@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manishtiwari25/pulse/internal/cli"
 )
@@ -17,6 +18,7 @@ import (
 // `pulse service install` (a signed copy renamed over it), and CodeSigned tells the two apart from a
 // plain ad-hoc build (ADR-035 rule 8).
 func TestSigningGivesEveryBuildTheSameRequirement(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "pulse")
 	if err := os.WriteFile(binary, []byte("not a mach-o"), 0o755); err != nil {
@@ -98,6 +100,7 @@ func TestSigningGivesEveryBuildTheSameRequirement(t *testing.T) {
 // TestSigningKeyMustExistBeforeIdentity: pointing user.signingkey at a missing key would only
 // surface when the worker commits, losing finished work; the runner must fail early instead.
 func TestSigningKeyMustExistBeforeIdentity(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	clone := t.TempDir()
 	run(t, clone, "git", "init", "-q")
 	missing := filepath.Join(t.TempDir(), "missing.key")

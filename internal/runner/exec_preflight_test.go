@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPreflightRunKeyMissingIsSetupError(t *testing.T) {
@@ -33,6 +34,7 @@ func TestPreflightRunKeyMissingIsSetupError(t *testing.T) {
 }
 
 func TestPreflightRunKeyRemoteCheckCmd(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	dir := t.TempDir()
 	key := filepath.Join(dir, "run.key")
 	run := func() error {
@@ -86,6 +88,7 @@ func TestPreflightRunKeyAfterMakeRunKey(t *testing.T) {
 }
 
 func TestPreflightRemoteCLICheckCmd(t *testing.T) {
+	testDeadline(t, 60*time.Second)
 	dir := t.TempDir()
 	cli := filepath.Join(dir, "pulse")
 	run := func() error {
