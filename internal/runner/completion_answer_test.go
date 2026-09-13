@@ -43,9 +43,10 @@ func completionQuestion(t *testing.T, s *store.Store, job row, opts postOpts) ro
 
 func TestCompletionAnswerDeliveredToSource(t *testing.T) {
 	skipSlow(t)
+	suite := newCompletionSuite(t)
 	for _, transport := range []string{"stdout", "finish-summary", "finish-raw"} {
 		t.Run(transport, func(t *testing.T) {
-			s, job, _, agent := newCompletionJob(t, "answer")
+			s, job, _, agent := suite.job(t, "answer")
 			q := completionQuestion(t, s, job, postOpts{})
 			other := completionQuestion(t, s, job, postOpts{Date: plusMinutes(testNow, 1), Summary: "A later question still needs an answer."})
 			exec1(s.DB, "UPDATE jobs SET source = ? WHERE id = ?", "question:"+q.str("id"), job.str("id"))
@@ -95,11 +96,7 @@ func TestCompletionAnswerGuards(t *testing.T) {
 	skipSlow(t)
 	// One store, checkout and agent for every case: only the job (and the posts it guards
 	// against) differ per row, so the clone+signing setup is not repeated 23 times.
-	base := newStore(t)
-	completionFixture(t, base, "answer")
-	snap := snapshotCompletionStore(t, base)
-	t.Cleanup(func() { snap.s.Close() })
-	agent := "aurora"
+	suite := newCompletionSuite(t)
 	for _, name := range []string{
 		"owner flag", "owner path", "owner path signal", "daemon question", "loop stop", "hard stop", "tier two", "closed thread", "jobs area",
 		"missing source", "empty source", "malformed source", "wrong prefix", "wrong kind", "cross project",
@@ -110,8 +107,7 @@ func TestCompletionAnswerGuards(t *testing.T) {
 			if name == "non-answer job" {
 				kind = "task"
 			}
-			s := snap.reset(t)
-			job := completionJob(t, s, kind)
+			s, job, _, agent := suite.job(t, kind)
 			opts := postOpts{}
 			switch name {
 			case "owner flag":
@@ -184,9 +180,10 @@ func TestCompletionAnswerGuards(t *testing.T) {
 
 func TestCompletionAnswerPreservesExistingAnswer(t *testing.T) {
 	skipSlow(t)
+	suite := newCompletionSuite(t)
 	for _, mode := range []string{"linked", "thread", "same-time-thread", "worker-linked", "worker-thread"} {
 		t.Run(mode, func(t *testing.T) {
-			s, job, _, agent := newCompletionJob(t, "answer")
+			s, job, _, agent := suite.job(t, "answer")
 			q := completionQuestion(t, s, job, postOpts{})
 			direct := ""
 			if strings.HasPrefix(mode, "worker-") {
