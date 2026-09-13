@@ -96,19 +96,42 @@ func run(t *testing.T, dir string, argv ...string) string {
 func newRepo(t *testing.T, s *store.Store) (row, string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Copying the per-binary template repo is a pure file copy: no git subprocess per test.
+	if err := os.CopyFS(dir, os.DirFS(templateRepo(t))); err != nil {
 		t.Fatal(err)
 	}
-	run(t, dir, "git", "init", "-q", "-b", "main")
-	run(t, dir, "git", "config", "commit.gpgsign", "false")
-	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# proj\n"), 0o644)
-	run(t, dir, "git", "add", "-A")
-	run(t, dir, "git", "commit", "-q", "-m", "init")
 	p, _, err := addProject(s, dir, "Proj", "", false, "", humanAgent, "proj")
 	if err != nil {
 		t.Fatal(err)
 	}
 	return p, p.str("path")
+}
+
+var (
+	templateOnce sync.Once
+	templateDir  string
+	templateErr  error
+)
+
+// templateRepo builds one git repo with a single commit on main per test binary; newRepo copies it
+// instead of running init/config/add/commit for every test. TestMain removes it after m.Run.
+func templateRepo(t *testing.T) string {
+	t.Helper()
+	templateOnce.Do(func() {
+		templateDir, templateErr = os.MkdirTemp("", "pulse-template-repo-")
+		if templateErr != nil {
+			return
+		}
+		run(t, templateDir, "git", "init", "-q", "-b", "main")
+		run(t, templateDir, "git", "config", "commit.gpgsign", "false")
+		os.WriteFile(filepath.Join(templateDir, "README.md"), []byte("# proj\n"), 0o644)
+		run(t, templateDir, "git", "add", "-A")
+		run(t, templateDir, "git", "commit", "-q", "-m", "init")
+	})
+	if templateErr != nil {
+		t.Fatal(templateErr)
+	}
+	return templateDir
 }
 
 func join(t *testing.T, s *store.Store, name string) row {
@@ -519,7 +542,11 @@ func TestMain(m *testing.M) {
 	githubHTTP = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return nil, errors.New("no network in tests: " + r.URL.Host)
 	})}
-	os.Exit(m.Run())
+	code := m.Run()
+	if templateDir != "" {
+		os.RemoveAll(templateDir)
+	}
+	os.Exit(code)
 }
 
 // roundTripFunc is an http.RoundTripper made of one function.
