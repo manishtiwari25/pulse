@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,4 +138,21 @@ func stageLocalPulse(t *testing.T, bin string) {
 	prev := stagedPulsePath
 	stagedPulsePath = bin
 	t.Cleanup(func() { stagedPulsePath = prev })
+}
+
+func TestPreflightRunKeyLocalPrepareFailsEarly(t *testing.T) {
+	s := newStore(t)
+	project, _ := newRepo(t, s)
+	home := t.TempDir()
+	e := newLocalExec(row{"name": "local"}, s, home, row{"id": "job-prep"}, project, "cinder", &runLog{})
+	if err := os.MkdirAll(filepath.Dir(e.key), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.prepare(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "setup-error") || !strings.Contains(err.Error(), e.key) {
+		t.Fatalf("prepare without a run key must fail with setup-error naming the key, got %v", err)
+	}
+	if e.started() {
+		t.Fatal("prepare must not mark the run as begun")
+	}
 }
