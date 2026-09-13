@@ -68,21 +68,19 @@ func TestSSHExecWorkerPath(t *testing.T) {
 	}
 }
 
-// TestLocalExecDefaultPulseCLI: localExec.runWorker exports PULSE_CLI for local runs even
-// when the caller's env lacks it, naming this process's binary (os.Executable()), so the
-// brief's `$PULSE_CLI` fallback holds locally; an explicit value is kept as is.
+// TestLocalExecDefaultPulseCLI: run.go derives PULSE_CLI for local runs once, through
+// workerCLIEnv(env, localCLI(home)), naming this process's binary (os.Executable()), so the
+// brief's `$PULSE_CLI` fallback holds locally; a recipe value applied afterwards wins, and
+// localExec.runWorker adds no derivation of its own.
 func TestLocalExecDefaultPulseCLI(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Skip("os.Executable unavailable:", err)
 	}
-	in := map[string]string{"PULSE_JOB": "j"}
-	got := withLocalCLI(in, t.TempDir())
+	got := map[string]string{"PULSE_JOB": "j"}
+	workerCLIEnv(got, localCLI(t.TempDir()))
 	if got["PULSE_CLI"] != exe {
 		t.Fatalf("PULSE_CLI=%q, want os.Executable()=%q", got["PULSE_CLI"], exe)
-	}
-	if _, ok := in["PULSE_CLI"]; ok {
-		t.Fatal("caller's env mutated")
 	}
 	env := workerEnvWithCLIPath([]string{"PATH=/usr/bin"}, got)
 	if lookupEnv(env, "PULSE_CLI") != exe {
@@ -92,8 +90,9 @@ func TestLocalExecDefaultPulseCLI(t *testing.T) {
 		t.Fatalf("PATH not prefixed with dir(os.Executable()): %q", lookupEnv(env, "PATH"))
 	}
 
-	keep := withLocalCLI(map[string]string{"PULSE_CLI": "/opt/pulse/bin/pulse"}, t.TempDir())
-	if keep["PULSE_CLI"] != "/opt/pulse/bin/pulse" {
-		t.Fatalf("explicit PULSE_CLI overridden: %q", keep["PULSE_CLI"])
+	// runWorker passes the caller's PULSE_CLI through untouched: one derivation site.
+	keep := workerEnvWithCLIPath([]string{"PATH=/usr/bin"}, map[string]string{"PULSE_CLI": "/opt/pulse/bin/pulse"})
+	if lookupEnv(keep, "PULSE_CLI") != "/opt/pulse/bin/pulse" {
+		t.Fatalf("explicit PULSE_CLI overridden: %q", lookupEnv(keep, "PULSE_CLI"))
 	}
 }

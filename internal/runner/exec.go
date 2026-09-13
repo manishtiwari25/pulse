@@ -154,7 +154,9 @@ func (e *localExec) runWorker(ctx context.Context, cmd []string, env map[string]
 	if err := preflightRunKey(e.key); err != nil {
 		return outcome{}, err
 	}
-	workerEnv := workerEnvWithCLIPath(environ(), withLocalCLI(env, e.home))
+	// PULSE_CLI is derived once, in run.go (workerCLIEnv(env, localCLI(home))), so the
+	// preflight there and the worker here always see the same value.
+	workerEnv := workerEnvWithCLIPath(environ(), env)
 	if err := preflightTmpSpace(workerTmpDir(workerEnv), minTmpSpace); err != nil {
 		return outcome{}, err
 	}
@@ -170,26 +172,6 @@ func (e *localExec) runWorker(ctx context.Context, cmd []string, env map[string]
 	text := out.Stdout
 	e.lastOut = &text
 	return out, nil
-}
-
-// withLocalCLI returns env with PULSE_CLI defaulting to this runner's own binary
-// (localCLI: os.Executable(), else $PULSE_CLI, else <home>/bin/pulse) when the caller
-// did not set one, so the brief's `$PULSE_CLI` fallback holds for every local run,
-// whichever path built env. The caller's map is left untouched.
-func withLocalCLI(env map[string]string, home string) map[string]string {
-	if env["PULSE_CLI"] != "" {
-		return env
-	}
-	exe := localCLI(home)
-	if exe == "" {
-		return env
-	}
-	out := make(map[string]string, len(env)+1)
-	for k, v := range env {
-		out[k] = v
-	}
-	out["PULSE_CLI"] = exe
-	return out
 }
 
 // resultText is the harness output (D-L: no result file); nil before the worker ran.
