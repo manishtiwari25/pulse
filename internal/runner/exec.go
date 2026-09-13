@@ -403,6 +403,16 @@ func (e *sshExec) runWorker(ctx context.Context, cmd []string, env map[string]st
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Same signing-key pre-check as localExec.runWorker, done here rather than
+	// by the caller so every SSH run fails at setup instead of at commit time:
+	// the hub copy must exist and be non-empty, and the copy uploaded in
+	// prepare must still be on the host right before the worker starts (ADR-022).
+	if err := preflightRunKey(e.key); err != nil {
+		return outcome{}, err
+	}
+	if err := e.preflightRemoteRunKey("before the worker starts"); err != nil {
+		return outcome{}, err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	id := e.execution(env)
