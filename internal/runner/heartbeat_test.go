@@ -283,6 +283,8 @@ func TestHeartbeatRemoteRequiresEvidenceAndRecoversWithoutLeaseChanges(t *testin
 	runSSH = func(ctx context.Context, argv []string, _ []byte, _ time.Duration) (int, string, string, error) {
 		args := heartbeatSSHArgs(t, argv)
 		switch args[0] {
+		case "verify": // runWorker's remote signing-key pre-check
+			return 0, "", "", nil
 		case "probe":
 			return 0, "hands=ok heartbeat=1", "", nil
 		case "run":
@@ -418,6 +420,9 @@ func TestHeartbeatLegacyHandsAndProbeFailuresDoNotFailWork(t *testing.T) {
 			t.Cleanup(func() { runSSH = oldSSH })
 			runSSH = func(_ context.Context, argv []string, _ []byte, _ time.Duration) (int, string, string, error) {
 				args := heartbeatSSHArgs(t, argv)
+				if args[0] == "verify" { // runWorker's remote signing-key pre-check
+					return 0, "", "", nil
+				}
 				if args[0] == "probe" {
 					switch mode {
 					case "probe error":
@@ -469,6 +474,8 @@ func TestHeartbeatRemoteStopsOnExitTimeoutAndTransportLoss(t *testing.T) {
 			runSSH = func(ctx context.Context, argv []string, _ []byte, _ time.Duration) (int, string, string, error) {
 				args := heartbeatSSHArgs(t, argv)
 				switch args[0] {
+				case "verify": // runWorker's remote signing-key pre-check
+					return 0, "", "", nil
 				case "probe":
 					return 0, "hands=ok heartbeat=1", "", nil
 				case "heartbeat":
@@ -647,5 +654,34 @@ func TestHeartbeatSSHProcessCancellationIsBounded(t *testing.T) {
 	cancel()
 	if err := heartbeatReceive(t, done); !errors.Is(err, context.Canceled) {
 		t.Fatalf("SSH process ignored cancellation: %v", err)
+	}
+}
+
+// sshExec.runWorker applies the signing-key pre-check itself: when the host's
+// `test -s run.key` fails, the run ends with a setup-error and no `run` verb
+// is ever issued, so the failure lands at setup rather than at commit time.
+func TestSSHRunWorkerFailsAtSetupWhenRemoteKeyMissing(t *testing.T) {
+	s := newStore(t)
+	local, _, env := runnerHeartbeatFixture(t, s, "hands")
+	e := &sshExec{localExec: local}
+	oldSSH := runSSH
+	t.Cleanup(func() { runSSH = oldSSH })
+	ran := false
+	runSSH = func(_ context.Context, argv []string, _ []byte, _ time.Duration) (int, string, string, error) {
+		args := heartbeatSSHArgs(t, argv)
+		switch args[0] {
+		case "verify":
+			return 1, "", "test: run.key: No such file", nil
+		case "run":
+			ran = true
+		}
+		return 0, "", "", nil
+	}
+	_, err := e.runWorker(context.Background(), []string{"copilot"}, env, 1)
+	if err == nil || !strings.Contains(err.Error(), "setup-error") || !strings.Contains(err.Error(), "before the worker starts") {
+		t.Fatalf("expected setup-error from the remote key pre-check, got %v", err)
+	}
+	if ran {
+		t.Fatal("worker was started although the remote signing key was missing")
 	}
 }

@@ -424,14 +424,8 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			if err := preflightPulseCLI(found, env["PULSE_CLI"]); err != nil {
 				return err
 			}
-		} else if r, ok := ex.(interface{ preflightRemoteRunKey(string) error }); ok {
-			// Same preflightRunKey check as localExec.runWorker, run on the host:
-			// the key uploaded in prepare must still be there right before the
-			// worker starts and signs with it (ADR-022).
-			if err := r.preflightRemoteRunKey("before the worker starts"); err != nil {
-				return err
-			}
 		}
+		// sshExec.runWorker repeats the key check on the remote host itself.
 		log.add("$ %s", strings.Join(shown, " "))
 		launched := wallClock()
 		out, err := ex.runWorker(ctx, cmd, env, minutes)
