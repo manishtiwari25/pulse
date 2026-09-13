@@ -59,3 +59,36 @@ func TestPulseOnPathMissingIsSetupError(t *testing.T) {
 		t.Fatal("directory PULSE_CLI accepted")
 	}
 }
+
+// TestSetupErrorsSharePrefix: every preflight check listed in the doc table at
+// the top of preflight.go reports its failure with the "setup-error:" prefix,
+// so the runner classifies all of them as setup failures that requeue the job.
+func TestSetupErrorsSharePrefix(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent")
+	empty := filepath.Join(t.TempDir(), "empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := freeSpace
+	freeSpace = func(string) (uint64, error) { return 0, nil }
+	defer func() { freeSpace = prev }()
+	cases := map[string]error{
+		"preflightPulseCLI no cli":   preflightPulseCLI("", ""),
+		"preflightPulseCLI bad cli":  preflightPulseCLI("", missing),
+		"preflightRunKey missing":    preflightRunKey(missing),
+		"preflightRunKey empty":      preflightRunKey(empty),
+		"preflightTmpSpace unusable": preflightTmpSpace(missing+"/x", 1),
+		"preflightTmpSpace low":      preflightTmpSpace(t.TempDir(), 1),
+		"remoteKeyCheckResult":       remoteKeyCheckResult("/j/run.key", "host", "after upload", 1, "", "no such file"),
+		"remoteCLICheckResult":       remoteCLICheckResult("/opt/pulse", "host", 1, "", ""),
+	}
+	for name, err := range cases {
+		if err == nil {
+			t.Errorf("%s: want a setup-error, got nil", name)
+			continue
+		}
+		if !strings.HasPrefix(err.Error(), "setup-error:") {
+			t.Errorf("%s: %q does not start with \"setup-error:\"", name, err.Error())
+		}
+	}
+}

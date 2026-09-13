@@ -1,5 +1,23 @@
 package runner
 
+// Preflight checks refuse to start a worker whose run would fail late. Every
+// one of them returns an error whose text starts with "setup-error:" (see
+// TestSetupErrorsSharePrefix) so the runner classifies it as a setup failure:
+// the job goes back to the queue and no worker minutes are spent.
+//
+//	Check                     Where                                   Stage
+//	preflightRunKey           run.go (both executors)                 after the run key is written, before anything is spent
+//	preflightRunKey           exec.go localExec.prepare               clone prepare
+//	preflightRunKey           exec.go localExec.runWorker             last moment before the worker starts
+//	preflightRunKey           exec.go sshExec.runWorker               hub-side copy, last moment before the worker starts
+//	preflightTmpSpace         exec.go localExec.runWorker             last moment before the worker starts
+//	preflightPulseCLI         run.go (local executor only)            after the worker env is built, before launch
+//	preflightRemoteRunKey     exec.go sshExec.prepare                 after the key upload (remoteKeyCheckResult)
+//	preflightRemoteCLI        exec.go sshExec.runWorker               before the remote worker starts (remoteCLICheckResult)
+//
+// Adding a check: return fail(1, "setup-error: ...") and add its message
+// constructor to TestSetupErrorsSharePrefix.
+
 import (
 	"os"
 	"path/filepath"
