@@ -3,7 +3,6 @@ package runner
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/evolve"
@@ -97,7 +96,6 @@ func TestAwayOwnerQuestionUsesExistingSixHourPacing(t *testing.T) {
 }
 
 func TestFreshOwnerWorkWakesLeadWithStopContext(t *testing.T) {
-	testDeadline(t, 60*time.Second)
 	skipSlow(t)
 	for _, tt := range []struct {
 		name, work string

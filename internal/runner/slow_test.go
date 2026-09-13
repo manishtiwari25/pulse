@@ -17,6 +17,9 @@ func skipSlow(t *testing.T) {
 	}
 }
 
+// defaultTestDeadline is the per-test bound newStore installs; the slowest test here takes ~8s alone.
+const defaultTestDeadline = 60 * time.Second
+
 // testDeadline fails the test with a goroutine dump when it runs past d, so a worker clone whose
 // spawned git/worker subprocess blocks (credential prompt, stuck pipe) reports the stuck test by
 // name instead of letting the whole package hit `go test -timeout` and kill every result with it.

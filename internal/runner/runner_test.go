@@ -21,6 +21,9 @@ const testNow = "2026-09-06T10:00:00Z"
 // newStore makes a store in a temporary home; nothing ever touches ~/.pulse.
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
+	// Every store-based test gets a per-test bound by default (see slow_test.go), so a new subprocess
+	// test cannot hang the whole package without naming itself; tests without a store call it themselves.
+	testDeadline(t, defaultTestDeadline)
 	home := t.TempDir()
 	t.Setenv("PULSE_HOME", home)
 	for _, name := range []string{"PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"} {
@@ -571,7 +574,6 @@ func buildPulse(t *testing.T) string {
 }
 
 func TestHandsVerbsRoundTrip(t *testing.T) {
-	testDeadline(t, 60*time.Second)
 	skipSlow(t)
 	bin := buildPulse(t)
 	s := newStore(t)
@@ -676,7 +678,6 @@ func b64(argv ...string) string {
 }
 
 func TestHandsRunWorkerWhitelistAllowsNativeHarness(t *testing.T) {
-	testDeadline(t, 60*time.Second)
 	bin := buildPulse(t)
 	s := newStore(t)
 	_, repo := newRepo(t, s)

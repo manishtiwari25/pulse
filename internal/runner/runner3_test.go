@@ -18,7 +18,6 @@ import (
 // -- provenance: a signed, trailered commit lands; a foreign one does not (ADR-024) -------------------------
 
 func TestProvenanceRoundTrip(t *testing.T) {
-	testDeadline(t, 60*time.Second)
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
 	}
@@ -421,7 +420,6 @@ func TestWorkOnceDryRunAndIdle(t *testing.T) {
 // -- remote hands through the Go executor and the Go hands verbs over the wire protocol ----------------------
 
 func TestRemoteRunThroughLocalHands(t *testing.T) {
-	testDeadline(t, 60*time.Second)
 	skipSlow(t)
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
