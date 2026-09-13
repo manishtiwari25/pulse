@@ -3,6 +3,7 @@ package runner
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,15 @@ import (
 func newCompletionJob(t *testing.T, kind string) (*store.Store, row, row, string) {
 	t.Helper()
 	s := newStore(t)
+	project, agent := completionFixture(t, s, kind)
+	return s, completionJob(t, s, kind), project, agent
+}
+
+// completionFixture registers the project checkout and the worker (or lead) agent on s once;
+// table-driven tests call it in the parent and completionJob per case instead of paying a
+// fresh store, repo copy and addProject's git spawns for every row.
+func completionFixture(t *testing.T, s *store.Store, kind string) (row, string) {
+	t.Helper()
 	project, _ := newRepo(t, s)
 	agent := "aurora"
 	if kind == leadKind {
@@ -24,11 +34,61 @@ func newCompletionJob(t *testing.T, kind string) (*store.Store, row, row, string
 	} else {
 		join(t, s, agent)
 	}
+	return project, agent
+}
+
+// completionJob queues one fresh job of kind on the shared fixture's project.
+func completionJob(t *testing.T, s *store.Store, kind string) row {
+	t.Helper()
 	job, _, err := addJob(s, "proj", kind, "Completion regression", "Report the outcome.", 0, 0, "", humanAgent, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, job, project, agent
+	return job
+}
+
+// completionSnapshot captures the shared fixture store so a table-driven test can reset to it
+// between cases: posts are immutable (no DELETE), so the reset reopens a copy of the file
+// instead of clearing rows. VACUUM INTO writes a consistent copy from WAL mode.
+type completionSnapshot struct {
+	home, file string
+	s          *store.Store
+}
+
+func snapshotCompletionStore(t *testing.T, s *store.Store) *completionSnapshot {
+	t.Helper()
+	home := os.Getenv("PULSE_HOME")
+	file := filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if _, err := s.DB.Exec("VACUUM INTO ?", file); err != nil {
+		t.Fatal(err)
+	}
+	return &completionSnapshot{home: home, file: file, s: s}
+}
+
+// reset closes the current store, restores the snapshot file and reopens it; the returned
+// store is the fixture as it was right after snapshotCompletionStore.
+func (c *completionSnapshot) reset(t *testing.T) *store.Store {
+	t.Helper()
+	if err := c.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(c.home, store.StoreName)
+	for _, suffix := range []string{"-wal", "-shm"} {
+		os.Remove(path + suffix)
+	}
+	data, err := os.ReadFile(c.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Open(store.Options{Home: c.home, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.s = s
+	return s
 }
 
 func runCompletion(t *testing.T, s *store.Store, job row, agent, command string) row {
