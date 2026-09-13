@@ -79,6 +79,12 @@ func TestLandingKeepsBranchWhenCheckoutUnreadable(t *testing.T) {
 	}
 }
 
+// Profiled 2026-09-13 with a timing git shim (PATH wrapper) and per-phase t.Logf: the test runs 18 git
+// subprocesses at ~20-40ms each, evenly spread (per project: git init in the fixture, then rev-parse
+// --show-toplevel, config --get remote.origin.url, rev-parse --abbrev-ref HEAD and two cat-file -t from
+// board.RegisterProject/records seeding). Warm wall time is 0.33-0.43s over 8 runs; the 2-3s seen in
+// a single -v run is the cold test-binary link plus first git spawn, not one slow subprocess. Only the
+// three `git init` calls (~25ms each) are fixture-side; the other 15 are product code under addProject.
 func TestProtectedFoldersNote(t *testing.T) {
 	s := newStore(t)
 	home := t.TempDir()
