@@ -33,6 +33,13 @@ func newStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A throwaway store in a temp dir needs no crash durability: with WAL and the default
+	// synchronous=FULL every commit fsyncs, and the fixture-heavy tests here (newRepo seeds the
+	// framework records and starter fixtures on every project) spent ~30% of the package's CPU in
+	// unixWrite/fsync. Only this connection pool sees the pragma; the on-disk store is unchanged.
+	if _, err := s.DB.Exec("PRAGMA synchronous = OFF"); err != nil {
+		t.Fatal(err)
+	}
 	// The daemon's sealed held-out generation (ADR-033) would start the real runner command; tests
 	// that exercise it switch evolve.heldout back to auto with sealedCall stubbed (see heldout_test.go).
 	if err := s.SetSetting(humanAgent, "evolve.heldout", "owner"); err != nil {
