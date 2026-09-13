@@ -83,10 +83,10 @@ func TestProtectedFoldersNote(t *testing.T) {
 	s := newStore(t)
 	home := t.TempDir()
 	for _, p := range []struct{ slug, path string }{{"desk", filepath.Join(home, "Desktop", "work", "desk")}, {"docs", filepath.Join(home, "Documents")}, {"src", filepath.Join(home, "src", "Desktop")}} {
-		if err := os.MkdirAll(p.path, 0o755); err != nil {
+		// The template repo is already on main; copying it saves a git init per project.
+		if err := os.CopyFS(p.path, os.DirFS(templateRepo(t))); err != nil {
 			t.Fatal(err)
 		}
-		run(t, p.path, "git", "init", "-q", "-b", "main")
 		if _, _, err := addProject(s, p.path, p.slug, "", false, "", humanAgent, p.slug); err != nil {
 			t.Fatal(err)
 		}
