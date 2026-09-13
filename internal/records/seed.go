@@ -56,9 +56,10 @@ func SeedLoopRecords(s *store.Store, project, actor string) (SeedSummary, error)
 	}
 	summary.Project = p.Slug
 	results := []*SeedResult{&summary.Constitution, &summary.Evaluators}
+	committed := committedBlobs(p.Path, loopRecordFiles())
 	created := false
 	for i, slug := range loopRecords {
-		result, err := seedLoopRecord(s, p, slug, actor)
+		result, err := seedLoopRecord(s, p, slug, actor, committed)
 		if err != nil {
 			return summary, err
 		}
@@ -73,7 +74,7 @@ func SeedLoopRecords(s *store.Store, project, actor string) (SeedSummary, error)
 	return summary, nil
 }
 
-func seedLoopRecord(s *store.Store, p *store.Project, slug, actor string) (SeedResult, error) {
+func seedLoopRecord(s *store.Store, p *store.Project, slug, actor string, committed map[string]bool) (SeedResult, error) {
 	existing, err := loopRecord(s, p.Slug, slug)
 	if err != nil {
 		return SeedResult{}, err
@@ -85,7 +86,7 @@ func seedLoopRecord(s *store.Store, p *store.Project, slug, actor string) (SeedR
 		return SeedResult{ID: scopedID("evolution", slug, p), Action: "absent"}, nil
 	}
 	file := "docs/evolution/" + slug + ".md"
-	if committedBlob(p.Path, file) {
+	if committed[file] {
 		return importLoopRecord(s, p, slug, file, actor)
 	}
 	return copyLoopRecord(s, p, slug, actor)
@@ -101,15 +102,39 @@ func loopRecord(s *store.Store, project, slug string) (*store.Record, error) {
 	return &rows[0], nil
 }
 
-// committedBlob reports whether HEAD of the checkout at repo has a regular
-// file at path; a directory that is not a repository, has no commit yet or
-// lacks the file is false.
-func committedBlob(repo, path string) bool {
-	if repo == "" {
-		return false
+// loopRecordFiles is the checkout path of every loop record, seeded order.
+func loopRecordFiles() []string {
+	files := make([]string, 0, len(loopRecords))
+	for _, slug := range loopRecords {
+		files = append(files, "docs/evolution/"+slug+".md")
 	}
-	kind, err := gitRead(repo, "cat-file", "-t", "HEAD:"+path)
-	return err == nil && strings.TrimSpace(kind) == "blob"
+	return files
+}
+
+// committedBlobs reports which of paths HEAD of the checkout at repo has as a
+// regular file, in one git call; a directory that is not a repository, has
+// no commit yet or lacks the files yields none.
+func committedBlobs(repo string, paths []string) map[string]bool {
+	found := map[string]bool{}
+	if repo == "" || len(paths) == 0 {
+		return found
+	}
+	out, err := gitRead(repo, append([]string{"ls-tree", "-z", "HEAD", "--"}, paths...)...)
+	if err != nil {
+		return found
+	}
+	for _, line := range strings.Split(out, "\x00") {
+		// <mode> SP <type> SP <object> TAB <path>
+		meta, path, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(meta)
+		if len(fields) >= 2 && fields[1] == "blob" {
+			found[path] = true
+		}
+	}
+	return found
 }
 
 // importLoopRecord indexes the committed file through ImportRepo, restricted
