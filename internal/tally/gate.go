@@ -3,6 +3,7 @@ package tally
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -25,6 +26,7 @@ const (
 	GateOwner      = "addressed to the owner; not a worker job"
 	GateNoEvidence = "without evidence: no Signal: line names an existing file, post or check"
 	GateOwnerPaths = "points at owner-only paths (constitution, evaluators, decisions, .github)"
+	GateUnlanded   = "Signal path is absent from the default branch (only on an unlanded branch); waits for landing"
 )
 
 func signalTokens(text string) []string {
@@ -74,6 +76,61 @@ func SignalResolves(s *store.Store, projectPath string, summary, body string) bo
 		}
 	}
 	return false
+}
+
+// signalPaths returns the cleaned relative file paths named by Signal: tokens that exist in the working tree.
+func signalPaths(projectPath, summary, body string) []string {
+	var out []string
+	for _, tok := range signalTokens(summary + "\n" + body) {
+		rel := relOfToken(tok)
+		if projectPath == "" || rel == "" || filepath.IsAbs(rel) {
+			continue
+		}
+		clean := filepath.Clean(rel)
+		if clean == "." || contains(strings.Split(clean, string(filepath.Separator)), "..") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(projectPath, clean)); err == nil {
+			out = append(out, clean)
+		}
+	}
+	return out
+}
+
+// SignalUnlanded reports whether every Signal: path of the card exists in the working tree but none is
+// present on the project's default branch, i.e. the evidence lives only on an unlanded pulse/* branch.
+// It returns false when the project has no default branch, projectPath is not a git repository, or the
+// card resolves through a post id or check: token, so those cards keep the plain SignalResolves verdict.
+func SignalUnlanded(s *store.Store, projectPath string, summary, body string) bool {
+	if projectPath == "" {
+		return false
+	}
+	for _, tok := range signalTokens(summary + "\n" + body) {
+		if strings.HasPrefix(strings.ToLower(tok), "check:") && len(tok) > len("check:") {
+			return false
+		}
+		var id string
+		if err := s.DB.QueryRow("SELECT id FROM posts WHERE id = ?", tok).Scan(&id); err == nil {
+			return false
+		}
+	}
+	paths := signalPaths(projectPath, summary, body)
+	if len(paths) == 0 {
+		return false
+	}
+	var branch string
+	if err := s.DB.QueryRow("SELECT default_branch FROM projects WHERE path = ?", projectPath).Scan(&branch); err != nil || branch == "" {
+		return false
+	}
+	if err := exec.Command("git", "-C", projectPath, "rev-parse", "--verify", "--quiet", branch+"^{commit}").Run(); err != nil {
+		return false // not a repository or the default branch is missing locally: cannot judge landing
+	}
+	for _, p := range paths {
+		if err := exec.Command("git", "-C", projectPath, "cat-file", "-e", branch+":"+filepath.ToSlash(p)).Run(); err == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // IsWorkerPost reports whether agent is registered as a worker.
@@ -136,6 +193,9 @@ func PlanGate(s *store.Store, projectPath string, sg Suggestion, post *Post) str
 		}
 		if OwnerTargeted(summary, body) {
 			return GateOwnerPaths
+		}
+		if SignalUnlanded(s, projectPath, summary, body) {
+			return GateUnlanded
 		}
 	}
 	return ""
