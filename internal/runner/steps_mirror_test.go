@@ -133,3 +133,17 @@ func TestRemoteStepsMirrorInvalidJSONStops(t *testing.T) {
 		t.Fatal("invalid JSON accepted")
 	}
 }
+
+// TestProbeVersionHookWithoutPATH pins the guard in-process: with PATH emptied the probe must still
+// report the hooked copilot version instead of shelling out to a real CLI.
+func TestProbeVersionHookWithoutPATH(t *testing.T) {
+	var out bytes.Buffer
+	h := newTestHands(t, t.TempDir(), &out, nil)
+	t.Setenv("PATH", "")
+	if err := h.probe(); err != nil {
+		t.Fatal(err)
+	}
+	if fields := parseProbe(out.String()); fields["copilot"] != "0.0.1-test" {
+		t.Fatalf("probe fields = %#v", fields)
+	}
+}

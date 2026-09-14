@@ -152,6 +152,29 @@ func (h *hands) withTimeoutObserved(budget time.Duration, dir string, argv []str
 
 var handsKillAfter = 30 * time.Second
 
+// probeVersion reports the copilot CLI version for `pulse hands probe`: "present" when the binary
+// resolves but prints no version, or an error when it is not on PATH. It is a package-level hook so
+// tests (newTestHands) can pin it in-process instead of relying on PATH shims: the real CLI unpacks
+// a ~130MB runtime into $HOME on first run, which is exactly what the test guard must never trigger.
+var probeVersion = copilotVersion
+
+func copilotVersion() (string, error) {
+	path, err := exec.LookPath("copilot")
+	if err != nil {
+		return "", err
+	}
+	out, err := exec.Command(path, "--version").Output()
+	if err != nil {
+		return "present", nil
+	}
+	first, _, _ := strings.Cut(string(out), "\n")
+	v := strings.Trim(regexp.MustCompile(`[^0-9.]`).ReplaceAllString(first, ""), ".")
+	if v == "" {
+		return "present", nil
+	}
+	return v, nil
+}
+
 func (h *hands) probe() error {
 	gitv := "missing"
 	if out, err := exec.Command("git", "--version").Output(); err == nil {
@@ -160,15 +183,8 @@ func (h *hands) probe() error {
 		}
 	}
 	copv := "missing"
-	if path, err := exec.LookPath("copilot"); err == nil {
-		copv = "present"
-		if out, err := exec.Command(path, "--version").Output(); err == nil {
-			first, _, _ := strings.Cut(string(out), "\n")
-			v := strings.Trim(regexp.MustCompile(`[^0-9.]`).ReplaceAllString(first, ""), ".")
-			if v != "" {
-				copv = v
-			}
-		}
+	if v, err := probeVersion(); err == nil {
+		copv = v
 	}
 	loggedIn := "no"
 	if copv != "missing" {
