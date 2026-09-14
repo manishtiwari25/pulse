@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { codeDeliveriesPath } from "./api.ts";
-import { codeDeliveryCoverageText, codeDeliveryIncompleteWindow, codeDeliveryKpiState, codeDeliveryKpiSub, codeDeliveryWindowLabel, shortCommit } from "./code-deliveries.ts";
+import { codeDeliveryCommitURL, codeDeliveryCoverageText, codeDeliveryIncompleteWindow, codeDeliveryKpiState, codeDeliveryKpiSub, codeDeliveryWindowLabel, shortCommit } from "./code-deliveries.ts";
 
 const payload = (overrides = {}) => ({
   scope: { project: null, limit: 100, scanned: 4, has_more: false, next_before: null, ...(overrides.scope || {}) },
@@ -56,4 +56,45 @@ test("KPI state marks cached refresh failures stale and warning", () => {
 test("commit display is bounded", () => {
   assert.equal(shortCommit("0123456789abcdef"), "0123456789ab");
   assert.equal(shortCommit(""), "unknown commit");
+});
+
+test("commit links use the configured repository and full object ID", () => {
+  const sha = "abcdef0123".repeat(4);
+  for (const remote of [
+    "https://github.com/team/project.git",
+    "git@github.com:team/project.git",
+    "ssh://git@github.com/team/project.git",
+    "git://github.com/team/project.git",
+    "http://GitHub.com/team/project/",
+  ]) {
+    assert.equal(codeDeliveryCommitURL(remote, sha), `https://github.com/team/project/commit/${sha}`, remote);
+  }
+  assert.equal(codeDeliveryCommitURL("git@gitlab.com:group/subgroup/project.git", sha), `https://gitlab.com/group/subgroup/project/-/commit/${sha}`);
+  assert.equal(codeDeliveryCommitURL("https://bitbucket.org/team/project.git", sha), `https://bitbucket.org/team/project/commits/${sha}`);
+  assert.equal(codeDeliveryCommitURL("https://github.com/team/other.git", "A".repeat(64)), `https://github.com/team/other/commit/${"a".repeat(64)}`);
+});
+
+test("commit links never copy credentials, query tokens or fragments", () => {
+  const sha = "a".repeat(40);
+  assert.equal(
+    codeDeliveryCommitURL("https://user:private-token@github.com/team/project.git?token=private-token#private-token", sha),
+    `https://github.com/team/project/commit/${sha}`,
+  );
+});
+
+test("local-only, unsupported and invalid targets keep an unlinked commit", () => {
+  const sha = "a".repeat(40);
+  for (const remote of [
+    null, undefined, "", "/tmp/project", "file:///tmp/project",
+    "javascript:alert(1)", "https://github.com.evil.test/team/project",
+    "https://example.test/team/project", "https://github.com/team",
+    "https://github.com/team/project/tree/main", "https://github.com/team//project",
+    "https://github.com/team/project%2Fother", "https://github.com/team/pro\nject",
+    "https://github.com:8443/team/project",
+  ]) {
+    assert.equal(codeDeliveryCommitURL(remote, sha), null, String(remote));
+  }
+  for (const commit of ["", "main", "abc123", "g".repeat(40), "a".repeat(41), "a".repeat(63), "a".repeat(65), "../main"]) {
+    assert.equal(codeDeliveryCommitURL("https://github.com/team/project", commit), null, commit);
+  }
 });

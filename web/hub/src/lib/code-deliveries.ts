@@ -56,3 +56,39 @@ export function codeDeliveryCoverageText(d: CodeDeliveriesPayload): string {
 export function shortCommit(sha: string): string {
   return sha ? sha.slice(0, 12) : "unknown commit";
 }
+
+export function codeDeliveryCommitURL(remote: string | null | undefined, sha: string): string | null {
+  if (!remote || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(sha)) return null;
+  let source = remote.trim();
+  if (/[\s\\]/.test(source)) return null;
+  const scp = /^(?:[^@/:]+@)?(github\.com|gitlab\.com|bitbucket\.org):(.+)$/i.exec(source);
+  if (scp) source = "ssh://" + scp[1] + "/" + scp[2];
+  let repo: URL;
+  try {
+    repo = new URL(source);
+  } catch (error) {
+    if (error instanceof TypeError) return null;
+    throw error;
+  }
+  if (!["https:", "http:", "ssh:", "git:"].includes(repo.protocol) || repo.port) return null;
+  const parts = repo.pathname.replace(/\/+$/, "").replace(/\.git$/i, "").slice(1).split("/");
+  if (parts.some((part) => !/^[a-z0-9_.-]+$/i.test(part) || /^\.+$/.test(part))) return null;
+  let route: string;
+  switch (repo.hostname.toLowerCase()) {
+    case "github.com":
+      if (parts.length !== 2) return null;
+      route = "commit";
+      break;
+    case "gitlab.com":
+      if (parts.length < 2) return null;
+      route = "-/commit";
+      break;
+    case "bitbucket.org":
+      if (parts.length !== 2) return null;
+      route = "commits";
+      break;
+    default:
+      return null;
+  }
+  return "https://" + repo.hostname.toLowerCase() + "/" + parts.join("/") + "/" + route + "/" + sha.toLowerCase();
+}

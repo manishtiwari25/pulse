@@ -8,8 +8,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { CardGrid, Fact, ItemCard, ItemCardActions, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
 import { EmptyState, ErrorNotice, Kpi, Notice, Panel, SkeletonRows, Stack } from "@/components/pulse/panel";
 import { Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
-import { codeDeliveryCoverageText, codeDeliveryCoverageTone, codeDeliveryIncompleteWindow, codeDeliveryKpiState, codeDeliveryWindowLabel, shortCommit } from "@/lib/code-deliveries";
-import { codeDeliveriesPath, type CodeDeliveriesPayload, type CodeDelivery, type CodeDeliveryJob, type CodeDeliverySuggestion, type CodeDeliveryTask, type CodeDeliveryWorker } from "@/lib/api";
+import { codeDeliveryCommitURL, codeDeliveryCoverageText, codeDeliveryCoverageTone, codeDeliveryIncompleteWindow, codeDeliveryKpiState, codeDeliveryWindowLabel, shortCommit } from "@/lib/code-deliveries";
+import { codeDeliveriesPath, type CodeDeliveriesPayload, type CodeDelivery, type CodeDeliveryJob, type CodeDeliverySuggestion, type CodeDeliveryTask, type CodeDeliveryWorker, type ProjectsPayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { num, plural, truncate } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
@@ -27,6 +27,8 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
   const [jobDelivery, setJobDelivery] = useState<CodeDelivery | null>(null);
   const before = cursors[cursors.length - 1] ?? null;
   const q = useApi<CodeDeliveriesPayload>(codeDeliveriesPath({ project: project || undefined, limit: LIMIT, before }), { refresh: 30000 });
+  const registry = useApi<ProjectsPayload>("projects", { refresh: 60000 });
+  const remotes = new Map((registry.error ? [] : registry.data?.projects ?? []).map((p) => [p.slug, p.remote]));
   const d = q.data;
   const page = cursors.length;
   const incomplete = codeDeliveryIncompleteWindow(d);
@@ -47,7 +49,7 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
             </Button>
           </span>
         }
-        footer="Counts come from recent land.landed evidence only. Mixed source/docs deliveries count once; docs-only and non-code-only landings are excluded. Votes are provenance/current votes, not approval or quality."
+        footer="Counts come from recent land.landed evidence only. Mixed source/docs deliveries count once; docs-only and non-code-only landings are excluded. Votes are provenance/current votes, not approval or quality. Hosted commit links require the commit to have been pushed."
       >
         {q.error && !d ? <ErrorNotice error={q.error} onRetry={() => void q.reload()} /> : null}
         {!d ? q.error ? null : (
@@ -55,6 +57,7 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
         ) : (
           <Stack gap={4}>
             {q.error ? <ErrorNotice error={q.error} onRetry={() => void q.reload()}>Showing cached code-delivery data; refresh failed ({q.error}).</ErrorNotice> : null}
+            {registry.error ? <ErrorNotice error={registry.error} onRetry={() => void registry.reload()}>Commit links unavailable: repository details could not be loaded ({registry.error}).</ErrorNotice> : null}
             <Notice tone={coverageTone}>{coverage}</Notice>
             <CardGrid cols={3}>
               <Fact n={num(d.summary.code_deliveries)} label="code deliveries" tone={d.summary.code_deliveries ? "ok" : undefined} />
@@ -67,7 +70,7 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
             {d.deliveries.length ? (
               <div className="grid gap-3">
                 {d.deliveries.map((row) => (
-                  <CodeDeliveryCard key={row.project + "/" + row.event_seq + "/" + row.commit} row={row} onOpenJob={() => setJobDelivery(row)} />
+                  <CodeDeliveryCard key={row.project + "/" + row.event_seq + "/" + row.commit} row={row} remote={remotes.get(row.project)} onOpenJob={() => setJobDelivery(row)} />
                 ))}
               </div>
             ) : incomplete ? (
@@ -98,12 +101,12 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
           </Stack>
         )}
       </Panel>
-      <JobEvidenceSheet delivery={jobDelivery} onClose={() => setJobDelivery(null)} />
+      <JobEvidenceSheet delivery={jobDelivery} remote={jobDelivery ? remotes.get(jobDelivery.project) : undefined} onClose={() => setJobDelivery(null)} />
     </section>
   );
 }
 
-function CodeDeliveryCard({ row, onOpenJob }: { row: CodeDelivery; onOpenJob: () => void }) {
+function CodeDeliveryCard({ row, remote, onOpenJob }: { row: CodeDelivery; remote?: string; onOpenJob: () => void }) {
   const title = row.job?.title || row.suggestion?.summary || row.tasks.map((t) => t.title).filter(Boolean).join(", ") || "Recorded source-code delivery";
   return (
     <ItemCard onOpen={row.job ? onOpenJob : undefined} ariaLabel={"Code delivery " + row.event_seq} className="min-w-0">
@@ -111,7 +114,7 @@ function CodeDeliveryCard({ row, onOpenJob }: { row: CodeDelivery; onOpenJob: ()
         right={
           <>
             <When d={row.at} />
-            <Mono>{shortCommit(row.commit)}</Mono>
+            <CommitLink commit={row.commit} remote={remote} />
           </>
         }
       >
@@ -128,6 +131,23 @@ function CodeDeliveryCard({ row, onOpenJob }: { row: CodeDelivery; onOpenJob: ()
       <PathPreview paths={row.code_paths} truncated={row.paths_truncated} />
       <Lineage row={row} onOpenJob={onOpenJob} />
     </ItemCard>
+  );
+}
+
+function CommitLink({ commit, remote }: { commit: string; remote?: string }) {
+  const url = codeDeliveryCommitURL(remote, commit);
+  if (!url) return <span title={commit + " (repository link unavailable)"}><Mono>{shortCommit(commit)}</Mono></span>;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={"View commit " + commit + " (opens in a new tab)"}
+      title={"View commit " + commit + " in the configured repository; available after push"}
+      className="inline-flex items-center gap-1 rounded-sm text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <Mono>{shortCommit(commit)}</Mono><ArrowUpRightIcon className="size-3" aria-hidden />
+    </a>
   );
 }
 
@@ -231,18 +251,18 @@ function UnavailableRows({ rows }: { rows: CodeDeliveriesPayload["unavailable"] 
   );
 }
 
-function JobEvidenceSheet({ delivery, onClose }: { delivery: CodeDelivery | null; onClose: () => void }) {
+function JobEvidenceSheet({ delivery, remote, onClose }: { delivery: CodeDelivery | null; remote?: string; onClose: () => void }) {
   const job = delivery?.job ?? null;
   return (
     <Sheet open={!!delivery} onOpenChange={(open) => !open && onClose()}>
       <SheetContent side="right" className="flex flex-col gap-0 overflow-hidden rounded-l-xl p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
-        {delivery && job ? <JobEvidenceBody delivery={delivery} job={job} /> : null}
+        {delivery && job ? <JobEvidenceBody delivery={delivery} job={job} remote={remote} /> : null}
       </SheetContent>
     </Sheet>
   );
 }
 
-function JobEvidenceBody({ delivery, job }: { delivery: CodeDelivery; job: CodeDeliveryJob }) {
+function JobEvidenceBody({ delivery, job, remote }: { delivery: CodeDelivery; job: CodeDeliveryJob; remote?: string }) {
   return (
     <>
       <SheetHeader className="border-b bg-card px-4 py-3">
@@ -262,7 +282,7 @@ function JobEvidenceBody({ delivery, job }: { delivery: CodeDelivery; job: CodeD
               <dt className="text-muted-foreground">event</dt>
               <dd><Mono>{delivery.event_seq}</Mono></dd>
               <dt className="text-muted-foreground">commit</dt>
-              <dd><span title={delivery.commit}><Mono>{shortCommit(delivery.commit)}</Mono></span></dd>
+              <dd><CommitLink commit={delivery.commit} remote={remote} /></dd>
               <dt className="text-muted-foreground">landed</dt>
               <dd><When d={delivery.at} exact /></dd>
               <dt className="text-muted-foreground">evidence</dt>
