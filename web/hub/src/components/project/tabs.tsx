@@ -11,12 +11,14 @@ import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow, work
 import { DataTable } from "@/components/pulse/data-table";
 import { DocRev, SeededMarker, SelfImprovementPanel } from "@/components/pulse/evolve";
 import { LiveFeed } from "@/components/pulse/live-feed";
+import { FailedJobsSection } from "@/components/pulse/job-repair-section";
 import { Markdown } from "@/components/pulse/markdown";
 import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Check, Mono, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
 import { THREAD_COLUMNS, ThreadCards, ThreadLastBy, ThreadParticipants, ThreadSignals } from "@/components/board/sheets";
 import { ChatPane } from "@/components/chat/chat-pane";
+import { ProjectGoalPanel } from "@/components/project/goal";
 import { SectionHeading } from "@/components/pulse/item-card";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
@@ -96,6 +98,8 @@ export function OverviewTab({ slug }: { slug: string }) {
         return (
           <div className="grid gap-4">
             <ProjectBranchLine info={i} />
+            <ProjectGoalPanel key={slug} slug={slug} />
+            <FailedJobsSection key={"repairs-" + slug} project={slug} />
             <KpiGrid>
               <Kpi icon={InboxIcon} n={o.proposals_awaiting} label="for you" sub="proposals waiting" tone={o.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "proposals")} />
               <Kpi icon={ListTodoIcon} n={open.length} label="open tasks" sub={tasks.data ? plural(open.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.project(slug, "tasks")} />

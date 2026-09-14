@@ -6,11 +6,13 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { showApiError } from "./confirm";
+import { canApplyServiceSetup, daemonServiceState, serviceSetupAction, type ServiceSetupAction, type ServiceSetupPhase } from "./daemon-control-state";
 import { TerminalAlternative } from "./evolve";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardTitle } from "./item-card";
 import { Notice } from "./panel";
+import { waitForServiceHandover } from "./service-handover";
 import { Mono, ToneBadge } from "./who";
-import { api, writes, type Org, type ServiceInstallResult, type ServicePayload } from "@/lib/api";
+import { api, writes, type ServiceInstallResult, type ServicePayload } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
 
 // Keep PULSE running (ADR-038): the one machine step a shared copy needs.
@@ -21,56 +23,70 @@ import { invalidate } from "@/lib/use-api";
 // hub is a foreground `pulse hub` on the service's port - waits for the
 // service's hub to answer on the same address before it reloads.
 
-const refreshAfterInstall = () => invalidate((p) => p === "service" || p === "running" || p === "runner" || p === "org");
-
-// How long the page waits for the service's hub after a handover before it says so.
-const HANDOVER_WAIT_MS = 45000;
-const HANDOVER_POLL_MS = 1000;
-
-type Phase = "preview" | "installing" | "handover" | "done" | "late";
+const refreshAfterInstall = () => invalidate((p) => p === "service" || p === "running" || p === "runner" || p === "settings" || p === "org");
 
 export function ServiceCard({ payload }: { payload: ServicePayload }) {
-  const [open, setOpen] = useState(false);
+  const state = daemonServiceState(payload);
+  const starting = state === "unloaded";
+  const finishing = serviceSetupAction(payload) === "finish";
+  const title = finishing ? "Finish service setup" : starting ? "Start daemon" : "Keep PULSE running";
   return (
-    <ItemCard highlight ariaLabel="Keep PULSE running">
+    <ItemCard highlight ariaLabel={title}>
       <ItemCardHeader right={<ToneBadge tone="neutral">{payload.service.kind}</ToneBadge>}>
         <ToneBadge tone="accent">this machine</ToneBadge>
-        <ToneBadge tone="warn">not kept alive</ToneBadge>
+        <ToneBadge tone={state === "loaded" && !finishing ? "neutral" : "warn"}>{finishing ? "console setup needed" : state === "unloaded" ? "not loaded" : state === "loaded" ? "service loaded" : state === "missing" ? "not installed" : state}</ToneBadge>
       </ItemCardHeader>
-      <ItemCardTitle>Keep PULSE running</ItemCardTitle>
+      <ItemCardTitle>{title}</ItemCardTitle>
       <ItemCardBody clamp={5}>
-        The daemon runs your agents, measures each cycle and lands what passes; this console is how you watch and decide. Right now both stop when the terminal that started them closes. Install them once as user services: they start
-        when you log in and come back on their own after a rebuild.
+        {finishing ? "The daemon's service is present and loaded. Preview and apply the existing installer to finish the console's missing, unloaded or unconfirmed service setup." : starting ? "The daemon's service file exists, but it is not loaded. Preview and apply the existing installer to load it again." : "User services keep the daemon and this console available after you close a terminal. They start at login and come back after a rebuild."}
+        {" "}Setup leaves unchanged, loaded units alone. It does not clear the owner pause or any STOP file, and a fresh heartbeat still needs to confirm progress.
       </ItemCardBody>
       <TerminalAlternative command={payload.command} />
       <ItemCardActions>
         <span className="text-xs text-muted-foreground">writes two small files under your home; nothing needs a password</span>
         <span className="ml-auto shrink-0">
-          <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-            <PowerIcon /> Keep running
-          </Button>
+          <ServiceControl payload={payload} />
         </span>
       </ItemCardActions>
-      <ServiceDialog open={open} onOpenChange={setOpen} payload={payload} />
     </ItemCard>
   );
 }
 
-export function ServiceDialog({ open, onOpenChange, payload }: { open: boolean; onOpenChange: (o: boolean) => void; payload: ServicePayload }) {
-  const [phase, setPhase] = useState<Phase>("preview");
+export function ServiceControl({ payload, disabled = false, blockedReason = "" }: { payload: ServicePayload; disabled?: boolean; blockedReason?: string }) {
+  const [intent, setIntent] = useState<ServiceSetupAction | null>(null);
+  const action = serviceSetupAction(payload);
+  return (
+    <>
+      {action ? <Button size="sm" variant="outline" disabled={disabled} onClick={() => setIntent(action)}><PowerIcon /> {action === "finish" ? "Finish service setup" : action === "start" ? "Start daemon" : "Keep running"}</Button> : null}
+      <ServiceDialog open={intent !== null} onOpenChange={(o) => !o && setIntent(null)} payload={payload} action={intent ?? "install"} disabled={disabled} blockedReason={blockedReason} />
+    </>
+  );
+}
+
+export function ServiceDialog({ open, onOpenChange, payload, action = "install", disabled = false, blockedReason = "" }: { open: boolean; onOpenChange: (o: boolean) => void; payload: ServicePayload; action?: ServiceSetupAction; disabled?: boolean; blockedReason?: string }) {
+  const [phase, setPhase] = useState<ServiceSetupPhase>("preview");
   const [preview, setPreview] = useState<ServiceInstallResult | null>(null);
   const [previewError, setPreviewError] = useState("");
+  const [previewAttempt, setPreviewAttempt] = useState(0);
   const [result, setResult] = useState<ServiceInstallResult | null>(null);
+  const [handoverNote, setHandoverNote] = useState("");
   const busy = phase === "installing" || phase === "handover";
+  const canApply = canApplyServiceSetup({ phase, supported: payload.service.supported, preview, previewError, disabled, blockedReason });
   const timer = useRef<number | null>(null);
+  const cancelHandover = useRef<(() => void) | null>(null);
+  const active = useRef(false);
+  const applying = useRef(false);
+  const starting = action === "start";
+  const finishing = action === "finish";
 
   // The preview is `pulse service install --dry-run`: the launchers and units as text, written nowhere.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !payload.service.supported) return;
     let cancelled = false;
     writes
       .serviceInstall(true)
       .then((r) => {
+        if (!r.dry_run || r.installed) throw new Error("The service API did not return a dry-run preview. Refresh status before trying again.");
         if (!cancelled) setPreview(r);
       })
       .catch((e: unknown) => {
@@ -79,64 +95,73 @@ export function ServiceDialog({ open, onOpenChange, payload }: { open: boolean; 
     return () => {
       cancelled = true;
     };
+  }, [open, payload.service.supported, previewAttempt]);
+
+  useEffect(() => {
+    active.current = open;
+    return () => {
+      active.current = false;
+      if (timer.current) window.clearTimeout(timer.current);
+      cancelHandover.current?.();
+    };
   }, [open]);
 
-  useEffect(
-    () => () => {
-      if (timer.current) window.clearTimeout(timer.current);
-    },
-    [],
-  );
-
-  // The card leaves the inbox once `service` says installed, and the dialog with it: refresh on close, not before.
+  // Refresh after closing, including failed applies: the installer may have written only some files.
   const close = (o: boolean) => {
     if (busy) return;
     if (!o) {
-      const installed = phase === "done" || phase === "late";
       setPhase("preview");
       setResult(null);
       setPreview(null);
       setPreviewError("");
-      if (installed) refreshAfterInstall();
+      setHandoverNote("");
+      refreshAfterInstall();
     }
     onOpenChange(o);
   };
 
-  // After a handover the old hub has left the port: poll until a hub answers again, then reload so the page reads the service's.
-  const awaitHandover = (started: number) => {
-    api<Org>("org")
-      .then(() => {
-        setPhase("done");
-        window.setTimeout(() => window.location.reload(), 400);
-      })
-      .catch(() => {
-        if (Date.now() - started > HANDOVER_WAIT_MS) {
-          setPhase("late");
-          return;
-        }
-        timer.current = window.setTimeout(() => awaitHandover(started), HANDOVER_POLL_MS);
-      });
-  };
-
   const install = async () => {
+    if (applying.current) return;
+    if (!canApply) {
+      showApiError(new Error(blockedReason || "A supported service manager, current status and successful preview are required before applying setup."));
+      return;
+    }
+    applying.current = true;
     setPhase("installing");
-    const id = toast.loading("Installing the services…");
+    const id = toast.loading(finishing ? "Completing service setup..." : starting ? "Loading the services..." : "Installing the services...");
     try {
       const r = await writes.serviceInstall(false);
-      setResult(r);
-      if (r.handover) {
-        toast.success("Installed · this console hands over to the service's", { id });
-        setPhase("handover");
-        // Give the old hub its moment to stop listening before the first poll.
-        timer.current = window.setTimeout(() => awaitHandover(Date.now()), 1500);
+      if (r.dry_run || !r.installed) throw new Error("The service setup was not applied. Refresh status and preview it again.");
+      if (!active.current) {
+        toast.dismiss(id);
+        refreshAfterInstall();
         return;
       }
-      toast.success("Installed · the daemon and the console are kept alive", { id });
+      setResult(r);
+      if (r.handover) {
+        toast.success("Service setup applied; waiting for the service's console", { id });
+        setPhase("handover");
+        cancelHandover.current = waitForServiceHandover({
+          load: (signal) => api<ServicePayload>("service", { signal }),
+          onReady: () => {
+            setPhase("done");
+            timer.current = window.setTimeout(() => window.location.reload(), 400);
+          },
+          onLate: (note) => {
+            setHandoverNote(note);
+            setPhase("late");
+          },
+        });
+        return;
+      }
+      toast.success("Service setup applied. Close to refresh the daemon's status.", { id });
       setPhase("done");
     } catch (e) {
       toast.dismiss(id);
       showApiError(e, "Could not install the services");
-      setPhase("preview");
+      if (active.current) setPhase("preview");
+    } finally {
+      applying.current = false;
     }
   };
 
@@ -144,16 +169,22 @@ export function ServiceDialog({ open, onOpenChange, payload }: { open: boolean; 
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="max-h-[90vh] overflow-y-auto rounded-xl sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Keep PULSE running</DialogTitle>
+          <DialogTitle>{finishing ? "Finish service setup" : starting ? "Start daemon" : "Keep PULSE running"}</DialogTitle>
           <DialogDescription>
             Two user services under {payload.service.kind}: the daemon and this console. They start at login, restart if they stop, and pick up each rebuild. The same as <Mono>{payload.command}</Mono>.
+            {" "}Unchanged, loaded units are left alone. Setup does not clear the owner pause or any STOP file, and does not prove a fresh daemon heartbeat.
           </DialogDescription>
         </DialogHeader>
 
         {phase === "preview" || phase === "installing" ? (
           <div className="grid gap-3">
-            {previewError ? (
-              <Notice tone="warn">Could not preview: {previewError}</Notice>
+            {!payload.service.supported ? (
+              <Notice tone="warn">No supported service manager is available. Run <Mono>pulse daemon</Mono> in a terminal only after confirming no daemon is already running.</Notice>
+            ) : previewError ? (
+              <Notice tone="warn">
+                Could not preview: {previewError}
+                <Button size="xs" variant="outline" className="ml-2" onClick={() => { setPreview(null); setPreviewError(""); setPreviewAttempt((n) => n + 1); }}>Retry preview</Button>
+              </Notice>
             ) : preview ? (
               <>
                 <p className="text-xs text-muted-foreground">
@@ -178,36 +209,40 @@ export function ServiceDialog({ open, onOpenChange, payload }: { open: boolean; 
                 <Loader2Icon className="size-4 animate-spin" /> previewing…
               </div>
             )}
+            {blockedReason ? <Notice tone="warn">{blockedReason}</Notice> : disabled ? <Notice tone="warn">Service or runner status changed or is being refreshed. Refresh status before applying setup.</Notice> : null}
           </div>
         ) : phase === "handover" ? (
           <div className="flex items-center gap-2 text-sm" aria-busy="true">
-            <Loader2Icon className="size-4 animate-spin" /> Installed. Waiting for the service&apos;s console at <Mono>{result?.hub_url ?? payload.hub_url}</Mono>…
+            <Loader2Icon className="size-4 animate-spin" /> Setup applied. Waiting for the service&apos;s console at <Mono>{result?.hub_url ?? payload.hub_url}</Mono>…
           </div>
         ) : phase === "late" ? (
           <Notice tone="warn">
-            The services are installed, but no console answered at <Mono>{result?.hub_url ?? payload.hub_url}</Mono> yet. Give it a moment and reload; <Mono>pulse service status</Mono> in a terminal shows both units.
+            Setup was applied, but the service&apos;s console has not confirmed the handover at <Mono>{result?.hub_url ?? payload.hub_url}</Mono>. {handoverNote} Give it a moment and reload; <Mono>pulse service status</Mono> in a terminal shows both units.
           </Notice>
         ) : (
           <div className="flex items-center gap-2 text-sm">
             <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-ok/10 text-ok" aria-hidden>
               <CheckIcon className="size-3.5" />
             </span>
-            Installed. The daemon and the console are user services now; <Mono>{payload.service.logs}</Mono> holds their logs.
+            <span>
+              {result?.handover ? "The service's console answered. Reconnecting to read its current daemon status." : "Service setup applied. Close to refresh the heartbeat and owner pause; neither a saved setting nor service setup proves the daemon is making progress."}
+              {" "}<Mono>{payload.service.logs}</Mono> holds the logs.
+            </span>
           </div>
         )}
 
         <DialogFooter>
           {phase === "done" && !result?.handover ? (
             <Button onClick={() => close(false)}>Done</Button>
-          ) : phase === "late" ? (
+          ) : phase === "late" || phase === "done" ? (
             <Button onClick={() => window.location.reload()}>Reload</Button>
           ) : (
             <>
               <Button variant="ghost" onClick={() => close(false)} disabled={busy}>
                 Not now
               </Button>
-              <Button onClick={() => void install()} disabled={busy || !preview}>
-                {busy ? <Loader2Icon className="animate-spin" /> : <PowerIcon />} Install and keep running
+              <Button onClick={() => void install()} disabled={!canApply}>
+                {busy ? <Loader2Icon className="animate-spin" /> : <PowerIcon />} {finishing ? "Apply setup for console" : starting ? "Apply setup and start daemon" : "Install and keep running"}
               </Button>
             </>
           )}

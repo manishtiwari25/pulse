@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,15 +33,22 @@ func landingHeld(state string) bool {
 // logged and written as land.resumed. A project not in projects this tick (its checkout did not answer the
 // probe) keeps its previous hold, since nothing about it was learned.
 func tendLandings(s *store.Store, projects []row, actor, now string, prev map[string]string) (lines []string, cur map[string]string) {
+	return tendLandingsContext(context.Background(), s, projects, actor, now, prev)
+}
+
+func tendLandingsContext(ctx context.Context, s *store.Store, projects []row, actor, now string, prev map[string]string) (lines []string, cur map[string]string) {
 	cur = map[string]string{}
 	swept := map[string]bool{}
 	waiting := map[string]int{}
 	states := map[string]string{}
 	for _, proj := range projects {
+		if ctx.Err() != nil {
+			break
+		}
 		slug := proj.str("slug")
 		swept[slug] = true
 		landed := false
-		for _, lr := range landPending(s, proj, actor, now, true, 0, false) {
+		for _, lr := range landPendingContext(ctx, s, proj, actor, now, true, 0, false) {
 			if lr.State == "landed" {
 				landed = true
 			}
@@ -54,7 +62,10 @@ func tendLandings(s *store.Store, projects []row, actor, now string, prev map[st
 		}
 		// ADR-037: what landed goes to the remote when the owner said so; a push that did not happen is a
 		// note beside the landing hold, said once per change and retried next tick.
-		line, note := pushLanded(s, proj, actor, now, landed)
+		line, note := "", ""
+		if landingStop(ctx, s, proj.str("path")) == "" {
+			line, note = pushLanded(s, proj, actor, now, landed)
+		}
 		if line != "" {
 			lines = append(lines, line)
 		}

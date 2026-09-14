@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func mustWriteBrief(t *testing.T, opts briefOpts) string {
+	t.Helper()
+	brief, err := writeBrief(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return brief
+}
+
 func TestWorkerBriefFinishCommands(t *testing.T) {
 	for _, status := range []string{"done", "failed"} {
 		t.Run(status, func(t *testing.T) {
@@ -20,7 +29,7 @@ func TestWorkerBriefFinishCommands(t *testing.T) {
 			if leased, err := leaseJob(s, "aurora", testNow, leaseOpts{JobID: jid, Minutes: 10}); err != nil || leased == nil {
 				t.Fatalf("lease: %v, %v", leased, err)
 			}
-			brief := writeBrief(briefOpts{
+			brief := mustWriteBrief(t, briefOpts{
 				Job: job, Project: project, Agent: "aurora", Clone: dir, Minutes: 10, Store: s, Now: testNow,
 			})
 			_, rest, found := strings.Cut(brief, "Report with `")
@@ -57,8 +66,9 @@ func TestWorkerBriefFinishCommands(t *testing.T) {
 
 func TestWorkerBriefRemoteReporting(t *testing.T) {
 	s := newStore(t)
-	brief := writeBrief(briefOpts{
-		Job: row{"id": "job-remote", "kind": "task", "tier": 0}, Project: row{"slug": "proj"},
+	project, _ := newRepo(t, s)
+	brief := mustWriteBrief(t, briefOpts{
+		Job: row{"id": "job-remote", "kind": "task", "tier": 0}, Project: project,
 		Agent: "aurora", Clone: "/clone", Minutes: 10, Remote: true, Store: s, Now: testNow,
 	})
 	for _, want := range []string{
@@ -87,7 +97,7 @@ func TestWorkerBriefClaimMentionsPulseCLIFallback(t *testing.T) {
 	if leased, err := leaseJob(s, "aurora", testNow, leaseOpts{JobID: job.str("id"), Minutes: 10}); err != nil || leased == nil {
 		t.Fatalf("lease: %v, %v", leased, err)
 	}
-	brief := writeBrief(briefOpts{
+	brief := mustWriteBrief(t, briefOpts{
 		Job: job, Project: project, Agent: "aurora", Clone: dir, Minutes: 10, Store: s, Now: testNow,
 	})
 	_, rest, found := strings.Cut(brief, "Claim your thread before you start (")

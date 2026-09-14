@@ -170,6 +170,57 @@ func TestPlanExperimentInFlightExperiment(t *testing.T) {
 	}
 }
 
+func TestPlanExperimentUsesDaemonHardStopGate(t *testing.T) {
+	s := cycleReady(t)
+	votedSuggestionWithVotes(t, s, "next", "operating-layer", "README.md", "up", "up")
+	job, _, err := board.AddJob(s, board.JobInput{
+		Project: "demo", Kind: "experiment", Title: "Failed attempt", Tier: 1, CreatedBy: "tester",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.FinishJob(s, job.ID, "tester", "failed", "constraint violation: hard stop", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	var question string
+	for range 2 {
+		planned, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+		if err != nil || planned.Created || planned.JobID != "" || planned.Question == "" ||
+			!strings.Contains(planned.Reason, job.ID) {
+			t.Fatalf("planner bypassed the daemon's hard-stop gate: %+v (%v)", planned, err)
+		}
+		if question != "" && planned.Question != question {
+			t.Fatal("hard-stop question was duplicated")
+		}
+		question = planned.Question
+	}
+	status, err := Status(s, "demo")
+	if err != nil || status.Planning.State != "blocked" || status.Planning.Job != job.ID {
+		t.Fatalf("status disagrees with the hard-stop gate: %+v (%v)", status, err)
+	}
+	now, err := time.Parse(time.RFC3339, s.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := board.CreatePost(s, board.PostInput{
+		Project: "demo", Kind: "answer", Area: "evolution", Thread: "loop-gate", On: question,
+		Agent: "tester", Summary: "Reviewed this failed attempt", Date: now.Add(time.Second).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	planned, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+	if err != nil || !planned.Created {
+		t.Fatalf("acknowledged hard-stop gate did not resume: %+v (%v)", planned, err)
+	}
+	if _, err := board.FinishJob(s, planned.JobID, "tester", "failed", "new constraint violation", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	again, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+	if err != nil || again.Created || again.Question == "" || again.Question == question {
+		t.Fatalf("an answer for an earlier job authorized a later failure: %+v (%v)", again, err)
+	}
+}
+
 func TestPlanExperimentSkipsArchivedSuggestion(t *testing.T) {
 	s := cycleReady(t)
 	archived := votedSuggestionWithVotes(t, s, "archived", "operating-layer", "README.md", "up", "up", "up")

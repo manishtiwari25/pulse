@@ -190,7 +190,8 @@ func Reflect(ctx context.Context, s *store.Store, project, area, agent, session 
 	if len(r.Ballot) == 0 {
 		r.NextCommands = append(r.NextCommands, "pulse ballot --project "+p.Slug)
 	}
-	if r.Level == "D" {
+	if r.Level == "D" && (r.Gates.Planning.State == "ready" || r.Gates.Planning.State == "queued" ||
+		r.Gates.Planning.State == "leased" || r.Gates.Planning.State == "finalizing") {
 		r.NextCommands = append(r.NextCommands, "pulse evolve cycle --project "+p.Slug)
 	} else {
 		r.NextCommands = append(r.NextCommands, "pulse evolve status --project "+p.Slug)

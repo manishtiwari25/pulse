@@ -27,7 +27,7 @@ func TestWorkerBriefListsOtherFocusAndExcludesSelf(t *testing.T) {
 	postRunnerFocus(t, s, "claim-other", "proj", "claim", "area", "thread", "borealis", "working here", "2026-09-06T11:00:00Z")
 	postRunnerFocus(t, s, "claim-self", "proj", "claim", "self", "thread", "aurora", "self claim", "2026-09-06T11:00:00Z")
 
-	brief := writeBrief(briefOpts{Job: self, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Store: s, Now: testNow})
+	brief := mustWriteBrief(t, briefOpts{Job: self, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Store: s, Now: testNow})
 	for _, want := range []string{
 		"## Who else is working on proj",
 		"- borealis: " + other.str("id") + " (improve) \"Other job\"",
@@ -51,7 +51,7 @@ func TestWorkerBriefFocusEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	brief := writeBrief(briefOpts{Job: job, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Store: s, Now: testNow})
+	brief := mustWriteBrief(t, briefOpts{Job: job, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Store: s, Now: testNow})
 	if !strings.Contains(brief, "Nobody else holds a job or a claim on this project right now.") {
 		t.Fatalf("empty focus text missing:\n%s", brief)
 	}
@@ -144,7 +144,7 @@ func TestWorkerBriefListsUnansweredMentions(t *testing.T) {
 	postRunnerFocus(t, s, "a-done", "proj", "answer", "api", "cache", "aurora", "yes, warmed at start", "")
 	postRunnerFocus(t, s, "q-other", "proj", "question", "api", "auth", "borealis", "@borealis note to self", "")
 
-	brief := writeBrief(briefOpts{Job: job, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Store: s, Now: testNow})
+	brief := mustWriteBrief(t, briefOpts{Job: job, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Store: s, Now: testNow})
 	for _, want := range []string{
 		"## Mentions for you (1)",
 		"- " + asked.ID + " api/limits by borealis (question): @aurora which fixture covers 429s?",
@@ -159,7 +159,7 @@ func TestWorkerBriefListsUnansweredMentions(t *testing.T) {
 			t.Fatalf("brief lists %q, which is answered or not for aurora:\n%s", absent, brief)
 		}
 	}
-	other := writeBrief(briefOpts{Job: job, Project: project, Agent: "borealis", Clone: "/clone", Minutes: 10, Store: s, Now: testNow})
+	other := mustWriteBrief(t, briefOpts{Job: job, Project: project, Agent: "borealis", Clone: "/clone", Minutes: 10, Store: s, Now: testNow})
 	if strings.Contains(other, "## Mentions for you") {
 		t.Fatalf("a brief without mentions should not carry the section:\n%s", other)
 	}

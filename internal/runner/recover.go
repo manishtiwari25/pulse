@@ -221,33 +221,14 @@ func recoveryQuestionAsked(q querier, slug, jobID string) bool {
 		slug, jobID) != nil
 }
 
-// supersedingJob names a job with the same source queued, running or done since this failure: the work has
-// another carrier, so recovery holds off. A job without a source has no carrier but itself.
-func supersedingJob(q querier, job row) string {
-	source := job.str("source")
-	if source == "" {
-		return ""
-	}
-	later := mustOne(q, "SELECT id FROM jobs WHERE project = ? AND source = ? AND id != ? AND created_at >= ? "+
-		"AND status IN ('queued', 'leased', 'blocked', 'done') ORDER BY created_at DESC, id LIMIT 1",
-		job.str("project"), source, job.str("id"), job.str("finished_at"))
-	if later == nil {
-		return ""
-	}
-	return later.str("id")
-}
-
 func recoveryCarrier(q querier, job row, root string) string {
-	if later := supersedingJob(q, job); later != "" {
-		return later
+	id, err := board.RecoveryCarrier(q, &board.Job{
+		ID: job.str("id"), Project: job.str("project"), Source: job.str("source"), FinishedAt: job.str("finished_at"),
+	}, root)
+	if err != nil {
+		panic(err)
 	}
-	later := mustOne(q, `SELECT j.id FROM events e JOIN jobs j
-		ON j.id = CASE WHEN json_valid(e.detail) THEN json_extract(e.detail, '$.job') END
-		WHERE e.action = ? AND json_valid(e.detail) AND json_extract(e.detail, '$.root') = ?
-		AND json_extract(e.detail, '$.outcome') = 'replanned' AND j.id != ? AND j.project = ?
-		AND (j.status IN ('queued', 'leased', 'blocked') OR (j.status = 'done' AND j.created_at >= ?))
-		ORDER BY e.seq DESC LIMIT 1`, board.JobRecoverAction, root, job.str("id"), job.str("project"), job.str("finished_at"))
-	return rowStr(later, "id")
+	return id
 }
 
 // leadFollowedUp reports whether the lead was already briefed on this failure (a task.followup event since it).
@@ -377,33 +358,14 @@ func recoverOne(s *store.Store, project, job, run row, now, actor string, f fail
 		if mustOne(q, "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND status = 'queued'", job.str("project")).int("n") >= recoverQueueRoom {
 			return fail(2, "recovery waits for the queue (%d queued)", recoverQueueRoom)
 		}
+		copyID, _, err := queueRecovery(q, project, job, run, now, actor, f, root, n)
+		if err != nil {
+			return err
+		}
 		switch f.Class {
 		case failureTransient:
-			result := "recovered: " + f.Reason
-			exec1(q, `UPDATE jobs SET status = 'queued', result = ?, branch = '', attempts = 0,
-				finished_at = '', lease_agent = '', lease_until = '', brief = ? WHERE id = ?`,
-				result, correctedBrief(job, run, f), job.str("id"))
-			eventAt(q, now, actor, "job.queued", job.str("id"), trunc(result, 400))
-			recoveryEvent(q, now, actor, job.str("id"), "requeued", f, root, n+1, "")
-			// The ledger must be writable before deleting a branch, and the write lock must still
-			// prevent another worker from leasing this job while its old branch is removed.
-			if err := dropStaleBranch(project.str("path"), job, run); err != nil {
-				return err
-			}
 			line, acted = fmt.Sprintf("recovered %s (transient): queued again after a %s pause", job.str("id"), shortDuration(recoverBackoff(n))), true
 		case failureDeterministic:
-			if job.str("source") != "" && mustOne(q, "SELECT 1 AS x FROM jobs WHERE source = ? AND status IN ('queued', 'leased', 'blocked') LIMIT 1", job.str("source")) != nil {
-				return nil
-			}
-			copyID := newID("job", now)
-			title := retryTitle(root, job.str("title"))
-			// The original is already a validated job; keep AddJob's Tier 0/1 and source-dedupe
-			// guards above, but write its corrected copy and the chain link in one transaction.
-			exec1(q, `INSERT INTO jobs (id, project, kind, title, brief, tier, priority, source, created_by, created_at, status)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`, copyID, job.str("project"), job.str("kind"),
-				title, correctedBrief(job, run, f), job.int("tier"), job.int("priority"), job.str("source"), actor, now)
-			eventAt(q, now, actor, "job.add", copyID, map[string]any{"project": job.str("project"), "kind": job.str("kind"), "title": title})
-			recoveryEvent(q, now, actor, job.str("id"), "replanned", f, root, n+1, copyID)
 			line, acted = fmt.Sprintf("re-planned %s as %s (deterministic: %s)", job.str("id"), copyID, f.Reason), true
 		}
 		return nil
@@ -417,6 +379,36 @@ func recoverOne(s *store.Store, project, job, run row, now, actor string, f fail
 		}
 	}
 	return line, acted
+}
+
+// queueRecovery is shared by the daemon and the bounded owner API. Its caller
+// must recheck the current failure and all gates under this write transaction.
+func queueRecovery(q querier, project, job, run row, now, actor string, f failure, root string, n int) (string, string, error) {
+	switch f.Class {
+	case failureTransient:
+		result := "recovered: " + f.Reason
+		exec1(q, `UPDATE jobs SET status = 'queued', result = ?, branch = '', attempts = 0,
+			finished_at = '', lease_agent = '', lease_until = '', brief = ? WHERE id = ?`,
+			result, correctedBrief(job, run, f), job.str("id"))
+		eventAt(q, now, actor, "job.queued", job.str("id"), trunc(result, 400))
+		recoveryEvent(q, now, actor, job.str("id"), "requeued", f, root, n+1, "")
+		// Write the ledger before cleanup, while the lock still fences leasing.
+		if err := dropStaleBranch(project.str("path"), job, run); err != nil {
+			return "", "", err
+		}
+		return job.str("id"), "requeued", nil
+	case failureDeterministic:
+		copyID := newID("job", now)
+		title := retryTitle(root, job.str("title"))
+		exec1(q, `INSERT INTO jobs (id, project, kind, title, brief, tier, priority, source, created_by, created_at, status)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`, copyID, job.str("project"), job.str("kind"),
+			title, correctedBrief(job, run, f), job.int("tier"), job.int("priority"), job.str("source"), actor, now)
+		eventAt(q, now, actor, "job.add", copyID, map[string]any{"project": job.str("project"), "kind": job.str("kind"), "title": title})
+		recoveryEvent(q, now, actor, job.str("id"), "replanned", f, root, n+1, copyID)
+		return copyID, "replanned", nil
+	default:
+		return "", "", fail(2, "structural failures must remain held")
+	}
 }
 
 func recoveryOwnedElsewhere(job row) bool {

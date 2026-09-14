@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -241,22 +242,15 @@ func refuseBranch(s *store.Store, now, root, base, branch, actor string, job row
 }
 
 type landOpts struct {
-	Job    row
-	Verify bool
-	ByHand bool
+	Job              row
+	Verify           bool
+	ByHand           bool
+	Ctx              context.Context
+	ArchiveID, RunID string
 }
 
 func shWithTimeout(dir, cmd string, budget time.Duration) (rc *int, stdout, stderr string) {
-	out, err := runGroup(nil, []string{"/bin/sh", "-c", cmd}, dir, environ(), nil, budget)
-	if err != nil {
-		code := 127
-		return &code, "", err.Error()
-	}
-	if out.Timeout {
-		return nil, out.Stdout, out.Stderr
-	}
-	code := out.ExitCode
-	return &code, out.Stdout, out.Stderr
+	return shWithContext(nil, dir, cmd, budget)
 }
 
 // landBranch is land_branch(): land one branch on the project's default branch. Returns (state, note).
@@ -268,11 +262,8 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 	}
 	home := s.Home
 	job := o.Job
-	if why := runnerStopped(s); why != "" {
+	if why := landingStop(o.Ctx, s, root); why != "" {
 		return "stopped", why, nil
-	}
-	if fileExists(filepath.Join(root, "docs", "evolution", "STOP")) {
-		return "stopped", fmt.Sprintf("docs/evolution/STOP is present in %s", root), nil
 	}
 	okPrefix := false
 	for _, p := range landedBranchPrefixes {
@@ -290,12 +281,21 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 	if !exists {
 		return "missing", fmt.Sprintf("branch %s does not exist in %s", branch, root), nil
 	}
-	if gitTimeout(root, 30*time.Second, "merge-base", "--is-ancestor", branch, def).ok() {
-		gitTimeout(root, 30*time.Second, "branch", "-D", branch)
-		if job != nil {
-			exec1(s.DB, "UPDATE jobs SET branch = '' WHERE id = ?", job.str("id"))
+	if job != nil && job.str("kind") == "experiment" && o.ArchiveID == "" {
+		o.RunID = lastRunID(s, job.str("id"))
+		archived, err := experimentArchive(s, project.str("slug"), branch, o.RunID)
+		if err != nil {
+			return "", "", err
 		}
-		eventAt(s.DB, now, actor, "land.merged", branch, map[string]any{"project": project.str("slug")})
+		if archived != nil && archived.int("kept") == 1 {
+			o.ArchiveID = archived.str("id")
+		}
+	}
+	if gitTimeout(root, 30*time.Second, "merge-base", "--is-ancestor", branch, def).ok() {
+		if err := recordLanding(s, project, branch, actor, "land.merged", "", o, map[string]any{}); err != nil {
+			return "", "", err
+		}
+		gitTimeout(root, 30*time.Second, "branch", "-D", branch)
 		return "merged", fmt.Sprintf("%s was already contained in %s; branch removed", branch, def), nil
 	}
 	base := strings.TrimSpace(gitTimeout(root, 30*time.Second, "merge-base", def, branch).Stdout)
@@ -411,7 +411,10 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 			if budget < 60*time.Second {
 				budget = 60 * time.Second
 			}
-			rc, so, se := shWithTimeout(worktree, setupCmd, budget)
+			rc, so, se := shWithContext(o.Ctx, worktree, setupCmd, budget)
+			if why := landingStop(o.Ctx, s, root); why != "" {
+				return "stopped", why, nil
+			}
 			prepTail := squeeze(so+se, 300)
 			if rc == nil {
 				prepTail = fmt.Sprintf("timed out after %d min", setupBudget)
@@ -429,7 +432,10 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 		if budget < 60*time.Second {
 			budget = 60 * time.Second
 		}
-		rc, so, se := shWithTimeout(worktree, vc, budget)
+		rc, so, se := shWithContext(o.Ctx, worktree, vc, budget)
+		if why := landingStop(o.Ctx, s, root); why != "" {
+			return "stopped", why, nil
+		}
 		ok, tailText := false, ""
 		if rc == nil {
 			verifyNote = fmt.Sprintf("verify timed out after %d min", minutes)
@@ -459,6 +465,9 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 			return "failed-verify", fmt.Sprintf("%s on the merged %s; %s; patch at %s", verifyNote, def, what, patch), nil
 		}
 	}
+	if why := landingStop(o.Ctx, s, root); why != "" {
+		return "stopped", why, nil
+	}
 	onDefault, clean = checkoutState(root, def)
 	if !(onDefault && clean) {
 		return "deferred", "the checkout changed while the merge was verified; nothing landed, try again", nil
@@ -466,15 +475,15 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 	if ff := gitTimeout(root, 120*time.Second, "merge", "--ff-only", sha); !ff.ok() {
 		return "deferred", fmt.Sprintf("%s moved while the merge was verified; nothing landed, try again (%s)", def, trunc(strings.TrimSpace(ff.Stderr), 200)), nil
 	}
-	gitTimeout(root, 30*time.Second, "branch", "-D", branch)
 	commits := strings.TrimSpace(gitTimeout(root, 30*time.Second, "rev-list", "--count", before+".."+sha).Stdout)
 	if commits == "" {
 		commits = "?"
 	}
-	eventAt(s.DB, now, actor, "land.landed", branch, map[string]any{"project": slug, "sha": sha, "commits": commits, "verify": verifyNote, "job": jobIDOf(job)})
-	if job != nil {
-		exec1(s.DB, "UPDATE jobs SET result = result || ?, branch = '' WHERE id = ?", fmt.Sprintf(" | landed %s from %s", short(sha, 12), branch), job.str("id"))
+	if err := recordLanding(s, project, branch, actor, "land.landed", fmt.Sprintf(" | landed %s from %s", short(sha, 12), branch), o,
+		map[string]any{"sha": sha, "commits": commits, "verify": verifyNote}); err != nil {
+		return "", "", err
 	}
+	gitTimeout(root, 30*time.Second, "branch", "-D", branch)
 	area, thread := "evolution", slugify(branch[strings.LastIndex(branch, "/")+1:], 40)
 	if job != nil {
 		area, thread = "jobs", job.str("id")
@@ -503,6 +512,10 @@ type landResult struct{ State, Note string }
 
 // landPending lands every waiting branch of one project, oldest first; stops at the first deferral.
 func landPending(s *store.Store, project row, actor, now string, verify bool, limit int, force bool) []landResult {
+	return landPendingContext(context.Background(), s, project, actor, now, verify, limit, force)
+}
+
+func landPendingContext(ctx context.Context, s *store.Store, project row, actor, now string, verify bool, limit int, force bool) []landResult {
 	if !force && s.Setting("landing", "") != "agents" {
 		return nil
 	}
@@ -513,14 +526,14 @@ func landPending(s *store.Store, project row, actor, now string, verify bool, li
 		}
 		if job.str("kind") == "experiment" {
 			// D-M: an experiment is measured before it may land; a dropped or unmeasured one never lands.
-			state, note := landExperiment(s, project, job, actor, now, verify)
+			state, note := landExperimentContext(ctx, s, project, job, actor, now, verify)
 			out = append(out, landResult{state, note})
 			if state == "deferred" || state == "locked" || state == "stopped" || state == "unreadable" {
 				break
 			}
 			continue
 		}
-		state, note, err := landBranch(s, project, job.str("branch"), actor, now, landOpts{Job: job, Verify: verify})
+		state, note, err := landBranch(s, project, job.str("branch"), actor, now, landOpts{Job: job, Verify: verify, Ctx: ctx})
 		if err != nil {
 			state, note = "error", errMessage(err)
 		}

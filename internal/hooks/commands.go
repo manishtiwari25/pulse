@@ -259,7 +259,9 @@ func runHooks(c *cli.Context, fs *flag.FlagSet, args []string) error {
 	case "context":
 		harness := str(fs, "harness")
 		home := c.Home
-		fmt.Fprintln(c.Out, ContextJSON(harness, func(args ...string) string { return RunPulse(home, args...) }))
+		fmt.Fprintln(c.Out, ContextJSON(harness, func(args ...string) string {
+			return RunPulse(home, contextArgs(c, args...)...)
+		}))
 		return nil
 	case "stop":
 		// best effort, read-only: the reminder may name what this store
@@ -273,4 +275,15 @@ func runHooks(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		return nil
 	}
 	return cli.Errorf(2, "pulse hooks: unknown subcommand "+strconv.Quote(sub), "install, uninstall, context or stop", "pulse help hooks")
+}
+
+func contextArgs(c *cli.Context, args ...string) []string {
+	for _, flag := range []struct{ name, value string }{
+		{"--project", c.Project}, {"--agent", c.Agent}, {"--session", c.Session},
+	} {
+		if flag.value != "" {
+			args = append(args, flag.name, flag.value)
+		}
+	}
+	return args
 }

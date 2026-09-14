@@ -8,11 +8,13 @@ import { Button } from "@/components/ui/button";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
 import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { ComputeDecide } from "@/components/compute/compute";
+import { daemonControlState } from "@/components/pulse/daemon-control-state";
+import { DaemonControls } from "@/components/pulse/daemon-controls";
 import { GateCard, foldSteps, gateStep, type GateStep } from "@/components/pulse/evolve";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { LiveFeed } from "@/components/pulse/live-feed";
+import { FailedJobsSection } from "@/components/pulse/job-repair-section";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, Notice, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
-import { ServiceCard } from "@/components/pulse/service";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { AddProjectButton } from "@/components/project/project-dialogs";
 import { awaitsDecision, ProposedRecordCard } from "@/components/records/decide-record";
@@ -21,7 +23,7 @@ import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num, plural } from "@/lib/format";
-import { evolveGate, registeredProjects, serviceStep, type Compute, type ComputeCaps, type ComputeRequest, type Org, type ProjectCardData, type ProjectsPayload, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type TasksPayload, type Timeline } from "@/lib/api";
+import { evolveGate, registeredProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type ProjectCardData, type ProjectsPayload, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type SettingsPayload, type TasksPayload, type Timeline } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 export default function HubPage() {
@@ -37,6 +39,7 @@ export default function HubPage() {
   const reg = useApi<ProjectsPayload>("projects", { refresh: 60000 });
   // Whether this machine keeps PULSE alive yet (ADR-038): the one step a shared copy asks for.
   const service = useApi<ServicePayload>("service", { refresh: 60000 });
+  const settings = useApi<SettingsPayload>("settings");
   const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
 
   if (org.error && !org.data)
@@ -63,9 +66,9 @@ export default function HubPage() {
   // The gate a project waits at (records, fixtures, the owner's held-out fixtures) is a human step too - it sits in the inbox with a command to copy (ADR-029). The baseline is the daemon's (ADR-031) and never a card.
   const gateOf = (p: ProjectCardData) => evolveGate(p, (reg.data?.projects ?? []).find((r) => r.slug === p.slug));
   const steps = foldSteps(projects.map((p) => gateStep(p.slug, gateOf(p))).filter((s): s is GateStep => s !== null));
-  const keepRunning = serviceStep(service.data);
+  const daemon = daemonControlState({ runner, service, settings });
   const decisions = adrs.length + awaiting.length + pendingCompute.length;
-  const machineSteps = keepRunning ? 1 : 0;
+  const machineSteps = daemon.pause === "on" || daemon.setup ? 1 : 0;
   const inbox = decisions + steps.length + machineSteps;
   const computeDown = !!compute.error && !compute.data;
   const decisionsDown = !!proposed.error && !proposed.data;
@@ -74,7 +77,6 @@ export default function HubPage() {
   const checking = [!proposed.data && !decisionsDown ? "decisions" : "", !compute.data && !computeDown ? "compute requests" : ""].filter(Boolean);
   const attention = projects.filter((p) => p.error || p.missing || p.stop_present || !p.board_present);
   const r = runner.data;
-  const daemonOn = !!r && (r.daemon.state === "running" || r.daemon.state === "alive");
   const sparkFor = (slug: string): number[] | undefined => {
     const s = tl.data?.series?.find((x) => x.slug === slug);
     return s ? lastDays(s, 14) : undefined;
@@ -150,7 +152,14 @@ export default function HubPage() {
             {pendingCompute.map((cr) => (
               <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
             ))}
-            {keepRunning && service.data ? <ServiceCard payload={service.data} /> : null}
+            {machineSteps ? (
+              <ItemCard href="#daemon-controls" highlight ariaLabel="Review daemon controls">
+                <ItemCardHeader><ToneBadge tone={daemon.tone}>{daemon.label}</ToneBadge><ToneBadge tone="neutral">this machine</ToneBadge></ItemCardHeader>
+                <ItemCardTitle chevron>{daemon.pause === "on" ? "Resume daemon" : daemon.setup === "start" ? "Start daemon" : "Keep PULSE running"}</ItemCardTitle>
+                <ItemCardBody clamp={0}>Review the owner pause, heartbeat and service setup together. Preview and confirm any change in the daemon controls below.</ItemCardBody>
+                <ItemCardMeta>Review daemon controls <ArrowUpRightIcon className="size-3.5" /></ItemCardMeta>
+              </ItemCard>
+            ) : null}
             {steps.map((s) => (
               <GateCard key={s.slug + "/" + s.kind} step={s} />
             ))}
@@ -175,9 +184,17 @@ export default function HubPage() {
           <Kpi icon={VoteIcon} n={o.totals.votes_open} label="In vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} href={hrefs.votes()} />
           <Kpi icon={MessageCircleQuestionIcon} n={o.totals.questions_open} label="Open questions" sub="across the boards" />
           <Kpi icon={MessageSquareIcon} n={o.totals.posts_24h} label="Posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
-          <Kpi icon={daemonOn ? PowerIcon : ActivityIcon} n={r ? (daemonOn ? "on" : "off") : "…"} label="Daemon" sub={r ? (r.runner?.allowed === false ? r.runner.reason : (r.daemon.state || "off") + " · " + num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued") : "loading"} tone={r ? (daemonOn ? "ok" : "warn") : "neutral"} href={hrefs.agents()} />
+          <Kpi icon={daemon.tone === "ok" ? PowerIcon : ActivityIcon} n={daemon.label} label="Daemon" sub={runner.error ? "status unavailable · controls below" : r ? (r.runner?.allowed === false ? r.runner.reason : num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued · controls below") : "checking heartbeat"} tone={daemon.tone} href="#daemon-controls" />
         </KpiGrid>
       </section>
+
+      <section id="daemon-controls" aria-label="Daemon controls" className="mb-7 scroll-mt-32">
+        <DaemonControls runner={runner} service={service} settings={settings} />
+      </section>
+
+      <div className="mb-7">
+        <FailedJobsSection />
+      </div>
 
       <div className="grid min-w-0 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_20rem] 2xl:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="grid min-w-0 grid-cols-1 content-start gap-7">

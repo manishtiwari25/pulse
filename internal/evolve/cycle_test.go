@@ -51,6 +51,10 @@ func votedSuggestion(t *testing.T, s *store.Store, thread, class, file string, v
 }
 
 func fakeArchive(s *store.Store, jobID string) error {
+	return fakeArchiveOutcome(s, jobID, true)
+}
+
+func fakeArchiveOutcome(s *store.Store, jobID string, kept bool) error {
 	job, err := board.JobByID(s, jobID)
 	if err != nil || job == nil {
 		return errors.New("fake runner could not read its queued job")
@@ -64,10 +68,14 @@ func fakeArchive(s *store.Store, jobID string) error {
 		runID, job.ID, "tester", job.Project, s.Now()); err != nil {
 		return err
 	}
+	variant := .4
+	if !kept {
+		variant = .1
+	}
 	if _, err := Archive(s, ArchiveRow{
 		Project: job.Project, SuggestionPost: strings.TrimPrefix(job.Source, "suggestion:"),
 		Hypothesis: "one constant improves the weighted score", Branch: "evolve/" + strings.TrimPrefix(job.Source, "suggestion:"),
-		Baseline: &Scores{Total: .2}, Variant: &Scores{Total: .4}, Kept: true, Tolerance: .02, RunID: runID,
+		Baseline: &Scores{Total: .2}, Variant: &Scores{Total: variant}, Kept: kept, Tolerance: .02, RunID: runID,
 	}); err != nil {
 		return err
 	}
@@ -79,8 +87,14 @@ func fakeLanding(s *store.Store, jobID string, hold time.Duration) error {
 		return err
 	}
 	time.Sleep(hold)
-	_, err := board.FinishJob(s, jobID, "tester", "done", "measured and kept", "", nil)
-	return err
+	if _, err := board.FinishJob(s, jobID, "tester", "done", "measured and kept", "", nil); err != nil {
+		return err
+	}
+	archive, err := archivedForJob(s, "demo", jobID)
+	if err != nil {
+		return err
+	}
+	return fakeFinalizeArchive(s, jobID, "land.landed", archive)
 }
 
 func TestCycleProductFirstBusCompletionAndNoCLIArchive(t *testing.T) {

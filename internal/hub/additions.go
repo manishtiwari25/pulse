@@ -39,6 +39,8 @@ func (h *Handler) additions(w http.ResponseWriter, r *http.Request, route string
 		h.additionEvents(w, r, parts)
 	case "tasks":
 		h.additionTasks(w, r, parts)
+	case "jobs":
+		h.additionJobs(w, r, parts)
 	case "messages":
 		h.additionMessages(w, r, parts)
 	case "compute":

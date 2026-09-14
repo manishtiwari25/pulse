@@ -70,7 +70,7 @@ func TestEvolutionGatesAndFixturesNeverExposeTexts(t *testing.T) {
 	gates := data["gates"].(map[string]any)
 	for _, key := range []string{"project", "stop", "loop", "limits", "tolerance", "constitution", "evaluators", "baseline",
 		"baseline_job", "baseline_failed_at", "public_fixtures", "heldout", "kept", "discarded", "voted", "signal", "product_scope",
-		"cycles", "hours", "cap_reached", "level", "reason", "next_human_step"} {
+		"cycles", "hours", "cap_reached", "level", "reason", "next_human_step", "planning"} {
 		if _, ok := gates[key]; !ok {
 			t.Fatalf("gates lacks %s: %v", key, sortedKeys(gates))
 		}
@@ -78,6 +78,10 @@ func TestEvolutionGatesAndFixturesNeverExposeTexts(t *testing.T) {
 	if gates["project"] != slug || gates["public_fixtures"] != float64(6) || gates["level"] != "B" || gates["baseline"] != nil ||
 		gates["baseline_job"] != nil || gates["baseline_failed_at"] != "" {
 		t.Fatalf("gates: %#v", gates)
+	}
+	planning, ok := gates["planning"].(map[string]any)
+	if !ok || planning["state"] != "gated" || !strings.Contains(str(planning["reason"]), str(gates["reason"])) {
+		t.Fatalf("planning does not carry the actual gate: %#v", gates["planning"])
 	}
 	rows := assertEvolutionFixtures(t, data["fixtures"])
 	if len(rows) != 7 {

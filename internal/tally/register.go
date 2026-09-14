@@ -15,6 +15,7 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/goals"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -205,7 +206,14 @@ func runBoard(c *cli.Context, fs *flag.FlagSet, _ []string) error {
 		if err != nil {
 			return wrap(err)
 		}
-		return cli.WriteJSON(c.Out, res)
+		goal, err := projectGoal(c.Store, slug)
+		if err != nil {
+			return err
+		}
+		return cli.WriteJSON(c.Out, struct {
+			*Result
+			Goal *goals.Goal `json:"goal,omitempty"`
+		}{res, goal})
 	}
 	session := c.Session
 	if agent != "" && session == "" {
@@ -333,6 +341,10 @@ func runBallot(c *cli.Context, _ *flag.FlagSet, _ []string) error {
 	if err != nil {
 		return wrap(err)
 	}
+	goal, err := projectGoal(c.Store, slug)
+	if err != nil {
+		return err
+	}
 	if c.JSON {
 		sugs, ams := splitBallot(items)
 		if sugs == nil {
@@ -341,9 +353,17 @@ func runBallot(c *cli.Context, _ *flag.FlagSet, _ []string) error {
 		if ams == nil {
 			ams = []Amendment{}
 		}
-		return cli.WriteJSON(c.Out, map[string]any{"project": slug, "agent": agent, "suggestions": sugs, "amendments": ams})
+		result := map[string]any{"project": slug, "agent": agent, "suggestions": sugs, "amendments": ams}
+		if goal != nil {
+			result["goal"] = goal
+		}
+		return cli.WriteJSON(c.Out, result)
 	}
-	_, err = io.WriteString(c.Out, BallotText(slug, agent, items))
+	text := BallotText(slug, agent, items)
+	if goal != nil {
+		text = goals.Context(*goal) + "\n" + text
+	}
+	_, err = io.WriteString(c.Out, text)
 	return err
 }
 

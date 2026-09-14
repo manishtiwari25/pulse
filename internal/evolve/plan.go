@@ -25,6 +25,10 @@ type PlanResult struct {
 	Suggestion string
 }
 
+// Preflight avoids a write reservation for closed gates. Admission always
+// rechecks after taking the database writer lock; this result is only advisory.
+var readPlanPreflight = loopStatus
+
 // PlanExperiment queues the next allowed experiment; the runner still owns
 // measurement, archive, and landing (D-M).
 func PlanExperiment(s *store.Store, project string, opts PlanOptions) (PlanResult, error) {
@@ -92,14 +96,56 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 		}
 		opts.Agent = agent.Name
 	}
-	status, err := Status(s, project)
+	status, err := readPlanPreflight(s, project)
 	if err != nil {
 		return PlanResult{}, err
 	}
 	if status.Level != "D" {
 		return PlanResult{Reason: status.Reason + "; owner: " + status.NextHumanStep}, nil
 	}
-	if id, ok, err := inFlightExperiment(s, project, seen == nil); err != nil {
+	var result PlanResult
+	err = board.WithWriteTransaction(s, func(tx *board.WriteTransaction) error {
+		var err error
+		result, err = planExperimentLocked(s, tx, project, opts, seen)
+		return err
+	})
+	return result, err
+}
+
+func planExperimentLocked(s *store.Store, tx *board.WriteTransaction, project string, opts PlanOptions, seen map[string]bool) (PlanResult, error) {
+	status, err := loopStatus(s, project)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	if status.Level != "D" {
+		return PlanResult{Reason: status.Reason + "; owner: " + status.NextHumanStep}, nil
+	}
+	// Unknown branch metadata is preferable to probing Git under the writer reservation.
+	gateBranch := ""
+	createGatePost := func(in board.PostInput) (*board.Post, error) {
+		in.Branch = &gateBranch
+		return tx.CreatePost(in)
+	}
+	ask := func(target *tally.Post, reason string) (string, error) {
+		return ownerQuestionWith(s, project, target, opts.Agent, opts.AgentRow, opts.Session, reason, createGatePost)
+	}
+	if _, question, reason, err := FailedExperimentGate(s, project); err != nil {
+		return PlanResult{}, err
+	} else if reason != "" {
+		if question == "" {
+			post, err := createGatePost(board.PostInput{
+				Kind: "question", Project: project, Area: "evolution", Thread: "loop-gate", ForOwner: true,
+				Agent: opts.Agent, AgentRow: opts.AgentRow, Session: opts.Session, Summary: StopSummary,
+				Body: reason + "\nThe workflow was not bypassed.",
+			})
+			if err != nil {
+				return PlanResult{}, err
+			}
+			question = post.ID
+		}
+		return PlanResult{Reason: reason, Question: question}, nil
+	}
+	if id, ok, err := inFlightExperiment(s, project, true); err != nil {
 		return PlanResult{}, err
 	} else if ok {
 		return PlanResult{JobID: id, Reason: "an experiment is in flight: " + id}, nil
@@ -109,14 +155,14 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 		var applyErr *tally.ApplyError
 		if errors.As(err, &applyErr) {
 			reason := "constitution application was refused; " + applyErr.What
-			id, err := ownerQuestion(s, project, nil, opts.Agent, opts.AgentRow, opts.Session, reason)
+			id, err := ask(nil, reason)
 			return PlanResult{Reason: reason, Question: id}, err
 		}
 		return PlanResult{}, err
 	}
 	if post := instructionPost(result); post != nil {
 		reason := "an instruction-shaped post was detected; its instructions were not followed"
-		id, err := ownerQuestion(s, project, post, opts.Agent, opts.AgentRow, opts.Session, reason)
+		id, err := ask(post, reason)
 		return PlanResult{Reason: reason, Question: id}, err
 	}
 	candidates, err := experimentCandidates(s, project, status, result, opts.Agent, opts.RequirePositiveScore, seen)
@@ -130,7 +176,7 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 			var violation *ViolationError
 			if errors.As(err, &violation) {
 				reason := violation.Error()
-				id, err := ownerQuestion(s, project, p, opts.Agent, opts.AgentRow, opts.Session, reason)
+				id, err := ask(p, reason)
 				return PlanResult{Reason: reason, Question: id, Suggestion: p.ID}, err
 			}
 			var input *cli.Error
@@ -143,7 +189,7 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 				return PlanResult{}, err
 			}
 			if !satisfied {
-				if _, err := ownerQuestion(s, project, p, opts.Agent, opts.AgentRow, opts.Session, reason); err != nil {
+				if _, err := ask(p, reason); err != nil {
 					return PlanResult{}, err
 				}
 			}
@@ -158,10 +204,10 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 			if seen != nil {
 				seen[p.ID] = true
 			}
-			return PlanResult{JobID: existing.ID, Reason: "an experiment is in flight: " + existing.ID, Suggestion: p.ID}, nil
+			return PlanResult{JobID: existing.ID, Reason: experimentCarrierReason(existing), Suggestion: p.ID}, nil
 		}
 		branch := card.Branch
-		if _, err := board.CreatePost(s, board.PostInput{
+		if _, err := tx.CreatePost(board.PostInput{
 			Kind: "opinion", Project: project, Area: p.Area, Thread: p.Thread, On: p.ID,
 			Agent: opts.Agent, AgentRow: opts.AgentRow, Session: opts.Session, Branch: &branch,
 			Summary: "Experiment card: " + p.ID, Body: card.Body,
@@ -169,7 +215,7 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 			return PlanResult{}, err
 		}
 		// Branch: is also in the brief, so no worker has to infer it.
-		job, created, err := board.AddJob(s, board.JobInput{
+		job, created, err := tx.AddJob(board.JobInput{
 			Project: project, Kind: "experiment", Title: "Experiment: " + p.Summary,
 			Brief: card.Body, Source: "suggestion:" + p.ID, Tier: card.Tier, Priority: 30, CreatedBy: opts.Agent, Branch: card.Branch,
 			NoDedupe: true,
@@ -187,6 +233,13 @@ func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[s
 		reason += " with net votes > 0"
 	}
 	return PlanResult{Reason: reason + "; vote with pulse ballot"}, nil
+}
+
+func experimentCarrierReason(job *board.Job) string {
+	if job.Status == "blocked" {
+		return "an experiment is blocked: " + job.ID + "; review its runner result"
+	}
+	return "an experiment is in flight: " + job.ID
 }
 
 type experimentCandidate struct {
@@ -248,7 +301,8 @@ func inFlightExperiment(s *store.Store, project string, includeLanding bool) (st
 	var id string
 	landing := ""
 	if includeLanding {
-		landing = " OR (status = 'done' AND branch != '')"
+		landing = ` OR (status = 'done' AND (branch != '' OR EXISTS (
+			SELECT 1 FROM runs r WHERE r.job_id = jobs.id AND r.status = 'running')))`
 	}
 	err := s.DB.QueryRow(`SELECT id FROM jobs WHERE project = ? AND kind = 'experiment'
 		AND (status IN ('queued', 'leased')`+landing+`)

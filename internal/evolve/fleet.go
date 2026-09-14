@@ -263,7 +263,10 @@ func CleanFleet(s *store.Store, id, actor string) error {
 func archivedForJob(s *store.Store, project, job string) (*Archived, error) {
 	var id string
 	err := s.DB.QueryRow(`SELECT a.id FROM evolution_archive a JOIN runs r ON r.id = a.run_id
-		WHERE a.project = ? AND r.job_id = ? ORDER BY a.at DESC, CAST(SUBSTR(a.id,3) AS INTEGER) DESC LIMIT 1`, project, job).Scan(&id)
+		WHERE a.project = ? AND r.project = a.project AND r.job_id = ?
+		AND r.id = (SELECT latest.id FROM runs latest WHERE latest.job_id = r.job_id
+			ORDER BY latest.started_at DESC, latest.id DESC LIMIT 1)
+		ORDER BY a.at DESC, CAST(SUBSTR(a.id,3) AS INTEGER) DESC LIMIT 1`, project, job).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

@@ -137,11 +137,11 @@ const TOUCHES: [RegExp, (path: string) => boolean][] = [
   [/^compute\./, (p) => p.startsWith("compute") || p.startsWith("executors") || p.startsWith("runner") || p.startsWith("proposals") || p.startsWith("events")],
   // Transcript panels consume harness.step from live.events and fetch ?after=N, so do not full-refetch every step.
   [/^harness\.(?!step$)/, (p) => p.startsWith("harness/sessions") || p.startsWith("harness") || p.startsWith("events")],
-  [/^settings\./, (p) => p.startsWith("settings") || p.startsWith("compute") || p.startsWith("runner") || p.startsWith("events")],
+  [/^settings\./, (p) => p.startsWith("settings") || p.startsWith("compute") || p.startsWith("runner") || p.startsWith("jobs/failed") || p.startsWith("events")],
   [/^record/, (p) => p.startsWith("records") || p.startsWith("constitution") || p.startsWith("events")],
   [/^constitution\./, (p) => p.startsWith("constitution") || p.startsWith("records") || /amendments/.test(p) || p.startsWith("events")],
   [/^executor\./, (p) => p.startsWith("executors") || p.startsWith("runner") || p.startsWith("compute") || p.startsWith("events")],
-  [/^(job|run|daemon)\./, (p) => p.startsWith("runner") || p.startsWith("tasks") || p.startsWith("events") || /\/(overview|timeline)$/.test(p)],
+  [/^(job|run|daemon)\./, (p) => p.startsWith("runner") || p.startsWith("jobs/failed") || p.startsWith("tasks") || p.startsWith("events") || /\/(overview|timeline)$/.test(p)],
 ];
 
 export type StreamState = "connecting" | "live" | "polling";

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/board"
+	"github.com/manishtiwari25/pulse/internal/goals"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -194,9 +195,24 @@ func Digest(s *store.Store, project, area string, th Thresholds, agent string) (
 	return DigestFor(s, project, area, th, agent, session)
 }
 
+func projectGoal(s *store.Store, project string) (*goals.Goal, error) {
+	if project == store.CommonsSlug {
+		return nil, nil
+	}
+	goal, err := goals.Get(s, project)
+	if err != nil {
+		return nil, err
+	}
+	return &goal, nil
+}
+
 // DigestFor is Digest with an explicit session for the ballot counts.
 func DigestFor(s *store.Store, project, area string, th Thresholds, agent, session string) (string, error) {
 	res, err := Compute(s, project, area, th)
+	if err != nil {
+		return "", err
+	}
+	goal, err := projectGoal(s, project)
 	if err != nil {
 		return "", err
 	}
@@ -212,6 +228,9 @@ func DigestFor(s *store.Store, project, area string, th Thresholds, agent, sessi
 		areaNote = " area " + area
 	}
 	w("PULSE %s%s  (now %s; store %s)", project, areaNote, now, realPath(s.Path))
+	if goal != nil {
+		w("%s", goals.Context(*goal))
+	}
 	w("NOTICES (who is asking for a vote; one vote per agent, latest wins, no self-votes - pulse guide)")
 	if project == store.CommonsSlug {
 		w("  this is the commons: posts here are data for every project; it has no queue and no loop")

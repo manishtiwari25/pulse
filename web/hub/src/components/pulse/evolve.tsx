@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
 import { HeldoutButton } from "./heldout";
+import { evolvePlanningView } from "./evolve-planning";
 import { Notice, Panel } from "./panel";
 import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
@@ -467,6 +468,7 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
   const step = gates && g ? gateStep(gates.project, g) : null;
   const bl = g ? baselineState(g) : null;
   const h = gates?.heldout;
+  const planning = evolvePlanningView(gates?.planning);
   // "none - or <command>": the daemon retries on its own; the command is the owner's shortcut, offered, never asked.
   const optional = none.none && /^or\s+pulse\b/.test(none.why) ? none.why.replace(/^or\s+/, "") : "";
   const idle = (): string => {
@@ -476,6 +478,7 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
     }
     if (bl?.kind === "measuring") return "Nothing waits for you - the daemon is " + baselineJobWord(bl.status) + (bl.status === "leased" ? " the baseline" : " to measure the baseline") + " (" + jobRef(bl.id) + ").";
     if (none.why && !optional) return "Nothing waits for you - " + none.why.replace(/\.$/, "") + ".";
+    if (gates?.level === "D") return planning.next;
     return "Nothing waits for you - every gate is open" + (gates?.loop ? " and the loop is on." : "; cycles run once evolve.loop is on in Settings.");
   };
   return (
@@ -492,6 +495,7 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
               <LevelBadge level={gates.level} />
             </div>
             <Progress value={LEVEL_PROGRESS[gates.level] ?? 0} className="h-1.5" />
+            <p className="text-[11px] text-muted-foreground">Gate readiness, not measured improvement. A baseline is not a completed cycle.</p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             {gates.stop ? <ToneBadge tone="bad" title="STOP is set - the loop halts until you clear it">STOP</ToneBadge> : null}
@@ -519,13 +523,26 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
             {gates.cap_reached ? <ToneBadge tone="bad" title={gates.limit_problem || "a cap the constitution writes is reached"}>cap reached</ToneBadge> : null}
           </div>
           <ItemCardMeta>
-            <span className="tnum">{plural(gates.cycles, "cycle") + (gates.hours ? " in " + num(Math.round(gates.hours)) + " h" : "")}</span>
-            <span className="tnum">{num(gates.kept) + " kept · " + num(gates.discarded) + " discarded"}</span>
+            <span className="tnum" title="Non-baseline measured archives since the current loop-enable event. Landing may still be pending or fail.">{plural(gates.cycles, "experiment archive") + " since loop enabled" + (gates.hours ? " (" + num(Math.round(gates.hours)) + " h)" : "")}</span>
+            <span className="tnum" title="All non-baseline archive history. Kept does not mean landed or published.">{num(gates.kept) + " kept · " + num(gates.discarded) + " discarded (all history)"}</span>
             {gates.voted?.tried ? <span className="tnum" title="suggestions the board voted for that were tried">{"voted " + num(gates.voted.kept) + "/" + num(gates.voted.tried) + " kept"}</span> : null}
             {gates.signal?.tried ? <span className="tnum" title="signal fixtures tried">{"signal " + num(gates.signal.kept) + "/" + num(gates.signal.tried) + " kept"}</span> : null}
             {gates.limits && gates.limits !== "none" ? <Mono>{"limits " + gates.limits}</Mono> : null}
             {gates.tolerance ? <span className="tnum">{"tolerance " + gates.tolerance}</span> : null}
           </ItemCardMeta>
+          <div className="grid gap-1.5 rounded-md border px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Experiment planning</span>
+              <ToneBadge tone={planning.tone}>{planning.label}</ToneBadge>
+            </div>
+            <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground anywhere">{planning.reason}</p>
+            {gates.planning?.job || gates.planning?.suggestion ? (
+              <ItemCardMeta>
+                {gates.planning.job ? <Mono>{gates.planning.job}</Mono> : null}
+                {gates.planning.suggestion ? <Link href={hrefs.post(gates.project, gates.planning.suggestion)} className="hover:underline">View suggestion</Link> : null}
+              </ItemCardMeta>
+            ) : null}
+          </div>
           <div>
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Next human step</div>
             {waits && step ? (

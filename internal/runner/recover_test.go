@@ -316,7 +316,7 @@ func TestRecoverPerTickCap(t *testing.T) {
 	p, _ := newRepo(t, s)
 	for i := 0; i < 6; i++ {
 		id := "job-cap-" + string(rune('a'+i))
-		insertRecoverFailedJob(t, s, id, "task", "manual", "runner error", plusMinutes(testNow, -30))
+		insertRecoverFailedJob(t, s, id, "task", "manual:"+id, "runner error", plusMinutes(testNow, -30))
 	}
 	recoverFailedJobs(s, p, testNow, "daemon")
 	if n := count(t, s, "SELECT COUNT(*) AS n FROM events WHERE action = ?", board.JobRecoverAction); n != recoverPerTick {

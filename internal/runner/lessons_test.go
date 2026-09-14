@@ -144,9 +144,10 @@ func TestRecentFailureLessonsFormatsNewestWithinWindow(t *testing.T) {
 }
 
 func TestWriteBriefRendersLessonsBeforeRules(t *testing.T) {
+	s := newStore(t)
+	project, _ := newRepo(t, s)
 	job := row{"id": "job-1", "kind": "task", "tier": 1, "title": "Fix it", "brief": "Do the work."}
-	project := row{"slug": "proj", "verify_cmd": "go test ./..."}
-	brief := writeBrief(briefOpts{Job: job, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Lessons: []string{"`MEM-one` Pattern: Run the check."}})
+	brief := mustWriteBrief(t, briefOpts{Job: job, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Store: s, Lessons: []string{"`MEM-one` Pattern: Run the check."}})
 	section := "## Lessons from this project's recent failures (ADR-036)"
 	if !strings.Contains(brief, section) || !strings.Contains(brief, "- `MEM-one` Pattern: Run the check.") {
 		t.Fatalf("brief lacks lessons section:\n%s", brief)
@@ -154,7 +155,7 @@ func TestWriteBriefRendersLessonsBeforeRules(t *testing.T) {
 	if task, lesson, rules := strings.Index(brief, "## Task"), strings.Index(brief, section), strings.Index(brief, "## Rules"); !(task < lesson && lesson < rules) {
 		t.Fatalf("section order task=%d lesson=%d rules=%d", task, lesson, rules)
 	}
-	without := writeBrief(briefOpts{Job: job, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10})
+	without := mustWriteBrief(t, briefOpts{Job: job, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Store: s})
 	if strings.Contains(without, section) {
 		t.Fatalf("empty lessons rendered:\n%s", without)
 	}

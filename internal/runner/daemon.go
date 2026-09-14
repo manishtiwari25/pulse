@@ -74,7 +74,7 @@ func handsWanted(s *store.Store, brain row, queued, slots, minutes int, now, act
 }
 
 // binaryStamp is source_stamp(): the mtime of the binary on disk; the service restarts a changed one.
-func binaryStamp() string { return cli.BinaryStamp() }
+var binaryStamp = cli.BinaryStamp
 
 type daemonOpts struct {
 	Agent           string
@@ -104,7 +104,8 @@ func runBudget(s *store.Store) time.Duration {
 }
 
 // daemon is the keep-alive loop rebuilt on goroutines and channels (D-E): a hooks runner and a bus bridge so
-// other processes' writes reach in-process subscribers, the compute worker, then per tick: land, apply passed
+// other processes' writes reach in-process subscribers, the compute worker, a single landing/sweep lane,
+// then per tick: apply passed
 // amendments, tend the leads, plan, lease into free slots, one goroutine per run with a context deadline,
 // results fanned in over `results`. Returns "stopped" (the stop switch: contexts cancelled, runs get the
 // grace), "done", "restart", or "interrupted" (ctx cancelled: no new leases, in-flight runs finish or are
@@ -130,9 +131,9 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	}
 	loops := 0
 	lastPruneDay := ""
-	var lastSweep time.Time
 	prevIdle := map[string]string{}
-	prevHeld := map[string]string{}
+	maintenance := &daemonMaintenance{}
+	maintenanceWake := false
 	stamp := binaryStamp()
 	results := make(chan *dispatch, 64)
 	inflight := map[*dispatch]bool{}
@@ -146,6 +147,10 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	defer stopLoop()
 	runCtx, killRuns := context.WithCancel(context.Background())
 	defer killRuns()
+	// Normal drains keep maintenance alive, but a later caller cancellation
+	// must still interrupt measurement and verification before we join the lane.
+	maintenanceCtx, killMaintenance := context.WithCancel(ctx)
+	defer killMaintenance()
 	// computeCtx outlives loopCtx too: a provision whose polling pause spans a loop tick must not die with
 	// the loop; leave cancels it after compute.wait(grace) has had its say.
 	computeCtx, killCompute := context.WithCancel(context.Background())
@@ -209,27 +214,6 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			}
 		}
 	}
-	waitAll := func(grace time.Duration) {
-		if len(inflight) == 0 {
-			return
-		}
-		var timer <-chan time.Time
-		if grace > 0 {
-			t := time.NewTimer(grace)
-			defer t.Stop()
-			timer = t.C
-		}
-		for len(inflight) > 0 {
-			select {
-			case d := <-results:
-				report(d)
-			case <-timer:
-				say("grace of %s over: killing %d run(s) still in flight", grace, len(inflight))
-				killRuns()
-				timer = nil
-			}
-		}
-	}
 	graceFor := func(result string) time.Duration {
 		if result != "interrupted" && result != "stopped" {
 			return 0
@@ -239,12 +223,62 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 		}
 		return time.Duration(settingInt(s, "minutes_per_job")+5) * time.Minute
 	}
+	waitAll := func(grace time.Duration) {
+		if len(inflight) == 0 {
+			return
+		}
+		var timer <-chan time.Time
+		var graceTimer *time.Timer
+		defer func() {
+			if graceTimer != nil {
+				graceTimer.Stop()
+			}
+		}()
+		if grace > 0 {
+			graceTimer = time.NewTimer(grace)
+			timer = graceTimer.C
+		}
+		callerDone := ctx.Done()
+		for len(inflight) > 0 {
+			select {
+			case d := <-results:
+				report(d)
+			case <-callerDone:
+				callerDone = nil
+				if graceTimer == nil {
+					grace = graceFor("interrupted")
+					graceTimer = time.NewTimer(grace)
+					timer = graceTimer.C
+				}
+			case <-timer:
+				say("grace of %s over: killing %d run(s) still in flight", grace, len(inflight))
+				killRuns()
+				timer = nil
+			}
+		}
+	}
 	leave := func(result, note string) string {
 		stopLoop()
+		if result == "stopped" || result == "interrupted" {
+			killMaintenance()
+		}
 		grace := graceFor(result)
 		if len(inflight) > 0 {
 			say("%s: waiting for %d run(s) in flight to finish", note, len(inflight))
 			waitAll(grace)
+		}
+		if maintenance.done != nil {
+			say("%s: waiting for landing maintenance to finish", note)
+			<-maintenance.done
+			lines := maintenance.drain()
+			for _, line := range lines {
+				say("%s", line)
+			}
+		}
+		killMaintenance()
+		if ctx.Err() != nil && result != "stopped" {
+			result = "interrupted"
+			grace = graceFor(result)
 		}
 		if compute.busy() > 0 {
 			say("%s: waiting for %d compute operation(s) in flight", note, compute.busy())
@@ -290,6 +324,12 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	for {
 		loops++
 		reap()
+		onlyMaintenanceWake := maintenanceWake
+		maintenanceWake = false
+		maintenanceLines := maintenance.drain()
+		for _, line := range maintenanceLines {
+			say("%s", line)
+		}
 		if completed && len(inflight) == 0 {
 			if allErrors && !sleep(time.Duration(interval)*time.Second) {
 				return leave("interrupted", "stopping on signal")
@@ -332,30 +372,16 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			for _, l := range holdLines {
 				say("%s", l)
 			}
-			// Verified branches land first, so a requeued job is planned and taken in the same loop (ADR-024);
-			// a hold (dirty or switched checkout, lock, unreadable folder, stop) is said once per change.
-			landLines, curHeld := tendLandings(s, projects, actor, now, prevHeld)
-			for _, l := range landLines {
-				say("%s", l)
-			}
-			prevHeld = curHeld
-			// Hygiene: what runs and landings left on this machine goes once nothing holds it; a run in
-			// flight keeps its clone, a branch waiting to land stays.
-			if !o.DryRun {
+			// Landing verification may take the owner's whole run budget. It must not
+			// hold the supervisor, heartbeat or other projects' dispatch behind it.
+			// A maintenance-only wake skips unchanged holds, not a new worker result.
+			if maintenance.done == nil && (!onlyMaintenanceWake || maintenance.hasNewPending(s, projects)) {
 				inflightJobs := map[string]bool{}
 				for d := range inflight {
 					inflightJobs[d.job.str("id")] = true
 				}
-				for _, l := range tendSweep(s, projects, now, actor, inflightJobs, &lastSweep) {
-					say("%s", l)
-				}
-			}
-			// ADR-035: a landing in the brain becomes the running binary; the build runs off the tick.
-			if !o.DryRun {
 				selfEnv.Inflight = len(inflight)
-				for _, l := range tendBinary(s, now, selfEnv) {
-					say("%s", l)
-				}
+				maintenance.start(maintenanceCtx, s, projects, actor, now, o.DryRun, inflightJobs, selfEnv)
 			}
 			for _, proj := range projects {
 				slug := proj.str("slug")
@@ -565,6 +591,19 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			select {
 			case d := <-results:
 				report(d)
+			case <-time.After(dispatchTickSeconds * time.Second):
+			case <-compute.wake:
+			case _, ok := <-wakeEvents:
+				if !ok {
+					wakeEvents = nil
+				}
+			case <-ctx.Done():
+				return leave("interrupted", "stopping on signal")
+			}
+		} else if maintenance.done != nil {
+			select {
+			case <-maintenance.done:
+				maintenanceWake = true
 			case <-time.After(dispatchTickSeconds * time.Second):
 			case <-compute.wake:
 			case _, ok := <-wakeEvents:

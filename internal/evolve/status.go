@@ -71,32 +71,33 @@ type JobRef struct {
 const BaselineRetryHours = 24
 
 type LoopStatus struct {
-	Project          string       `json:"project"`
-	Stop             bool         `json:"stop"`
-	Loop             bool         `json:"loop"`
-	Limits           string       `json:"limits"`
-	Tolerance        float64      `json:"tolerance"`
-	Constitution     bool         `json:"constitution"`
-	Evaluators       bool         `json:"evaluators"`
-	Baseline         *float64     `json:"baseline"`
-	BaselineID       string       `json:"baseline_id,omitempty"`
-	BaselineJob      *JobRef      `json:"baseline_job"`       // the open baseline job, or null (ADR-031)
-	BaselineFailedAt string       `json:"baseline_failed_at"` // when the newest baseline job failed within BaselineRetryHours, else ""
-	PublicFixtures   int          `json:"public_fixtures"`
-	Heldout          HeldoutState `json:"heldout"`
-	Kept             int          `json:"kept"`
-	Discarded        int          `json:"discarded"`
-	Voted            HitRate      `json:"voted"`
-	Signal           HitRate      `json:"signal"`
-	ProductScope     ProductScope `json:"product_scope"`
-	LoopStartedAt    string       `json:"loop_started_at,omitempty"`
-	Cycles           int          `json:"cycles"`
-	Hours            float64      `json:"hours"`
-	CapReached       bool         `json:"cap_reached"`
-	LimitProblem     string       `json:"limit_problem,omitempty"`
-	Level            string       `json:"level"`
-	Reason           string       `json:"reason"`
-	NextHumanStep    string       `json:"next_human_step"`
+	Project          string         `json:"project"`
+	Stop             bool           `json:"stop"`
+	Loop             bool           `json:"loop"`
+	Limits           string         `json:"limits"`
+	Tolerance        float64        `json:"tolerance"`
+	Constitution     bool           `json:"constitution"`
+	Evaluators       bool           `json:"evaluators"`
+	Baseline         *float64       `json:"baseline"`
+	BaselineID       string         `json:"baseline_id,omitempty"`
+	BaselineJob      *JobRef        `json:"baseline_job"`       // the open baseline job, or null (ADR-031)
+	BaselineFailedAt string         `json:"baseline_failed_at"` // when the newest baseline job failed within BaselineRetryHours, else ""
+	PublicFixtures   int            `json:"public_fixtures"`
+	Heldout          HeldoutState   `json:"heldout"`
+	Kept             int            `json:"kept"`
+	Discarded        int            `json:"discarded"`
+	Voted            HitRate        `json:"voted"`
+	Signal           HitRate        `json:"signal"`
+	ProductScope     ProductScope   `json:"product_scope"`
+	LoopStartedAt    string         `json:"loop_started_at,omitempty"`
+	Cycles           int            `json:"cycles"`
+	Hours            float64        `json:"hours"`
+	CapReached       bool           `json:"cap_reached"`
+	LimitProblem     string         `json:"limit_problem,omitempty"`
+	Level            string         `json:"level"`
+	Reason           string         `json:"reason"`
+	NextHumanStep    string         `json:"next_human_step"`
+	Planning         PlanningStatus `json:"planning"`
 }
 
 func (status *LoopStatus) onlyBudgetClosed() bool {
@@ -214,6 +215,18 @@ func RecentBaselineFailure(s *store.Store, project, now string) (string, error) 
 }
 
 func Status(s *store.Store, project string) (*LoopStatus, error) {
+	status, err := loopStatus(s, project)
+	if err != nil {
+		return nil, err
+	}
+	status.Planning, err = planningStatus(s, status)
+	if err != nil {
+		return nil, err
+	}
+	return status, nil
+}
+
+func loopStatus(s *store.Store, project string) (*LoopStatus, error) {
 	if _, err := validProject(s, project); err != nil {
 		return nil, err
 	}
@@ -418,6 +431,7 @@ func statusRows(s *LoopStatus) [][]string {
 		{"Voted suggestions", hit(s.Voted)}, {"Signal-derived", hit(s.Signal)},
 		{"Since loop enabled", fmt.Sprintf("%d cycles; %.2f hours", s.Cycles, s.Hours)},
 		{"Product scope", s.ProductScope.Reason}, {"Level allowed", s.Level + " - " + s.Reason},
+		{"Experiment planning", s.Planning.State + " - " + s.Planning.Reason},
 		{"Next human step", s.NextHumanStep},
 	}
 }

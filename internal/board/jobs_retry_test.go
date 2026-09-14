@@ -3,6 +3,7 @@ package board
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/manishtiwari25/pulse/internal/cli"
@@ -200,5 +201,114 @@ func TestRetryCommandOutputAndJSON(t *testing.T) {
 	}
 	if result.Outcome != "retried" || result.Root != job.ID || result.Job.ID != job.ID {
 		t.Fatalf("json result %+v", result)
+	}
+}
+
+func TestRetryJobNoSourceAndSupersededInPlace(t *testing.T) {
+	_, s, p := fixture(t)
+	job := makeFailedJob(t, s, p.Slug, "")
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			if _, err := RetryJob(s, RetryInput{JobID: job.ID, AsNew: true}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if n := countRows(t, s, "jobs", "status = 'queued'"); n != 1 {
+		t.Fatalf("empty-source retries made %d queued copies", n)
+	}
+	again, err := RetryJob(s, RetryInput{JobID: job.ID})
+	if err != nil || !again.reused || again.Job.ID == job.ID {
+		t.Fatalf("in-place retry revived superseded failure: %+v %v", again, err)
+	}
+	if n := countRows(t, s, "events", "action = ? AND subject = ?", JobRecoverAction, job.ID); n != 1 {
+		t.Fatalf("reusing a carrier consumed the recovery cap: %d events", n)
+	}
+	if _, err := FinishJob(s, again.Job.ID, "human", "done", "landed", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, asNew := range []bool{false, true} {
+		if _, err := RetryJob(s, RetryInput{JobID: job.ID, AsNew: asNew}); err == nil || !strings.Contains(what(err), "superseded") {
+			t.Fatalf("succeeded lineage retried: %v", err)
+		}
+	}
+}
+
+func TestRetryJobActiveRunRefused(t *testing.T) {
+	_, s, p := fixture(t)
+	job := makeFailedJob(t, s, p.Slug, "")
+	if _, err := s.DB.Exec(`INSERT INTO runs(id,job_id,agent,project,started_at,status)
+		VALUES ('run-active',?,'alice',?,?,'running')`, job.ID, p.Slug, testNow); err != nil {
+		t.Fatal(err)
+	}
+	for _, asNew := range []bool{false, true} {
+		if _, err := RetryJob(s, RetryInput{JobID: job.ID, AsNew: asNew}); err == nil || !strings.Contains(what(err), "active run") {
+			t.Fatalf("provisional failure retried: %v", err)
+		}
+	}
+}
+
+func TestRetryJobSourceDedupeStaysInProject(t *testing.T) {
+	_, s, p := fixture(t)
+	job := makeFailedJob(t, s, p.Slug, "shared-source")
+	if _, err := s.DB.Exec("INSERT INTO projects(slug,name,path,added_at) VALUES ('other','Other',?,?)", t.TempDir(), testNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := AddJob(s, JobInput{Project: "other", Kind: "task", Title: "Other work", Tier: 1, Source: job.Source}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := RetryJob(s, RetryInput{JobID: job.ID, AsNew: true})
+	if err != nil || out.Job.Project != p.Slug || out.reused {
+		t.Fatalf("retry returned another project's work: %+v %v", out, err)
+	}
+}
+
+func retryStoreAt(t *testing.T, s *store.Store, hours float64) *store.Store {
+	t.Helper()
+	now, err := PlusHours(testNow, hours)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := store.Open(store.Options{Home: s.Home, Now: now, SkipRecords: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = later.Close() })
+	return later
+}
+
+func TestRetryJobCancelledRootAllowsLaterChildRecovery(t *testing.T) {
+	for _, source := range []string{"", "manual:cancelled-chain"} {
+		for _, asNew := range []bool{false, true} {
+			t.Run(source+"/"+map[bool]string{false: "in place", true: "as new"}[asNew], func(t *testing.T) {
+				_, s, p := fixture(t)
+				root := makeFailedJob(t, s, p.Slug, source)
+				cancelled, err := FinishJob(s, root.ID, store.HumanAgent, "cancelled", "cancelled by the owner", "", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				child, err := RetryJob(retryStoreAt(t, s, 1), RetryInput{JobID: root.ID, AsNew: true, Actor: store.HumanAgent})
+				if err != nil {
+					t.Fatal(err)
+				}
+				later := retryStoreAt(t, s, 2)
+				if _, err := FinishJob(later, child.Job.ID, store.HumanAgent, "failed", "verify exit 1", "", nil); err != nil {
+					t.Fatal(err)
+				}
+				retry, err := RetryJob(later, RetryInput{JobID: child.Job.ID, AsNew: asNew, Actor: store.HumanAgent})
+				if err != nil {
+					t.Fatalf("older root cancellation blocked the later authorized child: %v", err)
+				}
+				if retry.Job.Status != "queued" || retry.Root != root.ID {
+					t.Fatalf("child recovery = %+v", retry)
+				}
+				rootAfter, err := JobByID(s, root.ID)
+				if err != nil || rootAfter.Status != "cancelled" || rootAfter.FinishedAt != cancelled.FinishedAt || rootAfter.Result != cancelled.Result {
+					t.Fatalf("cancelled history was changed: %+v %v", rootAfter, err)
+				}
+			})
+		}
 	}
 }

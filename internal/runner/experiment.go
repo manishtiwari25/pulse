@@ -96,6 +96,10 @@ func scoreLine(sc *evolve.Scores) string {
 // landExperiment measures, decides, archives and lands or drops one experiment job's branch. It returns the
 // landing state and note exactly like landBranch; "unmeasured" leaves the job untouched for a later pass.
 func landExperiment(s *store.Store, project row, job row, actor, now string, verify bool) (state, note string) {
+	return landExperimentContext(context.Background(), s, project, job, actor, now, verify)
+}
+
+func landExperimentContext(parent context.Context, s *store.Store, project row, job row, actor, now string, verify bool) (state, note string) {
 	root := project.str("path")
 	def := project.str("default_branch")
 	if def == "" {
@@ -110,26 +114,60 @@ func landExperiment(s *store.Store, project row, job row, actor, now string, ver
 		_, _ = createPost(s, now, postOpts{Kind: "result", Project: slug, Area: area, Thread: thread, Summary: trunc(summary, 230), Body: body,
 			Agent: agent, On: on, Resolution: resolution, Date: now})
 	}
-	if why := runnerStopped(s); why != "" {
+	if why := landingStop(parent, s, root); why != "" {
 		return "stopped", why
+	}
+	runID := lastRunID(s, job.str("id"))
+	prior, err := experimentArchive(s, slug, branch, runID)
+	if err != nil {
+		return "error", errMessage(err)
 	}
 	exists, unreadable := branchExists(root, branch)
 	if unreadable != "" {
 		return "unreadable", fmt.Sprintf("%s kept: %s", branch, unreadable)
 	}
-	if !exists {
-		exec1(s.DB, "UPDATE jobs SET branch = '' WHERE id = ?", job.str("id"))
-		eventAt(s.DB, now, actor, "land.missing", branch, map[string]any{"job": job.str("id"), "project": slug})
-		post("dropped", fmt.Sprintf("experiment %s dropped: branch %s has no commits", suggestion, branch),
-			fmt.Sprintf("Job %s finished without a branch to measure (`%s` does not exist in %s); nothing changed.\n", job.str("id"), branch, root))
-		return "missing", fmt.Sprintf("branch %s does not exist in %s; experiment dropped", branch, root)
+	// A discarded artifact may be gone while its receipt still needs retrying.
+	// A missing kept artifact never establishes successful delivery.
+	if !exists && (prior == nil || prior.int("kept") != 0) {
+		archiveID := ""
+		if prior != nil {
+			archiveID = prior.str("id")
+		}
+		why := fmt.Sprintf("experiment artifact %s is missing; delivery was not confirmed; any measured archive is retained", branch)
+		if err := failMissingExperiment(s, project, job, actor, runID, archiveID, why); err != nil {
+			return "error", errMessage(err)
+		}
+		post("dropped", fmt.Sprintf("experiment %s failed: branch %s is missing", suggestion, branch),
+			fmt.Sprintf("Job %s has no branch artifact (`%s` does not exist in %s). A measured keep is not proof of delivery. "+
+				"The job failed; its measurements remain unchanged. Owner review is needed.\n", job.str("id"), branch, root))
+		return "missing", why
 	}
 	tol := evolveTolerance(s)
-	runID := lastRunID(s, job.str("id"))
-	// A kept experiment whose landing was deferred earlier is not measured twice: the archive already says so.
-	if prior := mustOne(s.DB, "SELECT id, note FROM evolution_archive WHERE project = ? AND branch = ? AND run_id = ? AND kept = 1 ORDER BY at DESC LIMIT 1",
-		slug, branch, runID); prior != nil && runID != "" {
-		state, note, lerr := landBranch(s, project, branch, actor, now, landOpts{Job: job, Verify: verify})
+	discard := func(archiveID, reason, measured string) (string, string) {
+		if why := landingStop(parent, s, root); why != "" {
+			return "stopped", why
+		}
+		if exists {
+			if removed := gitTimeout(root, 30*time.Second, "branch", "-D", branch); !removed.ok() {
+				return "deferred", fmt.Sprintf("experiment discard (archive %s) awaits branch removal: %s", archiveID, strings.TrimSpace(removed.Stderr))
+			}
+		}
+		if err := recordLanding(s, project, branch, actor, "land.dropped", " | dropped: "+reason,
+			landOpts{Job: job, ArchiveID: archiveID, RunID: runID}, map[string]any{"why": reason}); err != nil {
+			return "error", errMessage(err)
+		}
+		post("dropped", fmt.Sprintf("experiment %s dropped: %s", suggestion, reason),
+			fmt.Sprintf("Branch `%s` was measured and discarded (archive %s): %s.\n\nThe branch is deleted; nothing changed on `%s`.\n",
+				branch, archiveID, measured, def))
+		return "dropped", fmt.Sprintf("%s dropped (%s); archive %s", branch, reason, archiveID)
+	}
+	// Retry finalization, not measurement, when a landing or discard was deferred.
+	if prior != nil {
+		if prior.int("kept") == 0 {
+			return discard(prior.str("id"), prior.str("note"), prior.str("note"))
+		}
+		state, note, lerr := landBranch(s, project, branch, actor, now,
+			landOpts{Job: job, Verify: verify, Ctx: parent, ArchiveID: prior.str("id"), RunID: runID})
 		if lerr != nil {
 			return "error", errMessage(lerr)
 		}
@@ -140,7 +178,7 @@ func landExperiment(s *store.Store, project row, job row, actor, now string, ver
 			fmt.Sprintf("Branch `%s` was measured and kept earlier (archive %s): %s.\n\nIt landed under ADR-024: %s.\n", branch, prior.str("id"), prior.str("note"), note))
 		return state, fmt.Sprintf("%s kept (archive %s); %s", branch, prior.str("id"), note)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), experimentMeasureBudget)
+	ctx, cancel := context.WithTimeout(parent, experimentMeasureBudget)
 	defer cancel()
 	unavailable := func(what string, err error) (string, string) {
 		summary := fmt.Sprintf("experiment %s waits: measurement unavailable (%s)", suggestion, what)
@@ -157,6 +195,9 @@ func landExperiment(s *store.Store, project row, job row, actor, now string, ver
 		return "unmeasured", fmt.Sprintf("%s not landed: measurement unavailable (%s)", branch, what)
 	}
 	baseline, err := evolve.Measure(ctx, s, slug, root, def, evolve.MeasureOptions{})
+	if why := landingStop(parent, s, root); why != "" {
+		return "stopped", why
+	}
 	if errors.Is(err, evolve.ErrNotImplemented) {
 		return unavailable("evolve.Measure is not implemented", err)
 	}
@@ -164,6 +205,9 @@ func landExperiment(s *store.Store, project row, job row, actor, now string, ver
 		return "deferred", fmt.Sprintf("%s not landed: measuring %s failed: %s", branch, def, errMessage(err))
 	}
 	variant, err := evolve.Measure(ctx, s, slug, root, branch, evolve.MeasureOptions{})
+	if why := landingStop(parent, s, root); why != "" {
+		return "stopped", why
+	}
 	if errors.Is(err, evolve.ErrNotImplemented) {
 		return unavailable("evolve.Measure is not implemented", err)
 	}
@@ -189,15 +233,10 @@ func landExperiment(s *store.Store, project row, job row, actor, now string, ver
 		hyp = "\n\nHypothesis: " + hypothesis
 	}
 	if !keep {
-		gitTimeout(root, 30*time.Second, "branch", "-D", branch)
-		exec1(s.DB, "UPDATE jobs SET branch = '', result = result || ? WHERE id = ?", " | dropped: "+reason, job.str("id"))
-		eventAt(s.DB, now, actor, "land.dropped", branch, map[string]any{"project": slug, "job": job.str("id"), "archive": archiveID, "why": reason})
-		post("dropped", fmt.Sprintf("experiment %s dropped: %s", suggestion, reason),
-			fmt.Sprintf("Branch `%s` was measured and discarded (archive %s): %s.%s\n\nThe branch is deleted; nothing changed on `%s`.\n",
-				branch, archiveID, measured, hyp, def))
-		return "dropped", fmt.Sprintf("%s dropped (%s); archive %s", branch, reason, archiveID)
+		return discard(archiveID, reason, measured+hyp)
 	}
-	state, note, lerr := landBranch(s, project, branch, actor, now, landOpts{Job: job, Verify: verify})
+	state, note, lerr := landBranch(s, project, branch, actor, now,
+		landOpts{Job: job, Verify: verify, Ctx: parent, ArchiveID: archiveID, RunID: runID})
 	if lerr != nil {
 		return "error", errMessage(lerr)
 	}

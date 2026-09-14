@@ -16,6 +16,7 @@ import (
 
 	_ "github.com/manishtiwari25/pulse/internal/board"
 	_ "github.com/manishtiwari25/pulse/internal/evolve"
+	_ "github.com/manishtiwari25/pulse/internal/goals/command"
 	_ "github.com/manishtiwari25/pulse/internal/harness"
 	_ "github.com/manishtiwari25/pulse/internal/hooks"
 	_ "github.com/manishtiwari25/pulse/internal/hub"

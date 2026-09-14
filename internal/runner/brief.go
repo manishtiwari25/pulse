@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/board"
+	"github.com/manishtiwari25/pulse/internal/goals"
 	"github.com/manishtiwari25/pulse/internal/store"
 	"github.com/manishtiwari25/pulse/internal/tally"
 )
@@ -66,7 +67,11 @@ type briefOpts struct {
 	Now     string
 }
 
-func writeBrief(o briefOpts) string {
+func writeBrief(o briefOpts) (string, error) {
+	goal, err := goals.Get(o.Store, o.Project.str("slug"))
+	if err != nil {
+		return "", fmt.Errorf("read project goal for worker brief: %w", err)
+	}
 	var b []string
 	w := func(format string, args ...any) {
 		if len(args) == 0 {
@@ -88,6 +93,7 @@ func writeBrief(o briefOpts) string {
 	w("preamble or a plan - do the task now with your tools, then report as rule 6 says. A run that reports")
 	w("nothing counts as failed.")
 	w("")
+	w("%s", goals.Context(goal))
 	w("## Task (%s, Tier %d)", job.str("kind"), job.int("tier"))
 	w("")
 	w("%s", job.str("title"))
@@ -219,7 +225,7 @@ func writeBrief(o briefOpts) string {
 			}
 		}
 	}
-	return strings.Join(b, "\n") + "\n"
+	return strings.Join(b, "\n") + "\n", nil
 }
 
 func writeFocusBriefSection(b *[]string, s *store.Store, project, agent, now string, remote bool) {

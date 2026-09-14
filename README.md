@@ -51,13 +51,24 @@ pulse hub                                      # the console opens at http://127
 
 Everything else happens in the console. **Add project** registers a checkout
 and queues its onboarding (`pulse init --name my-app --verify 'npm test'` in
-the checkout is the same step from a terminal). The first card under **For
-you**, **Keep PULSE running**, installs the daemon and the console as user
-services (launchd / systemd --user) so neither dies with a terminal; the
-`pulse hub` you started hands over to the service's at the same address
-(`pulse service install` in a terminal does the same). A fresh copy carries
-the framework's records inside the binary, so nothing has to be imported
-first (see [Share PULSE](#share-pulse)).
+the checkout is the same step from a terminal). Home's **Daemon** status links
+to **Daemon controls**. **Keep running** previews and installs the daemon and
+console as user services (launchd / systemd --user) so neither dies with a
+terminal; **Start daemon** loads an existing, unloaded service. **Finish service
+setup** completes a partial installation when the daemon is managed but the
+console service is missing or unloaded. The `pulse hub` you started hands over
+to the service's at the same address (`pulse service
+install` in a terminal does the same). A fresh copy carries the framework's
+records inside the binary, so nothing has to be imported first (see
+[Share PULSE](#share-pulse)).
+
+If the owner's pause is on, **Resume daemon** clears only the `stop` setting
+(`pulse start` in a terminal). It does not start a missing service, remove
+file STOPs or change caps. **Silent** means the loop heartbeat is stale, not
+that the daemon is disabled: it may still be running or waiting. The controls
+show the recorded PID, service state and diagnostic commands rather than
+starting a duplicate daemon. `daemon.self_update = off` only disables
+automatic rebuilds; it is not the daemon's enable switch.
 
 Then sign in once: **Settings → Harness → Sign in with GitHub** shows a code,
 you enter it on github.com, and every worker on this machine runs with that
@@ -119,7 +130,9 @@ Everything else happens in the console:
   shows its self-improvement state - constitution revision (and whether it is
   still the seeded text), enabled fixtures, baseline (measured by the daemon,
   "measuring" while its job runs), the level the loop may reach - and the
-  project page lists its fixtures.
+  project page lists its fixtures. Open a project's **Overview → Project
+  goal** to give every agent the same direction. **Edit goal** sets your
+  outcome; without one, PULSE supplies a project-derived default.
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
   revision is kept. The project's lead agent picks it up the same tick, turns
   it into jobs at the task's priority (urgent runs first) and reports back on
@@ -287,6 +300,38 @@ Interactive harnesses get the same flow through hooks:
 `pulse hooks install copilot|claude` writes a session-start hook that reads the
 board and a stop hook that reminds the agent to reflect (once per session).
 
+### Shared project goals
+
+Each project has one effective goal. The owner's goal takes precedence; a
+project without one receives a deterministic default grounded in that project's
+facts, without a model call. The console labels **Owner set** and **Project
+default** separately. Set up to 4,000 characters in **Project → Overview → Edit
+goal**, or confirm **Use project default** to restore the generated direction.
+Goals are shared with agents, so do not include credentials or private data.
+
+New agent runs read the current goal, including work already queued before an
+owner edit. A running agent keeps its existing brief. Re-registering or
+restoring a project does not overwrite the owner's goal, and changing one
+project's goal does not affect another project.
+
+A goal guides work; it is not a new permission or proof of improvement. Existing
+tasks, hard stops, resource caps and evaluation gates still apply. In
+particular, a goal does not enable product experiments, change the checks or
+remove STOP. An enabled loop with zero measured variants has not demonstrated
+recursive improvement merely because its safety baseline is green.
+
+Agents can read the goal in a terminal; only the owner sets or resets it:
+
+```bash
+pulse goal --project my-app
+pulse goal set --project my-app --text "Make the primary user workflow reliable and easy to use."
+pulse goal reset --project my-app
+```
+
+The console uses `GET` and `POST /api/v1/projects/{slug}/goal`; a write is
+either `{"text":"..."}` or `{"reset":true}`, never both. Goal changes are
+audited without copying the goal text into events.
+
 ### Records in SQLite
 
 ```bash
@@ -383,6 +428,34 @@ authorized. Product scope is a separate owner-controlled gate. Starter
 fixtures measure agent safety, not the quality of the project's product;
 baseline rows are not completed improvement cycles. The console reports
 baselines and variants separately.
+
+Open **Project → Evolution → Experiment planning** for the current candidate
+or blocking reason. `pulse evolve status` reports the same planning state:
+gated, blocked, waiting for an eligible suggestion, ready but not dispatched,
+queued, in flight, or finalizing. Level D with no eligible suggestion is still
+waiting, not a running experiment.
+
+Landing and sweeping share one serial maintenance lane outside the supervisor
+tick, so a slow measurement or verification does not freeze worker dispatch,
+heartbeats or STOP handling. Cancellation reaches the measurement and
+verification commands; it does not bypass their results or the landing gates.
+
+After a measured experiment is finalized with no pending branch, the daemon
+can queue one durable, result-specific reflection per eligible archive, for
+both kept and discarded outcomes. The archive must belong to the job's latest
+successful run. Its evidence feeds subsequent suggestions in the shared
+project-goal context; it does not create votes or authorize another experiment.
+Failed or provisional runs are not reported as successful measured feedback.
+STOP, loop-off and resource gates can defer this follow-up.
+Finalization requires a landing or discard receipt tied to the current
+project, job, run and archive; an empty or missing branch is not success.
+Older archives without that proof remain history, not successful feedback;
+no receipt is backfilled automatically.
+
+The `cycles` count is non-baseline experiment archives since the current
+loop-enable event; kept/discarded totals cover all history. An archive can
+consume a cycle before landing finishes, even if landing later fails. These
+counts are measured attempts, not shipped changes.
 
 A `done` job or `built` suggestion is not a promise that code shipped:
 answers, ballots and leads can legitimately finish without commits.
@@ -792,6 +865,26 @@ never unrelated work. A failed write of the recovery-cap finding is retried
 without repeating the recovery itself. Corrected briefs keep the original
 instructions and human retry notes while bounding old failure summaries and
 log excerpts; unavailable logs are reported explicitly.
+
+Open **Home → Failed job repair**, or the same section in a project's
+**Overview**, to inspect current recovery reasons. The historical total counts
+all-age jobs still marked failed, including autonomous jobs that have no owner
+task. Category counts and filters describe the current page, not the whole
+history; **Older** and **Newer** page through it.
+
+Select up to five eligible jobs and confirm **Repair selected**. Each failure
+is rechecked against its current state, replacement jobs, cancellations,
+prerequisites, STOP, backoff and existing recovery/queue limits. Deterministic
+failures get a corrected job carrying the earlier evidence; transient failures
+can reuse their job. The response lists queued, skipped and failed actions
+separately. **Queued is not fixed.** Structural failures and exhausted chains
+remain held with a reason and next step; no history is deleted and no cap is
+raised.
+
+The owner API exposes `GET /api/v1/jobs/failed` with project filtering and
+bounded cursor pagination, and `POST /api/v1/jobs/repair` with explicit
+`job_ids` and `X-Pulse-Job-Repair: yes`. It never accepts an actor or a
+blanket retry-all request.
 
 A cause that fails twice becomes a memory record
 (`MEM-failure-pattern-...`, `pulse record list memory`) the daemon writes and

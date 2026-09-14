@@ -89,6 +89,13 @@ const GateCooldown = 30 * time.Minute
 // waits for an answer or its answer is within GateCooldown, its id is returned and nothing new is posted.
 // The planner runs on every daemon tick, so otherwise one gate would fill the thread with identical questions.
 func ownerQuestion(s *store.Store, project string, target *tally.Post, agent string, agentRow *store.Agent, session, reason string) (string, error) {
+	return ownerQuestionWith(s, project, target, agent, agentRow, session, reason, func(in board.PostInput) (*board.Post, error) {
+		return board.CreatePost(s, in)
+	})
+}
+
+func ownerQuestionWith(s *store.Store, project string, target *tally.Post, agent string, agentRow *store.Agent, session, reason string,
+	create func(board.PostInput) (*board.Post, error)) (string, error) {
 	area, thread, on := "evolution", "loop-gate", ""
 	if target != nil {
 		area, thread, on = target.Area, target.Thread, target.ID
@@ -99,7 +106,7 @@ func ownerQuestion(s *store.Store, project string, target *tally.Post, agent str
 	if id, err := recentlyAnsweredStopQuestion(s, project, area, thread, on); err != nil || id != "" {
 		return id, err
 	}
-	post, err := board.CreatePost(s, board.PostInput{
+	post, err := create(board.PostInput{
 		Kind: "question", Project: project, Area: area, Thread: thread, On: on, ForOwner: true,
 		Agent: agent, AgentRow: agentRow, Session: session, Summary: StopSummary,
 		Body: reason + "\nThe workflow was not bypassed. Resolve the gate or close the unsafe thread before resuming.",
@@ -263,29 +270,44 @@ func Cycle(ctx context.Context, s *store.Store, project string, opts CycleOption
 				return errors.New("evolution job disappeared")
 			}
 			if job.Status != "queued" && job.Status != "leased" {
-				archived, err := archivedForJob(s, project, job.ID)
-				if err != nil {
-					return err
-				}
-				if archived != nil {
-					if err := emitCycle(opts, CycleResult{Project: project, Job: job.ID, Archive: archived}); err != nil {
-						return err
-					}
-				}
 				text := strings.ToLower(job.Result)
 				if job.Status != "done" || strings.Contains(text, "applyerror") ||
 					strings.Contains(text, "violation") || strings.Contains(text, "hard stop") {
 					return stopCycle(s, project, nil, opts, job.ID, "experiment stopped with status "+job.Status+"; review its runner result")
 				}
-				if archived == nil {
-					return stopCycle(s, project, nil, opts, job.ID, "runner finished without an archive row; no result was invented")
+				finalizing, err := experimentFinalizing(s, job)
+				if err != nil {
+					return err
 				}
-				ownedJob = ""
-				createdJob = false
-				if opts.Once {
-					return nil
+				if !finalizing {
+					archived, err := archivedForJob(s, project, job.ID)
+					if err != nil {
+						return err
+					}
+					if archived == nil {
+						return stopCycle(s, project, nil, opts, job.ID, "runner finished without an archive row; no result was invented")
+					}
+					finalized, err := archiveFinalized(s, project, job.ID, archived.ID)
+					if err != nil {
+						return err
+					}
+					if !finalized {
+						return stopCycle(s, project, nil, opts, job.ID,
+							"runner finished without current-run finalization evidence; the measurement is retained but landing or discard was not confirmed")
+					}
+					if err := emitCycle(opts, CycleResult{Project: project, Job: job.ID, Archive: archived}); err != nil {
+						return err
+					}
+					if _, err := PlanFeedback(s, project, opts.Agent); err != nil {
+						return err
+					}
+					ownedJob = ""
+					createdJob = false
+					if opts.Once {
+						return nil
+					}
+					continue
 				}
-				continue
 			}
 		}
 		select {

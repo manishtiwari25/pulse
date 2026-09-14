@@ -253,6 +253,13 @@ func retryJob(w *writer, in RetryInput) (*RetryResult, error) {
 	default:
 		return nil, refuse(2, "Job %s is %s; only failed or cancelled jobs can be retried", job.ID, job.Status)
 	}
+	var active int
+	if err := w.db.QueryRow("SELECT COUNT(*) FROM runs WHERE job_id = ? AND status = 'running'", job.ID).Scan(&active); err != nil {
+		return nil, err
+	}
+	if active != 0 {
+		return nil, refuse(2, "Job %s still has an active run; its result is not final", job.ID)
+	}
 
 	root, err := recoverRoot(w.db, job)
 	if err != nil {
@@ -262,11 +269,70 @@ func retryJob(w *writer, in RetryInput) (*RetryResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	carrier, err := RecoveryCarrier(w.db, job, root)
+	if err != nil {
+		return nil, err
+	}
+	if carrier != "" {
+		current, err := jobByID(w.db, carrier)
+		if err != nil {
+			return nil, err
+		}
+		if current.Status != "queued" && current.Status != "leased" && current.Status != "blocked" {
+			return nil, refuse(2, "Job %s is superseded by %s (%s); it must not be retried", job.ID, carrier, current.Status)
+		}
+		return &RetryResult{Job: current, Outcome: "replanned", Root: root, reused: true, n: n}, nil
+	}
 	n++
 	if in.AsNew {
 		return retryAsNew(w, job, root, n, in)
 	}
 	return retryInPlace(w, job, root, n, in)
+}
+
+// RecoveryCarrier finds work already carried by the source or recovery lineage.
+// Call it under the same write transaction as a retry. Lineage also covers jobs
+// without sources, and running controllers count even after a provisional finish.
+// A cancelled ancestor stays history only along the branch of a later explicit
+// human CLI retry; API recovery is not an override, nor is an older retry.
+func RecoveryCarrier(q interface {
+	QueryRow(string, ...any) *sql.Row
+}, job *Job, root string) (string, error) {
+	var id string
+	err := q.QueryRow(`WITH RECURSIVE recoveries AS (
+		SELECT seq, at, actor, subject, json_extract(detail, '$.job') AS job,
+			json_extract(detail, '$.class') AS class, json_extract(detail, '$.outcome') AS outcome
+		FROM events WHERE action = ? AND json_valid(detail) AND json_extract(detail, '$.root') = ?
+	), chain(id) AS (
+		SELECT ?
+		UNION SELECT job FROM recoveries WHERE outcome = 'replanned'
+	), ancestors(id) AS (
+		SELECT ?
+		UNION SELECT r.subject FROM recoveries r JOIN ancestors a ON r.job = a.id
+			WHERE r.outcome = 'replanned'
+	)
+	SELECT j.id FROM jobs j WHERE j.id != ? AND j.project = ? AND (
+		(j.id IN (SELECT id FROM chain) AND (
+			j.status IN ('queued', 'leased', 'blocked', 'done', 'cancelled')
+			OR EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.status = 'running')))
+		OR (? != '' AND j.source = ? AND (
+			j.status IN ('queued', 'leased', 'blocked')
+			OR EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.status = 'running')
+			OR (j.status IN ('done', 'cancelled') AND (j.created_at >= ? OR j.finished_at >= ?)))))
+		AND (j.status != 'cancelled' OR NOT EXISTS (
+			SELECT 1 FROM recoveries h WHERE h.subject = j.id AND h.outcome = 'replanned' AND h.class = 'human'
+			AND (h.actor = ? OR h.actor GLOB ?) AND h.job IN (SELECT id FROM ancestors)
+			AND j.finished_at != '' AND (h.at > j.finished_at OR (h.at = j.finished_at AND EXISTS (
+				SELECT 1 FROM events c WHERE c.subject = j.id AND c.action = 'job.cancelled'
+				AND c.at = j.finished_at AND c.seq < h.seq)))
+			AND NOT EXISTS (SELECT 1 FROM events c WHERE c.subject = j.id AND c.action = 'job.cancelled' AND c.seq > h.seq)))
+		ORDER BY j.created_at DESC, j.id DESC LIMIT 1`,
+		JobRecoverAction, root, root, job.ID, job.ID, job.Project, job.Source, job.Source, job.FinishedAt, job.FinishedAt,
+		store.HumanAgent, store.HumanAgent+":*").Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
 }
 
 func retryInPlace(w *writer, job *Job, root string, n int, in RetryInput) (*RetryResult, error) {
@@ -297,8 +363,9 @@ func retryAsNew(w *writer, job *Job, root string, n int, in RetryInput) (*RetryR
 		brief += in.Brief + "\n\n"
 	}
 	brief += "Start from the cause, fix it, then deliver the original task above."
+	// RecoveryCarrier already fenced source and lineage within this project.
 	copyJob, created, err := addJob(w, JobInput{Project: job.Project, Kind: job.Kind, Tier: job.Tier, Priority: job.Priority,
-		Title: retryTitle(root, job.Title), Brief: brief, Source: job.Source, CreatedBy: in.Actor})
+		Title: retryTitle(root, job.Title), Brief: brief, Source: job.Source, CreatedBy: in.Actor, NoDedupe: true})
 	if err != nil {
 		return nil, err
 	}

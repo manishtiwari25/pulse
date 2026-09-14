@@ -475,6 +475,21 @@ export interface RegisterProjectInput {
   verify?: string;
 }
 
+export const MAX_PROJECT_GOAL_CHARS = 4000;
+
+export interface ProjectGoal {
+  text: string;
+  source: "owner" | "generated";
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface ProjectGoalPayload {
+  project: string;
+  goal: ProjectGoal;
+  can_edit: boolean;
+}
+
 // What `pulse init` did: the row, whether it was new, the onboarding job it
 // queued (or found queued), and the environment record it imported, if any.
 export interface InitResult {
@@ -1022,6 +1037,13 @@ export interface Evolution {
 // Every gate between a project and its self-improvement loop, as the hub
 // evaluates them: the level allowed right now, why, and the one human step
 // that opens the next gate. The held-out set is counted, never named.
+export interface EvolvePlanning {
+  state: "gated" | "blocked" | "waiting" | "ready" | "queued" | "leased" | "finalizing" | string;
+  reason: string;
+  job?: string;
+  suggestion?: string;
+}
+
 export interface EvolveGates {
   project: string;
   stop: boolean;
@@ -1053,6 +1075,7 @@ export interface EvolveGates {
   level: EvolveLevel | string;
   reason: string;
   next_human_step: string; // a command, or "none" - optionally "none - <what the daemon does instead>"
+  planning?: EvolvePlanning; // absent on an older hub; readiness alone is not dispatch or progress
 }
 
 // One fixture as the console may see it: name, kind, state and provenance.
@@ -1330,6 +1353,8 @@ export const writes = {
   denyCompute: (id: string, words: string) => post<{ request: ComputeRequest }>("compute/" + enc(id) + "/deny", { words }),
   // Project lifecycle (ADR-027) - the same functions `pulse init` and `pulse remove` run.
   registerProject: (input: RegisterProjectInput) => post<InitResult>("projects", input),
+  setProjectGoal: (slug: string, text: string) => post<ProjectGoalPayload>(projectPath(slug, "goal"), { text }),
+  resetProjectGoal: (slug: string) => post<ProjectGoalPayload>(projectPath(slug, "goal"), { reset: true }),
   // dry_run:true previews; the hub applies only on an explicit false.
   removeProject: (slug: string, dryRun: boolean) => post<RemovePreview>("projects/" + enc(slug) + "/remove", { dry_run: dryRun }),
   restoreProject: (slug: string) => post<InitResult>("projects/" + enc(slug) + "/restore", {}),

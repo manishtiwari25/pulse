@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/manishtiwari25/pulse/internal/goals"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -145,6 +146,9 @@ func RegisterProject(s *store.Store, path, name, remote string, brain bool, veri
 	}
 	p, err := s.Project(slug)
 	if err != nil {
+		return nil, false, err
+	}
+	if err := goals.EnsureDefault(s, slug); err != nil {
 		return nil, false, err
 	}
 	if created && OnProjectCreated != nil {

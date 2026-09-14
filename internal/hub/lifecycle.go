@@ -20,7 +20,7 @@ func lifecycleRoute(parts []string) bool {
 	case 1:
 		return true
 	case 3:
-		return parts[2] == "remove" || parts[2] == "restore"
+		return parts[2] == "remove" || parts[2] == "restore" || parts[2] == "goal"
 	}
 	return false
 }
@@ -38,6 +38,10 @@ func (h *Handler) additionProjects(w http.ResponseWriter, r *http.Request, parts
 		} else {
 			h.additionProjectList(w, r)
 		}
+		return true
+	}
+	if parts[2] == "goal" {
+		h.additionProjectGoal(w, r, parts[1])
 		return true
 	}
 	if !additionMethod(w, r, http.MethodPost) || !h.additionAvailable(w, r, "projects") {

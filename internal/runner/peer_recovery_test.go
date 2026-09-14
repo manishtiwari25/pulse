@@ -240,7 +240,7 @@ func TestWorkerBriefRecoveryIsBoundedAndTransportAware(t *testing.T) {
 	s := newStore(t)
 	project, _ := newRepo(t, s)
 	for _, remote := range []bool{false, true} {
-		brief := writeBrief(briefOpts{Job: row{"id": "job-peer", "kind": "task", "tier": 0}, Project: project,
+		brief := mustWriteBrief(t, briefOpts{Job: row{"id": "job-peer", "kind": "task", "tier": 0}, Project: project,
 			Agent: "aurora", Clone: "/clone", Minutes: 10, Remote: remote, Store: s, Now: testNow})
 		for _, want := range []string{"## Working through a blocker", "different safe approach", "Do not poll", "SUMMARY: blocked:",
 			"Never weaken a check", "never bypass"} {

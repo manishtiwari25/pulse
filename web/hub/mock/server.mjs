@@ -10,6 +10,7 @@ import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rosterScenarios } from "./roster.mjs";
 import { taskDetailScenario, taskScenarios, taskWorkFocus } from "./tasks.mjs";
+import { createJobRepairMock } from "./job-repair.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "api");
 const port = Number(process.env.PULSE_HUB_PORT ?? 8787);
@@ -25,7 +26,13 @@ let agentReturnStarted = false;
 
 // ----- in-memory state for writes ----------------------------------------
 
-const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessPrompt: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {}, serviceInstalled: false };
+const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, goals: new Map(), jobRepairs: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessPrompt: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {}, serviceInstalled: false };
+const privateGoalComponent = "(?:private|heldout|held-out|\\.ssh|\\.aws|\\.azure|\\.pulse)";
+const privateGoalPath = new RegExp("(?:^|[\\s\"'`(\\[<{=:,;])" +
+  "(?:file:(?://[^/\\\\\\s\"'`<>]*)?)?" +
+  "(?:~[/\\\\]|/(?:Users|home|private|tmp|var)/|/?[a-z]:[/\\\\])" +
+  "|(?:^|[\\s/\\\\\"'`(\\[<{=:,;])" + privateGoalComponent + "[/\\\\]" +
+  "|[/\\\\]" + privateGoalComponent + "(?:[/\\\\]|$|[\\s\"'`()\\[\\]{}<>,;])", "i");
 // The owner's private set (ADR-032) as the hub reports it: counts only, never
 // the folder. The mock keeps the folder in `dir` to refuse a second setup
 // elsewhere the way the real hub would not - it simply never sends it.
@@ -78,6 +85,7 @@ async function init() {
   // A registered checkout that vanished from disk: its path is not in TREE, so the
   // picker shows "missing on disk" and Restore is refused like the real hub does.
   state.projects.push({ slug: "demo-docs", name: "demo-docs", path: "/home/owner/src/demo-docs", remote: "", brain: false, status: "inactive", verify_cmd: "", default_branch: "main", added_at: "2026-08-12T09:00:00Z", added_by: "human", last_seen: "2026-08-30T09:00:00Z", present: false, ...gate({}) });
+  state.jobRepairs = createJobRepairMock({ projects: state.projects, settings: state.settings, now, emit });
   for (const t of state.tasks) {
     try {
       t._detail = taskDetailScenario(await loadJson(`tasks/${t.id}.json`), now());
@@ -156,6 +164,20 @@ function recordView(r) {
   return o ? { ...r, status: o.status, current_rev: r.current_rev + o.revisions.length, updated_at: now() } : r;
 }
 
+function projectGoal(p) {
+  const product = p.brain ? "PULSE's agent-first engineering control plane" : (p.name || p.slug);
+  return {
+    project: p.slug,
+    goal: state.goals.get(p.slug) ?? {
+      text: `Improve ${product} through useful, reliable product behavior. Prioritize demonstrated defects and user experience, make focused improvements, and measure progress with the project's existing checks. Preserve task scope, approvals and self-improvement gates.`,
+      source: "generated",
+      updated_at: "",
+      updated_by: "",
+    },
+    can_edit: p.status === "active",
+  };
+}
+
 function folders(raw) {
   let path = raw.trim() === "" ? HOME + "/src" : diskPath(raw);
   const children = TREE[path];
@@ -208,6 +230,9 @@ function evolutionView(slug, d) {
       out.gates.next_human_step = p.evolve_next;
       out.gates.reason = p.evolve_level === "D" ? "the loop may run until a stop rule fires" : /evolve\.loop/.test(p.evolve_next) ? "evolve.loop is off" : heldoutAuto() ? "the daemon writes the private held-out set on its next tick (ADR-033)" : "the two private held-out fixtures are the one step the owner is the point of (ADR-012)";
     }
+    out.gates.planning = out.gates.level === "D"
+      ? { state: "waiting", reason: "No eligible, untried, in-scope experiment is simulated by this offline mock; no work is dispatched." }
+      : { state: "gated", reason: out.gates.reason + "; owner: " + out.gates.next_human_step };
   }
   return out;
 }
@@ -338,6 +363,13 @@ async function handle(req, res) {
   const q = url.searchParams;
   if (delay) await new Promise((r) => setTimeout(r, delay));
 
+  if (segs[0] === "jobs") {
+    const method = segs[1] === "repair" ? "POST" : "GET";
+    if (segs.length !== 2 || !["failed", "repair"].includes(segs[1])) return fail(res, 404, "Unknown jobs route", "Use failed or repair.", "Open Failed job repair.");
+    if (req.method !== method) return fail(res, 405, "Method not allowed", "Use " + method + " for this route.", "Open Failed job repair.");
+  }
+  if (segs[0] === "projects" && segs.length === 3 && segs[2] === "goal" && !["GET", "POST"].includes(req.method)) return fail(res, 405, "Method not allowed", "Goals support GET and POST.", "Use the project goal editor.");
+
   // SSE
   if (segs[0] === "events" && segs[1] === "stream") {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "access-control-allow-origin": "*" });
@@ -357,6 +389,11 @@ async function handle(req, res) {
       body = await readBody(req);
     } catch (e) {
       return fail(res, 400, "bad request", String(e.message), "send a JSON object");
+    }
+    if (segs[0] === "jobs" && segs[1] === "repair") {
+      if (req.headers["x-pulse-job-repair"] !== "yes") return fail(res, 403, "missing X-Pulse-Job-Repair: yes", "An explicit confirmation header is required.", "Select jobs and confirm their repair.");
+      const result = state.jobRepairs.repair(body, q.get("project") || "");
+      return send(res, result.status, result.body);
     }
     // tasks
     if (segs[0] === "tasks" && segs.length === 1) {
@@ -511,6 +548,26 @@ async function handle(req, res) {
           }, 6000);
         }, 3000);
       return send(res, 200, { request: r });
+    }
+    if (segs[0] === "projects" && segs.length === 3 && segs[2] === "goal") {
+      if (!body || typeof body !== "object" || Array.isArray(body)) return fail(res, 400, "Invalid goal change", "Send a JSON object.", "Use the project goal editor.");
+      const p = state.projects.find((x) => x.slug === segs[1]);
+      if (!p) return fail(res, 404, "No project " + segs[1], "Goals belong to registered projects.", "Choose a project.");
+      if (p.status !== "active") return fail(res, 409, "Project is inactive", "Restore the project before changing its goal.", "Use Restore in Projects.");
+      if (Object.keys(body).some((key) => key !== "text" && key !== "reset") || ("text" in body) === ("reset" in body) || ("reset" in body && body.reset !== true)) {
+        return fail(res, 400, "Invalid goal change", "Send either text or reset:true, not both.", "Use the project goal editor.");
+      }
+      if (body.reset === true) state.goals.delete(p.slug);
+      else {
+        const raw = typeof body.text === "string" ? body.text.replace(/\r\n/g, "\n") : "";
+        const text = raw.trim();
+        const unsafeControl = /[\p{Cc}\p{Cf}]/u.test(raw.replace(/[\n\t\u200c\u200d]/g, ""));
+        if (!text || Array.from(text).length > 4000 || unsafeControl) return fail(res, 400, "Invalid goal", "A goal must have 1 to 4000 characters and no unsafe controls.", "Write a short, specific project outcome.");
+        if (secretShaped(text) || text.split(/\s+/).some(secretShaped) || privateGoalPath.test(text)) return fail(res, 400, "Goal contains private information", "Project goals are shared with every agent.", "Remove credentials, secrets and private paths.");
+        state.goals.set(p.slug, { text, source: "owner", updated_at: now(), updated_by: "human" });
+      }
+      emit("human", "project.goal", p.slug, { project: p.slug, source: body.reset === true ? "generated" : "owner" });
+      return send(res, 200, projectGoal(p));
     }
     // project lifecycle (ADR-027): register, remove, restore; executor remove
     if (segs[0] === "projects" && segs.length === 1) {
@@ -687,10 +744,19 @@ async function handle(req, res) {
       heldoutGates();
       return send(res, 200, { configured: true, present: true, count: h.count, pending: h.pending, created: 0, problem: "" });
     }
-    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/remove|restore, compute/executors/<name>/remove, records/<id>/accept|status, heldout, heldout/fixtures");
+    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status, heldout, heldout/fixtures");
   }
 
   // GET - live state first, fixtures second
+  if (segs[0] === "jobs" && segs[1] === "failed") {
+    const result = state.jobRepairs.read(q);
+    return send(res, result.status, result.body);
+  }
+  if (segs[0] === "projects" && segs.length === 3 && segs[2] === "goal") {
+    const p = state.projects.find((x) => x.slug === segs[1]);
+    if (!p) return fail(res, 404, "No project " + segs[1], "Goals belong to registered projects.", "Choose a project.");
+    return send(res, 200, projectGoal(p));
+  }
   if (segs[0] === "harness" && segs.length === 1) {
     const failed = new Set(["step_limit", "time_limit", "format_error", "provider_error", "not_logged_in", "cancelled", "lost"]);
     state.harness.sessions = {
