@@ -109,6 +109,14 @@ func emptyStoreBytes() ([]byte, error) {
 			return
 		}
 		defer os.RemoveAll(dir)
+		// The template must not depend on which test builds it first:
+		// store.Open refuses to create a store while PULSE_JOB is set
+		// (WorkerGuard), and a test may legitimately set it before its
+		// first newHome call. Clear it for the build and restore after.
+		if job, ok := os.LookupEnv("PULSE_JOB"); ok {
+			os.Unsetenv("PULSE_JOB")
+			defer os.Setenv("PULSE_JOB", job)
+		}
 		s, err := store.Open(store.Options{Home: dir, Create: true, Now: testNow})
 		if err != nil {
 			emptyStoreErr = err
