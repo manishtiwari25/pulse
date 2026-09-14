@@ -73,13 +73,21 @@ func configureCloneIdentity(clone, agent, keyPath, hookText string) error {
 		return fail(1, "the run's signing key %s does not exist; refusing to configure user.signingkey (ADR-022)", keyPath)
 	}
 	hooks := filepath.Join(clone, ".git", "hooks")
+	// One git process instead of eight: the identity keys live in .git/pulse-identity and
+	// .git/config includes that file, which git resolves exactly like inline keys.
+	var identity strings.Builder
 	for _, kv := range [][2]string{{"user.name", agent}, {"user.email", agentEmail(agent)},
 		{"gpg.format", "ssh"}, {"gpg.ssh.program", "ssh-keygen"},
 		{"user.signingkey", keyPath}, {"commit.gpgsign", "true"}, {"tag.gpgsign", "false"},
 		{"core.hooksPath", hooks}} {
-		if _, err := gitCheck(clone, "config", kv[0], kv[1]); err != nil {
-			return err
-		}
+		fmt.Fprintf(&identity, "%s\t%s = %s\n", gitConfigSection(kv[0]), kv[0][strings.LastIndexByte(kv[0], '.')+1:], gitConfigQuote(kv[1]))
+	}
+	identityPath := filepath.Join(clone, ".git", "pulse-identity")
+	if err := os.WriteFile(identityPath, []byte(identity.String()), 0o644); err != nil {
+		return err
+	}
+	if _, err := gitCheck(clone, "config", "include.path", identityPath); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(hooks, 0o755); err != nil {
 		return err
@@ -89,6 +97,22 @@ func configureCloneIdentity(clone, agent, keyPath, hookText string) error {
 		return err
 	}
 	return os.Chmod(hook, 0o755)
+}
+
+// gitConfigSection renders the section header for a dotted config key: gpg.ssh.program
+// becomes [gpg "ssh"], user.name becomes [user].
+func gitConfigSection(key string) string {
+	section, rest, _ := strings.Cut(key, ".")
+	if i := strings.LastIndexByte(rest, '.'); i >= 0 {
+		return fmt.Sprintf("[%s %s]\n", section, gitConfigQuote(rest[:i]))
+	}
+	return "[" + section + "]\n"
+}
+
+// gitConfigQuote double-quotes a config value so paths with spaces, quotes or backslashes survive.
+func gitConfigQuote(v string) string {
+	v = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`).Replace(v)
+	return `"` + v + `"`
 }
 
 // SignersLine is the one-line allowed-signers content for a run (`pulse signers` prints the same shape).

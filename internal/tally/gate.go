@@ -3,9 +3,12 @@ package tally
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/manishtiwari25/pulse/internal/store"
 )
@@ -25,6 +28,7 @@ const (
 	GateOwner      = "addressed to the owner; not a worker job"
 	GateNoEvidence = "without evidence: no Signal: line names an existing file, post or check"
 	GateOwnerPaths = "points at owner-only paths (constitution, evaluators, decisions, .github)"
+	GateUnlanded   = "Signal path is absent from the default branch (only on an unlanded branch); waits for landing"
 )
 
 func signalTokens(text string) []string {
@@ -46,9 +50,15 @@ func signalTokens(text string) []string {
 }
 
 func relOfToken(tok string) string {
-	rel, _, _ := strings.Cut(tok, ":")
-	rel, _, _ = strings.Cut(rel, "#")
+	rel, _ := relAndSymbol(tok)
 	return rel
+}
+
+// relAndSymbol splits a Signal token into its path and the optional #Symbol suffix (path#Symbol or path#Symbol:line).
+func relAndSymbol(tok string) (string, string) {
+	rel, _, _ := strings.Cut(tok, ":")
+	rel, sym, _ := strings.Cut(rel, "#")
+	return rel, sym
 }
 
 // SignalResolves reports whether a Signal: line names an existing check, post, or project file.
@@ -74,6 +84,163 @@ func SignalResolves(s *store.Store, projectPath string, summary, body string) bo
 		}
 	}
 	return false
+}
+
+// signalPaths returns the cleaned relative file paths named by Signal: tokens that exist in the working tree.
+func signalPaths(projectPath, summary, body string) []string {
+	var out []string
+	for _, tok := range signalTokens(summary + "\n" + body) {
+		rel := relOfToken(tok)
+		if projectPath == "" || rel == "" || filepath.IsAbs(rel) {
+			continue
+		}
+		clean := filepath.Clean(rel)
+		if clean == "." || contains(strings.Split(clean, string(filepath.Separator)), "..") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(projectPath, clean)); err == nil {
+			out = append(out, clean)
+		}
+	}
+	return out
+}
+
+// SignalUnlanded reports whether every Signal: path of the card exists in the working tree but none is
+// present on the project's default branch, i.e. the evidence lives only on an unlanded pulse/* branch.
+// It returns false when the project has no default branch, projectPath is not a git repository, or the
+// card resolves through a post id or check: token, so those cards keep the plain SignalResolves verdict.
+func SignalUnlanded(s *store.Store, projectPath string, summary, body string) bool {
+	if projectPath == "" {
+		return false
+	}
+	for _, tok := range signalTokens(summary + "\n" + body) {
+		if strings.HasPrefix(strings.ToLower(tok), "check:") && len(tok) > len("check:") {
+			return false
+		}
+		var id string
+		if err := s.DB.QueryRow("SELECT id FROM posts WHERE id = ?", tok).Scan(&id); err == nil {
+			return false
+		}
+	}
+	paths := signalPaths(projectPath, summary, body)
+	if len(paths) == 0 {
+		return false
+	}
+	var branch string
+	if err := s.DB.QueryRow("SELECT default_branch FROM projects WHERE path = ?", projectPath).Scan(&branch); err != nil || branch == "" {
+		return false
+	}
+	head, ok := defaultBranchHead(projectPath, branch)
+	if !ok {
+		return false // not a repository or the default branch is missing locally: cannot judge landing
+	}
+	for _, p := range paths {
+		if !landedPathExists(projectPath, head, p) {
+			continue
+		}
+		if sym := signalSymbol(summary+"\n"+body, p); sym != "" && !landedSymbolExists(projectPath, head, p, sym) {
+			continue // file landed but the named symbol is only on the unlanded branch
+		}
+		return false
+	}
+	return true
+}
+
+// signalSymbol returns the #Symbol suffix the card attaches to path p, or "" when it names the whole file.
+func signalSymbol(text, p string) string {
+	for _, tok := range signalTokens(text) {
+		rel, sym := relAndSymbol(tok)
+		if rel != "" && filepath.Clean(rel) == p && sym != "" {
+			return sym
+		}
+	}
+	return ""
+}
+
+// landedSymbolExists reports whether the default-branch blob of p mentions sym as a whole identifier.
+// The verdict is memoised per (commit, path, symbol) like landedPathExists.
+func landedSymbolExists(projectPath, commit, p, sym string) bool {
+	key := projectPath + "\x00" + commit + "\x00" + p + "#" + sym
+	landedCache.Lock()
+	if v, ok := landedCache.exists[key]; ok {
+		landedCache.Unlock()
+		return v
+	}
+	landedCache.Unlock()
+	out, err := exec.Command("git", "-C", projectPath, "show", commit+":"+filepath.ToSlash(p)).Output()
+	v := err != nil || regexp.MustCompile(`(^|[^A-Za-z0-9_])`+regexp.QuoteMeta(sym)+`([^A-Za-z0-9_]|$)`).Match(out)
+	landedCache.Lock()
+	if len(landedCache.exists) >= landedExistsCap {
+		landedCache.exists = map[string]bool{}
+	}
+	landedCache.exists[key] = v
+	landedCache.Unlock()
+	return v
+}
+
+// landedCache memoises the git lookups behind SignalUnlanded so one tally pass over many cards
+// resolves the default branch once per (projectPath, branch) and runs `git cat-file -e` once per
+// (projectPath, commit, path) instead of once per card.
+var landedCache = struct {
+	sync.Mutex
+	heads  map[string]landedHead // projectPath + "\x00" + branch -> resolved head
+	exists map[string]bool       // projectPath + "\x00" + commit + "\x00" + path -> present on commit
+}{heads: map[string]landedHead{}, exists: map[string]bool{}}
+
+type landedHead struct {
+	commit string
+	ok     bool
+	at     time.Time
+}
+
+// landedHeadTTL bounds how long a resolved default-branch head is reused; a landing that moves the
+// branch is seen on the next pass after this window. Tally passes take well under it.
+const landedHeadTTL = 5 * time.Second
+
+// landedExistsCap bounds the immutable (commit, path) memo so a long-lived daemon does not grow it forever.
+const landedExistsCap = 4096
+
+func defaultBranchHead(projectPath, branch string) (string, bool) {
+	key := projectPath + "\x00" + branch
+	now := time.Now()
+	landedCache.Lock()
+	if h, ok := landedCache.heads[key]; ok && now.Sub(h.at) < landedHeadTTL {
+		landedCache.Unlock()
+		return h.commit, h.ok
+	}
+	landedCache.Unlock()
+	out, err := exec.Command("git", "-C", projectPath, "rev-parse", "--verify", "--quiet", branch+"^{commit}").Output()
+	h := landedHead{commit: strings.TrimSpace(string(out)), ok: err == nil && len(out) > 0, at: now}
+	landedCache.Lock()
+	landedCache.heads[key] = h
+	landedCache.Unlock()
+	return h.commit, h.ok
+}
+
+func landedPathExists(projectPath, commit, p string) bool {
+	key := projectPath + "\x00" + commit + "\x00" + p
+	landedCache.Lock()
+	if v, ok := landedCache.exists[key]; ok {
+		landedCache.Unlock()
+		return v
+	}
+	landedCache.Unlock()
+	v := exec.Command("git", "-C", projectPath, "cat-file", "-e", commit+":"+filepath.ToSlash(p)).Run() == nil
+	landedCache.Lock()
+	if len(landedCache.exists) >= landedExistsCap {
+		landedCache.exists = map[string]bool{}
+	}
+	landedCache.exists[key] = v
+	landedCache.Unlock()
+	return v
+}
+
+// resetLandedCache clears the SignalUnlanded memo; tests call it after moving a default branch.
+func resetLandedCache() {
+	landedCache.Lock()
+	landedCache.heads = map[string]landedHead{}
+	landedCache.exists = map[string]bool{}
+	landedCache.Unlock()
 }
 
 // IsWorkerPost reports whether agent is registered as a worker.
@@ -136,6 +303,9 @@ func PlanGate(s *store.Store, projectPath string, sg Suggestion, post *Post) str
 		}
 		if OwnerTargeted(summary, body) {
 			return GateOwnerPaths
+		}
+		if SignalUnlanded(s, projectPath, summary, body) {
+			return GateUnlanded
 		}
 	}
 	return ""

@@ -32,7 +32,10 @@ func TestLandingCancellationKeepsUnverifiedBranch(t *testing.T) {
 	}
 	project["verify_cmd"] = "printf ready > " + shellQuote(marker) + "; read line < " + shellQuote(fifo)
 	setSetting(t, s, "minutes_per_job", "1000")
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	// Starting the fake verify costs a worktree checkout plus a shell spawn,
+	// which takes ~1s alone on macOS and longer inside the full package run,
+	// so the start wait is generous; only the cancel-to-finish bound is tight.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	finished := make(chan struct{})
 	var state, note string
 	var landErr error
@@ -44,7 +47,7 @@ func TestLandingCancellationKeepsUnverifiedBranch(t *testing.T) {
 		cancel()
 		<-finished
 	}()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for !fileExists(marker) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}

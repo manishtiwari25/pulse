@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -115,6 +116,18 @@ func newRepo(t *testing.T, s *store.Store) (row, string) {
 		t.Fatal(err)
 	}
 	return p, p.str("path")
+}
+
+// newBareRepo is newRepo without the project's seeded records (ADR-029/030): registration only
+// inserts the project row, so fixtures that never read records or memories skip the ~0.8s of
+// seeding per call. Tests that consult seeded records must keep using newRepo. Safe because no
+// test in this package runs in parallel.
+func newBareRepo(t *testing.T, s *store.Store) (row, string) {
+	t.Helper()
+	previous := board.OnProjectCreated
+	board.OnProjectCreated = nil
+	defer func() { board.OnProjectCreated = previous }()
+	return newRepo(t, s)
 }
 
 var (
@@ -573,6 +586,20 @@ func buildPulse(t *testing.T) string {
 	return exe
 }
 
+// fakeHandsPath returns a PATH that resolves `copilot` (and `pulse`, unless the caller ships its own)
+// to tiny shell shims. `pulse hands probe` runs `copilot --version`; the real CLI unpacks a ~130MB
+// runtime into $HOME/Library/Caches on first run, which took ~10s per test and left the extracted
+// tree behind when the hands HOME was removed, filling the test volume over many runs.
+func fakeHandsPath(t *testing.T, extra ...string) string {
+	t.Helper()
+	fakes := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakes, "copilot"), []byte("#!/bin/sh\necho 'GitHub Copilot CLI 0.0.1-test'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirs := append(append([]string{}, extra...), fakes, os.Getenv("PATH"))
+	return "PATH=" + strings.Join(dirs, string(os.PathListSeparator))
+}
+
 func TestHandsVerbsRoundTrip(t *testing.T) {
 	skipSlow(t)
 	bin := buildPulse(t)
@@ -580,7 +607,7 @@ func TestHandsVerbsRoundTrip(t *testing.T) {
 	_, repo := newRepo(t, s)
 	workdir := filepath.Join(t.TempDir(), "srv")
 	home := t.TempDir()
-	env := append(os.Environ(), "PULSE_TEST_HANDS=1", "PULSE_HANDS_WORKDIR="+workdir, "HOME="+home, "PULSE_HANDS_ALLOW_ANY_WORKER=1", "PULSE_HANDS_KEYS_OK=yes")
+	env := append(os.Environ(), "PULSE_TEST_HANDS=1", "PULSE_HANDS_WORKDIR="+workdir, "HOME="+home, "PULSE_HANDS_ALLOW_ANY_WORKER=1", "PULSE_HANDS_KEYS_OK=yes", fakeHandsPath(t))
 	hands := func(stdin []byte, args ...string) (int, string, string) {
 		cmd := exec.Command(bin, args...)
 		cmd.Env = env
@@ -687,7 +714,7 @@ func TestHandsRunWorkerWhitelistAllowsNativeHarness(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fakes, "pulse"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "PULSE_TEST_HANDS=1", "PULSE_HANDS_WORKDIR="+workdir, "HOME="+home, "PULSE_HANDS_KEYS_OK=yes", "PATH="+fakes+string(os.PathListSeparator)+os.Getenv("PATH"))
+	env := append(os.Environ(), "PULSE_TEST_HANDS=1", "PULSE_HANDS_WORKDIR="+workdir, "HOME="+home, "PULSE_HANDS_KEYS_OK=yes", fakeHandsPath(t, fakes))
 	hands := func(stdin []byte, args ...string) (int, string, string) {
 		cmd := exec.Command(bin, args...)
 		cmd.Env = env

@@ -434,12 +434,13 @@ func TestRemoteRunThroughLocalHands(t *testing.T) {
 	}
 	workdir := filepath.Join(t.TempDir(), "srv")
 	handsHome := t.TempDir()
+	handsPath := fakeHandsPath(t)
 	old := runSSH
 	t.Cleanup(func() { runSSH = old })
 	// the fake ssh: hand SSH_ORIGINAL_COMMAND to the test binary acting as `pulse hands`, like sshd would
 	runSSH = func(_ context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error) {
 		cmd := exec.Command(bin)
-		cmd.Env = append(os.Environ(), "PULSE_TEST_HANDS=1", "PULSE_HANDS_WORKDIR="+workdir, "HOME="+handsHome,
+		cmd.Env = append(os.Environ(), "PULSE_TEST_HANDS=1", "PULSE_HANDS_WORKDIR="+workdir, "HOME="+handsHome, handsPath,
 			"PULSE_HANDS_ALLOW_ANY_WORKER=1", "PULSE_HANDS_KEYS_OK=yes", "SSH_ORIGINAL_COMMAND="+argv[len(argv)-1])
 		cmd.Stdin = bytes.NewReader(stdin)
 		var out, errb bytes.Buffer
