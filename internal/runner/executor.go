@@ -58,8 +58,8 @@ type ExecutorFault struct{ Msg string }
 
 func (e *ExecutorFault) Error() string { return e.Msg }
 
-// ExecutorUnfit: the machine lacks a tool one project needs.
-type ExecutorUnfit struct{ Msg, Tool, Project string }
+// ExecutorUnfit: the machine lacks or cannot run a tool one project needs.
+type ExecutorUnfit struct{ Msg, Tool, Project, Detail string }
 
 func (e *ExecutorUnfit) Error() string { return e.Msg }
 

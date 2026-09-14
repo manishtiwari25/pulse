@@ -213,11 +213,11 @@ func TestHygieneStatusLine(t *testing.T) {
 
 func TestUnfitMarksAreReadOnly(t *testing.T) {
 	s := temporaryStore(t)
-	raw := `{"local":{"fresh":{"tool":"tool:node@22","at":"2026-09-05T19:00:01Z"},"expired":{"tool":"uv","at":"2026-09-05T19:00:00Z"},"services":{"tool":"services","at":"2026-09-06T18:00:00Z"}}}`
+	raw := `{"local":{"fresh":{"tool":"tool:node@22","at":"2026-09-05T19:00:01Z"},"expired":{"tool":"uv","at":"2026-09-05T19:00:00Z"},"services":{"tool":"services","at":"2026-09-06T18:00:00Z"},"setup":{"tool":"setup:Gemfile.lock","at":"2026-09-06T18:30:00Z"}}}`
 	execSQL(t, s, "INSERT INTO meta(key,value) VALUES ('unfit',?)", raw)
 	before := eventCount(t, s)
 	got, err := ExecutorsLine(s)
-	if err != nil || got != "local active (0/1 busy); lacks node@22 for fresh, needs services for services" {
+	if err != nil || got != "local active (0/1 busy); lacks node@22 for fresh, needs services for services, cannot set up Gemfile.lock for setup" {
 		t.Fatalf("unfit report: %q, %v", got, err)
 	}
 	after, _, err := s.Meta("unfit")

@@ -582,7 +582,7 @@ var toolHints = map[string]string{
 	"bun":               "curl -fsSL https://bun.sh/install | bash",
 	"go":                "sudo apt-get install -y golang-go",
 	"cargo":             "curl https://sh.rustup.rs -sSf | sh -s -- -y",
-	"bundle":            "sudo apt-get install -y ruby-full && gem install --user-install bundler",
+	"bundle":            "gem install bundler; on Homebrew macOS, `brew reinstall ruby` can repair a stale bundle shim; then `pulse executor probe <executor>`",
 	"composer":          "sudo apt-get install -y composer",
 	"make":              "sudo apt-get install -y make",
 	recipeUnfitMise:     "curl https://mise.run | sh   (installs ~/.local/bin/mise; `pulse pair` puts a pinned, checksummed release on remote hands)",
@@ -618,6 +618,14 @@ func notFoundRe(tool string) (*regexp.Regexp, *regexp.Regexp) {
 		regexp.MustCompile(regexp.QuoteMeta(tool) + `: No such file or directory`)
 }
 
+var brokenToolRes = map[string][]*regexp.Regexp{
+	"bundle": {
+		regexp.MustCompile(`cannot load such file -- [^\n]*bundler[^\n]*\(LoadError\)`),
+		regexp.MustCompile(`Could not find 'bundler' \(`),
+		regexp.MustCompile(`Gem::GemNotFoundException`),
+	},
+}
+
 func missingTool(setupCmd string, rc int, output string) string {
 	var tools []string
 	for _, rule := range setupRules {
@@ -630,11 +638,72 @@ func missingTool(setupCmd string, rc int, output string) string {
 		if a.MatchString(output) || b.MatchString(output) {
 			return tool
 		}
+		for _, re := range brokenToolRes[tool] {
+			if re.MatchString(output) {
+				return tool
+			}
+		}
 	}
 	if rc == 127 && len(tools) > 0 {
 		return tools[0]
 	}
 	return ""
+}
+
+func setupUnfitTool(files []string) string {
+	return "setup:" + strings.Join(files, ",")
+}
+
+func setupUnfitFiles(tool string) string {
+	return strings.TrimPrefix(tool, "setup:")
+}
+
+func setupUnfitCommands(tool string) string {
+	files := strings.Split(setupUnfitFiles(tool), ",")
+	var commands []string
+	for _, file := range files {
+		for _, rule := range setupRules {
+			if file == rule.lockfile {
+				commands = append(commands, rule.command)
+				break
+			}
+		}
+	}
+	if len(commands) == 0 {
+		return "the setup command"
+	}
+	quoted := make([]string, len(commands))
+	for i, cmd := range commands {
+		quoted[i] = "`" + cmd + "`"
+	}
+	return strings.Join(quoted, " && ")
+}
+
+func setupFailureSummary(executor string, rc int, detail string) string {
+	return fmt.Sprintf("setup failed on %s (exit %d): %s", executor, rc, detail)
+}
+
+// setupTransientMarks: a setup that failed on the network or a registry says nothing about the machine;
+// such failures never mark an executor unfit (the job just runs again, as before).
+var setupTransientMarks = []string{"failed to fetch", "could not resolve", "could not connect", "connection timed out",
+	"tls handshake", "network", "certificate", "proxy"}
+
+// repeatedSetupFailure: the machine failed the same setup the same way on its latest run for this project
+// within unfitHours - twice in a row, not twice among other outcomes, so a setup that passed in between
+// (the tool was fixed, the registry came back) starts the count again.
+func repeatedSetupFailure(q querier, now, project, executor, summary string) bool {
+	lower := strings.ToLower(summary)
+	if containsAny(lower, transientMarks) || containsAny(lower, setupTransientMarks) {
+		return false
+	}
+	since := formatISO(mustISO(now).Add(-unfitHours * time.Hour))
+	last := mustOne(q, "SELECT status, summary FROM runs WHERE project = ? AND executor = ? AND finished_at >= ? "+
+		"ORDER BY finished_at DESC LIMIT 1", project, executor, since)
+	if last == nil || (last.str("status") != "error" && last.str("status") != "failed") {
+		return false
+	}
+	prev := last.str("summary")
+	return strings.HasPrefix(prev, "setup failed on ") && failureSignature(failureTransient, prev) == failureSignature(failureTransient, summary)
 }
 
 func checkToolMissing(verifyCmd string, rc int, output string) string {
@@ -703,12 +772,18 @@ func unfitPhrase(tool string) string {
 	case recipeUnfitCheckout:
 		return "cannot read the checkout"
 	}
+	if strings.HasPrefix(tool, "setup:") {
+		return "cannot set up " + setupUnfitFiles(tool)
+	}
 	return "lacks " + strings.TrimPrefix(tool, "tool:")
 }
 
 func toolHint(tool string) string {
 	if strings.HasPrefix(tool, "tool:") {
 		return fmt.Sprintf("as the executor user: `mise install %s`, then `pulse executor probe <executor>`; a pin mise cannot build here is the recipe's to change", tool[5:])
+	}
+	if strings.HasPrefix(tool, "setup:") {
+		return fmt.Sprintf("the setup command %s fails the same way on every run; fix the machine (see the run log), then `pulse executor probe <executor>`", setupUnfitCommands(tool))
 	}
 	if h, ok := toolHints[tool]; ok {
 		return h
@@ -852,7 +927,7 @@ func clearUnfit(q querier, now, executor string) {
 }
 
 // toolsWanted is tools_wanted(): once a day per executor and tool, one finding on the brain's board.
-func toolsWanted(s *store.Store, brain row, executor, tool, project, now, actor string) row {
+func toolsWanted(s *store.Store, brain row, executor, tool, project, detail, now, actor string) row {
 	if brain == nil {
 		return nil
 	}
@@ -864,27 +939,41 @@ func toolsWanted(s *store.Store, brain row, executor, tool, project, now, actor 
 	}
 	hint := toolHint(tool)
 	var summary, why string
-	switch tool {
-	case recipeUnfitServices:
-		summary = trunc(fmt.Sprintf("%s for %s: its recipe lists running services no machine starts; jobs wait until an owner clears the list", needle, project), 230)
-		why = fmt.Sprintf("The environment recipe of %s (`%s`, ADR-026) lists `services:`. The runner starts no databases, brokers, or "+
-			"other services, so the project is off every machine until the list is empty.", project, recipePath)
-	case recipeUnfitHands:
-		summary = trunc(fmt.Sprintf("%s for %s: its recipe pins tools or env the remote hands cannot take yet; jobs run on the hub meanwhile", needle, project), 230)
-		why = fmt.Sprintf("The environment recipe of %s (`%s`, ADR-026) pins tools or sets env, and the hands on `%s` have no verb for "+
-			"that yet; the project runs where they can be honoured until the hands are refreshed.", project, recipePath, executor)
-	default:
-		summary = trunc(fmt.Sprintf("%s for %s: its jobs run elsewhere until the tool is installed and `pulse executor probe %s` passes", needle, project, executor), 230)
-		adr := ""
-		if strings.HasPrefix(tool, "tool:") || tool == recipeUnfitMise {
-			adr = ", ADR-026"
+	if strings.HasPrefix(tool, "setup:") {
+		files := setupUnfitFiles(tool)
+		summary = trunc(fmt.Sprintf("%s for %s: setup keeps failing the same way on %s; jobs run elsewhere until the machine is fixed", needle, project, executor), 230)
+		why = fmt.Sprintf("Setting up a clone of %s on executor `%s` from %s failed with the same signature on repeated runs (WU-021). "+
+			"The runner stops spending more attempts on that executor until a probe clears the mark.", project, executor, files)
+	} else {
+		switch tool {
+		case recipeUnfitServices:
+			summary = trunc(fmt.Sprintf("%s for %s: its recipe lists running services no machine starts; jobs wait until an owner clears the list", needle, project), 230)
+			why = fmt.Sprintf("The environment recipe of %s (`%s`, ADR-026) lists `services:`. The runner starts no databases, brokers, or "+
+				"other services, so the project is off every machine until the list is empty.", project, recipePath)
+		case recipeUnfitHands:
+			summary = trunc(fmt.Sprintf("%s for %s: its recipe pins tools or env the remote hands cannot take yet; jobs run on the hub meanwhile", needle, project), 230)
+			why = fmt.Sprintf("The environment recipe of %s (`%s`, ADR-026) pins tools or sets env, and the hands on `%s` have no verb for "+
+				"that yet; the project runs where they can be honoured until the hands are refreshed.", project, recipePath, executor)
+		default:
+			summary = trunc(fmt.Sprintf("%s for %s: its jobs run elsewhere until the tool is installed and `pulse executor probe %s` passes", needle, project, executor), 230)
+			adr := ""
+			if strings.HasPrefix(tool, "tool:") || tool == recipeUnfitMise {
+				adr = ", ADR-026"
+			}
+			usable := "not installed"
+			if tool == "bundle" {
+				usable = "not installed or not usable"
+			}
+			why = fmt.Sprintf("Setting up a clone of %s on executor `%s` failed because `%s` is %s there (WU-021%s). The runner "+
+				"installs what the project pins before a worker starts; without the tool it cannot.", project, executor, strings.TrimPrefix(tool, "tool:"), usable, adr)
 		}
-		why = fmt.Sprintf("Setting up a clone of %s on executor `%s` failed because `%s` is not installed there (WU-021%s). The runner "+
-			"installs what the project pins before a worker starts; without the tool it cannot.", project, executor, strings.TrimPrefix(tool, "tool:"), adr)
 	}
 	body := fmt.Sprintf("%s So %s jobs go to other slots for %d hours and again after that until a probe passes.\n\nOn %s, as the "+
 		"executor user unless the line says sudo:\n\n    %s\n\nthen on the hub: `pulse executor probe %s`. The human owns "+
 		"the machine; this post is a measurement, not a request to act.\n", why, project, unfitHours, executor, hint, executor)
+	if detail != "" {
+		body += fmt.Sprintf("\nLast setup error tail:\n\n    %s\n", detail)
+	}
 	post, err := createPost(s, now, postOpts{Kind: "finding", Project: brain.str("slug"), Area: "runner", Thread: thread,
 		Summary: summary, Body: body, Agent: actorAgent(s, actor), Date: now})
 	if err != nil {

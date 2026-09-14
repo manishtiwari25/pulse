@@ -444,6 +444,9 @@ func unfitPhrase(tool string) string {
 	case "hands outdated":
 		return tool
 	default:
+		if strings.HasPrefix(tool, "setup:") {
+			return "cannot set up " + strings.TrimPrefix(tool, "setup:")
+		}
 		return "lacks " + strings.TrimPrefix(tool, "tool:")
 	}
 }

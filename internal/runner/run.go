@@ -111,11 +111,7 @@ func takeJob(s *store.Store, agent, project, jobID string, dryRun bool, now, exe
 	}
 	if len(unfit) > 0 {
 		if why, ok := unfit[project]; project != "" && ok {
-			if why == recipeUnfitServices || why == recipeUnfitHands || why == recipeUnfitCheckout {
-				return nil, exrow, fmt.Sprintf("executor %s %s for %s (%s)", exrow.str("name"), unfitPhrase(why), project, toolHint(why)), nil
-			}
-			return nil, exrow, fmt.Sprintf("executor %s lacks %s for %s (install it, then `pulse executor probe %s`)",
-				exrow.str("name"), why, project, exrow.str("name")), nil
+			return nil, exrow, fmt.Sprintf("executor %s %s for %s (%s)", exrow.str("name"), unfitPhrase(why), project, toolHint(why)), nil
 		}
 		if anyProj {
 			projects = nil
@@ -138,10 +134,7 @@ func takeJob(s *store.Store, agent, project, jobID string, dryRun bool, now, exe
 				reasons = append(reasons, fmt.Sprintf("%s for %s", unfitPhrase(unfit[slug]), slug))
 			}
 			first := unfit[slugs[0]]
-			hint := fmt.Sprintf("install it, then `pulse executor probe %s`", exrow.str("name"))
-			if first == recipeUnfitServices || first == recipeUnfitHands || first == recipeUnfitCheckout {
-				hint = toolHint(first)
-			}
+			hint := toolHint(first)
 			return nil, exrow, fmt.Sprintf("executor %s %s (%s)", exrow.str("name"), strings.Join(reasons, "; "), hint), nil
 		}
 	}
@@ -305,11 +298,11 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			if len(svc) > 4 {
 				svc = svc[:4]
 			}
-			return &ExecutorUnfit{fmt.Sprintf("%s lists services (%s) that no machine starts; %s waits until an owner clears the list",
-				recipePath, strings.Join(svc, ", "), project.str("slug")), recipeUnfitServices, project.str("slug")}
+			return &ExecutorUnfit{Msg: fmt.Sprintf("%s lists services (%s) that no machine starts; %s waits until an owner clears the list",
+				recipePath, strings.Join(svc, ", "), project.str("slug")), Tool: recipeUnfitServices, Project: project.str("slug")}
 		case recipeUnfitHands:
-			return &ExecutorUnfit{fmt.Sprintf("%s pins tools or env that the hands on %s cannot take yet; %s jobs run on the hub until the hands are refreshed",
-				recipePath, ex.name(), project.str("slug")), recipeUnfitHands, project.str("slug")}
+			return &ExecutorUnfit{Msg: fmt.Sprintf("%s pins tools or env that the hands on %s cannot take yet; %s jobs run on the hub until the hands are refreshed",
+				recipePath, ex.name(), project.str("slug")), Tool: recipeUnfitHands, Project: project.str("slug")}
 		}
 		var pins []string
 		if recipe != nil {
@@ -328,12 +321,12 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			if *rc != 0 {
 				t := squeeze(mout, 300)
 				if *rc == 127 || miseNotFoundRe.MatchString(mout) {
-					return &ExecutorUnfit{fmt.Sprintf("%s pins tools but `mise` is not installed on %s (%s); %s jobs run elsewhere until it is and `pulse executor probe %s` passes",
-						recipePath, ex.name(), t, project.str("slug"), ex.name()), recipeUnfitMise, project.str("slug")}
+					return &ExecutorUnfit{Msg: fmt.Sprintf("%s pins tools but `mise` is not installed on %s (%s); %s jobs run elsewhere until it is and `pulse executor probe %s` passes",
+						recipePath, ex.name(), t, project.str("slug"), ex.name()), Tool: recipeUnfitMise, Project: project.str("slug"), Detail: t}
 				}
 				failed := miseFailedPin(pins, mout)
-				return &ExecutorUnfit{fmt.Sprintf("mise could not install %s on %s (%s); %s jobs run elsewhere until it can and `pulse executor probe %s` passes",
-					failed, ex.name(), t, project.str("slug"), ex.name()), "tool:" + failed, project.str("slug")}
+				return &ExecutorUnfit{Msg: fmt.Sprintf("mise could not install %s on %s (%s); %s jobs run elsewhere until it can and `pulse executor probe %s` passes",
+					failed, ex.name(), t, project.str("slug"), ex.name()), Tool: "tool:" + failed, Project: project.str("slug"), Detail: t}
 			}
 		}
 		setupCmd, setupFiles, setupShown := projectSetup(root, base, recipe, clone)
@@ -347,10 +340,18 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 				tool := missingTool(setupCmd, *rc, sout)
 				t := squeeze(sout, 300)
 				if tool != "" {
-					return &ExecutorUnfit{fmt.Sprintf("setup on %s needs `%s`, which is not installed there (%s); %s jobs run elsewhere until it is and `pulse executor probe %s` passes",
-						ex.name(), tool, t, project.str("slug"), ex.name()), tool, project.str("slug")}
+					return &ExecutorUnfit{Msg: fmt.Sprintf("setup on %s needs `%s`, which is not installed or usable there (%s); %s jobs run elsewhere until it is fixed and `pulse executor probe %s` passes",
+						ex.name(), tool, t, project.str("slug"), ex.name()), Tool: tool, Project: project.str("slug"), Detail: t}
 				}
-				return fail(1, "setup failed on %s (exit %d): %s", ex.name(), *rc, t)
+				summary := setupFailureSummary(ex.name(), *rc, t)
+				// Two identical setup failures on the same executor are a machine fault:
+				// stop burning the third attempt and let placement route the project elsewhere.
+				if repeatedSetupFailure(s.DB, now, project.str("slug"), ex.name(), summary) {
+					tool = setupUnfitTool(setupFiles)
+					return &ExecutorUnfit{Msg: fmt.Sprintf("setup on %s for %s failed the same way again (%s); %s jobs run elsewhere until the machine is fixed and `pulse executor probe %s` passes",
+						ex.name(), strings.Join(setupFiles, ", "), t, project.str("slug"), ex.name()), Tool: tool, Project: project.str("slug"), Detail: t}
+				}
+				return fail(1, "%s", summary)
 			}
 		}
 		func() {
@@ -589,7 +590,7 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 				case checkTool != "":
 					status = "failed"
 					summary = fmt.Sprintf("%d commit(s) but the check could not start on %s: `%s` is not installed there (%s); nothing landed", commits, ex.name(), checkTool, verifyNote)
-					unfit = &ExecutorUnfit{summary, checkTool, project.str("slug")}
+					unfit = &ExecutorUnfit{Msg: summary, Tool: checkTool, Project: project.str("slug"), Detail: verifyNote}
 				case !ok:
 					status = "failed"
 					summary = fmt.Sprintf("%d commit(s) but %s; nothing landed", commits, verifyNote)
@@ -701,7 +702,7 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 	noteExecutorRun(s, now, ex.name(), status, summary, transportError, fault)
 	if unfit != nil {
 		markUnfit(s.DB, now, ex.name(), unfit.Project, unfit.Tool)
-		toolsWanted(s, brainProject(s.DB), ex.name(), unfit.Tool, unfit.Project, now, agent)
+		toolsWanted(s, brainProject(s.DB), ex.name(), unfit.Tool, unfit.Project, unfit.Detail, now, agent)
 	}
 	runRow := func() row { return mustOne(s.DB, "SELECT * FROM runs WHERE id = ?", runID) }
 	finishEvent := func(st, br string) {
