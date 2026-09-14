@@ -16,6 +16,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/hooks"
 	"github.com/manishtiwari25/pulse/internal/records"
 	"github.com/manishtiwari25/pulse/internal/store"
+	"github.com/manishtiwari25/pulse/internal/tally"
 )
 
 const (
@@ -155,6 +156,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	// the loop; leave cancels it after compute.wait(grace) has had its say.
 	computeCtx, killCompute := context.WithCancel(context.Background())
 	defer killCompute()
+	tally.Log = func(format string, a ...any) { say(format, a...) }
 	hooksRunner := &hooks.Runner{Bus: bus.Default(), Store: s, Log: func(format string, a ...any) { say("hook: "+format, a...) }}
 	hooksDone := make(chan struct{})
 	go func() {

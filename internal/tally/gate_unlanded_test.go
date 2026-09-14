@@ -1,9 +1,11 @@
 package tally
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/manishtiwari25/pulse/internal/store"
@@ -65,6 +67,23 @@ func TestSignalUnlanded(t *testing.T) {
 	// A non-git directory never fires either.
 	if SignalUnlanded(f.st, t.TempDir(), "card", "Signal: internal/x/unlanded.go") {
 		t.Error("SignalUnlanded fired outside a git repository")
+	}
+	// A default branch that does not resolve to a commit: plannable (false), no silent fallback to
+	// HEAD (which is on pulse/* here and holds the file), and the reason is logged once per window.
+	var logged []string
+	prev := Log
+	Log = func(format string, a ...any) { logged = append(logged, fmt.Sprintf(format, a...)) }
+	t.Cleanup(func() { Log = prev })
+	if _, err := f.st.DB.Exec("UPDATE projects SET default_branch = 'no-such-branch' WHERE slug = 'fixture'"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if SignalUnlanded(f.st, f.repo, "card", "Signal: internal/x/unlanded.go") {
+			t.Error("SignalUnlanded fired with an unresolvable default branch")
+		}
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], `"no-such-branch"`) || !strings.Contains(logged[0], f.repo) {
+		t.Errorf("unresolvable default branch logged %q, want one line naming the branch and project", logged)
 	}
 }
 
