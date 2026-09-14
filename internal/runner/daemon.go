@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -89,6 +90,7 @@ type daemonOpts struct {
 	Sleep           func(time.Duration) bool // nil = event-aware wait; false interrupts the loop
 	HubHome         string                   // the hub user's home (ssh keys, known_hosts) for pairing the machines compute provisions; "" = this user's
 	SelfUpdate      *selfUpdateEnv           // ADR-035; nil = derive from the running binary (tests pass fakes)
+	NoWatchdog      bool                     // tests: no stall watchdog goroutine
 }
 
 // daemonWake is what wakes the loop before its interval is over: the owner wrote (message.sent, task.*), a
@@ -156,6 +158,20 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	// the loop; leave cancels it after compute.wait(grace) has had its say.
 	computeCtx, killCompute := context.WithCancel(context.Background())
 	defer killCompute()
+	// The watchdog outlives nothing: a loop that stops beating for daemonStallBound is dumped and restarted.
+	heartbeat := func(note string) { daemonHeartbeat(s, loops, interval, note) }
+	if !o.NoWatchdog {
+		stalled := func(note, dump string) {
+			heartbeat(note)
+			eventAt(s.DB, s.Now(), actor, "daemon.stalled", "", map[string]any{"note": note, "dump": dump, "loops": loops})
+		}
+		dog := newDaemonWatchdog(daemonStallBound(interval), filepath.Join(s.Home, "logs"), say, stalled, killRuns)
+		heartbeat = func(note string) {
+			daemonHeartbeat(s, loops, interval, note)
+			dog.beat()
+		}
+		go dog.run(loopCtx, time.Minute)
+	}
 	tally.Log = func(format string, a ...any) { say(format, a...) }
 	hooksRunner := &hooks.Runner{Bus: bus.Default(), Store: s, Log: func(format string, a ...any) { say("hook: "+format, a...) }}
 	hooksDone := make(chan struct{})
@@ -350,7 +366,7 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 			return leave("restart", "restarting")
 		}
 		now := s.Now()
-		daemonHeartbeat(s, loops, interval, "")
+		heartbeat("")
 		var started []*dispatch
 		reason := ""
 		var slots []string

@@ -65,7 +65,12 @@ records inside the binary, so nothing has to be imported first (see
 If the owner's pause is on, **Resume daemon** clears only the `stop` setting
 (`pulse start` in a terminal). It does not start a missing service, remove
 file STOPs or change caps. **Silent** means the loop heartbeat is stale, not
-that the daemon is disabled: it may still be running or waiting. The controls
+that the daemon is disabled: it may still be running or waiting. A loop that
+stays silent for half an hour (six intervals when the interval is longer) is
+treated as hung: the daemon writes every goroutine's stack to
+`~/.pulse/logs/daemon-stall-<time>.log`, notes the stall in its heartbeat and
+event log, cancels the runs in flight and exits 3, so the service starts it
+again; `kill -USR1 <pid>` writes the same dump without a restart. The controls
 show the recorded PID, service state and diagnostic commands rather than
 starting a duplicate daemon. `daemon.self_update = off` only disables
 automatic rebuilds; it is not the daemon's enable switch.
