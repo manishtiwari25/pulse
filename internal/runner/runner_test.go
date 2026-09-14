@@ -601,14 +601,17 @@ func fakeHandsPath(t *testing.T, extra ...string) string {
 	return "PATH=" + strings.Join(dirs, string(os.PathListSeparator))
 }
 
-// newTestHands builds an in-process hands for unit tests. It sets PULSE_TEST_HANDS=1 and points PATH
-// at the fakeHandsPath shims for the test's lifetime, so any verb the test reaches (probe included)
-// resolves the copilot shim instead of the real CLI; every test that builds a `hands` goes through
+// newTestHands builds an in-process hands for unit tests. It sets PULSE_TEST_HANDS=1, points PATH
+// at the fakeHandsPath shims and pins the probeVersion hook for the test's lifetime, so any verb the
+// test reaches (probe included) never runs the real copilot CLI even with an empty PATH; every test that builds a `hands` goes through
 // here so the guard is the default rather than a per-test chore. Nil writers fall back to a buffer.
 func newTestHands(t *testing.T, workdir string, stdout, stderr io.Writer) *hands {
 	t.Helper()
 	t.Setenv("PULSE_TEST_HANDS", "1")
 	t.Setenv("PATH", strings.TrimPrefix(fakeHandsPath(t), "PATH="))
+	prev := probeVersion
+	probeVersion = func() (string, error) { return "0.0.1-test", nil }
+	t.Cleanup(func() { probeVersion = prev })
 	if stdout == nil {
 		stdout = &bytes.Buffer{}
 	}
