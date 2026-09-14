@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/manishtiwari25/pulse/internal/store"
 )
@@ -122,15 +124,81 @@ func SignalUnlanded(s *store.Store, projectPath string, summary, body string) bo
 	if err := s.DB.QueryRow("SELECT default_branch FROM projects WHERE path = ?", projectPath).Scan(&branch); err != nil || branch == "" {
 		return false
 	}
-	if err := exec.Command("git", "-C", projectPath, "rev-parse", "--verify", "--quiet", branch+"^{commit}").Run(); err != nil {
+	head, ok := defaultBranchHead(projectPath, branch)
+	if !ok {
 		return false // not a repository or the default branch is missing locally: cannot judge landing
 	}
 	for _, p := range paths {
-		if err := exec.Command("git", "-C", projectPath, "cat-file", "-e", branch+":"+filepath.ToSlash(p)).Run(); err == nil {
+		if landedPathExists(projectPath, head, p) {
 			return false
 		}
 	}
 	return true
+}
+
+// landedCache memoises the git lookups behind SignalUnlanded so one tally pass over many cards
+// resolves the default branch once per (projectPath, branch) and runs `git cat-file -e` once per
+// (projectPath, commit, path) instead of once per card.
+var landedCache = struct {
+	sync.Mutex
+	heads  map[string]landedHead // projectPath + "\x00" + branch -> resolved head
+	exists map[string]bool       // projectPath + "\x00" + commit + "\x00" + path -> present on commit
+}{heads: map[string]landedHead{}, exists: map[string]bool{}}
+
+type landedHead struct {
+	commit string
+	ok     bool
+	at     time.Time
+}
+
+// landedHeadTTL bounds how long a resolved default-branch head is reused; a landing that moves the
+// branch is seen on the next pass after this window. Tally passes take well under it.
+const landedHeadTTL = 5 * time.Second
+
+// landedExistsCap bounds the immutable (commit, path) memo so a long-lived daemon does not grow it forever.
+const landedExistsCap = 4096
+
+func defaultBranchHead(projectPath, branch string) (string, bool) {
+	key := projectPath + "\x00" + branch
+	now := time.Now()
+	landedCache.Lock()
+	if h, ok := landedCache.heads[key]; ok && now.Sub(h.at) < landedHeadTTL {
+		landedCache.Unlock()
+		return h.commit, h.ok
+	}
+	landedCache.Unlock()
+	out, err := exec.Command("git", "-C", projectPath, "rev-parse", "--verify", "--quiet", branch+"^{commit}").Output()
+	h := landedHead{commit: strings.TrimSpace(string(out)), ok: err == nil && len(out) > 0, at: now}
+	landedCache.Lock()
+	landedCache.heads[key] = h
+	landedCache.Unlock()
+	return h.commit, h.ok
+}
+
+func landedPathExists(projectPath, commit, p string) bool {
+	key := projectPath + "\x00" + commit + "\x00" + p
+	landedCache.Lock()
+	if v, ok := landedCache.exists[key]; ok {
+		landedCache.Unlock()
+		return v
+	}
+	landedCache.Unlock()
+	v := exec.Command("git", "-C", projectPath, "cat-file", "-e", commit+":"+filepath.ToSlash(p)).Run() == nil
+	landedCache.Lock()
+	if len(landedCache.exists) >= landedExistsCap {
+		landedCache.exists = map[string]bool{}
+	}
+	landedCache.exists[key] = v
+	landedCache.Unlock()
+	return v
+}
+
+// resetLandedCache clears the SignalUnlanded memo; tests call it after moving a default branch.
+func resetLandedCache() {
+	landedCache.Lock()
+	landedCache.heads = map[string]landedHead{}
+	landedCache.exists = map[string]bool{}
+	landedCache.Unlock()
 }
 
 // IsWorkerPost reports whether agent is registered as a worker.
