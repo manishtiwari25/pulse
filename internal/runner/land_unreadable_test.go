@@ -135,8 +135,11 @@ func TestDaemonHoldsUnreadableCheckout(t *testing.T) {
 	holdCheckouts(nil)
 
 	log := onceDaemon(t, s, daemonOpts{WorkerCmd: "sh -c 'echo SUMMARY: ran'"})
-	if !strings.Contains(log, "holding proj this loop: cannot read") || !strings.Contains(log, "cannot read the checkout for proj") || strings.Contains(log, "landing") {
+	if !strings.Contains(log, "holding proj this loop: cannot read") || !strings.Contains(log, "cannot read the checkout for proj") || strings.Contains("\n"+log, "\nlanding ") {
 		t.Fatalf("daemon log:\n%s", log)
+	}
+	if n := count(t, s, "SELECT COUNT(*) AS n FROM events WHERE action LIKE 'land.%'"); n != 0 {
+		t.Fatalf("unreadable checkout produced %d landing events", n)
 	}
 	if r := jobRow(s.DB, j.ID); r.str("status") != "queued" || r.int("attempts") != 0 {
 		t.Fatalf("held job touched: %v", r)

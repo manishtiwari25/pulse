@@ -264,8 +264,11 @@ func TestBaselineRunRecordsTheBaseline(t *testing.T) {
 	}
 	// Nothing lands and nothing is planned again: the archive row is the baseline.
 	log = onceDaemon(t, s, daemonOpts{})
-	if len(baselineJobs(t, s, "proj")) != 1 || strings.Contains(log, "landing") || !strings.Contains(log, "idle: no queued job") {
+	if len(baselineJobs(t, s, "proj")) != 1 || strings.Contains("\n"+log, "\nlanding ") || !strings.Contains(log, "idle: no queued job") {
 		t.Fatalf("second tick: %v\n%s", baselineJobs(t, s, "proj"), log)
+	}
+	if n := count(t, s, "SELECT COUNT(*) AS n FROM events WHERE action LIKE 'land.%'"); n != 0 {
+		t.Fatalf("baseline produced %d landing events", n)
 	}
 }
 
