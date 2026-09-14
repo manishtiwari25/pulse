@@ -102,7 +102,7 @@ type computeHarness struct {
 func newComputeHarness(t *testing.T, s *store.Store, settings map[string]string) *computeHarness {
 	t.Helper()
 	bus.ResetDefault()
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	h := &computeHarness{hubHome: t.TempDir()}
 	if err := os.MkdirAll(filepath.Join(h.hubHome, ".ssh"), 0o700); err != nil {
@@ -470,7 +470,7 @@ func TestDaemonOnceComputeAWS(t *testing.T) {
 
 func TestAWSProvisionNeedsLoginAndRegion(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	f := &fakeCLI{handle: func(cmd string, _ []string) (int, string, string) {
 		if strings.HasPrefix(cmd, "sts get-caller-identity") {
 			return 255, "", "Unable to locate credentials. You can configure credentials by running \"aws configure\"."
@@ -499,7 +499,7 @@ func TestAWSProvisionNeedsLoginAndRegion(t *testing.T) {
 
 func TestTendRetiresAndDeletesOurEC2Instance(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "compute.provider", "aws")
 	setSetting(t, s, "compute.aws.region", "eu-west-1")
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
@@ -695,7 +695,7 @@ func TestDaemonOnceComputeGCP(t *testing.T) {
 
 func TestTendRetiresAndDeletesOurGCEInstance(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "compute.provider", "gcp")
 	setSetting(t, s, "compute.gcp.project", "pulse-proj")
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
@@ -835,7 +835,7 @@ func TestDaemonOnceComputeMultipass(t *testing.T) {
 
 func TestTendRetiresAndDeletesOurMultipassInstance(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "compute.provider", "multipass")
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
 	// A laptop VM PULSE did not make shares the network: never touched.

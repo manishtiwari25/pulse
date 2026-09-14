@@ -71,7 +71,7 @@ func TestLeadDueAwayProposalPacingAndExclusions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newStore(t)
-			newRepo(t, s)
+			newBareRepo(t, s)
 			join(t, s, "aurora")
 			if tt.away {
 				setOwnerAway(t, s)
@@ -100,7 +100,7 @@ func TestLeadDueAwayProposalPacingAndExclusions(t *testing.T) {
 
 func TestTendLeadQueuesAwayProposal(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	setOwnerAway(t, s)
 	p := agreedProposal(t, s, "proj", "small", "Evidence: tests pass.")
@@ -153,7 +153,7 @@ func TestLeadBriefAwayRulesAreNumberedInOrder(t *testing.T) {
 
 func TestLeadIdleBriefAwayNumbersRulesInOrder(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	brief := leadIdleBrief(s, "proj", nil, nil, 1)
 	if strings.Contains(brief, "## The owner is away") || !strings.Contains(brief, "\n6. Finish with `SUMMARY:`") {
 		t.Fatalf("present idle brief:\n%s", brief)
@@ -171,7 +171,7 @@ func TestLeadIdleBriefAwayNumbersRulesInOrder(t *testing.T) {
 
 func TestLeadDueAwayListsOwnerCardsOnce(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	join(t, s, "boreas")
 	join(t, s, "castor")
@@ -242,7 +242,7 @@ func TestApplyResultDecisionsGuards(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newStore(t)
-			newRepo(t, s)
+			newBareRepo(t, s)
 			join(t, s, "aurora")
 			if tt.project == "other" {
 				exec1(s.DB, "INSERT INTO projects (slug, name, path, added_at, added_by, last_seen) VALUES (?, ?, ?, ?, ?, ?)",

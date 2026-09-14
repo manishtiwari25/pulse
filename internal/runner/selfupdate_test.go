@@ -59,7 +59,7 @@ func selfUpdateFixture(t *testing.T) (*store.Store, string, selfUpdateEnv) {
 	signingSystem = "linux"
 	t.Cleanup(func() { signingSystem = "" })
 	s := newStore(t)
-	_, repo := newRepo(t, s)
+	_, repo := newBareRepo(t, s)
 	exec1(s.DB, "UPDATE projects SET brain = 1 WHERE slug = 'proj'")
 	tools := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tools, "go"), []byte(fakeGo), 0o755); err != nil {

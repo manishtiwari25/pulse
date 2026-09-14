@@ -10,7 +10,7 @@ import (
 
 func TestWorkerBriefListsOtherFocusAndExcludesSelf(t *testing.T) {
 	s := newStore(t)
-	project, _ := newRepo(t, s)
+	project, _ := newBareRepo(t, s)
 	join(t, s, "aurora")
 	join(t, s, "borealis")
 	self, _, err := addJob(s, "proj", "task", "Self job", "do self", 1, 0, "task:self", "human", false)
@@ -45,7 +45,7 @@ func TestWorkerBriefListsOtherFocusAndExcludesSelf(t *testing.T) {
 
 func TestWorkerBriefFocusEmpty(t *testing.T) {
 	s := newStore(t)
-	project, _ := newRepo(t, s)
+	project, _ := newBareRepo(t, s)
 	join(t, s, "aurora")
 	job, _, err := addJob(s, "proj", "task", "Self job", "do self", 1, 0, "task:self", "human", false)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestWorkerBriefFocusEmpty(t *testing.T) {
 
 func TestLeadBriefListsAgentsAndOwnerQuestions(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "borealis")
 	other, _, err := addJob(s, "proj", "task", "Build thing", "do it", 1, 0, "task:one", "human", false)
 	if err != nil {
@@ -102,7 +102,7 @@ func TestLeadBriefAgentsEmpty(t *testing.T) {
 
 func TestAwayOwnerQuestionQueuesLeadOnlyWhileAway(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "borealis")
 	if _, err := board.CreatePost(s, board.PostInput{PostID: "q-owner", Project: "proj", Kind: "question", Area: "owner",
 		Thread: "budget", Agent: "borealis", Summary: "for the owner: budget?", ForOwner: true}); err != nil {
@@ -132,7 +132,7 @@ func postRunnerFocus(t *testing.T, s *store.Store, id, project, kind, area, thre
 
 func TestWorkerBriefListsUnansweredMentions(t *testing.T) {
 	s := newStore(t)
-	project, _ := newRepo(t, s)
+	project, _ := newBareRepo(t, s)
 	join(t, s, "aurora")
 	join(t, s, "borealis")
 	job, _, err := addJob(s, "proj", "task", "Self job", "do self", 1, 0, "task:self", "human", false)
@@ -167,7 +167,7 @@ func TestWorkerBriefListsUnansweredMentions(t *testing.T) {
 
 func TestLeadBriefListsMentionsOfTheLead(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "borealis")
 	lead, _, err := ensureLead(s, "proj")
 	if err != nil {

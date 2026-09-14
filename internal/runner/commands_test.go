@@ -73,7 +73,7 @@ func TestCommandsRegisteredInRunnerGroup(t *testing.T) {
 
 func TestWorkPlanLandCommands(t *testing.T) {
 	s := newStore(t)
-	_, dir := newRepo(t, s)
+	_, dir := newBareRepo(t, s)
 	join(t, s, "aurora")
 	out, errText, code := invoke(t, s, "work", "proj")
 	if code != 3 || !strings.HasPrefix(out, "idle: ") {
@@ -109,7 +109,7 @@ func TestWorkPlanLandCommands(t *testing.T) {
 
 func TestExecutorAndEnvCommands(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	out, _, code := invoke(t, s, "executor", "", "list")
 	if code != 0 || !strings.HasPrefix(out, localExecutor) || !strings.Contains(out, "this machine") {
 		t.Fatalf("list: %d %q", code, out)
@@ -197,7 +197,7 @@ func TestWorkerCommitLandsThroughLand(t *testing.T) {
 		}
 	}
 	s := newStore(t)
-	_, dir := newRepo(t, s)
+	_, dir := newBareRepo(t, s)
 	join(t, s, "aurora")
 	job, _, err := addJob(s, "proj", "task", "add a file", "add f.txt", 1, 0, "test", humanAgent, false)
 	if err != nil {

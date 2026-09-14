@@ -23,7 +23,7 @@ func failedLessonJob(t *testing.T, s *store.Store, title, result, finished strin
 
 func TestTendLessonsRecordsAndAmendsVerifyPattern(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	exec1(s.DB, "UPDATE projects SET verify_cmd = 'go test ./...' WHERE slug = 'proj'")
 	result := "3 commit(s) but verify exit 1; nothing landed"
 	j1 := failedLessonJob(t, s, "First verify failure", result, plusHours(testNow, -3))
@@ -85,7 +85,7 @@ func TestTendLessonsRecordsAndAmendsVerifyPattern(t *testing.T) {
 
 func TestTendLessonsThresholdAndMultipleSignatures(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	failedLessonJob(t, s, "lone", "worker exited 1", plusHours(testNow, -4))
 	if lines := tendLessons(s, "proj", testNow, "daemon"); len(lines) != 0 {
 		t.Fatalf("lone failure wrote: %v", lines)
@@ -108,7 +108,7 @@ func TestTendLessonsThresholdAndMultipleSignatures(t *testing.T) {
 
 func TestRecentFailureLessonsFormatsNewestWithinWindow(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	for i := 0; i < 6; i++ {
 		rec, err := records.New(s, "memory", "proj", fmt.Sprintf("Failure pattern recent %d", i), records.NewOptions{
 			Areas: []string{"jobs"}, Tags: []string{"failure", "recovery", fmt.Sprintf("sig:%08d", i)},
@@ -145,7 +145,7 @@ func TestRecentFailureLessonsFormatsNewestWithinWindow(t *testing.T) {
 
 func TestWriteBriefRendersLessonsBeforeRules(t *testing.T) {
 	s := newStore(t)
-	project, _ := newRepo(t, s)
+	project, _ := newBareRepo(t, s)
 	job := row{"id": "job-1", "kind": "task", "tier": 1, "title": "Fix it", "brief": "Do the work."}
 	brief := mustWriteBrief(t, briefOpts{Job: job, Project: project, Agent: "aurora", Clone: "/clone", Minutes: 10, Store: s, Lessons: []string{"`MEM-one` Pattern: Run the check."}})
 	section := "## Lessons from this project's recent failures (ADR-036)"
@@ -189,7 +189,7 @@ func TestRecoveryOutcomePhrasesAndLeadBrief(t *testing.T) {
 
 func TestLeadDueAnnotatesFailedTaskJobs(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	task, err := tasks.New(s, "proj", "Fix task", "brief", 10, humanAgent)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestLeadDueAnnotatesFailedTaskJobs(t *testing.T) {
 
 func TestTendLessonsRecoverOff(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "daemon.recover", "off")
 	failedLessonJob(t, s, "verify a", "3 commit(s) but verify exit 1; nothing landed", plusHours(testNow, -3))
 	failedLessonJob(t, s, "verify b", "1 commit(s) but verify exit 2; nothing landed", plusHours(testNow, -2))

@@ -107,7 +107,7 @@ func stubGh(t *testing.T, tok string) {
 
 func TestExecutorTokenCommand(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	gh := &fakeGitHub{login: "hands-bot"}
 	gh.install(t)
 

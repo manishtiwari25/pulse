@@ -44,7 +44,7 @@ func daemonRetryFixture(t *testing.T) (*store.Store, row) {
 	t.Helper()
 	bus.ResetDefault()
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	job, _, err := addJob(s, "proj", "task", "retry", "exercise retry timing", 1, 100, "retry-test", humanAgent, false)
 	if err != nil {

@@ -165,7 +165,7 @@ func TestRetireCandidatesRule(t *testing.T) {
 
 func TestTendRetiresOurAzureVM(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
 	az := &retireAz{listOut: `[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]`}
 	installRetireAz(t, az)
@@ -233,7 +233,7 @@ func TestTendRetiresOurAzureVM(t *testing.T) {
 
 func TestTendLeavesForeignMachineRunning(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	drainedByLogin(t, s, "laptop", "pulse@laptop.local")
 	az := &retireAz{}
 	installRetireAz(t, az)
@@ -257,7 +257,7 @@ func TestTendLeavesForeignMachineRunning(t *testing.T) {
 
 func TestTendWithoutAzIsNotOurs(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
 	az := &retireAz{broken: true}
 	installRetireAz(t, az)
@@ -280,7 +280,7 @@ func TestTendWithoutAzIsNotOurs(t *testing.T) {
 
 func TestTendHealsFromExecutorToken(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
 	setExecutorAdmin(s, "vm-seven", "pulseadmin@vm-seven-admin")
 	az := &retireAz{listOut: `[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]`}
@@ -318,7 +318,7 @@ func TestTendHealsFromExecutorToken(t *testing.T) {
 
 func TestTendHealRefusedRetiresAndDoesNotHealTwice(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
 	az := &retireAz{listOut: `[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]`}
 	installRetireAz(t, az)
@@ -369,7 +369,7 @@ func TestTendHealRefusedRetiresAndDoesNotHealTwice(t *testing.T) {
 
 func TestTendPostponesWhileARunIsInFlight(t *testing.T) {
 	s := newStore(t)
-	_, slug := newRepo(t, s)
+	_, slug := newBareRepo(t, s)
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
 	az := &retireAz{listOut: `[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]`}
 	installRetireAz(t, az)
@@ -386,7 +386,7 @@ func TestTendPostponesWhileARunIsInFlight(t *testing.T) {
 
 func TestTendDeletesAfterGraceAndKeepsWhatTheOwnerRevived(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
 	drainedByLogin(t, s, "vm-nine", "pulse@vm-nine")
 	az := &retireAz{listOut: `[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]`}
@@ -466,7 +466,7 @@ func TestTendDeletesAfterGraceAndKeepsWhatTheOwnerRevived(t *testing.T) {
 
 func TestTendDeleteClosesAMissingVM(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	az := &retireAz{missing: true}
 	installRetireAz(t, az)
 	exec1(s.DB, "INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after) VALUES ('vm-gone', 'azure', 'pulse-hands', 'pulse-cr-gone', ?, ?)", testNow, testNow)
@@ -486,7 +486,7 @@ func TestTendDeleteClosesAMissingVM(t *testing.T) {
 
 func TestDaemonTickTendsExecutors(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	drainedByLogin(t, s, "vm-seven", "pulse@vm-seven")
 	az := &retireAz{listOut: `[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]`}
 	installRetireAz(t, az)
@@ -522,7 +522,7 @@ func TestCapsAllowHoldsWithoutLoginSource(t *testing.T) {
 func TestComputeHeldWithoutLoginSourceAndExplainedOncePerDay(t *testing.T) {
 	bus.ResetDefault()
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	for k, v := range map[string]string{"compute.provider": "azure", "compute.max_vms": "2", "compute.max_hours_per_day": "24",
 		"compute.azure.resource_group": "rg", "compute.azure.location": "westeurope", "compute.azure.vm_size": "Standard_B2ms", "compute.auto_approve": "1"} {

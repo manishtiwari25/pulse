@@ -13,7 +13,7 @@ func idleLeadJobRows(s querier) []row {
 
 func TestIdleLeadQueuesStandingBrief(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	setSetting(t, s, "lead.idle_hours", "6")
 
@@ -41,7 +41,7 @@ func TestIdleLeadQueuesStandingBrief(t *testing.T) {
 
 func TestIdleLeadCanBeDisabled(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "lead.idle_hours", "0")
 
 	lines := tendLead(s, "proj", testNow, "daemon")
@@ -52,7 +52,7 @@ func TestIdleLeadCanBeDisabled(t *testing.T) {
 
 func TestIdleLeadStaysQuietWhenProjectHasQueuedJob(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "lead.idle_hours", "6")
 	if _, _, err := addJob(s, "proj", "task", "already queued", "do it", 1, 5, "test:queued", humanAgent, false); err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestIdleLeadStaysQuietWhenProjectHasQueuedJob(t *testing.T) {
 
 func TestIdleLeadUsesRecentCreatedJobAsQuietWindow(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	j, _, err := addJob(s, "proj", "task", "recently done", "done", 1, 5, "test:recent", humanAgent, false)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestIdleLeadUsesRecentCreatedJobAsQuietWindow(t *testing.T) {
 
 func TestOwnerMessageBeatsIdleLead(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "lead.idle_hours", "6")
 	if _, err := tasks.SendMessage(s, "proj", "", humanAgent, "Please look at the roadmap"); err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestOwnerMessageBeatsIdleLead(t *testing.T) {
 
 func TestIdleLeadDoesNotQueueTwiceImmediately(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "lead.idle_hours", "6")
 
 	tendLead(s, "proj", testNow, "daemon")
@@ -116,7 +116,7 @@ func TestIdleLeadDoesNotQueueTwiceImmediately(t *testing.T) {
 
 func TestIdleLeadBriefListsBoardAndFailures(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	setSetting(t, s, "lead.idle_hours", "6")
 	handoff, err := createPost(s, plusHours(testNow, -48), postOpts{Kind: "handoff", Project: "proj", Area: "docs", Thread: "install",

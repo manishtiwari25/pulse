@@ -22,7 +22,7 @@ func TestProvenanceRoundTrip(t *testing.T) {
 		t.Skip("no ssh-keygen")
 	}
 	s := newStore(t)
-	_, dir := newRepo(t, s)
+	_, dir := newBareRepo(t, s)
 	clone := filepath.Join(t.TempDir(), "clone")
 	run(t, "", "git", "clone", "-q", dir, clone)
 	keyPath := filepath.Join(t.TempDir(), "run.key")
@@ -76,7 +76,7 @@ func TestProvenanceRoundTrip(t *testing.T) {
 
 func TestOwnerPathsTouched(t *testing.T) {
 	s := newStore(t)
-	_, dir := newRepo(t, s)
+	_, dir := newBareRepo(t, s)
 	base := strings.TrimSpace(run(t, dir, "git", "rev-parse", "HEAD"))
 	os.MkdirAll(filepath.Join(dir, "docs", "evolution"), 0o755)
 	os.WriteFile(filepath.Join(dir, "docs", "evolution", "constitution.md"), []byte("x\n"), 0o644)
@@ -390,7 +390,7 @@ func TestOnboardQueuesTheJobAndWritesNoFiles(t *testing.T) {
 
 func TestWorkOnceDryRunAndIdle(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	if _, reason, err := workOnce(s, "aurora", "", "", testNow, runOpts{}); err != nil || reason == "" {
 		t.Fatalf("idle without jobs: %q %v", reason, err)
@@ -427,7 +427,7 @@ func TestRemoteRunThroughLocalHands(t *testing.T) {
 	bin := buildPulse(t)
 	stageLocalPulse(t, bin)
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	if err := s.SetSetting(humanAgent, "minutes_per_job", "1"); err != nil {
 		t.Fatal(err)

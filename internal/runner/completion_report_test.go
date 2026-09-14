@@ -28,7 +28,7 @@ type completionAgents map[string]string
 // snapshot serves a whole table instead of one fixture builder per agent kind.
 func completionFixture(t *testing.T, s *store.Store) (row, completionAgents) {
 	t.Helper()
-	project, _ := newRepo(t, s)
+	project, _ := newBareRepo(t, s)
 	worker, lead := "aurora", leadName("proj")
 	join(t, s, worker)
 	if _, _, err := joinAgent(s, lead, "", "", "", "", leadKind, ""); err != nil {

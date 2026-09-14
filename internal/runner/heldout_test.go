@@ -358,7 +358,7 @@ func TestDaemonTickGeneratesHeldout(t *testing.T) {
 	bus.ResetDefault()
 	resetHeldout(t)
 	s := autoStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	stub := &countingCall{reply: sealedReply}
 	sealedCall = stub.call
 	first := onceDaemon(t, s, daemonOpts{WorkerCmd: "sh -c 'echo SUMMARY: ok'"})

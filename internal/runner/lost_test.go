@@ -17,7 +17,7 @@ import (
 // A lost run must not keep its job leased for the rest of minutes_per_job.
 func TestSweepLostRunsReleasesLease(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "w0")
 	job, _, err := addJob(s, "proj", "task", "t", "do it", 1, 0, "test", humanAgent, false)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestReportReported(t *testing.T) {
 // login on this machine.
 func TestLaunchRejectionOnLocalIsRunnerError(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	job, _, err := addJob(s, "proj", "task", "t", "do it", 1, 0, "test", humanAgent, false)
 	if err != nil {
@@ -125,7 +125,7 @@ func TestLaunchRejectionOnLocalIsRunnerError(t *testing.T) {
 
 func TestNativeNotLoggedInExitFourIsRunnerErrorAfterSlowStart(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	job, _, err := addJob(s, "proj", "task", "t", "do it", 1, 0, "test", humanAgent, false)
 	if err != nil {
@@ -153,7 +153,7 @@ func TestNativeNotLoggedInExitFourIsRunnerErrorAfterSlowStart(t *testing.T) {
 
 func TestWorkerExitSummaryIncludesHarnessStopReason(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	_, _, err := addJob(s, "proj", "task", "t", "do it", 1, 0, "test", humanAgent, false)
 	if err != nil {
@@ -171,7 +171,7 @@ func TestWorkerExitSummaryIncludesHarnessStopReason(t *testing.T) {
 
 func TestWorkerExitFiveIsOwnerCancelledFailure(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	job, _, err := addJob(s, "proj", "task", "t", "do it", 1, 0, "test", humanAgent, false)
 	if err != nil {
@@ -223,7 +223,7 @@ func TestLaunchRejectionOnRemoteDrainsExecutor(t *testing.T) {
 	bin := buildPulse(t)
 	stageLocalPulse(t, bin)
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	if err := s.SetSetting(humanAgent, "minutes_per_job", "1"); err != nil {
 		t.Fatal(err)

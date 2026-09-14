@@ -69,7 +69,7 @@ func TestProjectGoalCanonicalSlugBriefIngress(t *testing.T) {
 
 func TestProjectGoalPrivatePathNeverReachesRemoteBrief(t *testing.T) {
 	s := newStore(t)
-	project, _ := newRepo(t, s)
+	project, _ := newBareRepo(t, s)
 	for _, text := range []string{"Use file:///Users/example/plan.md.", "Prioritize path=/home/example/plan.md."} {
 		value, err := json.Marshal(map[string]string{"text": text, "source": "owner"})
 		if err != nil {

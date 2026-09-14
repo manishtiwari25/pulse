@@ -29,7 +29,7 @@ func schedulingRun(s *store.Store, job row, agent string) string {
 
 func TestSchedulingConcurrentLeasesKeepOneJobPerAgent(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	setSetting(t, s, "parallel_per_project", "2")
 	jobs := []row{
@@ -87,7 +87,7 @@ func TestSchedulingProvisionalFinishKeepsCapacity(t *testing.T) {
 		for _, scope := range []string{"worker", "project"} {
 			t.Run(status+"/"+scope, func(t *testing.T) {
 				s := newStore(t)
-				newRepo(t, s)
+				newBareRepo(t, s)
 				join(t, s, "aurora")
 				join(t, s, "borealis")
 				first := schedulingJob(t, s, "proj", "first", 100)
@@ -128,7 +128,7 @@ func TestSchedulingProvisionalFinishKeepsCapacity(t *testing.T) {
 
 func TestSchedulingRunningLeaseCountsOnce(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "parallel_per_project", "2")
 	first := schedulingJob(t, s, "proj", "first", 100)
 	second := schedulingJob(t, s, "proj", "second", 90)
@@ -149,7 +149,7 @@ func TestSchedulingPickWorkerSkipsProvisionalCompletion(t *testing.T) {
 	for _, status := range []string{"done", "failed", "cancelled", "blocked"} {
 		t.Run(status, func(t *testing.T) {
 			s := newStore(t)
-			newRepo(t, s)
+			newBareRepo(t, s)
 			join(t, s, "aurora")
 			join(t, s, "borealis")
 			setSetting(t, s, "quorum", "1")
@@ -187,7 +187,7 @@ func TestSchedulingPickWorkerSkipsProvisionalCompletion(t *testing.T) {
 
 func TestSchedulingExpiredLeasePreservesGenerationTakeover(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	job := schedulingJob(t, s, "proj", "expired", 100)
 	first, err := leaseJob(s, "aurora", testNow, leaseOpts{JobID: job.str("id"), Minutes: 1})

@@ -116,7 +116,7 @@ func TestExecutorSlotsHoldThisMachineWhenGated(t *testing.T) {
 
 func TestDaemonIdlesBehindLoginGateAndPostsOnce(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	exec1(s.DB, "UPDATE projects SET brain = 1 WHERE slug = 'proj'")
 	job, _, err := addJob(s, "proj", "task", "say ok", "echo ok and report", 1, 0, "test", humanAgent, false)
