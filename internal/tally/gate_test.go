@@ -98,6 +98,9 @@ func TestRunCheckIsNoOp(t *testing.T) {
 		"bad regex":          {"check: go test ./internal/runner -run 'Test(' ", true, ""},
 		"no -run":            {"check: go test ./internal/runner", false, ""},
 		"no pkgs":            {"check: go test -run TestMissing", false, ""},
+		"pkgs after flags":   {"check `go test -run TestMissing ./internal/runner` and Signal: x", true, "TestMissing"},
+		"pkgs after count":   {"check: go test -run 'TestMissing|Test B' -count=1 ./internal/runner.", true, "TestMissing|Test B"},
+		"prose after flags":  {"check: go test -run TestMissing then Signal: ./internal/runner", false, ""},
 	}
 	for name, tc := range cases {
 		gotPkgs, gotRegex = nil, ""

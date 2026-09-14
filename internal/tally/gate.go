@@ -331,7 +331,9 @@ const GateNoOpCheck = "check selects no test: its `go test -run` regex matches n
 // runCheckRe finds `go test [packages...] -run REGEX` in a card's text. A quoted regex may
 // contain spaces or the other quote character (`-run 'TestA|Test B'`); an unquoted one ends at
 // the next space.
-var runCheckRe = regexp.MustCompile(`go test\s+((?:[^\s'"` + "`" + `]+\s+)*?)-run[= ]+(?:'([^']*)'|"([^"]*)"|` + "`([^`]*)`" + `|([^'"` + "`" + `\s]+))`)
+// Packages may also follow the flags (`go test -run TestX ./internal/tally`): the trailing
+// group captures the unquoted tokens after the regex.
+var runCheckRe = regexp.MustCompile(`go test\s+((?:[^\s'"` + "`" + `]+\s+)*?)-run[= ]+(?:'([^']*)'|"([^"]*)"|` + "`([^`]*)`" + `|([^'"` + "`" + `\s]+))((?:[ \t]+[^\s'"` + "`" + `]+)*)`)
 
 // runCheckRegex returns the -run regex captured by a runCheckRe match, whichever quoting
 // alternative fired.
@@ -386,6 +388,20 @@ func RunCheckIsNoOp(projectPath, summary, body string) bool {
 				break
 			}
 			pkgs = append(pkgs, tok)
+		}
+		// Packages listed after the flags: skip flags, stop at the first token that is not a
+		// relative package path (prose, `Signal:`, ...).
+		for _, tok := range strings.Fields(m[6]) {
+			if strings.HasPrefix(tok, "-") {
+				continue
+			}
+			if !strings.HasPrefix(tok, "./") && !strings.HasPrefix(tok, "...") {
+				break
+			}
+			if strings.Contains(tok, "..") && !strings.HasSuffix(tok, "...") {
+				break
+			}
+			pkgs = append(pkgs, strings.TrimRight(tok, ".,;"))
 		}
 		if len(pkgs) == 0 || re == "" {
 			continue
