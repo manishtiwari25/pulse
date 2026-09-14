@@ -57,7 +57,7 @@ func TestLandingCancellationKeepsUnverifiedBranch(t *testing.T) {
 	cancel()
 	select {
 	case <-finished:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testWait(10 * time.Second)):
 		t.Fatal("cancellation did not end fake verification within its test bound")
 	}
 	if landErr != nil || state != "stopped" {

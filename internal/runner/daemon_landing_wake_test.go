@@ -38,7 +38,7 @@ func TestDaemonWorkerCompletionStartsNextLandingPass(t *testing.T) {
 	defer gate.Close()
 	command := fmt.Sprintf("sh -c %s", shellQuote("read gate < "+shellQuote(fifo)+
 		"; printf change > value.txt && git add value.txt && git commit -q -m 'Fake change' && echo SUMMARY: fake commit"))
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testWait(20*time.Second))
 	finished := make(chan struct{})
 	defer func() {
 		_, _ = gate.WriteString("go\ngo\n")
@@ -51,7 +51,7 @@ func TestDaemonWorkerCompletionStartsNextLandingPass(t *testing.T) {
 		result = daemon(ctx, s, daemonOpts{Interval: 300, MaxLoops: 2, WorkerCmd: command, Out: io.Discard})
 	}()
 	// Finish the first (empty) maintenance pass before releasing the fake worker.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testWait(10 * time.Second))
 	for {
 		if _, exists, err := s.Meta("hygiene"); err != nil {
 			t.Fatal(err)

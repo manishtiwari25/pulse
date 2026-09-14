@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -39,6 +40,10 @@ func completionQuestion(t *testing.T, s *store.Store, job row, opts postOpts) ro
 	}
 	exec1(s.DB, "UPDATE jobs SET source = ? WHERE id = ?", "question:"+q.str("id"), job.str("id"))
 	return q
+}
+
+func lightweightCompletionWorkerCommand(output string, exit int) string {
+	return "sh -c " + shellQuote("printf %s "+shellQuote(output)+"; exit "+strconv.Itoa(exit))
 }
 
 func TestCompletionAnswerDeliveredToSource(t *testing.T) {
@@ -170,7 +175,11 @@ func TestCompletionAnswerGuards(t *testing.T) {
 			case "empty summary":
 				output = "FINDING: no conclusion yet\n"
 			}
-			runCompletion(t, s, job, agent, completionWorkerCommand(t, status, result, output, exit, ""))
+			command := lightweightCompletionWorkerCommand(output, exit)
+			if status != "" || result != "" {
+				command = completionWorkerCommand(t, status, result, output, exit, "")
+			}
+			runCompletion(t, s, job, agent, command)
 			if n := count(t, s, "SELECT COUNT(*) AS n FROM posts WHERE kind = 'answer'"); n != 0 {
 				t.Errorf("guarded completion emitted %d answer(s)", n)
 			}

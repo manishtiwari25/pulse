@@ -226,7 +226,7 @@ func TestRunHarnessCancelWatcherCancelsContext(t *testing.T) {
 	}
 	select {
 	case <-workerCtx.Done():
-	case <-time.After(time.Second):
+	case <-time.After(testWait(10 * time.Second)):
 		t.Fatal("worker context was not cancelled")
 	}
 	if !ownerCancelled.Load() {

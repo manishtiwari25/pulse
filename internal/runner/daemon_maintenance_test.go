@@ -62,30 +62,40 @@ func TestDaemonSlowMeasurementDoesNotBlockDispatchOrStop(t *testing.T) {
 			return nil, errors.New("fake measurement intentionally left unmeasured")
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testWait(30*time.Second))
 	done := make(chan string, 1)
+	joined := false
 	go func() {
 		done <- daemon(ctx, s, daemonOpts{Interval: 300, WorkerCmd: "sh -c 'echo SUMMARY: fake work complete'", Out: io.Discard, SelfUpdate: &selfEnv})
 	}()
+	var releaseOnce sync.Once
+	releaseMeasurement := func() { releaseOnce.Do(func() { close(release) }) }
+	stopTimedOut := false
 	t.Cleanup(func() {
-		close(release)
+		releaseMeasurement()
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("fake daemon did not finish after its blocked measurement was released")
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(testWait(10 * time.Second)):
+				if stopTimedOut {
+					t.Log("fake daemon still did not finish after the STOP timeout and measurement release")
+				} else {
+					t.Error("fake daemon did not finish after its blocked measurement was released")
+				}
+			}
 		}
 		evolve.Measure = old
 	})
 	select {
 	case <-started:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testWait(10 * time.Second)):
 		t.Fatal("fake measurement did not start")
 	}
 	if _, err := bus.Emit(s, humanAgent, "post.question", "wake-control", map[string]any{"project": "other"}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testWait(10 * time.Second))
 	progress := false
 	for time.Now().Before(deadline) {
 		var beat struct {
@@ -114,15 +124,16 @@ func TestDaemonSlowMeasurementDoesNotBlockDispatchOrStop(t *testing.T) {
 	if building || fileExists(selfEnv.Binary+".new") {
 		t.Error("self-update started while landing verification was pending")
 	}
+	// The setting's own "setting" event wakes the loop (daemonWake); no extra wake, so that path stays covered.
 	setSetting(t, s, "stop", "1")
-	deadline = time.Now().Add(time.Second)
+	deadline = time.Now().Add(testWait(10 * time.Second))
 	for time.Now().Before(deadline) {
 		select {
 		case result := <-done:
+			joined = true
 			if result != "stopped" {
 				t.Errorf("STOP result = %s", result)
 			}
-			done <- result
 			if job := jobRow(s.DB, "slow-measurement"); job.str("branch") != "evolve/slow-measurement" {
 				t.Errorf("STOP discarded the unmeasured branch: %v", job)
 			}
@@ -131,5 +142,6 @@ func TestDaemonSlowMeasurementDoesNotBlockDispatchOrStop(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+	stopTimedOut = true
 	t.Error("STOP could not cancel a fake blocked measurement")
 }

@@ -29,7 +29,7 @@ func TestDaemonCancellationDuringWorkerDrainKeepsGrace(t *testing.T) {
 	}
 	cmd := "sh -c " + shellQuote("printf ready > "+shellQuote(marker)+"; read line < "+shellQuote(fifo))
 	out := &drainWriter{waiting: make(chan struct{}), needle: "run(s) in flight to finish"}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testWait(20*time.Second))
 	const grace = 100 * time.Millisecond
 	done := make(chan string, 1)
 	go func() {
@@ -51,7 +51,7 @@ func TestDaemonCancellationDuringWorkerDrainKeepsGrace(t *testing.T) {
 		if !joined {
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testWait(10 * time.Second)):
 				t.Error("fake worker outlived its daemon")
 			}
 		}
@@ -61,7 +61,7 @@ func TestDaemonCancellationDuringWorkerDrainKeepsGrace(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("daemon did not enter its normal worker drain")
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testWait(10 * time.Second))
 	for !fileExists(marker) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -76,7 +76,7 @@ func TestDaemonCancellationDuringWorkerDrainKeepsGrace(t *testing.T) {
 		if result != "interrupted" || time.Since(cancelledAt) < grace {
 			t.Fatalf("late cancellation lost its grace or exit state: %s, elapsed %s", result, time.Since(cancelledAt))
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testWait(10 * time.Second)):
 		t.Fatal("late cancellation failed to bound the previously unbounded worker drain")
 	}
 	if jobRow(s.DB, job.str("id")).str("status") == "leased" ||

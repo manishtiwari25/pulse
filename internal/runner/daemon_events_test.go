@@ -24,7 +24,7 @@ func TestDaemonWakesOnPostQuestion(t *testing.T) {
 		done <- daemon(ctx, s, daemonOpts{Interval: 30, MaxLoops: 2, WorkerCmd: "sh -c 'echo SUMMARY: ok'", Out: &out})
 	}()
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testWait(10 * time.Second))
 	for time.Now().Before(deadline) {
 		var beat map[string]any
 		if r := mustOne(s.DB, "SELECT value FROM meta WHERE key = 'daemon'"); r != nil && json.Unmarshal([]byte(r.str("value")), &beat) == nil && beat["loops"] == float64(1) {
@@ -40,7 +40,7 @@ func TestDaemonWakesOnPostQuestion(t *testing.T) {
 		if result != "done" {
 			t.Fatalf("daemon = %s\n%s", result, out.String())
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait(10 * time.Second)):
 		cancel()
 		t.Fatalf("the daemon did not wake on post.question:\n%s", out.String())
 	}

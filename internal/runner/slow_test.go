@@ -32,7 +32,7 @@ const defaultTestDeadline = 60 * time.Second
 // -short runs are the ones that share the host with other jobs. Raise `go test -timeout` accordingly.
 func testDeadline(t *testing.T, d time.Duration) {
 	t.Helper()
-	d = time.Duration(float64(d) * deadlineMult())
+	d = testWait(d)
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
 	go func() {
@@ -45,6 +45,10 @@ func testDeadline(t *testing.T, d time.Duration) {
 			panic(fmt.Sprintf("test %s exceeded %s deadline", t.Name(), d))
 		}
 	}()
+}
+
+func testWait(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * deadlineMult())
 }
 
 // deadlineMult reads PULSE_TEST_DEADLINE_MULT (a positive float, e.g. "2.5"); when unset or invalid it

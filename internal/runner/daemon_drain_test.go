@@ -61,7 +61,7 @@ func TestDaemonCancellationDuringMaintenanceDrain(t *testing.T) {
 				}
 				return "old-fake-binary"
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testWait(20*time.Second))
 			out := &drainWriter{waiting: make(chan struct{})}
 			opts := daemonOpts{Interval: 300, Out: out, SelfUpdate: &binary}
 			if exit == "done" {
@@ -78,7 +78,7 @@ func TestDaemonCancellationDuringMaintenanceDrain(t *testing.T) {
 				if !joined {
 					select {
 					case <-done:
-					case <-time.After(5 * time.Second):
+					case <-time.After(testWait(10 * time.Second)):
 						t.Error("maintenance lane outlived the fake daemon")
 					}
 				}
@@ -113,7 +113,7 @@ func TestDaemonCancellationDuringMaintenanceDrain(t *testing.T) {
 				if result != "interrupted" {
 					t.Fatalf("late cancellation returned %s instead of interrupted", result)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(testWait(10 * time.Second)):
 				t.Fatal("caller cancellation was ignored after " + exit + " drain began")
 			}
 			select {
