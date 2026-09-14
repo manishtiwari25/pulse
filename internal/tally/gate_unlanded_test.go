@@ -136,3 +136,49 @@ func BenchmarkSignalUnlanded(b *testing.B) {
 		}
 	}
 }
+
+// TestPlanGateHoldsUnlandedSignal drives the GateUnlanded verdict through PlanGate with the checkout
+// sitting on a pulse/* branch: the Signal path is judged against `<default_branch>:<path>`, not HEAD,
+// so a file that exists only on the unlanded branch holds the card while a landed one is planned.
+func TestPlanGateHoldsUnlandedSignal(t *testing.T) {
+	f := newFixture(t, true)
+	if err := os.MkdirAll(filepath.Join(f.repo, "internal", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repo, "internal", "x", "landed.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.repo, "init", "-q", "-b", "main")
+	gitIn(t, f.repo, "add", ".")
+	gitIn(t, f.repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "landed")
+	gitIn(t, f.repo, "checkout", "-q", "-b", "pulse/agent/job")
+	if err := os.WriteFile(filepath.Join(f.repo, "internal", "x", "unlanded.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.repo, "add", ".")
+	gitIn(t, f.repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "unlanded")
+	resetLandedCache()
+
+	unlanded := addEligibleSuggestion(t, f, "6", "runner-worker/model", "worker-unlanded", "Worker unlanded card", "Signal: internal/x/unlanded.go", "", []string{"up", "up"})
+	landed := addEligibleSuggestion(t, f, "7", "runner-worker/model", "worker-landed", "Worker landed card", "Signal: internal/x/landed.go", "", []string{"up", "up"})
+	if _, err := f.st.DB.Exec("UPDATE agents SET kind = 'worker' WHERE name = 'runner-worker/model'"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Compute(f.st, "fixture", "", Thresholds{Now: fixtureNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suggestions := map[string]Suggestion{}
+	posts := map[string]*Post{}
+	for _, sg := range res.Suggestions {
+		suggestions[sg.ID] = sg
+	}
+	for i := range res.Posts {
+		posts[res.Posts[i].ID] = &res.Posts[i]
+	}
+	for id, want := range map[string]string{unlanded: GateUnlanded, landed: ""} {
+		if got := PlanGate(f.st, res.Repo, suggestions[id], posts[id]); got != want {
+			t.Fatalf("PlanGate(%s) = %q, want %q (HEAD on pulse/* branch)", id, got, want)
+		}
+	}
+}
