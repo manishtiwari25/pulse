@@ -57,9 +57,11 @@ func TestPlanGateOutcomes(t *testing.T) {
 		ownerPath:         GateOwnerPaths,
 		plannable:         "",
 	}
+	// Map iteration order is random: report every mismatch (t.Errorf, not Fatalf) so a failure names
+	// the same set of cases on every run and never depends on which case happened to come first.
 	for id, want := range tests {
 		if got := PlanGate(f.st, res.Repo, suggestions[id], posts[id]); got != want {
-			t.Fatalf("PlanGate(%s) = %q, want %q (suggestion %+v)", id, got, want, suggestions[id])
+			t.Errorf("PlanGate(%s) = %q, want %q (suggestion %+v)", id, got, want, suggestions[id])
 		}
 	}
 }
