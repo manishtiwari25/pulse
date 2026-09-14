@@ -23,7 +23,7 @@ func TestSignalUnlanded(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(f.repo, "internal", "x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(f.repo, "internal", "x", "landed.go"), []byte("package x\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.repo, "internal", "x", "landed.go"), []byte("package x\n\nfunc Landed() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitIn(t, f.repo, "init", "-q", "-b", "main")
@@ -33,10 +33,17 @@ func TestSignalUnlanded(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.repo, "internal", "x", "unlanded.go"), []byte("package x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(f.repo, "internal", "x", "landed.go"), []byte("package x\n\nfunc Landed() {}\n\nfunc Unlanded() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	gitIn(t, f.repo, "add", ".")
 	gitIn(t, f.repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "unlanded")
 
 	cases := map[string]bool{
+		"Signal: internal/x/landed.go#Landed":                          false, // symbol on the default branch
+		"Signal: internal/x/landed.go#Unlanded":                        true,  // file landed, symbol only on pulse/*
+		"Signal: internal/x/landed.go#Unlanded:5":                      true,
+		"Signal: internal/x/landed.go#Land":                            true, // whole-identifier match, not a prefix
 		"Signal: internal/x/landed.go":                                 false,
 		"Signal: internal/x/unlanded.go":                               true,
 		"Signal: internal/x/unlanded.go\nSignal: internal/x/landed.go": false, // any landed path is enough
@@ -68,7 +75,7 @@ func TestSignalUnlandedCacheFollowsLanding(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(f.repo, "internal", "x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(f.repo, "internal", "x", "a.go"), []byte("package x\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.repo, "internal", "x", "a.go"), []byte("package x\n\nfunc Landed() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitIn(t, f.repo, "init", "-q", "-b", "main")
