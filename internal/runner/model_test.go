@@ -91,7 +91,7 @@ func TestRunJobRecordsTheModelOfEachRunOnTheAgent(t *testing.T) {
 		t.Skip("no ssh-keygen")
 	}
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	argsFile := filepath.Join(s.Home, "worker-args")
 	script := filepath.Join(s.Home, "runner.sh")
@@ -140,7 +140,7 @@ func TestRunJobRecordsTheModelOfEachRunOnTheAgent(t *testing.T) {
 func TestLeadRunsWithTheLightModel(t *testing.T) {
 	bus.ResetDefault()
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	setSetting(t, s, "worker_model", "heavy-test")
 	lead, created, err := ensureLead(s, "proj")
 	if err != nil || !created || lead.Model != "heavy-test" {

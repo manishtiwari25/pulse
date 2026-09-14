@@ -24,7 +24,7 @@ func TestPlanJobsForOwnerMetadata(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(kind+"/"+tc.name, func(t *testing.T) {
 				s := newStore(t)
-				newRepo(t, s)
+				newBareRepo(t, s)
 				suppressPlannerReflect(t, s)
 				first, err := createPost(s, plusHours(testNow, -2), postOpts{
 					Kind: kind, Project: "proj", Area: "routing", Thread: tc.thread, Summary: tc.summary,
@@ -78,7 +78,7 @@ func TestPlanJobsForOwnerMetadata(t *testing.T) {
 
 func TestPostRowParsesForOwner(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	for _, tc := range []struct {
 		name  string
 		extra map[string]any
@@ -127,7 +127,7 @@ func TestPostRowParsesForOwner(t *testing.T) {
 // into the row: the planner never sends a worker to answer it. Only a person's unflagged question gets a job.
 func TestPlanJobsNeverAnswersMachineQuestions(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	suppressPlannerReflect(t, s)
 	at := plusHours(testNow, -4)
 	next := func() string {
@@ -176,7 +176,7 @@ func TestPlanJobsNeverAnswersMachineQuestions(t *testing.T) {
 // in the same thread is not planned; an answer in the thread resets it and the next new question gets a worker.
 func TestPlanJobsOneTriedQuestionPerThread(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	suppressPlannerReflect(t, s)
 	if err := s.SetSetting(humanAgent, "parallel_per_project", "3"); err != nil {
 		t.Fatal(err)

@@ -19,7 +19,7 @@ func TestLandingHoldSaidOncePerChange(t *testing.T) {
 	skipSlow(t)
 	bus.ResetDefault()
 	s := newStore(t)
-	proj, dir := newRepo(t, s)
+	proj, dir := newBareRepo(t, s)
 	join(t, s, "aurora")
 	setSetting(t, s, "landing", "agents")
 
@@ -101,7 +101,7 @@ func TestLandingHoldSaidOncePerChange(t *testing.T) {
 func TestDaemonLogsLandingHoldOnce(t *testing.T) {
 	bus.ResetDefault()
 	s := newStore(t)
-	_, dir := newRepo(t, s)
+	_, dir := newBareRepo(t, s)
 	join(t, s, "aurora")
 	setSetting(t, s, "landing", "agents")
 	setSetting(t, s, "jobs_per_day", "20")

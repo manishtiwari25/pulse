@@ -15,7 +15,7 @@ import (
 // on a branch with a real commit waiting to land.
 func pushFixture(t *testing.T, s *store.Store) (proj row, repo, bare string) {
 	t.Helper()
-	proj, repo = newRepo(t, s)
+	proj, repo = newBareRepo(t, s)
 	bare = filepath.Join(t.TempDir(), "origin.git")
 	run(t, "", "git", "init", "--bare", "-q", bare)
 	run(t, repo, "git", "remote", "add", "origin", bare)
@@ -176,7 +176,7 @@ func TestLandingPushFailureIsANoteNotAnUndo(t *testing.T) {
 func TestLandingPushSkipsWithoutUpstream(t *testing.T) {
 	bus.ResetDefault()
 	s := newStore(t)
-	proj, repo := newRepo(t, s)
+	proj, repo := newBareRepo(t, s)
 	setSetting(t, s, "landing.push", "main")
 	pushBranch(t, s, proj, repo, "pulse/worker/1")
 	lines, cur := tendLandings(s, []row{proj}, "daemon", testNow, nil)

@@ -10,7 +10,7 @@ import (
 
 func TestProjectGoalAllWorkerKindsReadLatestAtRender(t *testing.T) {
 	s := newStore(t)
-	project, _ := newRepo(t, s)
+	project, _ := newBareRepo(t, s)
 	old := "Improve useful search results using regression evidence."
 	if _, err := goals.Set(s, "proj", old, "human"); err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestProjectGoalAllWorkerKindsReadLatestAtRender(t *testing.T) {
 
 func TestProjectGoalDispatchUsesJobStoreAndQueuedOwnerEdit(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	if _, err := goals.Set(s, "proj", "Earlier project direction.", "human"); err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestProjectGoalDispatchUsesJobStoreAndQueuedOwnerEdit(t *testing.T) {
 
 func TestProjectGoalBriefReadFailureDoesNotRenderSuccess(t *testing.T) {
 	s := newStore(t)
-	project, _ := newRepo(t, s)
+	project, _ := newBareRepo(t, s)
 	job := row{"id": "job-goal-error", "kind": "task", "tier": 1}
 	if text, err := writeBrief(briefOpts{Project: project, Job: job}); err == nil || text != "" {
 		t.Fatal("missing store silently rendered an unaligned brief")
@@ -107,7 +107,7 @@ func TestProjectGoalBriefReadFailureDoesNotRenderSuccess(t *testing.T) {
 
 func TestProjectGoalBriefLegacyFallbackOnReadOnlyStore(t *testing.T) {
 	s := newStore(t)
-	project, _ := newRepo(t, s)
+	project, _ := newBareRepo(t, s)
 	if _, err := s.DB.Exec("DELETE FROM settings WHERE name = 'project.goal.proj'"); err != nil {
 		t.Fatal(err)
 	}

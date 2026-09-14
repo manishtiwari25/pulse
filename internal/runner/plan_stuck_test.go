@@ -12,7 +12,7 @@ import (
 // planner picks the tutor handoff first.
 func stuckFixture(t *testing.T, s *store.Store, n int) (tutor, admin row, jobIDs []string) {
 	t.Helper()
-	newRepo(t, s)
+	newBareRepo(t, s)
 	join(t, s, "aurora")
 	suppressPlannerReflect(t, s)
 	for i := 0; i < n; i++ {

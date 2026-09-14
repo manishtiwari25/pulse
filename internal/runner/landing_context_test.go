@@ -11,7 +11,7 @@ import (
 
 func TestLandingCancellationKeepsUnverifiedBranch(t *testing.T) {
 	s := newStore(t)
-	project, root := newRepo(t, s)
+	project, root := newBareRepo(t, s)
 	before := headOf(t, root)
 	branch := "pulse/aurora/cancelled-check"
 	run(t, root, "git", "switch", "-q", "-c", branch)

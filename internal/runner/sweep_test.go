@@ -74,7 +74,7 @@ func heldWhy(items []swept, path string) string {
 // stays; a lost run's clone goes at once; an unknown job's leftovers wait for the keep period.
 func TestSweepWorkLeftovers(t *testing.T) {
 	s := sweepStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	work := filepath.Join(s.Home, "work")
 	finished := sweepJob(t, s, "done", "")
 	sweepRun(t, s, finished, "done")
@@ -136,7 +136,7 @@ func TestSweepWorkLeftovers(t *testing.T) {
 // lives is held.
 func TestSweepLandingWorktree(t *testing.T) {
 	s := sweepStore(t)
-	_, root := newRepo(t, s)
+	_, root := newBareRepo(t, s)
 	work := filepath.Join(s.Home, "work")
 	if err := os.MkdirAll(work, 0o755); err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestSweepLandingWorktree(t *testing.T) {
 // git still lists and a repository of its own are only reported.
 func TestSweepStrayWorktrees(t *testing.T) {
 	s := sweepStore(t)
-	_, root := newRepo(t, s)
+	_, root := newBareRepo(t, s)
 	dir := filepath.Join(s.Home, "worktrees")
 	plain := filepath.Join(dir, "proj")
 	mkdirFile(t, filepath.Join(plain, "leftover.txt"), "x")
@@ -221,7 +221,7 @@ func TestSweepStrayWorktrees(t *testing.T) {
 // of a running job stays.
 func TestSweepBranchesAndRefs(t *testing.T) {
 	s := sweepStore(t)
-	_, root := newRepo(t, s)
+	_, root := newBareRepo(t, s)
 	mk := func(branch string, commit bool) {
 		run(t, root, "git", "branch", branch, "main")
 		if !commit {
@@ -298,7 +298,7 @@ func TestSweepBranchesAndRefs(t *testing.T) {
 // A branch younger than daemon.sweep_branch_days is held even when no job will land it.
 func TestSweepBranchAgeHold(t *testing.T) {
 	s := newStore(t)
-	_, root := newRepo(t, s)
+	_, root := newBareRepo(t, s)
 	orphan := sweepJob(t, s, "failed", "")
 	run(t, root, "git", "branch", "pulse/w/"+orphan, "main")
 	rep := sweep(s, projectRows(s.DB, false), testNow, sweepOpts{})
@@ -313,7 +313,7 @@ func TestSweepBranchAgeHold(t *testing.T) {
 // Run logs and saved patches past daemon.sweep_keep_days go; younger ones and a running run's log stay.
 func TestSweepOldLogsAndPatches(t *testing.T) {
 	s := sweepStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	old := wallClock().Add(-40 * 24 * time.Hour)
 	age := func(path string) {
 		if err := os.Chtimes(path, old, old); err != nil {
@@ -365,7 +365,7 @@ func TestSweepOldLogsAndPatches(t *testing.T) {
 // A dry run reports and removes nothing.
 func TestSweepDryRun(t *testing.T) {
 	s := sweepStore(t)
-	_, root := newRepo(t, s)
+	_, root := newBareRepo(t, s)
 	finished := sweepJob(t, s, "done", "")
 	clone := filepath.Join(s.Home, "work", finished)
 	mkdirFile(t, filepath.Join(clone, "f"), "x")
@@ -400,7 +400,7 @@ func TestSweepDryRun(t *testing.T) {
 // the pass; daemon.sweep=off leaves everything.
 func TestDaemonSweeps(t *testing.T) {
 	s := sweepStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	finished := sweepJob(t, s, "done", "")
 	sweepRun(t, s, finished, "done")
 	clone := filepath.Join(s.Home, "work", finished)
@@ -451,7 +451,7 @@ func TestDaemonSweeps(t *testing.T) {
 // tendSweep runs at most once per sweepEvery.
 func TestTendSweepCadence(t *testing.T) {
 	s := sweepStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	var last time.Time
 	if lines := tendSweep(s, projectRows(s.DB, false), testNow, "daemon", nil, &last); lines != nil || last.IsZero() {
 		t.Fatalf("first pass: %v %v", lines, last)

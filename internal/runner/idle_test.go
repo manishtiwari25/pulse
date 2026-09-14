@@ -11,7 +11,7 @@ import (
 
 func TestIdleNoteEmptyProject(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 
 	got := idleNote(s, "proj", testNow)
 	if !strings.Contains(got, "no suggestions") || !strings.Contains(got, "reflect due") {
@@ -21,7 +21,7 @@ func TestIdleNoteEmptyProject(t *testing.T) {
 
 func TestIdleNoteEligibleSuggestionWithNetNonPositiveVotes(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	author := join(t, s, "author")
 	voter1 := join(t, s, "voter-one")
 	voter2 := join(t, s, "voter-two")
@@ -45,7 +45,7 @@ func TestIdleNoteEligibleSuggestionWithNetNonPositiveVotes(t *testing.T) {
 
 func TestIdleNoteHandoffsAndTried(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	worker := join(t, s, "worker-one")
 	h, err := createPost(s, testNow, postOpts{Kind: "handoff", Project: "proj", Area: "code", Thread: "handoff",
 		Summary: "continue this", Body: "leftover work\n", Agent: rowAgent(worker)})
@@ -66,7 +66,7 @@ func TestIdleNoteHandoffsAndTried(t *testing.T) {
 
 func TestIdleNoteQuestions(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	worker := join(t, s, "worker-one")
 	if _, err := createPost(s, testNow, postOpts{Kind: "question", Project: "proj", Area: "code", Thread: "q",
 		Summary: "what next?", Body: "what next?\n", Agent: rowAgent(worker)}); err != nil {
@@ -80,7 +80,7 @@ func TestIdleNoteQuestions(t *testing.T) {
 
 func TestRecordIdleNotesReadableByInspect(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	recordIdleNotes(s, map[string]string{"proj": "no suggestions; reflect due"}, testNow)
 
 	raw, exists, err := s.Meta("planner")

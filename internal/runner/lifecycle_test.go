@@ -148,7 +148,7 @@ func TestWorkerLifecycleDelayedSuggestion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newStore(t)
-			_, root := newRepo(t, s)
+			_, root := newBareRepo(t, s)
 			t.Setenv("PULSE_SESSION", "")
 			setSetting(t, s, "minutes_per_job", "1")
 			setSetting(t, s, "jobs_per_day", "0")
