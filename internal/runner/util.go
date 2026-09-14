@@ -174,7 +174,7 @@ func gitTimeoutEnv(repo string, timeout time.Duration, env []string, args ...str
 		args = append([]string{"-C", repo}, args...)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
+	cmd.Env = gitEnv(env)
 	var out, errb strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -189,6 +189,14 @@ func gitTimeoutEnv(repo string, timeout time.Duration, env []string, args ...str
 		}
 	}
 	return res
+}
+
+// gitEnv is the environment every runner git command runs with: no credential prompts, and no optional
+// locks - a read (status, diff) does not take .git/index.lock to refresh the index on the side, so a
+// probe the timeout kills on a loaded disk cannot leave a lock that holds every later landing and
+// self-update ("Unable to create index.lock: File exists"). Writes lock as before.
+func gitEnv(extra []string) []string {
+	return append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"), extra...)
 }
 
 func git(repo string, args ...string) gitResult {
