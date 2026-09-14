@@ -15,26 +15,55 @@ import (
 func newCompletionJob(t *testing.T, kind string) (*store.Store, row, row, string) {
 	t.Helper()
 	s := newStore(t)
-	project, agent := completionFixture(t, s, kind)
-	return s, completionJob(t, s, kind), project, agent
+	project, agents := completionFixture(t, s)
+	return s, completionJob(t, s, kind), project, agents[kind]
 }
 
-// completionFixture registers the project checkout and the worker (or lead) agent on s once;
-// table-driven tests call it in the parent and completionJob per case instead of paying a
-// fresh store, repo copy and addProject's git spawns for every row.
-func completionFixture(t *testing.T, s *store.Store, kind string) (row, string) {
+// completionAgents maps a job kind to the agent that works it in the shared fixture: lead
+// jobs run under the project lead, everything else under the worker "aurora".
+type completionAgents map[string]string
+
+// completionFixture registers the project checkout, the worker agent and the lead agent on s
+// once; every job kind (including leadKind) can then be queued on the same store, so one
+// snapshot serves a whole table instead of one fixture builder per agent kind.
+func completionFixture(t *testing.T, s *store.Store) (row, completionAgents) {
 	t.Helper()
 	project, _ := newRepo(t, s)
-	agent := "aurora"
-	if kind == leadKind {
-		agent = leadName("proj")
-		if _, _, err := joinAgent(s, agent, "", "", "", "", leadKind, ""); err != nil {
-			t.Fatal(err)
-		}
-	} else {
-		join(t, s, agent)
+	worker, lead := "aurora", leadName("proj")
+	join(t, s, worker)
+	if _, _, err := joinAgent(s, lead, "", "", "", "", leadKind, ""); err != nil {
+		t.Fatal(err)
 	}
-	return project, agent
+	agents := completionAgents{}
+	for _, kind := range []string{"task", "answer", "ballot", "experiment", leadKind} {
+		agents[kind] = worker
+	}
+	agents[leadKind] = lead
+	return project, agents
+}
+
+// completionSuite is the shared fixture plus its snapshot: table-driven tests build one in the
+// parent and call job per case to get a fresh store with exactly one queued job of that kind.
+type completionSuite struct {
+	project row
+	agents  completionAgents
+	snap    *completionSnapshot
+}
+
+func newCompletionSuite(t *testing.T) *completionSuite {
+	t.Helper()
+	s := newStore(t)
+	project, agents := completionFixture(t, s)
+	snap := snapshotCompletionStore(t, s)
+	t.Cleanup(func() { snap.s.Close() })
+	return &completionSuite{project: project, agents: agents, snap: snap}
+}
+
+// job resets the store to the fixture snapshot and queues one job of kind on it.
+func (c *completionSuite) job(t *testing.T, kind string) (*store.Store, row, row, string) {
+	t.Helper()
+	s := c.snap.reset(t)
+	return s, completionJob(t, s, kind), c.project, c.agents[kind]
 }
 
 // completionJob queues one fresh job of kind on the shared fixture's project.
@@ -162,13 +191,14 @@ func TestCompletionWorkerProcess(t *testing.T) {
 
 func TestCompletionRejectsUnreportedSuccess(t *testing.T) {
 	skipSlow(t)
+	suite := newCompletionSuite(t)
 	for name, output := range map[string]string{
 		"empty":        "",
 		"unstructured": "Starting work; everything looks fine.\n",
 		"empty label":  "SUMMARY:   \n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			s, job, _, agent := newCompletionJob(t, "task")
+			s, job, _, agent := suite.job(t, "task")
 			command := completionWorkerCommand(t, "", "", output, 0, "")
 			r := runCompletion(t, s, job, agent, command)
 			if r.str("status") != "failed" || !strings.Contains(r.str("summary"), "worker wrote no report") {
@@ -183,9 +213,10 @@ func TestCompletionRejectsUnreportedSuccess(t *testing.T) {
 
 func TestCompletionSummaryOnlyKinds(t *testing.T) {
 	skipSlow(t)
+	suite := newCompletionSuite(t)
 	for _, kind := range []string{"answer", "ballot", leadKind, "task"} {
 		t.Run(kind, func(t *testing.T) {
-			s, job, _, agent := newCompletionJob(t, kind)
+			s, job, _, agent := suite.job(t, kind)
 			command := completionWorkerCommand(t, "", "", "SUMMARY: investigated without changing code\n", 0, "")
 			r := runCompletion(t, s, job, agent, command)
 			if r.str("status") != "done" || r.int("commits") != 0 || r.str("branch") != "" {
@@ -197,6 +228,7 @@ func TestCompletionSummaryOnlyKinds(t *testing.T) {
 
 func TestCompletionWorkerFinishAuthoritative(t *testing.T) {
 	skipSlow(t)
+	suite := newCompletionSuite(t)
 	for _, tc := range []struct {
 		name, kind, status, result, output, want string
 		exit                                     int
@@ -211,7 +243,7 @@ func TestCompletionWorkerFinishAuthoritative(t *testing.T) {
 		{"cancelled finish", "task", "cancelled", "SUMMARY: stopped", "", "failed", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, job, _, agent := newCompletionJob(t, tc.kind)
+			s, job, _, agent := suite.job(t, tc.kind)
 			command := completionWorkerCommand(t, tc.status, tc.result, tc.output, tc.exit, "")
 			r := runCompletion(t, s, job, agent, command)
 			j := jobRow(s.DB, job.str("id"))
