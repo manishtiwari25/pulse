@@ -50,9 +50,15 @@ func signalTokens(text string) []string {
 }
 
 func relOfToken(tok string) string {
-	rel, _, _ := strings.Cut(tok, ":")
-	rel, _, _ = strings.Cut(rel, "#")
+	rel, _ := relAndSymbol(tok)
 	return rel
+}
+
+// relAndSymbol splits a Signal token into its path and the optional #Symbol suffix (path#Symbol or path#Symbol:line).
+func relAndSymbol(tok string) (string, string) {
+	rel, _, _ := strings.Cut(tok, ":")
+	rel, sym, _ := strings.Cut(rel, "#")
+	return rel, sym
 }
 
 // SignalResolves reports whether a Signal: line names an existing check, post, or project file.
@@ -129,11 +135,47 @@ func SignalUnlanded(s *store.Store, projectPath string, summary, body string) bo
 		return false // not a repository or the default branch is missing locally: cannot judge landing
 	}
 	for _, p := range paths {
-		if landedPathExists(projectPath, head, p) {
-			return false
+		if !landedPathExists(projectPath, head, p) {
+			continue
 		}
+		if sym := signalSymbol(summary+"\n"+body, p); sym != "" && !landedSymbolExists(projectPath, head, p, sym) {
+			continue // file landed but the named symbol is only on the unlanded branch
+		}
+		return false
 	}
 	return true
+}
+
+// signalSymbol returns the #Symbol suffix the card attaches to path p, or "" when it names the whole file.
+func signalSymbol(text, p string) string {
+	for _, tok := range signalTokens(text) {
+		rel, sym := relAndSymbol(tok)
+		if rel != "" && filepath.Clean(rel) == p && sym != "" {
+			return sym
+		}
+	}
+	return ""
+}
+
+// landedSymbolExists reports whether the default-branch blob of p mentions sym as a whole identifier.
+// The verdict is memoised per (commit, path, symbol) like landedPathExists.
+func landedSymbolExists(projectPath, commit, p, sym string) bool {
+	key := projectPath + "\x00" + commit + "\x00" + p + "#" + sym
+	landedCache.Lock()
+	if v, ok := landedCache.exists[key]; ok {
+		landedCache.Unlock()
+		return v
+	}
+	landedCache.Unlock()
+	out, err := exec.Command("git", "-C", projectPath, "show", commit+":"+filepath.ToSlash(p)).Output()
+	v := err != nil || regexp.MustCompile(`(^|[^A-Za-z0-9_])`+regexp.QuoteMeta(sym)+`([^A-Za-z0-9_]|$)`).Match(out)
+	landedCache.Lock()
+	if len(landedCache.exists) >= landedExistsCap {
+		landedCache.exists = map[string]bool{}
+	}
+	landedCache.exists[key] = v
+	landedCache.Unlock()
+	return v
 }
 
 // landedCache memoises the git lookups behind SignalUnlanded so one tally pass over many cards
