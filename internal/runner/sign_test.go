@@ -131,3 +131,24 @@ func TestSigningKeyCreatesWorkDir(t *testing.T) {
 		t.Fatal("key not written")
 	}
 }
+
+// configureCloneIdentity writes one include file instead of eight `git config` calls; the values
+// must still read back through git, including paths with spaces and quotes.
+func TestConfigureCloneIdentityIncludeFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), `with space "q"`)
+	run(t, "", "git", "init", "-q", dir)
+	key := filepath.Join(dir, `key "x" y`)
+	if err := os.WriteFile(key, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureCloneIdentity(dir, "aurora", key, "#!/bin/sh\n"); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{"user.name": "aurora", "user.email": "aurora@pulse.local",
+		"gpg.format": "ssh", "gpg.ssh.program": "ssh-keygen", "user.signingkey": key,
+		"commit.gpgsign": "true", "tag.gpgsign": "false", "core.hooksPath": filepath.Join(dir, ".git", "hooks")} {
+		if got := git(dir, "config", "--get", k); got.Stdout != want+"\n" {
+			t.Errorf("%s = %q want %q (%s)", k, got.Stdout, want, got.Stderr)
+		}
+	}
+}
