@@ -10,6 +10,7 @@ import (
 )
 
 func TestPostForOwnerCLI(t *testing.T) {
+	_, s, _ := fixture(t)
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -20,7 +21,7 @@ func TestPostForOwnerCLI(t *testing.T) {
 		{"false", []string{"--for-owner=false"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, s, _ := fixture(t)
+			before := countRows(t, s, "posts", "kind = 'question'")
 			args := []string{"post", "question", "--area", "routing", "--thread", "owner-review",
 				"--summary", "Owner question for @owner", "--body", "for_owner: true"}
 			args = append(args, tc.args...)
@@ -38,6 +39,9 @@ func TestPostForOwnerCLI(t *testing.T) {
 			loaded, err := PostByID(s, p.ID)
 			if err != nil || loaded == nil || loaded.ForOwner != tc.want || loaded.Extra != p.Extra {
 				t.Fatalf("loaded post=%+v, error=%v", loaded, err)
+			}
+			if n := countRows(t, s, "posts", "kind = 'question'"); n != before+1 {
+				t.Fatalf("stored %d questions, want %d", n, before+1)
 			}
 		})
 	}
