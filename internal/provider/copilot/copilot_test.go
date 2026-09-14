@@ -260,6 +260,141 @@ func TestChatPlainContentAndUserInitiator(t *testing.T) {
 	}
 }
 
+func TestChatRetriesSessionTokenNetworkErrorThenSucceeds(t *testing.T) {
+	restore := shortenChatRetryBackoffs(t, time.Millisecond, time.Millisecond)
+	defer restore()
+
+	var tokenCalls atomic.Int32
+	var logs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/copilot_internal/v2/token":
+			json.NewEncoder(w).Encode(map[string]any{
+				"token":      "tid=tokenretry;exp=999;",
+				"expires_at": time.Now().Add(time.Hour).Unix(),
+				"endpoints":  map[string]string{"api": srvURL(r)},
+			})
+		case "/chat/completions":
+			json.NewEncoder(w).Encode(chatContent("req-token-retry", "gpt-4.1", "ok"))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	cleanup := resetGlobals(t, srv.URL, srv.URL, srv.URL)
+	defer cleanup()
+
+	base := http.DefaultTransport
+	p, err := New(provider.Options{
+		Home: t.TempDir(),
+		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path == "/copilot_internal/v2/token" && tokenCalls.Add(1) == 1 {
+				return nil, errors.New("temporary dns failure")
+			}
+			return base.RoundTrip(r)
+		}), Timeout: 5 * time.Second},
+		Env: func(k string) string {
+			if k == "COPILOT_GITHUB_TOKEN" {
+				return "gho_abcdefghijklmnopqrstuvwxyz"
+			}
+			return ""
+		},
+		Log: func(format string, a ...any) {
+			logs = append(logs, fmt.Sprintf(format, a...))
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.Chat(context.Background(), provider.Request{Model: "gpt-4.1", Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Message.Content != "ok" || tokenCalls.Load() != 2 {
+		t.Fatalf("resp=%+v token calls=%d", resp, tokenCalls.Load())
+	}
+	if !sawLog(logs, "copilot session token retry in") {
+		t.Fatalf("missing retry log: %v", logs)
+	}
+}
+
+func TestChatTokenUnauthorizedReturnsNotLoggedInWithoutRetry(t *testing.T) {
+	restore := shortenChatRetryBackoffs(t, time.Millisecond, time.Millisecond)
+	defer restore()
+
+	var tokenCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/copilot_internal/v2/token" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		tokenCalls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{"message": "Bad credentials", "status": "401"})
+	}))
+	defer srv.Close()
+	cleanup := resetGlobals(t, srv.URL, srv.URL, srv.URL)
+	defer cleanup()
+
+	p := newTestProvider(t, t.TempDir(), map[string]string{"COPILOT_GITHUB_TOKEN": "gho_abcdefghijklmnopqrstuvwxyz"})
+	_, err := p.Chat(context.Background(), provider.Request{Model: "gpt-4.1", Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	if !errors.Is(err, provider.ErrNotLoggedIn) || tokenCalls.Load() != 1 {
+		t.Fatalf("err=%v token calls=%d", err, tokenCalls.Load())
+	}
+}
+
+func TestChatNetworkErrorRetriesThroughBackoffLimit(t *testing.T) {
+	restore := shortenChatRetryBackoffs(t, time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond)
+	defer restore()
+
+	var chatCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/copilot_internal/v2/token":
+			json.NewEncoder(w).Encode(map[string]any{
+				"token":      "tid=chatretry;exp=999;",
+				"expires_at": time.Now().Add(time.Hour).Unix(),
+				"endpoints":  map[string]string{"api": srvURL(r)},
+			})
+		case "/chat/completions":
+			json.NewEncoder(w).Encode(chatContent("req-chat-retry", "gpt-4.1", "unused"))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	cleanup := resetGlobals(t, srv.URL, srv.URL, srv.URL)
+	defer cleanup()
+
+	base := http.DefaultTransport
+	p, err := New(provider.Options{
+		Home: t.TempDir(),
+		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path == "/chat/completions" {
+				chatCalls.Add(1)
+				return nil, errors.New("temporary chat dns failure")
+			}
+			return base.RoundTrip(r)
+		}), Timeout: 5 * time.Second},
+		Env: func(k string) string {
+			if k == "COPILOT_GITHUB_TOKEN" {
+				return "gho_abcdefghijklmnopqrstuvwxyz"
+			}
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Chat(context.Background(), provider.Request{Model: "gpt-4.1", Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	var perr *provider.Error
+	if !errors.As(err, &perr) || !perr.Retryable || perr.Code != "network" {
+		t.Fatalf("network error = %#v", err)
+	}
+	if got, want := int(chatCalls.Load()), len(chatRetryBackoffs)+1; got != want {
+		t.Fatalf("chat calls = %d, want %d", got, want)
+	}
+}
+
 func TestChat429RetryAfterAnd400ModelError(t *testing.T) {
 	var rateCalls atomic.Int32
 	srv := copilotTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -637,4 +772,28 @@ func srvURL(r *http.Request) string {
 		scheme = "https"
 	}
 	return scheme + "://" + r.Host
+}
+
+func shortenChatRetryBackoffs(t *testing.T, backoffs ...time.Duration) func() {
+	t.Helper()
+	old := chatRetryBackoffs
+	chatRetryBackoffs = backoffs
+	return func() {
+		chatRetryBackoffs = old
+	}
+}
+
+func sawLog(logs []string, needle string) bool {
+	for _, line := range logs {
+		if strings.Contains(line, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }

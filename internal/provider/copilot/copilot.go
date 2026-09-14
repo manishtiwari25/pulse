@@ -46,6 +46,8 @@ var (
 	oauthBase  = "https://github.com"
 	apiBase    = "https://api.githubcopilot.com"
 
+	chatRetryBackoffs = []time.Duration{time.Second, 3 * time.Second, 9 * time.Second, 27 * time.Second}
+
 	tokenPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`gh[opusr]_[A-Za-z0-9]{20,}`),
 		regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
@@ -360,11 +362,18 @@ func (p *copilot) Chat(ctx context.Context, req provider.Request) (provider.Resp
 		return provider.Response{}, err
 	}
 	refreshedFor401 := false
-	backoffs := []time.Duration{time.Second, 3 * time.Second, 9 * time.Second}
-	for attempt := 0; attempt < len(backoffs); attempt++ {
+	for attempt := 0; ; attempt++ {
 		token, base, err := p.sessionToken(ctx, src.token, false)
 		if err != nil {
-			return provider.Response{}, err
+			if errors.Is(err, provider.ErrNotLoggedIn) || !isRetryable(err) || attempt == len(chatRetryBackoffs) {
+				return provider.Response{}, err
+			}
+			wait := retryDelay(err, chatRetryBackoffs[attempt])
+			p.logRedacted("copilot session token retry in %s after %s", wait, err.Error())
+			if !sleep(ctx, wait) {
+				return provider.Response{}, ctx.Err()
+			}
+			continue
 		}
 		resp, err := p.chatOnce(ctx, base, token, body, req)
 		if err == nil {
@@ -380,16 +389,15 @@ func (p *copilot) Chat(ctx context.Context, req provider.Request) (provider.Resp
 			attempt--
 			continue
 		}
-		if !isRetryable(err) || attempt == len(backoffs)-1 {
+		if !isRetryable(err) || attempt == len(chatRetryBackoffs) {
 			return provider.Response{}, err
 		}
-		wait := retryDelay(err, backoffs[attempt])
+		wait := retryDelay(err, chatRetryBackoffs[attempt])
 		p.logRedacted("copilot chat retry in %s after %s", wait, err.Error())
 		if !sleep(ctx, wait) {
 			return provider.Response{}, ctx.Err()
 		}
 	}
-	return provider.Response{}, providerError(0, "retry_exhausted", "Copilot chat retry loop exhausted", true)
 }
 
 func (p *copilot) Models(ctx context.Context) ([]provider.Model, error) {
