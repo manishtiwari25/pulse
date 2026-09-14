@@ -13,6 +13,9 @@ package store
 // when the request's hours run out. detail is provider JSON (tags, ids);
 // never a credential.
 //
+// events_action_subject and events_subject_seq (2026-09-14) index the append-only events table the
+// schema-3 DDL created bare; every reader of a job's or executor's history goes through them.
+//
 // retired_vms (ADR-034) remembers a VM the daemon stopped because its
 // executor's login was refused: where it is, when it was stopped and when the
 // daemon may delete it (delete_after); deleted_at closes the row, note says
@@ -53,6 +56,12 @@ var RunnerDDL = []string{
   note TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (executor)
 )`,
+	// The daemon reads events by (action, subject) for every failed job it tends - recovery decisions,
+	// lesson counts, requeue counts, follow-ups - and by subject alone for "did anything come later".
+	// Without these the table is scanned once per question; with a week of failures and a 200 MB store
+	// one loop ran for hours in pread (see the daemon-stall dump of 2026-09-14).
+	`CREATE INDEX IF NOT EXISTS events_action_subject ON events (action, subject, seq)`,
+	`CREATE INDEX IF NOT EXISTS events_subject_seq ON events (subject, seq)`,
 }
 
 // RunnerColumns are the columns the runner work added to schema-3 tables after

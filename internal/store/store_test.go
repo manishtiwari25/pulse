@@ -998,3 +998,57 @@ func TestOnEventPublishesAfterCommit(t *testing.T) {
 		t.Fatalf("rolled back event persisted: n=%d err=%v", n, err)
 	}
 }
+
+// The events table the schema-3 DDL created bare gets its two indexes from RunnerDDL: a store that lacks
+// one is completed at open, and the daemon's per-job question is a search, not a scan.
+func TestEventsIndexesArriveAtOpenAndServeJobHistoryQueries(t *testing.T) {
+	t.Setenv("PULSE_JOB", "")
+	home := t.TempDir()
+	s := openTemp(t, Options{Home: home, Create: true})
+	indexExists := func(st *Store, name string) bool {
+		var n int
+		if err := st.DB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", name).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+	for _, name := range []string{"events_action_subject", "events_subject_seq"} {
+		if !indexExists(s, name) {
+			t.Fatalf("%s missing after create", name)
+		}
+	}
+	if _, err := s.DB.Exec("DROP INDEX events_action_subject"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	again := openTemp(t, Options{Home: home})
+	if !indexExists(again, "events_action_subject") {
+		t.Fatal("dropped events index not recreated at open")
+	}
+	plan := func(query string) string {
+		rows, err := again.DB.Query("EXPLAIN QUERY PLAN " + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, detail)
+		}
+		return strings.Join(out, "\n")
+	}
+	got := plan(`SELECT e.detail FROM events e WHERE e.action = 'job.recover' AND e.subject = 'job-1' AND e.at >= '2026'
+		AND NOT EXISTS (SELECT 1 FROM events later WHERE later.subject = e.subject AND later.seq > e.seq AND later.action IN ('job.lease', 'job.failed'))
+		ORDER BY e.seq DESC LIMIT 1`)
+	if !strings.Contains(got, "USING INDEX events_action_subject") || strings.Contains(got, "SCAN e") {
+		t.Fatalf("recovery decision plan:\n%s", got)
+	}
+	if got := plan("SELECT detail FROM events WHERE action = 'executor.login' AND subject = 'local' ORDER BY seq DESC LIMIT 1"); !strings.Contains(got, "USING INDEX events_action_subject") {
+		t.Fatalf("executor history plan:\n%s", got)
+	}
+}
