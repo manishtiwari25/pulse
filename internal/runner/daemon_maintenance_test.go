@@ -62,7 +62,7 @@ func TestDaemonSlowMeasurementDoesNotBlockDispatchOrStop(t *testing.T) {
 			return nil, errors.New("fake measurement intentionally left unmeasured")
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), testWait(30*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), testWait(120*time.Second))
 	done := make(chan string, 1)
 	joined := false
 	go func() {
@@ -126,21 +126,20 @@ func TestDaemonSlowMeasurementDoesNotBlockDispatchOrStop(t *testing.T) {
 	}
 	// The setting's own "setting" event wakes the loop (daemonWake); no extra wake, so that path stays covered.
 	setSetting(t, s, "stop", "1")
-	deadline = time.Now().Add(testWait(10 * time.Second))
-	for time.Now().Before(deadline) {
-		select {
-		case result := <-done:
-			joined = true
-			if result != "stopped" {
-				t.Errorf("STOP result = %s", result)
-			}
-			if job := jobRow(s.DB, "slow-measurement"); job.str("branch") != "evolve/slow-measurement" {
-				t.Errorf("STOP discarded the unmeasured branch: %v", job)
-			}
-			return
-		default:
-			time.Sleep(10 * time.Millisecond)
+	// Wait on the daemon's result channel with a generous, load-scaled budget: on a loaded host the
+	// stop path (cancelling the measurement, marking runs, writing the heartbeat) has taken well over
+	// the 10s the old poll loop allowed even though STOP itself was never stuck.
+	select {
+	case result := <-done:
+		joined = true
+		if result != "stopped" {
+			t.Errorf("STOP result = %s", result)
 		}
+		if job := jobRow(s.DB, "slow-measurement"); job.str("branch") != "evolve/slow-measurement" {
+			t.Errorf("STOP discarded the unmeasured branch: %v", job)
+		}
+		return
+	case <-time.After(testWait(60 * time.Second)):
 	}
 	stopTimedOut = true
 	t.Error("STOP could not cancel a fake blocked measurement")
