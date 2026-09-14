@@ -167,7 +167,7 @@ func (e *localExec) runWorker(ctx context.Context, cmd []string, env map[string]
 	}
 	out, err := runGroupObserved(ctx, cmd, e.cloneDir, workerEnv, nil, budget, e.observer(e.execution(env)))
 	if err != nil {
-		return out, fail(1, "worker command not found: %s (setting runner_cmd=%s)", cmd[0], e.s.Setting("runner_cmd", ""))
+		return out, fail(1, "worker command not found: %s (setting runner_cmd=%s): %v", cmd[0], e.s.Setting("runner_cmd", ""), err)
 	}
 	text := out.Stdout
 	e.lastOut = &text
