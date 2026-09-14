@@ -16,7 +16,7 @@ func TestHandsStepsVerbStreamsWholeLinesByOffset(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &hands{workdir: workdir, stdout: &bytes.Buffer{}}
+	h := newTestHands(t, workdir, nil, nil)
 	if err := h.steps("job-steps", "run-steps", "0"); err == nil {
 		t.Fatal("missing steps file returned nil")
 	} else {
@@ -115,7 +115,7 @@ func TestRemoteStepsMirrorFinishLine(t *testing.T) {
 func TestProbeAdvertisesSteps(t *testing.T) {
 	workdir := t.TempDir()
 	var out bytes.Buffer
-	h := &hands{workdir: workdir, stdout: &out}
+	h := newTestHands(t, workdir, &out, nil)
 	if err := h.probe(); err != nil {
 		t.Fatal(err)
 	}
