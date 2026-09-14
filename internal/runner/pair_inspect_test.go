@@ -134,6 +134,36 @@ func TestPairHandsBuildVersion(t *testing.T) {
 
 func TestPairInspectHandsScript(t *testing.T) {
 	testDeadline(t, 60*time.Second)
+	// One shared PATH dir: the hasher stubs read the expected path and hash
+	// from the environment so every subtest reuses the same two files. The
+	// first exec of a freshly written script costs ~0.3s on macOS
+	// (syspolicyd), which used to be paid once per subtest.
+	sharedBin := filepath.Join(t.TempDir(), "bin")
+	if err := os.Mkdir(sharedBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"head", "sed", "grep", "base64", "tr"} {
+		tool, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(tool, filepath.Join(sharedBin, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hasherBin := filepath.Join(sharedBin, "hasher")
+	failBin := filepath.Join(sharedBin, "fail")
+	for dir, hasher := range map[string]string{
+		hasherBin: "#!/bin/sh\n[ \"$1\" = \"$PAIR_TEST_PATH\" ] || exit 2\nprintf '%s  %s\\n' \"$PAIR_TEST_HASH\" \"$1\"\n",
+		failBin:   "#!/bin/sh\necho 'hash read failed' >&2\nexit 1\n",
+	} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "sha256sum"), []byte(hasher), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	buildInfo := "mod\t" + pairHandsModule + "\t(devel)\t\n" +
 		"build\t-ldflags=\"-X " + pairHandsModule + "/internal/cli.version=v3.2.1\"\n" +
 		"build\tvcs.revision=" + strings.Repeat("ab", 20) + "\n" +
@@ -171,35 +201,23 @@ func TestPairInspectHandsScript(t *testing.T) {
 					}
 				}
 			}
-			bin := filepath.Join(dir, "bin")
-			if err := os.Mkdir(bin, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			for _, name := range []string{"head", "sed", "grep", "base64", "tr"} {
-				tool, err := exec.LookPath(name)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(tool, filepath.Join(bin, name)); err != nil {
-					t.Fatal(err)
-				}
-			}
 			hash := sha256Bytes([]byte(content))
-			if !tc.noHash {
-				hasher := "#!/bin/sh\n[ \"$1\" = " + shellQuote(installedPath) + " ] || exit 2\nprintf '%s  %s\\n' " + shellQuote(hash) + " \"$1\"\n"
-				if tc.hashFails {
-					hasher = "#!/bin/sh\necho 'hash read failed' >&2\nexit 1\n"
-				}
-				if err := os.WriteFile(filepath.Join(bin, "sha256sum"), []byte(hasher), 0o755); err != nil {
-					t.Fatal(err)
-				}
+			searchPath := sharedBin
+			switch {
+			case tc.noHash:
+			case tc.hashFails:
+				searchPath = failBin + string(os.PathListSeparator) + sharedBin
+			default:
+				searchPath = hasherBin + string(os.PathListSeparator) + sharedBin
 			}
 			wantState, expectedHash := "differs", ""
 			if tc.same {
 				wantState, expectedHash = "present", hash
 			}
 			cmd := exec.Command("sh", "-s")
-			cmd.Env = envWith(os.Environ(), map[string]string{"PATH": bin})
+			cmd.Env = envWith(os.Environ(), map[string]string{
+				"PATH": searchPath, "PAIR_TEST_PATH": installedPath, "PAIR_TEST_HASH": hash,
+			})
 			cmd.Stdin = strings.NewReader("set -u\n" + pairInspectHandsScript(path, expectedHash))
 			out, err := cmd.CombinedOutput()
 			if tc.hashFails {
