@@ -198,6 +198,7 @@ func (a *Agent) Run(ctx context.Context) (Result, error) {
 	keepObservations := a.cfg.KeepObservations
 	lastPromptTokens := 0
 	lastPruneLevel := 0
+	budgetNoticeSent := false
 	emittedPruneNotes := map[string]bool{}
 	for {
 		if status := a.limitStatus(ctx); status != "" {
@@ -220,12 +221,28 @@ func (a *Agent) Run(ctx context.Context) (Result, error) {
 			}
 			lastPruneLevel = level
 		}
+		if !budgetNoticeSent {
+			if notice := a.budgetNotice(); notice != "" {
+				a.msgs = append(a.msgs, provider.Message{Role: provider.RoleUser, Content: notice})
+				a.emit(Step{Kind: StepNote, Content: notice})
+				budgetNoticeSent = true
+			}
+		}
 		req := provider.Request{Model: a.cfg.Model, Messages: cloneMessages(a.msgs), Tools: []provider.Tool{BashTool}, Initiator: initiator}
 		resp, err := a.p.Chat(runCtx, req)
 		a.result.Calls++
 		if err != nil {
 			if a.cfg.WallTime > 0 && time.Since(a.started) >= a.cfg.WallTime {
 				return a.finish(ExitTimeLimit, "", a.limitError(ExitTimeLimit)), nil
+			}
+			if runCtx.Err() != nil || ctx.Err() != nil {
+				a.setCancelReason(runCtx)
+				if a.cancelReason == "" {
+					a.setCancelReason(ctx)
+				}
+				msg := a.limitError(ExitCancelled)
+				a.emit(Step{Kind: StepError, Content: msg, Model: resp.Model})
+				return a.finish(ExitCancelled, "", msg), nil
 			}
 			status := ExitProviderError
 			if errors.Is(err, provider.ErrNotLoggedIn) {
@@ -348,6 +365,7 @@ Verify your work by running the project's own checks.
 On a command failure, inspect the cause, make a small safe correction and rerun the targeted check.
 If it still fails, try a different evidence-based approach or use the task's peer-help channel; do not repeat an unchanged failure or poll while waiting for help.
 Never bypass a policy refusal or approval boundary, weaken a check, or report unfinished work as completed.
+A budget notice arrives when few model calls remain; after it, stop exploring and finish with the targeted check, commit, and final SUMMARY report.
 An unfinished task is reported as SUMMARY: blocked: <cause and attempted fixes> or SUMMARY: failed: <cause and attempted fixes>.
 When done, or when you cannot continue, reply with no command and a plain-text final report.
 The report must include a SUMMARY: line and any FINDING:, SUGGESTION:, QUESTION:, or VOTE: lines the task asked for.
@@ -481,9 +499,7 @@ func (a *Agent) limitStatus(ctx context.Context) string {
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		if errors.Is(context.Cause(ctx), ErrOwnerCancelled) {
-			a.cancelReason = ErrOwnerCancelled.Error()
-		}
+		a.setCancelReason(ctx)
 		return ExitCancelled
 	}
 	if a.result.Calls >= a.cfg.MaxSteps {
@@ -496,6 +512,31 @@ func (a *Agent) limitStatus(ctx context.Context) string {
 		return ExitCostLimit
 	}
 	return ""
+}
+
+func (a *Agent) budgetNotice() string {
+	if a.cfg.MaxSteps < 10 {
+		return ""
+	}
+	reserve := min(5, a.cfg.MaxSteps/10)
+	remaining := a.cfg.MaxSteps - a.result.Calls
+	if remaining != reserve {
+		return ""
+	}
+	return fmt.Sprintf("Budget notice: %d model calls remain of %d. Stop exploring. If you changed files, run the targeted check and commit finished work now, then reply with no command and your final report starting with SUMMARY: (use SUMMARY: blocked: or SUMMARY: failed: if unfinished). Do not start new work.", remaining, a.cfg.MaxSteps)
+}
+
+func (a *Agent) setCancelReason(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	if errors.Is(context.Cause(ctx), ErrOwnerCancelled) {
+		a.cancelReason = ErrOwnerCancelled.Error()
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		a.cancelReason = "interrupted: " + err.Error()
+	}
 }
 
 func (a *Agent) limitError(status string) string {

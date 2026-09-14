@@ -510,7 +510,11 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 				status = "failed"
 				summary = "cancelled by the owner"
 				if parsed.Summary != "" {
-					summary = "cancelled by the owner: " + parsed.Summary
+					if plainCancelSummary(parsed.Summary) && !ownerCancelled.Load() && workerReported != "cancelled" {
+						summary = parsed.Summary
+					} else {
+						summary = "cancelled by the owner: " + parsed.Summary
+					}
 				}
 			case code != 0 && !parsed.reported() && workerReported == "" && commits == 0 && (elapsed < launchSeconds*time.Second || (code == 4 && loginFault(out.Stderr+"\n"+out.Stdout))):
 				// The harness died before any work: no report line, no commit, seconds in.

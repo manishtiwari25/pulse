@@ -377,6 +377,11 @@ func (r report) incomplete() bool {
 	return found && (strings.EqualFold(strings.TrimSpace(prefix), "blocked") || strings.EqualFold(strings.TrimSpace(prefix), "failed"))
 }
 
+func plainCancelSummary(summary string) bool {
+	text := strings.ToLower(summary)
+	return strings.Contains(text, "interrupted:") || strings.Contains(text, "context canceled")
+}
+
 func parseResultText(text *string) report {
 	var out report
 	if text == nil {

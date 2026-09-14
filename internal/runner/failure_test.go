@@ -19,6 +19,8 @@ func TestClassifyFailure(t *testing.T) {
 		{"verify timed out", "2 commit(s) but verify timed out; nothing landed", "failed", "", false, failureTransient},
 		{"landing conflict", "not landed after 2 requeues: pulse/w/job-1 conflicts with main; earlier attempt kept at /p.patch", "", "", false, failureTransient},
 		{"api hiccup in summary", "worker exited 1", "failed", "worker exited 1: 429 Too Many Requests", false, failureTransient},
+		{"provider error network", "worker exited 3: harness stopped: provider_error after 4 model calls and 0 commands; error: Post \"https://api.example.test\": dial tcp: lookup api.example.test: no such host", "failed", "", false, failureTransient},
+		{"context canceled", "worker exited 5: harness stopped: cancelled after 2 model calls and 0 commands; error: interrupted: context canceled", "failed", "", false, failureTransient},
 		{"worker exited", "worker exited 1", "failed", "worker exited 1", false, failureDeterministic},
 		{"worker reported failure", "the worker reported failure", "failed", "", false, failureDeterministic},
 		{"no report", "worker wrote no report (no `pulse job finish`, no SUMMARY line); nothing to land", "failed", "", false, failureDeterministic},

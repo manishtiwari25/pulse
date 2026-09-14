@@ -37,6 +37,68 @@ func (p *fakeProvider) Chat(ctx context.Context, req provider.Request) (provider
 func (p *fakeProvider) Models(context.Context) ([]provider.Model, error) { return nil, nil }
 func (p *fakeProvider) Status(context.Context) (provider.Login, error)   { return provider.Login{}, nil }
 
+type budgetAwareProvider struct {
+	requests []provider.Request
+}
+
+func (p *budgetAwareProvider) Name() string  { return "budget-aware" }
+func (p *budgetAwareProvider) Label() string { return "Budget Aware" }
+func (p *budgetAwareProvider) Chat(ctx context.Context, req provider.Request) (provider.Response, error) {
+	_ = ctx
+	p.requests = append(p.requests, cloneRequestForTest(req))
+	if requestHasBudgetNotice(req) {
+		return provider.Response{Message: provider.Message{Content: "SUMMARY: done after notice"}}, nil
+	}
+	args, _ := json.Marshal(struct {
+		Command string `json:"command"`
+	}{Command: "true"})
+	return provider.Response{Message: provider.Message{ToolCalls: []provider.ToolCall{{ID: "call", Name: "bash", Arguments: string(args)}}}}, nil
+}
+func (p *budgetAwareProvider) Models(context.Context) ([]provider.Model, error) {
+	return nil, nil
+}
+func (p *budgetAwareProvider) Status(context.Context) (provider.Login, error) {
+	return provider.Login{}, nil
+}
+
+func requestHasBudgetNotice(req provider.Request) bool {
+	for _, msg := range req.Messages {
+		if msg.Role == provider.RoleUser && strings.HasPrefix(msg.Content, "Budget notice:") {
+			return true
+		}
+	}
+	return false
+}
+
+type blockingProvider struct {
+	started  chan struct{}
+	requests []provider.Request
+}
+
+func (p *blockingProvider) Name() string  { return "blocking" }
+func (p *blockingProvider) Label() string { return "Blocking" }
+func (p *blockingProvider) Chat(ctx context.Context, req provider.Request) (provider.Response, error) {
+	p.requests = append(p.requests, cloneRequestForTest(req))
+	if p.started != nil {
+		close(p.started)
+		p.started = nil
+	}
+	<-ctx.Done()
+	return provider.Response{}, ctx.Err()
+}
+func (p *blockingProvider) Models(context.Context) ([]provider.Model, error) {
+	return nil, nil
+}
+func (p *blockingProvider) Status(context.Context) (provider.Login, error) {
+	return provider.Login{}, nil
+}
+
+func cloneRequestForTest(req provider.Request) provider.Request {
+	req.Messages = cloneMessages(req.Messages)
+	req.Tools = append([]provider.Tool(nil), req.Tools...)
+	return req
+}
+
 type fakeEnv struct {
 	observations  []Observation
 	commands      []string
@@ -222,6 +284,65 @@ func TestCostLimitStopsRun(t *testing.T) {
 	}
 }
 
+func TestBudgetNoticeAppearsOnceAndCanSubmit(t *testing.T) {
+	p := &budgetAwareProvider{}
+	cfg := baseConfig()
+	cfg.MaxSteps = 20
+	var notes []Step
+	h := New(p, &fakeEnv{defaultOutput: "ok\n"}, cfg, SinkFunc(func(s Step) {
+		if s.Kind == StepNote && strings.HasPrefix(s.Content, "Budget notice:") {
+			notes = append(notes, s)
+		}
+	}))
+	got, err := h.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitStatus != ExitSubmitted || got.Calls != 19 || !strings.Contains(got.Submission, "SUMMARY: done after notice") {
+		t.Fatalf("unexpected result: %+v", got)
+	}
+	if len(notes) != 1 {
+		t.Fatalf("budget notes = %d, want 1", len(notes))
+	}
+	noticeReq := cfg.MaxSteps - min(5, cfg.MaxSteps/10)
+	if len(p.requests) != got.Calls || !requestHasBudgetNotice(p.requests[noticeReq]) {
+		t.Fatalf("notice missing from request %d of %d", noticeReq, len(p.requests))
+	}
+	for i, req := range p.requests {
+		count := 0
+		for _, msg := range req.Messages {
+			if msg.Role == provider.RoleUser && strings.HasPrefix(msg.Content, "Budget notice:") {
+				count++
+			}
+		}
+		if i < noticeReq && count != 0 {
+			t.Fatalf("request %d has early budget notice", i)
+		}
+		if i >= noticeReq && count != 1 {
+			t.Fatalf("request %d budget notices = %d, want 1", i, count)
+		}
+	}
+}
+
+func TestBudgetNoticeNotSentBelowTenSteps(t *testing.T) {
+	p := providerfake.New(providerfake.Script{Replies: []providerfake.Reply{{Command: "true"}}, Loop: true})
+	cfg := baseConfig()
+	cfg.MaxSteps = 9
+	h := New(p, &fakeEnv{defaultOutput: "ok\n"}, cfg)
+	got, err := h.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitStatus != ExitStepLimit || got.Calls != 9 {
+		t.Fatalf("unexpected result: %+v", got)
+	}
+	for _, req := range p.Requests() {
+		if requestHasBudgetNotice(req) {
+			t.Fatal("budget notice was sent below 10 max steps")
+		}
+	}
+}
+
 func TestLongRunStaysUnderWindow(t *testing.T) {
 	var replies []providerfake.Reply
 	for i := 0; i < 80; i++ {
@@ -381,6 +502,42 @@ func TestCancellationReportsOwnerReason(t *testing.T) {
 	}
 	if got.ExitStatus != ExitCancelled || got.Error != "cancelled by the owner" {
 		t.Fatalf("cancel cause result: %+v", got)
+	}
+}
+
+func TestProviderCallCancellationReportsCancelReason(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		want  string
+	}{
+		{"plain", context.Canceled, "interrupted: context canceled"},
+		{"owner", ErrOwnerCancelled, "cancelled by the owner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &blockingProvider{started: make(chan struct{})}
+			ctx, cancel := context.WithCancelCause(context.Background())
+			done := make(chan Result, 1)
+			errs := make(chan error, 1)
+			go func() {
+				got, err := New(p, &fakeEnv{}, baseConfig()).Run(ctx)
+				done <- got
+				errs <- err
+			}()
+			select {
+			case <-p.started:
+			case <-time.After(time.Second):
+				t.Fatal("provider call did not start")
+			}
+			cancel(tc.cause)
+			got := <-done
+			if err := <-errs; err != nil {
+				t.Fatal(err)
+			}
+			if got.ExitStatus != ExitCancelled || got.Error != tc.want {
+				t.Fatalf("cancel result = %+v, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

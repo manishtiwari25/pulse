@@ -74,12 +74,15 @@ var (
 		"moved while",               //
 		"lease generation",          // a stale lease
 		"no response was returned",  // the harness's own retry hint
+		"provider_error",            // the provider path, not the worker's code
+		"interrupted",               // SIGTERM/SIGINT while a harness call was in flight
 		"rate limit",                // a model or API hiccup the worker reported
 		"too many requests",         //
 		"429",                       //
 		"temporarily unavailable",   //
 		"connection reset",          //
 		"connection refused",        //
+		"context canceled",          //
 		"context deadline exceeded", //
 		"i/o timeout",               //
 		"no such host",              //

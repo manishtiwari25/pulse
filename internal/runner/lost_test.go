@@ -189,6 +189,27 @@ func TestWorkerExitFiveIsOwnerCancelledFailure(t *testing.T) {
 	}
 }
 
+func TestFailureWorkerExitFiveKeepsPlainCancelSummary(t *testing.T) {
+	s := newStore(t)
+	newBareRepo(t, s)
+	join(t, s, "aurora")
+	job, _, err := addJob(s, "proj", "task", "t", "do it", 1, 0, "test", humanAgent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "harness stopped: cancelled after 1 model calls and 0 commands; error: interrupted: context canceled"
+	r, reason, err := workOnce(s, "aurora", "", "", testNow, runOpts{WorkerCmd: "sh -c 'echo \"SUMMARY: " + want + "\"; exit 5'"})
+	if err != nil || r == nil {
+		t.Fatalf("work: %v %q %v", r, reason, err)
+	}
+	if r.str("status") != "failed" || r.str("summary") != want || r.int("exit_code") != 5 {
+		t.Fatalf("run after plain cancel exit: %v", r)
+	}
+	if j := jobRow(s.DB, job.str("id")); j.str("status") != "failed" || j.str("result") != want {
+		t.Fatalf("job after plain cancel exit: %v", j)
+	}
+}
+
 func TestRunHarnessCancelWatcherCancelsContext(t *testing.T) {
 	s := newStore(t)
 	if err := s.BeginHarnessSession(store.HarnessSession{ID: "run-cancel"}); err != nil {
