@@ -132,7 +132,10 @@ func SignalUnlanded(s *store.Store, projectPath string, summary, body string) bo
 	}
 	head, ok := defaultBranchHead(projectPath, branch)
 	if !ok {
-		return false // not a repository or the default branch is missing locally: cannot judge landing
+		// Not a repository or the default branch is missing locally: cannot judge landing. Never fall
+		// back to HEAD (a pulse/* checkout would mask an unlanded Signal); the card stays plannable and
+		// the reason is logged once per resolve window so the owner can see why the hold is inert.
+		return false
 	}
 	for _, p := range paths {
 		if !landedPathExists(projectPath, head, p) {
@@ -178,6 +181,11 @@ func landedSymbolExists(projectPath, commit, p, sym string) bool {
 	return v
 }
 
+// Log receives one line each time SignalUnlanded cannot resolve a project's default branch as a commit
+// (at most once per landedHeadTTL per project and branch). The daemon wires it to its own output; nil
+// discards.
+var Log func(format string, a ...any)
+
 // landedCache memoises the git lookups behind SignalUnlanded so one tally pass over many cards
 // resolves the default branch once per (projectPath, branch) and runs `git cat-file -e` once per
 // (projectPath, commit, path) instead of once per card.
@@ -214,6 +222,9 @@ func defaultBranchHead(projectPath, branch string) (string, bool) {
 	landedCache.Lock()
 	landedCache.heads[key] = h
 	landedCache.Unlock()
+	if !h.ok && Log != nil {
+		Log("tally: %s: default branch %q does not resolve to a commit; unlanded-Signal hold is inert (not falling back to HEAD)", projectPath, branch)
+	}
 	return h.commit, h.ok
 }
 
