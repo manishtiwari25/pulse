@@ -318,6 +318,88 @@ func PlanGate(s *store.Store, projectPath string, sg Suggestion, post *Post) str
 		if SignalUnlanded(s, projectPath, summary, body) {
 			return GateUnlanded
 		}
+		if RunCheckIsNoOp(projectPath, summary, body) {
+			return GateNoOpCheck
+		}
 	}
 	return ""
+}
+
+// GateNoOpCheck is the phrase for a card whose `go test ... -run REGEX` check selects no test.
+const GateNoOpCheck = "check selects no test: its `go test -run` regex matches nothing in `go test -list`"
+
+// runCheckRe finds `go test [packages...] -run REGEX` in a card's text. A quoted regex may
+// contain spaces or the other quote character (`-run 'TestA|Test B'`); an unquoted one ends at
+// the next space.
+var runCheckRe = regexp.MustCompile(`go test\s+((?:[^\s'"` + "`" + `]+\s+)*?)-run[= ]+(?:'([^']*)'|"([^"]*)"|` + "`([^`]*)`" + `|([^'"` + "`" + `\s]+))`)
+
+// runCheckRegex returns the -run regex captured by a runCheckRe match, whichever quoting
+// alternative fired.
+func runCheckRegex(m []string) string {
+	for _, g := range m[2:] {
+		if g != "" {
+			return g
+		}
+	}
+	return ""
+}
+
+// listTests runs `go test <pkgs> -list <regex>` in dir and returns the names it printed. It is a
+// variable so tests can stub the toolchain.
+var listTests = func(dir string, pkgs []string, regex string) ([]string, error) {
+	args := append([]string{"test"}, pkgs...)
+	args = append(args, "-list", regex)
+	cmd := exec.Command("go", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "ok ") || strings.HasPrefix(line, "?") || strings.Contains(line, " ") {
+			continue
+		}
+		names = append(names, line)
+	}
+	return names, nil
+}
+
+// RunCheckIsNoOp reports whether the card names a `go test [pkgs] -run REGEX` check whose regex
+// selects no test in the project at projectPath. A toolchain or build failure is not a no-op:
+// the planner cannot tell, so it lets the card through.
+func RunCheckIsNoOp(projectPath, summary, body string) bool {
+	if projectPath == "" {
+		return false
+	}
+	for _, m := range runCheckRe.FindAllStringSubmatch(summary+"\n"+body, -1) {
+		re := runCheckRegex(m)
+		var pkgs []string
+		for _, tok := range strings.Fields(m[1]) {
+			if strings.HasPrefix(tok, "-") {
+				pkgs = nil
+				break
+			}
+			if strings.Contains(tok, "..") && !strings.HasSuffix(tok, "...") {
+				pkgs = nil
+				break
+			}
+			pkgs = append(pkgs, tok)
+		}
+		if len(pkgs) == 0 || re == "" {
+			continue
+		}
+		if _, err := regexp.Compile(re); err != nil {
+			return true
+		}
+		names, err := listTests(projectPath, pkgs, re)
+		if err != nil {
+			continue
+		}
+		if len(names) == 0 {
+			return true
+		}
+	}
+	return false
 }
