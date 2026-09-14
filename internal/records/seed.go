@@ -156,11 +156,7 @@ func importLoopRecord(s *store.Store, p *store.Project, slug, file, actor string
 	if rec == nil {
 		return SeedResult{}, errors.New(p.Slug + ": " + file + " was not indexed")
 	}
-	short, err := gitRead(p.Path, "rev-parse", "--short", summary.Ref)
-	if err != nil {
-		return SeedResult{}, err
-	}
-	return SeedResult{ID: rec.ID, Action: "imported", Source: file + "@" + strings.TrimSpace(short), Rev: rec.CurrentRev}, nil
+	return SeedResult{ID: rec.ID, Action: "imported", Source: file + "@" + summary.ShortRef, Rev: rec.CurrentRev}, nil
 }
 
 // copyLoopRecord writes the template's text as the project's record. The

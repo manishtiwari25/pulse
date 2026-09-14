@@ -37,6 +37,7 @@ type SkippedFile struct {
 type Summary struct {
 	Project  string               `json:"project"`
 	Ref      string               `json:"ref"`
+	ShortRef string               `json:"-"`
 	DryRun   bool                 `json:"dry_run"`
 	Kinds    map[string]KindCount `json:"kinds"`
 	Imported int                  `json:"imported"`
@@ -92,11 +93,12 @@ func ImportRepo(s *store.Store, repo, ref, project string, opts ImportOptions) (
 	if ref == "" {
 		ref = "HEAD"
 	}
-	commit, err := gitRead(repo, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	// One call yields the full and abbreviated ids; callers print the short one.
+	commit, err := gitRead(repo, "log", "-1", "--format=%H%n%h", "--end-of-options", ref+"^{commit}", "--")
 	if err != nil {
 		return summary, err
 	}
-	summary.Ref = strings.TrimSpace(commit)
+	summary.Ref, summary.ShortRef, _ = strings.Cut(strings.TrimSpace(commit), "\n")
 	p, err := resolveProject(s, project, repo)
 	if err != nil {
 		return summary, err
@@ -106,8 +108,27 @@ func ImportRepo(s *store.Store, repo, ref, project string, opts ImportOptions) (
 	if len(paths) == 0 {
 		paths = importPaths
 	}
-	args := append([]string{"ls-tree", "-r", "--name-only", "-z", summary.Ref, "--"}, paths...)
+	// The tree listing carries each blob's object id, so the files' contents
+	// come from one cat-file --batch call instead of one git show per file.
+	args := append([]string{"ls-tree", "-r", "-z", summary.Ref, "--"}, paths...)
 	tree, err := gitRead(repo, args...)
+	if err != nil {
+		return summary, err
+	}
+	files, oids := []string{}, map[string]string{}
+	for _, entry := range strings.Split(tree, "\x00") {
+		meta, file, found := strings.Cut(entry, "\t")
+		if !found {
+			continue
+		}
+		fields := strings.Fields(meta)
+		if len(fields) < 3 || fields[1] != "blob" {
+			continue
+		}
+		files = append(files, file)
+		oids[file] = fields[2]
+	}
+	blobs, err := gitCatBlobs(repo, oids)
 	if err != nil {
 		return summary, err
 	}
@@ -128,10 +149,7 @@ func ImportRepo(s *store.Store, repo, ref, project string, opts ImportOptions) (
 		}
 	}
 	items := []importItem{}
-	for _, file := range strings.Split(tree, "\x00") {
-		if file == "" {
-			continue
-		}
+	for _, file := range files {
 		kind, slug, reason := classifyPath(file)
 		if reason != "" {
 			summary.skip(file, kind, reason)
@@ -142,9 +160,9 @@ func ImportRepo(s *store.Store, repo, ref, project string, opts ImportOptions) (
 			summary.skip(file, kind, "origin path already imported as "+prev.ID)
 			continue
 		}
-		text, err := gitRead(repo, "show", summary.Ref+":"+file)
-		if err != nil {
-			return summary, err
+		text, ok := blobs[oids[file]]
+		if !ok {
+			return summary, inputError("Cannot read repository history", "git cat-file returned no object "+oids[file]+" for "+file, "git -C "+strconv.Quote(repo)+" fsck")
 		}
 		front, body, err := ParseFrontmatter(text)
 		if err != nil {
@@ -300,6 +318,57 @@ func classifyPath(file string) (kind, slug, reason string) {
 		}
 	}
 	return kind, slugify(slug), ""
+}
+
+// gitCatBlobs reads every object id in oids (values) through one
+// `git cat-file --batch` process and returns the contents keyed by id.
+func gitCatBlobs(repo string, oids map[string]string) (map[string]string, error) {
+	blobs := make(map[string]string, len(oids))
+	if len(oids) == 0 {
+		return blobs, nil
+	}
+	var input strings.Builder
+	for _, oid := range oids {
+		if _, seen := blobs[oid]; seen {
+			continue
+		}
+		blobs[oid] = ""
+		input.WriteString(oid + "\n")
+	}
+	cmd := exec.Command("git", "-C", repo, "cat-file", "--batch")
+	cmd.Stdin = strings.NewReader(input.String())
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, inputError("Cannot read repository history", "git is not installed", "git --version")
+		}
+		return nil, inputError("Cannot read repository history", strings.TrimSpace(stderr.String())+" ("+err.Error()+")", "git -C "+strconv.Quote(repo)+" status")
+	}
+	rest := string(output)
+	for rest != "" {
+		header, body, found := strings.Cut(rest, "\n")
+		if !found {
+			break
+		}
+		fields := strings.Fields(header)
+		if len(fields) == 2 && fields[1] == "missing" {
+			delete(blobs, fields[0])
+			rest = body
+			continue
+		}
+		if len(fields) != 3 {
+			return nil, inputError("Cannot read repository history", "unexpected git cat-file --batch header "+strconv.Quote(header), "git -C "+strconv.Quote(repo)+" fsck")
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil || size < 0 || size > len(body) {
+			return nil, inputError("Cannot read repository history", "unexpected git cat-file --batch header "+strconv.Quote(header), "git -C "+strconv.Quote(repo)+" fsck")
+		}
+		blobs[fields[0]] = body[:size]
+		rest = strings.TrimPrefix(body[size:], "\n")
+	}
+	return blobs, nil
 }
 
 func gitRead(repo string, args ...string) (string, error) {
