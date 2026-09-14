@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/manishtiwari25/pulse/internal/bus"
@@ -91,9 +92,47 @@ func openHome(t *testing.T, home string) *store.Store {
 	return s
 }
 
+// emptyStore is a freshly created, closed store built once per package;
+// newHome copies its file instead of paying store.Open's git rev-parse
+// checkout guard and schema DDL for every test.
+var (
+	emptyStoreOnce sync.Once
+	emptyStoreData []byte
+	emptyStoreErr  error
+)
+
+func emptyStoreBytes() ([]byte, error) {
+	emptyStoreOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "pulse-empty-store")
+		if err != nil {
+			emptyStoreErr = err
+			return
+		}
+		defer os.RemoveAll(dir)
+		s, err := store.Open(store.Options{Home: dir, Create: true, Now: testNow})
+		if err != nil {
+			emptyStoreErr = err
+			return
+		}
+		if err := s.Close(); err != nil {
+			emptyStoreErr = err
+			return
+		}
+		emptyStoreData, emptyStoreErr = os.ReadFile(filepath.Join(dir, store.StoreName))
+	})
+	return emptyStoreData, emptyStoreErr
+}
+
 func newHome(t *testing.T) (string, *store.Store) {
 	t.Helper()
 	home := t.TempDir()
+	data, err := emptyStoreBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, store.StoreName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return home, openHome(t, home)
 }
 
