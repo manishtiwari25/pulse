@@ -14,6 +14,10 @@ import (
 
 func TestVoteSummaryWarnings(t *testing.T) {
 	noTTY(t)
+	// One fixture and one seeded suggestion/amendment serve every case; each
+	// case only adds its own vote, so the assertions check row deltas.
+	_, s, _ := fixture(t)
+	suggestion, amendment, _ := seedPosts(t, s)
 	for _, command := range []string{"vote", "post"} {
 		for _, tc := range []struct {
 			name, summary, vote      string
@@ -35,8 +39,7 @@ func TestVoteSummaryWarnings(t *testing.T) {
 			{name: "JSON amendment bare", summary: "down", vote: "down", amendment: true, json: true},
 		} {
 			t.Run(command+"/"+tc.name, func(t *testing.T) {
-				_, s, _ := fixture(t)
-				suggestion, amendment, _ := seedPosts(t, s)
+				votesBefore := countRows(t, s, "posts", "kind = 'vote'")
 				target := suggestion
 				body := "The explanation in the body is not the displayed reason."
 				if tc.amendment {
@@ -69,8 +72,8 @@ func TestVoteSummaryWarnings(t *testing.T) {
 					row.Summary != strings.Join(strings.Fields(tc.summary), " ") || row.Body != body || row.TextHash != target.TextHash {
 					t.Fatalf("warning changed stored vote: %+v", row)
 				}
-				if n := countRows(t, s, "posts", "kind = 'vote'"); n != 1 {
-					t.Fatalf("stored %d votes, want 1", n)
+				if n := countRows(t, s, "posts", "kind = 'vote'"); n != votesBefore+1 {
+					t.Fatalf("stored %d votes, want %d", n, votesBefore+1)
 				}
 				wantOut := row.ID + "\n"
 				if tc.json {
@@ -97,9 +100,9 @@ func TestVoteSummaryWarnings(t *testing.T) {
 
 func TestNonVoteSummaryWarnings(t *testing.T) {
 	noTTY(t)
+	_, s, _ := fixture(t)
 	for _, summary := range []string{"up", "down"} {
 		t.Run(summary, func(t *testing.T) {
-			_, s, _ := fixture(t)
 			var diagnostics bytes.Buffer
 			out, err := runCmd(t, s, &cli.Context{Agent: "bob", Project: "demo", Err: &diagnostics},
 				"post", "finding", "--area", "runner", "--thread", "status", "--summary", summary)
@@ -115,10 +118,10 @@ func TestNonVoteSummaryWarnings(t *testing.T) {
 
 func TestRejectedVoteSummaryDoesNotWarn(t *testing.T) {
 	noTTY(t)
+	_, s, _ := fixture(t)
+	target, _, _ := seedPosts(t, s)
 	for _, command := range []string{"vote", "post"} {
 		t.Run(command, func(t *testing.T) {
-			_, s, _ := fixture(t)
-			target, _, _ := seedPosts(t, s)
 			args := []string{"vote", target.ID, "up"}
 			if command == "post" {
 				args = []string{"post", "vote", "--area", target.Area, "--thread", target.Thread, "--on", target.ID, "--vote", "up"}
