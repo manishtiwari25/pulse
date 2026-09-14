@@ -61,7 +61,7 @@ func suggestionIdlePart(s *store.Store, slug, now string) string {
 				netNonPositive++
 			case gate == tally.GateOwner:
 				owner++
-			case gate == tally.GateNoEvidence || gate == tally.GateOwnerPaths || gate == tally.GateUnlanded:
+			case gate == tally.GateNoEvidence || gate == tally.GateOwnerPaths || gate == tally.GateUnlanded || gate == tally.GateNoOpCheck:
 				noEvidence++
 			default:
 				plannable++

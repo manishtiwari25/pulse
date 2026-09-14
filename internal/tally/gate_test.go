@@ -3,6 +3,7 @@ package tally
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,4 +63,85 @@ func TestPlanGateOutcomes(t *testing.T) {
 			t.Fatalf("PlanGate(%s) = %q, want %q (suggestion %+v)", id, got, want, suggestions[id])
 		}
 	}
+}
+
+func TestRunCheckIsNoOp(t *testing.T) {
+	orig := listTests
+	t.Cleanup(func() { listTests = orig })
+	var gotPkgs []string
+	var gotRegex string
+	listTests = func(dir string, pkgs []string, regex string) ([]string, error) {
+		gotPkgs, gotRegex = pkgs, regex
+		if strings.HasPrefix(regex, "TestMissing") {
+			return nil, nil
+		}
+		if regex == "TestBroken" {
+			return nil, os.ErrNotExist
+		}
+		return []string{"TestCompletionLanding"}, nil
+	}
+	cases := map[string]struct {
+		text      string
+		want      bool
+		wantRegex string
+	}{
+		"matches":            {"check: go test ./internal/runner -run TestCompletionLanding.", false, "TestCompletionLanding."},
+		"quoted":             {"check: go test ./internal/runner -run 'TestCompletion.*'", false, "TestCompletion.*"},
+		"quoted alternation": {"check: go test ./internal/runner -run 'TestMissing|Test B' -count=1", true, "TestMissing|Test B"},
+		"double quoted":      {"check: go test ./internal/runner -run \"TestMissing|Test's\"", true, "TestMissing|Test's"},
+		"backquoted":         {"check: go test ./internal/runner -run `TestMissing|Test B`", true, "TestMissing|Test B"},
+		"no-op":              {"check: go test ./internal/runner -run TestMissing", true, "TestMissing"},
+		"equals":             {"check: go test ./internal/runner -run=TestMissing -count=1", true, "TestMissing"},
+		"toolchain err":      {"check: go test ./internal/runner -run TestBroken", false, "TestBroken"},
+		"bad regex":          {"check: go test ./internal/runner -run 'Test(' ", true, ""},
+		"no -run":            {"check: go test ./internal/runner", false, ""},
+		"no pkgs":            {"check: go test -run TestMissing", false, ""},
+	}
+	for name, tc := range cases {
+		gotPkgs, gotRegex = nil, ""
+		if got := RunCheckIsNoOp("/repo", tc.text, ""); got != tc.want {
+			t.Fatalf("%s: RunCheckIsNoOp = %v, want %v", name, got, tc.want)
+		}
+		if gotRegex != tc.wantRegex {
+			t.Fatalf("%s: listTests regex = %q, want %q", name, gotRegex, tc.wantRegex)
+		}
+		if tc.wantRegex != "" && (len(gotPkgs) != 1 || gotPkgs[0] != "./internal/runner") {
+			t.Fatalf("%s: listTests pkgs = %v", name, gotPkgs)
+		}
+	}
+	if RunCheckIsNoOp("", "check: go test ./x -run TestMissing", "") {
+		t.Fatal("empty project path must not gate")
+	}
+}
+
+func TestPlanGateHoldsNoOpRunCheck(t *testing.T) {
+	orig := listTests
+	t.Cleanup(func() { listTests = orig })
+	listTests = func(string, []string, string) ([]string, error) { return nil, nil }
+	f := newFixture(t, true)
+	id := addEligibleSuggestion(t, f, "6", "runner-noop/model", "worker-noop", "Worker no-op check", "check: go test ./internal/runner -run TestGone. Signal: README.md", "", []string{"up", "up"})
+	if _, err := f.st.DB.Exec("UPDATE agents SET kind = 'worker' WHERE name = 'runner-noop/model'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repo, "README.md"), []byte("# r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Compute(f.st, "fixture", "", Thresholds{Now: fixtureNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sg := range res.Suggestions {
+		if sg.ID != id {
+			continue
+		}
+		for i := range res.Posts {
+			if res.Posts[i].ID == id {
+				if got := PlanGate(f.st, res.Repo, sg, &res.Posts[i]); got != GateNoOpCheck {
+					t.Fatalf("PlanGate = %q, want %q", got, GateNoOpCheck)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("suggestion not found")
 }
