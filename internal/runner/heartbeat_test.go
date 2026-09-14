@@ -527,7 +527,7 @@ func TestHeartbeatHandsFailedLaunchAndTimeoutSnapshots(t *testing.T) {
 				t.Fatal(err)
 			}
 			var stdout, stderr bytes.Buffer
-			h := &hands{workdir: workdir, stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}
+			h := newTestHands(t, workdir, &stdout, &stderr)
 			env := map[string]string{"PULSE_AGENT": "quiet", "PULSE_SESSION": "run-quiet", "PULSE_GENERATION": "1", "PULSE_EXECUTOR": "hands"}
 			observer, err := h.heartbeatObserver("job-quiet", env)
 			if err != nil {
@@ -568,7 +568,7 @@ func TestHeartbeatHandsSupervisorSnapshotsAndSessionIsolation(t *testing.T) {
 	}
 	t.Setenv("PULSE_HANDS_ALLOW_ANY_WORKER", "1")
 	var stdout, stderr bytes.Buffer
-	h := &hands{workdir: workdir, stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}
+	h := newTestHands(t, workdir, &stdout, &stderr)
 	id := board.ExecutionIdentity{Agent: "quiet", Session: "run-quiet", RunID: "run-quiet", JobID: "job-quiet", Generation: 4, Executor: "hands"}
 	env := map[string]string{"PULSE_AGENT": id.Agent, "PULSE_SESSION": id.Session, "PULSE_GENERATION": "4", "PULSE_EXECUTOR": "hands"}
 	observer, err := h.heartbeatObserver(id.JobID, env)
@@ -587,7 +587,7 @@ func TestHeartbeatHandsSupervisorSnapshotsAndSessionIsolation(t *testing.T) {
 	heartbeatReceive(t, observed)
 	read := func(session string) (board.ExecutionHeartbeat, error) {
 		var out bytes.Buffer
-		reader := &hands{workdir: workdir, stdout: &out}
+		reader := newTestHands(t, workdir, &out, nil)
 		err := reader.heartbeat(id.JobID, session)
 		var beat board.ExecutionHeartbeat
 		if err == nil {

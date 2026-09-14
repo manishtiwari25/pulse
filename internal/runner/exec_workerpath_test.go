@@ -58,7 +58,7 @@ func TestSSHExecWorkerPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	h := &hands{stdout: &out, stderr: &out}
+	h := newTestHands(t, "", &out, &out)
 	rc := h.withTimeout(time.Minute, dir, []string{"/bin/sh", "-c", "printf %s \"$PATH\""}, map[string]string{"PULSE_CLI": cli})
 	if rc != 0 {
 		t.Fatalf("rc=%d out=%q", rc, out.String())

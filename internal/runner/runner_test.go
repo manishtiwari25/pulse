@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -598,6 +599,23 @@ func fakeHandsPath(t *testing.T, extra ...string) string {
 	}
 	dirs := append(append([]string{}, extra...), fakes, os.Getenv("PATH"))
 	return "PATH=" + strings.Join(dirs, string(os.PathListSeparator))
+}
+
+// newTestHands builds an in-process hands for unit tests. It sets PULSE_TEST_HANDS=1 and points PATH
+// at the fakeHandsPath shims for the test's lifetime, so any verb the test reaches (probe included)
+// resolves the copilot shim instead of the real CLI; every test that builds a `hands` goes through
+// here so the guard is the default rather than a per-test chore. Nil writers fall back to a buffer.
+func newTestHands(t *testing.T, workdir string, stdout, stderr io.Writer) *hands {
+	t.Helper()
+	t.Setenv("PULSE_TEST_HANDS", "1")
+	t.Setenv("PATH", strings.TrimPrefix(fakeHandsPath(t), "PATH="))
+	if stdout == nil {
+		stdout = &bytes.Buffer{}
+	}
+	if stderr == nil {
+		stderr = &bytes.Buffer{}
+	}
+	return &hands{workdir: workdir, home: t.TempDir(), stdin: strings.NewReader(""), stdout: stdout, stderr: stderr}
 }
 
 func TestHandsVerbsRoundTrip(t *testing.T) {
