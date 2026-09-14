@@ -50,6 +50,33 @@ func countEvents(t *testing.T, s *Store, action string) int {
 	return n
 }
 
+func writeWAL(t *testing.T, s *Store) int64 {
+	t.Helper()
+	if _, err := s.DB.Exec("PRAGMA wal_autocheckpoint = 0"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := strings.Repeat("x", 8192)
+	for i := 0; i < 1200; i++ {
+		if _, err := tx.Exec("INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'test', 'checkpoint.write', 'wal', ?)",
+			"2026-09-06T10:00:00Z", payload); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	size := walSize(s.Path)
+	if size == 0 {
+		t.Fatal("test did not create a WAL")
+	}
+	return size
+}
+
 func TestDDLMatchesCapturedSchema(t *testing.T) {
 	want, err := os.ReadFile("/tmp/pulse-parity/schema.sql")
 	if err != nil {
@@ -109,6 +136,36 @@ func TestCreateAndReopen(t *testing.T) {
 			t.Fatalf("EnsureRecords again: schema.records events = %d", n)
 		}
 		again.Close()
+	}
+}
+
+func TestOpenSetsJournalSizeLimit(t *testing.T) {
+	s := openTemp(t, Options{Create: true})
+	var got int64
+	if err := s.DB.QueryRow("PRAGMA journal_size_limit").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != journalSizeLimitBytes {
+		t.Fatalf("journal_size_limit = %d, want %d", got, journalSizeLimitBytes)
+	}
+}
+
+func TestCheckpointTruncatesWAL(t *testing.T) {
+	s := openTemp(t, Options{Create: true})
+	before := writeWAL(t, s)
+	got, err := s.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Busy {
+		t.Fatalf("checkpoint reported busy readers: %+v", got)
+	}
+	if !got.Truncated {
+		t.Fatalf("checkpoint did not report truncation after %d byte WAL: %+v", before, got)
+	}
+	after := walSize(s.Path)
+	if after > 4096 {
+		t.Fatalf("WAL size after checkpoint = %d, want <= 4096 (before %d)", after, before)
 	}
 }
 

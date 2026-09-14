@@ -24,6 +24,31 @@ func sweepStore(t *testing.T) *store.Store {
 	return s
 }
 
+func writeSweepWAL(t *testing.T, s *store.Store) {
+	t.Helper()
+	if _, err := s.DB.Exec("PRAGMA wal_autocheckpoint = 0"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := strings.Repeat("x", 8192)
+	for i := 0; i < 1200; i++ {
+		if _, err := tx.Exec("INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'test', 'checkpoint.write', 'wal', ?)",
+			testNow, payload); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(s.Path + "-wal"); err != nil || st.Size() == 0 {
+		t.Fatalf("test did not create a WAL: %v", err)
+	}
+}
+
 func sweepJob(t *testing.T, s *store.Store, status, branch string) string {
 	t.Helper()
 	job, _, err := addJob(s, "proj", "task", "t-"+newID("x", testNow), "b", 1, 0, "test", humanAgent, false)
@@ -453,8 +478,14 @@ func TestTendSweepCadence(t *testing.T) {
 	s := sweepStore(t)
 	newBareRepo(t, s)
 	var last time.Time
-	if lines := tendSweep(s, projectRows(s.DB, false), testNow, "daemon", nil, &last); lines != nil || last.IsZero() {
+	if lines := tendSweep(s, projectRows(s.DB, false), testNow, "daemon", nil, &last); last.IsZero() {
 		t.Fatalf("first pass: %v %v", lines, last)
+	} else {
+		for _, line := range lines {
+			if !strings.HasPrefix(line, "checkpointed WAL:") {
+				t.Fatalf("first pass: %v %v", lines, last)
+			}
+		}
 	}
 	finished := sweepJob(t, s, "done", "")
 	mkdirFile(t, filepath.Join(s.Home, "work", finished, "f"), "x")
@@ -462,7 +493,17 @@ func TestTendSweepCadence(t *testing.T) {
 		t.Fatalf("second pass within the interval ran: %v", lines)
 	}
 	last = last.Add(-sweepEvery)
-	if lines := tendSweep(s, projectRows(s.DB, false), testNow, "daemon", nil, &last); len(lines) != 1 || !strings.HasPrefix(lines[0], "swept clone ") {
+	if lines := tendSweep(s, projectRows(s.DB, false), testNow, "daemon", nil, &last); !strings.Contains(strings.Join(lines, "\n"), "swept clone ") {
 		t.Fatalf("pass after the interval: %v", lines)
+	}
+}
+
+func TestTendSweepCheckpointsWAL(t *testing.T) {
+	s := sweepStore(t)
+	writeSweepWAL(t, s)
+	var last time.Time
+	lines := tendSweep(s, projectRows(s.DB, false), testNow, "daemon", nil, &last)
+	if !strings.Contains(strings.Join(lines, "\n"), "checkpointed WAL:") {
+		t.Fatalf("sweep did not log WAL checkpoint work: %v", lines)
 	}
 }

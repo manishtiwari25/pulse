@@ -7,6 +7,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -20,7 +21,8 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // SchemaVersion is the store schema this tool speaks (legacy/pulse.py SCHEMA_VERSION).
@@ -28,6 +30,8 @@ const SchemaVersion = 3
 
 // StoreName is the file name of the store inside PULSE_HOME.
 const StoreName = "pulse.sqlite"
+
+const journalSizeLimitBytes = 64 * 1024 * 1024
 
 // HumanAgent is the agents row the maintainer acts as.
 const HumanAgent = "human"
@@ -155,6 +159,7 @@ func dsn(path string, readOnly bool) string {
 		q.Set("mode", "ro")
 	} else {
 		q.Add("_pragma", "journal_mode(WAL)")
+		q.Add("_pragma", fmt.Sprintf("journal_size_limit(%d)", journalSizeLimitBytes))
 		// every db.Begin() is BEGIN IMMEDIATE: a writer takes the lock up front
 		// and waits on busy_timeout instead of failing with SQLITE_BUSY when it
 		// tries to upgrade a deferred read transaction (parallel CLI start-up)
@@ -437,6 +442,78 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.DB.Close()
+}
+
+// CheckpointResult is one WAL checkpoint attempt.
+type CheckpointResult struct {
+	Busy         bool
+	Log          int
+	Checkpointed int
+	Truncated    bool
+}
+
+// Checkpoint nudges the WAL without waiting long on readers: PASSIVE copies
+// what it can, and TRUNCATE runs only when no reader kept the log busy.
+func (s *Store) Checkpoint() (CheckpointResult, error) {
+	var out CheckpointResult
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		if sqliteBusy(err) {
+			out.Busy = true
+			return out, nil
+		}
+		return out, err
+	}
+	defer conn.Close()
+	before := walSize(s.Path)
+	busy, log, checkpointed, err := walCheckpoint(ctx, conn, "PASSIVE")
+	if err != nil {
+		if sqliteBusy(err) {
+			out.Busy = true
+			return out, nil
+		}
+		return out, err
+	}
+	out.Busy, out.Log, out.Checkpointed = busy != 0, log, checkpointed
+	if out.Busy {
+		return out, nil
+	}
+	busy, _, _, err = walCheckpoint(ctx, conn, "TRUNCATE")
+	if err != nil {
+		if sqliteBusy(err) {
+			out.Busy = true
+			return out, nil
+		}
+		return out, err
+	}
+	out.Busy = busy != 0
+	if !out.Busy {
+		out.Truncated = before > walSize(s.Path)
+	}
+	return out, nil
+}
+
+func walCheckpoint(ctx context.Context, conn *sql.Conn, mode string) (busy, log, checkpointed int, err error) {
+	err = conn.QueryRowContext(ctx, "PRAGMA wal_checkpoint("+mode+")").Scan(&busy, &log, &checkpointed)
+	return busy, log, checkpointed, err
+}
+
+func sqliteBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	return sqliteErr.Code()&0xff == sqlite3.SQLITE_BUSY
+}
+
+func walSize(path string) int64 {
+	st, err := os.Stat(path + "-wal")
+	if err != nil {
+		return 0
+	}
+	return st.Size()
 }
 
 // Now is the UTC clock as "2006-01-02T15:04:05Z"; Options.Now, then

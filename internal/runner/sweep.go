@@ -614,6 +614,18 @@ func tendSweep(s *store.Store, projects []row, now, actor string, inflight map[s
 	rep := sweep(s, projects, now, sweepOpts{Actor: actor, Inflight: inflight})
 	recordSweep(s, rep, now, actor)
 	lines := sweepLines(rep)
+	if checkpoint, err := s.Checkpoint(); err != nil {
+		lines = append(lines, "checkpoint WAL: "+errMessage(err))
+	} else if checkpoint.Checkpointed > 0 || checkpoint.Truncated {
+		line := fmt.Sprintf("checkpointed WAL: %d/%d frame(s)", checkpoint.Checkpointed, checkpoint.Log)
+		if checkpoint.Truncated {
+			line += ", truncated"
+		}
+		if checkpoint.Busy {
+			line += ", busy readers remain"
+		}
+		lines = append(lines, line)
+	}
 	olderThan := plusMinutes(now, -float64(settingInt(s, "minutes_per_job")*2+10))
 	if n, err := s.MarkLostHarnessSessions(olderThan); err == nil && n > 0 {
 		lines = append(lines, fmt.Sprintf("closed %d harness session(s) left running before %s", n, olderThan))
