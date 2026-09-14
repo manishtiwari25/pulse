@@ -34,7 +34,7 @@ func TestRecoveryResilienceFailedWriteIsAtomic(t *testing.T) {
 	} {
 		t.Run(string(tc.class)+"/"+tc.action, func(t *testing.T) {
 			s := newStore(t)
-			p, root := newRepo(t, s)
+			p, root := newBareRepo(t, s)
 			job := insertRecoverFailedJob(t, s, "job-write-failure", "improve", "", tc.result, plusMinutes(testNow, -30))
 			run(t, root, "git", "branch", job.str("branch"))
 			exec1(s.DB, fmt.Sprintf(`CREATE TRIGGER reject_recovery_write BEFORE INSERT ON events
@@ -81,7 +81,7 @@ func TestRecoveryResilienceDoesNotMutateStaleFailures(t *testing.T) {
 	for _, mode := range []string{"leased", "done", "cancelled", "owner result", "new failure", "active run", "owner question"} {
 		t.Run(mode, func(t *testing.T) {
 			s := newStore(t)
-			p, root := newRepo(t, s)
+			p, root := newBareRepo(t, s)
 			job := insertRecoverFailedJob(t, s, "job-stale", "improve", "", "runner error: connection reset", plusMinutes(testNow, -30))
 			run(t, root, "git", "branch", job.str("branch"))
 			f := classifyFailure(job.str("result"), "", "", false)
@@ -125,7 +125,7 @@ func TestRecoveryResilienceDoesNotMutateStaleFailures(t *testing.T) {
 
 func TestRecoveryResilienceBranchCleanupFailureRemainsRetryable(t *testing.T) {
 	s := newStore(t)
-	p, root := newRepo(t, s)
+	p, root := newBareRepo(t, s)
 	job := insertRecoverFailedJob(t, s, "job-checked-out", "improve", "", "runner error: connection reset", plusMinutes(testNow, -30))
 	run(t, root, "git", "checkout", "-q", "-b", job.str("branch"))
 	f := classifyFailure(job.str("result"), "", "", false)
@@ -150,7 +150,7 @@ func TestRecoveryResilienceCleanupOnlyDeletesThisJobsBranches(t *testing.T) {
 		for _, source := range []string{"job", "run"} {
 			t.Run(branch+"/"+source, func(t *testing.T) {
 				s := newStore(t)
-				p, root := newRepo(t, s)
+				p, root := newBareRepo(t, s)
 				job := insertRecoverFailedJob(t, s, "job-cleanup-scope", "improve", "", "runner error: connection reset", plusMinutes(testNow, -30))
 				canonical := job.str("branch")
 				run(t, root, "git", "branch", canonical)
@@ -187,7 +187,7 @@ func TestRecoveryResilienceCleanupOnlyDeletesThisJobsBranches(t *testing.T) {
 
 func TestRecoveryResilienceOneCorrectedJobWithoutSource(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	job := insertRecoverFailedJob(t, s, "job-no-source", "improve", "", "verify exit 1", plusMinutes(testNow, -30))
 	f := classifyFailure(job.str("result"), "", "", false)
 	var wg sync.WaitGroup
@@ -208,7 +208,7 @@ func TestRecoveryResilienceOneCorrectedJobWithoutSource(t *testing.T) {
 
 func TestRecoveryResilienceChainHasOneCorrectedCarrier(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	setRecoverSetting(t, s, "daemon.recover_limit", "5")
 	insertRecoverFailedJob(t, s, "job-chain-root", "improve", "", "verify exit 1", plusHours(testNow, -7))
 	for _, id := range []string{"job-chain-first", "job-chain-second"} {
@@ -230,7 +230,7 @@ func TestRecoveryResilienceChainHasOneCorrectedCarrier(t *testing.T) {
 
 func TestRecoveryResilienceWriteErrorsRespectTickCap(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	for i := range recoverPerTick + 1 {
 		insertRecoverFailedJob(t, s, fmt.Sprintf("job-write-cap-%d", i), "improve", "", "runner error", plusHours(testNow, -1))
 	}
@@ -249,7 +249,7 @@ func TestRecoveryResilienceHeldWriteErrorsRespectTickCap(t *testing.T) {
 	for _, mode := range []string{"cancelled", "superseded", "cap finding"} {
 		t.Run(mode, func(t *testing.T) {
 			s := newStore(t)
-			p, _ := newRepo(t, s)
+			p, _ := newBareRepo(t, s)
 			for i := range recoverPerTick + 1 {
 				id := fmt.Sprintf("job-held-write-%d", i)
 				result := "verify exit 1"
@@ -300,7 +300,7 @@ func TestRecoveryResilienceHeldWriteErrorsRespectTickCap(t *testing.T) {
 
 func TestRecoveryResilienceSameSecondFailureIsNotStranded(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	job := insertRecoverFailedJob(t, s, "job-fast-failure", "improve", "", "runner error", plusMinutes(testNow, -30))
 	recoverFailedJobs(s, p, testNow, "daemon")
 	leased, err := leaseJob(s, "w1", testNow, leaseOpts{JobID: job.str("id")})
@@ -326,7 +326,7 @@ func TestRecoveryResiliencePendingMatchesRecoveryGates(t *testing.T) {
 	for _, mode := range []string{"answer", "lead", "baseline", "experiment", "old", "cancelled", "lead followup", "superseded", "active run"} {
 		t.Run(mode, func(t *testing.T) {
 			s := newStore(t)
-			newRepo(t, s)
+			newBareRepo(t, s)
 			job := insertRecoverFailedJob(t, s, "job-not-pending", "task", "task:TASK-guard", "runner error: connection reset", plusHours(testNow, -1))
 			switch mode {
 			case "answer", "lead", "baseline", "experiment":
@@ -353,7 +353,7 @@ func TestRecoveryResiliencePendingMatchesRecoveryGates(t *testing.T) {
 
 func TestRecoveryResilienceCorrectedBriefIsBounded(t *testing.T) {
 	s := newStore(t)
-	_, root := newRepo(t, s)
+	_, root := newBareRepo(t, s)
 	logPath := filepath.Join(root, "recovery.log")
 	if err := os.WriteFile(logPath, []byte(strings.Repeat("prior debug output\n", 500)+"last diagnostic detail\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -440,7 +440,7 @@ func TestRecoveryResilienceMissingLogIsExplicit(t *testing.T) {
 
 func TestRecoveryResilienceCapFindingRetriesAfterWriteFailure(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	setRecoverSetting(t, s, "daemon.recover_limit", "1")
 	job := insertRecoverFailedJob(t, s, "job-cap-finding", "improve", "", "verify exit 1: parser still rejects empty input", plusMinutes(testNow, -30))
 	eventAt(s.DB, plusHours(testNow, -2), "daemon", board.JobRecoverAction, job.str("id"),
