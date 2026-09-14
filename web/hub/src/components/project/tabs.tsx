@@ -6,6 +6,7 @@ import { ActivityIcon, BellIcon, BotIcon, CheckCircle2Icon, FileDiffIcon, Folder
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart } from "@/components/pulse/charts";
 import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { DataTable } from "@/components/pulse/data-table";
@@ -108,6 +109,7 @@ export function OverviewTab({ slug }: { slug: string }) {
               <Kpi icon={CheckCircle2Icon} n={o.suggestions_eligible} label="eligible" sub={o.suggestions_plannable === undefined ? "suggestions past quorum" : num(o.suggestions_plannable) + " plannable"} tone={o.suggestions_eligible ? "accent" : "neutral"} href={hrefs.project(slug, "suggestions")} />
               <Kpi icon={VoteIcon} n={o.suggestions_needing_votes} label="need votes" sub={"quorum " + num(o.quorum)} tone={o.suggestions_needing_votes ? "warn" : "neutral"} href={hrefs.project(slug, "suggestions")} />
               <Kpi icon={FileDiffIcon} n={o.amendments_open} label="amendments" sub={num(o.amendments_passed) + " passed"} href={hrefs.project(slug, "amendments")} />
+              <CodeDeliveredKpi project={slug} />
               <Kpi icon={MessageSquareIcon} n={o.posts} label="posts" sub={num(o.posts_without_provenance) + " without provenance"} tone={o.posts_without_provenance ? "warn" : "neutral"} />
             </KpiGrid>
             {!o.board_present ? (

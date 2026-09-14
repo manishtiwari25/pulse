@@ -472,15 +472,27 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 	if !(onDefault && clean) {
 		return "deferred", "the checkout changed while the merge was verified; nothing landed, try again", nil
 	}
-	if ff := gitTimeout(root, 120*time.Second, "merge", "--ff-only", sha); !ff.ok() {
+	reflogAction := newID("pulse-code-delivery", s.Now())
+	if ff := gitTimeoutEnv(root, 120*time.Second, []string{"GIT_REFLOG_ACTION=" + reflogAction}, "merge", "--ff-only", sha); !ff.ok() {
 		return "deferred", fmt.Sprintf("%s moved while the merge was verified; nothing landed, try again (%s)", def, trunc(strings.TrimSpace(ff.Stderr), 200)), nil
 	}
-	commits := strings.TrimSpace(gitTimeout(root, 30*time.Second, "rev-list", "--count", before+".."+sha).Stdout)
-	if commits == "" {
-		commits = "?"
+	effectiveBefore, effectiveAfter := landingRefTransition(o.Ctx, root, "refs/heads/"+def, sha, reflogAction)
+	commits := "?"
+	if effectiveBefore != "" {
+		if count := gitTimeout(root, 30*time.Second, "rev-list", "--count", effectiveBefore+".."+effectiveAfter); count.ok() {
+			commits = strings.TrimSpace(count.Stdout)
+		}
+	}
+	evidence := landingCodeDeliveryEvidence(o.Ctx, root, effectiveBefore, effectiveAfter)
+	detail := map[string]any{
+		"sha": sha, "before": effectiveBefore, "commits": commits, "verify": verifyNote,
+		"code_delivery": evidence,
+	}
+	if work := landingWorkSnapshot(s, project, job, o); work.Job != nil || work.Worker != nil {
+		detail["work"] = work
 	}
 	if err := recordLanding(s, project, branch, actor, "land.landed", fmt.Sprintf(" | landed %s from %s", short(sha, 12), branch), o,
-		map[string]any{"sha": sha, "commits": commits, "verify": verifyNote}); err != nil {
+		detail); err != nil {
 		return "", "", err
 	}
 	gitTimeout(root, 30*time.Second, "branch", "-D", branch)

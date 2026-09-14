@@ -1,0 +1,155 @@
+{
+  "sparse_windows": [
+    {
+      "project": "old-site",
+      "before": 0,
+      "next_before": 224
+    }
+  ],
+  "records": [
+    {
+      "type": "delivery",
+      "event_seq": 230,
+      "project": "demo-app",
+      "at": "2026-09-07T08:40:00Z",
+      "delivery": {
+        "event_seq": 230,
+        "project": "demo-app",
+        "at": "2026-09-07T08:40:00Z",
+        "commit": "4f3a65b1122e99990d5a88007a6032719705a1cb",
+        "code_files": 2,
+        "files_changed": 3,
+        "code_paths": [
+          "src/checkout/price.ts",
+          "tests/checkout/price-cache.test.ts"
+        ],
+        "paths_truncated": false,
+        "evidence": "recorded",
+        "job": {
+          "id": "job-price-cache",
+          "title": "Cache the price lookup",
+          "kind": "improve",
+          "status": "done"
+        },
+        "tasks": [
+          {
+            "id": "TASK-002",
+            "title": "Fix the flaky checkout test"
+          }
+        ],
+        "worker": {
+          "name": "cinder",
+          "runner": "claude-code",
+          "model": "claude-fable-5.1"
+        },
+        "suggestion": {
+          "id": "20260901T141500Z-cinder",
+          "summary": "Cache the price lookup per request in src/checkout/price.ts",
+          "area": "product",
+          "thread": "product/checkout-latency",
+          "votes": {
+            "up": 3,
+            "down": 0,
+            "score": 3
+          }
+        }
+      }
+    },
+    {
+      "type": "docs_only",
+      "event_seq": 229,
+      "project": "demo-app",
+      "at": "2026-09-07T08:20:00Z",
+      "reason": "README and guide prose only; excluded from source-code delivery"
+    },
+    {
+      "type": "delivery",
+      "event_seq": 228,
+      "project": "demo-lib",
+      "at": "2026-09-07T07:55:00Z",
+      "delivery": {
+        "event_seq": 228,
+        "project": "demo-lib",
+        "at": "2026-09-07T07:55:00Z",
+        "commit": "7b994ae64b2fe5153eb42a961d877ef5a1093d3f",
+        "code_files": 1,
+        "files_changed": 2,
+        "code_paths": [
+          "pkg/client/v2/parser.go"
+        ],
+        "paths_truncated": false,
+        "evidence": "git",
+        "job": {
+          "id": "job-schema-index",
+          "title": "Stabilize the v2 parser handoff",
+          "kind": "task",
+          "status": "done"
+        },
+        "tasks": [
+          {
+            "id": "TASK-003",
+            "title": "Publish v2 of the client"
+          }
+        ],
+        "worker": {
+          "name": "delta",
+          "runner": "copilot-cli",
+          "model": "gpt-6-astra"
+        },
+        "suggestion": null
+      }
+    },
+    {
+      "type": "unavailable",
+      "event_seq": 227,
+      "project": "demo-app",
+      "at": "2026-09-06T17:10:00Z",
+      "reason": "Legacy landing predates trustworthy changed-file evidence"
+    },
+    {
+      "type": "duplicate",
+      "event_seq": 226,
+      "project": "demo-app",
+      "at": "2026-09-06T16:58:00Z",
+      "commit": "4f3a65b1122e99990d5a88007a6032719705a1cb",
+      "reason": "Repeated project+commit landing event deduped in the reported scope"
+    },
+    {
+      "type": "non_code",
+      "event_seq": 225,
+      "project": "demo-lib",
+      "at": "2026-09-06T16:10:00Z",
+      "reason": "Lockfile/config-only maintenance excluded from source-code delivery"
+    },
+    {
+      "type": "delivery",
+      "event_seq": 224,
+      "project": "demo-app",
+      "at": "2026-09-06T15:42:00Z",
+      "delivery": {
+        "event_seq": 224,
+        "project": "demo-app",
+        "at": "2026-09-06T15:42:00Z",
+        "commit": "943d7ab0facade0909090022bb33cc44dd55ee66",
+        "code_files": 2,
+        "files_changed": 2,
+        "code_paths": [
+          "src/auth/magic-link.ts",
+          "src/auth/magic-link.css"
+        ],
+        "paths_truncated": true,
+        "evidence": "recorded",
+        "job": null,
+        "tasks": [],
+        "worker": null,
+        "suggestion": {
+          "id": "20260901T180000Z-borealis",
+          "summary": "Add passwordless sign-in behind the existing flag",
+          "area": "auth",
+          "thread": "auth/passwordless-sign-in",
+          "votes": null
+        }
+      }
+    }
+  ]
+}

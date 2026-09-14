@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ActivityIcon, AlertTriangleIcon, ArrowUpRightIcon, BotIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
 import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { ComputeDecide } from "@/components/compute/compute";
@@ -182,6 +183,7 @@ export default function HubPage() {
           <Kpi icon={CpuIcon} n={pendingCompute.length} label="Compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
           <Kpi icon={BotIcon} n={o.totals.agents_active} label="Agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
           <Kpi icon={VoteIcon} n={o.totals.votes_open} label="In vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} href={hrefs.votes()} />
+          <CodeDeliveredKpi />
           <Kpi icon={MessageCircleQuestionIcon} n={o.totals.questions_open} label="Open questions" sub="across the boards" />
           <Kpi icon={MessageSquareIcon} n={o.totals.posts_24h} label="Posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
           <Kpi icon={daemon.tone === "ok" ? PowerIcon : ActivityIcon} n={daemon.label} label="Daemon" sub={runner.error ? "status unavailable · controls below" : r ? (r.runner?.allowed === false ? r.runner.reason : num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued · controls below") : "checking heartbeat"} tone={daemon.tone} href="#daemon-controls" />

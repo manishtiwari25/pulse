@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { rosterScenarios } from "./roster.mjs";
 import { taskDetailScenario, taskScenarios, taskWorkFocus } from "./tasks.mjs";
 import { createJobRepairMock } from "./job-repair.mjs";
+import { createCodeDeliveryMock } from "./code-deliveries.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "api");
 const port = Number(process.env.PULSE_HUB_PORT ?? 8787);
@@ -26,7 +27,7 @@ let agentReturnStarted = false;
 
 // ----- in-memory state for writes ----------------------------------------
 
-const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, goals: new Map(), jobRepairs: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessPrompt: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {}, serviceInstalled: false };
+const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, goals: new Map(), jobRepairs: null, codeDeliveries: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessPrompt: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {}, serviceInstalled: false };
 const privateGoalComponent = "(?:private|heldout|held-out|\\.ssh|\\.aws|\\.azure|\\.pulse)";
 const privateGoalPath = new RegExp("(?:^|[\\s\"'`(\\[<{=:,;])" +
   "(?:file:(?://[^/\\\\\\s\"'`<>]*)?)?" +
@@ -85,6 +86,7 @@ async function init() {
   // A registered checkout that vanished from disk: its path is not in TREE, so the
   // picker shows "missing on disk" and Restore is refused like the real hub does.
   state.projects.push({ slug: "demo-docs", name: "demo-docs", path: "/home/owner/src/demo-docs", remote: "", brain: false, status: "inactive", verify_cmd: "", default_branch: "main", added_at: "2026-08-12T09:00:00Z", added_by: "human", last_seen: "2026-08-30T09:00:00Z", present: false, ...gate({}) });
+  state.codeDeliveries = createCodeDeliveryMock(await loadJson("code-deliveries.json"), state.projects.map((p) => p.slug));
   state.jobRepairs = createJobRepairMock({ projects: state.projects, settings: state.settings, now, emit });
   for (const t of state.tasks) {
     try {
@@ -750,6 +752,10 @@ async function handle(req, res) {
   // GET - live state first, fixtures second
   if (segs[0] === "jobs" && segs[1] === "failed") {
     const result = state.jobRepairs.read(q);
+    return send(res, result.status, result.body);
+  }
+  if (segs[0] === "code-deliveries" && segs.length === 1) {
+    const result = state.codeDeliveries.read(q);
     return send(res, result.status, result.body);
   }
   if (segs[0] === "projects" && segs.length === 3 && segs[2] === "goal") {

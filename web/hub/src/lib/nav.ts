@@ -38,10 +38,11 @@ export const hrefs = {
   chat: (slug: string, task?: string) => "/project/" + qs({ slug, tab: "chat", task }),
   records: (f: { kind?: string; status?: string; project?: string } = {}) => "/records/" + qs(f),
   record: (id: string, project?: string) => "/records/" + qs({ id, project }),
+  codeDeliveries: (f: { project?: string } = {}) => "/code-deliveries/" + qs({ project: f.project }),
   compute: () => "/compute/",
   settings: (section?: string) => "/settings/" + (section ? "#" + section : ""),
   agents: () => "/agents/",
-  harness: (f: { id?: string; project?: string; status?: string } = {}) => "/harness/" + qs(f),
+  harness: (f: { id?: string; project?: string; status?: string; agent?: string } = {}) => "/harness/" + qs({ id: f.id, project: f.project, status: f.status, agent: f.agent }),
   votes: (f: { project?: string; status?: string; kind?: string } = {}) => "/votes/" + qs(f),
   tasks: (f: { project?: string; status?: string } = {}) => "/tasks/" + qs(f),
 };

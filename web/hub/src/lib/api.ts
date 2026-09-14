@@ -1189,6 +1189,89 @@ export interface TasksPayload {
   tasks: Task[];
 }
 
+export interface CodeDeliveryScope {
+  project: string | null;
+  limit: number;
+  scanned: number;
+  has_more: boolean;
+  next_before: number | null;
+}
+
+export interface CodeDeliverySummary {
+  code_deliveries: number;
+  code_files: number;
+  docs_only: number;
+  non_code: number;
+  unknown: number;
+  duplicates: number;
+}
+
+export interface CodeDeliveryJob {
+  id: string;
+  title: string;
+  kind: string;
+  status: string;
+}
+
+export interface CodeDeliveryTask {
+  id: string;
+  title: string;
+}
+
+export interface CodeDeliveryWorker {
+  name: string;
+  runner: string;
+  model: string;
+}
+
+export interface CodeDeliveryVotes {
+  up: number;
+  down: number;
+  score: number;
+}
+
+export interface CodeDeliverySuggestion {
+  id: string;
+  summary: string;
+  area: string;
+  thread: string;
+  votes: CodeDeliveryVotes | null;
+}
+
+export interface CodeDelivery {
+  event_seq: number;
+  project: string;
+  at: string;
+  commit: string;
+  code_files: number;
+  files_changed: number;
+  code_paths: string[];
+  paths_truncated: boolean;
+  evidence: "recorded" | "git";
+  job: CodeDeliveryJob | null;
+  tasks: CodeDeliveryTask[];
+  worker: CodeDeliveryWorker | null;
+  suggestion: CodeDeliverySuggestion | null;
+}
+
+export interface CodeDeliveryUnavailable {
+  event_seq: number;
+  project: string;
+  at: string;
+  reason: string;
+}
+
+export interface CodeDeliveriesPayload {
+  scope: CodeDeliveryScope;
+  summary: CodeDeliverySummary;
+  deliveries: CodeDelivery[];
+  unavailable: CodeDeliveryUnavailable[];
+}
+
+export function codeDeliveriesPath({ project, limit, before }: { project?: string | null; limit?: number; before?: number | null } = {}): string {
+  return "code-deliveries" + query({ project, limit, before });
+}
+
 export interface MessagesPayload {
   messages: Message[];
 }
