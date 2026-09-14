@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -115,6 +116,18 @@ func newRepo(t *testing.T, s *store.Store) (row, string) {
 		t.Fatal(err)
 	}
 	return p, p.str("path")
+}
+
+// newBareRepo is newRepo without the project's seeded records (ADR-029/030): registration only
+// inserts the project row, so fixtures that never read records or memories skip the ~0.8s of
+// seeding per call. Tests that consult seeded records must keep using newRepo. Safe because no
+// test in this package runs in parallel.
+func newBareRepo(t *testing.T, s *store.Store) (row, string) {
+	t.Helper()
+	previous := board.OnProjectCreated
+	board.OnProjectCreated = nil
+	defer func() { board.OnProjectCreated = previous }()
+	return newRepo(t, s)
 }
 
 var (

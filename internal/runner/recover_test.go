@@ -65,7 +65,7 @@ func recoverDetail(t *testing.T, s *store.Store, jobID string) map[string]any {
 
 func TestRecoverOffSwitchWritesNoteOnlyWithFailures(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	setRecoverSetting(t, s, "daemon.recover", "off")
 	insertRecoverFailedJob(t, s, "job-off", "task", "manual", "verify exit 1", plusMinutes(testNow, -30))
 	lines := recoverFailedJobs(s, p, testNow, "daemon")
@@ -88,7 +88,7 @@ func TestRecoverOffSwitchWritesNoteOnlyWithFailures(t *testing.T) {
 
 func TestRecoverTransientWaitsThenRequeuesAndDropsBranch(t *testing.T) {
 	s := newStore(t)
-	p, root := newRepo(t, s)
+	p, root := newBareRepo(t, s)
 	job := insertRecoverFailedJob(t, s, "job-transient", "task", "manual", "runner error: connection reset", plusMinutes(testNow, -2))
 	branch := "pulse/w1/" + job.str("id")
 	run(t, root, "git", "branch", branch)
@@ -121,7 +121,7 @@ func TestRecoverTransientWaitsThenRequeuesAndDropsBranch(t *testing.T) {
 
 func TestRecoverDeterministicNonTaskQueuesCorrectedJobWithLogTail(t *testing.T) {
 	s := newStore(t)
-	p, root := newRepo(t, s)
+	p, root := newBareRepo(t, s)
 	job := insertRecoverFailedJob(t, s, "job-det", "improve", "manual", "verify exit 1", plusMinutes(testNow, -30))
 	logPath := filepath.Join(root, "run-det.log")
 	var lines []string
@@ -162,7 +162,7 @@ func TestRecoverDeterministicNonTaskQueuesCorrectedJobWithLogTail(t *testing.T) 
 
 func TestRecoverCorrectedChainKeepsRootAndBackoff(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	insertRecoverFailedJob(t, s, "job-root", "improve", "manual", "verify exit 1", plusHours(testNow, -2))
 	eventAt(s.DB, plusHours(testNow, -1), "daemon", board.JobRecoverAction, "job-root",
 		map[string]any{"outcome": "replanned", "class": "deterministic", "why": "verify exit 1", "root": "job-root", "n": 1, "signature": "deterministic:verify exit #", "job": "job-corrected"})
@@ -192,7 +192,7 @@ func TestRecoverCorrectedChainKeepsRootAndBackoff(t *testing.T) {
 
 func TestRecoverDedupeOpenCorrectedJob(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	insertRecoverFailedJob(t, s, "job-dedupe", "improve", "manual", "verify exit 1", plusMinutes(testNow, -30))
 	exec1(s.DB, `INSERT INTO jobs (id, project, kind, tier, title, brief, source, status, created_at)
 		VALUES ('job-open-recover', 'proj', 'improve', 1, 'open', 'open', 'manual', 'queued', ?)`, testNow)
@@ -209,7 +209,7 @@ func TestRecoverDedupeOpenCorrectedJob(t *testing.T) {
 
 func TestRecoverHoldsOwnerCancelledJobs(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	job := insertRecoverFailedJob(t, s, "job-cancelled", "task", "manual", "cancelled by the owner: stopped after cancel", plusMinutes(testNow, -30))
 	insertRecoverRun(t, s, job.str("id"), "run-cancelled", "failed", "cancelled by the owner: stopped after cancel", "", "")
 
@@ -232,7 +232,7 @@ func TestRecoverHoldsOwnerCancelledJobs(t *testing.T) {
 
 func TestRecoverTaskOwnedDeterministicWaitsForLead(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	job := insertRecoverFailedJob(t, s, "job-task", "task", "task:TASK-1", "verify exit 1", plusMinutes(testNow, -30))
 	recoverFailedJobs(s, p, testNow, "daemon")
 	after := jobRow(s.DB, job.str("id"))
@@ -249,7 +249,7 @@ func TestRecoverTaskOwnedDeterministicWaitsForLead(t *testing.T) {
 
 func TestRecoverStructuralHeldWithoutFinding(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	job := insertRecoverFailedJob(t, s, "job-struct", "task", "manual", "needs a real decision", plusMinutes(testNow, -1))
 	recoverFailedJobs(s, p, testNow, "daemon")
 	after := jobRow(s.DB, job.str("id"))
@@ -267,7 +267,7 @@ func TestRecoverStructuralHeldWithoutFinding(t *testing.T) {
 
 func TestRecoverLimitHeldPostsOneFindingAcrossTicks(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	setRecoverSetting(t, s, "daemon.recover_limit", "1")
 	insertRecoverFailedJob(t, s, "job-limit", "improve", "manual", "verify exit 1", plusMinutes(testNow, -40))
 	insertRecoverFailedJob(t, s, "job-limit-copy", "improve", "manual", "verify exit 1", plusMinutes(testNow, -39))
@@ -290,7 +290,7 @@ func TestRecoverLimitHeldPostsOneFindingAcrossTicks(t *testing.T) {
 
 func TestRecoverSkipsOwnedKindsAndOldWindow(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	for _, tc := range []struct {
 		id, kind string
 	}{
@@ -313,7 +313,7 @@ func TestRecoverSkipsOwnedKindsAndOldWindow(t *testing.T) {
 
 func TestRecoverPerTickCap(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	for i := 0; i < 6; i++ {
 		id := "job-cap-" + string(rune('a'+i))
 		insertRecoverFailedJob(t, s, id, "task", "manual:"+id, "runner error", plusMinutes(testNow, -30))
@@ -332,7 +332,7 @@ func TestRecoverPerTickCap(t *testing.T) {
 
 func TestRecoverMetaShapeAndRemovalPreservesOtherProjects(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	exec1(s.DB, "INSERT INTO meta (key, value) VALUES ('recovery', ?)", `{"other":{"at":"2026-09-06T09:00:00Z","note":"kept"}}`)
 	insertRecoverFailedJob(t, s, "job-meta", "task", "manual", "runner error", plusMinutes(testNow, -30))
 	recoverFailedJobs(s, p, testNow, "daemon")
@@ -354,7 +354,7 @@ func TestRecoverMetaShapeAndRemovalPreservesOtherProjects(t *testing.T) {
 
 func TestRecoverIdempotentForHandledFailure(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	insertRecoverFailedJob(t, s, "job-idem", "improve", "manual", "verify exit 1", plusMinutes(testNow, -30))
 	recoverFailedJobs(s, p, testNow, "daemon")
 	recoverFailedJobs(s, p, plusMinutes(testNow, 1), "daemon")
@@ -368,7 +368,7 @@ func TestRecoverIdempotentForHandledFailure(t *testing.T) {
 
 func TestRecoverSupersededFailureIsHeldOnce(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	failed := insertRecoverFailedJob(t, s, "job-old", "improve", "suggestion:POST-1", "runner error: connection reset", plusHours(testNow, -3))
 	exec1(s.DB, `INSERT INTO jobs (id, project, kind, tier, title, brief, source, priority, status, created_at, created_by)
 		VALUES ('job-later', 'proj', 'improve', 1, 'Later carrier', 'brief', 'suggestion:POST-1', 0, 'done', ?, 'lead')`, plusHours(testNow, -2))
@@ -395,7 +395,7 @@ func TestRecoverSupersededFailureIsHeldOnce(t *testing.T) {
 
 func TestRecoverTaskOwnedTransientDefersToLeadFollowUp(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	job := insertRecoverFailedJob(t, s, "job-task", "task", "task:TASK-1", "runner error: connection reset", plusHours(testNow, -1))
 	if !recoveryPending(s, job.str("id")) {
 		t.Fatal("a fresh transient task failure should be pending recovery")
@@ -413,7 +413,7 @@ func TestRecoverTaskOwnedTransientDefersToLeadFollowUp(t *testing.T) {
 
 func TestRecoveryPendingOnlyForUnansweredTransientWithinLimit(t *testing.T) {
 	s := newStore(t)
-	newRepo(t, s)
+	newBareRepo(t, s)
 	insertRecoverFailedJob(t, s, "job-det", "task", "task:TASK-2", "verify exit 1", plusHours(testNow, -1))
 	if recoveryPending(s, "job-det") {
 		t.Fatal("a deterministic failure is the lead's, not pending recovery")
@@ -445,7 +445,7 @@ func TestRetryTitlePrefixesOnce(t *testing.T) {
 
 func TestRecoverWaitsWhileTheQueueIsFull(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	for i := 0; i < recoverQueueRoom; i++ {
 		exec1(s.DB, `INSERT INTO jobs (id, project, kind, tier, title, brief, source, status, created_at)
 			VALUES (?, 'proj', 'improve', 1, 'fresh', 'fresh', ?, 'queued', ?)`, fmt.Sprintf("job-fresh-%d", i), fmt.Sprintf("fresh:%d", i), testNow)
@@ -473,7 +473,7 @@ func TestRecoverWaitsWhileTheQueueIsFull(t *testing.T) {
 
 func TestRecoverNeverRetriesAnswerJobs(t *testing.T) {
 	s := newStore(t)
-	p, _ := newRepo(t, s)
+	p, _ := newBareRepo(t, s)
 	// One transient and one deterministic failure of answer jobs, both past their due time: neither is
 	// queued again or re-planned, because a question is tried once.
 	insertRecoverFailedJob(t, s, "job-ans-1", "answer", "question:q-one", "runner error: connection reset", plusMinutes(testNow, -30))
