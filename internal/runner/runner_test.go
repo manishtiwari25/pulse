@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/manishtiwari25/pulse/internal/board"
+	"github.com/manishtiwari25/pulse/internal/bus"
+	"github.com/manishtiwari25/pulse/internal/goals"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -119,16 +120,37 @@ func newRepo(t *testing.T, s *store.Store) (row, string) {
 	return p, p.str("path")
 }
 
-// newBareRepo is newRepo without the project's seeded records (ADR-029/030): registration only
-// inserts the project row, so fixtures that never read records or memories skip the ~0.8s of
-// seeding per call. Tests that consult seeded records must keep using newRepo. Safe because no
-// test in this package runs in parallel.
+// newBareRepo is newRepo without the project's seeded records (ADR-029/030) and without the three
+// git subprocesses RegisterProject runs per call (top-level, remote, branch: ~280ms together). It
+// copies the template repo and writes the same projects row, generated goal setting and
+// project.add event RegisterProject would, all in-process; the template is known to be a checkout
+// on main with no remote. Tests that consult seeded records must keep using newRepo.
 func newBareRepo(t *testing.T, s *store.Store) (row, string) {
 	t.Helper()
-	previous := board.OnProjectCreated
-	board.OnProjectCreated = nil
-	defer func() { board.OnProjectCreated = previous }()
-	return newRepo(t, s)
+	dir := filepath.Join(t.TempDir(), "proj")
+	if err := os.CopyFS(dir, os.DirFS(templateRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	root := dir
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		root = real
+	}
+	now := s.Now()
+	if _, err := s.DB.Exec("INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) "+
+		"VALUES (?, ?, ?, '', 0, '', 'main', 'active', ?, ?, ?)", "proj", "Proj", root, now, humanAgent, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bus.Emit(s, humanAgent, "project.add", "proj", root); err != nil {
+		t.Fatal(err)
+	}
+	if err := goals.EnsureDefault(s, "proj"); err != nil {
+		t.Fatal(err)
+	}
+	p := projectBySlug(s.DB, "proj")
+	if p == nil {
+		t.Fatal("project proj not found after insert")
+	}
+	return p, p.str("path")
 }
 
 var (
