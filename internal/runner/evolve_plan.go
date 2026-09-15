@@ -74,6 +74,15 @@ func tendEvolve(s *store.Store, now, actor string, slugs []string) []string {
 			}
 			continue
 		}
+		if result.CardCreated {
+			title := "experiment card"
+			if job, err := board.JobByID(s, result.CardJob); err == nil && job != nil {
+				title = job.Title
+			}
+			recordEvolveReason(slug, result.Reason)
+			lines = append(lines, fmt.Sprintf("planned card %s for %s: %s", result.CardJob, slug, title))
+			continue
+		}
 		if result.Reason != "" && rememberEvolveReason(slug, result.Reason) {
 			lines = append(lines, fmt.Sprintf("evolve %s: %s", slug, result.Reason))
 		}

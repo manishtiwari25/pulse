@@ -23,6 +23,11 @@ const STATES = new Map<string, Omit<PlanningView, "reason">>([
     tone: "neutral",
     next: "An eligible, untried, in-scope suggestion is still needed; see the planning reason above.",
   }],
+  ["carding", {
+    label: "Writing an experiment card",
+    tone: "info",
+    next: "The top voted suggestion names no single file and variable; an agent's card job is writing its experiment card as a new suggestion on the thread. The card needs its own votes before the loop runs it.",
+  }],
   ["ready", {
     label: "Ready, not dispatched",
     tone: "info",

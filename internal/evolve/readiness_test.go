@@ -29,7 +29,7 @@ func TestStatusDistinguishesReadinessFromProgress(t *testing.T) {
 					Project: "demo", Area: "evolution", Thread: "incomplete", Kind: "suggestion",
 					Agent: "proposer", Summary: "Not a one-variable card", Body: "Class: operating-layer\n",
 				}, "up", "up")
-				wantState, wantReason = "blocked", "experiment card"
+				wantState, wantReason = "waiting", "no experiment card"
 			case "queued":
 				votedSuggestion(t, s, "ready", "operating-layer", "README.md", 2)
 				if _, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"}); err != nil {
@@ -82,12 +82,15 @@ func TestStatusDistinguishesReadinessFromProgress(t *testing.T) {
 				t.Fatal("status changed the plan or board")
 			}
 			if scenario == "unsupported-card" {
-				if _, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"}); err != nil {
-					t.Fatal(err)
+				// ADR-044: the planner queues a card job for the card-less pick and status names it; no owner step.
+				res, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+				if err != nil || !res.CardCreated || res.CardJob == "" {
+					t.Fatalf("plan = %+v (%v); want a card job", res, err)
 				}
 				after, err := Status(s, "demo")
-				if err != nil || after.Planning.State != "blocked" || !strings.Contains(after.Planning.Reason, "experiment card") {
-					t.Fatalf("the card gate disappeared after its question was posted: %+v (%v)", after, err)
+				if err != nil || after.Planning.State != "carding" || after.Planning.Job != res.CardJob ||
+					!strings.Contains(after.Planning.Reason, "card job "+res.CardJob) || strings.Contains(after.Planning.Reason, "owner:") {
+					t.Fatalf("planning after the card job = %+v (%v)", after.Planning, err)
 				}
 			}
 		})

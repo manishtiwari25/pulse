@@ -436,9 +436,14 @@ baselines and variants separately.
 
 Open **Project → Evolution → Experiment planning** for the current candidate
 or blocking reason. `pulse evolve status` reports the same planning state:
-gated, blocked, waiting for an eligible suggestion, ready but not dispatched,
-queued, in flight, or finalizing. Level D with no eligible suggestion is still
-waiting, not a running experiment.
+gated, blocked, waiting for an eligible suggestion, writing an experiment
+card, ready but not dispatched, queued, in flight, or finalizing. Level D with
+no eligible suggestion is still waiting, not a running experiment. A voted
+suggestion that names no single `File:` and `Variable:` is not the owner's to
+fix: the planner queues one agent card job for it, which posts the card as a
+new suggestion on the same thread, where it earns its own votes and passes
+every gate before the loop runs it (ADR-044). Workers can post a complete card
+in one `SUGGESTION:` line with `;`-separated fields.
 
 Landing and sweeping share one serial maintenance lane outside the supervisor
 tick, so a slow measurement or verification does not freeze worker dispatch,

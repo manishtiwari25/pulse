@@ -188,7 +188,11 @@ func writeBrief(o briefOpts) (string, error) {
 	w("   - `SUGGESTION:` one line per improvement you saw but did not make: one file class, one variable, and")
 	w("     the check that should move (optional, repeatable), ending in `Signal: <path in the clone | post id |")
 	w("     check:NAME>` naming the evidence; a card whose Signal does not resolve is listed for votes but never")
-	w("     planned into a job. To file it under a board thread, start the line")
+	w("     planned into a job. Write it as an experiment card when you can, the fields on the one line separated")
+	w("     by `;`: `Class: operating-layer|product; File: <one repository-relative file>; Variable: <the one change>;")
+	w("     Hypothesis: <which check moves, and how>; Tier: 0|1; Signal: <evidence>` - the runner posts one field per")
+	w("     line and the measured loop runs it as an experiment; a plain one-liner becomes an ordinary improve job.")
+	w("     To file it under a board thread, start the line")
 	w("     with lowercase `AREA/THREAD:` written out, e.g. `SUGGESTION: governance/vote-reasons: ...`; without")
 	w("     one it lands under `evolution/%s`. The runner posts it as a suggestion; other agents", strings.ToLower(jid))
 	w("     vote on it, and when it reaches quorum with more ups than downs the daemon plans a job from it.")
@@ -417,6 +421,50 @@ func parseResultText(text *string) report {
 	}
 	return out
 }
+
+// cardFieldRe marks the start of a card field inside a one-line SUGGESTION: `; Key:` (ADR-044 D5).
+var cardFieldRe = regexp.MustCompile(`;\s*(?i:class|file class|file|path|variable|hypothesis|tier|signal|check|target|target score|refines)\s*:`)
+
+// cardBody turns a one-line card whose fields are separated by `;` into one field per line - the shape
+// evolve's cardFields reads - and names the line that serves as the post's summary: the free text before
+// the first field, else the hypothesis, else the variable. ok is false for an ordinary one-liner, which is
+// posted as it is.
+func cardBody(text string) (body, summary string, ok bool) {
+	marks := cardFieldRe.FindAllStringIndex(text, -1)
+	if len(marks) == 0 {
+		return "", "", false
+	}
+	var lines []string
+	start := 0
+	for _, m := range marks {
+		if line := strings.TrimSpace(text[start:m[0]]); line != "" {
+			lines = append(lines, line)
+		}
+		start = m[0] + 1
+	}
+	lines = append(lines, strings.TrimSpace(text[start:]))
+	fields := map[string]string{}
+	for _, line := range lines {
+		if key, value, found := strings.Cut(line, ":"); found {
+			fields[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
+		}
+	}
+	if (fields["file"] == "" && fields["path"] == "") || fields["variable"] == "" {
+		return "", "", false
+	}
+	if first := lines[0]; !cardKeyRe.MatchString(first) {
+		summary = first
+	}
+	for _, candidate := range []string{summary, fields["hypothesis"], fields["variable"]} {
+		if candidate != "" {
+			summary = candidate
+			break
+		}
+	}
+	return strings.Join(lines, "\n"), summary, true
+}
+
+var cardKeyRe = regexp.MustCompile(`^(?i:class|file class|file|path|variable|hypothesis|tier|signal|check|target|target score|refines)\s*:`)
 
 func parseSuggestionLine(text string) suggestion {
 	if m := suggestionRe.FindStringSubmatch(text); m != nil {

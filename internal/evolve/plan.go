@@ -23,6 +23,9 @@ type PlanResult struct {
 	Reason     string
 	Question   string
 	Suggestion string
+	// CardJob is the reflect job writing the card of a card-less pick (ADR-044 D1); CardCreated says this call queued it.
+	CardJob     string
+	CardCreated bool
 }
 
 // Preflight avoids a write reservation for closed gates. Admission always
@@ -39,53 +42,94 @@ func LoopPick(s *store.Store, project string) (suggestionID string, reason strin
 	return LoopPickForAgent(s, project, "daemon")
 }
 
+// LoopPickForAgent is the first suggestion the loop claims (LoopClaims): the in-flight experiment's,
+// else the top candidate whose experiment card is valid.
 func LoopPickForAgent(s *store.Store, project, agent string) (suggestionID string, reason string, err error) {
+	claims, reason, err := loopClaims(s, project, agent)
+	if err != nil || len(claims) == 0 {
+		return "", reason, err
+	}
+	return claims[0], reason, nil
+}
+
+// LoopClaims is the set of eligible suggestions the loop holds for itself while it is on and at Level D
+// (ADR-044 D4): the in-flight experiment's, and every untried, in-scope candidate with net votes > 0
+// whose experiment card is valid. The improve planner leaves them to the loop and builds the rest;
+// a card-less candidate is not claimed here - the card job the planner queues for it holds it through
+// its source instead. reason says why the loop plans nothing new right now, when it does not.
+func LoopClaims(s *store.Store, project, agent string) (claims map[string]bool, reason string, err error) {
+	ordered, reason, err := loopClaims(s, project, agent)
+	if err != nil {
+		return nil, "", err
+	}
+	claims = map[string]bool{}
+	for _, id := range ordered {
+		claims[id] = true
+	}
+	return claims, reason, nil
+}
+
+func loopClaims(s *store.Store, project, agent string) (claims []string, reason string, err error) {
 	if s.Setting("evolve.loop", "") != "1" {
-		return "", "", nil
+		return nil, "", nil
 	}
 	if agent == "" {
 		agent = "daemon"
 	}
 	status, err := Status(s, project)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	if status.Level != "D" {
-		return "", status.Reason + "; owner: " + status.NextHumanStep, nil
+		return nil, status.Reason + "; owner: " + status.NextHumanStep, nil
 	}
 	if id, ok, err := inFlightExperiment(s, project, true); err != nil {
-		return "", "", err
+		return nil, "", err
 	} else if ok {
 		job, err := board.JobByID(s, id)
 		if err != nil {
-			return "", "", err
+			return nil, "", err
 		}
 		if job != nil && strings.HasPrefix(job.Source, "suggestion:") {
-			return strings.TrimPrefix(job.Source, "suggestion:"), "an experiment is in flight: " + id, nil
+			claims = append(claims, strings.TrimPrefix(job.Source, "suggestion:"))
 		}
-		return "", "an experiment is in flight: " + id, nil
+		reason = "an experiment is in flight: " + id
 	}
 	result, err := tally.Compute(s, project, "", tally.Thresholds{})
 	if err != nil {
 		var applyErr *tally.ApplyError
 		if errors.As(err, &applyErr) {
-			return "", "constitution application was refused; " + applyErr.What, nil
+			return claims, firstText(reason, "constitution application was refused; "+applyErr.What), nil
 		}
-		return "", "", err
+		return nil, "", err
 	}
+	// A stop holds the loop's cards with it: they wait for the owner's decision rather than
+	// being built unmeasured (ADR-044 D4).
 	if stop, err := instructionPost(s, result); err != nil {
-		return "", "", err
+		return nil, "", err
 	} else if stop != nil {
-		return "", stop.reason(), nil
+		reason = firstText(reason, stop.reason())
 	}
 	candidates, err := experimentCandidates(s, project, status, result, agent, true, nil)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
-	if len(candidates) == 0 {
-		return "", "no eligible, untried, in-scope suggestion with net votes > 0; vote with pulse ballot", nil
+	has := map[string]bool{}
+	for _, id := range claims {
+		has[id] = true
 	}
-	return candidates[0].post.ID, "", nil
+	for _, candidate := range candidates {
+		if has[candidate.post.ID] {
+			continue
+		}
+		if _, err := makeCard(s, candidate.post, status); err == nil {
+			claims = append(claims, candidate.post.ID)
+		}
+	}
+	if len(claims) == 0 && reason == "" {
+		reason = "no eligible, untried, in-scope suggestion with net votes > 0 and a valid experiment card; vote with pulse ballot"
+	}
+	return claims, reason, nil
 }
 
 func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[string]bool) (PlanResult, error) {
@@ -178,6 +222,13 @@ func planExperimentLocked(s *store.Store, tx *board.WriteTransaction, project st
 	if err != nil {
 		return PlanResult{}, err
 	}
+	// The loop writes one card at a time (ADR-044 D1): the first card-less candidate gets the card job,
+	// or is held while another suggestion's card is being written.
+	cardJob, err := openCardJob(s, project)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	cardCreated := false
 	for _, candidate := range candidates {
 		p := candidate.post
 		card, err := makeCard(s, p, status)
@@ -192,13 +243,13 @@ func planExperimentLocked(s *store.Store, tx *board.WriteTransaction, project st
 			if !errors.As(err, &input) {
 				return PlanResult{}, err
 			}
-			reason := input.What + "; " + input.Why + "; owner: " + input.Fix
 			satisfied, err := threadHasCard(s, project, p, status)
 			if err != nil {
 				return PlanResult{}, err
 			}
-			if !satisfied {
-				if _, err := ask(p, reason); err != nil {
+			if !satisfied && cardJob == nil {
+				cardJob, cardCreated, err = queueCardJob(tx, project, p, candidate.suggestion, status, opts)
+				if err != nil {
 					return PlanResult{}, err
 				}
 			}
@@ -235,13 +286,26 @@ func planExperimentLocked(s *store.Store, tx *board.WriteTransaction, project st
 		if seen != nil {
 			seen[p.ID] = true
 		}
-		return PlanResult{JobID: job.ID, Created: created, Suggestion: p.ID}, nil
+		res := PlanResult{JobID: job.ID, Created: created, Suggestion: p.ID, CardCreated: cardCreated}
+		if cardJob != nil {
+			res.CardJob = cardJob.ID
+		}
+		return res, nil
 	}
 	reason := "no eligible, untried, in-scope suggestion"
 	if opts.RequirePositiveScore {
 		reason += " with net votes > 0"
 	}
+	if cardJob != nil {
+		return PlanResult{Reason: cardJobReason(cardJob), Suggestion: cardJobSuggestion(cardJob), CardJob: cardJob.ID, CardCreated: cardCreated}, nil
+	}
 	return PlanResult{Reason: reason + "; vote with pulse ballot"}, nil
+}
+
+func cardJobSuggestion(job *board.Job) string { return strings.TrimPrefix(job.Source, "suggestion:") }
+
+func cardJobReason(job *board.Job) string {
+	return "suggestion " + cardJobSuggestion(job) + " has no experiment card; card job " + job.ID + " (" + job.Status + ") writes one as a new suggestion on its thread"
 }
 
 func experimentCarrierReason(job *board.Job) string {
@@ -282,6 +346,14 @@ func experimentCandidates(s *store.Store, project string, status *LoopStatus, re
 		if p.ForOwner || (productPost(*p) && !status.ProductScope.Allowed) {
 			continue
 		}
+		if held, err := heldByAnotherJob(s, suggestion); err != nil {
+			return nil, err
+		} else if held {
+			if seen != nil {
+				seen[suggestion.ID] = true
+			}
+			continue
+		}
 		if questionOpenOnPost(s, project, p, agent) {
 			if seen != nil {
 				seen[p.ID] = true
@@ -291,6 +363,24 @@ func experimentCandidates(s *store.Store, project string, status *LoopStatus, re
 		out = append(out, experimentCandidate{post: p, suggestion: suggestion})
 	}
 	return out, nil
+}
+
+// heldByAnotherJob reports whether an open job of another kind already carries the suggestion - an
+// improve job, or the card job writing its card (ADR-044) - so the loop neither cards it nor runs it
+// meanwhile. An open experiment is the loop's own and is reported by the in-flight checks.
+func heldByAnotherJob(s *store.Store, sg tally.Suggestion) (bool, error) {
+	if sg.Job == "" {
+		return false, nil
+	}
+	var kind string
+	err := s.DB.QueryRow("SELECT kind FROM jobs WHERE id = ?", sg.Job).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return kind != "experiment", nil
 }
 
 func openExperimentForSuggestion(s *store.Store, project, suggestionID string) (*board.Job, error) {

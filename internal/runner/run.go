@@ -809,8 +809,13 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			if thread == "" {
 				thread = job.str("id")
 			}
-			post("suggestion", area, thread, sg.Card, fmt.Sprintf("One-variable improvement seen by the worker in run `%s` of job `%s` (%s), not made there.\n\n%s\n",
-				runID, job.str("id"), job.str("title"), sg.Card), "")
+			// A one-line card with `;`-separated fields is posted one field per line so the loop can run it (ADR-044 D5).
+			card, summary := sg.Card, sg.Card
+			if body, sum, ok := cardBody(sg.Card); ok {
+				card, summary = body, sum
+			}
+			post("suggestion", area, thread, summary, fmt.Sprintf("One-variable improvement seen by the worker in run `%s` of job `%s` (%s), not made there.\n\n%s\n",
+				runID, job.str("id"), job.str("title"), card), "")
 		}
 		_ = os.WriteFile(logPath, []byte(log.text()), 0o644)
 	}

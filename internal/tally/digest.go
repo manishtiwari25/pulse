@@ -53,7 +53,7 @@ func (r *Result) Ballot(agent, session string) []BallotItem {
 	for i := range r.Suggestions {
 		x := r.Suggestions[i]
 		switch x.Status {
-		case "closed", "expired", "built", "tried":
+		case "closed", "expired", "built", "tried", "carded":
 			continue
 		}
 		if agent != "" && (x.Agent == agent || voted[x.ID] || sameSession(session, x.Session)) {

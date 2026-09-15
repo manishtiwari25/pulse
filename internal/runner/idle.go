@@ -68,7 +68,7 @@ func suggestionIdlePart(s *store.Store, slug, now string) string {
 			}
 		case "needs votes":
 			needsVotes++
-		case "tried", "built":
+		case "tried", "built", "carded":
 			tried++
 		}
 	}

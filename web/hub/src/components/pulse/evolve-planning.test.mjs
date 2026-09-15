@@ -7,6 +7,7 @@ test("planning labels distinguish eligibility, dispatch and finalization", () =>
     ["gated", "Gated"],
     ["blocked", "Blocked"],
     ["waiting", "Waiting for suggestions"],
+    ["carding", "Writing an experiment card"],
     ["ready", "Ready, not dispatched"],
     ["queued", "Queued"],
     ["leased", "Experiment in flight"],
@@ -25,6 +26,14 @@ test("Level D with no eligible candidate does not promise an active loop", () =>
   assert.match(view.next, /eligible, untried, in-scope/);
   assert.doesNotMatch(view.next, /nothing waits|every gate is open/i);
   assert.match(view.reason, /operating layer only/);
+});
+
+test("carding names the agent's card job, not an owner step", () => {
+  const view = evolvePlanningView({ state: "carding", reason: "suggestion X has no experiment card; card job J (queued) writes one as a new suggestion on its thread", job: "J" });
+  assert.equal(view.tone, "info");
+  assert.match(view.next, /card job/);
+  assert.doesNotMatch(view.next, /owner/i);
+  assert.match(view.reason, /card job J/);
 });
 
 test("blocked planning retains the gate rather than claiming no owner step", () => {

@@ -530,23 +530,28 @@ func atoi(s string) int {
 func hasPrefix(s, p string) bool { return len(s) >= len(p) && s[:len(p)] == p }
 
 // suggestionJobs returns legacy/pulse.py built_suggestions status plus each suggestion's open job.
+// A done reflect job with a suggestion source is the loop's card job (ADR-044): the suggestion was
+// carded - turned into an experiment card on its thread - not built.
 func suggestionJobs(s *store.Store) (map[string]string, map[string]openSuggestionJob, error) {
 	out := map[string]string{}
-	rows, err := s.DB.Query("SELECT source, status FROM jobs WHERE source LIKE 'suggestion:%' AND status IN ('done', 'failed', 'cancelled') ORDER BY id")
+	rows, err := s.DB.Query("SELECT source, status, kind FROM jobs WHERE source LIKE 'suggestion:%' AND status IN ('done', 'failed', 'cancelled') ORDER BY id")
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var source, status string
-		if err := rows.Scan(&source, &status); err != nil {
+		var source, status, kind string
+		if err := rows.Scan(&source, &status, &kind); err != nil {
 			return nil, nil, err
 		}
 		sid := source[len("suggestion:"):]
 		if _, seen := out[sid]; status == "done" || !seen {
-			if status == "done" {
+			switch {
+			case status == "done" && kind == "reflect":
+				out[sid] = "carded"
+			case status == "done":
 				out[sid] = "built"
-			} else {
+			default:
 				out[sid] = "tried"
 			}
 		}

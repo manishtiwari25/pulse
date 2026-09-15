@@ -112,3 +112,43 @@ func TestWorkerBriefClaimMentionsPulseCLIFallback(t *testing.T) {
 		t.Fatalf("claim instruction lacks the $PULSE_CLI fallback: %q", claim)
 	}
 }
+
+// A worker's one-line SUGGESTION: whose fields are separated by `;` is posted one field per line, the shape
+// the loop's card reader expects; an ordinary one-liner is posted as it is (ADR-044 D5).
+func TestCardBodyTurnsOneLineCardIntoFields(t *testing.T) {
+	body, summary, ok := cardBody("Shorten the intro; Class: operating-layer; File: README.md; Variable: intro length; Hypothesis: the README check scores higher; Tier: 1")
+	if !ok {
+		t.Fatal("a one-line card with a file and a variable was not recognised")
+	}
+	if summary != "Shorten the intro" {
+		t.Fatalf("summary = %q", summary)
+	}
+	want := "Shorten the intro\nClass: operating-layer\nFile: README.md\nVariable: intro length\nHypothesis: the README check scores higher\nTier: 1"
+	if body != want {
+		t.Fatalf("body =\n%s\nwant\n%s", body, want)
+	}
+
+	// without free text the hypothesis is the summary, then the variable
+	if _, summary, ok := cardBody("File: README.md; Variable: intro length; Hypothesis: fewer words, same score"); !ok || summary != "fewer words, same score" {
+		t.Fatalf("hypothesis summary: ok=%v summary=%q", ok, summary)
+	}
+	if _, summary, ok := cardBody("path: docs/a.md; variable: heading depth"); !ok || summary != "heading depth" {
+		t.Fatalf("variable summary: ok=%v summary=%q", ok, summary)
+	}
+	// a card needs both a file and a variable; anything else stays a one-liner
+	for _, text := range []string{
+		"Tune the README intro",
+		"Tune the README intro; the second sentence repeats the first",
+		"File: README.md; Hypothesis: shorter is better",
+		"Variable: intro length; Tier: 1",
+	} {
+		if _, _, ok := cardBody(text); ok {
+			t.Fatalf("%q was taken for a card", text)
+		}
+	}
+	// the line still carries the area/thread prefix the report grammar allows
+	sg := parseSuggestionLine("evolution/readme - Shorten the intro; File: README.md; Variable: intro length")
+	if body, summary, ok := cardBody(sg.Card); !ok || summary != "Shorten the intro" || !strings.Contains(body, "\nFile: README.md\n") {
+		t.Fatalf("prefixed card: area=%q thread=%q ok=%v summary=%q body=%q", sg.Area, sg.Thread, ok, summary, body)
+	}
+}

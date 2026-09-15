@@ -75,7 +75,7 @@ func planningStatus(s *store.Store, status *LoopStatus) (PlanningStatus, error) 
 	if err != nil {
 		return PlanningStatus{}, err
 	}
-	var unsupported *PlanningStatus
+	var cardless *PlanningStatus
 	for _, candidate := range candidates {
 		_, err := makeCard(s, candidate.post, status)
 		if err == nil {
@@ -97,17 +97,23 @@ func planningStatus(s *store.Store, status *LoopStatus) (PlanningStatus, error) 
 		if !errors.As(err, &input) {
 			return PlanningStatus{}, err
 		}
-		if unsupported == nil {
-			unsupported = &PlanningStatus{State: "blocked", Reason: input.What + "; " + input.Why + "; owner: " + input.Fix, Suggestion: candidate.post.ID}
+		if cardless == nil {
+			cardless = &PlanningStatus{State: "waiting", Suggestion: candidate.post.ID,
+				Reason: "suggestion " + candidate.post.ID + " has no experiment card; the planner queues a card job for it on its next tick (ADR-044)"}
 		}
 	}
-	if unsupported != nil {
-		return *unsupported, nil
+	// A card-less pick is agents' work, not the owner's (ADR-044): the card job in flight is the state.
+	if job, err := openCardJob(s, project); err != nil {
+		return PlanningStatus{}, err
+	} else if job != nil {
+		return PlanningStatus{State: "carding", Reason: cardJobReason(job), Job: job.ID, Suggestion: cardJobSuggestion(job)}, nil
 	}
-	// A malformed card is skipped after the planner asks its owner question.
-	// Keep that actual gate readable instead of collapsing it to "may run".
+	if cardless != nil {
+		return *cardless, nil
+	}
 	// Instruction stops report themselves above while they hold; their older
-	// questions are moot once the post no longer trips or was cleared.
+	// questions are moot once the post no longer trips or was cleared. What
+	// remains here is a violation question the owner has not answered.
 	var question, body string
 	err = s.DB.QueryRow(`SELECT q.id, q.body FROM posts q WHERE q.project = ? AND q.kind = 'question' AND q.summary = ?
 		AND q.body NOT LIKE ?

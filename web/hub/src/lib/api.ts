@@ -1131,7 +1131,7 @@ export interface Evolution {
 // evaluates them: the level allowed right now, why, and the one human step
 // that opens the next gate. The held-out set is counted, never named.
 export interface EvolvePlanning {
-  state: "gated" | "blocked" | "waiting" | "ready" | "queued" | "leased" | "finalizing" | string;
+  state: "gated" | "blocked" | "waiting" | "carding" | "ready" | "queued" | "leased" | "finalizing" | string;
   reason: string;
   job?: string;
   suggestion?: string;

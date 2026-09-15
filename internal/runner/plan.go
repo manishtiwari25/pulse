@@ -213,18 +213,18 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 		}
 	}
 	suggestions := suggestionRecords(s, slug, now)
-	loopPick := ""
-	if pick, _, err := evolve.LoopPickForAgent(s, slug, createdBy); err != nil {
+	// The loop claims every eligible suggestion whose experiment card is valid, and the in-flight
+	// experiment's (ADR-044 D4); the planner leaves those to it and builds the rest.
+	claims, _, err := evolve.LoopClaims(s, slug, createdBy)
+	if err != nil {
 		return created, err
-	} else {
-		loopPick = pick
 	}
 	if len(created) == 0 {
 		for _, sg := range suggestions {
 			if sg.Status != "eligible" {
 				continue
 			}
-			if sg.ID == loopPick {
+			if claims[sg.ID] {
 				recordPlanDeferred(s, slug, now, createdBy, sg.ID)
 				continue
 			}
@@ -335,7 +335,8 @@ const stuckThreadSummary = "Stuck thread:"
 
 // stuckThreads is the set of area/thread keys of one project whose worker jobs stopped moving it: the newest
 // lead.stuck_thread_jobs finished jobs seeded by the thread's suggestions, handoffs and questions all committed
-// nothing (each run read, claimed, asked or handed off, and the next repeated it). Such a thread costs a job per
+// nothing (each run read, claimed, asked or handed off, and the next repeated it). A reflect job - the loop's
+// card job (ADR-044) - commits nothing by design and does not count. Such a thread costs a job per
 // tick while only the lead or the owner can decide it, so the planner seeds nothing from it and posts one question
 // for the owner on the thread - the lead's brief carries it. The count restarts when a job from the thread commits
 // (a run with commits, or a branch waiting to land) and when the lead or the owner answers on the thread: each
@@ -359,7 +360,7 @@ func stuckThreads(s *store.Store, slug, now, actor string) map[string]bool {
 	for _, r := range mustRows(s.DB, "SELECT j.id, j.status, j.result, j.finished_at, "+
 		"(j.branch != '' OR EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.commits > 0)) AS committed, "+
 		"p.area || '/' || p.thread AS key FROM jobs j JOIN posts p ON p.id = substr(j.source, instr(j.source, ':') + 1) "+
-		"WHERE j.project = ? AND j.status IN ('done', 'failed') "+
+		"WHERE j.project = ? AND j.status IN ('done', 'failed') AND j.kind != 'reflect' "+
 		"AND (j.source LIKE 'suggestion:%' OR j.source LIKE 'handoff:%' OR j.source LIKE 'question:%') "+
 		"ORDER BY j.finished_at DESC, j.created_at DESC", slug) {
 		key := r.str("key")

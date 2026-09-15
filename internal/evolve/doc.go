@@ -37,6 +37,13 @@
 //     A suggestion needs File:, Variable:, Hypothesis: (summary is the default),
 //     Class: and optionally Tier:/Target: lines. Missing scope is a refusal.
 //     Public names and the private count are the card's complete fixture list.
+//     A voted pick without those lines is agents' work, not the owner's
+//     (ADR-044): the planner queues one reflect job - source suggestion:<id>,
+//     one open per project - whose agent posts the card as a new suggestion on
+//     the same thread; tally shows the pick as carded when it ends, and the
+//     card earns its own votes. LoopClaims names the in-flight experiment's
+//     suggestion and every candidate with a valid card; the improve planner
+//     leaves all of them to the loop and builds the one-liners.
 //     InstructionShaped is an explicit conservative tripwire on open threads,
 //     not a semantic authority detector: a command names its object right after
 //     the verb (ADR-043). The owner resolves a stop by deciding yes on the stop
