@@ -733,6 +733,22 @@ func AgentGate(s *store.Store, marker, actor, now string) (string, error) {
 	return found.PostID, nil
 }
 
+// OnboardingJob returns the project's newest onboarding job that is open or
+// done, or (nil, nil) when it has none: a cancelled one (the project was
+// removed) does not count, so restoring the project queues a fresh one.
+func OnboardingJob(s *store.Store, slug string) (*Job, error) {
+	var id string
+	err := s.DB.QueryRow("SELECT id FROM jobs WHERE source = ? AND status IN ('queued', 'leased', 'blocked', 'done') "+
+		"ORDER BY created_at DESC, id DESC LIMIT 1", "onboard:"+slug).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return jobByID(s.DB, id)
+}
+
 // QueueOnboardingJob queues the first job of a project: read the guide, run
 // the checks, post findings, and fill the environment recipe (D-K) unless
 // init already imported one.

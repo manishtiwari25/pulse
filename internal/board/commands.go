@@ -610,9 +610,22 @@ func Init(s *store.Store, path, name, remote string, brain bool, verifyCmd, who 
 			hasRecipe = true
 		}
 	}
-	job, queued, err := QueueOnboardingJob(s, proj.Slug, "init", hasRecipe)
-	if err != nil {
-		return nil, err
+	// A refresh of an existing project (a new verify_cmd or remote) keeps
+	// the onboarding job the project already had, open or done; only a
+	// project without one (new, or restored after removal) gets one queued.
+	var job *Job
+	queued := false
+	if !created {
+		job, err = OnboardingJob(s, proj.Slug)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if job == nil {
+		job, queued, err = QueueOnboardingJob(s, proj.Slug, "init", hasRecipe)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &InitResult{Project: proj, Created: created, Job: job, JobQueued: queued, Environment: envID, Store: s.Path}, nil
 }
@@ -647,6 +660,8 @@ func runInit(c *cli.Context, fs *flag.FlagSet, args []string) error {
 	q := "already queued"
 	if res.JobQueued {
 		q = "queued"
+	} else if !contains([]string{"queued", "leased", "blocked"}, res.Job.Status) {
+		q = "already " + res.Job.Status
 	}
 	c.Printf("%s onboarding job %s\n", q, res.Job.ID)
 	if res.Environment != "" {

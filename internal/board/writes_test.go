@@ -536,6 +536,28 @@ func TestInitRegistersProject(t *testing.T) {
 	if n := countRows(t, s, "events", "action IN ('project.add', 'project.refresh', 'job.add', 'record.imported')"); n != 4 {
 		t.Fatalf("%d init events", n)
 	}
+	// refreshing only the check after onboarding finished queues no second job
+	var onboardID string
+	if err := s.DB.QueryRow("SELECT id FROM jobs WHERE source = 'onboard:my-app'").Scan(&onboardID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FinishJob(s, onboardID, "human", "done", "onboarded", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCmd(t, s, &cli.Context{}, "init", "--path", repo, "--verify", "go test -timeout 30m ./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines = strings.Split(strings.TrimSpace(out), "\n")
+	if lines[0] != "refreshed project my-app at "+repo || lines[1] != "already done onboarding job "+onboardID || len(lines) != 3 {
+		t.Fatalf("refresh after onboarding:\n%s", out)
+	}
+	if n := countRows(t, s, "jobs", "source = 'onboard:my-app'"); n != 1 {
+		t.Fatalf("%d onboarding jobs after refresh", n)
+	}
+	if p, _ := s.Project("my-app"); p.VerifyCmd != "go test -timeout 30m ./..." {
+		t.Fatalf("verify_cmd not refreshed: %+v", p)
+	}
 	// a brain without a recipe: CTX-environment id, brief asks for the recipe
 	brain := gitRepo(t)
 	res, err := Init(s, brain, "", "", true, "", "human")
