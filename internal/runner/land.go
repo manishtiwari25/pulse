@@ -355,6 +355,13 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 		gitTimeout(root, 30*time.Second, "worktree", "prune")
 		_ = os.Remove(lock)
 	}()
+	stuck, movedLock := freeIndexLock(root, time.Now())
+	if stuck != "" {
+		return "deferred", stuck, nil
+	}
+	if movedLock != nil {
+		eventAt(s.DB, now, actor, "land.stale-lock", branch, map[string]any{"project": slug, "lock": movedLock.detail()})
+	}
 	before := strings.TrimSpace(gitTimeout(root, 10*time.Second, "rev-parse", "--verify", "refs/heads/"+def).Stdout)
 	gitTimeout(root, 60*time.Second, "worktree", "remove", "--force", worktree)
 	if added := gitTimeout(root, 120*time.Second, "worktree", "add", "--detach", worktree, def); !added.ok() {
@@ -474,7 +481,11 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 	}
 	reflogAction := newID("pulse-code-delivery", s.Now())
 	if ff := gitTimeoutEnv(root, 120*time.Second, []string{"GIT_REFLOG_ACTION=" + reflogAction}, "merge", "--ff-only", sha); !ff.ok() {
-		return "deferred", fmt.Sprintf("%s moved while the merge was verified; nothing landed, try again (%s)", def, trunc(strings.TrimSpace(ff.Stderr), 200)), nil
+		why := trunc(strings.TrimSpace(ff.Stderr), 200)
+		if lockedCheckout(ff.Stderr) {
+			return "deferred", fmt.Sprintf("the checkout of %s is locked (%s); nothing landed, try again", root, why), nil
+		}
+		return "deferred", fmt.Sprintf("%s moved while the merge was verified; nothing landed, try again (%s)", def, why), nil
 	}
 	effectiveBefore, effectiveAfter := landingRefTransition(o.Ctx, root, "refs/heads/"+def, sha, reflogAction)
 	commits := "?"
@@ -487,6 +498,9 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 	detail := map[string]any{
 		"sha": sha, "before": effectiveBefore, "commits": commits, "verify": verifyNote,
 		"code_delivery": evidence,
+	}
+	if movedLock != nil {
+		detail["stale_lock"] = movedLock.detail()
 	}
 	if work := landingWorkSnapshot(s, project, job, o); work.Job != nil || work.Worker != nil {
 		detail["work"] = work
