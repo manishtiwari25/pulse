@@ -269,9 +269,27 @@ func scopeHeading(line string) bool {
 	return rest == "" || rest[0] == ' '
 }
 
-func editablePath(body, file string, product bool) bool {
+// ScopeClass is one row of the constitution's "Editable scope" table: a file class, the paths it
+// covers, the stage it has reached and who merges its kept variants.
+type ScopeClass struct {
+	Class    string `json:"class"`
+	Paths    string `json:"paths"`
+	Stage    int    `json:"stage"`
+	Autonomy string `json:"autonomy,omitempty"`
+}
+
+// Editable says whether the loop may run an experiment on this class: Stage 2 or later for an
+// operating-layer change, Stage 4 for a product change (ADR-012's ladder).
+func (c ScopeClass) Editable(product bool) bool {
+	return c.Stage >= 2 && (!product || c.Stage >= 4)
+}
+
+// scopeClasses reads the constitution's "Editable scope" table. A row without a readable stage is
+// kept with Stage 0 so the status can name it; it is never editable.
+func scopeClasses(body string) []ScopeClass {
+	var out []ScopeClass
 	inside := false
-	pathsColumn, stageColumn := -1, -1
+	classColumn, pathsColumn, stageColumn, autonomyColumn := -1, -1, -1, -1
 	for _, line := range strings.Split(body, "\n") {
 		if strings.HasPrefix(line, "## ") {
 			inside = scopeHeading(line)
@@ -291,18 +309,38 @@ func editablePath(body, file string, product bool) bool {
 					pathsColumn = i
 				case "stage":
 					stageColumn = i
+				case "file class", "class":
+					classColumn = i
+				case "autonomy":
+					autonomyColumn = i
 				}
 			}
 			continue
 		}
-		if pathsColumn >= len(cells) || stageColumn < 0 || stageColumn >= len(cells) {
+		if pathsColumn >= len(cells) || stageColumn < 0 || stageColumn >= len(cells) || strings.Trim(cells[pathsColumn], "- ") == "" {
 			continue
 		}
-		stage, err := strconv.Atoi(cells[stageColumn])
-		if err != nil || stage < 2 || (product && stage < 4) {
+		c := ScopeClass{Paths: cells[pathsColumn]}
+		if classColumn >= 0 && classColumn < len(cells) {
+			c.Class = cells[classColumn]
+		}
+		if autonomyColumn >= 0 && autonomyColumn < len(cells) {
+			c.Autonomy = cells[autonomyColumn]
+		}
+		if stage, err := strconv.Atoi(cells[stageColumn]); err == nil {
+			c.Stage = stage
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func editablePath(body, file string, product bool) bool {
+	for _, class := range scopeClasses(body) {
+		if !class.Editable(product) {
 			continue
 		}
-		for _, pattern := range pathPatterns(cells[pathsColumn]) {
+		for _, pattern := range pathPatterns(class.Paths) {
 			if matchesScope(file, pattern) {
 				return true
 			}

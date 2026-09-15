@@ -445,6 +445,17 @@ new suggestion on the same thread, where it earns its own votes and passes
 every gate before the loop runs it (ADR-044). Workers can post a complete card
 in one `SUGGESTION:` line with `;`-separated fields.
 
+The loop may edit only the file classes the constitution's Editable scope
+table has raised to Stage 2 (Stage 4 for product code) whose paths exist in
+the checkout. When no class qualifies, `pulse evolve status` reports Level C,
+`gated`, names the classes and the owner's step (raise a stage with `pulse
+record amend`, or point a staged class at paths that exist); the planner then
+cards nothing and asks nothing, because no experiment could run. `pulse evolve
+report --project P [--days N]` prints the week from the store - suggestions
+and where the vote left them, card jobs, jobs done with and without a change,
+landings, experiments, and the questions still waiting for the owner - so
+"is anything improving" is a table anyone can recompute, not an essay.
+
 Landing and sweeping share one serial maintenance lane outside the supervisor
 tick, so a slow measurement or verification does not freeze worker dispatch,
 heartbeats or STOP handling. Cancellation reaches the measurement and

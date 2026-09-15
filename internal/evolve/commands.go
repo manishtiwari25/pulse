@@ -199,7 +199,10 @@ func runEvolve(c *cli.Context, _ *flag.FlagSet, args []string) error {
 	var tree, ref string
 	var selected repeatedStrings
 	var shadow, once bool
+	var days int
 	switch sub {
+	case "report":
+		fs.IntVar(&days, "days", 7, "the window the counts cover")
 	case "measure":
 		fs.StringVar(&tree, "tree", "", "local source checkout (committed tree only)")
 		fs.StringVar(&ref, "ref", "HEAD", "local commit, branch or tag")
@@ -207,9 +210,9 @@ func runEvolve(c *cli.Context, _ *flag.FlagSet, args []string) error {
 		fs.BoolVar(&shadow, "shadow", false, "post scores as a finding; never archive")
 	case "cycle":
 		fs.BoolVar(&once, "once", false, "finish at most one experiment")
-	case "status", "report", "gates", "archive", "setup":
+	case "status", "gates", "archive", "setup":
 	default:
-		return inputError("Unknown evolve subcommand", "choose status, fixture, seed, setup, measure, archive, cycle or score", "pulse help evolve")
+		return inputError("Unknown evolve subcommand", "choose status, report, fixture, seed, setup, measure, archive, cycle or score", "pulse help evolve")
 	}
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
@@ -257,7 +260,23 @@ func runEvolve(c *cli.Context, _ *flag.FlagSet, args []string) error {
 			return err
 		}
 		switch sub {
-		case "status", "report", "gates":
+		case "report":
+			report, err := BuildReport(s, p.Slug, days)
+			if err != nil {
+				return err
+			}
+			if c.JSON {
+				return cli.WriteJSON(c.Out, report)
+			}
+			if !c.Quiet {
+				fmt.Fprintln(c.Out, "SELF-IMPROVEMENT LOOP -", p.Slug)
+				cli.Table(c.Out, c.Color, nil, statusRows(report.Status))
+				fmt.Fprintln(c.Out)
+				fmt.Fprintln(c.Out, "SELF-IMPROVEMENT REPORT -", p.Slug)
+				cli.Table(c.Out, c.Color, nil, reportRows(report))
+			}
+			return nil
+		case "status", "gates":
 			status, err := Status(s, p.Slug)
 			if err != nil {
 				return err

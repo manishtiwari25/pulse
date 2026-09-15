@@ -1160,6 +1160,11 @@ export interface EvolveGates {
   voted: { tried: number; kept: number; rate: number };
   signal: { tried: number; kept: number; rate: number };
   product_scope: { allowed: boolean; reason: string };
+  // The constitution's Editable scope table as the loop reads it: how many
+  // file classes it has, which ones the loop may edit now (Stage 2, or Stage 4
+  // for product code, with paths present in the checkout) and which staged
+  // classes name absent paths. Empty `editable` is a gate; an older hub omits it.
+  scope?: { classes: number; editable: string[]; absent?: string[]; reason: string };
   loop_started_at?: string;
   cycles: number;
   hours: number;

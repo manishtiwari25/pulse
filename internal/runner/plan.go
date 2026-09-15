@@ -317,7 +317,10 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			brief := "Run the project's own checks (tests, lint, links, `git diff --check`), read the memory records " +
 				"(`pulse record list memory`) and the open ADRs' acceptance criteria (`pulse record list adr --status Proposed`), " +
 				"and fix one Tier 0 thing you can prove with the checks (a flaky test, a broken link, a stale doc, a lint " +
-				"finding). Record every other signal as FINDING: lines so the runner posts them."
+				"finding). Read `pulse evolve report --project " + slug + "` for what the loop did this week - jobs done " +
+				"without a change, card jobs that found nothing, experiments planned, questions waiting for the owner - " +
+				"and when one gap is measurable, post it as one SUGGESTION: line naming File:, Variable: and Hypothesis:. " +
+				"Record every other signal as FINDING: lines so the runner posts them."
 			job, isNew, err := addJob(s, slug, "reflect", "Daily reflect: find and fix one provable Tier 0 issue", brief, 0, 1, source, createdBy, true)
 			if err != nil {
 				return created, err

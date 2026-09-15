@@ -196,6 +196,7 @@ func Reflect(ctx context.Context, s *store.Store, project, area, agent, session 
 	} else {
 		r.NextCommands = append(r.NextCommands, "pulse evolve status --project "+p.Slug)
 	}
+	r.NextCommands = append(r.NextCommands, "pulse evolve report --project "+p.Slug)
 	return r, nil
 }
 

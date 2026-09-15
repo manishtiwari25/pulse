@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -58,6 +60,76 @@ type ProductScope struct {
 	Reason  string `json:"reason"`
 }
 
+// EditableScope is what the constitution's "Editable scope" table lets the loop touch right now:
+// the classes at Stage 2 or later (Stage 4 for product classes) whose paths exist in the project's
+// checkout, by name. A table with no such row is a closed gate the owner opens - the loop may not
+// raise a stage itself (ADR-012).
+type EditableScope struct {
+	Classes  int      `json:"classes"`
+	Editable []string `json:"editable"`
+	Absent   []string `json:"absent,omitempty"`
+	Reason   string   `json:"reason"`
+}
+
+// parseEditableScope reads the table; root is the project's checkout, or "" when it is not on this
+// machine, in which case every staged class counts as present.
+func parseEditableScope(body, root, project string) EditableScope {
+	scope := EditableScope{Editable: []string{}}
+	below := 0
+	for _, class := range scopeClasses(body) {
+		scope.Classes++
+		name := class.Class
+		if name == "" {
+			name = class.Paths
+		}
+		switch {
+		case !class.Editable(false):
+			below++
+		case root != "" && !scopePresent(root, class.Paths):
+			scope.Absent = append(scope.Absent, fmt.Sprintf("%s (Stage %d)", name, class.Stage))
+		default:
+			scope.Editable = append(scope.Editable, fmt.Sprintf("%s (Stage %d)", name, class.Stage))
+		}
+	}
+	fix := fmt.Sprintf("owner: raise a class to Stage 2 (Stage 4 for product code) in EVO-constitution-%s with pulse record amend, or ratify an amendment that does (ADR-014)", project)
+	switch {
+	case scope.Classes == 0:
+		scope.Reason = "the constitution has no Editable scope table; owner: add one to EVO-constitution-" + project + " (pulse record amend)"
+	case len(scope.Editable) == 0 && len(scope.Absent) == 0:
+		scope.Reason = fmt.Sprintf("none of the %d file class(es) in the constitution's Editable scope table has reached Stage 2, so the loop may edit no file; %s", scope.Classes, fix)
+	case len(scope.Editable) == 0:
+		scope.Reason = fmt.Sprintf("the loop may edit no file: %d class(es) below Stage 2, and the staged class(es) name paths absent from the checkout (%s); "+
+			"owner: create those paths (pulse-bootstrap) or amend EVO-constitution-%s so a Stage 2 class (Stage 4 for product code) names paths that exist (pulse record amend, ADR-014)",
+			below, strings.Join(scope.Absent, ", "), project)
+	default:
+		scope.Reason = fmt.Sprintf("%d of %d class(es): %s", len(scope.Editable), scope.Classes, strings.Join(scope.Editable, ", "))
+		if len(scope.Absent) > 0 {
+			scope.Reason += "; paths absent from the checkout: " + strings.Join(scope.Absent, ", ")
+		}
+	}
+	return scope
+}
+
+// scopePresent says whether any path pattern of a class resolves to something in the checkout.
+func scopePresent(root, paths string) bool {
+	for _, pattern := range pathPatterns(paths) {
+		pattern = strings.TrimPrefix(strings.TrimSpace(pattern), "./")
+		if strings.HasSuffix(pattern, "/**") || strings.HasSuffix(pattern, "/") {
+			pattern = strings.TrimSuffix(strings.TrimSuffix(pattern, "**"), "/")
+		}
+		if pattern == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, pattern)); err == nil {
+			return true
+		}
+		if matches, err := filepath.Glob(filepath.Join(root, pattern)); err == nil && len(matches) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // JobRef names the open baseline job of a project (ADR-031): its id and
 // queue status (queued, leased or blocked).
 type JobRef struct {
@@ -89,6 +161,7 @@ type LoopStatus struct {
 	Voted            HitRate        `json:"voted"`
 	Signal           HitRate        `json:"signal"`
 	ProductScope     ProductScope   `json:"product_scope"`
+	Scope            EditableScope  `json:"scope"`
 	LoopStartedAt    string         `json:"loop_started_at,omitempty"`
 	Cycles           int            `json:"cycles"`
 	Hours            float64        `json:"hours"`
@@ -252,6 +325,17 @@ func loopStatus(s *store.Store, project string) (*LoopStatus, error) {
 	} else {
 		status.ProductScope = parseProductScope("")
 	}
+	root := ""
+	if p, err := s.Project(project); err == nil && p != nil && p.Path != "" {
+		if info, err := os.Stat(p.Path); err == nil && info.IsDir() {
+			root = p.Path
+		}
+	}
+	if constitution != nil {
+		status.Scope = parseEditableScope(constitution.Body, root, project)
+	} else {
+		status.Scope = parseEditableScope("", root, project)
+	}
 	if err := s.DB.QueryRow("SELECT COUNT(*) FROM evolution_fixtures WHERE project = ? AND enabled = 1", project).Scan(&status.PublicFixtures); err != nil {
 		return nil, err
 	}
@@ -384,6 +468,11 @@ func loopStatus(s *store.Store, project string) (*LoopStatus, error) {
 			status.Reason, status.NextHumanStep = status.LimitProblem, "pulse settings set evolve.limits 'cycles=N,hours=H'"
 		case status.CapReached:
 			status.Reason, status.NextHumanStep = "the owner's evolution budget is exhausted", "pulse settings set evolve.limits 'cycles=N,hours=H'"
+		case len(status.Scope.Editable) == 0:
+			// every experiment target would be refused as outside the editable scope; the ladder says so
+			// here instead of letting the planner card and question suggestions that can never run
+			reason, step, _ := strings.Cut(status.Scope.Reason, "; owner: ")
+			status.Reason, status.NextHumanStep = reason, step
 		default:
 			status.Level, status.Reason, status.NextHumanStep = "D", "the loop may run until a stop rule fires", "none"
 		}
@@ -430,7 +519,7 @@ func statusRows(s *LoopStatus) [][]string {
 		{"Kept / discarded", fmt.Sprintf("%d / %d", s.Kept, s.Discarded)},
 		{"Voted suggestions", hit(s.Voted)}, {"Signal-derived", hit(s.Signal)},
 		{"Since loop enabled", fmt.Sprintf("%d cycles; %.2f hours", s.Cycles, s.Hours)},
-		{"Product scope", s.ProductScope.Reason}, {"Level allowed", s.Level + " - " + s.Reason},
+		{"Product scope", s.ProductScope.Reason}, {"Editable scope", s.Scope.Reason}, {"Level allowed", s.Level + " - " + s.Reason},
 		{"Experiment planning", s.Planning.State + " - " + s.Planning.Reason},
 		{"Next human step", s.NextHumanStep},
 	}

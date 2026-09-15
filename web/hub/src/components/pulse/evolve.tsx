@@ -520,6 +520,13 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
                 {gates.product_scope.allowed ? "product changes allowed" : "operating layer only"}
               </ToneBadge>
             ) : null}
+            {gates.scope ? (
+              <ToneBadge tone={gates.scope.editable.length ? "ok" : "warn"} title={gates.scope.reason || undefined}>
+                {gates.scope.editable.length
+                  ? plural(gates.scope.editable.length, "editable class") + " of " + num(gates.scope.classes)
+                  : "no editable file class"}
+              </ToneBadge>
+            ) : null}
             {gates.cap_reached ? <ToneBadge tone="bad" title={gates.limit_problem || "a cap the constitution writes is reached"}>cap reached</ToneBadge> : null}
           </div>
           <ItemCardMeta>
