@@ -236,3 +236,28 @@ func TestLoopClaimsEveryValidCard(t *testing.T) {
 		t.Fatalf("jobs for the suggestion an improve job holds = %d, want the improve job alone", n)
 	}
 }
+
+// A card question the planner asked the owner before ADR-044 is moot: it neither blocks the readout nor
+// outranks the carded state of the pick it was about.
+func TestReadinessIgnoresPreADR044CardQuestions(t *testing.T) {
+	s := cycleReady(t)
+	joinTestAgent(t, s, "card-writer")
+	idea := cardlessSuggestion(t, s, "idea", "Shorten the README intro", "up", "up")
+	if _, err := board.CreatePost(s, board.PostInput{Project: "demo", Area: idea.Area, Thread: idea.Thread, Kind: "question",
+		Agent: "tester", ForOwner: true, On: idea.ID, Summary: StopSummary,
+		Body: cardNeeded + "; name exactly one File: and one Variable: in a new suggestion; the original post is immutable; owner: pulse post suggestion ... The workflow was not bypassed."}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+	if err != nil || !res.CardCreated {
+		t.Fatalf("plan = %+v (%v); want a card job despite the old question", res, err)
+	}
+	finishCardJob(t, s, res.CardJob, "done")
+	status, err := Status(s, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Planning.State == "blocked" || strings.Contains(status.Planning.Reason, cardNeeded) {
+		t.Fatalf("planning = %+v; an old card question is not a gate", status.Planning)
+	}
+}

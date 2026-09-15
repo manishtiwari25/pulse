@@ -112,14 +112,15 @@ func planningStatus(s *store.Store, status *LoopStatus) (PlanningStatus, error) 
 		return *cardless, nil
 	}
 	// Instruction stops report themselves above while they hold; their older
-	// questions are moot once the post no longer trips or was cleared. What
-	// remains here is a violation question the owner has not answered.
+	// questions are moot once the post no longer trips or was cleared, and so
+	// are the card questions the planner asked before ADR-044. What remains
+	// here is a violation question the owner has not answered.
 	var question, body string
 	err = s.DB.QueryRow(`SELECT q.id, q.body FROM posts q WHERE q.project = ? AND q.kind = 'question' AND q.summary = ?
-		AND q.body NOT LIKE ?
+		AND q.body NOT LIKE ? AND q.body NOT LIKE ?
 		AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
 			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date)
-		ORDER BY q.date DESC, q.id DESC LIMIT 1`, project, StopSummary, instructionReason+"%").Scan(&question, &body)
+		ORDER BY q.date DESC, q.id DESC LIMIT 1`, project, StopSummary, instructionReason+"%", "%"+cardNeeded+"%").Scan(&question, &body)
 	if err == nil {
 		return PlanningStatus{State: "blocked", Reason: "owner review " + question + ": " + body}, nil
 	}

@@ -448,13 +448,15 @@ func threadHasCard(s *store.Store, project string, p *tally.Post, status *LoopSt
 	return false, nil
 }
 
+// questionOpenOnPost reports an unanswered question this agent asked on p - a violation the owner has not
+// decided. The card questions the planner asked before ADR-044 do not count: the card is an agent's job now.
 func questionOpenOnPost(s *store.Store, project string, p *tally.Post, agent string) bool {
 	var id string
 	err := s.DB.QueryRow(`SELECT q.id FROM posts q WHERE q.project = ? AND q.kind = 'question'
-		AND q.area = ? AND q.thread = ? AND q.on_post = ? AND q.agent = ?
+		AND q.area = ? AND q.thread = ? AND q.on_post = ? AND q.agent = ? AND q.body NOT LIKE ?
 		AND NOT EXISTS (
 			SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
 			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date
-		) ORDER BY q.date DESC, q.id DESC LIMIT 1`, project, p.Area, p.Thread, p.ID, agent).Scan(&id)
+		) ORDER BY q.date DESC, q.id DESC LIMIT 1`, project, p.Area, p.Thread, p.ID, agent, "%"+cardNeeded+"%").Scan(&id)
 	return err == nil
 }

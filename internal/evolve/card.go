@@ -138,6 +138,11 @@ type ExperimentCard struct {
 	Body       string `json:"body"`
 }
 
+// cardNeeded starts the input error for a suggestion without one File: and one Variable:. Before ADR-044
+// the planner asked the owner a question with this text; the card is an agent's job now, and an old
+// question that still carries it is moot.
+const cardNeeded = "Suggestion needs an experiment card"
+
 func cardFields(body string) map[string]string {
 	out := map[string]string{}
 	for _, line := range strings.Split(body, "\n") {
@@ -319,7 +324,7 @@ func makeCard(s *store.Store, p *tally.Post, status *LoopStatus) (*ExperimentCar
 	}
 	variable := fields["variable"]
 	if file == "" || variable == "" || strings.Contains(file, ",") {
-		return nil, inputError("Suggestion needs an experiment card",
+		return nil, inputError(cardNeeded,
 			"name exactly one File: and one Variable: in a new suggestion; the original post is immutable",
 			"pulse post suggestion --project "+p.Project+" --area "+p.Area+" --thread "+p.Thread+" --summary 'One-file experiment' --body-file FILE")
 	}
