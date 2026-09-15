@@ -68,6 +68,14 @@ const LABELS: Record<string, string> = {
   "daemon.sweep_keep_days": "Keep logs and patches (days)",
   "daemon.min_free_mb": "Minimum free disk (MB)",
   "provider.openai.base_url": "OpenAI-compatible endpoint",
+  harness: "Harness",
+  provider: "Model provider",
+  "harness.max_steps": "Model calls per run",
+  "harness.max_cost": "Cost cap per run",
+  "harness.keep_observations": "Observations kept verbatim",
+  "harness.system_prompt": "System prompt template",
+  "harness.step_timeout": "Command timeout (seconds)",
+  "harness.output_limit": "Output kept per command (characters)",
 };
 
 const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider)\./;
