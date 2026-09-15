@@ -94,7 +94,7 @@ func TestBuildReportCountsWhatTheLoopAndTheOperatingLayerDid(t *testing.T) {
 	if r.Days != 7 || r.Since >= r.Now || r.Status == nil || r.Status.Project != "demo" {
 		t.Fatalf("window or status wrong: %+v", r)
 	}
-	if r.Suggestions.Posted != 2 || r.Suggestions.Voted != 2 || r.Suggestions.WithCard != 1 || r.Suggestions.Carded != 1 {
+	if r.Suggestions.Posted != 2 || r.Suggestions.Voted != 2 || r.Suggestions.WithCard != 1 || r.Suggestions.InScope != 1 || r.Suggestions.Carded != 1 {
 		t.Fatalf("suggestion funnel: %+v", r.Suggestions)
 	}
 	if r.CardJobs.NoCard != 1 || r.CardJobs.Carded != 0 || r.CardJobs.Queued != 0 {

@@ -60,6 +60,13 @@ func TestStatusGatesTheLoopWhenNoClassHasReachedStageTwo(t *testing.T) {
 	if err != nil || len(claims) != 0 || !strings.Contains(reason, "Stage 2") {
 		t.Fatalf("claims = %v reason %q (%v); the gated loop claims no suggestion", claims, reason, err)
 	}
+	report, err := BuildReport(s, "demo", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Suggestions.WithCard != 1 || report.Suggestions.InScope != 0 {
+		t.Fatalf("funnel = %+v; the card names its fields but the scope refuses it", report.Suggestions)
+	}
 	found := false
 	for _, row := range statusRows(status) {
 		if row[0] == "Editable scope" && strings.Contains(row[1], "Stage 2") {

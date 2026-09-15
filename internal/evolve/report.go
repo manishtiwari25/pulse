@@ -49,6 +49,7 @@ type Funnel struct {
 	Expired    int `json:"expired"`
 	Closed     int `json:"closed"`
 	WithCard   int `json:"with_card"` // the post itself names one File: and one Variable:
+	InScope    int `json:"in_scope"`  // and the constraint check accepts it as an experiment card now
 }
 
 // CardJobCount counts the loop's card jobs (ADR-044) created in the window.
@@ -188,8 +189,12 @@ func suggestionFunnel(s *store.Store, project, since string, status *LoopStatus)
 			f.Closed++
 		}
 		if p := posts[sg.ID]; p != nil {
-			if _, err := makeCard(s, p, status); err == nil {
+			fields := cardFields(p.Body)
+			if fields["file"] != "" && fields["variable"] != "" {
 				f.WithCard++
+			}
+			if _, err := makeCard(s, p, status); err == nil {
+				f.InScope++
 			}
 		}
 	}
@@ -378,7 +383,7 @@ func reportRows(r *Report) [][]string {
 	rows := [][]string{
 		{"Window", fmt.Sprintf("last %d day(s), since %s", r.Days, r.Since)},
 		{"Posts", strings.Join(posts, ", ")},
-		{"Suggestions posted", fmt.Sprintf("%d; %d voted; %d name one File: and one Variable:", f.Posted, f.Voted, f.WithCard)},
+		{"Suggestions posted", fmt.Sprintf("%d; %d voted; %d name one File: and one Variable:, %d of those inside the editable scope", f.Posted, f.Voted, f.WithCard, f.InScope)},
 		{"Suggestions now", fmt.Sprintf("%d need votes, %d eligible, %d carded, %d built, %d tried, %d expired, %d closed",
 			f.NeedsVotes, f.Eligible, f.Carded, f.Built, f.Tried, f.Expired, f.Closed)},
 		{"Card jobs", fmt.Sprintf("%d open, %d carded, %d no card, %d failed", r.CardJobs.Queued, r.CardJobs.Carded, r.CardJobs.NoCard, r.CardJobs.Failed)},
