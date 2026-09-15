@@ -72,8 +72,9 @@ type EditableScope struct {
 }
 
 // parseEditableScope reads the table; root is the project's checkout, or "" when it is not on this
-// machine, in which case every staged class counts as present.
-func parseEditableScope(body, root, project string) EditableScope {
+// machine, in which case every staged class counts as present; record is the constitution's record
+// id, which the owner's step names.
+func parseEditableScope(body, root, record string) EditableScope {
 	scope := EditableScope{Editable: []string{}}
 	below := 0
 	for _, class := range scopeClasses(body) {
@@ -91,16 +92,16 @@ func parseEditableScope(body, root, project string) EditableScope {
 			scope.Editable = append(scope.Editable, fmt.Sprintf("%s (Stage %d)", name, class.Stage))
 		}
 	}
-	fix := fmt.Sprintf("owner: raise a class to Stage 2 (Stage 4 for product code) in EVO-constitution-%s with pulse record amend, or ratify an amendment that does (ADR-014)", project)
+	fix := fmt.Sprintf("owner: raise a class to Stage 2 (Stage 4 for product code) in %s with pulse record amend, or ratify an amendment that does (ADR-014)", record)
 	switch {
 	case scope.Classes == 0:
-		scope.Reason = "the constitution has no Editable scope table; owner: add one to EVO-constitution-" + project + " (pulse record amend)"
+		scope.Reason = "the constitution has no Editable scope table; owner: add one to " + record + " (pulse record amend)"
 	case len(scope.Editable) == 0 && len(scope.Absent) == 0:
 		scope.Reason = fmt.Sprintf("none of the %d file class(es) in the constitution's Editable scope table has reached Stage 2, so the loop may edit no file; %s", scope.Classes, fix)
 	case len(scope.Editable) == 0:
 		scope.Reason = fmt.Sprintf("the loop may edit no file: %d class(es) below Stage 2, and the staged class(es) name paths absent from the checkout (%s); "+
-			"owner: create those paths (pulse-bootstrap) or amend EVO-constitution-%s so a Stage 2 class (Stage 4 for product code) names paths that exist (pulse record amend, ADR-014)",
-			below, strings.Join(scope.Absent, ", "), project)
+			"owner: create those paths (pulse-bootstrap) or amend %s so a Stage 2 class (Stage 4 for product code) names paths that exist (pulse record amend, ADR-014)",
+			below, strings.Join(scope.Absent, ", "), record)
 	default:
 		scope.Reason = fmt.Sprintf("%d of %d class(es): %s", len(scope.Editable), scope.Classes, strings.Join(scope.Editable, ", "))
 		if len(scope.Absent) > 0 {
@@ -310,9 +311,13 @@ func loopStatus(s *store.Store, project string) (*LoopStatus, error) {
 		return nil, inputError("Invalid evolution tolerance", "expected a finite fraction in [0,1]", "pulse settings set evolve.tolerance 0.02")
 	}
 	status.Tolerance = tolerance
-	_, constitution, err := evolutionRecord(s, project, "constitution")
+	constitutionRecord, constitution, err := evolutionRecord(s, project, "constitution")
 	if err != nil {
 		return nil, err
+	}
+	constitutionID := "EVO-constitution-" + project
+	if constitutionRecord != nil {
+		constitutionID = constitutionRecord.ID
 	}
 	_, evaluators, err := evolutionRecord(s, project, "evaluators")
 	if err != nil {
@@ -332,9 +337,9 @@ func loopStatus(s *store.Store, project string) (*LoopStatus, error) {
 		}
 	}
 	if constitution != nil {
-		status.Scope = parseEditableScope(constitution.Body, root, project)
+		status.Scope = parseEditableScope(constitution.Body, root, constitutionID)
 	} else {
-		status.Scope = parseEditableScope("", root, project)
+		status.Scope = parseEditableScope("", root, constitutionID)
 	}
 	if err := s.DB.QueryRow("SELECT COUNT(*) FROM evolution_fixtures WHERE project = ? AND enabled = 1", project).Scan(&status.PublicFixtures); err != nil {
 		return nil, err
