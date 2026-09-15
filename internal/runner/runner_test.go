@@ -113,11 +113,111 @@ func newRepo(t *testing.T, s *store.Store) (row, string) {
 	if err := os.CopyFS(dir, os.DirFS(templateRepo(t))); err != nil {
 		t.Fatal(err)
 	}
-	p, _, err := addProject(s, dir, "Proj", "", false, "", humanAgent, "proj")
+	root := dir
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		root = real
+	}
+	// addProject seeds ~65 framework records plus the starter fixtures per call (ADR-029/030; ~200ms).
+	// The seeded rows are byte-identical for every test except the project path, so they are built
+	// once into a template store and copied into this store with ATTACH + INSERT ... SELECT.
+	tpl := templateStore(t)
+	ctx := context.Background()
+	conn, err := s.DB.Conn(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "ATTACH DATABASE ? AS tpl", tpl.path); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		"INSERT INTO main.projects SELECT * FROM tpl.projects WHERE slug = 'proj'",
+		"UPDATE main.projects SET path = REPLACE(path, ?, ?) WHERE slug = 'proj'",
+		"INSERT INTO main.settings SELECT * FROM tpl.settings WHERE name NOT IN (SELECT name FROM main.settings)",
+		"INSERT INTO main.records SELECT * FROM tpl.records",
+		"INSERT INTO main.record_revisions SELECT * FROM tpl.record_revisions",
+		"INSERT INTO main.evolution_fixtures SELECT * FROM tpl.evolution_fixtures",
+		"INSERT INTO main.events (at, actor, action, subject, detail) SELECT at, actor, action, subject, REPLACE(detail, ?, ?) FROM tpl.events WHERE seq > ? ORDER BY seq",
+	} {
+		args := []any{}
+		if strings.Contains(q, "REPLACE") {
+			args = append(args, tpl.root, root)
+		}
+		if strings.Contains(q, "seq >") {
+			args = append(args, tpl.baseSeq)
+		}
+		if _, err := conn.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "DETACH DATABASE tpl"); err != nil {
+		t.Fatal(err)
+	}
+	p := projectBySlug(s.DB, "proj")
+	if p == nil {
+		t.Fatal("project proj not found after copy")
+	}
 	return p, p.str("path")
+}
+
+// templateStoreInfo describes the per-binary template store newRepo copies from.
+type templateStoreInfo struct {
+	path    string // the closed template store file
+	root    string // the project path registered in it
+	baseSeq int    // events.seq before addProject ran; later rows belong to the project
+	err     error
+}
+
+var (
+	tplStoreOnce sync.Once
+	tplStore     templateStoreInfo
+)
+
+// templateStore builds, once per binary, a store in which addProject registered `proj` at a copy
+// of the template repo, then closes it so newRepo can ATTACH the file and copy its rows.
+func templateStore(t *testing.T) *templateStoreInfo {
+	t.Helper()
+	tplStoreOnce.Do(func() {
+		home, err := os.MkdirTemp("", "pulse-template-store-")
+		if err != nil {
+			tplStore.err = err
+			return
+		}
+		dir := filepath.Join(home, "proj")
+		if err := os.CopyFS(dir, os.DirFS(templateRepo(t))); err != nil {
+			tplStore.err = err
+			return
+		}
+		if err := store.Create(filepath.Join(home, store.StoreName)); err != nil {
+			tplStore.err = err
+			return
+		}
+		s, err := store.Open(store.Options{Home: home, Now: testNow})
+		if err != nil {
+			tplStore.err = err
+			return
+		}
+		if _, err := s.DB.Exec("PRAGMA synchronous = OFF"); err != nil {
+			tplStore.err = err
+			return
+		}
+		if err := s.DB.QueryRow("SELECT COALESCE(MAX(seq), 0) FROM events").Scan(&tplStore.baseSeq); err != nil {
+			tplStore.err = err
+			return
+		}
+		p, _, err := addProject(s, dir, "Proj", "", false, "", humanAgent, "proj")
+		if err != nil {
+			tplStore.err = err
+			return
+		}
+		tplStore.root = p.str("path")
+		tplStore.path = filepath.Join(home, store.StoreName)
+		tplStore.err = s.Close()
+	})
+	if tplStore.err != nil {
+		t.Fatal(tplStore.err)
+	}
+	return &tplStore
 }
 
 // newBareRepo is newRepo without the project's seeded records (ADR-029/030) and without the three
@@ -591,6 +691,9 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	if templateDir != "" {
 		os.RemoveAll(templateDir)
+	}
+	if tplStore.path != "" {
+		os.RemoveAll(filepath.Dir(tplStore.path))
 	}
 	os.Exit(code)
 }
