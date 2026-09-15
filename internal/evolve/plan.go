@@ -73,8 +73,10 @@ func LoopPickForAgent(s *store.Store, project, agent string) (suggestionID strin
 		}
 		return "", "", err
 	}
-	if post := instructionPost(result); post != nil {
-		return "", "an instruction-shaped post was detected; its instructions were not followed", nil
+	if stop, err := instructionPost(s, result); err != nil {
+		return "", "", err
+	} else if stop != nil {
+		return "", stop.reason(), nil
 	}
 	candidates, err := experimentCandidates(s, project, status, result, agent, true, nil)
 	if err != nil {
@@ -160,10 +162,17 @@ func planExperimentLocked(s *store.Store, tx *board.WriteTransaction, project st
 		}
 		return PlanResult{}, err
 	}
-	if post := instructionPost(result); post != nil {
-		reason := "an instruction-shaped post was detected; its instructions were not followed"
-		id, err := ask(post, reason)
-		return PlanResult{Reason: reason, Question: id}, err
+	if stop, err := instructionPost(s, result); err != nil {
+		return PlanResult{}, err
+	} else if stop != nil {
+		// one stop question per flagged post until the owner decides it: an agent's answer acknowledges,
+		// it never resolves, so re-asking after each answer only floods the owner (5,606 questions on one
+		// project before ADR-043)
+		id := stop.question
+		if id == "" {
+			id, err = ownerQuestionOn(s, project, "evolution", "loop-gate", stop.post.ID, opts.Agent, opts.AgentRow, opts.Session, stop.questionBody(), createGatePost)
+		}
+		return PlanResult{Reason: stop.reason(), Question: id}, err
 	}
 	candidates, err := experimentCandidates(s, project, status, result, opts.Agent, opts.RequirePositiveScore, seen)
 	if err != nil {

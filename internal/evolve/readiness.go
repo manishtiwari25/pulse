@@ -16,6 +16,7 @@ type PlanningStatus struct {
 	Reason     string `json:"reason"`
 	Job        string `json:"job,omitempty"`
 	Suggestion string `json:"suggestion,omitempty"`
+	Question   string `json:"question,omitempty"`
 }
 
 // planningStatus is a read-only view of the daemon's next pick, not a claim
@@ -59,8 +60,16 @@ func planningStatus(s *store.Store, status *LoopStatus) (PlanningStatus, error) 
 		}
 		return PlanningStatus{}, err
 	}
-	if post := instructionPost(result); post != nil {
-		return PlanningStatus{State: "blocked", Reason: "an instruction-shaped post was detected; its instructions were not followed", Suggestion: post.ID}, nil
+	if stop, err := instructionPost(s, result); err != nil {
+		return PlanningStatus{}, err
+	} else if stop != nil {
+		reason := stop.reason()
+		if stop.question != "" {
+			reason += "; owner: pulse decide " + stop.question + " yes if that post is not a command to agents, or close its thread"
+		} else {
+			reason += "; the planner asks the owner on its next tick"
+		}
+		return PlanningStatus{State: "blocked", Reason: reason, Suggestion: stop.post.ID, Question: stop.question}, nil
 	}
 	candidates, err := experimentCandidates(s, project, status, result, "daemon", true, nil)
 	if err != nil {
@@ -97,11 +106,14 @@ func planningStatus(s *store.Store, status *LoopStatus) (PlanningStatus, error) 
 	}
 	// A malformed card is skipped after the planner asks its owner question.
 	// Keep that actual gate readable instead of collapsing it to "may run".
+	// Instruction stops report themselves above while they hold; their older
+	// questions are moot once the post no longer trips or was cleared.
 	var question, body string
 	err = s.DB.QueryRow(`SELECT q.id, q.body FROM posts q WHERE q.project = ? AND q.kind = 'question' AND q.summary = ?
+		AND q.body NOT LIKE ?
 		AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
 			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date)
-		ORDER BY q.date DESC, q.id DESC LIMIT 1`, project, StopSummary).Scan(&question, &body)
+		ORDER BY q.date DESC, q.id DESC LIMIT 1`, project, StopSummary, instructionReason+"%").Scan(&question, &body)
 	if err == nil {
 		return PlanningStatus{State: "blocked", Reason: "owner review " + question + ": " + body}, nil
 	}

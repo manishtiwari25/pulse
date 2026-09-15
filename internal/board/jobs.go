@@ -577,6 +577,9 @@ func decisionDecider(w *writer, target *Post, postID, decidedBy string) (*store.
 	if decisionMarkerRe.MatchString(target.Body) {
 		return nil, refuse(2, "a proposal that authorizes a command waits for the human (ADR-021)")
 	}
+	if isStopQuestion(target) {
+		return nil, refuse(2, "a stop question from the evolution loop is the owner's alone (ADR-043)")
+	}
 	if what := Tier2Proposal(target.Summary, target.Body); what != "" {
 		return nil, refuse(2, "a proposal that %s is a Tier 2 decision: it waits for the owner", what)
 	}
@@ -584,6 +587,12 @@ func decisionDecider(w *writer, target *Post, postID, decidedBy string) (*store.
 }
 
 var decisionMarkerRe = regexp.MustCompile(`(?m)^[ \t]*(pair|onboard):[ \t]*\S`)
+
+// isStopQuestion is the evolution loop's gate question. A yes on it records that the flagged post is not a
+// command to agents (ADR-043); it proposes no work, so no job follows, and only the human decides it.
+func isStopQuestion(p *Post) bool {
+	return p.Kind == "question" && p.Summary == store.EvolutionStopSummary
+}
 
 var adrRe = regexp.MustCompile(`\bADR-\d+\b`)
 
@@ -618,7 +627,7 @@ func decisionJob(w *writer, target, result *Post, words, decidedBy string) (*Job
 	if err != nil {
 		return nil, err
 	}
-	if p == nil || decisionMarkerRe.MatchString(target.Body) {
+	if p == nil || decisionMarkerRe.MatchString(target.Body) || isStopQuestion(target) {
 		return nil, nil
 	}
 	withWords := ""

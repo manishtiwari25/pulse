@@ -36,6 +36,11 @@ const journalSizeLimitBytes = 64 * 1024 * 1024
 // HumanAgent is the agents row the maintainer acts as.
 const HumanAgent = "human"
 
+// EvolutionStopSummary is the summary of the question the evolution loop posts
+// when a gate stops it. board and evolve both read it: a stop question is the
+// owner's alone to decide and a yes on one queues no job (ADR-043).
+const EvolutionStopSummary = "Evolution stopped; owner review needed"
+
 // CommonsSlug is the pseudo project shared by every project.
 const CommonsSlug = "commons"
 

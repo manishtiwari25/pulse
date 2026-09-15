@@ -80,7 +80,7 @@ func emitCycle(opts CycleOptions, result CycleResult) error {
 }
 
 // StopSummary is the summary of the question the loop posts when a gate stops it.
-const StopSummary = "Evolution stopped; owner review needed"
+const StopSummary = store.EvolutionStopSummary
 
 // GateCooldown is how long an answered stop question stands in for a new one on the same target.
 const GateCooldown = 30 * time.Minute
@@ -100,6 +100,13 @@ func ownerQuestionWith(s *store.Store, project string, target *tally.Post, agent
 	if target != nil {
 		area, thread, on = target.Area, target.Thread, target.ID
 	}
+	return ownerQuestionOn(s, project, area, thread, on, agent, agentRow, session, reason, create)
+}
+
+// ownerQuestionOn asks in a chosen thread. The instruction gate asks in evolution/loop-gate, on the flagged
+// post: the owner's decision closes the gate thread, never the thread the candidate lives in (ADR-043 D4).
+func ownerQuestionOn(s *store.Store, project, area, thread, on, agent string, agentRow *store.Agent, session, reason string,
+	create func(board.PostInput) (*board.Post, error)) (string, error) {
 	if id, err := openStopQuestion(s, project, area, thread, on); err != nil || id != "" {
 		return id, err
 	}

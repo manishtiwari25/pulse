@@ -1,6 +1,7 @@
 package evolve
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +15,12 @@ import (
 	"github.com/manishtiwari25/pulse/internal/tally"
 )
 
-var instructionPattern = regexp.MustCompile(`(?i)\b(ignore|bypass|override|skip|disable)\b.{0,60}?\b(instructions?|checks?|constitution|stop|safety|policy|guards?|sandbox)\b|\b(merge|push|deploy|publish|reset)\s+(now|immediately|without)\b|\b(maintainer|owner|human)\s+(has\s+)?(approved|authorized)\b`)
+// A command to an agent names its object right after the verb: "ignore all previous instructions",
+// "bypass the safety checks", "skip the checks", "disable the sandbox". Up to three qualifiers may sit
+// between them. Identifiers (skip.nocheck, skip-before-lease), verbs with another object ("skip it
+// under -short so the package check stays fast", "skip planning") and quotations of the words
+// ("skip ... check") are the vocabulary of the work, not commands (ADR-043 D1).
+var instructionPattern = regexp.MustCompile(`(?i)\b(ignore|bypass|override|skip|disable)\s+(?:(?:the|all|any|every|these|those|this|that|your|our|my|its|their|previous|prior|earlier|above|existing|current|remaining|other|further|usual|normal|safety|verification|human|owner|maintainer|pulse|constitutional|[a-z]+'s)\s+){0,3}(instructions?|checks?|constitution|stop(?:\s+rules?)?|safety|policy|policies|guards?|guardrails?|sandbox)\b|\b(merge|push|deploy|publish|reset)\s+(now|immediately|without)\b|\b(maintainer|owner|human)\s+(has\s+)?(approved|authorized)\b`)
 var negatedInstruction = regexp.MustCompile(`(?i)^(do not|don't|never|must not|cannot|won't|refuse|not authorized)\b`)
 
 // InstructionShaped is a conservative tripwire, not a prompt-injection
@@ -33,18 +39,91 @@ func InstructionShaped(text string) bool {
 	return false
 }
 
-func instructionPost(result *tally.Result) *tally.Post {
+// instructionReason is the planner's reason and the stop question's first line when the tripwire fires.
+const instructionReason = "an instruction-shaped post was detected; its instructions were not followed"
+
+// instructionStop is the newest instruction-shaped post on an open or stale thread that the owner has
+// not cleared, with the id of the stop question waiting on it ("" when none is open yet); nil when the
+// loop may plan. A post is cleared when the stop question posted on it was decided yes by the human
+// (ADR-043 D2): one decision clears one post, and a later instruction-shaped post stops the loop again.
+type instructionStop struct {
+	post     *tally.Post
+	question string
+}
+
+func (st *instructionStop) reason() string {
+	if st == nil {
+		return ""
+	}
+	return instructionReason + " (" + st.post.ID + ")"
+}
+
+// questionBody is what the owner reads on the stop question: which post, and what yes and no mean.
+func (st *instructionStop) questionBody() string {
+	return st.reason() + "\n" +
+		"If " + st.post.ID + " is not a command to agents, answer yes on this question with " +
+		"pulse decide QUESTION yes --words '...' to record the review; the loop then plans past that post. " +
+		"Answer no, or close the thread, to keep the stop."
+}
+
+func instructionPost(s *store.Store, result *tally.Result) (*instructionStop, error) {
+	cleared, err := clearedInstructionPosts(s, result.Project)
+	if err != nil {
+		return nil, err
+	}
 	open := map[string]bool{}
 	for _, t := range result.Threads {
 		open[t.Key] = t.Status == "open" || t.Status == "stale"
 	}
 	for _, p := range result.Posts {
 		key := p.Area + "/" + p.Thread
-		if (open[key] || open[result.Project+"/"+key]) && InstructionShaped(p.Summary+"\n"+p.Body) {
-			return &p
+		if cleared[p.ID] || !(open[key] || open[result.Project+"/"+key]) {
+			continue
+		}
+		if InstructionShaped(p.Summary + "\n" + p.Body) {
+			post := p
+			question, err := undecidedStopQuestion(s, result.Project, p.ID)
+			if err != nil {
+				return nil, err
+			}
+			return &instructionStop{post: &post, question: question}, nil
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+// undecidedStopQuestion is the newest stop question on a post that no decision has answered yet, whether
+// or not an agent's answer acknowledged it; "" when the planner has not asked. It is the id the owner
+// passes to pulse decide.
+func undecidedStopQuestion(s *store.Store, project, postID string) (string, error) {
+	var id string
+	err := s.DB.QueryRow(`SELECT q.id FROM posts q WHERE q.project = ? AND q.kind = 'question' AND q.summary = ?
+		AND q.on_post = ? AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id)
+		ORDER BY q.date DESC, q.id DESC LIMIT 1`, project, StopSummary, postID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// clearedInstructionPosts are the posts whose stop question the human decided yes on.
+func clearedInstructionPosts(s *store.Store, project string) (map[string]bool, error) {
+	rows, err := s.DB.Query(`SELECT q.on_post FROM decisions d JOIN posts q ON q.id = d.post_id
+		WHERE q.project = ? AND q.kind = 'question' AND q.summary = ? AND q.on_post != ''
+		AND d.answer = 'yes' AND d.decided_by = ?`, project, StopSummary, store.HumanAgent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cleared := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		cleared[id] = true
+	}
+	return cleared, rows.Err()
 }
 
 type ExperimentCard struct {

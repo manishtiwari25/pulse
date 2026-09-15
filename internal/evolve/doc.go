@@ -38,7 +38,10 @@
 //     Class: and optionally Tier:/Target: lines. Missing scope is a refusal.
 //     Public names and the private count are the card's complete fixture list.
 //     InstructionShaped is an explicit conservative tripwire on open threads,
-//     not a semantic authority detector; owner resolution closes unsafe threads.
+//     not a semantic authority detector: a command names its object right after
+//     the verb (ADR-043). The owner resolves a stop by deciding yes on the stop
+//     question in evolution/loop-gate (the post is not a command; the loop
+//     plans past it) or by closing the unsafe thread.
 //     Cycles reconcile job events through the process bus and cross-process
 //     Bridge, retain only a renewable SQL lease, and never touch source branches.
 //     A stopped observer cancels only a queued job it created. Leased jobs stay
