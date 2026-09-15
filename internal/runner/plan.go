@@ -9,7 +9,14 @@ import (
 	"github.com/manishtiwari25/pulse/internal/tally"
 )
 
-const ballotHours = 6 // a card gets its own session's votes first; idle hands vote on what is still short after this long
+// ballotHours is lead.ballot_hours: a card gets its own session's votes first; idle hands vote on what is
+// still short after this long, at most one ballot per project per that many hours (ADR-045).
+func ballotHours(s *store.Store) int {
+	if h := settingInt(s, "lead.ballot_hours"); h >= 1 {
+		return h
+	}
+	return 1
+}
 
 func recordPlanDeferred(s *store.Store, slug, now, actor, suggestionID string) {
 	if planDeferredEventExists(s, slug, suggestionID) {
@@ -112,9 +119,9 @@ func openQuestions(s *store.Store, slug, now string) []row {
 	return out
 }
 
-// ballotDue is ballot_due(): below-quorum cards older than ballotHours, unless a ballot job was planned since.
+// ballotDue is ballot_due(): below-quorum cards older than lead.ballot_hours, unless a ballot job was planned since.
 func ballotDue(s *store.Store, slug, now string, suggestions []tally.Suggestion) []tally.Suggestion {
-	since := plusHours(now, -ballotHours)
+	since := plusHours(now, -float64(ballotHours(s)))
 	prefix := "ballot:" + slug + ":"
 	last := mustOne(s.DB, "SELECT MAX(substr(source, ?)) AS m FROM jobs WHERE project = ? AND kind = 'ballot' AND source LIKE ?",
 		len(prefix)+1, slug, prefix+"%").str("m")
@@ -297,7 +304,7 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 				"project's own checks, down when it is a guess, a duplicate, owner-only, or already done. Never vote on "+
 				"your own cards. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with "+
 				"how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n%s",
-				len(cards), ballotHours, strings.Join(listed, "\n"))
+				len(cards), ballotHours(s), strings.Join(listed, "\n"))
 			job, isNew, err := addJob(s, slug, "ballot", fmt.Sprintf("Vote the ballot: %d card(s) below quorum for %s", len(cards), slug), brief,
 				0, 3, fmt.Sprintf("ballot:%s:%s", slug, stampOf(now)), createdBy, true)
 			if err != nil {
@@ -328,6 +335,17 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			if isNew {
 				created = append(created, job)
 			}
+		}
+	}
+	// ADR-045: a project that is quiet - nothing plannable, nothing queued, nothing created for lead.research_minutes -
+	// gets a research job, so idle time produces the cards and votes the rest of the planner runs on.
+	if len(created) == 0 {
+		job, isNew, err := planResearch(s, slug, now, createdBy)
+		if err != nil {
+			return created, err
+		}
+		if isNew {
+			created = append(created, job)
 		}
 	}
 	return created, nil

@@ -61,6 +61,11 @@ func newStore(t *testing.T) *store.Store {
 	if err := s.SetSetting(humanAgent, "lead.idle_hours", "0"); err != nil {
 		t.Fatal(err)
 	}
+	// The planner's research jobs (ADR-045) would seed a reflect job for every quiet project in every planner
+	// test; tests that exercise them set lead.research_minutes back on (see plan_research_test.go).
+	if err := s.SetSetting(humanAgent, "lead.research_minutes", "0"); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { s.Close() })
 	return s
 }

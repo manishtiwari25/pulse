@@ -844,8 +844,23 @@ func TestLeadIdleSettings(t *testing.T) {
 	}
 	names := ExtraSettingNames()
 	leadStart := len(names) - len(OwnerSettings) - len(LeadSettings)
-	if names[leadStart] != "lead.idle_hours" || names[leadStart+1] != "lead.idle_max_jobs" {
+	if names[leadStart] != "lead.ballot_hours" || names[leadStart+1] != "lead.idle_hours" || names[leadStart+2] != "lead.idle_max_jobs" {
 		t.Fatalf("ExtraSettingNames lead segment = %v", names[leadStart:])
+	}
+	// ADR-045: the research and ballot cadence settings default on, with the floors their planner code assumes.
+	for key, want := range map[string]string{"lead.research_minutes": "60", "lead.research_per_day": "12", "lead.ballot_hours": "1"} {
+		if got := s.Setting(key, ""); got != want {
+			t.Fatalf("%s default = %q, want %s", key, got, want)
+		}
+	}
+	if err := s.SetSetting("human", "lead.research_per_day", "0"); err == nil {
+		t.Fatal("research per day 0 accepted")
+	}
+	if err := s.SetSetting("human", "lead.ballot_hours", "0"); err == nil {
+		t.Fatal("ballot hours 0 accepted")
+	}
+	if err := s.SetSetting("human", "lead.research_minutes", "0"); err != nil || s.Setting("lead.research_minutes", "") != "0" {
+		t.Fatalf("research minutes 0: %v %q", err, s.Setting("lead.research_minutes", ""))
 	}
 }
 

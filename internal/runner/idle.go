@@ -30,7 +30,7 @@ func idleNote(s *store.Store, slug, now string) string {
 	if part := ballotIdlePart(s, slug, now, suggestions); part != "" {
 		parts = append(parts, part)
 	}
-	parts = append(parts, reflectIdlePart(s, slug, now))
+	parts = append(parts, reflectIdlePart(s, slug, now), researchIdlePart(s, slug, now))
 	if st, err := evolve.Status(s, slug); err == nil {
 		if st.Level == "D" {
 			parts = append(parts, "evolve: level D")
@@ -152,7 +152,7 @@ func ballotIdlePart(s *store.Store, slug, now string, suggestions []tally.Sugges
 	if last == nil || last.str("created_at") == "" {
 		return ""
 	}
-	due := mustISO(last.str("created_at")).Add(ballotHours * time.Hour)
+	due := mustISO(last.str("created_at")).Add(time.Duration(ballotHours(s)) * time.Hour)
 	left := due.Sub(mustISO(now))
 	hours := int((left + time.Hour - time.Nanosecond) / time.Hour)
 	if hours < 1 {
@@ -169,6 +169,15 @@ func reflectIdlePart(s *store.Store, slug, now string) string {
 		return "reflect " + job.str("status") + " today"
 	}
 	return "reflect due"
+}
+
+// researchIdlePart says when the next research job (ADR-045) comes and what it will look at, or why none does.
+func researchIdlePart(s *store.Store, slug, now string) string {
+	focus, reason, ok := researchDue(s, slug, now)
+	if ok {
+		return "research due: " + focus.Name
+	}
+	return "research: " + reason
 }
 
 func jobSourceCount(s *store.Store, source string) int {

@@ -864,8 +864,20 @@
     },
     {
       "choices": null,
+      "default": "1",
+      "description": "hours a card may wait below the vote quorum before the planner seeds a ballot job, at most one per project per that many hours, and only when nothing else is queued",
+      "kind": "count",
+      "min": 1,
+      "name": "lead.ballot_hours",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "1"
+    },
+    {
+      "choices": null,
       "default": "6",
-      "description": "hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; 0 turns the standing brief off",
+      "description": "hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; research, ballot and reflect jobs the planner seeds on its own do not count as the project moving; 0 turns the standing brief off",
       "kind": "count",
       "min": 0,
       "name": "lead.idle_hours",
@@ -885,6 +897,30 @@
       "updated_at": "",
       "updated_by": "default",
       "value": "3"
+    },
+    {
+      "choices": null,
+      "default": "60",
+      "description": "minutes a project must sit with nothing queued, leased or created before the planner seeds one research job: a worker investigates one focus in turn (the checks, the loop's report, the docs, the product as its user sees it, the code that changes most, the dependencies, the board, the memory) and ends with one to three experiment cards and a vote on every card below quorum; 0 turns research off (ADR-045)",
+      "kind": "count",
+      "min": 0,
+      "name": "lead.research_minutes",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "60"
+    },
+    {
+      "choices": null,
+      "default": "12",
+      "description": "research jobs one project may receive per UTC day",
+      "kind": "count",
+      "min": 1,
+      "name": "lead.research_per_day",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "12"
     },
     {
       "choices": null,

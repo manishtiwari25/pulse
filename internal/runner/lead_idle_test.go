@@ -148,3 +148,22 @@ func TestIdleLeadBriefListsBoardAndFailures(t *testing.T) {
 		}
 	}
 }
+
+// ADR-045: the planner's own standing jobs - research, ballots, the daily reflect - keep a quiet project busy
+// without deciding anything, so they do not reset the lead's quiet window; a worker job of any other kind does.
+func TestIdleLeadIgnoresStandingResearchAndBallotJobs(t *testing.T) {
+	s := newStore(t)
+	newBareRepo(t, s)
+	setSetting(t, s, "lead.idle_hours", "6")
+	for _, j := range []struct{ kind, source string }{{"reflect", "research:proj:20260906T090000Z"}, {"ballot", "ballot:proj:20260906T093000Z"}, {"reflect", "reflect:proj:2026-09-06"}} {
+		job, _, err := addJob(s, "proj", j.kind, "standing "+j.kind, "look around", 0, 1, j.source, "daemon", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec1(s.DB, "UPDATE jobs SET status = 'done', created_at = ?, finished_at = ? WHERE id = ?", plusHours(testNow, -1), plusHours(testNow, -1), job.str("id"))
+	}
+	lines := tendLead(s, "proj", testNow, "daemon")
+	if len(idleLeadJobRows(s.DB)) != 1 || !strings.Contains(strings.Join(lines, "\n"), "owner idle 6h") {
+		t.Fatalf("standing jobs an hour ago held the idle lead: %v", lines)
+	}
+}

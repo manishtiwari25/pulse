@@ -36,8 +36,8 @@ interface Group {
 const RUNNER_CLUSTERS = [
   { title: "The machine", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "max_ai_credits", "runner_cmd", "prune_after_days"] },
   { title: "The worker", keys: ["worker_model", "light_model", "landing", "landing.push", "push.credential"] },
-  { title: "The board", keys: ["quorum", "expiry_days", "stale_days", "claim_hours"] },
-  { title: "The lead", keys: ["lead.idle_hours", "lead.idle_max_jobs", "lead.stuck_thread_jobs"] },
+  { title: "The board", keys: ["quorum", "expiry_days", "stale_days", "claim_hours", "lead.ballot_hours"] },
+  { title: "The lead", keys: ["lead.idle_hours", "lead.idle_max_jobs", "lead.stuck_thread_jobs", "lead.research_minutes", "lead.research_per_day"] },
   { title: "Amendments", keys: ["amend_quorum", "amend_majority"] },
 ];
 const GROUPS: Group[] = [

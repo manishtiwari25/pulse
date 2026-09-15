@@ -652,8 +652,11 @@ func tendIdleLead(s *store.Store, slug, lead, now, actor string) []string {
 	if hours <= 0 {
 		return nil
 	}
+	// The planner's own standing jobs - research, ballots, the daily reflect (ADR-045) - keep a quiet project
+	// busy without deciding anything; they do not count as the project moving, or the lead would never be asked.
 	quiet := mustOne(s.DB, "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased', 'blocked') LIMIT 1", slug) == nil &&
-		mustOne(s.DB, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? LIMIT 1", slug, plusHours(now, -float64(hours))) == nil
+		mustOne(s.DB, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? AND kind NOT IN ('reflect', 'ballot') LIMIT 1",
+			slug, plusHours(now, -float64(hours))) == nil
 	if !quiet {
 		return nil
 	}

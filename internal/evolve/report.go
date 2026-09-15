@@ -27,9 +27,22 @@ type Report struct {
 	Suggestions Funnel       `json:"suggestions"`
 	CardJobs    CardJobCount `json:"card_jobs"`
 	Jobs        []JobCount   `json:"jobs"`
+	Research    Research     `json:"research"`
 	Landings    Landings     `json:"landings"`
 	Experiments Experiments  `json:"experiments"`
 	Owner       OwnerInbox   `json:"owner"`
+}
+
+// Research is what the planner's research jobs (ADR-045; kind reflect, source research:*) left behind in the
+// window: the posts their runs made, by what the rest of the planner runs on. Cards are the suggestions that
+// name one File: and one Variable:. The jobs themselves are the "research" row of Jobs.
+type Research struct {
+	Jobs        int `json:"jobs"`
+	Suggestions int `json:"suggestions"`
+	Cards       int `json:"cards"`
+	Votes       int `json:"votes"`
+	Findings    int `json:"findings"`
+	Answers     int `json:"answers"`
 }
 
 type KindCount struct {
@@ -119,6 +132,9 @@ func BuildReport(s *store.Store, project string, days int) (*Report, error) {
 		return nil, err
 	}
 	if r.Jobs, err = jobCounts(s, project, since); err != nil {
+		return nil, err
+	}
+	if r.Research, err = researchCounts(s, project, since); err != nil {
 		return nil, err
 	}
 	if r.Landings, err = landingCounts(s, project, since); err != nil {
@@ -228,8 +244,11 @@ func cardJobCounts(s *store.Store, project, since string) (CardJobCount, error) 
 	return c, rows.Err()
 }
 
+// researchJobSQL tells a research job from the other reflect jobs (a daily reflect, a card job) for a jobs row j.
+const researchJobSQL = "(j.kind = 'reflect' AND j.source LIKE 'research:%')"
+
 func jobCounts(s *store.Store, project, since string) ([]JobCount, error) {
-	rows, err := s.DB.Query(`SELECT j.kind, j.status,
+	rows, err := s.DB.Query(`SELECT CASE WHEN `+researchJobSQL+` THEN 'research' ELSE j.kind END AS kind, j.status,
 		(j.branch != '' OR EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.commits > 0)) AS changed
 		FROM jobs j WHERE j.project = ? AND j.created_at >= ?`, project, since)
 	if err != nil {
@@ -272,6 +291,42 @@ func jobCounts(s *store.Store, project, since string) ([]JobCount, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Kind < out[j].Kind })
 	return out, nil
+}
+
+// researchCounts counts the research jobs created in the window and the posts their runs made: a post's session
+// is its run's id, the run names its job.
+func researchCounts(s *store.Store, project, since string) (Research, error) {
+	var out Research
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM jobs j WHERE j.project = ? AND `+researchJobSQL+` AND j.created_at >= ?`,
+		project, since).Scan(&out.Jobs); err != nil {
+		return out, err
+	}
+	rows, err := s.DB.Query(`SELECT p.kind, p.body FROM posts p JOIN runs r ON r.id = p.session JOIN jobs j ON j.id = r.job_id
+		WHERE j.project = ? AND `+researchJobSQL+` AND p.created_at >= ?`, project, since)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, body string
+		if err := rows.Scan(&kind, &body); err != nil {
+			return out, err
+		}
+		switch kind {
+		case "suggestion":
+			out.Suggestions++
+			if f := cardFields(body); f["file"] != "" && f["variable"] != "" {
+				out.Cards++
+			}
+		case "vote":
+			out.Votes++
+		case "finding":
+			out.Findings++
+		case "answer":
+			out.Answers++
+		}
+	}
+	return out, rows.Err()
 }
 
 func landingCounts(s *store.Store, project, since string) (Landings, error) {
@@ -395,6 +450,8 @@ func reportRows(r *Report) [][]string {
 		rows = append(rows, []string{"Jobs " + j.Kind, fmt.Sprintf("%d done with commits, %d done without, %d failed, %d cancelled, %d open",
 			j.DoneChanged, j.DoneUnchanged, j.Failed, j.Cancelled, j.Open)})
 	}
+	rows = append(rows, []string{"Research", fmt.Sprintf("%d job(s); left %d suggestion(s) (%d cards), %d vote(s), %d finding(s), %d answer(s)",
+		r.Research.Jobs, r.Research.Suggestions, r.Research.Cards, r.Research.Votes, r.Research.Findings, r.Research.Answers)})
 	l := r.Landings
 	rows = append(rows,
 		[]string{"Landings", fmt.Sprintf("%d landed (%d with code files, %d docs only); %d pushed; %d held, %d conflicts, %d failed verify",

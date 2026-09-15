@@ -310,13 +310,19 @@ var LeadSettings = map[string]string{
 	"lead.idle_hours":        "6",
 	"lead.idle_max_jobs":     "3",
 	"lead.stuck_thread_jobs": "3",
+	"lead.research_minutes":  "60",
+	"lead.research_per_day":  "12",
+	"lead.ballot_hours":      "1",
 }
 
 // LeadRules validate LeadSettings.
 var LeadRules = map[string]SettingRule{
-	"lead.idle_hours":        {Kind: "count", Min: 0, HasMin: true, Description: "hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; 0 turns the standing brief off"},
+	"lead.idle_hours":        {Kind: "count", Min: 0, HasMin: true, Description: "hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; research, ballot and reflect jobs the planner seeds on its own do not count as the project moving; 0 turns the standing brief off"},
 	"lead.idle_max_jobs":     {Kind: "count", Min: 1, HasMin: true, Description: "worker jobs one idle lead run may queue"},
 	"lead.stuck_thread_jobs": {Kind: "count", Min: 0, HasMin: true, Description: "finished worker jobs one board thread may seed in a row (from its suggestions, handoffs and questions) that commit nothing - read-only triage, claims, questions - before the planner stops seeding that thread and asks the lead to decide it; a job from the thread that commits resets the count; 0 turns the cap off"},
+	"lead.research_minutes":  {Kind: "count", Min: 0, HasMin: true, Description: "minutes a project must sit with nothing queued, leased or created before the planner seeds one research job: a worker investigates one focus in turn (the checks, the loop's report, the docs, the product as its user sees it, the code that changes most, the dependencies, the board, the memory) and ends with one to three experiment cards and a vote on every card below quorum; 0 turns research off (ADR-045)"},
+	"lead.research_per_day":  {Kind: "count", Min: 1, HasMin: true, Description: "research jobs one project may receive per UTC day"},
+	"lead.ballot_hours":      {Kind: "count", Min: 1, HasMin: true, Description: "hours a card may wait below the vote quorum before the planner seeds a ballot job, at most one per project per that many hours, and only when nothing else is queued"},
 }
 
 const (

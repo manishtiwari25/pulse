@@ -1061,9 +1061,24 @@ created, the lead gets a standing brief: read the board's queue, the failed
 jobs of the week, the plans and decisions, queue up to `lead.idle_max_jobs`
 (default 3) Tier 0/1 worker jobs and tell the owner in the project's chat what
 it queued and why, or say in its summary that nothing was worth queueing.
+Idle time is research time (ADR-045): when a project has nothing plannable,
+nothing queued and no job created for `lead.research_minutes` (default 60,
+`0` turns it off), the planner seeds one research job - a `reflect` job whose
+brief points a worker at one focus in turn (the project's checks, the loop's
+report, the docs against the code, the product as its user sees it, the code
+that changes most, the dependencies, the board, the lessons the code could
+enforce) and requires one to three experiment cards with evidence, a vote on
+every card below quorum and findings for the rest - at most
+`lead.research_per_day` (default 12) per project per day. A card below quorum
+gets a ballot job after `lead.ballot_hours` (default 1), one ballot per
+project per that many hours. Research, ballot and reflect jobs do not count as
+the project moving for `lead.idle_hours`, so the lead's standing brief still
+comes. `pulse evolve report` counts what research left behind (cards, votes,
+findings, answers) on its own row.
 `pulse status` shows one `planner <slug>: ...` line per idle project saying
 which gate held each card back (net votes <= 0, for the owner, without
-evidence, in flight, tried), and the daemon log says it once per change.
+evidence, in flight, tried), when the next research job comes and what it
+looks at, and the daemon log says it once per change.
 Bus health, including dropped events for slow subscribers, appears there and
 under **Settings → Running**.
 `pulse queue` marks such cards `not planned:` with the reason and counts each

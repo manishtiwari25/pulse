@@ -170,3 +170,61 @@ func TestBuildReportWindowExcludesOlderWork(t *testing.T) {
 		t.Fatalf("cycle total and owner inbox are not windowed; got %+v %+v", r.Experiments, r.Owner)
 	}
 }
+
+// ADR-045: the report tells the research jobs from the other reflect jobs and counts what their runs left
+// behind - suggestions (and which of them are cards), votes, findings, answers - through the posts' session,
+// which is the run's id.
+func TestBuildReportCountsWhatResearchLeftBehind(t *testing.T) {
+	s := cycleReady(t)
+	joinTestAgent(t, s, "card-writer")
+	research := reportJob(t, s, "reflect", "Research (checks): the project's own checks of demo", "research:demo:20260906T100000Z", "done", 1)
+	daily := reportJob(t, s, "reflect", "Daily reflect: find and fix one provable Tier 0 issue", "reflect:demo:2026-09-06", "done", 0)
+	if _, err := s.DB.Exec(`INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, commits) VALUES (?, ?, 'card-writer', 'demo', ?, ?, 'done', 0)`,
+		"run-"+daily.ID, daily.ID, s.Now(), s.Now()); err != nil {
+		t.Fatal(err)
+	}
+	post := func(kind, session, summary, body string, extra func(*board.PostInput)) *board.Post {
+		in := board.PostInput{Project: "demo", Area: "evolution", Thread: "research", Kind: kind, Agent: "card-writer", Session: session, Summary: summary, Body: body}
+		if extra != nil {
+			extra(&in)
+		}
+		p, err := board.CreatePost(s, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	post("suggestion", "run-"+research.ID, "Make the flaky test deterministic", "Class: operating-layer\nFile: internal/x/y_test.go\nVariable: fix the clock\nHypothesis: go test passes 10 times\nTier: 0\nSignal: internal/x/y_test.go", nil)
+	post("suggestion", "run-"+research.ID, "A one-liner without a card", "", nil)
+	post("finding", "run-"+research.ID, "The lint step is not in CI", "", nil)
+	post("answer", "run-"+research.ID, "The scorer lives in score.go", "", nil)
+	target := cardlessSuggestion(t, s, "shape", "Shorten the daily brief", "up")
+	post("vote", "run-"+research.ID, "up", "", func(in *board.PostInput) {
+		in.On, in.Vote, in.Thread, in.Area = target.ID, "up", target.Thread, target.Area
+	})
+	// The daily reflect's posts and posts from no run do not count as research.
+	post("finding", "run-"+daily.ID, "Daily reflect finding", "", nil)
+	post("suggestion", "", "Interactive suggestion", "", nil)
+
+	r, err := BuildReport(s, "demo", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Research != (Research{Jobs: 1, Suggestions: 2, Cards: 1, Votes: 1, Findings: 1, Answers: 1}) {
+		t.Fatalf("research: %+v", r.Research)
+	}
+	got := map[string]JobCount{}
+	for _, j := range r.Jobs {
+		got[j.Kind] = j
+	}
+	if got["research"].DoneChanged != 1 || got["reflect"].DoneUnchanged != 1 || got["reflect"].DoneChanged != 0 {
+		t.Fatalf("job counts split research from reflect: %+v", r.Jobs)
+	}
+	text := ""
+	for _, row := range reportRows(r) {
+		text += strings.Join(row, " | ") + "\n"
+	}
+	if !strings.Contains(text, "Research | 1 job(s); left 2 suggestion(s) (1 cards), 1 vote(s), 1 finding(s), 1 answer(s)") || !strings.Contains(text, "Jobs research | 1 done with commits") {
+		t.Fatalf("report rows:\n%s", text)
+	}
+}
