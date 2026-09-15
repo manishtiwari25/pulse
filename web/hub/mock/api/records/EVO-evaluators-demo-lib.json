@@ -1,0 +1,39 @@
+{
+  "body": "# Demo Lib Evaluators\n\nWhat better means for Demo Lib.\n\n## Product evaluators\n\n| Id | Check | Command | Threshold |\n| --- | --- | --- | --- |\n| PC1 | unit tests | <test command> | all pass |\n| PC2 | lint | <lint command> | 0 findings |\n",
+  "draft": null,
+  "frontmatter": {
+    "date": "2026-09-01",
+    "id": "EVO-evaluators-demo-lib",
+    "loop": "off",
+    "seeded_by": "human",
+    "seeded_from": "amistio-template/TPL-evolution-evaluators@r1",
+    "status": "Active",
+    "title": "Demo Lib Evaluators"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "EVO-evaluators-demo-lib",
+    "kind": "evolution",
+    "number": 0,
+    "path": "",
+    "project": "demo-lib",
+    "slug": "evaluators",
+    "status": "Active",
+    "tags": [],
+    "tier": 0,
+    "title": "Demo Lib Evaluators",
+    "updated_at": "2026-09-01T09:21:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T09:21:00Z",
+      "author": "human",
+      "note": "seeded from TPL-evolution-evaluators@r1 (ADR-030)",
+      "rev": 1
+    }
+  ]
+}

@@ -66,6 +66,11 @@ func newStore(t *testing.T) *store.Store {
 	if err := s.SetSetting(humanAgent, "lead.research_minutes", "0"); err != nil {
 		t.Fatal(err)
 	}
+	// The planner's drafting jobs (ADR-046) would queue a reflect job for every project newRepo seeds, since
+	// its records are the template's copy; tests that exercise them set evolve.draft_hours back on.
+	if err := s.SetSetting(humanAgent, "evolve.draft_hours", "0"); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { s.Close() })
 	return s
 }

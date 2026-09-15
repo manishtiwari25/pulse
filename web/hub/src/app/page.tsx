@@ -19,6 +19,7 @@ import { EmptyState, ErrorNotice, Kpi, KpiGrid, Notice, PageTitle, Panel, Skelet
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { AddProjectButton } from "@/components/project/project-dialogs";
 import { awaitsDecision, ProposedRecordCard } from "@/components/records/decide-record";
+import { DraftCard, draftState, type DraftState } from "@/components/records/draft-panel";
 import { RecordSheet } from "@/components/records/records";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
@@ -67,8 +68,13 @@ export default function HubPage() {
   // The gate a project waits at (records, fixtures, the owner's held-out fixtures) is a human step too - it sits in the inbox with a command to copy (ADR-029). The baseline is the daemon's (ADR-031) and never a card.
   const gateOf = (p: ProjectCardData) => evolveGate(p, (reg.data?.projects ?? []).find((r) => r.slug === p.slug));
   const steps = foldSteps(projects.map((p) => gateStep(p.slug, gateOf(p))).filter((s): s is GateStep => s !== null));
+  // ADR-046: a constitution or evaluators an agent drafted waits for the owner's read and yes or no - a card with the buttons on it.
+  const drafts = projects.flatMap((p) => {
+    const g = gateOf(p);
+    return [draftState(g?.constitution), draftState(g?.evaluators)].filter((r): r is DraftState => !!r?.draft).map((r) => ({ slug: p.slug, r }));
+  });
   const daemon = daemonControlState({ runner, service, settings });
-  const decisions = adrs.length + awaiting.length + pendingCompute.length;
+  const decisions = adrs.length + awaiting.length + pendingCompute.length + drafts.length;
   const machineSteps = daemon.pause === "on" || daemon.setup ? 1 : 0;
   const inbox = decisions + steps.length + machineSteps;
   const computeDown = !!compute.error && !compute.data;
@@ -152,6 +158,9 @@ export default function HubPage() {
             ))}
             {pendingCompute.map((cr) => (
               <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
+            ))}
+            {drafts.map(({ slug, r }) => (
+              <DraftCard key={slug + "/" + r.id} slug={slug} r={r} />
             ))}
             {machineSteps ? (
               <ItemCard href="#daemon-controls" highlight ariaLabel="Review daemon controls">

@@ -38,10 +38,19 @@ var RecordsDDL = []string{
 	`CREATE TRIGGER IF NOT EXISTS record_revisions_immutable_update BEFORE UPDATE ON record_revisions BEGIN SELECT RAISE(ABORT, 'record revisions are immutable'); END;`,
 	`CREATE TRIGGER IF NOT EXISTS record_revisions_immutable_delete BEFORE DELETE ON record_revisions BEGIN SELECT RAISE(ABORT, 'record revisions are immutable'); END;`,
 	`CREATE TRIGGER IF NOT EXISTS records_no_delete BEFORE DELETE ON records BEGIN SELECT RAISE(ABORT, 'records are never deleted; set status instead'); END;`,
+	// ADR-046: at most one proposed body per record, never the record's text
+	// until a human adopts it (then it is a revision and the row is gone).
+	`CREATE TABLE IF NOT EXISTS record_drafts (
+  record_id TEXT PRIMARY KEY REFERENCES records(id),
+  base_rev INTEGER NOT NULL,          -- the revision the draft was written against
+  body TEXT NOT NULL,
+  author TEXT NOT NULL, at TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+  job_id TEXT NOT NULL DEFAULT ''     -- the job whose run filed it, when one did
+);`,
 }
 
 // RecordsVersion is the value EnsureRecords writes to meta.records_version.
 // BUMP IT whenever a statement is added to RecordsDDL: EnsureRecords skips a
 // store whose stamp already equals this value, so new tables only reach
 // existing stores through a new version.
-const RecordsVersion = "1"
+const RecordsVersion = "2"

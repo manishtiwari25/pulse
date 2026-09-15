@@ -256,6 +256,30 @@ export interface EvolveRecordRef {
   rev: number; // current revision
   seeded: boolean; // the body is still the seeded copy of the template's text
   seeded_from: string; // template record and revision the copy started from; "" when none
+  // ADR-046: the draft an agent filed against the record, waiting for the owner
+  // (no body on a project row - GET records/<id> or the evolution doc carry it),
+  // and the project's open drafting job. Absent on an older hub.
+  draft?: RecordDraft | null;
+  draft_job?: JobRef | null;
+}
+
+// ADR-046: a body an agent proposed for a record. It never changes the record
+// until the owner adopts it (POST records/<id>/adopt) - then it becomes the next
+// revision, authored `human`, with the drafting agent in the note. One per
+// record; the latest filed wins.
+export interface RecordDraft {
+  author: string; // the agent that filed it
+  at: string; // ISO time it was filed
+  note: string; // one line on what it was based on; may be ""
+  base_rev: number; // the revision it was written against
+  job_id: string; // the job whose run filed it; "" when filed by hand
+  body?: string; // Markdown; present on records/<id> and projects/<slug>/evolution only
+}
+
+// {id, status} of a job the console refers to (the open drafting job, the baseline job).
+export interface JobRef {
+  id: string;
+  status: string;
 }
 
 // The daemon's baseline job for a project (ADR-031): the newest open one,
@@ -369,8 +393,17 @@ function recordRef(v: unknown): EvolveRecordRef | null | undefined {
   if (typeof v !== "object" || v === undefined) return undefined;
   const r = v as Partial<EvolveRecordRef>;
   if (typeof r.id !== "string" || !r.id) return undefined;
-  return { id: r.id, rev: typeof r.rev === "number" ? r.rev : 0, seeded: r.seeded === true, seeded_from: typeof r.seeded_from === "string" ? r.seeded_from : "" };
+  const ref: EvolveRecordRef = { id: r.id, rev: typeof r.rev === "number" ? r.rev : 0, seeded: r.seeded === true, seeded_from: typeof r.seeded_from === "string" ? r.seeded_from : "" };
+  // ADR-046: the waiting draft and the open drafting job, when the hub reports them.
+  if (r.draft && typeof r.draft === "object" && typeof r.draft.author === "string") {
+    ref.draft = { author: r.draft.author, at: str(r.draft.at), note: str(r.draft.note), base_rev: typeof r.draft.base_rev === "number" ? r.draft.base_rev : 0, job_id: str(r.draft.job_id) };
+  } else if (r.draft === null) ref.draft = null;
+  const job = baselineJob(r.draft_job);
+  if (job !== undefined) ref.draft_job = job;
+  return ref;
 }
+
+const str = (v: unknown) => (typeof v === "string" ? v : "");
 
 export interface Totals {
   projects: number;
@@ -1090,6 +1123,9 @@ export interface EvolutionDoc {
   // text and where that copy started (see EvolveRecordRef). Absent on an older hub.
   seeded?: boolean;
   seeded_from?: string;
+  // ADR-046: the waiting draft (with its body) and the open drafting job, or null.
+  draft?: RecordDraft | null;
+  draft_job?: JobRef | null;
 }
 
 // One archived measurement. The daemon's baseline (ADR-031) is a row like
@@ -1472,6 +1508,7 @@ export interface RecordDetail {
   frontmatter: Record<string, unknown>;
   body: string; // Markdown after the frontmatter
   revisions: RecordRevisionRef[];
+  draft?: RecordDraft | null; // ADR-046: the waiting draft with its body, or null
 }
 
 export interface RecordsPayload {
@@ -1518,6 +1555,10 @@ export type RecordDecision = "accept" | "Rejected" | "Deferred";
 export const writes = {
   acceptRecord: (id: string, words: string) => post<{ record: RecordRow }>("records/" + enc(id) + "/accept", { words }),
   setRecordStatus: (id: string, status: "Rejected" | "Deferred", words: string) => post<{ record: RecordRow }>("records/" + enc(id) + "/status", { status, words }),
+  // Record drafts (ADR-046): the owner adopts or discards what an agent drafted, or asks for a draft now.
+  adoptDraft: (id: string, words: string) => post<{ record: RecordRow }>("records/" + enc(id) + "/adopt", words ? { words } : {}),
+  discardDraft: (id: string, words: string) => post<{ record: RecordRow; discarded: boolean }>("records/" + enc(id) + "/discard", words ? { words } : {}),
+  draftJob: (id: string) => post<{ job: JobRef; created: boolean; reason: string }>("records/" + enc(id) + "/draft-job", {}),
   // `id` is the contract field; `post_id` is what the Python hub read - the Go hub accepts both.
   decide: (id: string, answer: "yes" | "no", words: string) => post<{ ok?: boolean; decided?: unknown }>("decide", { id, post_id: id, answer, words }),
   setSetting: (name: string, value: string) => post<{ ok?: boolean; setting?: Setting }>("settings", { name, value }),

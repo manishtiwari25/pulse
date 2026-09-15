@@ -36,7 +36,9 @@ func (h *Handler) evolution(project string) (map[string]any, error) {
 			archive["body"] = revision.Body
 		} else {
 			seeded, from := seededRecord(head, revision)
-			result[record.Slug] = object("record body seeded seeded_from", additionRecord(*head), revision.Body, seeded, from)
+			doc := object("record body seeded seeded_from", additionRecord(*head), revision.Body, seeded, from)
+			doc["draft"], doc["draft_job"] = draftSummary(h.Store, head.ID, true), draftJobRef(h.Store, project)
+			result[record.Slug] = doc
 		}
 	}
 	var hasArchive int
@@ -97,6 +99,29 @@ func (h *Handler) evolution(project string) (map[string]any, error) {
 func seededRecord(head *store.Record, revision *store.Revision) (bool, string) {
 	from := str(revision.Frontmatter["seeded_from"])
 	return head.CurrentRev == 1 && from != "", from
+}
+
+// draftSummary is the draft waiting on a record (ADR-046) - {author, at,
+// note, base_rev, job_id} and, when asked, body - or nil when none is filed.
+func draftSummary(s *store.Store, id string, withBody bool) any {
+	draft, err := s.GetDraft(id)
+	if err != nil || draft == nil {
+		return nil
+	}
+	out := object("author at note base_rev job_id", draft.Author, draft.At, draft.Note, draft.BaseRev, draft.JobID)
+	if withBody {
+		out["body"] = draft.Body
+	}
+	return out
+}
+
+// draftJobRef is {id, status} of the project's open drafting job, or nil.
+func draftJobRef(s *store.Store, project string) any {
+	ref, err := evolve.OpenDraftJob(s, project)
+	if err != nil || ref == nil {
+		return nil
+	}
+	return object("id status", ref.ID, ref.Status)
 }
 
 // evolutionGates is evolve status as a generic document so the private-path

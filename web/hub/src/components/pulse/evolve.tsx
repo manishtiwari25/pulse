@@ -116,7 +116,7 @@ export const seedName = (from: string) => from.split("/").pop() || from;
 // The one way a record's text changes: the owner amends it in a terminal.
 export const amendCommand = (id: string) => "pulse record amend " + id + " --body-file FILE";
 
-const seededTitle = (from: string) => "still the template's text" + (from ? " (seeded from " + from + ")" : "") + " - edit it to make it yours";
+const seededTitle = (from: string) => "still the template's text" + (from ? " (seeded from " + from + ")" : "") + " - the daemon has an agent draft it for you to adopt, or edit it yourself";
 const ownTitle = (r: EvolveRecordRef, what: string) => "the " + r.id + " record, revision " + num(r.rev) + (r.seeded_from ? " - started as a copy of " + r.seeded_from + ", edited since" : " - " + what + " in your own words");
 
 // The constitution as one chip (ADR-030): its revision, and whether the text is
@@ -127,6 +127,19 @@ export function RecordChip({ r, what, className }: { r: EvolveRecordRef | null |
     return (
       <ToneBadge tone="warn" title={"no " + what + " record - " + (what === "constitution" ? "the loop has no bounds to read" : "the loop has no checks to read") + "; seed it or write your own"} className={className}>
         {"no " + what}
+      </ToneBadge>
+    );
+  // ADR-046: a seeded record says what waits on it - a draft to adopt, a drafting job, or nothing yet.
+  if (r.draft)
+    return (
+      <ToneBadge tone="info" title={"an agent (" + r.draft.author + ") drafted the " + what + " from the repository - read and adopt it on the Evolution tab"} className={className}>
+        {what + " r" + num(r.rev) + " · draft ready"}
+      </ToneBadge>
+    );
+  if (r.seeded && r.draft_job)
+    return (
+      <ToneBadge tone="info" title={"an agent is drafting the " + what + " from the repository (job " + r.draft_job.id + ", " + r.draft_job.status + ")"} className={className}>
+        {what + " r" + num(r.rev) + " · drafting…"}
       </ToneBadge>
     );
   if (r.seeded)
@@ -592,43 +605,16 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
 // header: `r1 · seeded` warns that the text is still the template's.
 export function DocRev({ doc, slug }: { doc: EvolutionDoc; slug: string }) {
   const r = doc.record;
+  const waiting = doc.draft ? " · draft ready" : doc.seeded && doc.draft_job ? " · drafting…" : doc.seeded ? " · seeded" : "";
   return (
     <>
-      <span className="tnum" title={doc.seeded ? seededTitle(doc.seeded_from ?? "") : doc.seeded_from ? "started as a copy of " + doc.seeded_from + ", edited since" : "revision " + num(r.current_rev)}>
-        {"r" + num(r.current_rev) + (doc.seeded ? " · seeded" : "")}
+      <span className="tnum" title={doc.draft ? "an agent drafted the text - read and adopt it below" : doc.seeded ? seededTitle(doc.seeded_from ?? "") : doc.seeded_from ? "started as a copy of " + doc.seeded_from + ", edited since" : "revision " + num(r.current_rev)}>
+        {"r" + num(r.current_rev) + waiting}
       </span>
       <Link href={hrefs.record(r.id, slug)} className="hover:underline">
         {r.id}
       </Link>
     </>
-  );
-}
-
-// Where a record's text came from, when it is still the seeded copy: the
-// template record it was copied from, the record it lives in, and the one
-// command that makes the text the owner's. Nothing when the text is theirs already.
-export function SeededMarker({ doc, className }: { doc: EvolutionDoc; className?: string }) {
-  if (!doc.seeded) return null;
-  const from = doc.seeded_from ?? "";
-  return (
-    <Notice tone="warn" className={cn("text-xs", className)}>
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-        <ToneBadge tone="warn">seeded</ToneBadge>
-        <span>
-          {from ? (
-            <span title={from}>
-              {"seeded from "}
-              <Mono>{seedName(from)}</Mono>
-            </span>
-          ) : (
-            "the template's text"
-          )}
-          {" · edit it to make it yours"}
-        </span>
-      </div>
-      <CommandBox command={amendCommand(doc.record.id)} copy className="mt-1.5 bg-background/60" />
-      <p className="mt-1 text-[11.5px] text-muted-foreground">Yours to run in a terminal on the hub machine with your text in FILE. The console shows the record and never edits it; the copy sets loop off, no baseline and no product scope until you do.</p>
-    </Notice>
   );
 }
 

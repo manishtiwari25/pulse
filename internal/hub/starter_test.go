@@ -322,7 +322,7 @@ func TestProjectRowsAndEvolutionTellSeededRecordsApart(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s of %v is not an object: %#v", name, row["slug"], row[name])
 		}
-		if !reflect.DeepEqual(sortedKeys(value), []string{"id", "rev", "seeded", "seeded_from"}) {
+		if !reflect.DeepEqual(sortedKeys(value), []string{"draft", "draft_job", "id", "rev", "seeded", "seeded_from"}) {
 			t.Fatalf("%s keys: %v", name, sortedKeys(value))
 		}
 		return value
@@ -335,7 +335,7 @@ func TestProjectRowsAndEvolutionTellSeededRecordsApart(t *testing.T) {
 	}
 	constitution := loopRecord(rows[slug], "constitution")
 	if constitution["id"] != "EVO-constitution-lamplitlabs" || constitution["rev"] != float64(1) || constitution["seeded"] != true ||
-		constitution["seeded_from"] != store.CommonsSlug+"/TPL-evolution-constitution@r2" {
+		constitution["seeded_from"] != store.CommonsSlug+"/TPL-evolution-constitution@r2" || constitution["draft"] != nil || constitution["draft_job"] != nil {
 		t.Fatalf("seeded constitution: %#v", constitution)
 	}
 	if evaluators := loopRecord(rows[slug], "evaluators"); evaluators["id"] != "EVO-evaluators-lamplitlabs" || evaluators["seeded"] != true ||
@@ -390,5 +390,127 @@ func TestProjectRowsAndEvolutionTellSeededRecordsApart(t *testing.T) {
 	}
 	if doc := data["constitution"].(map[string]any); doc["seeded"] != false || doc["seeded_from"] != "" {
 		t.Fatalf("hand-written constitution: %#v", doc)
+	}
+}
+
+// ADR-046: a seeded record is drafted by an agent and adopted by the owner in
+// the console; the console never edits the text itself.
+func TestConsoleAdoptsOrDiscardsADraftAndQueuesTheDraftingJob(t *testing.T) {
+	s, slug := templateStore(t)
+	h := New(s, nil)
+	id := "EVO-constitution-" + slug
+	// Draft it for me: the record's project gets the drafting job at once; a second click finds it open.
+	status, data := additionsRequest(t, h, "POST", "/api/v1/records/"+id+"/draft-job", `{}`)
+	if status != 200 {
+		t.Fatalf("draft-job: %d %#v", status, data)
+	}
+	job := data["job"].(map[string]any)
+	if job["status"] != "queued" || data["created"] != true || data["reason"] != "" {
+		t.Fatalf("draft-job payload: %#v", data)
+	}
+	var kind, source, createdBy string
+	if err := s.DB.QueryRow("SELECT kind, source, created_by FROM jobs WHERE id = ?", job["id"]).Scan(&kind, &source, &createdBy); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "reflect" || !strings.HasPrefix(source, "draft:"+slug+":") || createdBy != store.HumanAgent {
+		t.Fatalf("queued job: %s %s %s", kind, source, createdBy)
+	}
+	status, again := additionsRequest(t, h, "POST", "/api/v1/records/"+id+"/draft-job", `{}`)
+	if status != 200 || again["created"] != false || again["job"].(map[string]any)["id"] != job["id"] || !strings.Contains(again["reason"].(string), "a draft job is queued") {
+		t.Fatalf("second draft-job: %d %#v", status, again)
+	}
+	_, rows := additionsRequest(t, h, "GET", "/api/v1/projects", "")
+	for _, item := range rows["projects"].([]any) {
+		row := item.(map[string]any)
+		if row["slug"] != slug {
+			continue
+		}
+		ref, _ := row["constitution"].(map[string]any)["draft_job"].(map[string]any)
+		if ref == nil || ref["id"] != job["id"] || ref["status"] != "queued" || row["constitution"].(map[string]any)["draft"] != nil {
+			t.Fatalf("row while drafting: %#v", row["constitution"])
+		}
+	}
+	// The worker files the draft; the row and the evolution document show it, the record is untouched.
+	if _, err := s.DB.Exec("UPDATE jobs SET status = 'done' WHERE id = ?", job["id"]); err != nil {
+		t.Fatal(err)
+	}
+	body := "# Lamplit Labs Evolution Constitution\n\nThe Lamplit Labs loop edits `src/`.\n"
+	if _, err := records.Draft(s, id, records.DraftInput{Body: body, Author: "aurora", Note: "from the README", JobID: job["id"].(string)}); err != nil {
+		t.Fatal(err)
+	}
+	_, rows = additionsRequest(t, h, "GET", "/api/v1/projects", "")
+	for _, item := range rows["projects"].([]any) {
+		row := item.(map[string]any)
+		if row["slug"] != slug {
+			continue
+		}
+		draft, _ := row["constitution"].(map[string]any)["draft"].(map[string]any)
+		if draft == nil || draft["author"] != "aurora" || draft["note"] != "from the README" || draft["base_rev"] != float64(1) || draft["job_id"] != job["id"] || draft["body"] != nil ||
+			row["constitution"].(map[string]any)["draft_job"] != nil || row["constitution"].(map[string]any)["seeded"] != true {
+			t.Fatalf("row with a draft: %#v", row["constitution"])
+		}
+	}
+	_, doc := additionsRequest(t, h, "GET", "/api/v1/projects/"+slug+"/evolution", "")
+	if draft := doc["constitution"].(map[string]any)["draft"].(map[string]any); draft["body"] != body || draft["author"] != "aurora" {
+		t.Fatalf("evolution draft: %#v", draft)
+	}
+	if status, rec := additionsRequest(t, h, "GET", "/api/v1/records/"+id, ""); status != 200 || rec["draft"].(map[string]any)["body"] != body || rec["body"] == body {
+		t.Fatalf("record with a draft: %d %#v", status, rec)
+	}
+	// With the constitution drafted, the button drafts what is left: the evaluators. Once both wait, there is nothing to draft.
+	status, data = additionsRequest(t, h, "POST", "/api/v1/records/"+id+"/draft-job", `{}`)
+	var title string
+	if err := s.DB.QueryRow("SELECT title FROM jobs WHERE id = ?", data["job"].(map[string]any)["id"]).Scan(&title); err != nil {
+		t.Fatal(err)
+	}
+	if status != 200 || data["created"] != true || title != "Draft the evaluators of "+slug+" from its repository" {
+		t.Fatalf("draft-job with the constitution drafted: %d %#v %q", status, data, title)
+	}
+	if _, err := s.DB.Exec("UPDATE jobs SET status = 'done' WHERE id = ?", data["job"].(map[string]any)["id"]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := records.Draft(s, "EVO-evaluators-"+slug, records.DraftInput{Body: "# Lamplit Labs Evaluators\n\nThe Lamplit Labs loop scores `make test`.\n", Author: "aurora"}); err != nil {
+		t.Fatal(err)
+	}
+	if status, data := additionsRequest(t, h, "POST", "/api/v1/records/"+id+"/draft-job", `{}`); status != 409 || !strings.Contains(str(data["why"]), "draft waiting") {
+		t.Fatalf("draft-job with both drafts waiting: %d %#v", status, data)
+	}
+	// Discard, draft again, adopt with the owner's words.
+	if status, data := additionsRequest(t, h, "POST", "/api/v1/records/"+id+"/discard", `{"words":"wrong paths"}`); status != 200 || data["discarded"] != true {
+		t.Fatalf("discard: %d %#v", status, data)
+	}
+	if d, _ := s.GetDraft(id); d != nil {
+		t.Fatal("discard left the draft")
+	}
+	if _, err := records.Draft(s, id, records.DraftInput{Body: body, Author: "aurora"}); err != nil {
+		t.Fatal(err)
+	}
+	status, data = additionsRequest(t, h, "POST", "/api/v1/records/"+id+"/adopt", `{"words":"paths checked"}`)
+	if status != 200 || data["record"].(map[string]any)["current_rev"] != float64(2) {
+		t.Fatalf("adopt: %d %#v", status, data)
+	}
+	head, rev, err := s.GetRecord(id, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Body != body || rev.Author != store.HumanAgent || rev.Note != "adopted the draft by aurora: paths checked (via console)" || head.CurrentRev != 2 {
+		t.Fatalf("adopted revision: %+v", rev)
+	}
+	_, rows = additionsRequest(t, h, "GET", "/api/v1/projects", "")
+	for _, item := range rows["projects"].([]any) {
+		row := item.(map[string]any)
+		if row["slug"] != slug {
+			continue
+		}
+		c := row["constitution"].(map[string]any)
+		if c["seeded"] != false || c["rev"] != float64(2) || c["draft"] != nil {
+			t.Fatalf("row after adoption: %#v", c)
+		}
+	}
+	if status, data := additionsRequest(t, h, "POST", "/api/v1/records/"+id+"/adopt", `{}`); status == 200 {
+		t.Fatalf("adopt without a draft: %d %#v", status, data)
+	}
+	if status, _ := additionsRequest(t, h, "GET", "/api/v1/records/"+id+"/adopt", ""); status != 405 {
+		t.Fatalf("GET adopt: %d", status)
 	}
 }

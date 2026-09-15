@@ -35,8 +35,8 @@ func assertEvolutionShape(t *testing.T, data map[string]any) {
 			continue
 		}
 		record, ok := data[key].(map[string]any)
-		if !ok || !reflect.DeepEqual(sortedKeys(record), []string{"body", "record", "seeded", "seeded_from"}) {
-			t.Fatalf("%s is not a record/body/seeded document: %#v", key, data[key])
+		if !ok || !reflect.DeepEqual(sortedKeys(record), []string{"body", "draft", "draft_job", "record", "seeded", "seeded_from"}) {
+			t.Fatalf("%s is not a record/body/seeded/draft document: %#v", key, data[key])
 		}
 		if _, ok := record["seeded"].(bool); !ok {
 			t.Fatalf("%s.seeded must be boolean: %#v", key, record["seeded"])

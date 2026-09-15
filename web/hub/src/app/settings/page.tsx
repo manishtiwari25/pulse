@@ -82,7 +82,7 @@ const GROUPS: Group[] = [
     id: "evolve",
     title: "Self-improvement loop",
     blurb: "Bounds on pulse-evolve. The held-out directory is yours alone: agents never see its path. With evolve.heldout on auto the daemon creates the set itself - a private folder under the store and two fixtures written by a sealed model call that sees no repository, board or store - and labels them generated (ADR-033). On owner, you write them from the Held-out fixtures dialog on a project's Self-improvement panel, or with pulse evolve setup DIR; a fixture you write is never overwritten either way.",
-    keys: ["evolve.loop", "evolve.limits", "evolve.tolerance", "evolve.heldout", "evolve.heldout_dir"],
+    keys: ["evolve.loop", "evolve.limits", "evolve.tolerance", "evolve.heldout", "evolve.heldout_dir", "evolve.draft_hours"],
     match: (n) => n.startsWith("evolve."),
   },
   {
@@ -139,6 +139,7 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "evolve.heldout", value: "auto", default: "auto", kind: "choice", min: null, choices: ["auto", "owner"], description: "auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)" },
   // Owner-private: the hub answers "[owner-private]" instead of the real path once set.
   { name: "evolve.heldout_dir", value: "", default: "", kind: "identifier", min: null, choices: null, description: "path to the owner's held-out evaluators; never shown to agents", secret: true },
+  { name: "evolve.draft_hours", value: "24", default: "24", kind: "count", min: 0, choices: null, description: "hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button" },
   { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off"], description: "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
   { name: "daemon.self_update_retry_minutes", value: "60", default: "60", kind: "count", min: 1, choices: null, description: "minutes the daemon waits before building again after a failed build or smoke test" },
   { name: "landing.push", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "main"], description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)" },

@@ -669,6 +669,18 @@
     },
     {
       "choices": null,
+      "default": "24",
+      "description": "hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button",
+      "kind": "count",
+      "min": 0,
+      "name": "evolve.draft_hours",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "24"
+    },
+    {
+      "choices": null,
       "default": "none",
       "description": "none, or a budget such as cycles=20,hours=48 after which the loop stops by itself",
       "kind": "text",

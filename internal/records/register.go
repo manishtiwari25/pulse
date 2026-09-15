@@ -16,7 +16,7 @@ func init() {
 	cli.Register(cli.Command{
 		Name: "record", Group: "records", Raw: true,
 		Summary: "list, read, create, revise, accept, deliver, or export records",
-		Usage:   "pulse record list|show|new|amend|status|accept|deliver|export|lead-time|revisions [flags] [args]",
+		Usage:   "pulse record list|show|new|amend|status|accept|deliver|draft|adopt|discard|drafts|export|lead-time|revisions [flags] [args]",
 		Run:     runRecord,
 	})
 	cli.Register(cli.Command{
@@ -136,7 +136,7 @@ func runSeed(c *cli.Context, _ *flag.FlagSet, args []string) error {
 
 func runRecord(c *cli.Context, _ *flag.FlagSet, args []string) error {
 	if len(args) == 0 {
-		return inputError("Record command required", "choose list, show, new, amend, status, accept, deliver, export, lead-time, or revisions", "pulse help record")
+		return inputError("Record command required", "choose list, show, new, amend, status, accept, deliver, draft, adopt, discard, drafts, export, lead-time, or revisions", "pulse help record")
 	}
 	sub, args := args[0], args[1:]
 	fs := flag.NewFlagSet("record "+sub, flag.ContinueOnError)
@@ -167,6 +167,13 @@ func runRecord(c *cli.Context, _ *flag.FlagSet, args []string) error {
 		fs.StringVar(&note, "note", "", "revision note")
 	case "accept":
 		fs.StringVar(&words, "words", "", "the human's acceptance words")
+	case "draft":
+		fs.StringVar(&bodyFile, "body-file", "", "file, stdin, or -")
+		fs.StringVar(&note, "note", "", "one line on what the draft is based on")
+	case "adopt", "discard":
+		fs.StringVar(&words, "words", "", "the owner's words for the revision note")
+	case "drafts":
+		fs.StringVar(&project, "project", project, "project slug")
 	case "deliver":
 		fs.StringVar(&date, "date", "", "delivery date (YYYY-MM-DD)")
 	case "export":
@@ -203,6 +210,26 @@ func runRecord(c *cli.Context, _ *flag.FlagSet, args []string) error {
 		}
 		if !c.Quiet {
 			cli.Table(c.Out, c.Color, []string{"ID", "PROJECT", "STATUS", "DELIVERY", "TITLE"}, table)
+		}
+		return nil
+	}
+	if sub == "drafts" {
+		if len(args) != 0 {
+			return usageError(sub, "drafts [--project P] [--json]")
+		}
+		rows, err := Drafts(c.Store, project)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return cli.WriteJSON(c.Out, map[string]any{"drafts": rows})
+		}
+		table := make([][]string, 0, len(rows))
+		for _, row := range rows {
+			table = append(table, []string{row.RecordID, row.Project, "r" + strconv.Itoa(row.BaseRev), row.Author, row.At, row.Note})
+		}
+		if !c.Quiet {
+			cli.Table(c.Out, c.Color, []string{"RECORD", "PROJECT", "AGAINST", "AUTHOR", "AT", "NOTE"}, table)
 		}
 		return nil
 	}
@@ -308,6 +335,43 @@ func runRecord(c *cli.Context, _ *flag.FlagSet, args []string) error {
 			return err
 		}
 		return printRecordWrite(c, rec, jsonOut)
+	case "draft":
+		if bodyFile == "" {
+			return usageError(sub, "draft "+id+" --body-file F|stdin [--note TEXT]")
+		}
+		body, err := readBody(bodyFile)
+		if err != nil {
+			return err
+		}
+		draft, err := Draft(c.Store, id, DraftInput{Body: body, Author: author(c), Note: note, JobID: os.Getenv("PULSE_JOB")})
+		if err != nil {
+			return recordError(id, err)
+		}
+		if jsonOut {
+			return cli.WriteJSON(c.Out, map[string]any{"draft": draft})
+		}
+		c.Printf("%s draft filed against r%d by %s; the owner adopts it in the hub or with pulse record adopt %s\n", id, draft.BaseRev, draft.Author, id)
+		return nil
+	case "adopt":
+		rec, err := Adopt(c.Store, id, author(c), words)
+		if err != nil {
+			return recordError(id, err)
+		}
+		return printRecordWrite(c, rec, jsonOut)
+	case "discard":
+		gone, err := Discard(c.Store, id, author(c), words)
+		if err != nil {
+			return recordError(id, err)
+		}
+		if jsonOut {
+			return cli.WriteJSON(c.Out, map[string]any{"discarded": gone})
+		}
+		if gone {
+			c.Printf("%s draft discarded\n", id)
+		} else {
+			c.Printf("%s has no draft\n", id)
+		}
+		return nil
 	case "export":
 		n, err := Export(c.Store, id, ExportOptions{Kind: kind, Project: project, Force: force})
 		if err != nil {

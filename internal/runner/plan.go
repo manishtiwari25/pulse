@@ -182,6 +182,13 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 		return []row{job}, nil
 	}
 	var created []row
+	// ADR-046: a project whose constitution or evaluators is still the seeded template text gets one drafting
+	// job (kind reflect) at most every evolve.draft_hours, alongside whatever else the planner queues.
+	if job, isNew, _, err := evolve.PlanDraftJob(s, slug, createdBy, now, false); err != nil {
+		return nil, err
+	} else if isNew && job != nil {
+		created = append(created, jobRow(s.DB, job.ID))
+	}
 	// lead.stuck_thread_jobs: a thread whose last N worker jobs all committed nothing - read-only triage, claims,
 	// questions and handoffs that pass the same open point to the next run - has stopped moving. The planner seeds
 	// no more jobs from that thread's handoffs, suggestions or questions and asks the lead once to decide it.

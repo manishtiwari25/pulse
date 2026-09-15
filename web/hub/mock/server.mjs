@@ -223,6 +223,14 @@ function evolutionView(slug, d) {
   const h = state.heldout;
   const p = state.projects.find((x) => x.slug === slug);
   const out = { ...d };
+  // ADR-046: the record refs on the registry row move with the console's adopt / discard / draft-job writes; the documents follow them.
+  for (const what of ["constitution", "evaluators"]) {
+    const doc = d[what];
+    const ref = p && p[what];
+    if (!doc || !ref || ref.id !== doc.record.id) continue;
+    const o = state.records[ref.id];
+    out[what] = { ...doc, record: recordView(doc.record), seeded: ref.seeded, draft: ref.draft ? { ...ref.draft, body: (doc.draft && doc.draft.body) || "" } : null, draft_job: ref.draft_job ?? null, ...(o && o.body ? { body: o.body } : {}) };
+  }
   if (d.loop) out.loop = { ...d.loop, heldout_present: h.configured && h.present };
   if (d.gates) {
     const problem = !h.configured ? "evolve.heldout_dir is not set" : !h.present ? "private fixture validation failed; owner: pulse evolve setup DIR" : h.problem;
@@ -587,7 +595,7 @@ async function handle(req, res) {
         let slug = base;
         for (let n = 2; state.projects.some((x) => x.slug === slug); n++) slug = base + "-" + n;
         // Onboarding seeds the starter set (ADR-029) and the loop's records from the template (ADR-030); the daemon records the baseline itself on its next tick (ADR-031).
-        const seeded = (what) => ({ id: "EVO-" + what + "-" + slug, rev: 1, seeded: true, seeded_from: "amistio-template/TPL-evolution-" + what + "@r1" });
+        const seeded = (what) => ({ id: "EVO-" + what + "-" + slug, rev: 1, seeded: true, seeded_from: "amistio-template/TPL-evolution-" + what + "@r1", draft: null, draft_job: null });
         p = { slug, name: body.name || slug, path, remote: "", brain: false, status: "active", verify_cmd: body.verify || "", default_branch: "main", added_at: now(), added_by: "human", last_seen: now(), present: true, fixtures_enabled: 6, baseline: false, evolve_level: "B", evolve_next: "none - the daemon plans the baseline job on its next tick (pulse daemon)", baseline_job: null, baseline_failed_at: "", constitution: seeded("constitution"), evaluators: seeded("evaluators") };
         state.projects.push(p);
       } else {
@@ -679,6 +687,40 @@ async function handle(req, res) {
         emit("human", "service.installed", d.service.kind, { units: ["daemon", "hub"] });
       }
       return send(res, 200, { dry_run: dry, installed: !dry, kind: d.service.kind, daemon_path: daemon.path, hub_path: hub.path, output, handover: false, hub_url: d.hub_url });
+    }
+    // Record drafts (ADR-046): the owner adopts or discards what an agent drafted, or asks for the drafting job now.
+    if (segs[0] === "records" && segs.length === 3 && (segs[2] === "adopt" || segs[2] === "discard" || segs[2] === "draft-job")) {
+      const all = (await fixture("records")).records;
+      const base = all.find((r) => r.id === segs[1]);
+      if (!base) return fail(res, 404, "No record " + segs[1], "nothing by that id is indexed", "pulse record list");
+      const words = String(body.words || "").trim();
+      const row = state.projects.find((x) => x.slug === base.project);
+      const ref = row ? [row.constitution, row.evaluators].find((r) => r && r.id === base.id) : null;
+      const detail = await fixture("records/" + base.id);
+      if (segs[2] === "draft-job") {
+        const seeded = row ? [row.constitution, row.evaluators].filter((r) => r && r.seeded && !r.draft) : [];
+        if (!seeded.length) return fail(res, 409, "Nothing to draft", "nothing to draft: " + (row ? [row.constitution, row.evaluators].filter(Boolean).map((r) => r.id.split("-")[1] + (r.draft ? " has a draft waiting for the owner" : r.seeded ? " is seeded" : " is the project's own text (r" + r.rev + ")")).join("; ") : "no loop records yet (pulse evolve seed)"), "The seeded records are already drafted or adopted; refresh the page.");
+        const open = seeded.find((r) => r.draft_job);
+        if (open) return send(res, 200, { job: open.draft_job, created: false, reason: "a draft job is " + open.draft_job.status + " (" + open.draft_job.id + ")" });
+        const job = { id: "job-" + now().replace(/[-:]/g, "").slice(0, 15) + "Z-" + Math.random().toString(16).slice(2, 8), status: "queued" };
+        for (const r of seeded) r.draft_job = job;
+        emit("human", "job.add", job.id, { project: base.project, kind: "reflect", title: "Draft the " + seeded.map((r) => r.id.split("-")[1]).join(" and ") + " of " + base.project + " from its repository" });
+        return send(res, 200, { job, created: true, reason: "" });
+      }
+      if (!ref || !ref.draft) return fail(res, 400, "No draft to " + segs[2], base.id + " has no draft filed", "pulse record drafts");
+      const o = (state.records[base.id] ||= { status: base.status, revisions: [] });
+      if (segs[2] === "adopt") {
+        o.revisions.push({ rev: base.current_rev + o.revisions.length + 1, author: "human", at: now(), note: "adopted the draft by " + ref.draft.author + (words ? ": " + words + " (via console)" : ": (via console)") });
+        if (detail && detail.draft && detail.draft.body) o.body = detail.draft.body;
+        ref.rev += 1;
+        ref.seeded = false;
+        ref.draft = null;
+        emit("human", "record.adopted", base.id, { author: "aurora", words });
+        return send(res, 200, { record: recordView(base) });
+      }
+      ref.draft = null;
+      emit("human", "record.draft.discarded", base.id, { words });
+      return send(res, 200, { record: recordView(base), discarded: true });
     }
     // The human gates (ADR-028): accept, decline or defer a Proposed ADR with words.
     if (segs[0] === "records" && segs.length === 3 && (segs[2] === "accept" || segs[2] === "status")) {
@@ -818,7 +860,7 @@ async function handle(req, res) {
       }
       return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
     }
-    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate");
+    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate");
   }
 
   // GET - live state first, fixtures second
@@ -979,7 +1021,10 @@ async function handle(req, res) {
     const d = await fixture("records/" + segs[1]);
     if (!d) return fail(res, 404, "no such record", segs[1] + " is not indexed", "run pulse init in the project checkout");
     const o = state.records[segs[1]];
-    const view = o ? { ...d, record: recordView(d.record), frontmatter: { ...d.frontmatter, status: o.status }, revisions: [...(d.revisions || []), ...o.revisions] } : d;
+    const row = state.projects.find((x) => x.slug === d.record.project);
+    const ref = row ? [row.constitution, row.evaluators].find((r) => r && r.id === d.record.id) : null;
+    const view = o ? { ...d, record: recordView(d.record), frontmatter: { ...d.frontmatter, status: o.status }, revisions: [...(d.revisions || []), ...o.revisions], ...(o.body ? { body: o.body } : {}) } : { ...d };
+    if (ref && "draft" in view) view.draft = ref.draft ? { ...ref.draft, body: (d.draft && d.draft.body) || "" } : null;
     const rev = q.get("rev");
     if (rev && Number(rev) !== view.record.current_rev) return send(res, 200, { ...view, body: `_(revision r${rev} of ${view.record.id} - the mock keeps only the current body)_\n\n` + view.body });
     return send(res, 200, view);

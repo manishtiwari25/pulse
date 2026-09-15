@@ -37,7 +37,7 @@ func seedTemplates(t *testing.T, s *store.Store) {
 		path := "docs/evolution/_template-" + slug + ".md"
 		rec := store.Record{ID: "TPL-evolution-" + slug, Project: "brain", Kind: "template", Slug: "evolution-" + slug,
 			Title: title, Status: "Active", Path: path, Origin: "markdown:" + path + "@0000000"}
-		if _, err := s.PutRecord(rec, front, "# "+title+"\n\nWhat the <Project> loop may change.\n", "human", "import "+path); err != nil {
+		if _, err := s.PutRecord(rec, front, "# "+title+"\n\nWhat the <Project> loop may change: <product paths, e.g. `src/`>.\n", "human", "import "+path); err != nil {
 			t.Fatal(err)
 		}
 	}

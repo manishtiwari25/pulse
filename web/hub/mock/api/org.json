@@ -150,8 +150,33 @@
       "built_at": "2026-09-07T09:00:00Z",
       "can_decide": true,
       "claims_active": 0,
+      "constitution": {
+        "draft": {
+          "at": "2026-09-07T08:41:00Z",
+          "author": "aurora",
+          "base_rev": 1,
+          "job_id": "job-20260907T081000Z-3f2a1c",
+          "note": "from the README, package.json scripts and the CI workflow"
+        },
+        "draft_job": null,
+        "id": "EVO-constitution-demo-lib",
+        "rev": 1,
+        "seeded": true,
+        "seeded_from": "amistio-template/TPL-evolution-constitution@r1"
+      },
       "dirty": false,
       "error": "",
+      "evaluators": {
+        "draft": null,
+        "draft_job": {
+          "id": "job-20260907T085000Z-9c1d4e",
+          "status": "leased"
+        },
+        "id": "EVO-evaluators-demo-lib",
+        "rev": 1,
+        "seeded": true,
+        "seeded_from": "amistio-template/TPL-evolution-evaluators@r1"
+      },
       "evolution_present": false,
       "head": "c364d4d",
       "kind": "project",

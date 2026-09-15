@@ -110,8 +110,10 @@ func projectGates(s *store.Store, slug string) map[string]any {
 	return gates
 }
 
-// loopRecordSummary is {id, rev, seeded, seeded_from} for the project's
-// evolution record with that slug, or nil.
+// loopRecordSummary is {id, rev, seeded, seeded_from, draft, draft_job} for
+// the project's evolution record with that slug, or nil: draft is the
+// waiting draft's metadata (ADR-046, no body) or null, draft_job the
+// project's open drafting job {id, status} or null.
 func loopRecordSummary(s *store.Store, slug, name string) any {
 	rows, err := s.ListRecords(store.RecordFilter{Project: slug, Kind: "evolution", Slug: name})
 	if err != nil || len(rows) == 0 {
@@ -122,7 +124,7 @@ func loopRecordSummary(s *store.Store, slug, name string) any {
 		return nil
 	}
 	seeded, from := seededRecord(head, revision)
-	return object("id rev seeded seeded_from", head.ID, head.CurrentRev, seeded, from)
+	return object("id rev seeded seeded_from draft draft_job", head.ID, head.CurrentRev, seeded, from, draftSummary(s, head.ID, false), draftJobRef(s, slug))
 }
 
 func (h *Handler) additionProjectRegister(w http.ResponseWriter, r *http.Request) {

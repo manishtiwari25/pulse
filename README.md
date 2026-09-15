@@ -404,7 +404,21 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   gets a copy of the template's text marked `seeded_from` in its frontmatter,
   with `loop: off`, no baseline and no product scope, so nothing runs until
   you edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
-  An existing record is never touched. The fixtures, named `starter-*`: the
+  An existing record is never touched. You do not have to write the text
+  yourself (ADR-046): while a project's constitution or evaluators is still
+  the seeded copy, the daemon plans one `reflect` job (source `draft:<slug>`,
+  once per 24 hours; the console's **Draft it for me** queues it at once)
+  whose worker reads the checkout and files the complete text with every
+  placeholder replaced as a *draft* - `pulse record draft ID --body-file F
+  [--note ...]`, refused while a `<placeholder>` remains or a protected
+  section (Hard stops, Kill switch, Amendments) differs from the current
+  text. A draft never changes the record: the console shows it as `draft
+  ready` on the project row and the Evolution tab, and one **Adopt** (or
+  `pulse record adopt ID [--words ...]`, human only) writes it as the next
+  revision authored by `human` with the drafting agent in the note;
+  **Discard** (`pulse record discard ID`) drops it; `pulse record drafts
+  [--project P]` lists what waits.
+  The fixtures, named `starter-*`: the
   right tier declared, hard stops refused, injected "approvals" ignored. Their
   scorers live in the binary (`pulse evolve score NAME`) and judge effects
   only. `pulse evolve seed [--project P]` seeds both for a project registered

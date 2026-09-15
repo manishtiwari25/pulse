@@ -678,7 +678,8 @@ func (h *Handler) additionRecords(w http.ResponseWriter, r *http.Request, parts 
 	for _, revision := range revisions {
 		history = append(history, map[string]any{"rev": revision.Rev, "author": revision.Author, "at": revision.At, "note": revision.Note})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"record": additionRecord(*rec), "frontmatter": revision.Frontmatter, "body": revision.Body, "revisions": history})
+	writeJSON(w, http.StatusOK, map[string]any{"record": additionRecord(*rec), "frontmatter": revision.Frontmatter, "body": revision.Body, "revisions": history,
+		"draft": draftSummary(h.Store, rec.ID, true)})
 }
 
 func (h *Handler) additionConstitution(w http.ResponseWriter, r *http.Request) {

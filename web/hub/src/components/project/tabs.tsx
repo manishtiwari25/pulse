@@ -10,7 +10,8 @@ import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart } from "@/components/pulse/charts";
 import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { DataTable } from "@/components/pulse/data-table";
-import { DocRev, SeededMarker, SelfImprovementPanel } from "@/components/pulse/evolve";
+import { DocRev, SelfImprovementPanel } from "@/components/pulse/evolve";
+import { RecordDraftPanel } from "@/components/records/draft-panel";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { FailedJobsSection } from "@/components/pulse/job-repair-section";
 import { Markdown } from "@/components/pulse/markdown";
@@ -27,7 +28,7 @@ import { TASK_COLUMNS } from "@/components/tasks/task-sheet";
 import { kindLabel, RECORD_COLUMNS, RecordCards, RecordSheet } from "@/components/records/records";
 import { hrefs } from "@/lib/nav";
 import { cn } from "@/lib/utils";
-import { num, plural, statusTone } from "@/lib/format";
+import { num, plural, statusTone, type Tone } from "@/lib/format";
 import { isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type ProjectInfo, type Proposal, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
 
@@ -517,12 +518,24 @@ export function EvolutionTab({ slug }: { slug: string }) {
         // The gates and fixtures (ADR-029) show whenever the hub reports them, set up or not: they are what the owner asked about.
         const fixtures = e.fixtures ?? [];
         const gated = e.gates !== undefined || !!e.gates_error || fixtures.length > 0;
-        // The loop's records (ADR-030): onboarding seeds them from the template; a project the seed did not reach is seeded from the terminal.
+        // The loop's records (ADR-030): onboarding seeds them from the template; agents draft the project's own text and the owner adopts it (ADR-046).
         const docs = { constitution: e.constitution ?? null, evaluators: e.evaluators ?? null };
         const docKpi = (doc: Evolution["constitution"]) => ({
           n: doc ? "r" + num(doc.record.current_rev) : "missing",
-          tone: (doc && !doc.seeded ? "ok" : "warn") as "ok" | "warn",
-          sub: doc ? (doc.seeded ? "seeded · make it yours" : doc.seeded_from ? "edited copy of the template" : "your own text") : "seed it, or write your own",
+          tone: (!doc ? "warn" : !doc.seeded ? "ok" : doc.draft || doc.draft_job ? "info" : "warn") as Tone,
+          sub: !doc
+            ? "seed it, or write your own"
+            : !doc.seeded
+              ? doc.draft
+                ? "your own text · a new draft waits"
+                : doc.seeded_from
+                  ? "edited copy of the template"
+                  : "your own text"
+              : doc.draft
+                ? "seeded · draft ready to adopt"
+                : doc.draft_job
+                  ? "seeded · an agent is drafting"
+                  : "seeded · ask for a draft",
         });
         const empty = (
           <EmptyState>
@@ -593,7 +606,7 @@ export function EvolutionTab({ slug }: { slug: string }) {
                   <Panel title="Constitution" icon={FileDiffIcon} actions={e.constitution ? <DocRev doc={e.constitution} slug={slug} /> : undefined}>
                     {e.constitution ? (
                       <>
-                        <SeededMarker doc={e.constitution} className="mb-3" />
+                        <RecordDraftPanel r={{ id: e.constitution.record.id, rev: e.constitution.record.current_rev, seeded: e.constitution.seeded === true, seeded_from: e.constitution.seeded_from ?? "", draft: e.constitution.draft, draft_job: e.constitution.draft_job }} body={e.constitution.draft?.body} className="mb-3" />
                         <Markdown source={e.constitution.body} className="max-h-[50vh] overflow-y-auto" />
                       </>
                     ) : (
@@ -603,7 +616,7 @@ export function EvolutionTab({ slug }: { slug: string }) {
                   <Panel title="Evaluators" icon={CheckCircle2Icon} actions={e.evaluators ? <DocRev doc={e.evaluators} slug={slug} /> : undefined}>
                     {e.evaluators ? (
                       <>
-                        <SeededMarker doc={e.evaluators} className="mb-3" />
+                        <RecordDraftPanel r={{ id: e.evaluators.record.id, rev: e.evaluators.record.current_rev, seeded: e.evaluators.seeded === true, seeded_from: e.evaluators.seeded_from ?? "", draft: e.evaluators.draft, draft_job: e.evaluators.draft_job }} body={e.evaluators.draft?.body} className="mb-3" />
                         <Markdown source={e.evaluators.body} className="max-h-[50vh] overflow-y-auto" />
                       </>
                     ) : (

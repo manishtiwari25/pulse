@@ -296,3 +296,120 @@ func nullInt(n int) any {
 	}
 	return n
 }
+
+// RecordDraft is a proposed body for a record (ADR-046): filed by anyone,
+// never the record's text until a human adopts it. One per record; the
+// latest filed wins. Project, kind and title come from the record's head row
+// when a list needs them.
+type RecordDraft struct {
+	RecordID string `json:"record_id"`
+	BaseRev  int    `json:"base_rev"`
+	Body     string `json:"body,omitempty"`
+	Author   string `json:"author"`
+	At       string `json:"at"`
+	Note     string `json:"note"`
+	JobID    string `json:"job_id"`
+	Project  string `json:"project,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Title    string `json:"title,omitempty"`
+}
+
+const draftCols = "d.record_id, d.base_rev, d.body, d.author, d.at, d.note, d.job_id, r.project, r.kind, r.title"
+
+func scanDraft(row interface{ Scan(...any) error }) (*RecordDraft, error) {
+	d := &RecordDraft{}
+	if err := row.Scan(&d.RecordID, &d.BaseRev, &d.Body, &d.Author, &d.At, &d.Note, &d.JobID, &d.Project, &d.Kind, &d.Title); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// GetDraft is the record's waiting draft, or nil when none is filed.
+func (s *Store) GetDraft(id string) (*RecordDraft, error) {
+	d, err := scanDraft(s.DB.QueryRow("SELECT "+draftCols+" FROM record_drafts d JOIN records r ON r.id = d.record_id WHERE d.record_id = ?", id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return d, err
+}
+
+// ListDrafts lists the waiting drafts, oldest first, for one project or all.
+func (s *Store) ListDrafts(project string) ([]RecordDraft, error) {
+	query, args := "SELECT "+draftCols+" FROM record_drafts d JOIN records r ON r.id = d.record_id", []any{}
+	if project != "" {
+		query, args = query+" WHERE r.project = ?", append(args, project)
+	}
+	rows, err := s.DB.Query(query+" ORDER BY d.at, d.record_id", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RecordDraft{}
+	for rows.Next() {
+		d, err := scanDraft(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
+}
+
+// PutDraft files a draft against the record's current revision, replacing
+// any earlier one, and logs record.draft. The record must exist.
+func (s *Store) PutDraft(id, body, author, note, jobID string) (*RecordDraft, error) {
+	now := s.Now()
+	tx, err := s.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var base int
+	if err := tx.QueryRow("SELECT current_rev FROM records WHERE id = ?", id).Scan(&base); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNoRecord
+	} else if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec("INSERT INTO record_drafts (record_id, base_rev, body, author, at, note, job_id) VALUES (?, ?, ?, ?, ?, ?, ?) "+
+		"ON CONFLICT(record_id) DO UPDATE SET base_rev = excluded.base_rev, body = excluded.body, author = excluded.author, at = excluded.at, note = excluded.note, job_id = excluded.job_id",
+		id, base, body, author, now, note, jobID); err != nil {
+		return nil, err
+	}
+	detail, err := detailText(map[string]any{"base_rev": base, "job": jobID, "bytes": len(body)})
+	if err != nil {
+		return nil, err
+	}
+	if err := event(tx, now, author, "record.draft", id, detail); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetDraft(id)
+}
+
+// DeleteDraft removes the record's draft and logs the given action
+// (record.adopted, record.draft.discarded) with the detail; nothing when
+// no draft is filed.
+func (s *Store) DeleteDraft(id, actor, action string, detail any) (bool, error) {
+	tx, err := s.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec("DELETE FROM record_drafts WHERE record_id = ?", id)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	text, err := detailText(detail)
+	if err != nil {
+		return false, err
+	}
+	if err := event(tx, s.Now(), actor, action, id, text); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}

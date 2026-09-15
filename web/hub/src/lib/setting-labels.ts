@@ -60,6 +60,7 @@ const LABELS: Record<string, string> = {
   "evolve.tolerance": "Improvement a variant needs",
   "evolve.heldout": "Who writes the held-out set",
   "evolve.heldout_dir": "Held-out folder",
+  "evolve.draft_hours": "Hours between drafting jobs",
   "daemon.self_update": "Self-update",
   "daemon.self_update_retry_minutes": "Retry a failed build after (minutes)",
   "daemon.recover": "Recover failed jobs",

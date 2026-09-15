@@ -257,6 +257,7 @@ var EvolveSettings = map[string]string{
 	"evolve.tolerance":   "0.02",
 	"evolve.heldout_dir": "",
 	"evolve.heldout":     "auto",
+	"evolve.draft_hours": "24",
 }
 
 // EvolveRules validate EvolveSettings.
@@ -266,6 +267,7 @@ var EvolveRules = map[string]SettingRule{
 	"evolve.tolerance":   {Kind: "decimal", Max: 1, HasMax: true, Description: "score improvement a variant needs over the baseline to be kept, a share between 0 and 1 such as 0.02"},
 	"evolve.heldout_dir": {Kind: "identifier", Description: "owner-private directory outside every repository holding held-out fixtures; never quoted to agents"},
 	"evolve.heldout":     {Kind: "choice", Choices: []string{"auto", "owner"}, Description: "auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)"},
+	"evolve.draft_hours": {Kind: "count", Min: 0, HasMin: true, Description: "hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button"},
 }
 
 // DaemonSettings govern the daemon's care of its own binary (ADR-035), of
