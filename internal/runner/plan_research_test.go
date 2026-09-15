@@ -55,7 +55,8 @@ func TestPlanJobsResearchesAQuietProject(t *testing.T) {
 	}
 }
 
-// Research waits lead.research_minutes after the last job the project got, of any kind, and rotates its focus
+// Research waits lead.research_minutes after the last job that decided work (a ballot or the daily reflect,
+// the planner's own standing jobs, do not postpone it) and after the last research job, and rotates its focus
 // with the count of research jobs the project ever had.
 func TestPlanJobsResearchKeepsItsCadenceAndRotatesFocus(t *testing.T) {
 	s := newStore(t)
@@ -63,20 +64,29 @@ func TestPlanJobsResearchKeepsItsCadenceAndRotatesFocus(t *testing.T) {
 	join(t, s, "aurora")
 	researchOn(t, s, "60")
 	suppressPlannerReflect(t, s)
+	worker, _, err := addJob(s, "proj", "improve", "Implement suggestion", "one variable", 1, 10, "suggestion:x", "daemon", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?", testNow, worker.str("id"))
 	ageJobs(s, plusMinutes(testNow, -30))
 
 	if jobs, err := planJobs(s, "proj", testNow, "daemon"); err != nil || len(jobs) != 0 {
-		t.Fatalf("research 30m after the last job: %v (%v)", jobs, err)
+		t.Fatalf("research 30m after a worker job: %v (%v)", jobs, err)
 	}
 	if _, reason, ok := researchDue(s, "proj", testNow); ok || reason != "a job was created in the last 60m" {
 		t.Fatalf("researchDue = %v %q", ok, reason)
 	}
-	ageJobs(s, plusMinutes(testNow, -61))
+	exec1(s.DB, "UPDATE jobs SET created_at = ? WHERE id = ?", plusMinutes(testNow, -61), worker.str("id"))
+	// The daily reflect 30 minutes ago is a standing job: it does not hold research back.
 	jobs, err := planJobs(s, "proj", testNow, "daemon")
 	if err != nil || len(jobs) != 1 || !strings.HasPrefix(jobs[0].str("title"), "Research (checks)") {
 		t.Fatalf("first research: %v (%v)", jobs, err)
 	}
-	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?", testNow, jobs[0].str("id"))
+	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ?, created_at = ? WHERE id = ?", testNow, plusMinutes(testNow, -30), jobs[0].str("id"))
+	if _, reason, ok := researchDue(s, "proj", testNow); ok || reason != "last research 30m ago, next after 60m" {
+		t.Fatalf("researchDue after a research job = %v %q", ok, reason)
+	}
 	ageJobs(s, plusMinutes(testNow, -61))
 	later := plusMinutes(testNow, 1)
 	jobs, err = planJobs(s, "proj", later, "daemon")
@@ -175,7 +185,10 @@ func TestResearchIdlePart(t *testing.T) {
 	if got := researchIdlePart(s, "proj", testNow); got != "research due: checks" {
 		t.Fatalf("due = %q", got)
 	}
-	suppressPlannerReflect(t, s)
+	if _, _, err := addJob(s, "proj", "improve", "Implement suggestion", "one variable", 1, 10, "suggestion:x", "daemon", true); err != nil {
+		t.Fatal(err)
+	}
+	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ? WHERE project = 'proj'", testNow)
 	if got := researchIdlePart(s, "proj", testNow); got != "research: a job was created in the last 60m" {
 		t.Fatalf("after a job = %q", got)
 	}

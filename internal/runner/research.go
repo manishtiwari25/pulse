@@ -53,9 +53,10 @@ var researchFocuses = []researchFocus{
 }
 
 // researchDue says whether the planner should seed a research job for slug now (ADR-045): research is on
-// (lead.research_minutes > 0), nothing is queued, leased or blocked for the project, no job of any kind was created
-// for it in the last lead.research_minutes, and today's research jobs are under lead.research_per_day. It returns
-// the focus the next job takes: the focuses rotate with the count of research jobs the project ever had.
+// (lead.research_minutes > 0), nothing is queued, leased or blocked for the project, the last research job and
+// the last job that decided work (any kind but the planner's own reflect and ballot jobs) are both older than
+// lead.research_minutes, and today's research jobs are under lead.research_per_day. It returns the focus the
+// next job takes: the focuses rotate with the count of research jobs the project ever had.
 func researchDue(s *store.Store, slug, now string) (researchFocus, string, bool) {
 	minutes := settingInt(s, "lead.research_minutes")
 	if minutes <= 0 {
@@ -64,10 +65,15 @@ func researchDue(s *store.Store, slug, now string) (researchFocus, string, bool)
 	if mustOne(s.DB, "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased', 'blocked') LIMIT 1", slug) != nil {
 		return researchFocus{}, "a job is open", false
 	}
-	if mustOne(s.DB, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? LIMIT 1", slug, plusMinutes(now, -float64(minutes))) != nil {
+	prefix := researchSourcePrefix + slug + ":"
+	since := plusMinutes(now, -float64(minutes))
+	if last := mustOne(s.DB, "SELECT MAX(created_at) AS at FROM jobs WHERE project = ? AND kind = 'reflect' AND source LIKE ?", slug, prefix+"%").str("at"); last >= since {
+		ago := int(mustISO(now).Sub(mustISO(last)).Minutes())
+		return researchFocus{}, fmt.Sprintf("last research %dm ago, next after %dm", ago, minutes), false
+	}
+	if mustOne(s.DB, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? AND kind NOT IN ('reflect', 'ballot') LIMIT 1", slug, since) != nil {
 		return researchFocus{}, fmt.Sprintf("a job was created in the last %dm", minutes), false
 	}
-	prefix := researchSourcePrefix + slug + ":"
 	perDay := settingInt(s, "lead.research_per_day")
 	if perDay < 1 {
 		perDay = 1

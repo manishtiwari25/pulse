@@ -1062,8 +1062,9 @@ jobs of the week, the plans and decisions, queue up to `lead.idle_max_jobs`
 (default 3) Tier 0/1 worker jobs and tell the owner in the project's chat what
 it queued and why, or say in its summary that nothing was worth queueing.
 Idle time is research time (ADR-045): when a project has nothing plannable,
-nothing queued and no job created for `lead.research_minutes` (default 60,
-`0` turns it off), the planner seeds one research job - a `reflect` job whose
+nothing queued, and no research job or job that decided work created for
+`lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do
+not count), the planner seeds one research job - a `reflect` job whose
 brief points a worker at one focus in turn (the project's checks, the loop's
 report, the docs against the code, the product as its user sees it, the code
 that changes most, the dependencies, the board, the lessons the code could
