@@ -185,7 +185,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
 
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto rounded-xl sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Held-out fixtures</DialogTitle>
           <DialogDescription>

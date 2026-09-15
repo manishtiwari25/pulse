@@ -3,14 +3,15 @@
 import { useState } from "react";
 import { Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { errorText } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
-import { cn } from "@/lib/utils";
 
-// Every owner write goes through here: a confirm dialog, an optional
+// Every owner write goes through here: a confirm panel at the right edge that
+// leaves the page readable and clickable while you decide, an optional
 // "words" field (the human's reason is recorded on the board), an optimistic
 // toast, and the error surfaced as what / why / fix.
 export interface ConfirmProps {
@@ -56,13 +57,14 @@ export function ConfirmDialog({ open, onOpenChange, title, description, action, 
       setBusy(false);
     }
   };
+  const close = (o: boolean) => !busy && onOpenChange(o);
   return (
-    <AlertDialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <AlertDialogContent size="default" className="rounded-xl sm:max-w-lg">
-        <AlertDialogHeader>
-          <AlertDialogTitle className="text-base font-semibold tracking-tight">{title}</AlertDialogTitle>
-          {description ? <AlertDialogDescription className="leading-relaxed anywhere">{description}</AlertDialogDescription> : null}
-        </AlertDialogHeader>
+    <Dialog open={open} onOpenChange={close}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="text-base font-semibold tracking-tight">{title}</DialogTitle>
+          {description ? <DialogDescription className="leading-relaxed anywhere">{description}</DialogDescription> : null}
+        </DialogHeader>
         {children}
         {words ? (
           <div className="grid gap-1.5">
@@ -81,14 +83,14 @@ export function ConfirmDialog({ open, onOpenChange, title, description, action, 
             <p className="text-xs text-muted-foreground">{words.required ? "Required - your words are recorded with the decision." : "Optional - recorded with the decision."} ⌘↩ confirms.</p>
           </div>
         ) : null}
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={busy || missing} onClick={(e) => { e.preventDefault(); void run(); }} className={cn(destructive && "bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/30")}>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => close(false)}>Cancel</Button>
+          <Button variant={destructive ? "destructive" : "default"} disabled={busy || missing} onClick={() => void run()}>
             {busy ? <Loader2Icon className="animate-spin" /> : null}
             {action}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

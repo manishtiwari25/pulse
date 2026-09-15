@@ -121,7 +121,7 @@ function GoalEditor({ slug, goal, onClose }: { slug: string; goal: ProjectGoal; 
 
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="sm:max-w-xl">
         <form onSubmit={(event) => { event.preventDefault(); if (!busy) void save(); }} className="grid gap-4">
           <DialogHeader>
             <DialogTitle>Edit project goal</DialogTitle>

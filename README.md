@@ -1153,6 +1153,12 @@ npm run check                                # typecheck + lint + a scratch buil
 ```
 
 Commit `web/hub/out/` together with the source change that produced it.
+Popups are panels, not modals (`src/components/ui/panel.tsx`): every dialog
+and sheet docks at the right edge under the header without dimming or
+locking the page, so you can keep reading, scrolling and clicking while you
+decide; decision and form panels stay open until you close them, read-only
+sheets close on an outside click, and opening a second top-level panel
+closes the first (a confirm inside a sheet stacks on it).
 When a framework record changes in the brain (a guide, skill, workflow,
 prompt or template), run `pulse seed export` and commit
 `internal/records/seed/bundle.json` with it: that file is what a fresh copy

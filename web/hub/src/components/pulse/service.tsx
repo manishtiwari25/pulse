@@ -167,7 +167,7 @@ export function ServiceDialog({ open, onOpenChange, payload, action = "install",
 
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto rounded-xl sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{finishing ? "Finish service setup" : starting ? "Start daemon" : "Keep PULSE running"}</DialogTitle>
           <DialogDescription>

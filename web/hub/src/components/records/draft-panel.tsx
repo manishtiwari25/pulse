@@ -116,7 +116,7 @@ export function DraftActions({ r, body, size = "sm", className }: { r: DraftStat
         onOpenChange={(o) => setOpen(o ? "adopt" : null)}
         title={"Adopt the drafted " + what + " of " + slugOf(r.id)}
         description={"The text below becomes " + r.id + " revision r" + (r.rev + 1) + ", authored by you with " + draft.author + " named in the note. The record's frontmatter stays; loop, baseline and scope settings are untouched. Read it first - the facts are the agent's reading of the repository."}
-        action="Adopting"
+        action="Adopt"
         success={r.id + " adopted - the " + what + " is yours now"}
         words={{ label: "Your words (optional)", placeholder: "Paths checked; the hard stops match ours …" }}
         onConfirm={(words) => writes.adoptDraft(r.id, words)}
@@ -129,7 +129,7 @@ export function DraftActions({ r, body, size = "sm", className }: { r: DraftStat
         onOpenChange={(o) => setOpen(o ? "discard" : null)}
         title={"Discard the drafted " + what + " of " + slugOf(r.id)}
         description={"The draft by " + draft.author + " is dropped; " + r.id + " keeps its current text (r" + r.rev + "). While the text is still the seeded copy the daemon drafts again after a day, or you ask for one now."}
-        action="Discarding"
+        action="Discard"
         destructive
         success={"Draft on " + r.id + " discarded"}
         words={{ label: "Why (optional)", placeholder: "Wrong product paths …" }}

@@ -135,7 +135,7 @@ interface Refused {
 export function CredentialPicker({ open, onOpenChange, payload }: { open: boolean; onOpenChange: (o: boolean) => void; payload: CredPayload }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] gap-0 overflow-y-auto p-0 sm:max-w-xl">
+      <DialogContent className="gap-0 p-0 sm:max-w-xl">
         <PickerBody payload={payload} close={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>

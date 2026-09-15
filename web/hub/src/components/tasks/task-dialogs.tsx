@@ -66,7 +66,7 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
 
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent className="scroll-thin max-h-[90vh] overflow-y-auto rounded-xl sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
           <DialogDescription>Tell the project&apos;s lead what you want. The brief is Markdown; the lead breaks it into jobs and reports back in the chat.</DialogDescription>
@@ -194,7 +194,7 @@ export function AmendTaskDialog({ task, open, onOpenChange }: { task: Task; open
   };
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent className="scroll-thin max-h-[90vh] overflow-y-auto rounded-xl sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{"Amend " + task.id}</DialogTitle>
           <DialogDescription>{"Revision " + (task.current_rev + 1) + " of this task. Say what changed in the note; the lead reads it."}</DialogDescription>

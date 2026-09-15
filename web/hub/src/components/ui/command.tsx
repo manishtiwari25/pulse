@@ -49,8 +49,10 @@ function CommandDialog({
   return (
     <Dialog {...props}>
       <DialogContent
+        placement="float"
+        stay={false}
         className={cn(
-          "top-[10dvh] flex max-h-[80dvh] translate-y-0 flex-col overflow-hidden rounded-xl! p-0",
+          "flex flex-col overflow-hidden rounded-xl! p-0",
           showCloseButton && "[&_[data-slot=dialog-close]]:top-1.5 [&_[data-slot=dialog-close]]:right-1.5 [&_[data-slot=dialog-close]]:size-11",
           className
         )}

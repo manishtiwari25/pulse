@@ -60,7 +60,7 @@ export function DecideRecordDialog({ record, action, open, onOpenChange, onDone 
   const [busy, setBusy] = useState(false);
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DecideBody record={record} action={action} busy={busy} setBusy={setBusy} onOpenChange={onOpenChange} onDone={onDone} />
       </DialogContent>
     </Dialog>

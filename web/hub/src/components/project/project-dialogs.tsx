@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpIcon, ChevronRightIcon, FolderIcon, FolderSearchIcon, GitBranchIcon, HomeIcon, Loader2Icon, PlusIcon, RotateCcwIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -75,7 +74,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
 
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Add project</DialogTitle>
           <DialogDescription>
@@ -376,11 +375,11 @@ export function RemoveDialog({ open, onOpenChange, kind, name, onApplied }: { op
   // so each opening starts from a fresh preview and the fetch runs once.
   const [busy, setBusy] = useState(false);
   return (
-    <AlertDialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <AlertDialogContent size="default" className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
+      <DialogContent className="sm:max-w-lg">
         <RemoveBody kind={kind} name={name} busy={busy} setBusy={setBusy} onOpenChange={onOpenChange} onApplied={onApplied} />
-      </AlertDialogContent>
-    </AlertDialog>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -425,13 +424,13 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
   const leased = preview?.leased_jobs?.length ?? 0;
   return (
     <>
-      <AlertDialogHeader>
-        <AlertDialogTitle>
+      <DialogHeader>
+        <DialogTitle>
           {text.title + " "}
           <Mono className="text-[15px]">{name}</Mono>
-        </AlertDialogTitle>
-        <AlertDialogDescription className="anywhere">{text.description}</AlertDialogDescription>
-      </AlertDialogHeader>
+        </DialogTitle>
+        <DialogDescription className="anywhere">{text.description}</DialogDescription>
+      </DialogHeader>
       {refusal ? (
         <Notice tone="bad" className="text-[13px]">
           <div className="font-medium">{refusal.error || "The hub refused the preview."}</div>
@@ -465,20 +464,13 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
           <Skeleton className="h-8" />
         </div>
       )}
-      <AlertDialogFooter>
-        <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-        <AlertDialogAction
-          variant="destructive"
-          disabled={busy || !preview}
-          onClick={(e) => {
-            e.preventDefault();
-            void apply();
-          }}
-        >
+      <DialogFooter>
+        <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
+        <Button variant="destructive" disabled={busy || !preview} onClick={() => void apply()}>
           {busy ? <Loader2Icon className="animate-spin" /> : <Trash2Icon />}
           {text.action}
-        </AlertDialogAction>
-      </AlertDialogFooter>
+        </Button>
+      </DialogFooter>
     </>
   );
 }
