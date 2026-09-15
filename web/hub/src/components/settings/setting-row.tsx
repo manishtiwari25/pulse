@@ -6,10 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Clamp } from "@/components/pulse/clamp";
 import { ConfirmDialog } from "@/components/pulse/confirm";
 import { Mono, ToneBadge, When } from "@/components/pulse/who";
 import { cn } from "@/lib/utils";
 import { writes, type Setting } from "@/lib/api";
+import { settingLabel } from "@/lib/setting-labels";
 
 export function hint(s: Setting): string {
   if (s.secret) return "owner-private: stored, but never shown here, to agents or in events";
@@ -35,12 +37,46 @@ export function hint(s: Setting): string {
   }
 }
 
-// One setting row, two columns from md up: what it is (name, description,
-// default and last change on one quiet line) and the editor for its kind
-// with Save right next to it and the hint after it. On phones the editor
-// stacks under the text. Saving is confirmed, then POST /api/v1/settings.
-// `title` puts a human name in front of the key for a row shown on its own
-// (the kill switch).
+// The left column of a settings row: the human name first, the key in small
+// type beside it with the last change, then the description folded to one
+// line (ADR-042 D5). A row at its default says so with one quiet badge.
+export function RowHead({ s, title, badge, children }: { s: Setting; title?: React.ReactNode; badge?: React.ReactNode; children?: React.ReactNode }) {
+  // "init" wrote the legacy rows at store creation: that is not a change either.
+  const unset = s.updated_by === "default" || s.updated_by === "init" || !s.updated_at;
+  const atDefault = s.value === s.default;
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="text-sm font-semibold">{title ?? settingLabel(s.name)}</span>
+        <Mono className="text-[11.5px] text-muted-foreground">{s.name}</Mono>
+        {s.secret ? (
+          <ToneBadge tone="warn" className="gap-1 self-center">
+            <EyeOffIcon className="size-3" /> secret
+          </ToneBadge>
+        ) : null}
+        {badge}
+        {unset || atDefault ? (
+          <span className="self-center rounded-full border px-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground" title={"default " + (s.default || "(empty)")}>
+            default
+          </span>
+        ) : null}
+        {!unset ? (
+          <span className="text-xs text-muted-foreground">
+            changed <When d={s.updated_at} />
+            {s.updated_by ? <> by <Mono className="text-[11px]">{s.updated_by}</Mono></> : null}
+            {!atDefault && s.default ? <> · default <Mono className="text-[11px]">{s.default}</Mono></> : null}
+          </span>
+        ) : null}
+      </div>
+      {children ?? <Clamp>{s.description}</Clamp>}
+    </div>
+  );
+}
+
+// One setting row, two columns from md up: what it is on the left, the
+// editor for its kind with Save right next to it on the right; the hint for
+// the kind appears while the owner types. On phones the editor stacks under
+// the text. Saving is confirmed, then POST /api/v1/settings.
 type SettingLabels = { on?: string; off?: string; choices?: Record<string, string> };
 
 export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit: boolean; labels?: SettingLabels; title?: React.ReactNode }) {
@@ -58,36 +94,12 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
   const isOn = s.value === "1";
   const isStop = s.name === "stop";
   const secret = !!s.secret;
-  const unset = s.updated_by === "default" || !s.updated_at;
   const wide = s.kind === "command" || s.kind === "text" || s.kind === "identifier" || s.kind === "reference";
+  const label = title ?? settingLabel(s.name);
   const h = hint(s);
   return (
     <div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-        {title ? <span className="text-sm font-semibold">{title}</span> : null}
-        <Mono className={cn("font-medium text-foreground", title && "text-muted-foreground")}>{s.name}</Mono>
-        {secret ? (
-          <ToneBadge tone="warn" className="gap-1 self-center">
-            <EyeOffIcon className="size-3" /> secret
-          </ToneBadge>
-        ) : null}
-        <p className="basis-full text-xs leading-snug text-muted-foreground anywhere">
-          {"default "}
-          <Mono className="text-[11.5px]">{s.default || "(empty)"}</Mono>
-          {" · "}
-          {unset ? (
-            "not set yet - the default is in effect"
-          ) : (
-            <>
-              {"changed "}
-              <When d={s.updated_at} />
-              {s.updated_by ? " by " : ""}
-              {s.updated_by ? <Mono className="text-[11.5px]">{s.updated_by}</Mono> : null}
-            </>
-          )}
-        </p>
-        <p className="basis-full text-[13px] leading-snug text-muted-foreground anywhere">{s.description}</p>
-      </div>
+      <RowHead s={s} title={label} />
       <div className="flex min-w-0 flex-col gap-1.5 md:items-end">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
         {isSwitch ? (
@@ -148,16 +160,17 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
           </>
         )}
         </div>
-        {h ? <p className="text-xs leading-snug text-muted-foreground anywhere">{h}</p> : null}
+        {h && (dirty || secret) ? <p className="text-xs leading-snug text-muted-foreground anywhere">{h}</p> : null}
       </div>
       <ConfirmDialog
         open={pending !== null}
         onOpenChange={(o) => !o && setPending(null)}
-        title={"Change " + s.name + "?"}
+        title={<>Change {label}?</>}
         description={
           <span>
-            {isSwitch ? (pending === "1" ? "Turn it on" : "Turn it off") : secret ? (
-              pending ? (s.value ? "Replace the private value (never shown here)" : "Set the private value (never shown here)") : "Clear the private value"
+            <Mono>{s.name}</Mono>{": "}
+            {isSwitch ? (pending === "1" ? "turn it on" : "turn it off") : secret ? (
+              pending ? (s.value ? "replace the private value (never shown here)" : "set the private value (never shown here)") : "clear the private value"
             ) : <>
               from <Mono>{s.value || "(empty)"}</Mono> to <Mono>{pending || "(empty)"}</Mono>
             </>}
@@ -165,7 +178,7 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
           </span>
         }
         action="Save"
-        success={s.name + " saved."}
+        success={settingLabel(s.name) + " saved."}
         onConfirm={() => writes.setSetting(s.name, pending ?? "")}
         invalidates={(p) => p.startsWith("settings") || p.startsWith("runner") || p.startsWith("compute") || p.startsWith("events") || p.startsWith("org")}
       />

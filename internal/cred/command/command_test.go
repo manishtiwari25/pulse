@@ -14,6 +14,7 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/cred"
+	"github.com/manishtiwari25/pulse/internal/cred/setup"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -212,7 +213,7 @@ func TestCredTokenSetStatusClear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rep statusReport
+	var rep setup.Report
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("json %v: %s", err, out)
 	}

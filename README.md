@@ -841,6 +841,17 @@ locks - so the honest answer is a key of the daemon's own (ADR-041):
 - `pulse cred status` (also `--json`) says what is set and where the token was
   found; `pulse cred clear [--token]` returns the daemon to your credentials.
 
+The same steps live in the hub (ADR-042): Settings > **Push key** > *Choose a
+key…* opens a picker that lists the providers this machine has (1Password,
+the macOS Keychain, a key file), takes the service-account token once, lets
+you browse the vaults and SSH Key items the token can see and pick one, then
+**Test and save** runs the same read-and-probe as `pulse cred set`. A refused
+key shows its public key to add as a deploy key and saves nothing; *Remove*
+is `pulse cred clear`. The hub route (`/api/v1/cred`) answers only on
+loopback, only with the `X-Pulse-Cred` header, and records the change as
+`human:dashboard`, so the browser gets no more than the CLI does - the token
+and the key never pass through the settings store or the page.
+
 Without 1Password, `keychain://SERVICE/ACCOUNT` names a macOS Keychain item
 holding the key, and `file:///ABSOLUTE/PATH` a 0600 file (a symlink or a
 looser mode is refused). Whatever the reference, the daemon resolves it at

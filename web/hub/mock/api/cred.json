@@ -1,0 +1,51 @@
+{
+  "available": true,
+  "can_edit": true,
+  "os": "darwin",
+  "report": {
+    "reference": "",
+    "landing_push": "off",
+    "token": "none"
+  },
+  "providers": [
+    {
+      "id": "op",
+      "title": "1Password",
+      "blurb": "The daemon reads the key through a service account at push time; the key never lands on disk for long.",
+      "available": true,
+      "needs_token": true,
+      "browse": true,
+      "generate": false,
+      "fields": [],
+      "example": "op://Vault/pulse push key/private key?ssh-format=openssh"
+    },
+    {
+      "id": "keychain",
+      "title": "macOS Keychain",
+      "blurb": "A generic password item that holds the private key; unlocked with the login keychain.",
+      "available": true,
+      "needs_token": false,
+      "browse": false,
+      "generate": false,
+      "fields": [
+        { "name": "service", "label": "Service", "placeholder": "pulse-push" },
+        { "name": "account", "label": "Account", "placeholder": "deploy" }
+      ],
+      "example": "keychain://pulse-push/deploy"
+    },
+    {
+      "id": "file",
+      "title": "Key file",
+      "blurb": "A private key on this machine, readable only by you; PULSE can mint one for the daemon.",
+      "available": true,
+      "needs_token": false,
+      "browse": false,
+      "generate": true,
+      "fields": [
+        { "name": "path", "label": "Path", "placeholder": "/home/owner/.pulse/secrets/push_key" }
+      ],
+      "example": "file:///home/owner/.pulse/secrets/push_key"
+    }
+  ],
+  "shapes": "op://VAULT/ITEM/FIELD[?ssh-format=openssh], keychain://SERVICE/ACCOUNT, or file:///ABSOLUTE/PATH"
+}

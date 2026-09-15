@@ -9,11 +9,15 @@ export class ApiError extends Error {
   status: number;
   why: string;
   fix: string;
-  constructor(message: string, status: number, why = "", fix = "") {
+  // The whole error body: a few refusals carry more than words (the push
+  // key's public half and its probes, ADR-042).
+  body: Record<string, unknown>;
+  constructor(message: string, status: number, why = "", fix = "", body: Record<string, unknown> = {}) {
     super(message);
     this.status = status;
     this.why = why;
     this.fix = fix;
+    this.body = body;
   }
 }
 
@@ -32,7 +36,7 @@ async function readJson<T>(r: Response): Promise<T> {
   }
   if (!r.ok) {
     const e = (data ?? {}) as Partial<ErrorBody>;
-    throw new ApiError(e.error || "HTTP " + r.status, r.status, e.why || "", e.fix || "");
+    throw new ApiError(e.error || "HTTP " + r.status, r.status, e.why || "", e.fix || "", typeof data === "object" && data ? (data as Record<string, unknown>) : {});
   }
   return data as T;
 }
@@ -50,8 +54,9 @@ export function apiHref(path: string): string {
 // The decide/settings routes kept their explicit intent headers from the
 // Python server (ADR-017, ADR-025); the newer write routes need only JSON.
 // The held-out writes (ADR-032) take the same guard: a `.score` file is a
-// program the daemon runs, so the intent is stated in a header too.
-const WRITE_HEADERS: Record<string, string> = { decide: "X-Pulse-Decide", settings: "X-Pulse-Settings", heldout: "X-Pulse-Heldout" };
+// program the daemon runs, so the intent is stated in a header too; so does
+// the push key (ADR-042), which decides what the daemon may push with.
+const WRITE_HEADERS: Record<string, string> = { decide: "X-Pulse-Decide", settings: "X-Pulse-Settings", heldout: "X-Pulse-Heldout", cred: "X-Pulse-Cred" };
 
 export function post<T>(path: string, payload: unknown): Promise<T> {
   const head = path.split("/")[0] ?? "";
@@ -637,6 +642,94 @@ export interface SettingsPayload {
   available: boolean;
   can_edit: boolean;
   settings: Setting[];
+}
+
+// ----- the daemon's push key (ADR-041, ADR-042) --------------------------
+
+// Where the key can live. The hub lists these; `available` is false for a
+// provider this machine lacks (`unavailable` says why), `needs_token` for
+// 1Password's service-account token, `browse` when the hub can list its
+// items, `generate` when the hub can mint a key of the daemon's own.
+export interface CredProvider {
+  id: "op" | "keychain" | "file" | string;
+  title: string;
+  blurb: string;
+  available: boolean;
+  unavailable?: string;
+  needs_token: boolean;
+  browse: boolean;
+  generate: boolean;
+  fields: { name: string; label: string; placeholder: string }[];
+  example: string;
+}
+
+// The state `pulse cred status` prints: the reference (never the key), where
+// the token was found ("none" when it was not), and the fingerprint the last
+// successful set recorded.
+export interface CredReport {
+  reference: string;
+  scheme?: string;
+  landing_push: string;
+  token: string;
+  set_at?: string;
+  set_by?: string;
+  fingerprint?: string;
+}
+
+export interface CredPayload {
+  available: boolean;
+  can_edit: boolean;
+  os: string;
+  report: CredReport;
+  providers: CredProvider[];
+  shapes: string;
+}
+
+export interface CredVault {
+  id: string;
+  name: string;
+}
+
+export interface CredItem {
+  id: string;
+  title: string;
+  category: string;
+  updated_at?: string;
+  reference: string;
+}
+
+// One remote asked whether the key may push: `ok`, or `skipped` (no
+// upstream), or `why` (the remote's refusal, redacted).
+export interface CredProbe {
+  project: string;
+  branch: string;
+  remote?: string;
+  ok: boolean;
+  skipped?: string;
+  why?: string;
+}
+
+export interface CredSetResult {
+  reference: string;
+  fingerprint: string;
+  public_key: string;
+  source: string;
+  probed: boolean;
+  probes: CredProbe[];
+  landing_push: string;
+}
+
+export interface CredGenerated {
+  path: string;
+  reference: string;
+  fingerprint: string;
+  public_key: string;
+  existed: boolean;
+}
+
+export interface CredCleared {
+  was: string;
+  token_removed: string[];
 }
 
 // ----- native harness ----------------------------------------------------
@@ -1448,4 +1541,13 @@ export const writes = {
   heldoutFixture: (input: HeldoutFixtureInput) => post<HeldoutPayload>("heldout/fixtures", input),
   // Keep PULSE running (ADR-038): `pulse service install` from the console. dry_run:true previews.
   serviceInstall: (dryRun: boolean) => post<ServiceInstallResult>("service", { dry_run: dryRun }),
+  // The daemon's push key (ADR-042): the same steps as `pulse cred`. The token
+  // is posted once and kept by the hub machine; a set probes every upstream
+  // and saves only when they all answer; a refusal carries the public key.
+  credToken: (token: string) => post<{ stored_in: string; report: CredReport }>("cred/token", { token }),
+  credVaults: () => post<{ vaults: CredVault[] }>("cred/op/vaults", {}),
+  credItems: (vault: string) => post<{ vault: string; items: CredItem[] }>("cred/op/items", { vault }),
+  credSet: (reference: string, probe = true) => post<{ result: CredSetResult; report: CredReport }>("cred/set", { reference, probe }),
+  credClear: (token: boolean) => post<{ cleared: CredCleared; report: CredReport }>("cred/clear", { token }),
+  credGenerate: (replace: boolean) => post<{ generated: CredGenerated }>("cred/generate", { replace }),
 };

@@ -1,14 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIcon, CloudIcon, GaugeIcon, PowerIcon, RefreshCwIcon, SettingsIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
+import { ActivityIcon, CloudIcon, GaugeIcon, PlugIcon, PowerIcon, RefreshCwIcon, SettingsIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Clamp } from "@/components/pulse/clamp";
 import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonPage } from "@/components/pulse/panel";
 import { Mono } from "@/components/pulse/who";
 import { RunningStrip } from "@/components/settings/running";
+import { CredentialRow } from "@/components/settings/credential";
 import { HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
 import { SettingRow } from "@/components/settings/setting-row";
 import type { Setting, SettingsPayload } from "@/lib/api";
+import { COMPUTE_PROVIDERS, settingLabel } from "@/lib/setting-labels";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
@@ -18,8 +21,9 @@ interface Group {
   blurb: string;
   keys: string[];
   match?: (name: string) => boolean;
-  // Clusters inside a section: a heading and the keys under it.
-  clusters?: { title: string; keys: string[] }[];
+  // Clusters inside a section: a heading and the keys under it. A cluster
+  // with a provider shows only while compute.provider names it (ADR-042 D6).
+  clusters?: { title: string; keys: string[]; provider?: string }[];
   // A read-only strip rendered above the rows (the daemon section's "Running").
   strip?: () => React.ReactNode;
 }
@@ -33,9 +37,17 @@ const RUNNER_CLUSTERS = [
   { title: "The machine", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "max_ai_credits", "runner_cmd", "prune_after_days"] },
   { title: "The worker", keys: ["worker_model", "light_model", "landing", "landing.push", "push.credential"] },
   { title: "The board", keys: ["quorum", "expiry_days", "stale_days", "claim_hours"] },
+  { title: "The lead", keys: ["lead.idle_hours", "lead.idle_max_jobs", "lead.stuck_thread_jobs"] },
   { title: "Amendments", keys: ["amend_quorum", "amend_majority"] },
 ];
 const GROUPS: Group[] = [
+  {
+    id: "provider",
+    title: "Model provider",
+    blurb: "Where the native harness sends its model calls when the provider above is openai: OpenAI itself, Azure OpenAI, Ollama, LM Studio or OpenRouter. The API key lives on this machine, never in the store.",
+    keys: ["provider.openai.base_url"],
+    match: (n) => n.startsWith("provider."),
+  },
   {
     id: "owner",
     title: "You",
@@ -48,6 +60,7 @@ const GROUPS: Group[] = [
     title: "Runner caps",
     blurb: "How hard the daemon may work, what each job runs with, and the board's thresholds. stop halts everything at once. Two models: worker_model runs the work that changes code (task, improve and experiment jobs); light_model runs the rest - the lead, answers, ballots, reflects, onboarding - and means worker_model while empty, so a cheaper model can take the routine.",
     keys: RUNNER_CLUSTERS.flatMap((c) => c.keys),
+    match: (n) => n.startsWith("lead."),
     clusters: RUNNER_CLUSTERS,
   },
   {
@@ -59,10 +72,10 @@ const GROUPS: Group[] = [
     clusters: [
       { title: "Caps", keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"] },
       { title: "Refused logins", keys: ["compute.self_heal", "compute.self_retire", "compute.retire_grace_hours"] },
-      { title: "Azure target", keys: ["compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"] },
-      { title: "AWS target", keys: ["compute.aws.profile", "compute.aws.region", "compute.aws.instance_type", "compute.aws.image", "compute.aws.subnet", "compute.aws.security_group"] },
-      { title: "GCP target", keys: ["compute.gcp.project", "compute.gcp.zone", "compute.gcp.machine_type", "compute.gcp.image", "compute.gcp.network"] },
-      { title: "Multipass (local)", keys: ["compute.multipass.size", "compute.multipass.image"] },
+      { title: "Azure target", provider: "azure", keys: ["compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"] },
+      { title: "AWS target", provider: "aws", keys: ["compute.aws.profile", "compute.aws.region", "compute.aws.instance_type", "compute.aws.image", "compute.aws.subnet", "compute.aws.security_group"] },
+      { title: "GCP target", provider: "gcp", keys: ["compute.gcp.project", "compute.gcp.zone", "compute.gcp.machine_type", "compute.gcp.image", "compute.gcp.network"] },
+      { title: "Multipass target (local VMs)", provider: "multipass", keys: ["compute.multipass.size", "compute.multipass.image"] },
     ],
   },
   {
@@ -76,8 +89,13 @@ const GROUPS: Group[] = [
     id: "daemon",
     title: "Running",
     blurb: "Which pulse runs where, and how it keeps itself current. After a landing in the brain the daemon rebuilds pulse from the checkout, smoke-tests the new binary, installs it in place and restarts once its runs finish; the hub follows within a minute; three early exits in a row put the previous build back and turn this off with a finding (ADR-035). The install line is for the first install only.",
-    keys: ["daemon.self_update", "daemon.self_update_retry_minutes"],
+    keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.recover", "daemon.recover_days", "daemon.recover_limit", "daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb"],
     match: (n) => n.startsWith("daemon."),
+    clusters: [
+      { title: "Self-update", keys: ["daemon.self_update", "daemon.self_update_retry_minutes"] },
+      { title: "Failed jobs", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
+      { title: "Housekeeping", keys: ["daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb"] },
+    ],
     strip: () => <RunningStrip />,
   },
 ];
@@ -148,6 +166,7 @@ const ANCHOR = "scroll-mt-32";
 const PILL = "inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-xs hover:bg-muted";
 const SECTION_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   stop: PowerIcon,
+  provider: PlugIcon,
   owner: UserRoundIcon,
   runner: GaugeIcon,
   compute: CloudIcon,
@@ -157,6 +176,7 @@ const SECTION_ICONS: Record<string, React.ComponentType<{ className?: string }>>
 };
 const SECTION_TONES: Record<string, string> = {
   stop: "bg-bad/10 text-bad",
+  provider: "bg-muted text-foreground",
   owner: "bg-info/10 text-info",
   runner: "bg-primary/10 text-primary",
   compute: "bg-accent-2/10 text-accent-2",
@@ -165,25 +185,38 @@ const SECTION_TONES: Record<string, string> = {
   other: "bg-muted text-muted-foreground",
 };
 
-function GroupRows({ g, rows, canEdit }: { g: Group; rows: Setting[]; canEdit: boolean }) {
-  const row = (s: Setting) => <SettingRow key={s.name} s={s} canEdit={canEdit} labels={SETTING_LABELS[s.name]} />;
+// The rows of one section. The push key has its own row (a picker, not a
+// text field). When the section knows compute providers, only the chosen
+// provider's target shows - unless the owner is searching, when every match
+// counts.
+function GroupRows({ g, rows, canEdit, provider, searching }: { g: Group; rows: Setting[]; canEdit: boolean; provider: string; searching: boolean }) {
+  const row = (s: Setting) => (s.name === "push.credential" ? <CredentialRow key={s.name} s={s} canEdit={canEdit} /> : <SettingRow key={s.name} s={s} canEdit={canEdit} labels={SETTING_LABELS[s.name]} />);
   const clusters = g.clusters;
+  const strip = g.strip ? <div className="border-b">{g.strip()}</div> : null;
   if (!clusters)
     return (
       <>
-        {g.strip ? <div className="border-b">{g.strip()}</div> : null}
+        {strip}
         <div className="divide-y">{rows.map(row)}</div>
       </>
     );
   const loose = rows.filter((s) => !clusters.some((c) => c.keys.includes(s.name)));
+  const others = clusters.filter((c) => c.provider && c.provider !== provider).map((c) => COMPUTE_PROVIDERS[c.provider!] ?? c.provider!);
   return (
     <>
+      {strip}
       {clusters.map((c) => {
+        if (c.provider && c.provider !== provider && !searching) return null;
         const inCluster = rows.filter((s) => c.keys.includes(s.name));
         if (!inCluster.length) return null;
+        const chosen = c.provider && c.provider === provider;
         return (
           <div key={c.title} className="border-t first:border-t-0">
-            <h3 className="px-4 pt-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{c.title}</h3>
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-4 pt-3">
+              <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{c.title}</h3>
+              {chosen && others.length && !searching ? <span className="text-[11.5px] text-muted-foreground">Only the chosen provider&apos;s target is shown - pick {others.join(", ")} above to set up another.</span> : null}
+              {c.provider && !chosen ? <span className="text-[11.5px] text-warn">Not the chosen provider - these rows sleep until Cloud provider says {COMPUTE_PROVIDERS[c.provider] ?? c.provider}.</span> : null}
+            </div>
             <div className="divide-y">{inCluster.map(row)}</div>
           </div>
         );
@@ -206,7 +239,7 @@ function SectionCard({ id, title, blurb, count, children, alert }: { id: string;
             {title}
             {count}
           </h2>
-          <p className="mt-0.5 text-[13px] leading-snug text-muted-foreground anywhere">{blurb}</p>
+          <Clamp className="mt-0.5">{blurb}</Clamp>
         </div>
       </header>
       {children}
@@ -259,11 +292,14 @@ export default function SettingsPage() {
   const stop = d.settings.find((s) => s.name === "stop");
   const stopped = stop?.value === "1";
   const needle = find.trim().toLowerCase();
-  const match = (s: Setting) => !needle || s.name.toLowerCase().includes(needle) || s.description.toLowerCase().includes(needle);
+  const match = (s: Setting) => !needle || s.name.toLowerCase().includes(needle) || settingLabel(s.name).toLowerCase().includes(needle) || s.description.toLowerCase().includes(needle);
+  const provider = d.settings.find((s) => s.name === "compute.provider")?.value || "azure";
+  // Sleeping provider rows leave the count too, unless a search wakes them.
+  const awake = (s: Setting) => !!needle || !GROUPS.some((g) => g.clusters?.some((c) => c.provider && c.provider !== provider && c.keys.includes(s.name)));
   const harnessShown = !needle || "harness built-in native copilot github model provider login max steps timeout output limit".includes(needle);
   // The kill switch has its own card at the top, so it leaves the runner cluster.
   const killShown = !!stop && match(stop);
-  const base = groups.map(({ g, rows }) => ({ g, rows: stop ? rows.filter((s) => s.name !== "stop") : rows }));
+  const base = groups.map(({ g, rows }) => ({ g, rows: rows.filter((s) => (!stop || s.name !== "stop") && awake(s)) }));
   const total = base.reduce((n, x) => n + x.rows.length, 0) + (stop ? 1 : 0);
   const shown = base.map(({ g, rows }) => ({ g, all: rows.length, rows: rows.filter(match) })).filter((x) => x.rows.length);
   const hit = new Set(shown.map((x) => x.g.id));
@@ -272,7 +308,7 @@ export default function SettingsPage() {
     <>
       <PageTitle
         icon={SettingsIcon}
-        sub={<>The owner&apos;s caps, as the store holds them. Every change is recorded with who made it; the daemon reads them on its next loop. Same keys as <Mono>pulse setting set</Mono>.</>}
+        sub={<>What the daemon may do, in your words. Every change is recorded with who made it and read on the daemon&apos;s next loop; the small key under each name is what <Mono>pulse setting set</Mono> takes.</>}
         actions={
           <>
             {needle ? <span className="tnum whitespace-nowrap text-xs text-muted-foreground">{matched} of {total}</span> : null}
@@ -329,11 +365,11 @@ export default function SettingsPage() {
               blurb={g.blurb}
               count={needle ? <span className="tnum ml-2 font-normal text-muted-foreground">{rows.length} of {all}</span> : null}
             >
-              <GroupRows g={g} rows={rows} canEdit={d.can_edit} />
+              <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} />
             </SectionCard>
           </section>
         ))}
-        {needle && !matched ? <EmptyState>No setting matches &ldquo;{find.trim()}&rdquo; - try part of a key such as quorum or azure.</EmptyState> : null}
+        {needle && !matched ? <EmptyState>No setting matches &ldquo;{find.trim()}&rdquo; - try a word from its name such as push, model or region.</EmptyState> : null}
       </div>
     </>
   );

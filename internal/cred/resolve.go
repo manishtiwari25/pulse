@@ -80,6 +80,9 @@ func (r *Resolver) goos() string {
 	return r.GOOS
 }
 
+// OS is the operating system the resolver acts for (GOOS, or the injected one).
+func (r *Resolver) OS() string { return r.goos() }
+
 func (r *Resolver) ctx(parent context.Context) (context.Context, context.CancelFunc) {
 	d := r.Timeout
 	if d == 0 {
@@ -106,18 +109,9 @@ func (r *Resolver) Resolve(parent context.Context, ref Ref) (*Secret, error) {
 	var source string
 	switch ref.Scheme {
 	case "op":
-		token, tokenSource, err := r.Token(parent)
+		out, tokenSource, err := r.Op(parent, "read", "-n", ref.Raw)
 		if err != nil {
 			return nil, err
-		}
-		ctx, cancel := r.ctx(parent)
-		defer cancel()
-		if _, err := exec.LookPath("op"); err != nil && r.Run == nil {
-			return nil, errors.New("op not found; install 1Password CLI (brew install 1password-cli)")
-		}
-		out, stderr, err := r.run()(ctx, "op", []string{"read", "-n", ref.Raw}, "", opEnv(os.Environ(), token))
-		if err != nil {
-			return nil, fmt.Errorf("op read failed: %s", Redact(firstLine(stderr, err), token))
 		}
 		key, source = []byte(out), "1Password (token from "+tokenSource+")"
 	case "keychain":
@@ -166,6 +160,39 @@ func (r *Resolver) Resolve(parent context.Context, ref Ref) (*Secret, error) {
 
 // opEnv is the environment of `op read`: the service-account token and no Connect variables, which would
 // take precedence over it.
+// OpAvailable reports whether the 1Password CLI is on PATH (always true with an injected Runner).
+func (r *Resolver) OpAvailable() bool {
+	if r.Run != nil {
+		return true
+	}
+	_, err := exec.LookPath("op")
+	return err == nil
+}
+
+// Op runs the 1Password CLI with the service-account token in its environment and nothing else of
+// 1Password's (OP_CONNECT_* would take precedence). It answers stdout, where the token came from, and a
+// redacted error: `op read -n REF`, `op vault list --format json`, `op item list ... --format json`.
+func (r *Resolver) Op(parent context.Context, args ...string) (stdout, tokenSource string, err error) {
+	token, tokenSource, err := r.Token(parent)
+	if err != nil {
+		return "", "", err
+	}
+	if !r.OpAvailable() {
+		return "", "", errors.New("op not found; install 1Password CLI (brew install 1password-cli)")
+	}
+	ctx, cancel := r.ctx(parent)
+	defer cancel()
+	out, stderr, err := r.run()(ctx, "op", args, "", opEnv(os.Environ(), token))
+	if err != nil {
+		verb := "op"
+		if len(args) > 0 {
+			verb = "op " + args[0]
+		}
+		return "", tokenSource, fmt.Errorf("%s failed: %s", verb, Redact(firstLine(stderr, err), token))
+	}
+	return out, tokenSource, nil
+}
+
 func opEnv(base []string, token string) []string {
 	env := make([]string, 0, len(base)+1)
 	for _, kv := range base {

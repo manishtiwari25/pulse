@@ -27,7 +27,7 @@ let agentReturnStarted = false;
 
 // ----- in-memory state for writes ----------------------------------------
 
-const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, goals: new Map(), jobRepairs: null, codeDeliveries: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessPrompt: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {}, serviceInstalled: false };
+const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, goals: new Map(), jobRepairs: null, codeDeliveries: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessPrompt: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {}, serviceInstalled: false, cred: { reference: "", fingerprint: "", set_at: "", set_by: "", token: "none", generated: false } };
 const privateGoalComponent = "(?:private|heldout|held-out|\\.ssh|\\.aws|\\.azure|\\.pulse)";
 const privateGoalPath = new RegExp("(?:^|[\\s\"'`(\\[<{=:,;])" +
   "(?:file:(?://[^/\\\\\\s\"'`<>]*)?)?" +
@@ -746,7 +746,79 @@ async function handle(req, res) {
       heldoutGates();
       return send(res, 200, { configured: true, present: true, count: h.count, pending: h.pending, created: 0, problem: "" });
     }
-    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status, heldout, heldout/fixtures");
+    // The daemon's push key (ADR-042): browse 1Password, test a reference against the remotes, save when they answer.
+    if (segs[0] === "cred" && segs.length >= 2) {
+      if (req.headers["x-pulse-cred"] !== "yes") return fail(res, 403, "missing X-Pulse-Cred: yes", "An explicit confirmation header is required.", "Confirm the change in the hub.");
+      const c = state.cred;
+      const sub = segs.slice(1).join("/");
+      const report = () => ({ reference: c.reference, scheme: c.reference.split(":")[0] || undefined, landing_push: state.settings.settings.find((s) => s.name === "landing.push")?.value || "off", token: c.token, set_at: c.set_at || undefined, set_by: c.set_by || undefined, fingerprint: c.fingerprint || undefined });
+      const flag = (key, dflt) => (key in body ? (typeof body[key] === "boolean" ? body[key] : null) : dflt);
+      const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockPublicKeyForTheDemoHubOnlyNotARealKey00 pulse push key (owner-mac)";
+      const fingerprint = "SHA256:MockFingerprintOfTheDemoKey0123456789abcdefghijk";
+      if (sub === "token") {
+        const token = typeof body.token === "string" ? body.token.trim() : "";
+        if (!token) return fail(res, 400, "Invalid token", "token must be a non-empty string.", "Send a JSON object with a valid token.");
+        if (!/^[A-Za-z0-9_.=-]{20,}$/.test(token)) return fail(res, 400, "Token not stored", "that does not look like a 1Password service-account token (one line, letters, digits, _ . = -)", "Copy the token from 1Password > Developer > Service Accounts and paste it on one line.");
+        c.token = "the keychain";
+        return send(res, 200, { stored_in: "the keychain (service pulse, account OP_SERVICE_ACCOUNT_TOKEN)", report: report() });
+      }
+      if (sub === "op/vaults") {
+        if (c.token === "none") return fail(res, 409, "1Password token not found", "no service-account token in OP_SERVICE_ACCOUNT_TOKEN, the keychain or the token file", "Add a service-account token first (pulse cred token or the Connect step), and check op is installed.");
+        return send(res, 200, { vaults: [{ id: "v-pulse", name: "PULSE" }, { id: "v-personal", name: "Personal" }, { id: "v-work", name: "Work" }] });
+      }
+      if (sub === "op/items") {
+        const vault = typeof body.vault === "string" ? body.vault.trim() : "";
+        if (!vault) return fail(res, 400, "Invalid vault", "vault must be a non-empty string.", "Send a JSON object with a valid vault.");
+        if (c.token === "none") return fail(res, 409, "1Password token not found", "no service-account token", "Add a service-account token first.");
+        const items = vault === "v-pulse" ? [
+          { id: "i-push", title: "pulse push key", category: "SSH_KEY", updated_at: "2026-09-14T10:12:00Z", reference: "op://PULSE/pulse push key/private key?ssh-format=openssh" },
+          { id: "i-old", title: "old deploy key (2024)", category: "SSH_KEY", updated_at: "2024-03-02T08:00:00Z", reference: "op://PULSE/old deploy key (2024)/private key?ssh-format=openssh" },
+        ] : vault === "v-work" ? [
+          { id: "i-ci", title: "ci-runner", category: "SSH_KEY", updated_at: "2026-01-20T16:40:00Z", reference: "op://Work/ci-runner/private key?ssh-format=openssh" },
+        ] : [];
+        return send(res, 200, { vault, items });
+      }
+      if (sub === "set") {
+        const reference = typeof body.reference === "string" ? body.reference.trim() : "";
+        if (!reference) return fail(res, 400, "Invalid reference", "reference must be a non-empty string.", "Send a JSON object with a valid reference.");
+        const probe = flag("probe", true);
+        if (probe === null) return fail(res, 400, "Invalid probe", "probe must be true or false.", "Send probe:true or probe:false.");
+        if (/BEGIN [A-Z ]*PRIVATE KEY/.test(reference) || secretShaped(reference)) return fail(res, 400, "That is a key, not a reference", "pulse cred set takes a reference to where the key lives, never the key itself.", "Put the key in 1Password, the keychain or a file and pass op://, keychain:// or file://.");
+        const m = /^(op|keychain|file):\/\/(.+)$/.exec(reference);
+        if (!m) return fail(res, 400, JSON.stringify(reference) + " is not a reference", "use op://VAULT/ITEM/FIELD[?ssh-format=openssh], keychain://SERVICE/ACCOUNT, or file:///ABSOLUTE/PATH", "Pick a key from a provider or type a reference in one of those shapes.");
+        if (m[1] === "op" && c.token === "none") return fail(res, 409, "1Password token not found", "the reference is op:// but no service-account token is stored", "Connect 1Password first.");
+        if (m[1] === "keychain" && (await fixture("cred")).os !== "darwin") return fail(res, 409, "keychain:// needs macOS", "the keychain is a macOS store", "Use 1Password or a key file here.");
+        const probes = state.projects.filter((p) => p.status === "active").map((p) => ({ project: p.slug, branch: "main", remote: "git@github.com:owner/" + p.slug + ".git", ok: !/old|2024/.test(reference) }));
+        if (probe && probes.some((p) => !p.ok)) {
+          return send(res, 409, { error: "the remote refused this key", why: probes.filter((p) => !p.ok).map((p) => p.project + ": ERROR: Permission to owner/" + p.project + ".git denied to deploy key").join("; "), fix: "Add the public key below as a deploy key with write access on every remote, then try again.", public_key: publicKey, fingerprint, probes: probes.map((p) => (p.ok ? p : { ...p, why: "ERROR: Permission to owner/" + p.project + ".git denied to deploy key" })) });
+        }
+        Object.assign(c, { reference, fingerprint, set_at: now(), set_by: "human:dashboard" });
+        emit("human:dashboard", "cred.set", "push.credential", { scheme: m[1], fingerprint });
+        const row = state.settings.settings.find((s) => s.name === "push.credential");
+        if (row) Object.assign(row, { value: reference, updated_by: "human:dashboard", updated_at: now() });
+        return send(res, 200, { result: { reference, fingerprint, public_key: publicKey, source: m[1] === "op" ? "1Password (token from the keychain)" : m[1] === "keychain" ? "the keychain" : reference.slice(7), probed: probe, probes: probe ? probes : probes.map((p) => ({ ...p, ok: false, skipped: "probe off" })), landing_push: report().landing_push }, report: report() });
+      }
+      if (sub === "clear") {
+        const token = flag("token", false);
+        if (token === null) return fail(res, 400, "Invalid token", "token must be true or false.", "Send token:true or token:false.");
+        const was = c.reference;
+        const token_removed = token && c.token !== "none" ? ["the keychain item"] : [];
+        Object.assign(c, { reference: "", fingerprint: "", set_at: "", set_by: "" }, token ? { token: "none" } : {});
+        const row = state.settings.settings.find((s) => s.name === "push.credential");
+        if (row) Object.assign(row, { value: "", updated_by: "default", updated_at: "" });
+        if (was) emit("human:dashboard", "cred.clear", "push.credential", { was_scheme: was.split(":")[0] });
+        return send(res, 200, { cleared: { was, token_removed }, report: report() });
+      }
+      if (sub === "generate") {
+        const replace = flag("replace", false);
+        if (replace === null) return fail(res, 400, "Invalid replace", "replace must be true or false.", "Send replace:true or replace:false.");
+        const existed = c.generated && !replace;
+        c.generated = true;
+        return send(res, 200, { generated: { path: HOME + "/.pulse/secrets/push_key", reference: "file://" + HOME + "/.pulse/secrets/push_key", fingerprint, public_key: publicKey, existed } });
+      }
+      return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
+    }
+    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate");
   }
 
   // GET - live state first, fixtures second
@@ -836,6 +908,11 @@ async function handle(req, res) {
     return send(res, 200, rosterScenarios(await loadJson("roster.json"), now(), agentReturned, taskWorkFocus(task002, now())));
   }
   if (segs[0] === "heldout" && segs.length === 1) return send(res, 200, heldoutView(state.heldout));
+  if (segs[0] === "cred" && segs.length === 1) {
+    const d = await fixture("cred");
+    const c = state.cred;
+    return send(res, 200, { ...d, report: { ...d.report, reference: c.reference, scheme: c.reference.split(":")[0] || undefined, token: c.token, set_at: c.set_at || undefined, set_by: c.set_by || undefined, fingerprint: c.fingerprint || undefined, landing_push: state.settings.settings.find((s) => s.name === "landing.push")?.value || "off" } });
+  }
   if (segs[0] === "projects" && segs.length === 3 && segs[2] === "evolution") {
     const d = await fixture("projects/" + segs[1] + "/evolution");
     if (d === null) return fail(res, 404, "not found", "no fixture for " + url.pathname, "add mock/api/" + segs.join("/") + ".json");
