@@ -31,7 +31,7 @@ interface Group {
 // view.
 const RUNNER_CLUSTERS = [
   { title: "The machine", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "max_ai_credits", "runner_cmd", "prune_after_days"] },
-  { title: "The worker", keys: ["worker_model", "light_model", "landing", "landing.push"] },
+  { title: "The worker", keys: ["worker_model", "light_model", "landing", "landing.push", "push.credential"] },
   { title: "The board", keys: ["quorum", "expiry_days", "stale_days", "claim_hours"] },
   { title: "Amendments", keys: ["amend_quorum", "amend_majority"] },
 ];
@@ -123,7 +123,8 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "evolve.heldout_dir", value: "", default: "", kind: "identifier", min: null, choices: null, description: "path to the owner's held-out evaluators; never shown to agents", secret: true },
   { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off"], description: "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
   { name: "daemon.self_update_retry_minutes", value: "60", default: "60", kind: "count", min: 1, choices: null, description: "minutes the daemon waits before building again after a failed build or smoke test" },
-  { name: "landing.push", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "main"], description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has, and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)" },
+  { name: "landing.push", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "main"], description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)" },
+  { name: "push.credential", value: "", default: "", kind: "reference", min: null, choices: null, description: "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)" },
 ];
 
 function withExtraDefaults(rows: Setting[]): Setting[] {

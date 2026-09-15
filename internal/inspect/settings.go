@@ -237,6 +237,10 @@ func runSettings(c *cli.Context, _ *flag.FlagSet, args []string) (retErr error) 
 			return cli.Errorf(2, "pulse: "+args[1]+" is the owner's setting", "it hands the owner's decisions to the leads, so only the owner sets it - in the console or here without PULSE_AGENT",
 				"pulse settings get "+args[1])
 		}
+		if args[1] == "push.credential" && ((c.Agent != "" && c.Agent != store.HumanAgent) || store.WorkerGuard(c.Store.Home)) {
+			return cli.Errorf(2, "pulse: push.credential is the owner's setting", "it names the key the daemon pushes with (ADR-041), so only the owner sets it - with pulse cred set, which probes the remote first",
+				"pulse cred status")
+		}
 		if err := c.Store.SetSetting(actor(c), args[1], args[2]); err != nil {
 			return inputError(err)
 		}

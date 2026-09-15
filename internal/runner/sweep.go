@@ -109,6 +109,7 @@ func sweep(s *store.Store, projects []row, now string, o sweepOpts) *sweepReport
 		w.o.Actor = "daemon"
 	}
 	w.sweepWork()
+	w.sweepPushKeys()
 	w.sweepStrayWorktrees()
 	for _, proj := range projects {
 		w.sweepCheckout(proj)
@@ -233,6 +234,32 @@ func (w *sweeper) sweepWork() {
 			w.held(kind, path, "", fmt.Sprintf("%s finished %s ago; removed after %s", jobID, roundDuration(age), roundDuration(w.grace)))
 		default:
 			w.held(kind, path, "", fmt.Sprintf("no job %s in this store; removed after %s untouched", jobID, roundDuration(w.keep)))
+		}
+	}
+}
+
+// sweepPushKeys removes the key directories a push with push.credential writes under PULSE_HOME/tmp
+// (ADR-041) when a daemon died between writing one and removing it; a push takes minutes at most, so one
+// older than the grace period belongs to no push in flight.
+func (w *sweeper) sweepPushKeys() {
+	tmp := filepath.Join(w.home, "tmp")
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "push-") {
+			continue
+		}
+		path := filepath.Join(tmp, e.Name())
+		age, ok := w.age(path)
+		if !ok {
+			continue
+		}
+		if age >= w.grace {
+			w.remove("scratch", path, "", fmt.Sprintf("push key left by a push that did not finish, untouched for %s", roundDuration(age)))
+		} else {
+			w.held("scratch", path, "", fmt.Sprintf("push key %s old; removed after %s", roundDuration(age), roundDuration(w.grace)))
 		}
 	}
 }

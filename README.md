@@ -801,7 +801,8 @@ Landing moves your local default branch; whether it goes further is your
 standing instruction, `landing.push` (ADR-037). `off`, the default: you review
 and push. `pulse settings landing.push main`: after each landing the daemon
 pushes the project's default branch to its upstream - the one branch, a plain
-fast-forward push with the git credentials this machine already has, never a
+fast-forward push with the git credentials this machine already has (or with
+the daemon's own key, see [Credentials](#credentials)), never a
 force, never a prompt - and pushes what landed earlier and was not pushed yet,
 so turning it on sends yesterday's landings along with whatever else sits on
 your `main`. A push that is refused (someone else moved the remote, no
@@ -809,6 +810,49 @@ credentials, no upstream) never undoes the landing: it is a `landing` note in
 `pulse status` and the hub and a `land.held` event once per change, retried
 every tick until it goes through as `land.pushed`. `pulse land` by hand does
 the same. Workers never push, whatever the setting.
+
+### Credentials
+
+"With the git credentials this machine already has" means the daemon is only
+as unattended as your credentials are. An SSH key that lives in an agent
+which asks you before each use (1Password's SSH agent, a hardware key) makes
+every push wait for a click that never comes at 3 a.m.: `push failed:
+sign_and_send_pubkey: signing failed ... communication with agent failed`
+lines in the daemon log, landings piling up unpushed. No vault whitelists a
+process for good - 1Password's agent remembers an approval only until the app
+locks - so the honest answer is a key of the daemon's own (ADR-041):
+
+- Make the daemon a key GitHub knows and that can do nothing but push this
+  repository: a **deploy key with write access** on the repository (or a
+  machine user's key). In 1Password, keep it as an SSH Key item in a vault of
+  its own, say `PULSE`, and create a **Service Account** (Developer > Service
+  Accounts) with **read-only** access to that vault only - service accounts
+  cannot see your Private vault and never need the app to be unlocked.
+- `pulse cred token` - paste the service-account token once. It goes to the
+  login Keychain on macOS (service `pulse`, account
+  `OP_SERVICE_ACCOUNT_TOKEN`), to `$PULSE_HOME/secrets/` as a 0600 file
+  elsewhere, never on a command line, never in the store.
+- `pulse cred set "op://PULSE/pulse push key/private key?ssh-format=openssh"`
+  - the setting `push.credential` holds a **reference**, never the key. `set`
+  reads the key, prints its fingerprint and public key, probes every
+  project's upstream with a dry-run push through that key alone, and saves
+  the reference only when the remote answers. A key the remote refuses names
+  the public key to add as a deploy key and saves nothing.
+- `pulse cred status` (also `--json`) says what is set and where the token was
+  found; `pulse cred clear [--token]` returns the daemon to your credentials.
+
+Without 1Password, `keychain://SERVICE/ACCOUNT` names a macOS Keychain item
+holding the key, and `file:///ABSOLUTE/PATH` a 0600 file (a symlink or a
+looser mode is refused). Whatever the reference, the daemon resolves it at
+push time, writes the key 0600 into a 0700 directory under `$PULSE_HOME/tmp`
+for the seconds of the push, runs `ssh -oBatchMode=yes -oIdentitiesOnly=yes
+-oIdentityAgent=none -i <that file>` for exactly that push, and removes it.
+A key that cannot be resolved holds the landing with `push credential:
+<why>` in `pulse status` and the hub; the daemon never falls back to your
+credentials, and no reference is resolved inside a worker. Only the owner
+runs `pulse cred token|set|clear` or sets `push.credential`; agents may read
+`pulse cred status`. Rolling back is `pulse cred clear` (ADR-037's behaviour
+returns at once), then revoke the service account and the deploy key.
 
 `pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) reads the
 machine and prints the proposed scripts without applying them. For installed

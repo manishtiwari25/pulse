@@ -15,6 +15,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/store"
 
 	_ "github.com/manishtiwari25/pulse/internal/board"
+	_ "github.com/manishtiwari25/pulse/internal/cred/command"
 	_ "github.com/manishtiwari25/pulse/internal/evolve"
 	_ "github.com/manishtiwari25/pulse/internal/goals/command"
 	_ "github.com/manishtiwari25/pulse/internal/harness"

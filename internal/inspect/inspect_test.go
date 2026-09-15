@@ -467,6 +467,15 @@ func TestSettingsReport(t *testing.T) {
 	if !errors.As(runErr, &ce) || ce.ExitCode() != 2 || !strings.Contains(runErr.Error(), "owner.presence is the owner's setting") || s.Setting("owner.presence", "") != "away" {
 		t.Fatalf("agent set owner.presence: err=%v value=%q", runErr, s.Setting("owner.presence", ""))
 	}
+	// ADR-041: push.credential names the daemon's push key, so an agent may not set it either; the owner may.
+	runErr = cmd.Run(&cli.Context{Store: s, Out: &out, Err: &errOut, Agent: "proj-lead", Now: parityNow}, flag.NewFlagSet("settings", flag.ContinueOnError), []string{"set", "push.credential", "file:///tmp/key"})
+	if !errors.As(runErr, &ce) || ce.ExitCode() != 2 || !strings.Contains(runErr.Error(), "push.credential is the owner's setting") || s.Setting("push.credential", "") != "" {
+		t.Fatalf("agent set push.credential: err=%v value=%q", runErr, s.Setting("push.credential", ""))
+	}
+	set = invoke(t, s, false, "", "settings", "set", "push.credential", "file:///tmp/key")
+	if set.code != 0 || set.out != "push.credential=file:///tmp/key\n" || s.Setting("push.credential", "") != "file:///tmp/key" {
+		t.Fatalf("owner set push.credential: %+v value=%q", set, s.Setting("push.credential", ""))
+	}
 }
 
 func TestSettingsListAppendsEffectiveExtras(t *testing.T) {

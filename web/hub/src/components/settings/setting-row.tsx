@@ -28,6 +28,8 @@ export function hint(s: Setting): string {
       return "a program name or path";
     case "identifier":
       return "a name, id or path - never a secret";
+    case "reference":
+      return "where the key lives - op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///PATH - never the key itself";
     default:
       return "";
   }
@@ -57,7 +59,7 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
   const isStop = s.name === "stop";
   const secret = !!s.secret;
   const unset = s.updated_by === "default" || !s.updated_at;
-  const wide = s.kind === "command" || s.kind === "text" || s.kind === "identifier";
+  const wide = s.kind === "command" || s.kind === "text" || s.kind === "identifier" || s.kind === "reference";
   const h = hint(s);
   return (
     <div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">

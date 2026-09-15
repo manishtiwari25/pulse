@@ -736,6 +736,42 @@ func TestDaemonSelfUpdateSettings(t *testing.T) {
 	if !strings.Contains(DaemonRules["landing.push"].Description, "ADR-037") {
 		t.Fatal("landing.push lacks its description")
 	}
+	// ADR-041: push.credential is empty without a row, takes a reference and never a key.
+	if got := s.Setting("push.credential", ""); got != "" {
+		t.Fatalf("push.credential default = %q, want empty", got)
+	}
+	if !strings.Contains(segment, "push.credential") {
+		t.Fatalf("ExtraSettingNames daemon segment lacks push.credential: %v", segment)
+	}
+	if !strings.Contains(DaemonRules["push.credential"].Description, "ADR-041") {
+		t.Fatal("push.credential lacks its description")
+	}
+	if err := s.SetSetting("human", "push.credential", " op://PULSE/pulse push key/private key?ssh-format=openssh "); err != nil {
+		t.Fatalf("push.credential op ref: %v", err)
+	}
+	if got := s.Setting("push.credential", ""); got != "op://PULSE/pulse push key/private key?ssh-format=openssh" {
+		t.Fatalf("push.credential stored = %q", got)
+	}
+	for _, ref := range []string{"keychain://pulse/push-key", "file:///Users/me/.pulse/secrets/push_key"} {
+		if err := s.SetSetting("human", "push.credential", ref); err != nil || s.Setting("push.credential", "") != ref {
+			t.Errorf("push.credential %s: %v", ref, err)
+		}
+	}
+	if err := s.SetSetting("human", "push.credential", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----"); err == nil || !strings.Contains(err.Error(), "never the key itself") {
+		t.Errorf("push.credential accepted a key: %v", err)
+	}
+	if err := s.SetSetting("human", "push.credential", "ghp_abcdefghijklmnop"); err == nil || !strings.Contains(err.Error(), "never the key itself") {
+		t.Errorf("push.credential accepted a token: %v", err)
+	}
+	if err := s.SetSetting("human", "push.credential", "vault://x/y"); err == nil || !strings.Contains(err.Error(), "unknown scheme") {
+		t.Errorf("push.credential bad scheme: %v", err)
+	}
+	if err := s.SetSetting("human", "push.credential", "file://relative"); err == nil || !strings.Contains(err.Error(), "absolute path") {
+		t.Errorf("push.credential relative file: %v", err)
+	}
+	if err := s.SetSetting("human", "push.credential", ""); err != nil || s.Setting("push.credential", "") != "" {
+		t.Fatalf("push.credential clear: %v %q", err, s.Setting("push.credential", ""))
+	}
 }
 
 // Hygiene: the daemon.sweep* settings default without a row and validate; grace and branch age may be 0

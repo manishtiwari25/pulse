@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+
+	"github.com/manishtiwari25/pulse/internal/cred"
 )
 
 // DefaultSettings mirrors legacy/pulse.py DEFAULT_SETTINGS.
@@ -268,9 +270,9 @@ var EvolveRules = map[string]SettingRule{
 
 // DaemonSettings govern the daemon's care of its own binary (ADR-035), of
 // the jobs that failed (ADR-036: recovery), of what it does after a
-// landing (ADR-037: landing.push) and of what its runs and landings leave
-// on this machine (daemon.sweep). Like ComputeSettings they are not written
-// at Create; Setting falls back here.
+// landing (ADR-037: landing.push; ADR-041: push.credential) and of what its
+// runs and landings leave on this machine (daemon.sweep). Like
+// ComputeSettings they are not written at Create; Setting falls back here.
 var DaemonSettings = map[string]string{
 	"daemon.self_update":               "on",
 	"daemon.self_update_retry_minutes": "60",
@@ -283,6 +285,7 @@ var DaemonSettings = map[string]string{
 	"daemon.sweep_branch_days":         "7",
 	"daemon.sweep_keep_days":           "30",
 	"landing.push":                     "off",
+	"push.credential":                  "",
 }
 
 // DaemonRules validate DaemonSettings.
@@ -297,7 +300,8 @@ var DaemonRules = map[string]SettingRule{
 	"daemon.sweep_grace_minutes":       {Kind: "count", Min: 0, HasMin: true, Description: "minutes a finished job's clone, key or bundle and a dead landing's worktree must sit untouched before the sweep removes them; a lost run's leftovers go at once"},
 	"daemon.sweep_branch_days":         {Kind: "count", Min: 0, HasMin: true, Description: "days since its last commit before a pulse/* or evolve/* branch that no job will land is removed; its commits are saved under PULSE_HOME/patches first unless they are already on the default branch"},
 	"daemon.sweep_keep_days":           {Kind: "count", Min: 1, HasMin: true, Description: "days run logs, saved patches and work files of jobs this store does not know are kept before the sweep removes them"},
-	"landing.push":                     {Kind: "choice", Choices: []string{"off", "main"}, Description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has, and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)"},
+	"landing.push":                     {Kind: "choice", Choices: []string{"off", "main"}, Description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)"},
+	"push.credential":                  {Kind: "reference", Description: "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)"},
 }
 
 // LeadSettings govern the lead's standing brief (D-C): what the lead does
@@ -589,6 +593,18 @@ func ValidateSetting(name, value string) (string, error) {
 		if SecretShaped(text) {
 			return "", inputErr("%s looks like a credential; PULSE never stores secrets - authenticate on this machine (az login, aws configure, gcloud auth login) and keep the setting to an identifier", name)
 		}
+	case "reference":
+		if text == "" {
+			return "", nil
+		}
+		if cred.IsPrivateKey([]byte(text)) || SecretShaped(text) {
+			return "", inputErr("%s takes a reference to the key, never the key itself (ADR-041): %s", name, cred.Shapes)
+		}
+		ref, err := cred.Parse(text)
+		if err != nil {
+			return "", inputErr("%s: %s", name, err.Error())
+		}
+		return ref.String(), nil
 	}
 	return text, nil
 }

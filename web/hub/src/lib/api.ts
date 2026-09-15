@@ -614,7 +614,7 @@ export interface LandingHold {
   stale: boolean;
 }
 
-export type SettingKind = "count" | "count-or-none" | "credits" | "number" | "fraction" | "switch" | "choice" | "command" | "text" | "identifier";
+export type SettingKind = "count" | "count-or-none" | "credits" | "number" | "fraction" | "switch" | "choice" | "command" | "text" | "identifier" | "reference";
 
 // One of the owner's caps as the store holds it (ADR-025). `secret` marks
 // keys whose values the API never returns (compute credentials never live

@@ -841,7 +841,7 @@
         "main"
       ],
       "default": "off",
-      "description": "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has, and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)",
+      "description": "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)",
       "kind": "choice",
       "min": null,
       "name": "landing.push",
@@ -849,6 +849,18 @@
       "updated_at": "",
       "updated_by": "default",
       "value": "off"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)",
+      "kind": "reference",
+      "min": null,
+      "name": "push.credential",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
     },
     {
       "choices": null,

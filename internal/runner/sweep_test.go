@@ -507,3 +507,39 @@ func TestTendSweepCheckpointsWAL(t *testing.T) {
 		t.Fatalf("sweep did not log WAL checkpoint work: %v", lines)
 	}
 }
+
+// ADR-041: a push key directory a dead daemon left under PULSE_HOME/tmp is removed once it is older than
+// the grace period; a fresh one may belong to a push in flight and is held. Other tmp entries are not
+// the sweeper's.
+func TestSweepStalePushKeys(t *testing.T) {
+	s := sweepStore(t)
+	setSetting(t, s, "daemon.sweep_grace_minutes", "30")
+	newBareRepo(t, s)
+	tmp := filepath.Join(s.Home, "tmp")
+	mkdirFile(t, filepath.Join(tmp, "push-deadbeef00000001", "key"), "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n")
+	mkdirFile(t, filepath.Join(tmp, "push-deadbeef00000002", "key"), "-----BEGIN OPENSSH PRIVATE KEY-----\ny\n")
+	mkdirFile(t, filepath.Join(tmp, "mine", "note.txt"), "not the runner's")
+	old := wallClock().Add(-2 * time.Hour)
+	if err := os.Chtimes(filepath.Join(tmp, "push-deadbeef00000001"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	rep := sweep(s, projectRows(s.DB, false), testNow, sweepOpts{})
+	if len(rep.Errors) > 0 {
+		t.Fatalf("errors: %v", rep.Errors)
+	}
+	if fileExists(filepath.Join(tmp, "push-deadbeef00000001")) {
+		t.Error("stale push key directory still there")
+	}
+	if !fileExists(filepath.Join(tmp, "push-deadbeef00000002", "key")) {
+		t.Error("fresh push key directory removed")
+	}
+	if !fileExists(filepath.Join(tmp, "mine", "note.txt")) {
+		t.Error("a tmp entry that is not the runner's was removed")
+	}
+	if paths := sweptPaths(rep.Removed, "scratch"); len(paths) != 1 || !strings.Contains(paths[0], "push-deadbeef00000001") {
+		t.Errorf("removed scratch = %v", paths)
+	}
+	if why := heldWhy(rep.Held, filepath.Join(tmp, "push-deadbeef00000002")); !strings.Contains(why, "push key") || !strings.Contains(why, "30m") {
+		t.Errorf("fresh push key held why = %q", why)
+	}
+}

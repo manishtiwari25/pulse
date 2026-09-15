@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/manishtiwari25/pulse/internal/cred"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -131,10 +132,11 @@ func pushOwed(s *store.Store, slug string) bool {
 
 // pushLanded pushes the project's default branch to its upstream when ADR-037 asks for it: after a sweep
 // that landed something (landedNow), or while an earlier landing is still unpushed. Fast-forward only - a
-// plain push of the one branch, never force - with the credentials git already has on this machine and no
-// prompt. It returns the log line for a push that happened (empty otherwise) and the hold note for a push
-// that was owed and did not happen (empty on success or when nothing was owed); the note never undoes the
-// landing and is retried on the next tick.
+// plain push of the one branch, never force - with the credentials git already has on this machine, or
+// with the daemon's own key when push.credential is set (ADR-041), and no prompt. It returns the log line
+// for a push that happened (empty otherwise) and the hold note for a push that was owed and did not happen
+// (empty on success or when nothing was owed); the note never undoes the landing and is retried on the
+// next tick.
 func pushLanded(s *store.Store, project row, actor, now string, landedNow bool) (line, note string) {
 	if !pushOn(s) {
 		return "", ""
@@ -160,16 +162,52 @@ func pushLanded(s *store.Store, project row, actor, now string, landedNow bool) 
 	}
 	from := strings.TrimSpace(gitTimeout(root, 10*time.Second, "rev-parse", upstream).Stdout)
 	to := strings.TrimSpace(gitTimeout(root, 10*time.Second, "rev-parse", "refs/heads/"+def).Stdout)
-	res := gitTimeoutEnv(root, 180*time.Second, pushEnv(root), "push", remote, "refs/heads/"+def+":"+remoteRef)
+	// ADR-041: with push.credential set the push uses the daemon's own key and nothing else; a key that
+	// cannot be resolved holds the push with the reason and never falls back to the owner's credentials.
+	env, cleanup, why := pushCredentialEnv(s, root)
+	if why != "" {
+		return "", fmt.Sprintf("%d %s landed but not pushed; push credential: %s", n, plural(n, "commit"), why)
+	}
+	res := gitTimeoutEnv(root, 180*time.Second, env, "push", remote, "refs/heads/"+def+":"+remoteRef)
+	cleanup()
 	if !res.ok() {
 		why := squeeze(res.Stderr+" "+res.Stdout, 300)
 		if res.Err != nil {
 			why = errMessage(res.Err)
 		}
-		return "", fmt.Sprintf("%d %s landed but not pushed; push failed: %s", n, plural(n, "commit"), why)
+		return "", fmt.Sprintf("%d %s landed but not pushed; push failed: %s", n, plural(n, "commit"), cred.Redact(why))
 	}
 	eventAt(s.DB, now, actor, "land.pushed", slug, map[string]any{"project": slug, "remote": remote, "branch": def, "from": from, "to": to, "commits": n})
 	return fmt.Sprintf("landing pushed %s: %s -> %s/%s (%d %s, %s..%s)", slug, def, remote, remoteBranch, n, plural(n, "commit"), short(from, 12), short(to, 12)), ""
+}
+
+// pushCredentialEnv returns the environment of one push. Without push.credential it is pushEnv (ADR-037:
+// the credentials git already has). With it, the referenced key is resolved and written under
+// PULSE_HOME/tmp for the seconds of the push and GIT_SSH_COMMAND uses that key alone - no agent, no other
+// identities, no prompt; cleanup removes the key and is safe to call in every case. why says, without the
+// secret, why the key could not be had; the push must not happen then.
+func pushCredentialEnv(s *store.Store, root string) (env []string, cleanup func(), why string) {
+	ref := strings.TrimSpace(s.Setting("push.credential", ""))
+	if ref == "" {
+		return pushEnv(root), func() {}, ""
+	}
+	parsed, err := cred.Parse(ref)
+	if err != nil {
+		return nil, func() {}, err.Error()
+	}
+	resolver := cred.New(s.Home)
+	resolver.Worker = store.WorkerGuard(s.Home)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	secret, err := resolver.Resolve(ctx, parsed)
+	if err != nil {
+		return nil, func() {}, cred.Redact(err.Error())
+	}
+	material, err := resolver.Materialize(secret)
+	if err != nil {
+		return nil, func() {}, "could not write the key for the push: " + cred.Redact(err.Error())
+	}
+	return []string{"GIT_SSH_COMMAND=" + material.SSHCommand}, material.Cleanup, ""
 }
 
 // pushEnv keeps a push from waiting on a prompt the daemon cannot answer: ssh in batch mode when the owner
