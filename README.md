@@ -854,6 +854,19 @@ runs `pulse cred token|set|clear` or sets `push.credential`; agents may read
 `pulse cred status`. Rolling back is `pulse cred clear` (ADR-037's behaviour
 returns at once), then revoke the service account and the deploy key.
 
+Where this runs: the daemon is a launchd agent on macOS and a `systemd
+--user` service on Linux, and the credential behaves the same on both - the
+one difference is where the service-account token rests (the login Keychain
+on macOS, a 0600 file under `$PULSE_HOME/secrets/` on Linux, or the
+`OP_SERVICE_ACCOUNT_TOKEN` environment variable on either) and that
+`keychain://` is refused on Linux with a pointer to `op://` or `file://`.
+1Password's Linux agent asks the same questions as the macOS one, and a
+`systemd --user` service does not even see its socket, so the reasons for a
+key of the daemon's own hold there too. Windows is not a host for the daemon
+today - the module does not build there (process groups, signals and disk
+statistics are POSIX-only), so nothing in this section applies until that is
+a decision of its own.
+
 `pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) reads the
 machine and prints the proposed scripts without applying them. For installed
 hands it loads or builds the Linux template locally, then reports mismatches
