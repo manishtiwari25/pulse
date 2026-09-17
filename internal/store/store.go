@@ -36,7 +36,12 @@ const journalSizeLimitBytes = 64 * 1024 * 1024
 // busyTimeoutMs is how long SQLite waits for a locked page before returning
 // SQLITE_BUSY. Concurrent CLI processes (pulse claim, pulse job finish) take
 // immediate write locks; without this timeout they fail on contention.
-const busyTimeoutMs = 5000
+const busyTimeoutMs = 10000
+
+// checkpointTimeout is how long a WAL checkpoint is allowed to wait for readers
+// and writers. It must be at least busyTimeoutMs so SQLite has time to resolve
+// contention instead of returning BUSY immediately.
+const checkpointTimeout = 30 * time.Second
 
 // HumanAgent is the agents row the maintainer acts as.
 const HumanAgent = "human"
@@ -170,6 +175,10 @@ func dsn(path string, readOnly bool) string {
 	} else {
 		q.Add("_pragma", "journal_mode(WAL)")
 		q.Add("_pragma", fmt.Sprintf("journal_size_limit(%d)", journalSizeLimitBytes))
+		// Checkpoint automatically after the WAL grows to this many pages
+		// (~4 MB) so it never balloons to the tens of megabytes that make
+		// manual checkpoints time out under load.
+		q.Add("_pragma", "wal_autocheckpoint(1000)")
 		// every db.Begin() is BEGIN IMMEDIATE: a writer takes the lock up front
 		// and waits on busy_timeout instead of failing with SQLITE_BUSY when it
 		// tries to upgrade a deferred read transaction (parallel CLI start-up)
@@ -466,7 +475,7 @@ type CheckpointResult struct {
 // what it can, and TRUNCATE runs only when no reader kept the log busy.
 func (s *Store) Checkpoint() (CheckpointResult, error) {
 	var out CheckpointResult
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), checkpointTimeout)
 	defer cancel()
 	conn, err := s.DB.Conn(ctx)
 	if err != nil {
