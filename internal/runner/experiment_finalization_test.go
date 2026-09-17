@@ -49,6 +49,7 @@ func measuredKeepFixture(t *testing.T) (*store.Store, row, row, string, *int) {
 
 func deferMeasuredKeep(t *testing.T, s *store.Store, project, job row, root string) {
 	t.Helper()
+	setSetting(t, s, "landing.auto_stash", "off")
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# unrelated local edit\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

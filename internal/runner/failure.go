@@ -101,7 +101,34 @@ var (
 	// The runner's own words around a harness that never started; a login fault is read only inside them,
 	// never in a worker's summary about a login page.
 	runnerWordsRe = regexp.MustCompile(`rejected at launch|runner errors?|remote (prepare|key) failed|clone failed`)
+	// Environment-class failures that should block a job rather than retry it indefinitely.
+	xcodeLicenseRe      = regexp.MustCompile(`(?i)xcode license|exit status 69|xcode.*license`)
+	sshSigningRe        = regexp.MustCompile(`(?i)1password|failed to write commit object|gpg.*signing|signing.*gpg|ssh signing`)
+	missingBundleRe     = regexp.MustCompile(`(?i)bundle.*not found|cannot load such file|gem not found|bundler`)
+	missingMiseRe       = regexp.MustCompile(`(?i)mise.*not found|mise: No such file|mise: command not found`)
+	missingExecutorRe   = regexp.MustCompile(`(?i)executor.*not found|no such executor|unknown executor`)
 )
+
+// environmentFailureReason returns a reason like "environment: xcode-license"
+// when the result or run summary describes an environment-class failure that
+// should block the job instead of being retried. The empty string means the
+// failure is not recognised as environment-class.
+func environmentFailureReason(result, runSummary string) string {
+	text := strings.ToLower(result + "\n" + runSummary)
+	switch {
+	case xcodeLicenseRe.MatchString(text):
+		return "environment: xcode-license"
+	case sshSigningRe.MatchString(text):
+		return "environment: ssh-signing"
+	case missingMiseRe.MatchString(text):
+		return "environment: missing-mise"
+	case missingBundleRe.MatchString(text):
+		return "environment: missing-bundle"
+	case missingExecutorRe.MatchString(text):
+		return "environment: missing-executor"
+	}
+	return ""
+}
 
 // classifyFailure reads a failed job's result (job.result), the run that
 // ended it (runs.status, runs.summary; both "" when there is none) and

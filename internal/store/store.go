@@ -33,6 +33,11 @@ const StoreName = "pulse.sqlite"
 
 const journalSizeLimitBytes = 64 * 1024 * 1024
 
+// busyTimeoutMs is how long SQLite waits for a locked page before returning
+// SQLITE_BUSY. Concurrent CLI processes (pulse claim, pulse job finish) take
+// immediate write locks; without this timeout they fail on contention.
+const busyTimeoutMs = 5000
+
 // HumanAgent is the agents row the maintainer acts as.
 const HumanAgent = "human"
 
@@ -158,7 +163,7 @@ func gitTopLevel(dir string) string {
 
 func dsn(path string, readOnly bool) string {
 	q := url.Values{}
-	q.Add("_pragma", "busy_timeout(5000)")
+	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMs))
 	q.Add("_pragma", "foreign_keys(1)")
 	if readOnly {
 		q.Set("mode", "ro")

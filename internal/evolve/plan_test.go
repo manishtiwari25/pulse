@@ -1,6 +1,7 @@
 package evolve
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -332,5 +333,83 @@ func TestPlanExperimentSkipsCardQuestionWhenThreadHasCard(t *testing.T) {
 	}
 	if got := countRows(t, s, "posts WHERE kind = 'question'"); got != 0 {
 		t.Fatalf("card question re-posted on a thread that already holds a card: %d questions, want 0", got)
+	}
+}
+
+func TestPlanExperimentSkipsLandedFix(t *testing.T) {
+	s := cycleReady(t)
+	p, err := s.Project("demo")
+	if err != nil || p == nil {
+		t.Fatalf("project: %+v %v", p, err)
+	}
+	putFile(t, filepath.Join(p.Path, "README.md"), "landed fix\n", 0o644)
+	testGit(t, p.Path, "add", "README.md")
+	testGit(t, p.Path, "commit", "--quiet", "-m", "landed the readme fix")
+
+	landed := votedPostWithVotes(t, s, board.PostInput{
+		Project: "demo", Area: "evolution", Thread: "landed", Kind: "suggestion", Agent: "proposer",
+		Summary: "Readme already fixed", Files: "README.md",
+		Body: "Class: operating-layer\nFile: README.md\nVariable: one constant\nCommit: landed the readme fix\nHypothesis: skip me\nTier: 1\n",
+	}, "up", "up", "up")
+	next := votedSuggestionWithVotes(t, s, "next", "operating-layer", "README.md", "up", "up", "up")
+
+	result, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Created || result.Suggestion != next.ID || result.Suggestion == landed.ID {
+		t.Fatalf("landed fix was not skipped: %+v", result)
+	}
+}
+
+func TestPlanExperimentSkipsLandedFixBySHA(t *testing.T) {
+	s := cycleReady(t)
+	p, err := s.Project("demo")
+	if err != nil || p == nil {
+		t.Fatalf("project: %+v %v", p, err)
+	}
+	putFile(t, filepath.Join(p.Path, "README.md"), "landed fix by sha\n", 0o644)
+	testGit(t, p.Path, "add", "README.md")
+	testGit(t, p.Path, "commit", "--quiet", "-m", "landed the readme fix by sha")
+	sha := testGit(t, p.Path, "rev-parse", "HEAD")
+
+	landed := votedPostWithVotes(t, s, board.PostInput{
+		Project: "demo", Area: "evolution", Thread: "landed-sha", Kind: "suggestion", Agent: "proposer",
+		Summary: "Readme already fixed by sha", Files: "README.md",
+		Body: "Class: operating-layer\nFile: README.md\nVariable: one constant\nCommit: " + sha + "\nHypothesis: skip me\nTier: 1\n",
+	}, "up", "up", "up")
+	next := votedSuggestionWithVotes(t, s, "next-sha", "operating-layer", "README.md", "up", "up", "up")
+
+	result, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Created || result.Suggestion != next.ID || result.Suggestion == landed.ID {
+		t.Fatalf("landed fix by sha was not skipped: %+v", result)
+	}
+}
+
+func TestPlanExperimentDoesNotSkipUnlandedFix(t *testing.T) {
+	s := cycleReady(t)
+	p, err := s.Project("demo")
+	if err != nil || p == nil {
+		t.Fatalf("project: %+v %v", p, err)
+	}
+	putFile(t, filepath.Join(p.Path, "README.md"), "landed fix\n", 0o644)
+	testGit(t, p.Path, "add", "README.md")
+	testGit(t, p.Path, "commit", "--quiet", "-m", "landed the readme fix")
+
+	unlanded := votedPostWithVotes(t, s, board.PostInput{
+		Project: "demo", Area: "evolution", Thread: "unlanded", Kind: "suggestion", Agent: "proposer",
+		Summary: "Readme not yet fixed", Files: "README.md",
+		Body: "Class: operating-layer\nFile: README.md\nVariable: one constant\nCommit: this never landed\nHypothesis: plan me\nTier: 1\n",
+	}, "up", "up", "up")
+
+	result, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Created || result.Suggestion != unlanded.ID {
+		t.Fatalf("unlanded fix was skipped: %+v", result)
 	}
 }

@@ -823,10 +823,13 @@ still reads a token from stdin; `--remove` forgets it). The hand's probe reports
 whose workdir filesystem has under `daemon.min_free_mb` (default 1024) megabytes
 free and names that path in its note; 0 turns the check off. The login check the daemon
 runs on an executor is a two-step harness run that must answer `SUMMARY: ok`. Landing waits while the checkout is
-on another branch or has uncommitted changes, so your work in progress is
-never touched; the hold shows in `pulse status` and the hub as `landing`
-(how many branches wait and why), and the daemon logs it and writes
-`land.held` once per change, `land.resumed` when the branches land again.
+on another branch; if it has uncommitted changes, `landing.auto_stash` (default
+`on`) stashes them with a clear message so the landing can proceed, and a
+stash that cannot be made blocks the landing with the reason instead of
+silently deferring. Your work in progress is never committed or lost. The hold
+shows in `pulse status` and the hub as `landing` (how many branches wait and
+why), and the daemon logs it and writes `land.held` once per change,
+`land.resumed` when the branches land again.
 Landing moves your local default branch; whether it goes further is your
 standing instruction, `landing.push` (ADR-037). `off`, the default: you review
 and push. `pulse settings landing.push main`: after each landing the daemon

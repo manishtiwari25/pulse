@@ -21,7 +21,8 @@
     "serve:out": "MOCK_STATIC=out PULSE_HUB_PORT=${PULSE_HUB_PORT:-8787} node mock/server.mjs",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run lint && PULSE_HUB_OUT_DIR=.next/check-out npm run build"
+    "test": "node --test 'src/**/*.test.mjs' 'mock/*.test.mjs'",
+    "check": "npm run typecheck && npm run lint && PULSE_HUB_OUT_DIR=.next/check-out npm run build && npm run test"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

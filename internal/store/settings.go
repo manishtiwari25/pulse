@@ -287,6 +287,7 @@ var DaemonSettings = map[string]string{
 	"daemon.sweep_branch_days":         "7",
 	"daemon.sweep_keep_days":           "30",
 	"landing.push":                     "off",
+	"landing.auto_stash":               "on",
 	"push.credential":                  "",
 }
 
@@ -303,6 +304,7 @@ var DaemonRules = map[string]SettingRule{
 	"daemon.sweep_branch_days":         {Kind: "count", Min: 0, HasMin: true, Description: "days since its last commit before a pulse/* or evolve/* branch that no job will land is removed; its commits are saved under PULSE_HOME/patches first unless they are already on the default branch"},
 	"daemon.sweep_keep_days":           {Kind: "count", Min: 1, HasMin: true, Description: "days run logs, saved patches and work files of jobs this store does not know are kept before the sweep removes them"},
 	"landing.push":                     {Kind: "choice", Choices: []string{"off", "main"}, Description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)"},
+	"landing.auto_stash":               {Kind: "choice", Choices: []string{"on", "off"}, Description: "on: before landing, the daemon stashes uncommitted changes in the checkout with a clear message so the landing can proceed; off: a dirty checkout defers landing (ADR-024)"},
 	"push.credential":                  {Kind: "reference", Description: "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)"},
 }
 

@@ -22,7 +22,7 @@ import (
 // and stay one log line and one event apiece.
 func landingHeld(state string) bool {
 	switch state {
-	case "deferred", "locked", "stopped", "unreadable":
+	case "deferred", "locked", "stopped", "unreadable", "blocked":
 		return true
 	}
 	return false

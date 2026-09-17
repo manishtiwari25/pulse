@@ -109,6 +109,21 @@ func takeJob(s *store.Store, agent, project, jobID string, dryRun bool, now, exe
 	for slug := range heldCheckouts() {
 		unfit[slug] = recipeUnfitCheckout
 	}
+	// Preflight health check: keep jobs off an executor whose environment is
+	// known broken from a recent environment-class failure (Xcode license, SSH
+	// signing, missing tools). The block ages out after environmentBlockBackoff.
+	checkProjects := projects
+	if project != "" {
+		checkProjects = []string{project}
+	}
+	for _, slug := range checkProjects {
+		if _, ok := unfit[slug]; ok {
+			continue
+		}
+		if reason, blocked := environmentHealthBlock(s.DB, exrow.str("name"), slug, now); blocked {
+			unfit[slug] = reason
+		}
+	}
 	if len(unfit) > 0 {
 		if why, ok := unfit[project]; project != "" && ok {
 			return nil, exrow, fmt.Sprintf("executor %s %s for %s (%s)", exrow.str("name"), unfitPhrase(why), project, toolHint(why)), nil

@@ -339,7 +339,22 @@ func landBranch(s *store.Store, project row, branch, actor, now string, o landOp
 		return "deferred", fmt.Sprintf("the checkout of %s is not on %s", root, def), nil
 	}
 	if !clean {
-		return "deferred", fmt.Sprintf("the checkout of %s has uncommitted changes", root), nil
+		if s.Setting("landing.auto_stash", "on") == "off" {
+			return "deferred", fmt.Sprintf("the checkout of %s has uncommitted changes", root), nil
+		}
+		stashMsg := fmt.Sprintf("pulse auto-stash before landing %s", jobIDOf(job))
+		stash := gitTimeout(root, 60*time.Second, "stash", "push", "-m", stashMsg)
+		if !stash.ok() {
+			why := strings.TrimSpace(stash.Stderr)
+			if why == "" {
+				why = "git stash failed"
+			}
+			return "blocked", fmt.Sprintf("the checkout of %s has uncommitted changes and could not be auto-stashed: %s", root, why), nil
+		}
+		_, clean = checkoutState(root, def)
+		if !clean {
+			return "blocked", fmt.Sprintf("the checkout of %s has uncommitted changes that could not be stashed", root), nil
+		}
 	}
 	lock := landingLock(root, now)
 	if lock == "" {
@@ -554,7 +569,7 @@ func landPendingContext(ctx context.Context, s *store.Store, project row, actor,
 			// D-M: an experiment is measured before it may land; a dropped or unmeasured one never lands.
 			state, note := landExperimentContext(ctx, s, project, job, actor, now, verify)
 			out = append(out, landResult{state, note})
-			if state == "deferred" || state == "locked" || state == "stopped" || state == "unreadable" {
+			if state == "deferred" || state == "locked" || state == "stopped" || state == "unreadable" || state == "blocked" {
 				break
 			}
 			continue
@@ -568,7 +583,7 @@ func landPendingContext(ctx context.Context, s *store.Store, project row, actor,
 			eventAt(s.DB, now, actor, "land.missing", job.str("branch"), map[string]any{"job": job.str("id")})
 		}
 		out = append(out, landResult{state, note})
-		if state == "deferred" || state == "locked" || state == "stopped" || state == "unreadable" {
+		if state == "deferred" || state == "locked" || state == "stopped" || state == "unreadable" || state == "blocked" {
 			break
 		}
 	}

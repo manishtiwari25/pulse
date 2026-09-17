@@ -863,6 +863,21 @@
       "value": "off"
     },
     {
+      "choices": [
+        "on",
+        "off"
+      ],
+      "default": "on",
+      "description": "on: before landing, the daemon stashes uncommitted changes in the checkout with a clear message so the landing can proceed; off: a dirty checkout defers landing (ADR-024)",
+      "kind": "choice",
+      "min": null,
+      "name": "landing.auto_stash",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "on"
+    },
+    {
       "choices": null,
       "default": "",
       "description": "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)",

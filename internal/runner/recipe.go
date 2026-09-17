@@ -764,6 +764,9 @@ func projectSetup(root, rev string, r *Recipe, clone string) (string, []string, 
 }
 
 func unfitPhrase(tool string) string {
+	if strings.HasPrefix(tool, "environment:") {
+		return "has environment issue " + strings.TrimPrefix(tool, "environment:")
+	}
 	switch tool {
 	case recipeUnfitServices:
 		return "needs services"
@@ -779,6 +782,9 @@ func unfitPhrase(tool string) string {
 }
 
 func toolHint(tool string) string {
+	if strings.HasPrefix(tool, "environment:") {
+		return fmt.Sprintf("fix the environment issue (%s) and unblock the job, or wait %s for the block to age out", tool, environmentBlockBackoff)
+	}
 	if strings.HasPrefix(tool, "tool:") {
 		return fmt.Sprintf("as the executor user: `mise install %s`, then `pulse executor probe <executor>`; a pin mise cannot build here is the recipe's to change", tool[5:])
 	}

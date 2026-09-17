@@ -3,6 +3,7 @@ package evolve
 import (
 	"database/sql"
 	"errors"
+	"os/exec"
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/board"
@@ -258,6 +259,19 @@ func planExperimentLocked(s *store.Store, tx *board.WriteTransaction, project st
 			}
 			continue
 		}
+		commit := strings.TrimSpace(cardFields(p.Body)["commit"])
+		if commit != "" {
+			landed, err := fixAlreadyLanded(s, project, card.File, commit)
+			if err != nil {
+				return PlanResult{}, err
+			}
+			if landed {
+				if seen != nil {
+					seen[p.ID] = true
+				}
+				continue
+			}
+		}
 		if existing, err := openExperimentForSuggestion(s, project, p.ID); err != nil {
 			return PlanResult{}, err
 		} else if existing != nil {
@@ -306,6 +320,40 @@ func cardJobSuggestion(job *board.Job) string { return strings.TrimPrefix(job.So
 
 func cardJobReason(job *board.Job) string {
 	return "suggestion " + cardJobSuggestion(job) + " has no experiment card; card job " + job.ID + " (" + job.Status + ") writes one as a new suggestion on its thread"
+}
+
+// fixAlreadyLanded checks whether a card's referenced fix appears to have landed on the project's
+// default branch. It first treats the reference as a commit SHA and checks ancestry with
+// merge-base; if that fails it falls back to matching the reference as a message substring in the
+// oneline log of the card's target file. When the project has no checkout, no default branch, or no
+// commit reference, it returns false so planning is not blocked.
+func fixAlreadyLanded(s *store.Store, project, file, commit string) (bool, error) {
+	if strings.TrimSpace(commit) == "" {
+		return false, nil
+	}
+	p, err := s.Project(project)
+	if err != nil {
+		return false, err
+	}
+	if p == nil || p.Path == "" || p.DefaultBranch == "" {
+		return false, nil
+	}
+	// Try SHA ancestry first: works for full or abbreviated SHAs that resolve to a real commit.
+	if err := exec.Command("git", "-C", p.Path, "merge-base", "--is-ancestor", commit, p.DefaultBranch).Run(); err == nil {
+		return true, nil
+	}
+	// Fall back to message substring matching in the oneline log of the target file.
+	out, err := exec.Command("git", "-C", p.Path, "log", p.DefaultBranch, "--oneline", "--", file).Output()
+	if err != nil {
+		return false, nil
+	}
+	needle := strings.ToLower(commit)
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(strings.ToLower(line), needle) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func experimentCarrierReason(job *board.Job) string {

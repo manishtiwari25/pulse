@@ -72,6 +72,21 @@ func recoverFailedJobs(s *store.Store, project row, now, actor string) []string 
 		}
 		f := classifyFailure(job.str("result"), rowStr(run, "status"), rowStr(run, "summary"), recoveryQuestionAsked(s.DB, slug, job.str("id")))
 		root, n := recoveryChain(s, job)
+		// Environment-class failures (Xcode license, SSH signing, missing tools) should not be retried
+		// indefinitely; block the job and let the preflight health check keep other jobs away.
+		if envReason := environmentFailureReason(job.str("result"), rowStr(run, "summary")); envReason != "" {
+			actions++
+			line, acted := blockEnvironmentFailure(s, job, run, now, actor, envReason, root, n)
+			if line != "" {
+				lines = append(lines, line)
+				if !acted {
+					stats.errors++
+				} else {
+					stats.blocked++
+				}
+			}
+			continue
+		}
 		// Work a later job with the same source already carries (the lead re-planned it, or it landed) is not done twice.
 		if later := recoveryCarrier(s.DB, job, root); later != "" {
 			held := f
@@ -125,12 +140,61 @@ const (
 	recoverQueueRoom = 5 // queued jobs a project may hold before recovery stops adding to it
 )
 
+// environmentBlockBackoff is how long a job stays blocked after an
+// environment-class failure before recovery may look at it again.
+const environmentBlockBackoff = 1 * time.Hour
+
+// environmentBlockReason returns the reason stored on a blocked job when it
+// was blocked by self-healing, or "" otherwise.
+func environmentBlockReason(job row) string {
+	if job == nil || job.str("status") != "blocked" {
+		return ""
+	}
+	if strings.HasPrefix(job.str("result"), "environment: ") {
+		return job.str("result")
+	}
+	return ""
+}
+
+// environmentBlockBackoffDue returns the earliest time an environment-blocked
+// job may be re-examined. It reads the most recent job.recover event with
+// outcome "blocked" for this job.
+func environmentBlockBackoffDue(q querier, jobID, now string) string {
+	if r := mustOne(q, `SELECT e.at FROM events e WHERE e.action = ? AND e.subject = ?
+		AND json_valid(detail) AND json_extract(detail, '$.outcome') = 'blocked'
+		ORDER BY e.seq DESC LIMIT 1`, board.JobRecoverAction, jobID); r != nil {
+		return formatISO(mustISO(r.str("at")).Add(environmentBlockBackoff))
+	}
+	return ""
+}
+
+// environmentHealthBlock reports whether a project should not be leased on an
+// executor because a recent run ended in an environment-class block. It returns
+// the reason (e.g. "environment: xcode-license") and true when the block is
+// still fresh. executor "" is treated as the local executor.
+func environmentHealthBlock(q querier, executor, project, now string) (string, bool) {
+	if executor == "" {
+		executor = localExecutor
+	}
+	since := formatISO(mustISO(now).Add(-environmentBlockBackoff))
+	r := mustOne(q, `SELECT j.result, r.executor FROM jobs j
+		JOIN runs r ON r.job_id = j.id
+		WHERE j.project = ? AND j.status = 'blocked' AND j.result LIKE 'environment:%'
+			AND j.finished_at >= ?
+			AND (r.executor = ? OR (? = ? AND (r.executor = '' OR r.executor IS NULL)))
+		ORDER BY j.finished_at DESC LIMIT 1`, project, since, executor, executor, localExecutor)
+	if r == nil {
+		return "", false
+	}
+	return r.str("result"), true
+}
+
 // recoveryStats is one tick's view of a project's failures: what the ledger already answered in the window,
 // what waits for the lead, the earliest retry still due, and whether the tick's cap held work back.
 type recoveryStats struct {
-	total, days, withLead, once, cancelled, capped, queueFull, errors int
-	ledger                                                            map[string]int // outcome -> events in the window
-	next                                                              string
+	total, days, withLead, once, cancelled, capped, queueFull, blocked, errors int
+	ledger                                                                       map[string]int // outcome -> events in the window
+	next                                                                         string
 }
 
 func (st *recoveryStats) nextAt(due string) {
@@ -142,7 +206,7 @@ func (st *recoveryStats) nextAt(due string) {
 func (st recoveryStats) note() string {
 	var parts []string
 	for _, key := range []struct{ outcome, label string }{
-		{"requeued", "run again"}, {"replanned", "re-planned"}, {"held", "held"}, {"retried", "retried by hand"},
+		{"requeued", "run again"}, {"replanned", "re-planned"}, {"held", "held"}, {"retried", "retried by hand"}, {"blocked", "blocked"},
 	} {
 		if n := st.ledger[key.outcome]; n > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", n, key.label))
@@ -442,6 +506,41 @@ func holdRecoveryFailure(s *store.Store, job row, now, actor string, f failure, 
 		}
 		return nil
 	})
+}
+
+// blockEnvironmentFailure marks a failed job as blocked because of an
+// environment-class failure. It respects a backoff: if the job was already
+// blocked for this reason within environmentBlockBackoff, it is left alone.
+// The run's executor is recorded in the recovery event so the preflight health
+// check can keep other jobs off the broken environment.
+func blockEnvironmentFailure(s *store.Store, job, run row, now, actor, reason, root string, n int) (string, bool) {
+	err := immediate(s, func(q querier) error {
+		current, err := currentRecoveryFailure(q, job)
+		if err != nil {
+			return err
+		}
+		job = current
+		if recoveryDecision(q, job.str("id"), job.str("finished_at")) != nil {
+			return nil
+		}
+		if due := environmentBlockBackoffDue(q, job.str("id"), now); due != "" && now < due {
+			return fail(2, "environment block backoff until %s", due)
+		}
+		executor := rowStr(run, "executor")
+		if executor == "" {
+			executor = localExecutor
+		}
+		exec1(q, `UPDATE jobs SET status = 'blocked', result = ?, lease_agent = '', lease_until = '', finished_at = ? WHERE id = ?`,
+			reason, now, job.str("id"))
+		eventAt(q, now, actor, "job.blocked", job.str("id"), trunc(reason, 400))
+		f := failure{Class: failureStructural, Reason: reason, Signature: failureSignature(failureStructural, reason)}
+		recoveryEvent(q, now, actor, job.str("id"), "blocked", f, root, n, "")
+		return nil
+	})
+	if err != nil {
+		return fmt.Sprintf("environment block for %s deferred: %s", job.str("id"), errMessage(err)), false
+	}
+	return fmt.Sprintf("blocked %s (%s)", job.str("id"), reason), true
 }
 
 func recoveryEvent(q querier, now, actor, jobID, outcome string, f failure, root string, n int, newJob string) {

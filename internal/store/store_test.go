@@ -150,6 +150,17 @@ func TestOpenSetsJournalSizeLimit(t *testing.T) {
 	}
 }
 
+func TestOpenSetsBusyTimeout(t *testing.T) {
+	s := openTemp(t, Options{Create: true})
+	var got int64
+	if err := s.DB.QueryRow("PRAGMA busy_timeout").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != busyTimeoutMs {
+		t.Fatalf("busy_timeout = %d, want %d", got, busyTimeoutMs)
+	}
+}
+
 func TestCheckpointTruncatesWAL(t *testing.T) {
 	s := openTemp(t, Options{Create: true})
 	before := writeWAL(t, s)

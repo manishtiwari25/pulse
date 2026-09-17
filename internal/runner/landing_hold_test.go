@@ -3,6 +3,7 @@ package runner
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,6 +23,7 @@ func TestLandingHoldSaidOncePerChange(t *testing.T) {
 	proj, dir := newBareRepo(t, s)
 	join(t, s, "aurora")
 	setSetting(t, s, "landing", "agents")
+	setSetting(t, s, "landing.auto_stash", "off")
 
 	// Two verified branches wait; the owner has uncommitted work in the checkout.
 	for _, name := range []string{"one", "two"} {
@@ -104,6 +106,7 @@ func TestDaemonLogsLandingHoldOnce(t *testing.T) {
 	_, dir := newBareRepo(t, s)
 	join(t, s, "aurora")
 	setSetting(t, s, "landing", "agents")
+	setSetting(t, s, "landing.auto_stash", "off")
 	setSetting(t, s, "jobs_per_day", "20")
 	run(t, dir, "git", "checkout", "-q", "-b", "pulse/aurora/x", "main")
 	os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x\n"), 0o644)
@@ -123,5 +126,145 @@ func TestDaemonLogsLandingHoldOnce(t *testing.T) {
 	}
 	if r := jobRow(s.DB, j.ID); r.str("branch") != "pulse/aurora/x" {
 		t.Fatalf("held job lost its branch: %v", r)
+	}
+}
+
+// With landing.auto_stash on (the default), a dirty checkout is stashed before
+// landing so the verified branch can land. The stash keeps the owner's changes
+// with a clear message and the landing proceeds.
+func TestLandingAutoStashLands(t *testing.T) {
+	skipSlow(t)
+	bus.ResetDefault()
+	s := newStore(t)
+	proj, dir := newBareRepo(t, s)
+	join(t, s, "aurora")
+	setSetting(t, s, "landing", "agents")
+
+	branch := "pulse/aurora/auto"
+	run(t, dir, "git", "checkout", "-q", "-b", branch, "main")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644)
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-q", "-m", "add feature")
+	run(t, dir, "git", "checkout", "-q", "main")
+
+	j, _, err := board.AddJob(s, board.JobInput{Project: "proj", Kind: "task", Title: "auto stash", Brief: "b", Tier: 1, CreatedBy: "aurora"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?", testNow, branch, j.ID)
+
+	// Owner's uncommitted work on main.
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# proj\n\nowner's work\n"), 0o644)
+
+	projects := []row{proj}
+	lines, held := tendLandings(s, projects, "daemon", testNow, map[string]string{})
+	joined := strings.Join(lines, "\n")
+	if len(held) != 0 || !strings.Contains(joined, "landing landed: "+branch) {
+		t.Fatalf("expected landing to succeed; lines=%q held=%v", lines, held)
+	}
+	if n := count(t, s, "SELECT COUNT(*) AS n FROM events WHERE action = 'land.landed' AND subject = ?", branch); n != 1 {
+		t.Fatalf("land.landed events: %d", n)
+	}
+	if n := count(t, s, "SELECT COUNT(*) AS n FROM jobs WHERE id = ? AND status = 'done' AND branch = ''", j.ID); n != 1 {
+		t.Fatalf("job not finished: %v", jobRow(s.DB, j.ID))
+	}
+
+	// The owner's changes were stashed, not committed or lost.
+	stashList := run(t, dir, "git", "stash", "list")
+	if !strings.Contains(stashList, "pulse auto-stash before landing "+j.ID) {
+		t.Fatalf("stash list missing expected message: %q", stashList)
+	}
+	status := run(t, dir, "git", "status", "--porcelain", "--untracked-files=no")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("checkout not clean after landing: %q", status)
+	}
+}
+
+// With landing.auto_stash off, a dirty checkout defers landing exactly as it
+// did before the self-healing behavior existed.
+func TestLandingAutoStashOffDefers(t *testing.T) {
+	skipSlow(t)
+	bus.ResetDefault()
+	s := newStore(t)
+	proj, dir := newBareRepo(t, s)
+	join(t, s, "aurora")
+	setSetting(t, s, "landing", "agents")
+	setSetting(t, s, "landing.auto_stash", "off")
+
+	branch := "pulse/aurora/manual"
+	run(t, dir, "git", "checkout", "-q", "-b", branch, "main")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644)
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-q", "-m", "add feature")
+	run(t, dir, "git", "checkout", "-q", "main")
+
+	j, _, err := board.AddJob(s, board.JobInput{Project: "proj", Kind: "task", Title: "manual stash", Brief: "b", Tier: 1, CreatedBy: "aurora"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?", testNow, branch, j.ID)
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# proj\n\nowner's work\n"), 0o644)
+
+	projects := []row{proj}
+	lines, held := tendLandings(s, projects, "daemon", testNow, map[string]string{})
+	want := "landing held proj: 1 pending landing job; deferred: the checkout of " + dir + " has uncommitted changes"
+	if len(lines) != 1 || lines[0] != want {
+		t.Fatalf("expected deferral; lines=%q held=%v", lines, held)
+	}
+	if r := jobRow(s.DB, j.ID); r.str("branch") != branch {
+		t.Fatalf("deferred job lost its branch: %v", r)
+	}
+	if stashList := run(t, dir, "git", "stash", "list"); strings.TrimSpace(stashList) != "" {
+		t.Fatalf("unexpected stash created: %q", stashList)
+	}
+}
+
+// When auto-stash is on but git cannot stash the working tree (e.g. an
+// unresolved merge), the landing is blocked with a clear reason instead of
+// silently deferred.
+func TestLandingAutoStashFailedBlocked(t *testing.T) {
+	skipSlow(t)
+	bus.ResetDefault()
+	s := newStore(t)
+	proj, dir := newBareRepo(t, s)
+	join(t, s, "aurora")
+	setSetting(t, s, "landing", "agents")
+
+	branch := "pulse/aurora/conflict"
+	run(t, dir, "git", "checkout", "-q", "-b", branch, "main")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644)
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-q", "-m", "add feature")
+	run(t, dir, "git", "checkout", "-q", "main")
+
+	j, _, err := board.AddJob(s, board.JobInput{Project: "proj", Kind: "task", Title: "stash fails", Brief: "b", Tier: 1, CreatedBy: "aurora"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?", testNow, branch, j.ID)
+
+	// Create an unresolved merge on main so git stash cannot save the state.
+	run(t, dir, "git", "checkout", "-q", "-b", "side", "main")
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("side\n"), 0o644)
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-q", "-m", "side commit")
+	run(t, dir, "git", "checkout", "-q", "main")
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("main\n"), 0o644)
+	run(t, dir, "git", "add", "-A")
+	run(t, dir, "git", "commit", "-q", "-m", "main commit")
+	// The merge is expected to conflict; do not use run() because it fails on non-zero exit.
+	exec.Command("git", "-C", dir, "merge", "side").CombinedOutput()
+	// The merge is left conflicted.
+
+	projects := []row{proj}
+	lines, held := tendLandings(s, projects, "daemon", testNow, map[string]string{})
+	if len(lines) != 1 || !strings.Contains(lines[0], "blocked") || !strings.Contains(lines[0], "could not be auto-stashed") {
+		t.Fatalf("expected blocked with auto-stash reason; lines=%q held=%v", lines, held)
+	}
+	if !strings.Contains(held["proj"], "blocked") {
+		t.Fatalf("expected hold to say blocked: %v", held)
+	}
+	if r := jobRow(s.DB, j.ID); r.str("branch") != branch {
+		t.Fatalf("blocked job lost its branch: %v", r)
 	}
 }

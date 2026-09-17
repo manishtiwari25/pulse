@@ -15,6 +15,7 @@ const LABELS: Record<string, string> = {
   light_model: "Light model",
   landing: "Who merges verified work",
   "landing.push": "Push after landing",
+  "landing.auto_stash": "Stash uncommitted changes before landing",
   "push.credential": "Push key",
   quorum: "Votes to queue a suggestion",
   expiry_days: "A suggestion expires after (days)",
