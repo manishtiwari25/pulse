@@ -78,7 +78,7 @@ export interface Loaded<T> {
   reload: () => Promise<void>;
 }
 
-const DEFAULT_REFRESH = 15000;
+const DEFAULT_REFRESH = 30000;
 
 export function useApi<T>(path: string | null, opts: { refresh?: number | false } = {}): Loaded<T> {
   const refresh = opts.refresh === false ? 0 : (opts.refresh ?? DEFAULT_REFRESH);

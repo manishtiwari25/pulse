@@ -62,6 +62,16 @@ var RunnerDDL = []string{
 	// one loop ran for hours in pread (see the daemon-stall dump of 2026-09-14).
 	`CREATE INDEX IF NOT EXISTS events_action_subject ON events (action, subject, seq)`,
 	`CREATE INDEX IF NOT EXISTS events_subject_seq ON events (subject, seq)`,
+	// Hub dashboard and daemon worker queries: avoid full scans on the large runs/jobs/posts tables.
+	`CREATE INDEX IF NOT EXISTS runs_agent_recent ON runs (agent, mode, started_at DESC, id DESC)`,
+	`CREATE INDEX IF NOT EXISTS runs_status_started ON runs (status, started_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS runs_executor_status ON runs (executor, status, started_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS jobs_source_status ON jobs (source, status, created_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS jobs_status_finished ON jobs (status, finished_at DESC, id)`,
+	`CREATE INDEX IF NOT EXISTS posts_kind_expires ON posts (kind, expires)`,
+	`CREATE INDEX IF NOT EXISTS posts_kind_date ON posts (kind, date DESC)`,
+	`CREATE INDEX IF NOT EXISTS posts_project_kind ON posts (project, kind, date DESC)`,
+	`CREATE INDEX IF NOT EXISTS agents_status_active ON agents (status, last_active_at DESC)`,
 }
 
 // RunnerColumns are the columns the runner work added to schema-3 tables after

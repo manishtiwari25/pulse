@@ -179,13 +179,18 @@ func AgentPresences(s *store.Store, now string) (map[string]AgentPresence, error
 	if err != nil {
 		return nil, fmt.Errorf("presence clock: %w", err)
 	}
-	rows, err := s.DB.Query(`SELECT a.name,a.kind,a.status,
+	rows, err := s.DB.Query(`WITH latest_run AS (
+		SELECT id, job_id, executor, started_at, status, agent,
+			ROW_NUMBER() OVER (PARTITION BY agent ORDER BY started_at DESC, rowid DESC) AS rn
+		FROM runs
+		WHERE mode != 'dry-run'
+	)
+	SELECT a.name,a.kind,a.status,
 		COALESCE(r.id,''),COALESCE(r.job_id,''),COALESCE(r.executor,''),COALESCE(r.started_at,''),COALESCE(r.status,''),
 		COALESCE(j.status,''),COALESCE(j.lease_agent,''),COALESCE(j.generation,0),COALESCE(m.value,''),
 		EXISTS(SELECT 1 FROM jobs busy WHERE busy.lease_agent=a.name AND busy.status='leased')
 		FROM agents a
-		LEFT JOIN runs r ON r.rowid=(SELECT r2.rowid FROM runs r2 WHERE r2.agent=a.name AND r2.mode!='dry-run'
-			ORDER BY r2.started_at DESC,r2.rowid DESC LIMIT 1)
+		LEFT JOIN latest_run r ON r.agent=a.name AND r.rn=1
 		LEFT JOIN jobs j ON j.id=r.job_id
 		LEFT JOIN meta m ON m.key=? || a.name`, heartbeatPrefix)
 	if err != nil {
