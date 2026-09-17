@@ -484,8 +484,8 @@ func TestSettingsListAppendsEffectiveExtras(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(legacyRows) != 16 {
-		t.Fatalf("fresh store has %d legacy settings, want 16", len(legacyRows))
+	if len(legacyRows) != len(store.DefaultSettings) {
+		t.Fatalf("fresh store has %d legacy settings, want %d (store.DefaultSettings)", len(legacyRows), len(store.DefaultSettings))
 	}
 	var prefix strings.Builder
 	for _, row := range legacyRows {
