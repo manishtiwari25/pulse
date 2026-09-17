@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"github.com/manishtiwari25/pulse/internal/testutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -294,7 +295,7 @@ func pushProject(t *testing.T, s *store.Store, slug string) string {
 		// Isolate from the host's global/system git config so the fixture
 		// never reaches a 1Password/ssh signing agent.
 		cmd := exec.Command("git", args...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+		cmd.Env = testutil.GitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v %s", args, err, out)
 		}

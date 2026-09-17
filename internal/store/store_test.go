@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"github.com/manishtiwari25/pulse/internal/testutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -490,7 +491,7 @@ func TestSchemaParityWithPython(t *testing.T) {
 		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+		cmd.Env = testutil.GitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git %v: %v %s", args, err, out)
 		}

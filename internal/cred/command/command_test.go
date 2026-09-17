@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/manishtiwari25/pulse/internal/testutil"
 	"io"
 	"os"
 	"os/exec"
@@ -351,7 +352,7 @@ func TestCredTokenFromFileAndBadTokens(t *testing.T) {
 // fixture repo never reaches a 1Password/ssh signing agent.
 func gitOut(args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+	cmd.Env = testutil.GitEnv()
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
