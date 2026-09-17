@@ -193,8 +193,8 @@ func environmentHealthBlock(q querier, executor, project, now string) (string, b
 // what waits for the lead, the earliest retry still due, and whether the tick's cap held work back.
 type recoveryStats struct {
 	total, days, withLead, once, cancelled, capped, queueFull, blocked, errors int
-	ledger                                                                       map[string]int // outcome -> events in the window
-	next                                                                         string
+	ledger                                                                     map[string]int // outcome -> events in the window
+	next                                                                       string
 }
 
 func (st *recoveryStats) nextAt(due string) {

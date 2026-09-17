@@ -102,11 +102,11 @@ var (
 	// never in a worker's summary about a login page.
 	runnerWordsRe = regexp.MustCompile(`rejected at launch|runner errors?|remote (prepare|key) failed|clone failed`)
 	// Environment-class failures that should block a job rather than retry it indefinitely.
-	xcodeLicenseRe      = regexp.MustCompile(`(?i)xcode license|exit status 69|xcode.*license`)
-	sshSigningRe        = regexp.MustCompile(`(?i)1password|failed to write commit object|gpg.*signing|signing.*gpg|ssh signing`)
-	missingBundleRe     = regexp.MustCompile(`(?i)bundle.*not found|cannot load such file|gem not found|bundler`)
-	missingMiseRe       = regexp.MustCompile(`(?i)mise.*not found|mise: No such file|mise: command not found`)
-	missingExecutorRe   = regexp.MustCompile(`(?i)executor.*not found|no such executor|unknown executor`)
+	xcodeLicenseRe    = regexp.MustCompile(`(?i)xcode license|exit status 69|xcode.*license`)
+	sshSigningRe      = regexp.MustCompile(`(?i)1password|failed to write commit object|gpg.*signing|signing.*gpg|ssh signing`)
+	missingBundleRe   = regexp.MustCompile(`(?i)bundle.*not found|cannot load such file|gem not found|bundler`)
+	missingMiseRe     = regexp.MustCompile(`(?i)mise.*not found|mise: No such file|mise: command not found`)
+	missingExecutorRe = regexp.MustCompile(`(?i)executor.*not found|no such executor|unknown executor`)
 )
 
 // environmentFailureReason returns a reason like "environment: xcode-license"
