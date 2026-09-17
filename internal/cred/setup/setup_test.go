@@ -287,11 +287,15 @@ func pushProject(t *testing.T, s *store.Store, slug string) string {
 	for _, args := range [][]string{
 		{"init", "-q", "--bare", bare},
 		{"init", "-q", "-b", "main", root},
-		{"-C", root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},
+		{"-C", root, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"},
 		{"-C", root, "remote", "add", "origin", bare},
 		{"-C", root, "push", "-q", "-u", "origin", "main"},
 	} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		// Isolate from the host's global/system git config so the fixture
+		// never reaches a 1Password/ssh signing agent.
+		cmd := exec.Command("git", args...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v %s", args, err, out)
 		}
 	}
