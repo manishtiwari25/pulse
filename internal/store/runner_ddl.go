@@ -67,6 +67,7 @@ var RunnerDDL = []string{
 	`CREATE INDEX IF NOT EXISTS runs_status_started ON runs (status, started_at DESC)`,
 	`CREATE INDEX IF NOT EXISTS runs_executor_status ON runs (executor, status, started_at DESC)`,
 	`CREATE INDEX IF NOT EXISTS jobs_source_status ON jobs (source, status, created_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS jobs_source_status_kind_id ON jobs (source, status, kind, id)`,
 	`CREATE INDEX IF NOT EXISTS jobs_status_finished ON jobs (status, finished_at DESC, id)`,
 	`CREATE INDEX IF NOT EXISTS posts_kind_expires ON posts (kind, expires)`,
 	`CREATE INDEX IF NOT EXISTS posts_kind_date ON posts (kind, date DESC)`,

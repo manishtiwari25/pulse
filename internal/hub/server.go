@@ -64,7 +64,7 @@ func New(s *store.Store, source TallySource) *Handler {
 	if err != nil {
 		panic(err) // The embed directive makes absence a build error.
 	}
-	return &Handler{Store: s, Source: source, UI: ui, orgCacheTTL: 15 * time.Second}
+	return &Handler{Store: s, Source: source, UI: ui, orgCacheTTL: 60 * time.Second}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

@@ -53,4 +53,4 @@ var RecordsDDL = []string{
 // BUMP IT whenever a statement is added to RecordsDDL: EnsureRecords skips a
 // store whose stamp already equals this value, so new tables only reach
 // existing stores through a new version.
-const RecordsVersion = "3"
+const RecordsVersion = "4"
