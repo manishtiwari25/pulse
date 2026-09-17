@@ -36,7 +36,9 @@ func projectReaderFixture(t *testing.T) (*store.Store, *Handler) {
 			t.Fatal(err)
 		}
 	}
-	return s, New(s, nil)
+	h := New(s, nil)
+	h.orgCacheTTL = 0 // tests expect fresh store views on every request
+	return s, h
 }
 
 func TestProjectReadersGitTimeout(t *testing.T) {

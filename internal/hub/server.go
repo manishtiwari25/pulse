@@ -47,11 +47,13 @@ type Handler struct {
 
 	// orgCache memoizes the expensive /api/v1/org aggregation for a few
 	// seconds. The dashboard polls every 30s; concurrent refreshes during
-	// that window should not each recompute the full org tally.
-	orgMu        sync.Mutex
-	orgCache     map[string]any
-	orgCacheAt   time.Time
-	orgCacheTTL  time.Duration
+	// that window should not each recompute the full org tally. We cache
+	// the serialized JSON bytes so cache hits avoid both aggregation and
+	// re-encoding.
+	orgMu       sync.Mutex
+	orgCache    []byte
+	orgCacheAt  time.Time
+	orgCacheTTL time.Duration
 }
 
 func New(s *store.Store, source TallySource) *Handler {

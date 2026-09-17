@@ -192,6 +192,18 @@ func (h *Handler) orgAPI(w http.ResponseWriter, r *http.Request, route string) {
 		writeJSON(w, 200, object("ok time projects errors", true, h.Store.Now(), slugs, map[string]any{}))
 		return
 	}
+	if route == "org" {
+		h.orgMu.Lock()
+		if len(h.orgCache) > 0 && time.Since(h.orgCacheAt) < h.orgCacheTTL {
+			w.Header().Set("X-Org-Cache", "hit")
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write(h.orgCache)
+			h.orgMu.Unlock()
+			return
+		}
+		h.orgMu.Unlock()
+	}
 	views, err := h.each()
 	if err != nil {
 		h.respond(w, nil, err)
@@ -200,14 +212,6 @@ func (h *Handler) orgAPI(w http.ResponseWriter, r *http.Request, route string) {
 	var data any
 	switch route {
 	case "org":
-		h.orgMu.Lock()
-		if h.orgCache != nil && time.Since(h.orgCacheAt) < h.orgCacheTTL {
-			w.Header().Set("X-Org-Cache", "hit")
-			data = h.orgCache
-			h.orgMu.Unlock()
-			break
-		}
-		h.orgMu.Unlock()
 		org := h.org(views)
 		metadata, metadataErr := h.metadata()
 		if metadataErr != nil {
@@ -217,12 +221,21 @@ func (h *Handler) orgAPI(w http.ResponseWriter, r *http.Request, route string) {
 		for key, value := range metadata {
 			org[key] = value
 		}
+		w.Header().Set("X-Org-Cache", "miss")
+		buf, err := json.Marshal(org)
+		if err != nil {
+			h.respond(w, nil, err)
+			return
+		}
 		h.orgMu.Lock()
-		h.orgCache = org
+		h.orgCache = buf
 		h.orgCacheAt = time.Now()
 		h.orgMu.Unlock()
-		w.Header().Set("X-Org-Cache", "miss")
-		data = org
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(200)
+		_, _ = w.Write(buf)
+		return
 	case "notices":
 		data = h.org(views)["notices"]
 	case "proposals":
