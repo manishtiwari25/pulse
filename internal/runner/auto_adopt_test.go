@@ -44,6 +44,9 @@ func TestAutoAdoptDraftsOnlyWhenAwayAndEnabled(t *testing.T) {
 func autoAdoptStore(t *testing.T) *store.Store {
 	t.Helper()
 	home := t.TempDir()
+	// store.Open refuses to create a store while PULSE_JOB is set (WorkerGuard), and every
+	// PULSE worker runs the suite with it set; clear it like newStore does.
+	t.Setenv("PULSE_JOB", "")
 	s, err := store.Open(store.Options{Home: home, Create: true})
 	if err != nil {
 		t.Fatal(err)
