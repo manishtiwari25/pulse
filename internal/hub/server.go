@@ -44,6 +44,14 @@ type Handler struct {
 
 	providerMu    sync.Mutex
 	providerCache map[string]provider.Provider
+
+	// orgCache memoizes the expensive /api/v1/org aggregation for a few
+	// seconds. The dashboard polls every 30s; concurrent refreshes during
+	// that window should not each recompute the full org tally.
+	orgMu        sync.Mutex
+	orgCache     map[string]any
+	orgCacheAt   time.Time
+	orgCacheTTL  time.Duration
 }
 
 func New(s *store.Store, source TallySource) *Handler {
@@ -54,7 +62,7 @@ func New(s *store.Store, source TallySource) *Handler {
 	if err != nil {
 		panic(err) // The embed directive makes absence a build error.
 	}
-	return &Handler{Store: s, Source: source, UI: ui}
+	return &Handler{Store: s, Source: source, UI: ui, orgCacheTTL: 15 * time.Second}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

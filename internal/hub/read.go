@@ -200,6 +200,14 @@ func (h *Handler) orgAPI(w http.ResponseWriter, r *http.Request, route string) {
 	var data any
 	switch route {
 	case "org":
+		h.orgMu.Lock()
+		if h.orgCache != nil && time.Since(h.orgCacheAt) < h.orgCacheTTL {
+			w.Header().Set("X-Org-Cache", "hit")
+			data = h.orgCache
+			h.orgMu.Unlock()
+			break
+		}
+		h.orgMu.Unlock()
 		org := h.org(views)
 		metadata, metadataErr := h.metadata()
 		if metadataErr != nil {
@@ -209,6 +217,11 @@ func (h *Handler) orgAPI(w http.ResponseWriter, r *http.Request, route string) {
 		for key, value := range metadata {
 			org[key] = value
 		}
+		h.orgMu.Lock()
+		h.orgCache = org
+		h.orgCacheAt = time.Now()
+		h.orgMu.Unlock()
+		w.Header().Set("X-Org-Cache", "miss")
 		data = org
 	case "notices":
 		data = h.org(views)["notices"]

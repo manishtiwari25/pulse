@@ -401,6 +401,9 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 				selfEnv.Inflight = len(inflight)
 				maintenance.start(maintenanceCtx, s, projects, actor, now, o.DryRun, inflightJobs, selfEnv)
 			}
+			for _, l := range autoAdoptDrafts(s, now, actor) {
+				say("%s", l)
+			}
 			for _, proj := range projects {
 				slug := proj.str("slug")
 				// D-H: passed amendments become the constitution; refusals go to the human once.

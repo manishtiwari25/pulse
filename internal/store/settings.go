@@ -31,6 +31,7 @@ var DefaultSettings = map[string]string{
 	"worker_model":         "",
 	"stop":                 "0",
 	"landing":              "agents",
+	"records.auto_adopt":   "0",
 }
 
 // SettingRule is one row of legacy/pulse.py SETTING_RULES: the kind decides
@@ -65,6 +66,7 @@ var SettingRules = map[string]SettingRule{
 	"worker_model":         {Kind: "text", Description: "the model of the runs that change code - task, improve and experiment jobs - and of every other run while light_model is empty; empty means the runner's default"},
 	"stop":                 {Kind: "switch", Choices: []string{"0", "1"}, Description: "the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)"},
 	"landing":              {Kind: "choice", Choices: []string{"agents", "human"}, Description: "agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)"},
+	"records.auto_adopt":   {Kind: "switch", Choices: []string{"0", "1"}, Description: "1: when the owner is away the daemon adopts waiting record drafts on its own; 0: drafts wait for the owner (ADR-046)"},
 }
 
 // ImplementationJobKinds are the job kinds whose run changes code and so

@@ -392,7 +392,7 @@ func TestSettings(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ key, value, want string }{
-		{"bogus", "1", "Unknown setting 'bogus'. Known: amend_majority, amend_quorum, claim_hours, expiry_days, jobs_per_day, landing, max_ai_credits, minutes_per_job, parallel_per_project, prune_after_days, quorum, runner_cmd, stale_days, stop, worker_model, workers"},
+		{"bogus", "1", "Unknown setting 'bogus'. Known: amend_majority, amend_quorum, claim_hours, expiry_days, jobs_per_day, landing, max_ai_credits, minutes_per_job, parallel_per_project, prune_after_days, quorum, records.auto_adopt, runner_cmd, stale_days, stop, worker_model, workers"},
 		{"quorum", "x", "quorum takes a whole number, not 'x'"},
 		{"jobs_per_day", "x", "jobs_per_day takes a whole number, or one of none/off/unlimited, not 'x'"},
 		{"quorum", "0", "quorum must be at least 1, not 0"},
