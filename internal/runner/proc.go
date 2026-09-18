@@ -203,4 +203,6 @@ func sortStrings(a []string) {
 	}
 }
 
-func environ() []string { return os.Environ() }
+// environ is the runner's view of its own environment with the GIT_* variables a
+// hosting git hook exports removed (see stripHookGitEnv).
+func environ() []string { return stripHookGitEnv(os.Environ()) }

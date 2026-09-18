@@ -37,11 +37,13 @@ func TestProvenanceRoundTrip(t *testing.T) {
 	os.WriteFile(filepath.Join(clone, "a.txt"), []byte("a\n"), 0o644)
 	cmd := exec.Command("git", "add", "a.txt")
 	cmd.Dir = clone
+	cmd.Env = environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatal(string(out))
 	}
 	cmd = exec.Command("git", "commit", "-q", "-m", "add a")
 	cmd.Dir = clone
+	cmd.Env = environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
