@@ -372,6 +372,11 @@ func (h *hands) key(job, executor string) error {
 		_ = os.Remove(key)
 		return handsDie("not an openssh private key")
 	}
+	// Mirror configureCloneIdentity: user.signingkey must never point at a missing key, or every
+	// commit the worker makes fails at commit time and finished work is lost (ADR-022).
+	if !fileExists(key) {
+		return handsDie("the run's signing key %s does not exist; refusing to configure user.signingkey (ADR-022)", key)
+	}
 	agent := strings.TrimSpace(git(clone, "config", "user.name").Stdout)
 	if !handsJobRe.MatchString(agent) {
 		return handsDie("the clone has no agent identity (prepare first)")
