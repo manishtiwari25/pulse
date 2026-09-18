@@ -219,6 +219,58 @@ func OpenHandoffs(res *Result) []Post {
 	return out
 }
 
+// OpenHandoffsFor returns the same posts as OpenHandoffs but loads only the
+// latest open handoff per thread directly from the store, avoiding the full
+// post scan that Compute performs.
+func OpenHandoffsFor(s *store.Store, project string) ([]Post, error) {
+	rows, err := s.DB.Query(`
+WITH
+open_threads AS (
+  SELECT area, thread
+  FROM posts
+  WHERE project = ?
+  GROUP BY area, thread
+  HAVING MAX(CASE WHEN resolution != '' THEN 1 ELSE 0 END) = 0
+),
+latest_claim AS (
+  SELECT area, thread, MAX(date) AS max_claim
+  FROM posts
+  WHERE project = ? AND kind = 'claim'
+  GROUP BY area, thread
+),
+ranked AS (
+  SELECT p.*,
+    ROW_NUMBER() OVER (PARTITION BY p.area, p.thread ORDER BY p.date DESC, p.id DESC) AS rn
+  FROM posts p
+  JOIN open_threads ot ON p.area = ot.area AND p.thread = ot.thread
+  LEFT JOIN latest_claim lc ON p.area = lc.area AND p.thread = lc.thread
+  WHERE p.project = ? AND p.kind = 'handoff'
+    AND (lc.max_claim IS NULL OR p.date > lc.max_claim)
+)
+SELECT id, project, area, thread, kind, agent, runner, model, session, date, branch, expires,
+  on_post, vote, text_hash, has_read_line, resolution, summary, body, links, files, name,
+  origin_project, extra, origin, created_at
+FROM ranked
+WHERE rn = 1
+ORDER BY date, id`, project, project, project)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Post
+	for rows.Next() {
+		var p Post
+		if err := rows.Scan(&p.ID, &p.Project, &p.Area, &p.Thread, &p.Kind, &p.Agent, &p.Runner, &p.Model,
+			&p.Session, &p.Date, &p.Branch, &p.Expires, &p.OnPost, &p.Vote, &p.TextHash, &p.HasReadLine,
+			&p.Resolution, &p.Summary, &p.Body, &p.Links, &p.Files, &p.Name, &p.OriginProject, &p.Extra,
+			&p.Origin, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 func plannableWork(items []WorkItem) int {
 	n := 0
 	for _, it := range items {

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/manishtiwari25/pulse/internal/store"
 	"github.com/manishtiwari25/pulse/internal/tally"
@@ -121,6 +122,66 @@ func undecidedStopQuestion(s *store.Store, project, postID string) (string, erro
 	return id, err
 }
 
+// instructionPostFor loads only the posts in open/stale threads and returns the first
+// instruction-shaped one, without forcing a full tally.Compute and its post scan.
+func instructionPostFor(s *store.Store, project string) (*tally.Post, string, error) {
+	cleared, err := clearedInstructionPosts(s, project)
+	if err != nil {
+		return nil, "", err
+	}
+	staleDays := s.SettingInt("stale_days")
+	if staleDays <= 0 {
+		staleDays = 14
+	}
+	staleThreshold := time.Now().UTC().AddDate(0, 0, -staleDays).Format("2006-01-02")
+	rows, err := s.DB.Query(`
+WITH
+thread_status AS (
+  SELECT area, thread,
+    MAX(CASE WHEN resolution != '' THEN 1 ELSE 0 END) AS closed,
+    MAX(date) AS last_date
+  FROM posts
+  WHERE project = ?
+  GROUP BY area, thread
+),
+open_threads AS (
+  SELECT area, thread
+  FROM thread_status
+  WHERE closed = 0 AND substr(last_date, 1, 10) >= ?
+)
+SELECT p.id, p.project, p.area, p.thread, p.kind, p.agent, p.runner, p.model, p.session, p.date, p.branch, p.expires,
+  p.on_post, p.vote, p.text_hash, p.has_read_line, p.resolution, p.summary, p.body, p.links, p.files, p.name,
+  p.origin_project, p.extra, p.origin, p.created_at
+FROM posts p
+JOIN open_threads ot ON p.area = ot.area AND p.thread = ot.thread
+WHERE p.project = ?
+ORDER BY p.date, p.id`, project, staleThreshold, project)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p tally.Post
+		if err := rows.Scan(&p.ID, &p.Project, &p.Area, &p.Thread, &p.Kind, &p.Agent, &p.Runner, &p.Model,
+			&p.Session, &p.Date, &p.Branch, &p.Expires, &p.OnPost, &p.Vote, &p.TextHash, &p.HasReadLine,
+			&p.Resolution, &p.Summary, &p.Body, &p.Links, &p.Files, &p.Name, &p.OriginProject, &p.Extra,
+			&p.Origin, &p.CreatedAt); err != nil {
+			return nil, "", err
+		}
+		if cleared[p.ID] {
+			continue
+		}
+		if InstructionShaped(p.Summary + "\n" + p.Body) {
+			question, err := undecidedStopQuestion(s, project, p.ID)
+			if err != nil {
+				return nil, "", err
+			}
+			return &p, question, nil
+		}
+	}
+	return nil, "", rows.Err()
+}
+
 // clearedInstructionPosts are the posts whose stop question the human decided yes on.
 func clearedInstructionPosts(s *store.Store, project string) (map[string]bool, error) {
 	rows, err := s.DB.Query(`SELECT q.on_post FROM decisions d JOIN posts q ON q.id = d.post_id
@@ -190,20 +251,23 @@ func productPost(p tally.Post) bool {
 	return strings.Contains(strings.ToLower(firstText(f["file class"], f["class"])), "product")
 }
 
-func orderedSuggestions(result *tally.Result, productFirst bool) []tally.Suggestion {
-	posts := map[string]tally.Post{}
-	for _, p := range result.Posts {
-		posts[p.ID] = p
-	}
+func orderedSuggestions(s *store.Store, result *tally.Result, productFirst bool) []tally.Suggestion {
 	out := []tally.Suggestion{}
-	for _, s := range result.Suggestions {
-		if s.Status == "eligible" {
-			out = append(out, s)
+	for _, sg := range result.Suggestions {
+		if sg.Status == "eligible" {
+			out = append(out, sg)
 		}
+	}
+	productOf := func(id string) bool {
+		p, err := tally.LoadPost(s, id)
+		if err != nil || p == nil {
+			return false
+		}
+		return productPost(*p)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		pa, pb := productPost(posts[a.ID]), productPost(posts[b.ID])
+		pa, pb := productOf(a.ID), productOf(b.ID)
 		if productFirst && pa != pb {
 			return pa
 		}

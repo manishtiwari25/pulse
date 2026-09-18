@@ -32,6 +32,11 @@ type cacheValue struct {
 }
 
 func cacheKeyFor(s *store.Store, project, area string, th Thresholds) cacheKey {
+	// Truncate the clock to the minute so the cache survives per-second ticks
+	// without multiplying entries; a tally only cares about the date boundary.
+	if len(th.Now) >= 16 {
+		th.Now = th.Now[:16] + ":00Z"
+	}
 	b, _ := json.Marshal(th)
 	h := sha256.Sum256(b)
 	return cacheKey{

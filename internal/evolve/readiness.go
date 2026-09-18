@@ -52,7 +52,7 @@ func planningStatus(s *store.Store, status *LoopStatus) (PlanningStatus, error) 
 		return PlanningStatus{State: state, Reason: "an experiment is in flight: " + id,
 			Job: id, Suggestion: suggestion}, nil
 	}
-	result, err := tally.Compute(s, project, "", tally.Thresholds{})
+	result, err := tally.ComputeLight(s, project, "", tally.Thresholds{})
 	if err != nil {
 		var applyErr *tally.ApplyError
 		if errors.As(err, &applyErr) {
@@ -60,9 +60,10 @@ func planningStatus(s *store.Store, status *LoopStatus) (PlanningStatus, error) 
 		}
 		return PlanningStatus{}, err
 	}
-	if stop, err := instructionPost(s, result); err != nil {
+	if stopPost, stopQuestion, err := instructionPostFor(s, project); err != nil {
 		return PlanningStatus{}, err
-	} else if stop != nil {
+	} else if stopPost != nil {
+		stop := &instructionStop{post: stopPost, question: stopQuestion}
 		reason := stop.reason()
 		if stop.question != "" {
 			reason += "; owner: pulse decide " + stop.question + " yes if that post is not a command to agents, or close its thread"

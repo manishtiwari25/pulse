@@ -220,12 +220,12 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 	// A handoff is work a worker left for the next one; the queue ranks it first, and so does the planner: the
 	// oldest open handoff nobody claimed becomes one improve job, tried once (like a question), never when it
 	// is addressed to the owner or points at owner-only paths.
-	if res, err := tally.Compute(s, slug, "", tally.Thresholds{Now: now}); err == nil && res != nil {
+	if handoffs, err := tally.OpenHandoffsFor(s, slug); err == nil {
 		tried := map[string]bool{}
 		for _, r := range mustRows(s.DB, "SELECT source FROM jobs WHERE source LIKE 'handoff:%'") {
 			tried[r.str("source")] = true
 		}
-		for _, p := range tally.OpenHandoffs(res) {
+		for _, p := range handoffs {
 			if tried["handoff:"+p.ID] || stuck[p.Area+"/"+p.Thread] {
 				continue
 			}

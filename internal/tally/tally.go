@@ -633,13 +633,32 @@ func pyRepr(s string) string { return "'" + s + "'" }
 
 // Compute runs the tally for a project (area "" = every area). th is the
 // override passed to LoadThresholds; th.Now, else the store clock, is "now".
+// Compute returns the full tally for a project/area, including the Posts slice.
+// It shares the lightweight cached result with ComputeLight and loads Posts separately.
 func Compute(s *store.Store, project, area string, th Thresholds) (*Result, error) {
+	res, err := ComputeLight(s, project, area, th)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := PostsFor(s, project, area)
+	if err != nil {
+		return nil, err
+	}
+	res.Posts = rows
+	return res, nil
+}
+
+// ComputeLight returns the same tally as Compute but without the Posts slice.
+// It is intended for callers that only need derived data (claims, threads,
+// suggestions, proposals) and should be used by the daemon hot path so the
+// cache does not retain every post body in memory.
+func ComputeLight(s *store.Store, project, area string, th Thresholds) (*Result, error) {
 	return cachedCompute(s, project, area, th, func() (*Result, error) {
-		return computeUncached(s, project, area, th)
+		return computeLightUncached(s, project, area, th)
 	})
 }
 
-func computeUncached(s *store.Store, project, area string, th Thresholds) (*Result, error) {
+func computeLightUncached(s *store.Store, project, area string, th Thresholds) (*Result, error) {
 	repo, err := projectRepo(s, project)
 	if err != nil {
 		return nil, err
@@ -659,7 +678,9 @@ func computeUncached(s *store.Store, project, area string, th Thresholds) (*Resu
 		return nil, err
 	}
 	t := newTally(rows, params, now, area, built, open)
-	res := &Result{Project: project, Repo: repo, Area: area, Now: now, Params: params, Posts: rows, NoKind: t.nokind}
+	// The cache stores the lightweight result (no Posts) to keep daemon memory
+	// bounded; callers that need posts use Compute, which re-attaches them.
+	res := &Result{Project: project, Repo: repo, Area: area, Now: now, Params: params, NoKind: t.nokind}
 	for _, cid := range t.claims.keys {
 		c := t.claims.m[cid]
 		res.Claims = append(res.Claims, Claim{ID: cid, Key: c.key, Agent: c.agent, Expires: c.expires, Status: t.claimStatus(cid), Summary: c.summary})

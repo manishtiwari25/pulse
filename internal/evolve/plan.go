@@ -96,7 +96,7 @@ func loopClaims(s *store.Store, project, agent string) (claims []string, reason 
 		}
 		reason = "an experiment is in flight: " + id
 	}
-	result, err := tally.Compute(s, project, "", tally.Thresholds{})
+	result, err := tally.ComputeLight(s, project, "", tally.Thresholds{})
 	if err != nil {
 		var applyErr *tally.ApplyError
 		if errors.As(err, &applyErr) {
@@ -106,9 +106,10 @@ func loopClaims(s *store.Store, project, agent string) (claims []string, reason 
 	}
 	// A stop holds the loop's cards with it: they wait for the owner's decision rather than
 	// being built unmeasured (ADR-044 D4).
-	if stop, err := instructionPost(s, result); err != nil {
+	if stopPost, stopQuestion, err := instructionPostFor(s, project); err != nil {
 		return nil, "", err
-	} else if stop != nil {
+	} else if stopPost != nil {
+		stop := &instructionStop{post: stopPost, question: stopQuestion}
 		reason = firstText(reason, stop.reason())
 	}
 	candidates, err := experimentCandidates(s, project, status, result, agent, true, nil)
@@ -197,7 +198,7 @@ func planExperimentLocked(s *store.Store, tx *board.WriteTransaction, project st
 	} else if ok {
 		return PlanResult{JobID: id, Reason: "an experiment is in flight: " + id}, nil
 	}
-	result, err := tally.Compute(s, project, "", tally.Thresholds{})
+	result, err := tally.ComputeLight(s, project, "", tally.Thresholds{})
 	if err != nil {
 		var applyErr *tally.ApplyError
 		if errors.As(err, &applyErr) {
@@ -207,12 +208,13 @@ func planExperimentLocked(s *store.Store, tx *board.WriteTransaction, project st
 		}
 		return PlanResult{}, err
 	}
-	if stop, err := instructionPost(s, result); err != nil {
+	if stopPost, stopQuestion, err := instructionPostFor(s, project); err != nil {
 		return PlanResult{}, err
-	} else if stop != nil {
+	} else if stopPost != nil {
 		// one stop question per flagged post until the owner decides it: an agent's answer acknowledges,
 		// it never resolves, so re-asking after each answer only floods the owner (5,606 questions on one
 		// project before ADR-043)
+		stop := &instructionStop{post: stopPost, question: stopQuestion}
 		id := stop.question
 		if id == "" {
 			id, err = ownerQuestionOn(s, project, "evolution", "loop-gate", stop.post.ID, opts.Agent, opts.AgentRow, opts.Session, stop.questionBody(), createGatePost)
@@ -370,7 +372,7 @@ type experimentCandidate struct {
 
 func experimentCandidates(s *store.Store, project string, status *LoopStatus, result *tally.Result, agent string, requirePositiveScore bool, seen map[string]bool) ([]experimentCandidate, error) {
 	var out []experimentCandidate
-	for _, suggestion := range orderedSuggestions(result, status.ProductScope.Allowed) {
+	for _, suggestion := range orderedSuggestions(s, result, status.ProductScope.Allowed) {
 		if seen != nil && seen[suggestion.ID] {
 			continue
 		}

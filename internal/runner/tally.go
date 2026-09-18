@@ -12,7 +12,7 @@ import (
 
 // suggestionRecords is Tally.suggestion_records() for one project, at `now`.
 func suggestionRecords(s *store.Store, slug, now string) []tally.Suggestion {
-	res, err := tally.Compute(s, slug, "", tally.Thresholds{Now: now})
+	res, err := tally.ComputeLight(s, slug, "", tally.Thresholds{Now: now})
 	if err != nil || res == nil {
 		return nil
 	}
@@ -25,7 +25,7 @@ func ballotItemsFor(s *store.Store, slug, agent, now, session string) []ballotIt
 		session = agentSession(agentRow(s.DB, agent))
 	}
 	items := []ballotItem{}
-	res, err := tally.Compute(s, slug, "", tally.Thresholds{Now: now})
+	res, err := tally.ComputeLight(s, slug, "", tally.Thresholds{Now: now})
 	if err != nil || res == nil {
 		return items
 	}

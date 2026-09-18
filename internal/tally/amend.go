@@ -122,7 +122,7 @@ func stopPresent(s *store.Store, project string) bool {
 // Ratification paused by STOP still counts as passed here; ApplyAmendment
 // refuses it.
 func PassedAmendments(s *store.Store, project string, th Thresholds) ([]Amendment, error) {
-	res, err := Compute(s, project, "", th)
+	res, err := ComputeLight(s, project, "", th)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +175,7 @@ func ApplyAmendment(s *store.Store, postID string, th Thresholds) (*Applied, err
 		return &Applied{PostID: postID, Project: post.Project, RecordID: rec.ID, Rev: rec.CurrentRev, Author: post.Agent, AlreadyAt: at,
 			Notice: fmt.Sprintf("amendment %s was already applied at %s", postID, at)}, nil
 	}
-	res, err := Compute(s, post.Project, "", th)
+	res, err := ComputeLight(s, post.Project, "", th)
 	if err != nil {
 		return nil, err
 	}

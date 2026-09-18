@@ -17,9 +17,9 @@ import (
 // pulse status, the daemon logs it when it changes).
 func idleNote(s *store.Store, slug, now string) string {
 	parts := []string{suggestionIdlePart(s, slug, now)}
-	res, err := tally.Compute(s, slug, "", tally.Thresholds{Now: now})
-	if err == nil && res != nil {
-		if part := handoffIdlePart(s, res); part != "" {
+	handoffs, err := tally.OpenHandoffsFor(s, slug)
+	if err == nil {
+		if part := handoffIdlePart(s, handoffs); part != "" {
 			parts = append(parts, part)
 		}
 	}
@@ -104,8 +104,7 @@ func suggestionIdlePart(s *store.Store, slug, now string) string {
 	return fmt.Sprintf("%d eligible suggestions, %d plannable (%s)", eligible, plannable, strings.Join(held, ", "))
 }
 
-func handoffIdlePart(s *store.Store, res *tally.Result) string {
-	handoffs := tally.OpenHandoffs(res)
+func handoffIdlePart(s *store.Store, handoffs []tally.Post) string {
 	if len(handoffs) == 0 {
 		return ""
 	}
