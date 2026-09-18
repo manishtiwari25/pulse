@@ -66,6 +66,26 @@ func provenanceHook(agent, jobID, executor string) string {
 		"exec git interpret-trailers --in-place --if-exists doNothing " + strings.Join(parts, " ") + " \"$1\"\n"
 }
 
+// preCommitHookScript returns a shell script that runs the project's verify
+// command with the recipe environment and optional mise pins. It is installed
+// as .git/hooks/pre-commit so a worker cannot commit changes that fail verify.
+func preCommitHookScript(verifyCmd string, recipe *Recipe, pins []string, clone string) string {
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	b.WriteString("# pulse: verify-before-commit gate (auto-installed by runner)\n")
+	if exports := recipeEnvExports(recipe); exports != "" {
+		b.WriteString(strings.TrimSuffix(exports, "; "))
+		b.WriteString("\n")
+	}
+	if len(pins) > 0 {
+		b.WriteString(miseWrapShell(pins, verifyCmd, clone))
+	} else {
+		b.WriteString(verifyCmd)
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 func configureCloneIdentity(clone, agent, keyPath, hookText string) error {
 	// The key must exist before user.signingkey points at it: otherwise every commit the worker
 	// makes fails at commit time and finished work is lost (ADR-022). Fail the run early instead.
@@ -94,6 +114,14 @@ func configureCloneIdentity(clone, agent, keyPath, hookText string) error {
 	}
 	hook := filepath.Join(hooks, "prepare-commit-msg")
 	if err := os.WriteFile(hook, []byte(hookText), 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(hook, 0o755)
+}
+
+func writePreCommitHook(clone, script string) error {
+	hook := filepath.Join(clone, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
 		return err
 	}
 	return os.Chmod(hook, 0o755)

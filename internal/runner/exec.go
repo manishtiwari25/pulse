@@ -30,6 +30,7 @@ type executor interface {
 	dirty() string
 	ownerPathsTouched(base string) []string
 	verify(ctx context.Context, cmd string, minutes int) (*int, string)
+	installPreCommitHook(verifyCmd string, recipe *Recipe, pins []string) error
 	fetchSource() string
 	fetchEnv() []string
 	cleanup()
@@ -133,6 +134,13 @@ func (e *localExec) prepare(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(head.Stdout), nil
+}
+
+func (e *localExec) installPreCommitHook(verifyCmd string, recipe *Recipe, pins []string) error {
+	if verifyCmd == "" {
+		return nil
+	}
+	return writePreCommitHook(e.cloneDir, preCommitHookScript(verifyCmd, recipe, pins, e.cloneDir))
 }
 
 // preflightRunKey fails before the worker starts when the per-run signing key
@@ -334,6 +342,25 @@ func (e *sshExec) preflightRemoteRunKey(when string) error {
 		return err
 	}
 	return remoteKeyCheckResult(e.remoteKeyPath(), e.name(), when, rc, out, errText)
+}
+
+func (e *sshExec) installPreCommitHook(verifyCmd string, recipe *Recipe, pins []string) error {
+	if verifyCmd == "" {
+		return nil
+	}
+	script := preCommitHookScript(verifyCmd, recipe, pins, e.cloneDir)
+	rc, out, errText, err := e.call([]string{"hook", e.job.str("id")}, []byte(script), 120*time.Second)
+	if err != nil {
+		return err
+	}
+	if rc != 0 {
+		src := errText
+		if src == "" {
+			src = out
+		}
+		return fail(1, "remote pre-commit hook install on %s failed (exit %d): %s", e.name(), rc, tail(strings.Join(strings.Fields(src), " "), 300))
+	}
+	return nil
 }
 
 // remoteKeyCheckResult maps the exit of remoteKeyCheckCmd to the same

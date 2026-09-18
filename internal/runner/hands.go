@@ -392,6 +392,25 @@ func (h *hands) key(job, executor string) error {
 	return nil
 }
 
+func (h *hands) hook(job string) error {
+	clone, err := h.cloneDir(job)
+	if err != nil {
+		return err
+	}
+	data, err := io.ReadAll(h.stdin)
+	if err != nil {
+		return handsDie("%v", err)
+	}
+	hooks := clone + "/.git/hooks"
+	_ = os.MkdirAll(hooks, 0o755)
+	if err := os.WriteFile(hooks+"/pre-commit", data, 0o755); err != nil {
+		return handsDie("%v", err)
+	}
+	_ = os.Chmod(hooks+"/pre-commit", 0o755)
+	fmt.Fprintln(h.stdout, "hooked")
+	return nil
+}
+
 func (h *hands) brief(job string) error {
 	dir, err := h.jobDir(job)
 	if err != nil {
@@ -629,6 +648,11 @@ func (h *hands) handsMain(args []string) error {
 			return err
 		}
 		return h.key(rest[0], rest[1])
+	case "hook":
+		if err := need(1, "hook JOB"); err != nil {
+			return err
+		}
+		return h.hook(rest[0])
 	case "brief":
 		if err := need(1, "brief JOB"); err != nil {
 			return err

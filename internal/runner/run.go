@@ -427,6 +427,11 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			// Without one, point at the binary `pulse pair` stages so the brief's `$PULSE_CLI` fallback holds remotely.
 			env["PULSE_CLI"] = remotePulseCLI(recipe)
 		}
+		if vc := project.str("verify_cmd"); vc != "" {
+			if err := ex.installPreCommitHook(vc, recipe, pins); err != nil {
+				return err
+			}
+		}
 		var shown []string
 		for _, c := range cmd {
 			if c == briefText {
