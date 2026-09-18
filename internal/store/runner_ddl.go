@@ -72,6 +72,10 @@ var RunnerDDL = []string{
 	`CREATE INDEX IF NOT EXISTS posts_kind_expires ON posts (kind, expires)`,
 	`CREATE INDEX IF NOT EXISTS posts_kind_date ON posts (kind, date DESC)`,
 	`CREATE INDEX IF NOT EXISTS posts_project_kind ON posts (project, kind, date DESC)`,
+	// leadPeerMentions / MentionsFor: the "is there a newer answer in this thread" correlated subquery
+	// was scanning posts per candidate mention and showed up as the daemon's hot path (2026-09-18).
+	// rowid is omitted because SQLite does not allow it in an index column list.
+	`CREATE INDEX IF NOT EXISTS posts_thread_answers ON posts (project, area, thread, agent, date DESC)`,
 	`CREATE INDEX IF NOT EXISTS agents_status_active ON agents (status, last_active_at DESC)`,
 }
 
