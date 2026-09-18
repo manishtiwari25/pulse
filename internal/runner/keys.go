@@ -69,10 +69,18 @@ func provenanceHook(agent, jobID, executor string) string {
 // preCommitHookScript returns a shell script that runs the project's verify
 // command with the recipe environment and optional mise pins. It is installed
 // as .git/hooks/pre-commit so a worker cannot commit changes that fail verify.
+// preCommitHookUnset clears the git-provided hook environment before the verify command runs.
+const preCommitHookUnset = "unset GIT_INDEX_FILE GIT_PREFIX GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE"
+
 func preCommitHookScript(verifyCmd string, recipe *Recipe, pins []string, clone string) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("# pulse: verify-before-commit gate (auto-installed by runner)\n")
+	// git exports GIT_INDEX_FILE, GIT_PREFIX and the author/committer identity to hooks. Tests that
+	// spawn git inside the verify command would inherit them and fail ("N commit(s) but verify exit N"),
+	// so drop them before running verify.
+	b.WriteString(preCommitHookUnset)
+	b.WriteString("\n")
 	if exports := recipeEnvExports(recipe); exports != "" {
 		b.WriteString(strings.TrimSuffix(exports, "; "))
 		b.WriteString("\n")
