@@ -2,6 +2,7 @@ package runner
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/evolve"
@@ -234,6 +235,7 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 		return created, err
 	}
 	if len(created) == 0 {
+		var eligible []tally.Suggestion
 		for _, sg := range suggestions {
 			if sg.Status != "eligible" {
 				continue
@@ -250,6 +252,24 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			if tally.PlanGate(s, projectPath, sg, post) != "" || stuck[sg.Key] {
 				continue
 			}
+			eligible = append(eligible, sg)
+		}
+		// Partition by quality so product-facing suggestions are built before
+		// vague operating-layer churn, even if the churn has a slightly higher score.
+		var high, low []tally.Suggestion
+		for _, sg := range eligible {
+			pRow := postRow(s.DB, sg.ID)
+			if suggestionQualityScore(pRow.str("body")) >= 50 {
+				high = append(high, sg)
+			} else {
+				low = append(low, sg)
+			}
+		}
+		candidates := high
+		if len(candidates) == 0 {
+			candidates = low
+		}
+		for _, sg := range candidates {
 			pRow := postRow(s.DB, sg.ID)
 			brief := fmt.Sprintf("The agents voted this the top eligible suggestion (score %+d, %d voters). Thread %s.\n\n%s\n\n"+
 				"One variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:.",
@@ -436,3 +456,48 @@ func stuckThreads(s *store.Store, slug, now, actor string) map[string]bool {
 	}
 	return stuck
 }
+
+// suggestionQualityScore returns 0-100 for a suggestion body. High scores go to
+// cards that name a concrete file, variable, or user-facing signal; low scores
+// mark vague operating-layer churn ("add tests", "improve coverage", "format").
+// The planner only picks a low-scoring eligible suggestion when no higher-scoring
+// eligible suggestion exists, so product-facing work stays ahead of meta-work.
+func suggestionQualityScore(body string) int {
+	b := strings.ToLower(body)
+	score := 50
+
+	// Concrete signals raise the score.
+	if fileLikeRe.MatchString(b) {
+		score += 25
+	}
+	if symbolLikeRe.MatchString(b) {
+		score += 15
+	}
+	if strings.Contains(b, "signal:") || strings.Contains(b, "hypothesis:") || strings.Contains(b, "variable:") {
+		score += 10
+	}
+
+	// Vague operating-layer churn lowers the score.
+	churn := []string{"gofmt", "format code", "formatting", "whitespace", "trailing space", "lint only", "linting only",
+		"increase coverage", "more tests", "add tests", "test coverage", "operating layer", "runner harness", "ci pipeline"}
+	for _, c := range churn {
+		if strings.Contains(b, c) {
+			score -= 20
+		}
+	}
+
+	// A suggestion with no concrete anchor and only vague positive words is noise.
+	if score < 50 && !strings.Contains(b, ".") && !strings.Contains(b, "`") {
+		score -= 15
+	}
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
+}
+
+var fileLikeRe = regexp.MustCompile(`\b[a-zA-Z0-9_./-]+\.[a-zA-Z]{2,8}\b`)
+var symbolLikeRe = regexp.MustCompile(`[` + "`" + `'][a-zA-Z0-9_]+[` + "`" + `']|\b[a-zA-Z0-9_]+\(\)`)
