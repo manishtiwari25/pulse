@@ -110,7 +110,7 @@ func (e *localExec) prepare(ctx context.Context) (string, error) {
 	if b := e.branchToClone(); b != "" {
 		args = append(args, "-b", b)
 	}
-	out, err := runGroup(ctx, append(append([]string{"git"}, args...), e.root, e.cloneDir), "", environ(), nil, 300*time.Second)
+	out, err := runGroup(ctx, append(append([]string{"git"}, args...), e.root, e.cloneDir), "", gitEnv(nil), nil, 300*time.Second)
 	e.log.add("$ git %s\n%s%s", strings.Join(args, " "), out.Stdout, out.Stderr)
 	if err != nil {
 		return "", fail(1, "clone failed: %v", err)
@@ -212,7 +212,7 @@ func (e *localExec) verify(ctx context.Context, cmd string, minutes int) (*int, 
 }
 
 func (e *localExec) fetchSource() string { return e.cloneDir }
-func (e *localExec) fetchEnv() []string  { return environ() }
+func (e *localExec) fetchEnv() []string { return gitEnv(nil) }
 
 func (e *localExec) cleanup() {
 	_ = os.RemoveAll(e.cloneDir)
@@ -580,9 +580,8 @@ func (e *sshExec) fetchSource() string {
 }
 
 func (e *sshExec) fetchEnv() []string {
-	return envWith(environ(), map[string]string{
-		"GIT_SSH_COMMAND":     shellJoin(append([]string{"ssh"}, sshOptions...)),
-		"GIT_TERMINAL_PROMPT": "0",
+	return envWith(gitEnv(nil), map[string]string{
+		"GIT_SSH_COMMAND": shellJoin(append([]string{"ssh"}, sshOptions...)),
 	})
 }
 

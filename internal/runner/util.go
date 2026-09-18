@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -196,7 +197,22 @@ func gitTimeoutEnv(repo string, timeout time.Duration, env []string, args ...str
 // probe the timeout kills on a loaded disk cannot leave a lock that holds every later landing and
 // self-update ("Unable to create index.lock: File exists"). Writes lock as before.
 func gitEnv(extra []string) []string {
-	return append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"), extra...)
+	// Isolate PULSE's git from the host's git configuration and macOS Xcode license
+	// prompts. The host may have 1Password SSH signing, GPG signing, or a global
+	// config that conflicts with PULSE's per-clone identity setup. PULSE sets every
+	// git option it needs explicitly (user.name/email, commit.gpgsign, etc.).
+	base := []string{
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_OPTIONAL_LOCKS=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+	}
+	if runtime.GOOS == "darwin" {
+		// Use the command-line tools git instead of /usr/bin/git, which prompts for
+		// the Xcode license on a fresh macOS install or after updates.
+		base = append(base, "DEVELOPER_DIR=/Library/Developer/CommandLineTools")
+	}
+	return append(append(os.Environ(), base...), extra...)
 }
 
 func git(repo string, args ...string) gitResult {
