@@ -78,7 +78,8 @@ var RunnerDDL = []string{
 	`CREATE INDEX IF NOT EXISTS posts_thread_answers ON posts (project, area, thread, agent, date DESC)`,
 	// plan.go projectPosts loads all posts for a project ordered by date/rowid; tally.PostsFor orders by
 	// area/thread/id. Both were full table scans and became the next hot path after the mentions fix.
-	`CREATE INDEX IF NOT EXISTS posts_project_date ON posts (project, date, rowid)`,
+	// rowid cannot be listed explicitly in an index column list.
+	`CREATE INDEX IF NOT EXISTS posts_project_date ON posts (project, date)`,
 	`CREATE INDEX IF NOT EXISTS posts_project_area_thread_id ON posts (project, area, thread, id)`,
 	`CREATE INDEX IF NOT EXISTS agents_status_active ON agents (status, last_active_at DESC)`,
 }

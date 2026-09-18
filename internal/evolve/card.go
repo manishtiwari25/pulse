@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/manishtiwari25/pulse/internal/store"
 	"github.com/manishtiwari25/pulse/internal/tally"
@@ -23,10 +24,24 @@ import (
 var instructionPattern = regexp.MustCompile(`(?i)\b(ignore|bypass|override|skip|disable)\s+(?:(?:the|all|any|every|these|those|this|that|your|our|my|its|their|previous|prior|earlier|above|existing|current|remaining|other|further|usual|normal|safety|verification|human|owner|maintainer|pulse|constitutional|[a-z]+'s)\s+){0,3}(instructions?|checks?|constitution|stop(?:\s+rules?)?|safety|policy|policies|guards?|guardrails?|sandbox)\b|\b(merge|push|deploy|publish|reset)\s+(now|immediately|without)\b|\b(maintainer|owner|human)\s+(has\s+)?(approved|authorized)\b`)
 var negatedInstruction = regexp.MustCompile(`(?i)^(do not|don't|never|must not|cannot|won't|refuse|not authorized)\b`)
 
+// instructionCache memoizes InstructionShaped results. Posts are immutable, so
+// the answer never changes; this saves re-running the expensive regexp on every
+// daemon loop (71k+ posts).
+var instructionCache sync.Map
+
 // InstructionShaped is a conservative tripwire, not a prompt-injection
 // classifier. Direct bypass/approval/publication commands on an open thread
 // stop the loop. Negated warnings do not exempt a later instruction clause.
 func InstructionShaped(text string) bool {
+	if v, ok := instructionCache.Load(text); ok {
+		return v.(bool)
+	}
+	out := instructionShapedSlow(text)
+	instructionCache.Store(text, out)
+	return out
+}
+
+func instructionShapedSlow(text string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "-*>"))
 		for _, match := range instructionPattern.FindAllStringIndex(line, -1) {
