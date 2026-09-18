@@ -634,6 +634,12 @@ func pyRepr(s string) string { return "'" + s + "'" }
 // Compute runs the tally for a project (area "" = every area). th is the
 // override passed to LoadThresholds; th.Now, else the store clock, is "now".
 func Compute(s *store.Store, project, area string, th Thresholds) (*Result, error) {
+	return cachedCompute(s, project, area, th, func() (*Result, error) {
+		return computeUncached(s, project, area, th)
+	})
+}
+
+func computeUncached(s *store.Store, project, area string, th Thresholds) (*Result, error) {
 	repo, err := projectRepo(s, project)
 	if err != nil {
 		return nil, err

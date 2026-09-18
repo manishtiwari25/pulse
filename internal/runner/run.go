@@ -427,9 +427,14 @@ func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error) 
 			// Without one, point at the binary `pulse pair` stages so the brief's `$PULSE_CLI` fallback holds remotely.
 			env["PULSE_CLI"] = remotePulseCLI(recipe)
 		}
-		if vc := project.str("verify_cmd"); vc != "" {
-			if err := ex.installPreCommitHook(vc, recipe, pins); err != nil {
-				return err
+		// Install a verify-before-commit hook for the default agent path. Custom
+		// worker commands (tests and explicit overrides) often gate or inspect the
+		// post-worker verify step, so they keep the post-commit verify contract.
+		if !customWorker {
+			if vc := project.str("verify_cmd"); vc != "" {
+				if err := ex.installPreCommitHook(vc, recipe, pins); err != nil {
+					return err
+				}
 			}
 		}
 		var shown []string
