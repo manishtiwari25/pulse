@@ -75,9 +75,8 @@ func TestComputeCacheExpiresAfterTTL(t *testing.T) {
 
 	// Force the cached entry past its TTL without changing the store.
 	key := cacheKeyFor(f.st, "fixture", "", th)
-	if v, ok := tallyCache.Load(key); ok {
-		cv := v.(*cacheValue)
-		tallyCache.Store(key, &cacheValue{result: cv.result, version: cv.version, at: time.Now().Add(-2 * cacheTTL)})
+	if cv, ok := tallyCache.get(key); ok {
+		tallyCache.put(key, &cacheValue{result: cv.result, version: cv.version, at: time.Now().Add(-2 * cacheTTL)})
 	}
 
 	r2, err := Compute(f.st, "fixture", "", th)

@@ -1,6 +1,7 @@
 package tally
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -14,9 +15,10 @@ import (
 // tallyCache memoizes Compute results so the daemon does not re-parse every
 // post in a project on every loop. Posts are immutable, so the cache key
 // includes a cheap version derived from post/job counts and statuses.
-var tallyCache sync.Map // map[cacheKey]*cacheValue
-
+// The cache is bounded so a long-running daemon does not retain unbounded
+// results as thresholds and projects drift.
 const cacheTTL = 10 * time.Second
+const cacheMaxEntries = 32
 
 type cacheKey struct {
 	storePtr uintptr
@@ -29,6 +31,57 @@ type cacheValue struct {
 	result  *Result
 	version string
 	at      time.Time
+}
+
+type lruCache struct {
+	mu       sync.Mutex
+	entries  map[cacheKey]*list.Element
+	order    list.List // front = most recently used
+	max      int
+}
+
+type lruEntry struct {
+	key   cacheKey
+	value *cacheValue
+}
+
+var tallyCache = &lruCache{entries: map[cacheKey]*list.Element{}, max: cacheMaxEntries}
+
+func (c *lruCache) get(key cacheKey) (*cacheValue, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.entries[key]; ok {
+		cv := el.Value.(*lruEntry).value
+		if time.Since(cv.at) < cacheTTL {
+			c.order.MoveToFront(el)
+			return cv, true
+		}
+		c.removeElement(el)
+	}
+	return nil, false
+}
+
+func (c *lruCache) put(key cacheKey, value *cacheValue) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.entries[key]; ok {
+		c.order.MoveToFront(el)
+		el.Value.(*lruEntry).value = value
+		return
+	}
+	for len(c.entries) >= c.max && c.order.Len() > 0 {
+		c.removeElement(c.order.Back())
+	}
+	el := c.order.PushFront(&lruEntry{key: key, value: value})
+	c.entries[key] = el
+}
+
+func (c *lruCache) removeElement(el *list.Element) {
+	if el == nil {
+		return
+	}
+	c.order.Remove(el)
+	delete(c.entries, el.Value.(*lruEntry).key)
 }
 
 func cacheKeyFor(s *store.Store, project, area string, th Thresholds) cacheKey {
@@ -144,9 +197,8 @@ func cachedCompute(s *store.Store, project, area string, th Thresholds, compute 
 		return nil, err
 	}
 
-	if v, ok := tallyCache.Load(key); ok {
-		cv := v.(*cacheValue)
-		if cv.version == version && time.Since(cv.at) < cacheTTL {
+	if cv, ok := tallyCache.get(key); ok {
+		if cv.version == version {
 			return cv.result, nil
 		}
 	}
@@ -155,6 +207,6 @@ func cachedCompute(s *store.Store, project, area string, th Thresholds, compute 
 	if err != nil {
 		return nil, err
 	}
-	tallyCache.Store(key, &cacheValue{result: res, version: version, at: time.Now()})
+	tallyCache.put(key, &cacheValue{result: res, version: version, at: time.Now()})
 	return res, nil
 }

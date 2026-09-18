@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -188,6 +189,20 @@ func daemon(ctx context.Context, s *store.Store, o daemonOpts) string {
 	if o.DryRun {
 		dry = ", dry run"
 	}
+	// Return idle heap memory to the OS every few minutes so the daemon's RSS
+	// stays close to its live heap instead of growing with peak allocations.
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-loopCtx.Done():
+				return
+			case <-ticker.C:
+				debug.FreeOSMemory()
+			}
+		}
+	}()
 	say("daemon started %s (interval %ds%s, pid %d)", s.Now(), interval, dry, os.Getpid())
 	if lost > 0 {
 		say("closed %d run(s) a previous runner left in progress as lost", lost)
