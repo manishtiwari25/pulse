@@ -905,3 +905,35 @@ func TestHandsRunWorkerWhitelistAllowsNativeHarness(t *testing.T) {
 		}
 	}
 }
+
+// TestHandsKeyUnwritableRunKeyNoSigningkey guards the 608ae87 ordering: `key` must persist run.key
+// before it touches git config, so a failed write leaves the clone without a dangling
+// user.signingkey pointing at a file that does not exist.
+func TestHandsKeyUnwritableRunKeyNoSigningkey(t *testing.T) {
+	workdir := t.TempDir()
+	clone := filepath.Join(workdir, "JOB-1", "clone")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(t, clone, "git", "init", "-q")
+	run(t, clone, "git", "config", "user.name", "aurora")
+	// a directory where run.key must be written makes os.WriteFile fail on every platform
+	if err := os.MkdirAll(filepath.Join(workdir, "JOB-1", "run.key"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := newTestHands(t, workdir, nil, nil)
+	h.stdin = strings.NewReader("-----BEGIN OPENSSH PRIVATE KEY-----\nx\n-----END OPENSSH PRIVATE KEY-----\n")
+	err := h.key("JOB-1", "hands")
+	if err == nil || !strings.HasPrefix(err.Error(), "pulse-hands: ") {
+		t.Fatalf("key with unwritable run.key: err=%v", err)
+	}
+	if got := strings.TrimSpace(git(clone, "config", "--local", "user.signingkey").Stdout); got != "" {
+		t.Fatalf("user.signingkey was set before run.key existed: %q", got)
+	}
+	if got := strings.TrimSpace(git(clone, "config", "--local", "commit.gpgsign").Stdout); got != "" {
+		t.Fatalf("commit.gpgsign was set before run.key existed: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(clone, ".git", "hooks", "prepare-commit-msg")); err == nil {
+		t.Fatal("provenance hook was installed before run.key existed")
+	}
+}
