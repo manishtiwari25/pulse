@@ -891,6 +891,18 @@
     },
     {
       "choices": null,
+      "default": "10",
+      "description": "maximum number of below-quorum cards a single ballot job asks a worker to vote on; closest-to-quorum cards are listed first",
+      "kind": "count",
+      "min": 1,
+      "name": "lead.ballot_cap",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "10"
+    },
+    {
+      "choices": null,
       "default": "1",
       "description": "hours a card may wait below the vote quorum before the planner seeds a ballot job, at most one per project per that many hours, and only when nothing else is queued",
       "kind": "count",

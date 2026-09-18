@@ -856,7 +856,7 @@ func TestLeadIdleSettings(t *testing.T) {
 	}
 	names := ExtraSettingNames()
 	leadStart := len(names) - len(OwnerSettings) - len(LeadSettings)
-	if names[leadStart] != "lead.ballot_hours" || names[leadStart+1] != "lead.idle_hours" || names[leadStart+2] != "lead.idle_max_jobs" {
+	if names[leadStart] != "lead.ballot_cap" || names[leadStart+1] != "lead.ballot_hours" || names[leadStart+2] != "lead.idle_hours" {
 		t.Fatalf("ExtraSettingNames lead segment = %v", names[leadStart:])
 	}
 	// ADR-045: the research and ballot cadence settings default on, with the floors their planner code assumes.

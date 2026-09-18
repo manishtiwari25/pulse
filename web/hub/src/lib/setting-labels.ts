@@ -29,6 +29,7 @@ const LABELS: Record<string, string> = {
   "lead.research_minutes": "Quiet minutes before a research job",
   "lead.research_per_day": "Research jobs per project per day",
   "lead.ballot_hours": "Hours a card waits before a ballot",
+  "lead.ballot_cap": "Cards per ballot job",
   "owner.presence": "Presence",
   "records.auto_adopt": "Adopt record drafts while away",
   "compute.provider": "Cloud provider",

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -171,6 +172,60 @@ func TestBallotDueReadsLeadBallotHours(t *testing.T) {
 	}
 	if part := ballotIdlePart(s, "proj", testNow, suggestionRecords(s, "proj", testNow)); part != "" {
 		t.Fatalf("ballot idle part with no ballot yet = %q", part)
+	}
+}
+
+func TestBallotDueCapsAndSortsByClosenessToQuorum(t *testing.T) {
+	s := newStore(t)
+	newRepo(t, s)
+	join(t, s, "aurora")
+	join(t, s, "boris")
+	join(t, s, "cora")
+	suppressPlannerReflect(t, s)
+	setSetting(t, s, "lead.ballot_cap", "2")
+	setSetting(t, s, "quorum", "3")
+
+	// Three below-quorum cards: one vote each, all older than ballot_hours.
+	old := plusMinutes(testNow, -90)
+	ids := []string{}
+	for i := 0; i < 3; i++ {
+		card, err := createPost(s, plusMinutes(old, float64(i)), postOpts{Kind: "suggestion", Project: "proj", Area: "docs",
+			Thread: fmt.Sprintf("card%d", i), Summary: fmt.Sprintf("Card %d", i), Body: "Signal: README.md", Agent: actorAgent(s, "aurora")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, card.str("id"))
+		if _, err := createPost(s, plusMinutes(old, float64(i)), postOpts{Kind: "vote", Project: "proj", Area: "docs",
+			Thread: card.str("thread"), Summary: "up", Body: "yes", Agent: actorAgent(s, "boris"), On: card.str("id"), Vote: "up"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Give the middle card a second vote so it is closest to quorum.
+	if _, err := createPost(s, plusMinutes(old, 1), postOpts{Kind: "vote", Project: "proj", Area: "docs",
+		Thread: "card1", Summary: "up", Body: "yes", Agent: actorAgent(s, "cora"), On: ids[1], Vote: "up"}); err != nil {
+		t.Fatal(err)
+	}
+
+	jobs, err := planJobs(s, "proj", testNow, "daemon")
+	if err != nil || len(jobs) != 1 || jobs[0].str("kind") != "ballot" {
+		t.Fatalf("ballot job: %v (%v)", jobs, err)
+	}
+	brief := jobs[0].str("brief")
+	if strings.Count(brief, "`") < 4 {
+		t.Fatalf("expected 2 cards in brief, got:\n%s", brief)
+	}
+	// Closest-to-quorum card should appear first; cap should exclude the third card.
+	idx1 := strings.Index(brief, ids[1])
+	idx0 := strings.Index(brief, ids[0])
+	idx2 := strings.Index(brief, ids[2])
+	if idx1 < 0 || idx0 < 0 {
+		t.Fatalf("expected card ids missing from brief:\n%s", brief)
+	}
+	if idx1 > idx0 {
+		t.Fatalf("closest card not listed first:\n%s", brief)
+	}
+	if idx2 >= 0 {
+		t.Fatalf("cap exceeded: card2 should not be in brief:\n%s", brief)
 	}
 }
 

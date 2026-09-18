@@ -3,6 +3,7 @@ package runner
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/evolve"
@@ -120,7 +121,16 @@ func openQuestions(s *store.Store, slug, now string) []row {
 	return out
 }
 
+// ballotCap is lead.ballot_cap: the maximum number of cards a single ballot job asks a worker to vote on.
+func ballotCap(s *store.Store) int {
+	if c := settingInt(s, "lead.ballot_cap"); c >= 1 {
+		return c
+	}
+	return 10
+}
+
 // ballotDue is ballot_due(): below-quorum cards older than lead.ballot_hours, unless a ballot job was planned since.
+// Cards closest to quorum are listed first so a single vote can push them to a decision.
 func ballotDue(s *store.Store, slug, now string, suggestions []tally.Suggestion) []tally.Suggestion {
 	since := plusHours(now, -float64(ballotHours(s)))
 	prefix := "ballot:" + slug + ":"
@@ -134,6 +144,19 @@ func ballotDue(s *store.Store, slug, now string, suggestions []tally.Suggestion)
 		if sg.Status == "needs votes" && sg.Date <= since {
 			out = append(out, sg)
 		}
+	}
+	// Sort by distance to quorum (closest first), then oldest first.
+	sort.SliceStable(out, func(i, j int) bool {
+		di := settingInt(s, "quorum") - out[i].Voters
+		dj := settingInt(s, "quorum") - out[j].Voters
+		if di != dj {
+			return di < dj
+		}
+		return out[i].Date < out[j].Date
+	})
+	cap := ballotCap(s)
+	if len(out) > cap {
+		out = out[:cap]
 	}
 	return out
 }

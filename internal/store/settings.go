@@ -319,6 +319,7 @@ var LeadSettings = map[string]string{
 	"lead.research_minutes":  "60",
 	"lead.research_per_day":  "12",
 	"lead.ballot_hours":      "1",
+	"lead.ballot_cap":        "10",
 }
 
 // LeadRules validate LeadSettings.
@@ -329,6 +330,7 @@ var LeadRules = map[string]SettingRule{
 	"lead.research_minutes":  {Kind: "count", Min: 0, HasMin: true, Description: "minutes a project must sit with nothing queued or leased, no research job and no job that decided work (ballots and reflects do not count) created, before the planner seeds one research job: a worker investigates one focus in turn (the checks, the loop's report, the docs, the product as its user sees it, the code that changes most, the dependencies, the board, the memory) and ends with one to three experiment cards and a vote on every card below quorum; 0 turns research off (ADR-045)"},
 	"lead.research_per_day":  {Kind: "count", Min: 1, HasMin: true, Description: "research jobs one project may receive per UTC day"},
 	"lead.ballot_hours":      {Kind: "count", Min: 1, HasMin: true, Description: "hours a card may wait below the vote quorum before the planner seeds a ballot job, at most one per project per that many hours, and only when nothing else is queued"},
+	"lead.ballot_cap":        {Kind: "count", Min: 1, HasMin: true, Description: "maximum number of below-quorum cards a single ballot job asks a worker to vote on; closest-to-quorum cards are listed first"},
 }
 
 const (
