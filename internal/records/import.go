@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -336,6 +337,7 @@ func gitCatBlobs(repo string, oids map[string]string) (map[string]string, error)
 		input.WriteString(oid + "\n")
 	}
 	cmd := exec.Command("git", "-C", repo, "cat-file", "--batch")
+	cmd.Env = gitRepoEnv()
 	cmd.Stdin = strings.NewReader(input.String())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -371,8 +373,26 @@ func gitCatBlobs(repo string, oids map[string]string) (map[string]string, error)
 	return blobs, nil
 }
 
+// gitRepoEnv returns the process environment without the repository
+// selection variables git hooks export (GIT_DIR, GIT_WORK_TREE,
+// GIT_INDEX_FILE, GIT_PREFIX), so `git -C repo` reads the repository at
+// repo instead of the one hosting the hook.
+func gitRepoEnv() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		switch key {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX":
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
+}
+
 func gitRead(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd.Env = gitRepoEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()

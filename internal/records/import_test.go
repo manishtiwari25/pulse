@@ -57,7 +57,9 @@ func sourceRepo(t *testing.T) string {
 func gitFixture(t *testing.T, repo string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull,
+	// gitRepoEnv drops the GIT_DIR/GIT_INDEX_FILE a pre-commit hook exports so
+	// the fixture is created at repo, not in the repository running the hook.
+	cmd.Env = append(gitRepoEnv(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull,
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
