@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 )
 
 // commandWords is intentionally not a shell: quotes and escapes are accepted,
@@ -109,18 +111,6 @@ func isolatedEnv(home string) []string {
 		"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 }
 
-func gitEnv() []string {
-	env := []string{}
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		if !strings.HasPrefix(key, "GIT_") {
-			env = append(env, entry)
-		}
-	}
-	return append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull,
-		"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
-}
-
 type boundedOutput struct {
 	buf      bytes.Buffer
 	limit    int
@@ -171,7 +161,7 @@ func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 func gitRaw(ctx context.Context, repo string, args ...string) (string, error) {
 	out := &boundedOutput{limit: 8 << 20}
 	argv := append([]string{"git", "-c", "core.hooksPath=" + os.DevNull}, args...)
-	err := runProcess(ctx, repo, gitEnv(), argv, out)
+	err := runProcess(ctx, repo, gitenv.Env(), argv, out)
 	if out.overflow {
 		return "", errors.New("git output exceeds the diagnostic limit")
 	}
