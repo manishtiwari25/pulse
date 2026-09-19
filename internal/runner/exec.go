@@ -220,7 +220,7 @@ func (e *localExec) verify(ctx context.Context, cmd string, minutes int) (*int, 
 }
 
 func (e *localExec) fetchSource() string { return e.cloneDir }
-func (e *localExec) fetchEnv() []string { return gitEnv(nil) }
+func (e *localExec) fetchEnv() []string  { return gitEnv(nil) }
 
 func (e *localExec) cleanup() {
 	_ = os.RemoveAll(e.cloneDir)
