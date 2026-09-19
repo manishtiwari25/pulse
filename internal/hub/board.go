@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,6 +107,9 @@ func gitValue(repo string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
+	// Drop hook-exported GIT_INDEX_FILE/GIT_DIR/GIT_WORK_TREE/GIT_PREFIX so "git -C repo" reads repo,
+	// not the clone whose pre-commit hook is running this process.
+	command.Env = gitenv.Env()
 	out, err := command.Output()
 	if err != nil {
 		// An unborn checkout has no branch/head; a missing remote is normal.
