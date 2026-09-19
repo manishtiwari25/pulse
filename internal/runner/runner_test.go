@@ -671,6 +671,13 @@ func TestDaemonStopsGracefullyOnCancel(t *testing.T) {
 // as cmdHands does (die -> stderr + exit 2, worker exit codes passed through), so the round trip needs no build
 // of ./cmd/pulse (whose other packages may be mid-edit).
 func TestMain(m *testing.M) {
+	// The pre-commit hook runs this suite from inside `git commit`, where git exports GIT_INDEX_FILE and
+	// friends; tests that drive git in temp repositories must not inherit the committing repo's index.
+	for _, e := range os.Environ() {
+		if k, _, _ := strings.Cut(e, "="); strings.HasPrefix(k, "GIT_") && k != "GIT_SSH_COMMAND" {
+			os.Unsetenv(k)
+		}
+	}
 	// No test may reach the real runner command through the daemon's sealed held-out call.
 	sealedCall = func(context.Context, *store.Store, string) (string, error) {
 		return "", errors.New("the sealed call is stubbed in tests")
