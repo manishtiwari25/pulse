@@ -19,6 +19,15 @@ func TestPreCommitHookScriptRunsVerifyWithRecipeEnv(t *testing.T) {
 	if !strings.HasPrefix(script, "#!/bin/sh\n") {
 		t.Fatalf("not a shell script:\n%s", script)
 	}
+	unsetAt, verifyAt := strings.Index(script, preCommitHookUnset), strings.Index(script, "make test")
+	if unsetAt < 0 || unsetAt > verifyAt {
+		t.Fatalf("hook env unset missing or after verify:\n%s", script)
+	}
+	for _, v := range []string{"GIT_INDEX_FILE", "GIT_PREFIX", "GIT_AUTHOR_NAME", "GIT_COMMITTER_DATE"} {
+		if !strings.Contains(preCommitHookUnset, v) {
+			t.Fatalf("hook unset does not drop %s", v)
+		}
+	}
 }
 
 func TestPreCommitHookScriptWrapsMisePins(t *testing.T) {
