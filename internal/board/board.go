@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -238,6 +239,7 @@ func BlockHash(lines []string) string {
 // git runs git in repo and returns stdout (trimmed) and whether it succeeded.
 func git(repo string, args ...string) (string, bool) {
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd.Env = gitChildEnv()
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err == nil
 }
@@ -325,4 +327,24 @@ func (w *writer) rollback() {
 	if w.tx != nil {
 		_ = w.tx.Rollback()
 	}
+}
+
+// gitChildEnv is the environment board git commands run with: the caller's environment minus the
+// repository-location variables git hooks export (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_PREFIX).
+// Inherited from a pre-commit hook or a test run under such a hook, they would redirect "git -C repo"
+// at the hosting clone instead of repo.
+func gitChildEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "GIT_DIR="),
+			strings.HasPrefix(kv, "GIT_WORK_TREE="),
+			strings.HasPrefix(kv, "GIT_INDEX_FILE="),
+			strings.HasPrefix(kv, "GIT_PREFIX="):
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
