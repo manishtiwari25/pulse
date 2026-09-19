@@ -82,7 +82,7 @@ func (g *lifecycleGate) release(t *testing.T) {
 	}
 }
 
-func assertLifecycleSuggestion(t *testing.T, s *store.Store, id, now, status string, listed bool) {
+func assertLifecycleSuggestion(t *testing.T, s *store.Store, id, now, status string, onBallotWant, inQueueWant bool) {
 	t.Helper()
 	th := tally.Thresholds{Now: now}
 	res, err := tally.Compute(s, "proj", "", th)
@@ -117,8 +117,8 @@ func assertLifecycleSuggestion(t *testing.T, s *store.Store, id, now, status str
 			inQueue = true
 		}
 	}
-	if onBallot != listed || inQueue != listed {
-		t.Fatalf("suggestion on ballot=%v in queue=%v, want both %v", onBallot, inQueue, listed)
+	if onBallot != onBallotWant || inQueue != inQueueWant {
+		t.Fatalf("suggestion on ballot=%v in queue=%v, want %v/%v", onBallot, inQueue, onBallotWant, inQueueWant)
 	}
 }
 
@@ -169,7 +169,7 @@ func TestWorkerLifecycleDelayedSuggestion(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			assertLifecycleSuggestion(t, s, suggestion.str("id"), testNow, "eligible", true)
+			assertLifecycleSuggestion(t, s, suggestion.str("id"), testNow, "eligible", false, true)
 			planned, err := planJobs(s, "proj", testNow, "daemon")
 			if err != nil || len(planned) != 1 {
 				t.Fatalf("plan: %v, %v", planned, err)
@@ -368,7 +368,7 @@ func TestWorkerLifecycleDelayedSuggestion(t *testing.T) {
 				if current := jobRow(s.DB, job.str("id")); !reflect.DeepEqual(current, replacement) {
 					t.Fatalf("old run overwrote replacement lease: %v", current)
 				}
-				assertLifecycleSuggestion(t, s, suggestion.str("id"), replacementAt, "eligible", true)
+				assertLifecycleSuggestion(t, s, suggestion.str("id"), replacementAt, "eligible", false, true)
 				workerGate.release(t)
 				verifyGate.release(t)
 				successful, err = runJob(s, replacement, "quiet", replacementAt, runOpts{WorkerCmd: worker, Ctx: ctx})
@@ -416,7 +416,7 @@ func TestWorkerLifecycleDelayedSuggestion(t *testing.T) {
 			if renewLease(s.DB, now.Format(time.RFC3339Nano), job.str("id"), "quiet", finished.int("generation"), 5) {
 				t.Fatal("completed job reacquired a lease")
 			}
-			assertLifecycleSuggestion(t, s, suggestion.str("id"), now.Format(time.RFC3339Nano), "built", false)
+			assertLifecycleSuggestion(t, s, suggestion.str("id"), now.Format(time.RFC3339Nano), "built", false, false)
 			for i := 0; i < 2; i++ {
 				if _, err := planJobs(s, "proj", now.Format(time.RFC3339Nano), "daemon"); err != nil {
 					t.Fatal(err)

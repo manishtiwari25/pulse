@@ -298,10 +298,10 @@ func (h *Handler) summary(view projectView) map[string]any {
 			proposals = append(proposals, pick(row, "id thread_key agent name session date status summary proposal_text rel_path"))
 		}
 	}
-	return object("slug kind brain base path remote name branch head dirty built_at board_present claims_active threads_open questions_open suggestions_eligible suggestions_plannable suggestions_needing_votes amendments_open proposals_awaiting posts posts_24h tally_mode can_decide agents identities evolution_present loop stop_present baseline last_post active_claims proposals present missing error",
+	return object("slug kind brain base path remote name branch head dirty built_at board_present claims_active threads_open questions_open suggestions_eligible suggestions_plannable suggestions_needing_votes suggestions_rejected amendments_open proposals_awaiting posts posts_24h tally_mode can_decide agents identities evolution_present loop stop_present baseline last_post active_claims proposals present missing error",
 		p.Slug, kind, p.Brain, baseFor(p.Slug), p.Path, p.Remote, d.Meta["repo_name"], d.Meta["branch"], d.Meta["head"],
 		d.Meta["dirty"] == "1", d.Meta["built_at"], d.Meta["board_present"] == "1", overview["claims_active"], overview["threads_open"], questionsOpen,
-		overview["suggestions_eligible"], overview["suggestions_plannable"], overview["suggestions_needing_votes"], overview["amendments_open"], overview["proposals_awaiting"], len(d.Posts), posts24,
+		overview["suggestions_eligible"], overview["suggestions_plannable"], overview["suggestions_needing_votes"], overview["suggestions_rejected"], overview["amendments_open"], overview["proposals_awaiting"], len(d.Posts), posts24,
 		"go", true, len(identities), sortedKeys(identities), evo["evolution_present"] == "1", evo["loop"], evo["stop_present"] == "1",
 		evo["baseline"], last, claims, proposals, true, false, view.Error)
 }
@@ -337,9 +337,9 @@ func (h *Handler) org(views []projectView) map[string]any {
 		if p["kind"] == "project" {
 			presentCount++
 			ballot = append(ballot, object("slug base name brain suggestions amendments proposals", p["slug"], p["base"], p["name"], p["brain"],
-				num(p["suggestions_eligible"])+num(p["suggestions_needing_votes"]), p["amendments_open"], p["proposals_awaiting"]))
+				num(p["suggestions_needing_votes"]), p["amendments_open"], p["proposals_awaiting"]))
 		}
-		votesOpen += num(p["suggestions_eligible"]) + num(p["suggestions_needing_votes"]) + num(p["amendments_open"])
+		votesOpen += num(p["suggestions_needing_votes"]) + num(p["amendments_open"])
 		votesPlannable += num(p["suggestions_plannable"])
 		posts24 += num(p["posts_24h"])
 		posts += num(p["posts"])
@@ -410,7 +410,7 @@ func orgVotes(views []projectView) map[string]any {
 			continue
 		}
 		for _, s := range view.Data.Suggestions {
-			if s["status"] == "eligible" || s["status"] == "needs votes" {
+			if s["status"] == "needs votes" {
 				row := clone(s)
 				row["slug"], row["base"] = view.Project.Slug, baseFor(view.Project.Slug)
 				row["quorum"], row["expiry_days"] = view.Data.Params["quorum"], view.Data.Params["expiry_days"]
@@ -428,10 +428,10 @@ func orgVotes(views []projectView) map[string]any {
 	order(suggestions, "date", "slug")
 	sort.SliceStable(suggestions, func(i, j int) bool {
 		a, b := suggestions[i], suggestions[j]
-		if a["status"] != b["status"] {
-			return a["status"] == "eligible"
+		if num(a["voters"]) != num(b["voters"]) {
+			return num(a["voters"]) > num(b["voters"])
 		}
-		return num(a["score"]) > num(b["score"])
+		return str(a["date"]) < str(b["date"])
 	})
 	order(amendments, "date", "slug")
 	sort.SliceStable(amendments, func(i, j int) bool {

@@ -342,9 +342,8 @@ func TestFixtureStatuses(t *testing.T) {
 		}
 		kinds = append(kinds, it.Kind+":"+id)
 	}
-	// runner-1 voted on the amendment already; the two open suggestions remain,
-	// ordered by (-score, date, id) like the queue
-	want := []string{"suggestion:" + f.ids["eligible"], "suggestion:" + f.ids["needs_votes"], "amendment:" + f.ids["blocked"]}
+	// runner-1 voted on the amendment already; eligible suggestions are decided and stay off the ballot.
+	want := []string{"suggestion:" + f.ids["needs_votes"], "amendment:" + f.ids["blocked"]}
 	if strings.Join(kinds, ",") != strings.Join(want, ",") {
 		t.Errorf("ballot for runner-1: %v", kinds)
 	}

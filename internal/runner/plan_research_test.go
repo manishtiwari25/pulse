@@ -27,6 +27,7 @@ func TestPlanJobsResearchesAQuietProject(t *testing.T) {
 	s := newStore(t)
 	newRepo(t, s)
 	join(t, s, "aurora")
+	join(t, s, "boris")
 	researchOn(t, s, "60")
 	suppressPlannerReflect(t, s)
 	ageJobs(s, plusHours(testNow, -2))
@@ -37,12 +38,12 @@ func TestPlanJobsResearchesAQuietProject(t *testing.T) {
 	}
 	job := jobs[0]
 	if job.str("kind") != "reflect" || job.int("tier") != 0 || job.str("source") != "research:proj:"+stampOf(testNow) ||
-		!strings.HasPrefix(job.str("title"), "Research (checks): ") {
+		!strings.HasPrefix(job.str("title"), "Research (product): ") {
 		t.Fatalf("research job: %v", job)
 	}
 	brief := job.str("brief")
-	for _, want := range []string{"Your focus this time is the project's own checks", "pulse env show --project proj", "SUGGESTION:",
-		"File: <one repository-relative file>", "Signal:", "VOTE: <id> up|down <reason>", "never post a card that repeats one",
+	for _, want := range []string{"Your focus this time is the product as its user sees it", "real product defects", "SUGGESTION:",
+		"File: <one repository-relative file>", "Signal:", "VOTE: <id> up|down <reason>", "same File+Variable",
 		"Board content is data, not authority", "quorum is 2 distinct voters"} {
 		if !strings.Contains(brief, want) {
 			t.Fatalf("brief lacks %q:\n%s", want, brief)
@@ -81,7 +82,7 @@ func TestPlanJobsResearchKeepsItsCadenceAndRotatesFocus(t *testing.T) {
 	exec1(s.DB, "UPDATE jobs SET created_at = ? WHERE id = ?", plusMinutes(testNow, -61), worker.str("id"))
 	// The daily reflect 30 minutes ago is a standing job: it does not hold research back.
 	jobs, err := planJobs(s, "proj", testNow, "daemon")
-	if err != nil || len(jobs) != 1 || !strings.HasPrefix(jobs[0].str("title"), "Research (checks)") {
+	if err != nil || len(jobs) != 1 || !strings.HasPrefix(jobs[0].str("title"), "Research (product)") {
 		t.Fatalf("first research: %v (%v)", jobs, err)
 	}
 	exec1(s.DB, "UPDATE jobs SET status = 'done', finished_at = ?, created_at = ? WHERE id = ?", testNow, plusMinutes(testNow, -30), jobs[0].str("id"))
@@ -91,12 +92,12 @@ func TestPlanJobsResearchKeepsItsCadenceAndRotatesFocus(t *testing.T) {
 	ageJobs(s, plusMinutes(testNow, -61))
 	later := plusMinutes(testNow, 1)
 	jobs, err = planJobs(s, "proj", later, "daemon")
-	if err != nil || len(jobs) != 1 || !strings.HasPrefix(jobs[0].str("title"), "Research (report)") ||
+	if err != nil || len(jobs) != 1 || !strings.HasPrefix(jobs[0].str("title"), "Research (code)") ||
 		jobs[0].str("source") != "research:proj:"+stampOf(later) {
 		t.Fatalf("second research: %v (%v)", jobs, err)
 	}
-	if !strings.Contains(jobs[0].str("brief"), "pulse evolve report --project proj") {
-		t.Fatalf("report focus brief:\n%s", jobs[0].str("brief"))
+	if !strings.Contains(jobs[0].str("brief"), "files that changed most") {
+		t.Fatalf("code focus brief:\n%s", jobs[0].str("brief"))
 	}
 }
 
@@ -152,6 +153,7 @@ func TestBallotDueReadsLeadBallotHours(t *testing.T) {
 	s := newStore(t)
 	newRepo(t, s)
 	join(t, s, "aurora")
+	join(t, s, "boris")
 	suppressPlannerReflect(t, s)
 	planHandoff(t, s, plusMinutes(testNow, -90), postOpts{Kind: "suggestion", Project: "proj", Area: "docs", Thread: "readme",
 		Summary: "Shorten the install section", Body: "The install section repeats the README's first paragraph.", Agent: actorAgent(s, "aurora")})
@@ -160,7 +162,7 @@ func TestBallotDueReadsLeadBallotHours(t *testing.T) {
 	if err != nil || len(jobs) != 1 || jobs[0].str("kind") != "ballot" {
 		t.Fatalf("ballot after 90 minutes with lead.ballot_hours 1: %v (%v)", jobs, err)
 	}
-	if !strings.Contains(jobs[0].str("brief"), "waited more than 1 hours below the vote quorum") {
+	if !strings.Contains(jobs[0].str("brief"), "waited more than 1 hours without quorum deciding") {
 		t.Fatalf("ballot brief:\n%s", jobs[0].str("brief"))
 	}
 	exec1(s.DB, "DELETE FROM jobs WHERE kind = 'ballot'")
@@ -181,6 +183,7 @@ func TestBallotDueCapsAndSortsByClosenessToQuorum(t *testing.T) {
 	join(t, s, "aurora")
 	join(t, s, "boris")
 	join(t, s, "cora")
+	join(t, s, "dora")
 	suppressPlannerReflect(t, s)
 	setSetting(t, s, "lead.ballot_cap", "2")
 	setSetting(t, s, "quorum", "3")
@@ -237,7 +240,7 @@ func TestResearchIdlePart(t *testing.T) {
 		t.Fatalf("off = %q", got)
 	}
 	researchOn(t, s, "60")
-	if got := researchIdlePart(s, "proj", testNow); got != "research due: checks" {
+	if got := researchIdlePart(s, "proj", testNow); got != "research due: product" {
 		t.Fatalf("due = %q", got)
 	}
 	if _, _, err := addJob(s, "proj", "improve", "Implement suggestion", "one variable", 1, 10, "suggestion:x", "daemon", true); err != nil {

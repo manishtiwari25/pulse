@@ -247,3 +247,59 @@ func TestDayNumberAndBoundaries(t *testing.T) {
 		t.Errorf("Records() differs from Result.Records(): %v", err)
 	}
 }
+
+func TestSuggestionQuorumDecidesAndBallotCaps(t *testing.T) {
+	f := newFixture(t, true)
+	rejected := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: "reject", agent: "runner-r/model-r", date: "2026-09-01T05:00:00Z", summary: "Rejected card", session: "s-r"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "reject", agent: "runner-rv1/model", date: "2026-09-02T05:00:00Z", summary: "down", session: "s-rv1", on: rejected, vote: "down"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "reject", agent: "runner-rv2/model", date: "2026-09-02T06:00:00Z", summary: "down", session: "s-rv2", on: rejected, vote: "down"})
+	tie := f.post(t, fpost{kind: "suggestion", area: "evolution", thread: "tie", agent: "runner-t/model-t", date: "2026-09-01T04:00:00Z", summary: "Tied card", session: "s-t"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "tie", agent: "runner-tv1/model", date: "2026-09-02T04:00:00Z", summary: "up", session: "s-tv1", on: tie, vote: "up"})
+	f.post(t, fpost{kind: "vote", area: "evolution", thread: "tie", agent: "runner-tv2/model", date: "2026-09-02T04:30:00Z", summary: "down", session: "s-tv2", on: tie, vote: "down"})
+
+	res, err := Compute(f.st, "fixture", "", Thresholds{Now: fixtureNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for _, sg := range res.Suggestions {
+		status[sg.ID] = sg.Status
+	}
+	if status[f.ids["eligible"]] != "eligible" {
+		t.Fatalf("up-voted quorum status = %q", status[f.ids["eligible"]])
+	}
+	if status[rejected] != "rejected" {
+		t.Fatalf("down-voted quorum status = %q", status[rejected])
+	}
+	if status[tie] != "needs votes" {
+		t.Fatalf("tied quorum status = %q", status[tie])
+	}
+
+	items := res.Ballot("", "")
+	sugs, _ := splitBallot(items)
+	got := map[string]bool{}
+	for _, sg := range sugs {
+		got[sg.ID] = true
+		if sg.Status != "needs votes" {
+			t.Fatalf("ballot included decided card: %+v", sg)
+		}
+	}
+	if !got[tie] || !got[f.ids["needs_votes"]] {
+		t.Fatalf("ballot missing needs-votes cards: %v", got)
+	}
+	if got[f.ids["eligible"]] || got[rejected] {
+		t.Fatalf("ballot included decided cards: %v", got)
+	}
+
+	if err := f.st.SetSetting("test", "lead.ballot_cap", "1"); err != nil {
+		t.Fatal(err)
+	}
+	capped, err := Ballot(f.st, "fixture", "", "", Thresholds{Now: fixtureNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sugs, _ = splitBallot(capped)
+	if len(sugs) != 1 || sugs[0].ID != tie {
+		t.Fatalf("capped ballot suggestions = %+v, want tied card closest to quorum", sugs)
+	}
+}

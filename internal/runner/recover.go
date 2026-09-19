@@ -282,7 +282,7 @@ func lastRecoveryRun(q querier, jobID string) row {
 
 func recoveryQuestionAsked(q querier, slug, jobID string) bool {
 	return mustOne(q, "SELECT 1 AS x FROM posts WHERE project = ? AND kind = 'question' AND area = 'jobs' AND thread = ? LIMIT 1",
-		slug, jobID) != nil
+		slug, board.NormalizeThread(jobID)) != nil
 }
 
 func recoveryCarrier(q querier, job row, root string) string {
@@ -731,8 +731,9 @@ func completeRecoveryFinding(s *store.Store, slug string, decision row, now, act
 
 func postRecoveryFinding(s *store.Store, slug, root string, n int, now, actor string) (bool, error) {
 	summary := fmt.Sprintf("Recovery held for %s", root)
-	existing, err := queryOne(s.DB, "SELECT 1 AS x FROM posts WHERE project = ? AND kind = 'finding' AND area = 'jobs' AND thread = ? AND summary = ? LIMIT 1",
-		slug, root, summary)
+	existing, err := queryOne(s.DB, `SELECT 1 AS x FROM posts
+		WHERE project = ? AND kind = 'finding' AND area = ? AND thread = ? AND summary LIKE ? LIMIT 1`,
+		slug, board.NormalizeArea("jobs"), board.NormalizeThread(root), "Recovery held for%")
 	if err != nil {
 		return false, fmt.Errorf("look up recovery finding: %w", err)
 	}

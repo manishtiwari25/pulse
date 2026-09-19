@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/manishtiwari25/pulse/internal/board"
@@ -31,7 +33,7 @@ func Ballot(s *store.Store, project, agent, session string, th Thresholds) ([]Ba
 	if agent != "" && session == "" {
 		session = agentSession(s, agent)
 	}
-	return res.Ballot(agent, session), nil
+	return LimitBallotItems(res.Ballot(agent, session), res.Params.Quorum, BallotCap(s)), nil
 }
 
 // Ballot filters a computed Result the way ballot_items does.
@@ -52,8 +54,10 @@ func (r *Result) Ballot(agent, session string) []BallotItem {
 	var out []BallotItem
 	for i := range r.Suggestions {
 		x := r.Suggestions[i]
-		switch x.Status {
-		case "closed", "expired", "built", "tried", "carded":
+		if x.Status != "needs votes" {
+			continue
+		}
+		if DuplicateOf(r, x) != "" {
 			continue
 		}
 		if agent != "" && (x.Agent == agent || voted[x.ID] || sameSession(session, x.Session)) {
@@ -71,6 +75,63 @@ func (r *Result) Ballot(agent, session string) []BallotItem {
 		}
 		out = append(out, BallotItem{Kind: "amendment", Amendment: &a})
 	}
+	return LimitBallotItems(out, r.Params.Quorum, 0)
+}
+
+// BallotCap is lead.ballot_cap: the maximum number of suggestion cards a ballot asks one agent to vote on.
+func BallotCap(s *store.Store) int {
+	raw := strings.TrimSpace(s.Setting("lead.ballot_cap", "10"))
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 10
+	}
+	return n
+}
+
+// OrderBallotSuggestions sorts cards closest to quorum first, then oldest first.
+func OrderBallotSuggestions(sugs []Suggestion, quorum int) []Suggestion {
+	out := append([]Suggestion(nil), sugs...)
+	sort.SliceStable(out, func(i, j int) bool {
+		di := quorum - out[i].Voters
+		dj := quorum - out[j].Voters
+		if di != dj {
+			return di < dj
+		}
+		if out[i].Date != out[j].Date {
+			return out[i].Date < out[j].Date
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// LimitBallotSuggestions applies the shared ballot order and optional cap.
+func LimitBallotSuggestions(sugs []Suggestion, quorum, cap int) []Suggestion {
+	out := OrderBallotSuggestions(sugs, quorum)
+	if cap > 0 && len(out) > cap {
+		out = out[:cap]
+	}
+	return out
+}
+
+// LimitBallotItems orders and caps suggestion cards while preserving open amendments after them.
+func LimitBallotItems(items []BallotItem, quorum, cap int) []BallotItem {
+	var sugs []Suggestion
+	var ams []BallotItem
+	for _, it := range items {
+		if it.Suggestion != nil {
+			sugs = append(sugs, *it.Suggestion)
+			continue
+		}
+		ams = append(ams, it)
+	}
+	sugs = LimitBallotSuggestions(sugs, quorum, cap)
+	out := make([]BallotItem, 0, len(sugs)+len(ams))
+	for i := range sugs {
+		sg := sugs[i]
+		out = append(out, BallotItem{Kind: "suggestion", Suggestion: &sg})
+	}
+	out = append(out, ams...)
 	return out
 }
 

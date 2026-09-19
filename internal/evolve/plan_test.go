@@ -121,9 +121,9 @@ func TestPlanExperimentAgentRowDoesNotNeedStoredAgent(t *testing.T) {
 	}
 }
 
-func TestPlanExperimentPositiveScoreOption(t *testing.T) {
+func TestPlanExperimentTieNeedsAnotherVote(t *testing.T) {
 	s := cycleReady(t)
-	zero := votedSuggestionWithVotes(t, s, "zero", "operating-layer", "README.md", "up", "down")
+	votedSuggestionWithVotes(t, s, "zero", "operating-layer", "README.md", "up", "down")
 	result, err := PlanExperiment(s, "demo", PlanOptions{Agent: "tester", RequirePositiveScore: true})
 	if err != nil {
 		t.Fatal(err)
@@ -135,8 +135,8 @@ func TestPlanExperimentPositiveScoreOption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Created || result.Suggestion != zero.ID {
-		t.Fatalf("non-positive score should be allowed without the daemon option: %+v", result)
+	if result.Created || result.Reason != "no eligible, untried, in-scope suggestion; vote with pulse ballot" {
+		t.Fatalf("tie should need another vote before planning: %+v", result)
 	}
 }
 

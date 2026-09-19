@@ -29,7 +29,7 @@ func ballotItemsFor(s *store.Store, slug, agent, now, session string) []ballotIt
 	if err != nil || res == nil {
 		return items
 	}
-	for _, it := range res.Ballot(agent, session) {
+	for _, it := range tally.LimitBallotItems(res.Ballot(agent, session), res.Params.Quorum, tally.BallotCap(s)) {
 		if it.Kind != "suggestion" || it.Suggestion == nil {
 			continue
 		}

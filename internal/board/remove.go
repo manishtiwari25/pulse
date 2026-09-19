@@ -22,9 +22,9 @@ type RemoveItem struct {
 
 // RemovePreview is what `pulse remove` shows before (and records after) it
 // acts: what changes in the store, what stays, and the commands that are the
-// human's to run. Nothing is ever deleted.
+// human's to run.
 type RemovePreview struct {
-	Kind    string `json:"kind"` // project or executor
+	Kind    string `json:"kind"` // project, executor or duplicate-findings
 	Name    string `json:"name"`
 	DryRun  bool   `json:"dry_run"`
 	Applied bool   `json:"applied"`
@@ -36,6 +36,10 @@ type RemovePreview struct {
 	CancelledJobs []string `json:"cancelled_jobs"`
 	LeasedJobs    []string `json:"leased_jobs"`
 	Executors     []string `json:"executors"`
+
+	DuplicateProjects []DuplicateFindingsProject `json:"duplicate_projects,omitempty"`
+	DuplicateGroups   int                        `json:"duplicate_groups,omitempty"`
+	DuplicateRows     int                        `json:"duplicate_rows,omitempty"`
 }
 
 func (p *RemovePreview) change(label, detail string) {
@@ -48,6 +52,269 @@ func (p *RemovePreview) stay(label, detail string) {
 func count(s *store.Store, query string, args ...any) (int, error) {
 	var n int
 	err := s.DB.QueryRow(query, args...).Scan(&n)
+	return n, err
+}
+
+// DuplicateFindingsThread is one duplicate finding group in a remove preview.
+type DuplicateFindingsThread struct {
+	Project string `json:"project"`
+	Area    string `json:"area"`
+	Thread  string `json:"thread"`
+	Agent   string `json:"agent"`
+	Summary string `json:"summary"`
+	Count   int    `json:"count"`
+	Remove  int    `json:"remove"`
+}
+
+// DuplicateFindingsProject summarizes duplicate system findings per project.
+type DuplicateFindingsProject struct {
+	Project    string                    `json:"project"`
+	Groups     int                       `json:"groups"`
+	Remove     int                       `json:"remove"`
+	TopThreads []DuplicateFindingsThread `json:"top_threads"`
+}
+
+func duplicateFindingsWhere(project string) (string, []any) {
+	where := "kind = 'finding' AND (agent = 'daemon' OR agent = project || '-lead')"
+	if project != "" {
+		return where + " AND project = ?", []any{project}
+	}
+	return where, nil
+}
+
+// RemoveDuplicateFindings deletes only exact duplicate system-authored findings.
+// The first row by date,rowid stays; dryRun only reports the groups.
+func RemoveDuplicateFindings(s *store.Store, project, actor string, dryRun bool) (*RemovePreview, error) {
+	if actor == "" {
+		actor = store.HumanAgent
+	}
+	name := "all projects"
+	if project != "" {
+		name = project
+		if project != store.CommonsSlug {
+			p, err := s.Project(project)
+			if err != nil {
+				return nil, err
+			}
+			if p == nil {
+				return nil, refuseFix(2, "No project "+pyRepr(project), "only a registered project can be scoped", "pulse projects")
+			}
+		}
+	}
+	pre := &RemovePreview{Kind: "duplicate-findings", Name: name, DryRun: dryRun, Yours: []string{}}
+	if err := fillDuplicateFindingsPreview(s, project, pre); err != nil {
+		return nil, err
+	}
+	if pre.DuplicateRows == 0 {
+		pre.stay("no duplicate system findings", "nothing to remove")
+		return pre, nil
+	}
+	if dryRun {
+		return pre, nil
+	}
+	triggers, err := postTriggerDefinitions(s.DB)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.Begin()
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, name := range []string{"posts_no_update", "posts_no_delete"} {
+		if _, err := tx.Exec("DROP TRIGGER " + name); err != nil {
+			return nil, err
+		}
+	}
+	where, args := duplicateFindingsWhere(project)
+	ranked := `WITH ranked AS (
+	SELECT rowid, agent, ROW_NUMBER() OVER (
+		PARTITION BY project, area, thread, summary, agent
+		ORDER BY date, rowid
+	) AS rn
+	FROM posts
+	WHERE ` + where + `
+)
+`
+	// createPost counts posts per agent; the counter follows the rows out.
+	perAgent, err := tx.Query(ranked+"SELECT agent, COUNT(*) FROM ranked WHERE rn > 1 GROUP BY agent", args...)
+	if err != nil {
+		return nil, err
+	}
+	agentRemoved := map[string]int{}
+	for perAgent.Next() {
+		var agent string
+		var n int
+		if err := perAgent.Scan(&agent, &n); err != nil {
+			perAgent.Close()
+			return nil, err
+		}
+		agentRemoved[agent] = n
+	}
+	perAgent.Close()
+	if err := perAgent.Err(); err != nil {
+		return nil, err
+	}
+	res, err := tx.Exec(ranked+"DELETE FROM posts WHERE rowid IN (SELECT rowid FROM ranked WHERE rn > 1)", args...)
+	if err != nil {
+		return nil, err
+	}
+	removed, _ := res.RowsAffected()
+	if removed != int64(pre.DuplicateRows) {
+		return nil, fmt.Errorf("duplicate finding delete changed %d rows, expected %d", removed, pre.DuplicateRows)
+	}
+	for agent, n := range agentRemoved {
+		if _, err := tx.Exec("UPDATE agents SET posts = MAX(posts - ?, 0) WHERE name = ?", n, agent); err != nil {
+			return nil, err
+		}
+	}
+	for _, name := range []string{"posts_no_update", "posts_no_delete"} {
+		if _, err := tx.Exec(triggers[name]); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Event(actor, "post.remove.duplicates", name, map[string]any{
+		"project":  project,
+		"groups":   pre.DuplicateGroups,
+		"removed":  pre.DuplicateRows,
+		"projects": pre.DuplicateProjects,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	committed = true
+	ok, err := postTriggersPresent(s.DB)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("post immutability triggers were not restored")
+	}
+	pre.Applied = true
+	return pre, nil
+}
+
+func fillDuplicateFindingsPreview(s *store.Store, project string, pre *RemovePreview) error {
+	where, args := duplicateFindingsWhere(project)
+	q := `WITH groups AS (
+	SELECT project, area, thread, summary, agent, COUNT(*) AS n
+	FROM posts
+	WHERE ` + where + `
+	GROUP BY project, area, thread, summary, agent
+	HAVING COUNT(*) > 1
+)
+SELECT project, COUNT(*) AS groups, SUM(n - 1) AS remove
+FROM groups
+GROUP BY project
+ORDER BY project`
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return err
+	}
+	var projects []DuplicateFindingsProject
+	for rows.Next() {
+		var p DuplicateFindingsProject
+		if err := rows.Scan(&p.Project, &p.Groups, &p.Remove); err != nil {
+			rows.Close()
+			return err
+		}
+		projects = append(projects, p)
+		pre.DuplicateGroups += p.Groups
+		pre.DuplicateRows += p.Remove
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	top := `WITH groups AS (
+	SELECT project, area, thread, summary, agent, COUNT(*) AS n
+	FROM posts
+	WHERE ` + where + `
+	GROUP BY project, area, thread, summary, agent
+	HAVING COUNT(*) > 1
+)
+SELECT project, area, thread, agent, summary, n, n - 1 AS remove
+FROM groups
+ORDER BY project, remove DESC, area, thread, agent, summary`
+	rows, err = s.DB.Query(top, args...)
+	if err != nil {
+		return err
+	}
+	byProject := map[string]int{}
+	for i := range projects {
+		byProject[projects[i].Project] = i
+	}
+	seen := map[string]int{}
+	for rows.Next() {
+		var t DuplicateFindingsThread
+		if err := rows.Scan(&t.Project, &t.Area, &t.Thread, &t.Agent, &t.Summary, &t.Count, &t.Remove); err != nil {
+			rows.Close()
+			return err
+		}
+		if seen[t.Project] < 5 {
+			i := byProject[t.Project]
+			projects[i].TopThreads = append(projects[i].TopThreads, t)
+			seen[t.Project]++
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	pre.DuplicateProjects = projects
+	for _, p := range projects {
+		pre.change(fmt.Sprintf("project %s", p.Project), fmt.Sprintf("%d duplicate %s, %d finding %s removed", p.Groups,
+			plural(p.Groups, "group"), p.Remove, plural(p.Remove, "row")))
+		for _, t := range p.TopThreads {
+			pre.change("  "+t.Area+"/"+t.Thread, fmt.Sprintf("%d of %d by %s: %s", t.Remove, t.Count, t.Agent, trunc(t.Summary, 80)))
+		}
+	}
+	pre.stay("earliest finding in each group", "kept by lowest date, then lowest rowid")
+	pre.stay("human and worker findings", "untouched; only daemon and project lead findings qualify")
+	pre.stay("posts indexes and tallies", "SQLite maintains indexes; tally cache version follows post count/max values")
+	return nil
+}
+
+func postTriggerDefinitions(db *sql.DB) (map[string]string, error) {
+	rows, err := db.Query("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('posts_no_update', 'posts_no_delete')")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var name, sqlText string
+		if err := rows.Scan(&name, &sqlText); err != nil {
+			return nil, err
+		}
+		out[name] = sqlText
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, name := range []string{"posts_no_update", "posts_no_delete"} {
+		if out[name] == "" {
+			return nil, fmt.Errorf("missing post immutability trigger %s", name)
+		}
+	}
+	return out, nil
+}
+
+func postTriggersPresent(db *sql.DB) (bool, error) {
+	n, err := countDB(db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ('posts_no_update', 'posts_no_delete')")
+	return n == 2, err
+}
+
+func countDB(db *sql.DB, query string, args ...any) (int, error) {
+	var n int
+	err := db.QueryRow(query, args...).Scan(&n)
 	return n, err
 }
 

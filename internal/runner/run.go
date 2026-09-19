@@ -1028,6 +1028,10 @@ func castResultVotes(s *store.Store, slug string, arow *store.Agent, agent, now,
 			log.add("vote skipped: %s has no reason", v.On)
 			continue
 		}
+		if mustOne(s.DB, "SELECT 1 AS x FROM posts WHERE kind = 'vote' AND agent = ? AND on_post = ? LIMIT 1", agent, v.On) != nil {
+			log.add("vote skipped: %s: already voted", v.On)
+			continue
+		}
 		key := item.Key
 		if key == "" {
 			key = "evolution/"

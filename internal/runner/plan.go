@@ -123,10 +123,7 @@ func openQuestions(s *store.Store, slug, now string) []row {
 
 // ballotCap is lead.ballot_cap: the maximum number of cards a single ballot job asks a worker to vote on.
 func ballotCap(s *store.Store) int {
-	if c := settingInt(s, "lead.ballot_cap"); c >= 1 {
-		return c
-	}
-	return 10
+	return tally.BallotCap(s)
 }
 
 // ballotDue is ballot_due(): below-quorum cards older than lead.ballot_hours, unless a ballot job was planned since.
@@ -141,24 +138,18 @@ func ballotDue(s *store.Store, slug, now string, suggestions []tally.Suggestion)
 	}
 	var out []tally.Suggestion
 	for _, sg := range suggestions {
-		if sg.Status == "needs votes" && sg.Date <= since {
+		if sg.Status == "needs votes" && sg.Date <= since && canAnyAgentVoteOnSuggestion(s, sg) {
 			out = append(out, sg)
 		}
 	}
-	// Sort by distance to quorum (closest first), then oldest first.
-	sort.SliceStable(out, func(i, j int) bool {
-		di := settingInt(s, "quorum") - out[i].Voters
-		dj := settingInt(s, "quorum") - out[j].Voters
-		if di != dj {
-			return di < dj
-		}
-		return out[i].Date < out[j].Date
-	})
-	cap := ballotCap(s)
-	if len(out) > cap {
-		out = out[:cap]
-	}
-	return out
+	return tally.LimitBallotSuggestions(out, settingInt(s, "quorum"), ballotCap(s))
+}
+
+func canAnyAgentVoteOnSuggestion(s *store.Store, sg tally.Suggestion) bool {
+	return mustOne(s.DB, `SELECT 1 AS x FROM agents a
+		WHERE a.status = 'active' AND a.kind != 'human' AND a.name != ?
+		AND NOT EXISTS (SELECT 1 FROM posts v WHERE v.kind = 'vote' AND v.agent = a.name AND v.on_post = ?)
+		LIMIT 1`, sg.Agent, sg.ID) != nil
 }
 
 func isOwnerAddressedPost(post row) bool {
@@ -250,7 +241,13 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			break
 		}
 	}
-	suggestions := suggestionRecords(s, slug, now)
+	var planRes *tally.Result
+	suggestions := []tally.Suggestion{}
+	if res, err := tally.ComputeLight(s, slug, "", tally.Thresholds{Now: now}); err == nil && res != nil {
+		planRes = res
+		suggestions = res.Suggestions
+	}
+	planCtx := tally.PlanContextFor(s, slug, now, planRes)
 	// The loop claims every eligible suggestion whose experiment card is valid, and the in-flight
 	// experiment's (ADR-044 D4); the planner leaves those to it and builds the rest.
 	claims, _, err := evolve.LoopClaims(s, slug, createdBy)
@@ -272,25 +269,49 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			if project != nil {
 				projectPath = project.str("path")
 			}
-			if tally.PlanGate(s, projectPath, sg, post) != "" || stuck[sg.Key] {
+			if tally.PlanGateWith(s, planCtx, projectPath, sg, post) != "" || stuck[sg.Key] {
 				continue
 			}
 			eligible = append(eligible, sg)
 		}
-		// Partition by quality so product-facing suggestions are built before
-		// vague operating-layer churn, even if the churn has a slightly higher score.
-		var high, low []tally.Suggestion
+		// Product cards are built before operating-layer churn. Within each class the queue's score/date
+		// order still leads, with the legacy quality score only breaking otherwise-equal cards.
+		var product, operating []tally.Suggestion
 		for _, sg := range eligible {
 			pRow := postRow(s.DB, sg.ID)
-			if suggestionQualityScore(pRow.str("body")) >= 50 {
-				high = append(high, sg)
+			if tally.CardClass(pRow.str("summary"), pRow.str("body")) == tally.CardClassProduct {
+				product = append(product, sg)
 			} else {
-				low = append(low, sg)
+				operating = append(operating, sg)
 			}
 		}
-		candidates := high
+		sortPlanCandidates := func(list []tally.Suggestion) {
+			sort.SliceStable(list, func(i, j int) bool {
+				a, b := list[i], list[j]
+				if a.Score != b.Score {
+					return a.Score > b.Score
+				}
+				abody, bbody := "", ""
+				if p := postRow(s.DB, a.ID); p != nil {
+					abody = p.str("body")
+				}
+				if p := postRow(s.DB, b.ID); p != nil {
+					bbody = p.str("body")
+				}
+				if aq, bq := suggestionQualityScore(abody), suggestionQualityScore(bbody); aq != bq {
+					return aq > bq
+				}
+				if a.Date != b.Date {
+					return a.Date < b.Date
+				}
+				return a.ID < b.ID
+			})
+		}
+		sortPlanCandidates(product)
+		sortPlanCandidates(operating)
+		candidates := product
 		if len(candidates) == 0 {
-			candidates = low
+			candidates = operating
 		}
 		for _, sg := range candidates {
 			pRow := postRow(s.DB, sg.ID)
@@ -347,12 +368,12 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 			for _, c := range cards {
 				listed = append(listed, fmt.Sprintf("- `%s` %s (%d of %d voters): %s", c.ID, c.Key, c.Voters, settingInt(s, "quorum"), trunc(c.Summary, 160)))
 			}
-			brief := fmt.Sprintf("%d suggestion(s) on this project's board have waited more than %d hours below the vote quorum, and "+
-				"nothing else is queued. Read each card on the ballot below in full (its body is in the Ballot section; "+
+			brief := fmt.Sprintf("%d suggestion(s) on this project's board have waited more than %d hours without quorum deciding, and "+
+				"nothing else is queued. Read each listed card in full (its body is in the Ballot section; "+
 				"check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` "+
-				"line per card in your report: up when the change is one variable a worker could make and measure with the "+
-				"project's own checks, down when it is a guess, a duplicate, owner-only, or already done. Never vote on "+
-				"your own cards. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with "+
+				"line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, "+
+				"down when it is a guess, a duplicate (vote on the older same File+Variable), owner-only, already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week. Never vote on "+
+				"your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with "+
 				"how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n%s",
 				len(cards), ballotHours(s), strings.Join(listed, "\n"))
 			job, isNew, err := addJob(s, slug, "ballot", fmt.Sprintf("Vote the ballot: %d card(s) below quorum for %s", len(cards), slug), brief,
@@ -371,12 +392,13 @@ func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error) {
 		doneToday := mustOne(s.DB, "SELECT 1 AS x FROM jobs WHERE project = ? AND kind = 'reflect' AND (source = ? OR (source = ? AND created_at LIKE ?))",
 			slug, source, "onboard-reflect:"+slug, now[:10]+"%")
 		if ever == nil || doneToday == nil {
-			brief := "Run the project's own checks (tests, lint, links, `git diff --check`), read the memory records " +
+			brief := "Run the project's own checks or registered verify command, read the memory records " +
 				"(`pulse record list memory`) and the open ADRs' acceptance criteria (`pulse record list adr --status Proposed`), " +
-				"and fix one Tier 0 thing you can prove with the checks (a flaky test, a broken link, a stale doc, a lint " +
-				"finding). Read `pulse evolve report --project " + slug + "` for what the loop did this week - jobs done " +
+				"and first fix one Tier 0 product defect you can prove (a wrong message, a wrong default, a broken user path, " +
+				"an error swallowed). If none is found, fix one flaky test, broken link, stale doc or lint finding. " +
+				"Read `pulse evolve report --project " + slug + "` for what the loop did this week - jobs done " +
 				"without a change, card jobs that found nothing, experiments planned, questions waiting for the owner - " +
-				"and when one gap is measurable, post it as one SUGGESTION: line naming File:, Variable: and Hypothesis:. " +
+				"and when one gap is measurable, post it as one SUGGESTION: line naming the product File:, Variable: and Hypothesis: outcome. " +
 				"Record every other signal as FINDING: lines so the runner posts them."
 			job, isNew, err := addJob(s, slug, "reflect", "Daily reflect: find and fix one provable Tier 0 issue", brief, 0, 1, source, createdBy, true)
 			if err != nil {

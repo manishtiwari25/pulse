@@ -127,7 +127,7 @@ type Suggestion struct {
 	Up        int    `json:"up"`
 	Down      int    `json:"down"`
 	Voters    int    `json:"voters"`
-	Status    string `json:"status"` // closed | built | tried | eligible | expired | needs votes
+	Status    string `json:"status"` // closed | built | tried | eligible | rejected | expired | needs votes
 	Agent     string `json:"agent"`
 	Summary   string `json:"summary"`
 	Session   string `json:"session"`
@@ -171,20 +171,21 @@ type Amendment struct {
 // area): the input rows and the typed records, in the order the Python emits
 // them.
 type Result struct {
-	Project     string       `json:"project"`
-	Repo        string       `json:"repo"` // the project's path; "" for the commons
-	Area        string       `json:"area"`
-	Now         string       `json:"now"`
-	Params      Thresholds   `json:"params"`
-	Posts       []Post       `json:"posts"` // every post of the project (not filtered by area)
-	NoKind      int          `json:"nokind"`
-	Claims      []Claim      `json:"claims"`
-	Threads     []Thread     `json:"threads"`
-	Proposals   []Proposal   `json:"proposals"`
-	SVotes      []SVote      `json:"svotes"`
-	Suggestions []Suggestion `json:"suggestions"`
-	AVotes      []AVote      `json:"avotes"`
-	Amendments  []Amendment  `json:"amendments"`
+	Project     string            `json:"project"`
+	Repo        string            `json:"repo"` // the project's path; "" for the commons
+	Area        string            `json:"area"`
+	Now         string            `json:"now"`
+	Params      Thresholds        `json:"params"`
+	Posts       []Post            `json:"posts"` // every post of the project (not filtered by area)
+	NoKind      int               `json:"nokind"`
+	Claims      []Claim           `json:"claims"`
+	Threads     []Thread          `json:"threads"`
+	Proposals   []Proposal        `json:"proposals"`
+	SVotes      []SVote           `json:"svotes"`
+	Suggestions []Suggestion      `json:"suggestions"`
+	Duplicates  map[string]string `json:"duplicates,omitempty"`
+	AVotes      []AVote           `json:"avotes"`
+	Amendments  []Amendment       `json:"amendments"`
 }
 
 // omap is an insertion-ordered map, standing in for Python's dict.
@@ -386,8 +387,10 @@ func (t *tally) suggestionRecords() []Suggestion {
 			status = "closed"
 		case t.built[sid] != "":
 			status = t.built[sid]
-		case voters >= t.params.Quorum:
+		case voters >= t.params.Quorum && up > down:
 			status = "eligible"
+		case voters >= t.params.Quorum && up < down:
+			status = "rejected"
 		case voters == 0 && age > t.params.ExpiryDays:
 			status = "expired"
 		default:
@@ -703,6 +706,7 @@ func computeLightUncached(s *store.Store, project, area string, th Thresholds) (
 	}
 	res.SVotes = t.svoteRecords()
 	res.Suggestions = t.suggestionRecords()
+	res.Duplicates = DuplicateMap(rows, res.Suggestions)
 	res.Amendments, res.AVotes = t.amendmentRecords()
 	return res, nil
 }

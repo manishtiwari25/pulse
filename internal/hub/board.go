@@ -231,6 +231,8 @@ func (h *Handler) snapshot(project, area string) (*boardData, error) {
 	d.Params = object("area now quorum expiry_days stale_days amend_quorum amend_majority protected_sections constitution_present stop_present",
 		params["area"], params["now"], num(params["quorum"]), num(params["expiry_days"]), num(params["stale_days"]),
 		num(params["amend_quorum"]), params["amend_majority"], params["protected"], params["constitution_present"] == "1", params["stop_present"] == "1")
+	planRes, _ := tally.ComputeLight(h.Store, project, "", tally.Thresholds{Now: params["now"]})
+	planCtx := tally.PlanContextFor(h.Store, project, params["now"], planRes)
 	d.enrichThreads()
 	for _, row := range d.Proposals {
 		post, decided := d.ByID[str(row["id"])], d.ByID[str(row["decided_id"])]
@@ -247,7 +249,7 @@ func (h *Handler) snapshot(project, area string) (*boardData, error) {
 	sort.SliceStable(d.Proposals, func(i, j int) bool {
 		return d.Proposals[i]["status"] == "awaiting" && d.Proposals[j]["status"] != "awaiting"
 	})
-	statusOrder := map[string]int{"eligible": 0, "needs votes": 1, "expired": 2}
+	statusOrder := map[string]int{"eligible": 0, "needs votes": 1, "rejected": 2, "expired": 3}
 	priority := func(v any) int {
 		if n, ok := statusOrder[str(v)]; ok {
 			return n
@@ -279,7 +281,7 @@ func (h *Handler) snapshot(project, area string) (*boardData, error) {
 			if p, ok := dbPosts[id]; ok {
 				post = &p
 			}
-			gate = tally.PlanGate(h.Store, p.Path, tally.Suggestion{
+			gate = tally.PlanGateWith(h.Store, planCtx, p.Path, tally.Suggestion{
 				Score:     num(row["score"]),
 				ID:        id,
 				Key:       str(row["thread_key"]),
@@ -628,10 +630,10 @@ func (d *boardData) overview() map[string]any {
 	evo := evolutionSummary(d.Evolution)
 	missing, _ := json.Marshal(evo["missing_files"])
 	evo["missing_files"] = string(missing)
-	return object("board_present posts_without_kind quorum claims_active claims_expired threads_open threads_stale threads_closed posts posts_without_provenance suggestions_eligible suggestions_plannable suggestions_needing_votes suggestions_expired amendments_open amendments_passed proposals_awaiting proposals_decided active_claims stale_claims open_threads recent_posts evolution kinds areas agents",
+	return object("board_present posts_without_kind quorum claims_active claims_expired threads_open threads_stale threads_closed posts posts_without_provenance suggestions_eligible suggestions_plannable suggestions_needing_votes suggestions_rejected suggestions_expired amendments_open amendments_passed proposals_awaiting proposals_decided active_claims stale_claims open_threads recent_posts evolution kinds areas agents",
 		d.Meta["board_present"] == "1", num(d.Meta["posts_without_kind"]), d.Params["quorum"], len(active), len(stale), len(open),
 		countStatus(d.Threads, "stale"), countStatus(d.Threads, "closed"), len(d.Posts), withoutProvenance, countStatus(d.Suggestions, "eligible"),
-		countPlannable(d.Suggestions), countStatus(d.Suggestions, "needs votes"), countStatus(d.Suggestions, "expired"), amendOpen, amendPassed,
+		countPlannable(d.Suggestions), countStatus(d.Suggestions, "needs votes"), countStatus(d.Suggestions, "rejected"), countStatus(d.Suggestions, "expired"), amendOpen, amendPassed,
 		countStatus(d.Proposals, "awaiting"), countStatus(d.Proposals, "accepted", "declined"), active, stale, open, recent, evo, kinds, sortedKeys(areas), agentRows)
 }
 
@@ -663,7 +665,7 @@ func (d *boardData) threads() []map[string]any {
 }
 
 func (d *boardData) notices() map[string]any {
-	suggestions := countStatus(d.Suggestions, "eligible", "needs votes")
+	suggestions := countStatus(d.Suggestions, "needs votes")
 	amendments := len(d.Amendments)
 	for _, row := range d.Amendments {
 		if strings.HasPrefix(str(row["status"]), "closed:") {

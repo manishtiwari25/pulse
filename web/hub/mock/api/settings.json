@@ -915,6 +915,18 @@
     },
     {
       "choices": null,
+      "default": "3",
+      "description": "operating-layer improve jobs the planner may create from suggestion cards for one project per UTC day; product cards are unaffected and are planned first; 0 turns this cap off",
+      "kind": "count",
+      "min": 0,
+      "name": "plan.operating_layer_per_day",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "3"
+    },
+    {
+      "choices": null,
       "default": "6",
       "description": "hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; research, ballot and reflect jobs the planner seeds on its own do not count as the project moving; 0 turns the standing brief off",
       "kind": "count",
@@ -940,7 +952,7 @@
     {
       "choices": null,
       "default": "60",
-      "description": "minutes a project must sit with nothing queued or leased, no research job and no job that decided work (ballots and reflects do not count) created, before the planner seeds one research job: a worker investigates one focus in turn (the checks, the loop's report, the docs, the product as its user sees it, the code that changes most, the dependencies, the board, the memory) and ends with one to three experiment cards and a vote on every card below quorum; 0 turns research off (ADR-045)",
+      "description": "minutes a project must sit with nothing queued or leased, no research job and no job that decided work (ballots and reflects do not count) created, before the planner seeds one research job: a worker investigates one focus in turn (the product as its user sees it, the code that changes most, the checks, the loop's report, the docs, the dependencies, the board, the memory) and ends with one to three experiment cards and a vote on every card below quorum; 0 turns research off (ADR-045)",
       "kind": "count",
       "min": 0,
       "name": "lead.research_minutes",

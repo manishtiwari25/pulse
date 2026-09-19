@@ -2,10 +2,12 @@ package board
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/store"
 )
 
 func rowCounts(t *testing.T, home string) map[string]int {
@@ -212,4 +214,110 @@ func TestRemoveExecutorSnapshot(t *testing.T) {
 		t.Fatalf("again: %v", err)
 	}
 	_ = home
+}
+
+func TestRemoveDuplicateFindings(t *testing.T) {
+	noTTY(t)
+	s := openHome(t, t.TempDir())
+	if _, err := s.DB.Exec("INSERT INTO projects (slug, name, path, added_at) VALUES ('demo', 'Demo', ?, ?)", t.TempDir(), testNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := JoinAgent(s, JoinInput{Name: "aurora", Kind: "worker", Runner: "test", Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	post := func(id, agent, date string, noAgent bool) {
+		t.Helper()
+		_, err := CreatePost(s, PostInput{PostID: id, Kind: "finding", Project: "demo", Area: "jobs", Thread: "job-1",
+			Summary: "Recovery held for job-1", Agent: agent, Date: date, NoAgentCheck: noAgent})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, date := range []string{"2026-09-06T09:00:00Z", "2026-09-06T09:01:00Z", "2026-09-06T09:02:00Z", "2026-09-06T09:03:00Z"} {
+		post(fmt.Sprintf("daemon-%d", i), "daemon", date, true)
+	}
+	post("human-copy", store.HumanAgent, "2026-09-06T09:04:00Z", false)
+	post("worker-copy", "aurora", "2026-09-06T09:05:00Z", false)
+	if _, err := s.DB.Exec("INSERT INTO agents (name, kind, created_at) VALUES ('demo-lead', 'lead', ?)", testNow); err != nil {
+		t.Fatal(err)
+	}
+	for i, date := range []string{"2026-09-06T09:06:00Z", "2026-09-06T09:07:00Z"} {
+		post(fmt.Sprintf("lead-%d", i), "demo-lead", date, true)
+	}
+	before := countRows(t, s, "posts", "")
+	leadPosts := func() int {
+		var n int
+		if err := s.DB.QueryRow("SELECT posts FROM agents WHERE name = 'demo-lead'").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := leadPosts(); n != 2 {
+		t.Fatalf("lead posts counter before = %d, want 2", n)
+	}
+
+	out, err := runCmd(t, s, &cli.Context{}, "remove", "duplicate-findings", "--project", "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("\n%s", out)
+	for _, want := range []string{
+		"pulse remove duplicate-findings demo  (dry run - nothing changed)",
+		"project demo", "2 duplicate groups", "4 finding rows removed",
+		"jobs/job-1", "human and worker findings", "tally cache version",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("preview lacks %q", want)
+		}
+	}
+	if n := countRows(t, s, "posts", ""); n != before {
+		t.Fatalf("dry run deleted posts: %d -> %d", before, n)
+	}
+
+	out, err = runCmd(t, s, &cli.Context{JSON: true}, "remove", "duplicate-findings", "--project", "demo", "--apply", "--yes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pv RemovePreview
+	if err := json.Unmarshal([]byte(out), &pv); err != nil {
+		t.Fatalf("json: %v\n%s", err, out)
+	}
+	if !pv.Applied || pv.Kind != "duplicate-findings" || pv.Name != "demo" || pv.DuplicateGroups != 2 || pv.DuplicateRows != 4 {
+		t.Fatalf("preview %+v", pv)
+	}
+	if n := countRows(t, s, "posts", ""); n != before-4 {
+		t.Fatalf("post count after apply = %d, want %d", n, before-4)
+	}
+	for _, id := range []string{"daemon-0", "human-copy", "worker-copy", "lead-0"} {
+		if n := countRows(t, s, "posts", "id = ?", id); n != 1 {
+			t.Fatalf("%s count = %d", id, n)
+		}
+	}
+	for _, id := range []string{"daemon-1", "daemon-2", "daemon-3", "lead-1"} {
+		if n := countRows(t, s, "posts", "id = ?", id); n != 0 {
+			t.Fatalf("%s survived", id)
+		}
+	}
+	if n := leadPosts(); n != 1 {
+		t.Fatalf("lead posts counter after = %d, want 1", n)
+	}
+	if _, err := s.DB.Exec("DELETE FROM posts WHERE id = 'daemon-0'"); err == nil || !strings.Contains(err.Error(), "posts are immutable") {
+		t.Fatalf("delete trigger not restored: %v", err)
+	}
+	for _, name := range []string{"posts_no_update", "posts_no_delete"} {
+		if n := countRows(t, s, "sqlite_master", "type = 'trigger' AND name = ?", name); n != 1 {
+			t.Fatalf("%s trigger count = %d", name, n)
+		}
+	}
+	var detail string
+	if err := s.DB.QueryRow("SELECT detail FROM events WHERE action = 'post.remove.duplicates' AND subject = 'demo'").Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(detail), &got); err != nil {
+		t.Fatalf("event detail: %v\n%s", err, detail)
+	}
+	if got["project"] != "demo" || got["groups"].(float64) != 2 || got["removed"].(float64) != 4 {
+		t.Fatalf("event detail %v", got)
+	}
 }

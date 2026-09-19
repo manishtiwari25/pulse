@@ -42,9 +42,14 @@ func idleNote(s *store.Store, slug, now string) string {
 }
 
 func suggestionIdlePart(s *store.Store, slug, now string) string {
-	suggestions := suggestionRecords(s, slug, now)
-	eligible, plannable, inFlight, netNonPositive, owner, noEvidence := 0, 0, 0, 0, 0, 0
-	needsVotes, tried := 0, 0
+	res, _ := tally.ComputeLight(s, slug, "", tally.Thresholds{Now: now})
+	suggestions := []tally.Suggestion{}
+	if res != nil {
+		suggestions = res.Suggestions
+	}
+	planCtx := tally.PlanContextFor(s, slug, now, res)
+	eligible, plannable, inFlight, netNonPositive, owner, noEvidence, overOperatingCap, duplicates := 0, 0, 0, 0, 0, 0, 0, 0
+	needsVotes, rejected, tried := 0, 0, 0
 	project := projectBySlug(s.DB, slug)
 	projectPath := ""
 	if project != nil {
@@ -54,20 +59,28 @@ func suggestionIdlePart(s *store.Store, slug, now string) string {
 		switch sg.Status {
 		case "eligible":
 			eligible++
-			switch gate := tally.PlanGate(s, projectPath, sg, tallyPost(s, sg.ID)); {
+			switch gate := tally.PlanGateWith(s, planCtx, projectPath, sg, tallyPost(s, sg.ID)); {
 			case tally.InFlightGate(sg) != "":
 				inFlight++
 			case gate == tally.GateNetVotes:
 				netNonPositive++
 			case gate == tally.GateOwner:
 				owner++
+			case strings.HasPrefix(gate, tally.GateDuplicate):
+				duplicates++
+			case strings.HasPrefix(gate, tally.GateOperatingLayerCap):
+				overOperatingCap++
 			case gate == tally.GateNoEvidence || gate == tally.GateOwnerPaths || gate == tally.GateUnlanded || gate == tally.GateNoOpCheck:
+				noEvidence++
+			case gate != "":
 				noEvidence++
 			default:
 				plannable++
 			}
 		case "needs votes":
 			needsVotes++
+		case "rejected":
+			rejected++
 		case "tried", "built", "carded":
 			tried++
 		}
@@ -76,6 +89,9 @@ func suggestionIdlePart(s *store.Store, slug, now string) string {
 		var held []string
 		if needsVotes > 0 {
 			held = append(held, fmt.Sprintf("%d need votes", needsVotes))
+		}
+		if rejected > 0 {
+			held = append(held, fmt.Sprintf("%d rejected", rejected))
 		}
 		if tried > 0 {
 			held = append(held, fmt.Sprintf("%d tried", tried))
@@ -95,8 +111,17 @@ func suggestionIdlePart(s *store.Store, slug, now string) string {
 	if noEvidence > 0 {
 		held = append(held, fmt.Sprintf("%d without evidence", noEvidence))
 	}
+	if duplicates > 0 {
+		held = append(held, fmt.Sprintf("%d duplicates", duplicates))
+	}
+	if overOperatingCap > 0 {
+		held = append(held, fmt.Sprintf("%d over operating-layer cap", overOperatingCap))
+	}
 	if inFlight > 0 {
 		held = append(held, fmt.Sprintf("%d in flight", inFlight))
+	}
+	if rejected > 0 {
+		held = append(held, fmt.Sprintf("%d rejected", rejected))
 	}
 	if len(held) == 0 {
 		return fmt.Sprintf("%d eligible suggestions, %d plannable", eligible, plannable)

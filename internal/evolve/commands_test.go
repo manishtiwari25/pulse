@@ -95,7 +95,7 @@ func TestReflectReadOnlyBoardNoticesBallotHygieneAndHealth(t *testing.T) {
 	if _, err := s.DB.Exec("UPDATE projects SET verify_cmd = ? WHERE slug='demo'", "touch '"+marker+"'"); err != nil {
 		t.Fatal(err)
 	}
-	votedSuggestion(t, s, "ballot-item", "product", "value.txt", 2)
+	votedSuggestion(t, s, "ballot-item", "product", "value.txt", 1)
 	testGit(t, p.Path, "branch", "evolve/stray")
 	testGit(t, p.Path, "branch", "pulse/stray")
 	before := countRows(t, s, "events")
@@ -112,7 +112,7 @@ func TestReflectReadOnlyBoardNoticesBallotHygieneAndHealth(t *testing.T) {
 		t.Fatal("reflection omitted required board, ladder or hygiene information")
 	}
 	commands := strings.Join(reflected.NextCommands, "\n")
-	for _, command := range []string{"pulse post ", "pulse vote ", "pulse evolve cycle --project demo"} {
+	for _, command := range []string{"pulse post ", "pulse vote "} {
 		if !strings.Contains(commands, command) {
 			t.Errorf("reflection did not end with %s", command)
 		}

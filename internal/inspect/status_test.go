@@ -159,7 +159,7 @@ func TestPlannerNotesTextAndStale(t *testing.T) {
 	s := temporaryStore(t)
 	execSQL(t, s, `INSERT INTO meta(key,value) VALUES
 		('daemon','{"pid":123,"at":"2026-09-06T18:59:00Z","loops":4,"interval":30,"note":""}'),
-		('planner','{"fresh":{"at":"2026-09-06T18:59:31Z","note":"no suggestions; reflect due"},"old":{"at":"2026-09-06T18:58:59Z","note":"1 eligible suggestions, 0 plannable (1 net votes <= 0)"}}')`)
+		('planner','{"fresh":{"at":"2026-09-06T18:59:31Z","note":"no suggestions; reflect due"},"old":{"at":"2026-09-06T18:58:59Z","note":"no eligible suggestion (1 rejected)"}}')`)
 
 	notes, err := PlannerNotes(s)
 	if err != nil {
@@ -176,7 +176,7 @@ func TestPlannerNotesTextAndStale(t *testing.T) {
 	if !strings.Contains(text, "planner    fresh: no suggestions; reflect due\n") {
 		t.Fatalf("fresh planner line missing:\n%s", text)
 	}
-	if !strings.Contains(text, "planner    old: 1 eligible suggestions, 0 plannable (1 net votes <= 0) (stale)\n") {
+	if !strings.Contains(text, "planner    old: no eligible suggestion (1 rejected) (stale)\n") {
 		t.Fatalf("stale planner line missing:\n%s", text)
 	}
 }

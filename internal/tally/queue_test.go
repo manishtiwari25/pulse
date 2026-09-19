@@ -131,7 +131,7 @@ func TestWorkWanted(t *testing.T) {
 		}
 
 	}
-	if ballots != 3 {
+	if ballots != 2 {
 		t.Errorf("ballot items %d", ballots)
 	}
 
@@ -210,14 +210,14 @@ func TestWorkWantedBlockedEligibleAndPlannable(t *testing.T) {
 			byID[it.ID] = it
 		}
 	}
-	if len(eligible) != 3 {
+	if len(eligible) != 2 {
 		t.Fatalf("eligible items: %+v", eligible)
 	}
 	if eligible[0].ID != f.ids["eligible"] || eligible[0].Blocked != "" {
 		t.Fatalf("unblocked eligible did not sort first: %+v", eligible)
 	}
-	if got := byID[zero].Blocked; got != "net votes <= 0: the planner takes score > 0 only" {
-		t.Fatalf("zero blocked = %q", got)
+	if _, ok := byID[zero]; ok {
+		t.Fatalf("zero-score tie should need more votes, not be eligible: %+v", byID[zero])
 	}
 	if got := byID[owner].Blocked; got != "addressed to the owner; not a worker job" {
 		t.Fatalf("owner blocked = %q", got)
@@ -225,9 +225,6 @@ func TestWorkWantedBlockedEligibleAndPlannable(t *testing.T) {
 	text := WorkText(q, 0)
 	if !strings.Contains(text, "PROJECTS (open suggestions, work items, plannable, kill switch)") || !strings.Contains(text, " 2 plannable") {
 		t.Fatalf("plannable text:\n%s", text)
-	}
-	if !strings.Contains(text, "next: not planned: net votes <= 0: the planner takes score > 0 only; vote it up with evidence (a Signal: line naming a file or check) or close the thread") {
-		t.Fatalf("blocked next text:\n%s", text)
 	}
 }
 

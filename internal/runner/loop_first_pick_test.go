@@ -15,7 +15,7 @@ func loopFirstSuggestion(t *testing.T, s *store.Store, thread, summary string, v
 	t.Helper()
 	post, err := board.CreatePost(s, board.PostInput{Kind: "suggestion", Project: "proj", Area: "evolution", Thread: thread,
 		Agent: "proposer", Summary: summary, Files: "README.md",
-		Body: "Class: operating-layer\nFile: README.md\nVariable: one constant\nHypothesis: README gets clearer\nTier: 1\nSignal: README.md\n"})
+		Body: "Class: operating-layer\nFile: README.md\nVariable: one constant " + thread + "\nHypothesis: README gets clearer\nTier: 1\nSignal: README.md\n"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func withClosedLoginGate(t *testing.T) {
 func plainSuggestion(t *testing.T, s *store.Store, thread, summary string, votes int) *board.Post {
 	t.Helper()
 	post, err := board.CreatePost(s, board.PostInput{Kind: "suggestion", Project: "proj", Area: "evolution", Thread: thread,
-		Agent: "proposer", Summary: summary, Body: "One-variable improvement seen by the worker in run `r` of job `j` (Reflect), not made there.\n\n" + summary + "\nSignal: README.md\n"})
+		Agent: "proposer", Summary: summary, Body: "Class: operating-layer\nOne-variable improvement seen by the worker in run `r` of job `j` (Reflect), not made there.\n\n" + summary + "\nSignal: README.md\n"})
 	if err != nil {
 		t.Fatal(err)
 	}

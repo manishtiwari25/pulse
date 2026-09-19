@@ -56,6 +56,7 @@ type Funnel struct {
 	Voted      int `json:"voted"`       // at least one independent vote
 	NeedsVotes int `json:"needs_votes"` // below quorum, not expired
 	Eligible   int `json:"eligible"`    // at quorum, nothing built yet
+	Rejected   int `json:"rejected"`    // quorum reached with more down than up
 	Carded     int `json:"carded"`      // a card job turned it into an experiment card (ADR-044)
 	Built      int `json:"built"`       // an improve or experiment job ended done
 	Tried      int `json:"tried"`       // a job ended failed or cancelled
@@ -193,6 +194,8 @@ func suggestionFunnel(s *store.Store, project, since string, status *LoopStatus)
 			f.NeedsVotes++
 		case "eligible":
 			f.Eligible++
+		case "rejected":
+			f.Rejected++
 		case "carded":
 			f.Carded++
 		case "built":
@@ -439,8 +442,8 @@ func reportRows(r *Report) [][]string {
 		{"Window", fmt.Sprintf("last %d day(s), since %s", r.Days, r.Since)},
 		{"Posts", strings.Join(posts, ", ")},
 		{"Suggestions posted", fmt.Sprintf("%d; %d voted; %d name one File: and one Variable:, %d of those inside the editable scope", f.Posted, f.Voted, f.WithCard, f.InScope)},
-		{"Suggestions now", fmt.Sprintf("%d need votes, %d eligible, %d carded, %d built, %d tried, %d expired, %d closed",
-			f.NeedsVotes, f.Eligible, f.Carded, f.Built, f.Tried, f.Expired, f.Closed)},
+		{"Suggestions now", fmt.Sprintf("%d need votes, %d eligible, %d rejected, %d carded, %d built, %d tried, %d expired, %d closed",
+			f.NeedsVotes, f.Eligible, f.Rejected, f.Carded, f.Built, f.Tried, f.Expired, f.Closed)},
 		{"Card jobs", fmt.Sprintf("%d open, %d carded, %d no card, %d failed", r.CardJobs.Queued, r.CardJobs.Carded, r.CardJobs.NoCard, r.CardJobs.Failed)},
 	}
 	if len(r.Jobs) == 0 {

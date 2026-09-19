@@ -157,13 +157,16 @@ func init() {
 	})
 	cli.Register(cli.Command{
 		Name: "remove", Group: "human",
-		Summary: "deactivate a project or retire an executor: preview, then apply; nothing is deleted",
+		Summary: "deactivate a project, retire an executor, or remove duplicate system findings",
 		Usage: "pulse remove project SLUG [--dry-run] [--yes] [--json]\n" +
 			"       pulse remove executor NAME [--dry-run] [--yes] [--json]   (the old spelling was: pulse executor remove NAME)\n" +
+			"       pulse remove duplicate-findings [--project SLUG] [--apply] [--yes] [--json]\n" +
 			"       pulse remove service                                     (the daemon's user service; today: pulse service uninstall)",
 		Flags: func(fs *flag.FlagSet) {
 			fs.Bool("dry-run", false, "show the preview and change nothing")
 			fs.Bool("yes", false, "apply without the confirmation prompt (only asked on a terminal)")
+			fs.Bool("apply", false, "duplicate-findings: delete after preview/confirmation")
+			fs.String("project", "", "duplicate-findings: limit to one project")
 		},
 		Run: runRemove,
 	})
@@ -706,7 +709,7 @@ func runImport(c *cli.Context, fs *flag.FlagSet, _ []string) error {
 
 func runRemove(c *cli.Context, fs *flag.FlagSet, args []string) error {
 	if len(args) == 0 {
-		return usage("remove", "project SLUG, executor NAME, or service")
+		return usage("remove", "project SLUG, executor NAME, duplicate-findings, or service")
 	}
 	dry, yes := flagBool(fs, "dry-run"), flagBool(fs, "yes")
 	var run func(dryRun bool) (*RemovePreview, error)
@@ -721,6 +724,13 @@ func runRemove(c *cli.Context, fs *flag.FlagSet, args []string) error {
 			return usage("remove", "executor needs one NAME")
 		}
 		run = func(d bool) (*RemovePreview, error) { return RemoveExecutor(c.Store, args[1], actor(c), d) }
+	case "duplicate-findings":
+		if len(args) != 1 {
+			return usage("remove", "duplicate-findings takes no positional argument; use --project SLUG")
+		}
+		dry = !flagBool(fs, "apply") || dry
+		project := flagString(fs, "project")
+		run = func(d bool) (*RemovePreview, error) { return RemoveDuplicateFindings(c.Store, project, actor(c), d) }
 	case "service":
 		if dry {
 			c.Printf("would run: pulse service uninstall\n")
@@ -732,7 +742,7 @@ func runRemove(c *cli.Context, fs *flag.FlagSet, args []string) error {
 		UninstallService(c.Out)
 		return nil
 	default:
-		return usage("remove", "unknown target "+pyRepr(args[0])+"; project, executor or service")
+		return usage("remove", "unknown target "+pyRepr(args[0])+"; project, executor, duplicate-findings or service")
 	}
 	st := c.Style()
 	if !dry && !yes && StdinIsTTY() {

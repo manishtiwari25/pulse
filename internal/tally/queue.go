@@ -325,6 +325,7 @@ func projectWork(s *store.Store, res *Result, agent, session, now string) []Work
 	}
 	// Eligible suggestions: the experiment queue, hidden while STOP is on.
 	if !res.Params.StopPresent {
+		planCtx := PlanContextFor(s, slug, now, res)
 		postsByID := map[string]Post{}
 		for _, p := range res.Posts {
 			postsByID[p.ID] = p
@@ -341,7 +342,7 @@ func projectWork(s *store.Store, res *Result, agent, session, now string) []Work
 			if p, ok := postsByID[x.ID]; ok {
 				post = &p
 			}
-			it.Blocked = PlanGate(s, res.Repo, x, post)
+			it.Blocked = PlanGateWith(s, planCtx, res.Repo, x, post)
 			if it.Blocked != "" {
 				if InFlightGate(x) != "" {
 					it.Next = fmt.Sprintf("already %s: wait for job %s", x.JobStatus, x.Job)
@@ -380,7 +381,7 @@ func projectWork(s *store.Store, res *Result, agent, session, now string) []Work
 	}
 	// Ballot: what this identity may still vote on (same rule as `pulse ballot`).
 	if agent != "" {
-		for _, b := range res.Ballot(agent, session) {
+		for _, b := range LimitBallotItems(res.Ballot(agent, session), res.Params.Quorum, BallotCap(s)) {
 			switch {
 			case b.Suggestion != nil:
 				x := b.Suggestion

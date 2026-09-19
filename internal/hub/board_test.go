@@ -227,8 +227,8 @@ func TestSuggestionRowsCarryJobsAndPlanGates(t *testing.T) {
 	for _, row := range data.Suggestions {
 		byID[str(row["id"])] = row
 	}
-	if row := byID[netZero.ID]; row["gate"] != tally.GateNetVotes || row["plannable"] != false {
-		t.Fatalf("net vote gate = %#v", row)
+	if row := byID[netZero.ID]; row["status"] != "needs votes" || row["gate"] != "" || row["plannable"] != false {
+		t.Fatalf("net-zero tie row = %#v", row)
 	}
 	if row := byID[plannable.ID]; row["gate"] != "" || row["plannable"] != true {
 		t.Fatalf("plannable gate = %#v", row)

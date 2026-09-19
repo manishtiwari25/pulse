@@ -19,7 +19,7 @@ func TestIdleNoteEmptyProject(t *testing.T) {
 	}
 }
 
-func TestIdleNoteEligibleSuggestionWithNetNonPositiveVotes(t *testing.T) {
+func TestIdleNoteRejectedSuggestion(t *testing.T) {
 	s := newStore(t)
 	newBareRepo(t, s)
 	author := join(t, s, "author")
@@ -36,10 +36,30 @@ func TestIdleNoteEligibleSuggestionWithNetNonPositiveVotes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
 	got := idleNote(s, "proj", testNow)
-	if !strings.Contains(got, "1 eligible suggestions, 0 plannable (1 net votes <= 0)") {
+	if !strings.Contains(got, "no eligible suggestion (1 rejected)") {
 		t.Fatalf("downvoted idle note: %q", got)
+	}
+}
+
+func TestBallotDueSkipsWhenOnlyAuthorCouldVote(t *testing.T) {
+	s := newStore(t)
+	newBareRepo(t, s)
+	author := join(t, s, "author")
+	card, err := createPost(s, "2026-09-06T08:00:00Z", postOpts{Kind: "suggestion", Project: "proj", Area: "code", Thread: "plan",
+		Summary: "try a measured change", Body: "one variable\n", Agent: rowAgent(author)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suggestions := suggestionRecords(s, "proj", testNow)
+	if cards := ballotDue(s, "proj", testNow, suggestions); len(cards) != 0 {
+		t.Fatalf("ballot due with only author voter: %+v", cards)
+	}
+	join(t, s, "voter")
+	suggestions = suggestionRecords(s, "proj", testNow)
+	cards := ballotDue(s, "proj", testNow, suggestions)
+	if len(cards) != 1 || cards[0].ID != card.str("id") {
+		t.Fatalf("ballot due with available voter: %+v", cards)
 	}
 }
 

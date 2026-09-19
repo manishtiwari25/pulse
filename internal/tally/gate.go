@@ -24,11 +24,13 @@ var OwnerPaths = store.OwnerPaths
 
 // Gate phrases the planner, `pulse queue` and the console show for an eligible suggestion it does not queue.
 const (
-	GateNetVotes   = "net votes <= 0: the planner takes score > 0 only"
-	GateOwner      = "addressed to the owner; not a worker job"
-	GateNoEvidence = "without evidence: no Signal: line names an existing file, post or check"
-	GateOwnerPaths = "points at owner-only paths (constitution, evaluators, decisions, .github)"
-	GateUnlanded   = "Signal path is absent from the default branch (only on an unlanded branch); waits for landing"
+	GateNetVotes          = "net votes <= 0: the planner takes score > 0 only"
+	GateOwner             = "addressed to the owner; not a worker job"
+	GateNoEvidence        = "without evidence: no Signal: line names an existing file, post or check"
+	GateOwnerPaths        = "points at owner-only paths (constitution, evaluators, decisions, .github)"
+	GateUnlanded          = "Signal path is absent from the default branch (only on an unlanded branch); waits for landing"
+	GateDuplicate         = "duplicate of"
+	GateOperatingLayerCap = "operating-layer cap"
 )
 
 func signalTokens(text string) []string {
@@ -292,8 +294,16 @@ func InFlightGate(sg Suggestion) string {
 // PlanGate returns "" when the planner may queue the eligible suggestion sg, else the reason it holds it back,
 // in planner order.
 func PlanGate(s *store.Store, projectPath string, sg Suggestion, post *Post) string {
+	return PlanGateWith(s, PlanContext{}, projectPath, sg, post)
+}
+
+// PlanGateWith is PlanGate with a precomputed project context for duplicate and cap gates.
+func PlanGateWith(s *store.Store, ctx PlanContext, projectPath string, sg Suggestion, post *Post) string {
 	if gate := InFlightGate(sg); gate != "" {
 		return gate
+	}
+	if dup := ctx.Duplicates[sg.ID]; dup != "" {
+		return DuplicateGate(dup)
 	}
 	if sg.Score <= 0 {
 		return GateNetVotes
@@ -321,6 +331,9 @@ func PlanGate(s *store.Store, projectPath string, sg Suggestion, post *Post) str
 		if RunCheckIsNoOp(projectPath, summary, body) {
 			return GateNoOpCheck
 		}
+	}
+	if ctx.OperatingLayerCapSet && ctx.OperatingLayerToday >= ctx.OperatingLayerCap && CardClass(summary, body) == CardClassOperatingLayer {
+		return OperatingLayerCapGate(ctx.OperatingLayerToday, ctx.OperatingLayerCap)
 	}
 	return ""
 }

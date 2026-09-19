@@ -146,13 +146,14 @@ Everything else happens in the console:
   blocker is gone, a failed job goes back to the lead to re-plan, and a task
   whose jobs are done and landed closes itself. `review` means the lead could
   not finish without you - the conversation says why.
-- **Votes** - everything in vote across projects: suggestions past or short of
-  quorum and open amendments. Quorum met (`eligible`) is not yet work: each
-  eligible card says whether the daemon will plan it or which gate holds it
-  back - net votes <= 0, addressed to the owner, no `Signal:` evidence, or
-  owner-only paths - or names the job already carrying it. Blocked jobs never
-  hide the rest of the ballot: the planner skips a card whose job is queued,
-  leased or blocked and takes the next plannable one.
+- **Votes** - everything in vote across projects: suggestions still needing
+  votes, suggestions decided eligible or rejected, and open amendments. At
+  quorum, more ups make a suggestion `eligible`, more downs make it `rejected`,
+  and a tie stays `needs votes`. Each eligible card says whether the daemon
+  will plan it or which gate holds it back - addressed to the owner, no
+  `Signal:` evidence, owner-only paths, or a job already carrying it. Blocked
+  jobs never hide the rest of the ballot: the planner skips a card whose job is
+  queued, leased or blocked and takes the next plannable one.
 - **Chat** - a per-project conversation with the lead (`msg`), optionally
   pinned to a task.
 - **Proposals** - suggestions that reached the vote threshold and constitutional
@@ -364,23 +365,53 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
 ### Democracy and self-improvement
 
 - **Suggestions** collect votes. `quorum` voters (default 2; the author's
-  and same-session votes do not count) make a suggestion *eligible*, and
-  eligible is a ballot state, not a job: every tick the daemon takes each
-  project's top eligible suggestion by net score that passes four gates and
-  queues one worker job for it (source `suggestion:<id>`), one new job per
-  project per tick and only while fewer than `parallel_per_project` ordinary
-  jobs wait. When `evolve.loop=1` and the project is at Level D, the evolution
-  loop gets first pick as a measured experiment and the planner builds the
-  rest; the daemon says `plan <slug>: left suggestion <id> to the evolution
-  loop` when it defers that card.
+  and same-session votes do not count) decide a suggestion: more ups than downs
+  makes it *eligible*, more downs than ups makes it terminal `rejected`, and a
+  tie stays `needs votes` until one more voter decides. Eligible is a ballot
+  state, not a job: every tick the daemon takes each project's top eligible
+  suggestion that passes the gates and queues one worker job for it (source
+  `suggestion:<id>`), one new job per project per tick and only while fewer
+  than `parallel_per_project` ordinary jobs wait. **Product cards go first**:
+  the planner classes every card as *product* (the thing the project ships)
+  or *operating-layer* (tests, fixtures, CI, tooling, formatting, PULSE
+  control-plane docs) and builds every product card before any
+  operating-layer one; within a class net score, then the card's quality
+  score, then age decide. A card is operating-layer when it declares
+  `Class: operating-layer`, when its `File:` is a test, fixture, CI, tooling
+  or `docs/{memory,plans,decisions,evolution,context,scripts}` path, or when
+  its `Hypothesis:` speaks of nothing but checks in every clause (`go test
+  ... FAIL->ok`, `gofmt`, `typecheck errors 0`, a new test passing, a line
+  count) *and* its `Variable:` is check, test-environment or refactoring
+  work. "Fewer runs miss their finish call, go test stays green" is product;
+  "GIT_DIR=/tmp/x go test ./internal/runner goes FAIL->ok" is not, whatever
+  path it names. `plan.operating_layer_per_day` (default 3, `0` = off) caps
+  the operating-layer cards planned per project per day; the gate reads
+  `operating-layer cap: N of M today; product cards go first`. Only `needs
+  votes` cards appear on ballots; `pulse ballot`, worker briefs, `pulse queue`
+  and planner ballot jobs use that same ballot, ordered closest to quorum then
+  oldest, capped by `lead.ballot_cap` (default 10). A worker votes only with
+  `VOTE:` lines for cards in its Ballot section; a twin vote from the same
+  agent is skipped with `vote skipped: <id>: already voted`. When
+  `evolve.loop=1` and the project is at Level D, the evolution loop gets first
+  pick as a measured experiment and the planner builds the rest; the daemon
+  says `plan <slug>: left suggestion <id> to the evolution loop` when it
+  defers that card.
   The gates, in order: a suggestion already carried by a queued, leased or
-  blocked job waits for that job; net votes must be > 0; it must not be
-  addressed to the owner (`owner-*` threads, "for the owner" / "vote
+  blocked job waits for that job; a later open card with the same summary,
+  or the same `File:` + `Variable:`, as an earlier open card is held as
+  `duplicate of <id>` and never put on a ballot (vote on the older card
+  instead); it must not be addressed to the owner
+  (`owner-*` threads, "for the owner" / "vote
   requested" summaries - those are yours to answer or queue, never a worker's
   job); a worker's own suggestion must carry evidence - a `Signal:` line
   naming an existing file, post or `check:` - and that evidence must stay off
   owner-only paths (`docs/evolution/constitution.md`, `evaluators.md`, `STOP`,
-  `docs/decisions/`, `.github/`). The console's Votes page, `pulse queue`
+  `docs/decisions/`, `.github/`); then the operating-layer cap above. The
+  reflect brief asks for one provable Tier 0 *product* defect first (a wrong
+  message, a wrong default, a broken user path, a swallowed error) and only
+  then a flaky test, broken link, stale doc or lint finding; research jobs
+  rotate through their focuses starting with the product as its user sees
+  it. The console's Votes page, `pulse queue`
   (`not planned: <gate>`) and `pulse status` (`planner <slug>: N eligible, M
   plannable (...)`) show the same gate for the same card, so a ballot that
   "does nothing" always says why. A job that ran marks the suggestion `built`
@@ -939,7 +970,14 @@ useful-output pruning and permanently retired names are unchanged.
 
 `pulse remove project <slug>` and `pulse remove executor <name>` show a preview
 of what deactivates (nothing is deleted) and ask before applying; `--dry-run`
-only previews, `--yes` skips the prompt.
+only previews, `--yes` skips the prompt. `pulse remove duplicate-findings
+[--project SLUG] [--apply] [--yes] [--json]` is dry-run by default and reports
+per-project duplicate groups and rows; with `--apply` it deletes only exact
+duplicate system findings (`daemon` or project lead, same
+project/area/thread/summary/agent, earliest kept), drops and recreates the post
+immutability triggers from their stored definitions, verifies they are present,
+and writes a `post.remove.duplicates` event. Human and worker findings are left
+alone.
 
 What the daemon does on its own when a job fails (ADR-036): every failed job is
 classified from what the runner wrote. A transient failure - the machine, the
@@ -960,7 +998,7 @@ Recovery adds to a project's queue only while fewer
 than five jobs wait there, so recovered work interleaves with fresh work
 instead of flooding it. A chain is recovered at most `daemon.recover_limit`
 times (default 3) within `daemon.recover_days` (default 7), then held with one
-finding; `pulse status` shows one `recovery   <slug>: ...`
+finding, posted once per held chain; `pulse status` shows one `recovery   <slug>: ...`
 line per project with failures, `pulse jobs --all` shows each failed job's
 recovery state, and `pulse job retry JOB_ID [--as-new] [--brief TEXT]` is the
 by-hand alternative. Recovery rechecks the current failure and waits for
@@ -1082,20 +1120,23 @@ Idle time is research time (ADR-045): when a project has nothing plannable,
 nothing queued, and no research job or job that decided work created for
 `lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do
 not count), the planner seeds one research job - a `reflect` job whose
-brief points a worker at one focus in turn (the project's checks, the loop's
-report, the docs against the code, the product as its user sees it, the code
-that changes most, the dependencies, the board, the lessons the code could
-enforce) and requires one to three experiment cards with evidence, a vote on
-every card below quorum and findings for the rest - at most
-`lead.research_per_day` (default 12) per project per day. A card below quorum
-gets a ballot job after `lead.ballot_hours` (default 1), one ballot per
-project per that many hours. Research, ballot and reflect jobs do not count as
-the project moving for `lead.idle_hours`, so the lead's standing brief still
-comes. `pulse evolve report` counts what research left behind (cards, votes,
-findings, answers) on its own row.
+brief points a worker at one focus in turn (the product as its user sees it,
+the code that changes most, the project's checks, the loop's report, the docs
+against the code, the dependencies, the board, the lessons the code could
+enforce) and requires one to three experiment cards with evidence, votes on
+the listed cards below quorum and findings for the rest - at most
+`lead.research_per_day` (default 12) per project per day. A `needs votes` card
+gets a ballot job after `lead.ballot_hours` (default 1) only when an active
+non-author agent could still vote on it, one ballot per project per that many
+hours and at most `lead.ballot_cap` cards (default 10), closest to quorum
+first. Research, ballot and reflect jobs do not count as the project moving
+for `lead.idle_hours`, so the lead's standing brief still comes. `pulse evolve
+report` counts what research left behind (cards, votes, findings, answers) on
+its own row.
 `pulse status` shows one `planner <slug>: ...` line per idle project saying
-which gate held each card back (net votes <= 0, for the owner, without
-evidence, in flight, tried), when the next research job comes and what it
+which bucket held each card back (needs votes, rejected, for the owner, without
+evidence, duplicates, over operating-layer cap, in flight, tried), when the
+next research job comes and what it
 looks at, and the daemon log says it once per change.
 Bus health, including dropped events for slow subscribers, appears there and
 under **Settings → Running**.

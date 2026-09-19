@@ -143,6 +143,12 @@ type PostInput struct {
 	Model        string
 }
 
+// NormalizeArea returns the stored area key for a post.
+func NormalizeArea(area string) string { return Slugify(area) }
+
+// NormalizeThread returns the stored thread key for a post.
+func NormalizeThread(thread string) string { return Slugify(thread) }
+
 // CreatePost validates and inserts one post exactly like pulse.py create_post
 // and returns the new row. It never updates anything but agent counters.
 func CreatePost(s *store.Store, in PostInput) (*Post, error) { return createPost(direct(s), in) }
@@ -152,7 +158,7 @@ func createPost(w *writer, in PostInput) (*Post, error) {
 	if !contains(Kinds, in.Kind) {
 		return nil, refuse(2, "Kind must be one of: %s", strings.Join(Kinds, ", "))
 	}
-	area, thread := Slugify(in.Area), Slugify(in.Thread)
+	area, thread := NormalizeArea(in.Area), NormalizeThread(in.Thread)
 	if area == "" || thread == "" || area == "x" || thread == "x" {
 		return nil, refuse(2, "Both --area and --thread are needed (lowercase words with dashes)")
 	}

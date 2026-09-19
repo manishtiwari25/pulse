@@ -299,6 +299,34 @@ func join(t *testing.T, s *store.Store, name string) row {
 	return r
 }
 
+func TestCastResultVotesSkipsAlreadyVotedTarget(t *testing.T) {
+	s := newStore(t)
+	newBareRepo(t, s)
+	author := join(t, s, "author")
+	voter := join(t, s, "voter")
+	card, err := createPost(s, testNow, postOpts{Kind: "suggestion", Project: "proj", Area: "code", Thread: "plan",
+		Summary: "try a measured change", Body: "one variable\n", Agent: rowAgent(author)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createPost(s, testNow, postOpts{Kind: "vote", Project: "proj", Area: "code", Thread: "plan",
+		Summary: "already voted", Body: "already voted\n", Agent: rowAgent(voter), On: card.str("id"), Vote: "up"}); err != nil {
+		t.Fatal(err)
+	}
+	log := &runLog{}
+	got := castResultVotes(s, "proj", rowAgent(voter), voter.str("name"), testNow, "run-vote", []vote{{On: card.str("id"), Vote: "down", Reason: "changed mind"}},
+		[]ballotItem{{ID: card.str("id"), Key: "code/plan", Summary: "try a measured change"}}, log)
+	if got != 0 {
+		t.Fatalf("cast votes = %d, want 0", got)
+	}
+	if !strings.Contains(log.text(), "vote skipped: "+card.str("id")+": already voted") {
+		t.Fatalf("skip log missing:\n%s", log.text())
+	}
+	if n := mustOne(s.DB, "SELECT COUNT(*) AS n FROM posts WHERE kind = 'vote' AND agent = ? AND on_post = ?", voter.str("name"), card.str("id")).int("n"); n != 1 {
+		t.Fatalf("vote count = %d, want existing vote only", n)
+	}
+}
+
 func count(t *testing.T, s *store.Store, sql string, args ...any) int {
 	t.Helper()
 	r, err := queryOne(s.DB, sql, args...)

@@ -247,8 +247,7 @@ func firstText(items ...string) string {
 }
 
 func productPost(p tally.Post) bool {
-	f := cardFields(p.Body)
-	return strings.Contains(strings.ToLower(firstText(f["file class"], f["class"])), "product")
+	return tally.CardClass(p.Summary, p.Body) == tally.CardClassProduct
 }
 
 func orderedSuggestions(s *store.Store, result *tally.Result, productFirst bool) []tally.Suggestion {

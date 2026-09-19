@@ -324,6 +324,7 @@ export interface ProjectCardData extends Partial<EvolveGate> {
   suggestions_eligible: number;
   suggestions_plannable?: number;
   suggestions_needing_votes: number;
+  suggestions_rejected?: number;
   amendments_open: number;
   proposals_awaiting: number;
   posts: number;
@@ -1081,6 +1082,7 @@ export interface Overview {
   suggestions_eligible: number;
   suggestions_plannable?: number;
   suggestions_needing_votes: number;
+  suggestions_rejected?: number;
   amendments_open: number;
   amendments_passed: number;
   proposals_awaiting: number;
