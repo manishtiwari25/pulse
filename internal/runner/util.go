@@ -212,7 +212,43 @@ func gitEnv(extra []string) []string {
 		// the Xcode license on a fresh macOS install or after updates.
 		base = append(base, "DEVELOPER_DIR=/Library/Developer/CommandLineTools")
 	}
-	return append(append(os.Environ(), base...), extra...)
+	return append(append(stripHookGitEnv(os.Environ()), base...), extra...)
+}
+
+// hookGitEnvPrefixes are the GIT_* variables a running git hook exports to its
+// children. When pulse itself is invoked from a hook (pre-commit running the
+// test suite, for example) they would redirect every runner git call at the
+// hook's index, prefix and author; dropping them keeps runner git hermetic.
+var hookGitEnvPrefixes = []string{
+	"GIT_INDEX_FILE=",
+	"GIT_PREFIX=",
+	"GIT_AUTHOR_NAME=",
+	"GIT_AUTHOR_EMAIL=",
+	"GIT_AUTHOR_DATE=",
+	"GIT_COMMITTER_NAME=",
+	"GIT_COMMITTER_EMAIL=",
+	"GIT_COMMITTER_DATE=",
+	"GIT_DIR=",
+	"GIT_WORK_TREE=",
+	"GIT_EDITOR=",
+	"GIT_REFLOG_ACTION=",
+}
+
+func stripHookGitEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		drop := false
+		for _, prefix := range hookGitEnvPrefixes {
+			if strings.HasPrefix(kv, prefix) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func git(repo string, args ...string) gitResult {

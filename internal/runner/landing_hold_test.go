@@ -253,7 +253,9 @@ func TestLandingAutoStashFailedBlocked(t *testing.T) {
 	run(t, dir, "git", "add", "-A")
 	run(t, dir, "git", "commit", "-q", "-m", "main commit")
 	// The merge is expected to conflict; do not use run() because it fails on non-zero exit.
-	exec.Command("git", "-C", dir, "merge", "side").CombinedOutput()
+	merge := exec.Command("git", "-C", dir, "merge", "side")
+	merge.Env = environ()
+	merge.CombinedOutput()
 	// The merge is left conflicted.
 
 	projects := []row{proj}

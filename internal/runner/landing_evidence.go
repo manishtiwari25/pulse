@@ -139,7 +139,7 @@ func limitedGitOutput(ctx context.Context, repo string, timeout time.Duration, m
 		args = append([]string{"-C", repo}, args...)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+	cmd.Env = append(stripHookGitEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	out := cappedBuffer{limit: maxBytes, cancel: cancel}
 	errOut := cappedBuffer{limit: 4096, cancel: cancel}
 	cmd.Stdout = &out

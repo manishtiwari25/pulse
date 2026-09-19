@@ -127,7 +127,7 @@ func (h *hands) withTimeoutObserved(budget time.Duration, dir string, argv []str
 	cmd.Dir = dir
 	// Same PATH prefix as localExec.runWorker: when run.go passed PULSE_CLI, its
 	// directory leads PATH so the remote worker resolves `pulse` by bare name.
-	env := workerEnvWithCLIPath(os.Environ(), extra)
+	env := workerEnvWithCLIPath(stripHookGitEnv(os.Environ()), extra)
 	var kept []string
 	for _, kv := range env {
 		k, _, _ := strings.Cut(kv, "=")

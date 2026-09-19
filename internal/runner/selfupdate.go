@@ -233,7 +233,7 @@ func runIn(dir string, timeout time.Duration, name string, args ...string) (stri
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(stripHookGitEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
