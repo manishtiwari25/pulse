@@ -38,6 +38,7 @@ func TestHandsKeyRefusesSigningKeyWithoutKeyFile(t *testing.T) {
 			for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "aurora"}} {
 				cmd := exec.Command("git", args...)
 				cmd.Dir = clone
+				cmd.Env = gitEnv(nil)
 				if out, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("git %v: %v %s", args, err, out)
 				}
@@ -58,6 +59,7 @@ func TestHandsKeyRefusesSigningKeyWithoutKeyFile(t *testing.T) {
 			}
 			cmd := exec.Command("git", "config", "--local", "--get", "user.signingkey")
 			cmd.Dir = clone
+			cmd.Env = gitEnv(nil)
 			out, _ := cmd.Output()
 			got := strings.TrimSpace(string(out))
 			if tc.wantKey && got != filepath.Join(dir, "run.key") {

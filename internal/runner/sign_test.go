@@ -113,6 +113,7 @@ func TestSigningKeyMustExistBeforeIdentity(t *testing.T) {
 	}
 	cmd := exec.Command("git", "config", "--local", "--get", "user.signingkey")
 	cmd.Dir = clone
+	cmd.Env = gitEnv(nil)
 	if out, err := cmd.Output(); err == nil {
 		t.Fatalf("user.signingkey set despite missing key: %q", out)
 	}
