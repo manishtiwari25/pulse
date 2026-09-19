@@ -14,6 +14,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 	"github.com/manishtiwari25/pulse/internal/store"
 )
 
@@ -54,7 +55,7 @@ func testGit(t *testing.T, repo string, args ...string) string {
 		"-c", "user.name=EVO fixture", "-c", "user.email=evo@example.invalid"}, args...)
 	cmd := exec.Command("git", argv...)
 	cmd.Dir = repo
-	cmd.Env = gitEnv()
+	cmd.Env = gitenv.Env()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("temporary repository git operation failed: %v (%s)", err, out)
