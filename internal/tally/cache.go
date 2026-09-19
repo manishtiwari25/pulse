@@ -34,10 +34,10 @@ type cacheValue struct {
 }
 
 type lruCache struct {
-	mu       sync.Mutex
-	entries  map[cacheKey]*list.Element
-	order    list.List // front = most recently used
-	max      int
+	mu      sync.Mutex
+	entries map[cacheKey]*list.Element
+	order   list.List // front = most recently used
+	max     int
 }
 
 type lruEntry struct {
