@@ -1,5 +1,6 @@
 {
   "name": "hub",
+  "type": "module",
   "//": [
     "PULSE hub UI - the owner's console. Next.js App Router + Tailwind v4 + shadcn/ui, exported statically to out/ which the Go binary embeds (web/hub/dist.go, //go:embed all:out). out/ is committed on purpose: go build needs no Node.",
     "dev:        `npm run dev` on :3000 proxies /api/* to the Go hub - run `pulse hub --no-browser --port 8787` first (PULSE_HUB_PORT overrides the port).",
