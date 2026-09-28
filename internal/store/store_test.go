@@ -1115,3 +1115,36 @@ func TestEventsIndexesArriveAtOpenAndServeJobHistoryQueries(t *testing.T) {
 		t.Fatalf("executor history plan:\n%s", got)
 	}
 }
+
+// TestGitTopLevelIgnoresHookGitDir: pulse invoked from a git hook inherits the
+// hook repository's GIT_DIR; gitTopLevel must still resolve the project checkout
+// containing dir, never the hook repo.
+func TestGitTopLevelIgnoresHookGitDir(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	hook := t.TempDir()
+	project := t.TempDir()
+	for _, dir := range []string{hook, project} {
+		cmd := exec.Command("git", "init", "-q", dir)
+		cmd.Env = testutil.GitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git init %s: %v\n%s", dir, err, out)
+		}
+	}
+	t.Setenv("GIT_DIR", filepath.Join(hook, ".git"))
+	t.Setenv("GIT_WORK_TREE", hook)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(hook, ".git", "index"))
+	sub := filepath.Join(project, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := gitTopLevel(sub)
+	want, _ := filepath.EvalSymlinks(project)
+	if real, err := filepath.EvalSymlinks(got); err == nil {
+		got = real
+	}
+	if got != want {
+		t.Fatalf("gitTopLevel(%s) = %q, want project root %q (hook GIT_DIR leaked)", sub, got, want)
+	}
+}
