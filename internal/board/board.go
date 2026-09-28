@@ -19,6 +19,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/store"
+	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 // Kinds are the post kinds, in the order the Python tool lists them.
@@ -330,21 +331,7 @@ func (w *writer) rollback() {
 }
 
 // gitChildEnv is the environment board git commands run with: the caller's environment minus the
-// repository-location variables git hooks export (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_PREFIX).
+// GIT_* variables git hooks export (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_PREFIX, author...).
 // Inherited from a pre-commit hook or a test run under such a hook, they would redirect "git -C repo"
-// at the hosting clone instead of repo.
-func gitChildEnv() []string {
-	env := os.Environ()
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		switch {
-		case strings.HasPrefix(kv, "GIT_DIR="),
-			strings.HasPrefix(kv, "GIT_WORK_TREE="),
-			strings.HasPrefix(kv, "GIT_INDEX_FILE="),
-			strings.HasPrefix(kv, "GIT_PREFIX="):
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
-}
+// at the hosting clone instead of repo. The list is shared with the runner via testutil.
+func gitChildEnv() []string { return testutil.StripHookGitEnv(os.Environ()) }

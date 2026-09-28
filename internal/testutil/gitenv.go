@@ -1,4 +1,6 @@
-// Package testutil holds small helpers shared by the package test suites.
+// Package testutil holds small helpers shared by the package test suites and
+// the single copy of the hook GIT_* environment scrub the runner and board git
+// callers use too.
 package testutil
 
 import (
@@ -9,8 +11,8 @@ import (
 // hookGitVars are the GIT_* variables a running git hook (pre-commit running
 // the test suite, for example) exports to its children. Inherited by a test's
 // git child they redirect every call at the hook's index, dir, prefix and
-// author, so fixture repositories fail or read the wrong tree. The list
-// mirrors runner.hookGitEnvPrefixes.
+// author, so fixture repositories fail or read the wrong tree. This is the one
+// list; runner and board git callers share it through StripHookGitEnv.
 var hookGitVars = []string{
 	"GIT_INDEX_FILE=",
 	"GIT_PREFIX=",
@@ -32,17 +34,25 @@ var hookGitVars = []string{
 // and with the hook-exported GIT_* variables dropped so the suite behaves the
 // same under a pre-commit hook as from a plain shell.
 func GitEnv() []string {
-	env := make([]string, 0, len(os.Environ())+2)
-	for _, kv := range os.Environ() {
-		if isHookGitVar(kv) {
-			continue
-		}
-		env = append(env, kv)
-	}
-	return append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+	return append(StripHookGitEnv(os.Environ()), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 }
 
-func isHookGitVar(kv string) bool {
+// StripHookGitEnv returns env without the GIT_* variables a running git hook
+// exports (see hookGitVars). Production git callers (runner, board) use it so
+// pulse invoked from a hook does not aim its own git at the hook's repository.
+func StripHookGitEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if HookGitVar(kv) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// HookGitVar reports whether the KEY=value entry kv is one of the hook-exported GIT_* variables.
+func HookGitVar(kv string) bool {
 	for _, prefix := range hookGitVars {
 		if strings.HasPrefix(kv, prefix) {
 			return true
