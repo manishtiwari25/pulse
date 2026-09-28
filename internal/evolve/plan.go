@@ -10,6 +10,8 @@ import (
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/store"
 	"github.com/manishtiwari25/pulse/internal/tally"
+
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 )
 
 type PlanOptions struct {
@@ -341,11 +343,15 @@ func fixAlreadyLanded(s *store.Store, project, file, commit string) (bool, error
 		return false, nil
 	}
 	// Try SHA ancestry first: works for full or abbreviated SHAs that resolve to a real commit.
-	if err := exec.Command("git", "-C", p.Path, "merge-base", "--is-ancestor", commit, p.DefaultBranch).Run(); err == nil {
+	ancestor := exec.Command("git", "-C", p.Path, "merge-base", "--is-ancestor", commit, p.DefaultBranch)
+	ancestor.Env = gitenv.Env()
+	if err := ancestor.Run(); err == nil {
 		return true, nil
 	}
 	// Fall back to message substring matching in the oneline log of the target file.
-	out, err := exec.Command("git", "-C", p.Path, "log", p.DefaultBranch, "--oneline", "--", file).Output()
+	log := exec.Command("git", "-C", p.Path, "log", p.DefaultBranch, "--oneline", "--", file)
+	log.Env = gitenv.Env()
+	out, err := log.Output()
 	if err != nil {
 		return false, nil
 	}

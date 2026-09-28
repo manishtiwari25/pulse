@@ -23,6 +23,8 @@ import (
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
+
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 )
 
 // SchemaVersion is the store schema this tool speaks (legacy/pulse.py SCHEMA_VERSION).
@@ -159,7 +161,9 @@ func isInside(path, root string) bool {
 
 // gitTopLevel returns the git checkout containing dir, or "".
 func gitTopLevel(dir string) string {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	cmd.Env = gitenv.Env()
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
