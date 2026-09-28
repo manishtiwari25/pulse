@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 )
 
 // `pulse hands`: the forced command a PULSE executor answers with (ADR-020), ported from hosted/pulse-hands.sh
@@ -243,7 +245,9 @@ func (h *hands) probe() error {
 		}
 		clone := filepath.Join(d, "clone")
 		if st, err := os.Stat(filepath.Join(clone, ".git")); err == nil && st.IsDir() {
-			if out, err := exec.Command("git", "-C", clone, "remote").Output(); err == nil && strings.TrimSpace(string(out)) != "" {
+			remote := exec.Command("git", "-C", clone, "remote")
+			remote.Env = gitenv.Env()
+			if out, err := remote.Output(); err == nil && strings.TrimSpace(string(out)) != "" {
 				remotes++
 			}
 		}
@@ -587,6 +591,7 @@ func (h *hands) uploadPack(path string) error {
 		return handsDie("no such clone")
 	}
 	cmd := exec.Command("git", "upload-pack", path)
+	cmd.Env = gitenv.Env()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = h.stdin, h.stdout, h.stderr
 	if err := cmd.Run(); err != nil {
 		return &handsExit{finish(err, "", "", false).ExitCode}
