@@ -27,7 +27,6 @@ import (
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/gitenv"
 	"github.com/manishtiwari25/pulse/internal/store"
-	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 const isoLayout = "2006-01-02T15:04:05Z"
@@ -213,8 +212,8 @@ func gitEnv(extra []string) []string {
 }
 
 // stripHookGitEnv drops the GIT_* variables a running git hook exports to its
-// children (index, prefix, author, dir); the shared list lives in testutil.
-func stripHookGitEnv(env []string) []string { return testutil.StripHookGitEnv(env) }
+// children (index, prefix, author, dir); the shared list lives in internal/gitenv.
+func stripHookGitEnv(env []string) []string { return gitenv.StripHook(env) }
 
 func git(repo string, args ...string) gitResult {
 	return gitTimeout(repo, 60*time.Second, args...)
