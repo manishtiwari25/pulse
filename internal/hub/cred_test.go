@@ -14,6 +14,7 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/cred"
 	"github.com/manishtiwari25/pulse/internal/cred/setup"
+	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 const credTestKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n"
@@ -303,7 +304,9 @@ func credUpstream(t *testing.T, repo string) {
 		{"-C", repo, "remote", "add", "origin", bare},
 		{"-C", repo, "push", "-q", "-u", "origin", "main"},
 	} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		cmd := exec.Command("git", args...)
+		cmd.Env = testutil.GitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v %s", args, err, out)
 		}
 	}
