@@ -4,6 +4,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 // GET /api/v1/running names the hub's build, the daemon's from its heartbeat,
@@ -95,6 +97,9 @@ func TestRunningNamesTheBuildsAndTheState(t *testing.T) {
 
 func mustOutput(t *testing.T, cmd *exec.Cmd) []byte {
 	t.Helper()
+	if cmd.Env == nil {
+		cmd.Env = testutil.GitEnv() // a hook's GIT_INDEX_FILE/GIT_DIR must not redirect the fixture git
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v: %v\n%s", cmd.Args, err, out)
