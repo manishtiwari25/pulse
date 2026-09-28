@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/cred"
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 	"github.com/manishtiwari25/pulse/internal/store"
-	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 // Deps are the seams tests replace; nil fields mean the real thing.
@@ -396,7 +396,7 @@ func DefaultBranch(b string) string {
 // UpstreamRemote is the remote the branch tracks, or "".
 func UpstreamRemote(root, branch string) string {
 	cmd := exec.Command("git", "-C", root, "for-each-ref", "--format=%(upstream:remotename)", "refs/heads/"+DefaultBranch(branch))
-	cmd.Env = testutil.StripHookGitEnv(os.Environ())
+	cmd.Env = gitenv.Env()
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -410,7 +410,7 @@ func ProbeRemote(ctx context.Context, root, remote, sshCommand string) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", root, "push", "--dry-run", "--porcelain", remote, "HEAD:refs/heads/pulse-cred-probe-does-not-exist")
-	cmd.Env = append(testutil.StripHookGitEnv(os.Environ()), "GIT_SSH_COMMAND="+sshCommand, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+	cmd.Env = append(gitenv.Env(), "GIT_SSH_COMMAND="+sshCommand)
 	var out strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {
