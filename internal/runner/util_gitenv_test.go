@@ -1,8 +1,9 @@
 package runner
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 )
 
 // gitEnv must not inherit the GIT_* variables a git hook exports, so runner git
@@ -15,10 +16,8 @@ func TestGitEnvDropsHookVariables(t *testing.T) {
 	t.Setenv("KEEP_ME", "yes")
 	env := gitEnv([]string{"EXTRA=1"})
 	for _, kv := range env {
-		for _, bad := range []string{"GIT_INDEX_FILE=", "GIT_PREFIX=", "GIT_AUTHOR_NAME=", "GIT_DIR="} {
-			if strings.HasPrefix(kv, bad) {
-				t.Fatalf("gitEnv leaked %q", kv)
-			}
+		if gitenv.HookVar(kv) {
+			t.Fatalf("gitEnv leaked %q", kv)
 		}
 	}
 	for _, want := range []string{"KEEP_ME=yes", "EXTRA=1", "GIT_TERMINAL_PROMPT=0"} {
