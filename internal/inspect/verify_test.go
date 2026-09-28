@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 func fixtureCommand(t *testing.T, dir, input, program string, args ...string) string {
@@ -17,7 +19,7 @@ func fixtureCommand(t *testing.T, dir, input, program string, args ...string) st
 	}
 	cmd := exec.Command(program, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull,
+	cmd.Env = append(testutil.GitEnv(),
 		"GIT_AUTHOR_NAME=worker", "GIT_AUTHOR_EMAIL=worker@pulse.local",
 		"GIT_COMMITTER_NAME=worker", "GIT_COMMITTER_EMAIL=worker@pulse.local",
 		"GIT_AUTHOR_DATE="+parityNow, "GIT_COMMITTER_DATE="+parityNow)
