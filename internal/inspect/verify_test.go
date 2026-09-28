@@ -144,3 +144,26 @@ func TestVerifyUnknownProject(t *testing.T) {
 	}
 	assertParity(t, got, oracle(t, s.Home, true, "verify", "HEAD", "--project", "unknown"))
 }
+
+// gitOutput runs inside git hooks (post-commit, pre-push) where GIT_DIR and
+// GIT_INDEX_FILE point at the hook's repository; it must scrub them so git
+// inspects the project root instead.
+func TestGitOutputIgnoresHookGitEnv(t *testing.T) {
+	root := t.TempDir()
+	fixtureCommand(t, root, "", "git", "init", "--quiet")
+	tree := fixtureCommand(t, root, "", "git", "mktree")
+	want := fixtureCommand(t, root, "", "git", "commit-tree", tree, "-m", "fixture")
+
+	hook := t.TempDir()
+	fixtureCommand(t, hook, "", "git", "init", "--quiet")
+	t.Setenv("GIT_DIR", filepath.Join(hook, ".git"))
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(hook, ".git", "index"))
+
+	got, stderr, code, err := gitOutput(root, "rev-parse", "--verify", "--quiet", want+"^{commit}")
+	if err != nil || code != 0 {
+		t.Fatalf("gitOutput under hook env: code %d err %v\n%s", code, err, stderr)
+	}
+	if strings.TrimSpace(got) != want {
+		t.Fatalf("gitOutput inspected the wrong repo: got %q want %q", got, want)
+	}
+}
