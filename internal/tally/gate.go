@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/store"
+	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 // signalRe matches case-insensitive Signal: lines (optional "-" bullet/backticked
@@ -172,7 +173,7 @@ func landedSymbolExists(projectPath, commit, p, sym string) bool {
 		return v
 	}
 	landedCache.Unlock()
-	out, err := exec.Command("git", "-C", projectPath, "show", commit+":"+filepath.ToSlash(p)).Output()
+	out, err := landedGit(projectPath, "show", commit+":"+filepath.ToSlash(p)).Output()
 	v := err != nil || regexp.MustCompile(`(^|[^A-Za-z0-9_])`+regexp.QuoteMeta(sym)+`([^A-Za-z0-9_]|$)`).Match(out)
 	landedCache.Lock()
 	if len(landedCache.exists) >= landedExistsCap {
@@ -219,7 +220,7 @@ func defaultBranchHead(projectPath, branch string) (string, bool) {
 		return h.commit, h.ok
 	}
 	landedCache.Unlock()
-	out, err := exec.Command("git", "-C", projectPath, "rev-parse", "--verify", "--quiet", branch+"^{commit}").Output()
+	out, err := landedGit(projectPath, "rev-parse", "--verify", "--quiet", branch+"^{commit}").Output()
 	h := landedHead{commit: strings.TrimSpace(string(out)), ok: err == nil && len(out) > 0, at: now}
 	landedCache.Lock()
 	landedCache.heads[key] = h
@@ -230,6 +231,15 @@ func defaultBranchHead(projectPath, branch string) (string, bool) {
 	return h.commit, h.ok
 }
 
+// landedGit builds a git command for the landed-Signal probes with the hook GIT_*
+// variables scrubbed, so `pulse queue`/tally run from a git hook (pre-commit
+// `go test ./...`) inspect projectPath instead of the hook's own repository.
+func landedGit(projectPath string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"-C", projectPath}, args...)...)
+	cmd.Env = testutil.StripHookGitEnv(os.Environ())
+	return cmd
+}
+
 func landedPathExists(projectPath, commit, p string) bool {
 	key := projectPath + "\x00" + commit + "\x00" + p
 	landedCache.Lock()
@@ -238,7 +248,7 @@ func landedPathExists(projectPath, commit, p string) bool {
 		return v
 	}
 	landedCache.Unlock()
-	v := exec.Command("git", "-C", projectPath, "cat-file", "-e", commit+":"+filepath.ToSlash(p)).Run() == nil
+	v := landedGit(projectPath, "cat-file", "-e", commit+":"+filepath.ToSlash(p)).Run() == nil
 	landedCache.Lock()
 	if len(landedCache.exists) >= landedExistsCap {
 		landedCache.exists = map[string]bool{}
