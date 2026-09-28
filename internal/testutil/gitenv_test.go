@@ -3,6 +3,8 @@ package testutil
 import (
 	"os"
 	"testing"
+
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 )
 
 // TestGitEnvDropsHookVariables guards the GIT_DIR class of failures: a test suite
@@ -17,7 +19,7 @@ func TestGitEnvDropsHookVariables(t *testing.T) {
 
 	env := GitEnv()
 	for _, kv := range env {
-		if HookGitVar(kv) {
+		if gitenv.HookVar(kv) {
 			t.Errorf("GitEnv leaked hook variable %q", kv)
 		}
 	}

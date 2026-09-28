@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 	"github.com/manishtiwari25/pulse/internal/store"
-	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 type Signer struct {
@@ -110,7 +110,7 @@ func gitOutput(root string, args ...string) (string, string, int, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "-C", root}, args...)...)
 	// `pulse verify` runs inside git hooks (post-commit, pre-push); scrub the
 	// hook's GIT_DIR/GIT_INDEX_FILE so git inspects root, not the hook's repo.
-	cmd.Env = testutil.StripHookGitEnv(os.Environ())
+	cmd.Env = gitenv.StripHook(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
