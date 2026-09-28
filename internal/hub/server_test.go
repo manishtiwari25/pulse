@@ -21,6 +21,7 @@ import (
 	"github.com/manishtiwari25/pulse/internal/board"
 	"github.com/manishtiwari25/pulse/internal/cli"
 	"github.com/manishtiwari25/pulse/internal/store"
+	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 func TestStaticExport(t *testing.T) {
@@ -82,7 +83,9 @@ func TestStaticExport(t *testing.T) {
 
 func TestProjectPresenceDoesNotRequireDocs(t *testing.T) {
 	path := t.TempDir()
-	if out, err := exec.Command("git", "init", "-q", path).CombinedOutput(); err != nil {
+	init := exec.Command("git", "init", "-q", path)
+	init.Env = testutil.GitEnv()
+	if out, err := init.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 	if !present(&store.Project{Path: path}) {
