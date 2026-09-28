@@ -2,7 +2,6 @@ package testutil
 
 import (
 	"os"
-	"strings"
 	"testing"
 )
 
@@ -18,10 +17,8 @@ func TestGitEnvDropsHookVariables(t *testing.T) {
 
 	env := GitEnv()
 	for _, kv := range env {
-		for _, prefix := range hookGitVars {
-			if strings.HasPrefix(kv, prefix) {
-				t.Errorf("GitEnv leaked hook variable %q", kv)
-			}
+		if HookGitVar(kv) {
+			t.Errorf("GitEnv leaked hook variable %q", kv)
 		}
 	}
 	want := map[string]bool{

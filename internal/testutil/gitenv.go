@@ -1,32 +1,13 @@
-// Package testutil holds small helpers shared by the package test suites and
-// the single copy of the hook GIT_* environment scrub the runner and board git
-// callers use too.
+// Package testutil holds small helpers shared by the package test suites. The
+// hook GIT_* environment scrub lives in internal/gitenv; the wrappers here keep
+// the test-suite call sites and the runner/board callers on one list.
 package testutil
 
 import (
 	"os"
-	"strings"
-)
 
-// hookGitVars are the GIT_* variables a running git hook (pre-commit running
-// the test suite, for example) exports to its children. Inherited by a test's
-// git child they redirect every call at the hook's index, dir, prefix and
-// author, so fixture repositories fail or read the wrong tree. This is the one
-// list; runner and board git callers share it through StripHookGitEnv.
-var hookGitVars = []string{
-	"GIT_INDEX_FILE=",
-	"GIT_PREFIX=",
-	"GIT_AUTHOR_NAME=",
-	"GIT_AUTHOR_EMAIL=",
-	"GIT_AUTHOR_DATE=",
-	"GIT_COMMITTER_NAME=",
-	"GIT_COMMITTER_EMAIL=",
-	"GIT_COMMITTER_DATE=",
-	"GIT_DIR=",
-	"GIT_WORK_TREE=",
-	"GIT_EDITOR=",
-	"GIT_REFLOG_ACTION=",
-}
+	"github.com/manishtiwari25/pulse/internal/gitenv"
+)
 
 // GitEnv returns the current environment with the host's system and global
 // git config disabled, so fixture repositories created in tests never inherit
@@ -38,25 +19,8 @@ func GitEnv() []string {
 }
 
 // StripHookGitEnv returns env without the GIT_* variables a running git hook
-// exports (see hookGitVars). Production git callers (runner, board) use it so
-// pulse invoked from a hook does not aim its own git at the hook's repository.
-func StripHookGitEnv(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		if HookGitVar(kv) {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
-}
+// exports; see gitenv.StripHook for the list.
+func StripHookGitEnv(env []string) []string { return gitenv.StripHook(env) }
 
-// HookGitVar reports whether the KEY=value entry kv is one of the hook-exported GIT_* variables.
-func HookGitVar(kv string) bool {
-	for _, prefix := range hookGitVars {
-		if strings.HasPrefix(kv, prefix) {
-			return true
-		}
-	}
-	return false
-}
+// HookGitVar reports whether kv is one of the hook-exported GIT_* variables (gitenv.HookVar).
+func HookGitVar(kv string) bool { return gitenv.HookVar(kv) }
