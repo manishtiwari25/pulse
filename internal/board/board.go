@@ -18,8 +18,8 @@ import (
 
 	"github.com/manishtiwari25/pulse/internal/bus"
 	"github.com/manishtiwari25/pulse/internal/cli"
+	"github.com/manishtiwari25/pulse/internal/gitenv"
 	"github.com/manishtiwari25/pulse/internal/store"
-	"github.com/manishtiwari25/pulse/internal/testutil"
 )
 
 // Kinds are the post kinds, in the order the Python tool lists them.
@@ -242,7 +242,7 @@ func git(repo string, args ...string) (string, bool) {
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
 	// Drop the GIT_* variables git hooks export (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, ...):
 	// inherited from a pre-commit hook they would aim "git -C repo" at the hosting clone instead.
-	cmd.Env = testutil.StripHookGitEnv(os.Environ())
+	cmd.Env = gitenv.StripHook(os.Environ())
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err == nil
 }
