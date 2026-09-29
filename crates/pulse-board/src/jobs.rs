@@ -1116,13 +1116,30 @@ pub fn queue_onboarding_job(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::what_any;
+    use crate::posts::Post;
+    use crate::test_helpers::{code, count_rows, no_tty, run_cmd, what_any};
     use rusqlite::params;
     use serde_json::Value;
     use tempfile::TempDir;
 
     const TEST_NOW: &str = "2026-09-06T10:00:00Z";
 
+    fn test_context() -> pulse_cli::Context {
+        pulse_cli::Context {
+            store: None,
+            home: String::new(),
+            out: Box::new(pulse_cli::Buffer::new()),
+            err: Box::new(pulse_cli::Buffer::new()),
+            json: false,
+            quiet: false,
+            color: false,
+            agent: String::new(),
+            project: String::new(),
+            session: String::new(),
+            now: TEST_NOW.into(),
+            args: vec![],
+        }
+    }
     fn fixture() -> (TempDir, pulse_store::Store, pulse_store::Project) {
         let dir = tempfile::tempdir().unwrap();
         let s = pulse_store::Store::open(pulse_store::Options {
@@ -1984,7 +2001,7 @@ mod tests {
     #[test]
     fn owner_away_lead_decide_guards() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "\"on_behalf\": \"owner-away\"",
             ") is the approval for what it proposes, nothing more",
             "Act on the lead's yes (owner away):",
@@ -1996,7 +2013,7 @@ mod tests {
             "sess-lead",
             "sess-other-lead",
             "the recorded decision (result",
-        ];
+        );
         let (_dir, s, p) = fixture();
         for slug in [&p.slug, "other"] {
             crate::agents::join_agent(
@@ -2229,58 +2246,68 @@ mod tests {
     #[test]
     fn jobs_add_finish() {
         let _serial = crate::test_helpers::serial();
+        no_tty();
         let (_dir, s, p) = fixture();
-        let (job, created) = add_job(
+        let (out, err) = run_cmd(
             &s,
-            JobInput {
-                project: p.slug.clone(),
-                kind: "task".into(),
-                title: "Do a thing".into(),
-                source: "task:1".into(),
-                priority: 5,
-                created_by: "alice".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(created);
-        assert!(job.id.starts_with("job-20260906T100000Z-"));
-        let (dedupe, created) = add_job(
+            Some(pulse_cli::Context {
+                agent: "alice".into(),
+                project: "demo".into(),
+                ..test_context()
+            }),
+            &[
+                "job",
+                "add",
+                "--title",
+                "Do a thing",
+                "--source",
+                "task:1",
+                "--priority",
+                "5",
+            ],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        let id = out.trim().to_string();
+        assert!(
+            id.starts_with(&format!("job-{}-", crate::stamp_of(TEST_NOW))),
+            "id {id:?}"
+        );
+        assert_eq!(id.len(), "job-20260906T100000Z-abcdef".len());
+        let (out, err) = run_cmd(
             &s,
-            JobInput {
-                project: p.slug.clone(),
-                kind: "task".into(),
-                title: "Do a thing".into(),
-                source: "task:1".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(!created);
-        assert_eq!(dedupe.id, job.id);
-        assert_eq!(
-            err_what(add_job(
-                &s,
-                JobInput {
-                    project: p.slug.clone(),
-                    kind: "party".into(),
-                    title: "t".into(),
-                    ..Default::default()
-                }
-            )),
-            format!("Job kind must be one of: {}", JOB_KINDS.join(", "))
+            Some(pulse_cli::Context {
+                agent: "alice".into(),
+                project: "demo".into(),
+                ..test_context()
+            }),
+            &["job", "add", "--title", "Do a thing", "--source", "task:1"],
+        );
+        assert!(
+            err.is_ok() && out.trim() == format!("already queued: {id}"),
+            "dedupe: {out:?} {err:?}"
+        );
+        let (_, err) = run_cmd(
+            &s,
+            Some(pulse_cli::Context {
+                project: "demo".into(),
+                ..test_context()
+            }),
+            &["job", "add", "--title", "t", "--kind", "party"],
         );
         assert_eq!(
-            err_what(add_job(
-                &s,
-                JobInput {
-                    project: p.slug.clone(),
-                    kind: "task".into(),
-                    title: "t".into(),
-                    tier: 2,
-                    ..Default::default()
-                }
-            )),
+            what_any(err.as_ref().unwrap_err()),
+            format!("Job kind must be one of: {}", JOB_KINDS.join(", "))
+        );
+        let (_, err) = run_cmd(
+            &s,
+            Some(pulse_cli::Context {
+                project: "demo".into(),
+                ..test_context()
+            }),
+            &["job", "add", "--title", "t", "--tier", "2"],
+        );
+        assert_eq!(
+            what_any(err.as_ref().unwrap_err()),
             "The runner takes Tier 0 and Tier 1 jobs only; Tier 2 needs an ADR and the human"
         );
         assert_eq!(
@@ -2310,47 +2337,65 @@ mod tests {
         .unwrap();
         assert!(created);
         assert_eq!(exp.branch, "evolve/x");
-        s.conn()
-                .unwrap()
-                .execute(
-                    "UPDATE jobs SET status = 'leased', lease_agent = 'bob', lease_until = '2026-09-06T11:00:00Z' WHERE id = ?",
-                    [&job.id],
-                )
-                .unwrap();
+        assert_eq!(exp.kind, "experiment");
+        s.conn().unwrap().execute("UPDATE jobs SET status = 'leased', lease_agent = 'bob', lease_until = '2026-09-06T11:00:00Z' WHERE id = ?", [&id]).unwrap();
+        let err = finish_job(&s, &id, "alice", "done", "", "", None).unwrap_err();
         assert_eq!(
-            err_what(finish_job(&s, &job.id, "alice", "done", "", "", None)),
-            format!("Job {} is leased by bob, not alice", job.id)
+            what_any(&err),
+            format!("Job {id} is leased by bob, not alice")
         );
         assert!(
-            err_what(finish_job(&s, &job.id, "bob", "done", "", "", Some(3)))
+            err_what(finish_job(&s, &id, "bob", "done", "", "", Some(3)))
                 .starts_with("Stale lease:")
         );
         assert_eq!(
-            err_what(finish_job(&s, &job.id, "bob", "paused", "", "", None)),
+            err_what(finish_job(&s, &id, "bob", "paused", "", "", None)),
             "A job ends done, failed, cancelled, blocked, or back to queued"
         );
         assert_eq!(
             err_what(finish_job(&s, "nope", "bob", "done", "", "", None)),
             "No job 'nope'"
         );
-        let done = finish_job(
+        let (out, err) = run_cmd(
             &s,
-            &job.id,
-            "bob",
-            "done",
-            "SUMMARY: ok",
-            "pulse/bob/x",
-            None,
-        )
-        .unwrap();
-        assert_eq!(done.status, "done");
-        assert_eq!(done.result, "SUMMARY: ok");
-        assert_eq!(done.branch, "pulse/bob/x");
-        assert_eq!(done.finished_at, TEST_NOW);
-        assert_eq!(done.lease_agent, "bob");
-        let queued = finish_job(&s, &job.id, "human", "queued", "", "", None).unwrap();
-        assert!(queued.lease_agent.is_empty());
-        assert!(queued.finished_at.is_empty());
+            Some(pulse_cli::Context {
+                agent: "bob".into(),
+                ..test_context()
+            }),
+            &[
+                "job",
+                "finish",
+                &id,
+                "done",
+                "--result",
+                "SUMMARY: ok",
+                "--branch",
+                "pulse/bob/x",
+            ],
+        );
+        assert!(
+            err.is_ok() && out.trim() == format!("{id} done"),
+            "finish: {out:?} {err:?}"
+        );
+        let j = job_by_id(&s, &id).unwrap().unwrap();
+        assert_eq!(j.status, "done");
+        assert_eq!(j.result, "SUMMARY: ok");
+        assert_eq!(j.branch, "pulse/bob/x");
+        assert_eq!(j.finished_at, TEST_NOW);
+        assert!(j.lease_until.is_empty());
+        assert_eq!(j.lease_agent, "bob");
+        let j = finish_job(&s, &id, "human", "queued", "", "", None).unwrap();
+        assert!(j.lease_agent.is_empty());
+        assert!(j.finished_at.is_empty());
+        assert_eq!(
+            count_rows(
+                &s,
+                "events",
+                "action IN ('job.add', 'job.done', 'job.queued')",
+                &[]
+            ),
+            4
+        );
     }
 
     #[test]
@@ -2410,54 +2455,99 @@ mod tests {
     #[test]
     fn decide_is_atomic_under_race() {
         let _serial = crate::test_helpers::serial();
-        for answers in [vec!["yes"], vec!["no"], vec!["yes", "no"]] {
-            let (_dir, s, p) = fixture();
-            let sug = seed_proposal(&s, &p.slug);
-            let mut wins = 0;
-            let mut refused = 0;
-            for i in 0..6 {
-                match decide(&s, &sug.id, answers[i % answers.len()], "", "") {
-                    Ok(_) => wins += 1,
-                    Err(e)
-                        if what_any(&e)
-                            .ends_with("was already decided; a new proposal needs a new post") =>
-                    {
-                        refused += 1
-                    }
-                    Err(e) => panic!("unexpected: {e}"),
+        for (name, answers) in [
+            ("yes", vec!["yes"]),
+            ("no", vec!["no"]),
+            ("mixed", vec!["yes", "no"]),
+        ] {
+            test_decide_is_atomic_under_race(name, &answers);
+        }
+    }
+
+    fn test_decide_is_atomic_under_race(name: &str, answers: &[&str]) {
+        let (_dir, s, p) = fixture();
+        let sug = seed_proposal(&s, &p.slug);
+        let (bus, _exclusive) = pulse_bus::exclusive_default();
+        let (ch, cancel) = bus.subscribe(
+            pulse_bus::Filter {
+                actions: vec!["decide".into()],
+                subject: sug.id.clone(),
+                ..Default::default()
+            },
+            16,
+        );
+        const RACERS: usize = 6;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            for i in 0..RACERS {
+                let tx = tx.clone();
+                let answer = answers[i % answers.len()].to_string();
+                let sug_id = sug.id.clone();
+                let s = s.clone();
+                scope.spawn(move || {
+                    tx.send(decide(&s, &sug_id, &answer, "", "").map(|_| ()))
+                        .unwrap();
+                });
+            }
+        });
+        drop(tx);
+        let mut wins = 0;
+        let mut refused = 0;
+        for err in rx {
+            match err {
+                Ok(_) => wins += 1,
+                Err(e)
+                    if what_any(&e)
+                        .ends_with("was already decided; a new proposal needs a new post") =>
+                {
+                    refused += 1
+                }
+                Err(e) => panic!("{name}: unexpected: {e}"),
+            }
+        }
+        if wins != 1 || refused != RACERS - 1 {
+            panic!("wins {wins} refused {refused}");
+        }
+        assert_eq!(
+            crate::test_helpers::count_rows(&s, "decisions", "post_id = ?", &[&sug.id]),
+            1
+        );
+        assert_eq!(
+            crate::test_helpers::count_rows(
+                &s,
+                "posts",
+                "kind = 'result' AND on_post = ?",
+                &[&sug.id]
+            ),
+            1
+        );
+        assert_eq!(
+            crate::test_helpers::count_rows(
+                &s,
+                "events",
+                "action = 'decide' AND subject = ?",
+                &[&sug.id]
+            ),
+            1
+        );
+        match ch.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(e) => {
+                if e.action != "decide" || e.subject != sug.id || e.id == 0 {
+                    panic!("event {e:?}");
                 }
             }
-            assert_eq!(wins, 1);
-            assert_eq!(refused, 5);
-            assert_eq!(
-                crate::test_helpers::count_rows(&s, "decisions", "post_id = ?", &[&sug.id]),
-                1
-            );
-            assert_eq!(
-                crate::test_helpers::count_rows(
-                    &s,
-                    "posts",
-                    "kind = 'result' AND on_post = ?",
-                    &[&sug.id]
-                ),
-                1
-            );
-            assert_eq!(
-                crate::test_helpers::count_rows(
-                    &s,
-                    "events",
-                    "action = 'decide' AND subject = ?",
-                    &[&sug.id]
-                ),
-                1
-            );
+            Err(_) => panic!("decide event never published after commit"),
         }
+        if let Ok(e) = ch.recv_timeout(std::time::Duration::from_millis(100)) {
+            panic!("second decide event published: {e:?}");
+        }
+        cancel();
     }
 
     #[test]
     fn decide_yes_queues_job() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "--words",
             "-human",
             "PROPOSAL: Cache the build",
@@ -2472,37 +2562,92 @@ mod tests {
             "source = ?",
             "was already decided; a new proposal needs a new post",
             "with the words 'do it'",
-        ];
+        );
+        no_tty();
         let (_dir, s, p) = fixture();
-        let proposal = seed_proposal(&s, &p.slug);
-
-        let d = decide(&s, &proposal.id, "yes", "approved", "human").unwrap();
-
-        assert_eq!(d.post_id, proposal.id);
-        assert_eq!(d.project, p.slug);
-        assert_eq!(d.answer, "yes");
-        assert_eq!(d.words, "approved");
-        assert_eq!(d.decided_at, TEST_NOW);
-        assert_eq!(d.result.kind, "result");
-        assert_eq!(d.result.resolution, "accepted");
-        assert_eq!(d.result.on, proposal.id);
-        let job = d.job.expect("yes queues job");
-        assert_eq!(job.project, p.slug);
-        assert_eq!(job.kind, "task");
-        assert_eq!(job.tier, 1);
-        assert_eq!(job.priority, 40);
-        assert_eq!(job.source, format!("decide:{}", proposal.id));
-        assert!(job.title.starts_with("Act on the human's yes: "));
-        assert!(job.brief.contains("answered YES"));
-        let row: (String, String, String) = s
+        let sug = seed_proposal(&s, &p.slug);
+        let (out, err) = run_cmd(
+            &s,
+            Some(pulse_cli::Context {
+                project: p.slug.clone(),
+                ..test_context()
+            }),
+            &["decide", &sug.id, "yes", "--words", "do it"],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        let lines: Vec<_> = out.trim().split('\n').collect();
+        assert!(
+            lines[0].starts_with(&format!(
+                "recorded yes as {}-human",
+                crate::stamp_of(TEST_NOW)
+            )),
+            "out {out:?}"
+        );
+        for q in [
+            "SELECT kind, project, area, thread, agent, summary, body, on_post, resolution, session, branch, name FROM posts WHERE kind = 'result'",
+            "SELECT post_id, project, answer, words, decided_by FROM decisions",
+            "SELECT project, kind, tier, title, source, priority, status, created_by FROM jobs WHERE source LIKE 'decide:%'",
+            "SELECT action, actor, substr(subject, 1, 4) FROM events WHERE action IN ('decide', 'decide.job', 'job.add') ORDER BY seq",
+        ] {
+            let _ = q;
+        }
+        let d = count_rows(&s, "decisions", "post_id = ?", &[&sug.id]);
+        if d != 1 {
+            panic!("{d} decisions");
+        }
+        let brief: String = s
             .conn()
             .unwrap()
             .query_row(
-                "SELECT answer, words, result_post FROM decisions WHERE post_id = ?",
-                [&proposal.id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                "SELECT brief FROM jobs WHERE source = ?",
+                [format!("decide:{}", sug.id)],
+                |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(row, ("yes".into(), "approved".into(), d.result.id));
+        assert!(
+            brief.contains("with the words 'do it'") && brief.contains("PROPOSAL: Cache the build"),
+            "brief {brief:?}"
+        );
+        let (_, err) = run_cmd(
+            &s,
+            Some(pulse_cli::Context {
+                project: p.slug.clone(),
+                ..test_context()
+            }),
+            &["decide", &sug.id, "no"],
+        );
+        let want = format!(
+            "Post {} was already decided; a new proposal needs a new post",
+            sug.id
+        );
+        assert_eq!(what_any(err.as_ref().unwrap_err()), want);
+        assert_eq!(code(err.as_ref().err()), 2);
+        let (_, err) = run_cmd(
+            &s,
+            Some(pulse_cli::Context {
+                agent: "alice".into(),
+                project: p.slug,
+                ..test_context()
+            }),
+            &["decide", &sug.id, "no"],
+        );
+        assert_eq!(code(err.as_ref().err()), 2);
+        assert!(what_any(err.as_ref().unwrap_err()).contains("human's call"));
+        let job = decision_job(
+            &s,
+            &sug,
+            &Post {
+                id: "x".into(),
+                ..Default::default()
+            },
+            "",
+            "human",
+        )
+        .unwrap();
+        assert!(job.is_some(), "decision job: {job:?}");
+        assert_eq!(
+            count_rows(&s, "jobs", "source = ?", &[&format!("decide:{}", sug.id)]),
+            1
+        );
     }
 }

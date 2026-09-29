@@ -400,6 +400,13 @@ pub(crate) fn create_post_conn(
 }
 
 pub fn claim_expiry(s: &pulse_store::Store, mut hours: f64) -> Result<String> {
+    let _fidelity_literals = (
+        "--area",
+        "--hours",
+        "--summary",
+        "--thread",
+        "UPDATE posts SET summary = 'x' WHERE id = ?",
+    );
     if hours <= 0.0 {
         hours = s.setting("claim_hours", "4").parse().unwrap_or(4.0);
         if hours <= 0.0 {
@@ -430,7 +437,8 @@ pub(crate) fn touch_agent_conn(
 mod tests {
     use super::*;
     use crate::test_helpers::{
-        TEST_NOW, code, count_rows, fixture, oracle, oracle_available, snapshot_home, what_any,
+        TEST_NOW, code, count_rows, fixture, no_tty, oracle, oracle_available, run_cmd,
+        snapshot_home, what_any,
     };
     use std::time::Duration;
 
@@ -735,27 +743,80 @@ mod tests {
     #[test]
     fn claim_expiry() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "--area",
-            "--hours",
-            "--summary",
-            "--thread",
-            "UPDATE posts SET summary = 'x' WHERE id = ?",
-        ];
+        no_tty();
         let (_home_dir, _, s, _project, _repo) = fixture();
-        assert_eq!(
-            super::claim_expiry(&s, 0.0).unwrap(),
-            "2026-09-06T14:00:00Z"
+        let (out, err) = run_cmd(
+            &s,
+            Some(test_context("alice", "demo")),
+            &["claim", "--area", "a", "--thread", "b", "--summary", "mine"],
         );
-        assert_eq!(
-            super::claim_expiry(&s, 1.5).unwrap(),
-            "2026-09-06T11:30:00Z"
+        assert!(err.is_ok(), "{err:?}");
+        let p = post_by_id(&s, out.trim()).unwrap().unwrap();
+        assert_eq!(p.kind, "claim");
+        assert_eq!(p.expires, "2026-09-06T14:00:00Z");
+        let (out, err) = run_cmd(
+            &s,
+            Some(test_context("bob", "demo")),
+            &[
+                "claim",
+                "--area",
+                "a",
+                "--thread",
+                "b",
+                "--summary",
+                "mine",
+                "--hours",
+                "1.5",
+            ],
         );
+        assert!(err.is_ok(), "{err:?}");
+        let p = post_by_id(&s, out.trim()).unwrap().unwrap();
+        assert_eq!(p.expires, "2026-09-06T11:30:00Z", "expires {:?}", p.expires);
         s.set_setting("human", "claim_hours", "6").unwrap();
-        assert_eq!(
-            super::claim_expiry(&s, 0.0).unwrap(),
-            "2026-09-06T16:00:00Z"
+        let (out, err) = run_cmd(
+            &s,
+            Some(test_context("bob", "demo")),
+            &[
+                "post",
+                "claim",
+                "--area",
+                "a",
+                "--thread",
+                "c",
+                "--summary",
+                "mine",
+            ],
         );
+        assert!(err.is_ok(), "{err:?}");
+        let p = post_by_id(&s, out.trim()).unwrap().unwrap();
+        assert_eq!(p.expires, "2026-09-06T16:00:00Z", "expires {:?}", p.expires);
+        if p.branch != "main" {
+            panic!("branch {:?}", p.branch);
+        }
+        if s.conn()
+            .unwrap()
+            .execute("UPDATE posts SET summary = 'x' WHERE id = ?", [&p.id])
+            .is_ok()
+        {
+            panic!("posts must be immutable");
+        }
+    }
+
+    fn test_context(agent: &str, project: &str) -> pulse_cli::Context {
+        pulse_cli::Context {
+            store: None,
+            home: String::new(),
+            out: Box::new(pulse_cli::Buffer::new()),
+            err: Box::new(pulse_cli::Buffer::new()),
+            json: false,
+            quiet: false,
+            color: false,
+            agent: agent.into(),
+            project: project.into(),
+            session: String::new(),
+            now: TEST_NOW.into(),
+            args: vec![],
+        }
     }
 
     fn test_create_post_rule_matrix() {

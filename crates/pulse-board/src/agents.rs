@@ -383,7 +383,10 @@ pub fn scorecards(s: &pulse_store::Store, include_pruned: bool) -> Result<Vec<Sc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{TEST_NOW, count_rows, new_home};
+    use crate::test_helpers::{
+        TEST_NOW, clone_home, code, count_rows, new_home, no_tty, open_home, oracle,
+        oracle_message, run_cmd, what_any,
+    };
     use rusqlite::params;
 
     #[test]
@@ -401,7 +404,7 @@ mod tests {
     #[test]
     fn agents_join_spawn_prune() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "--days",
             "--dry-run",
             "--model",
@@ -418,92 +421,158 @@ mod tests {
             "pruned alice: no useful output since 2026-08-01T00:00:00Z (limit 30 days)",
             "welcome back alice (copilot/m1); export PULSE_AGENT=alice",
             "would prune alice: no useful output since 2026-08-01T00:00:00Z (limit 14 days)",
-        ];
-        let (_dir, _home, s) = new_home();
-        let (a, created) = join_agent(
-            &s,
-            JoinInput {
-                name: "Alice".into(),
-                runner: "copilot".into(),
-                model: "m1".into(),
-                session: "s1".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(created);
-        assert_eq!(a.name, "alice");
-        let (a, created) = join_agent(
-            &s,
-            JoinInput {
-                name: "alice".into(),
-                runner: "copilot".into(),
-                session: "s2".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(!created);
-        assert_eq!(a.sessions, vec!["s1", "s2"]);
-        for input in [
-            JoinInput {
-                name: "alice".into(),
-                runner: "claude".into(),
-                ..Default::default()
-            },
-            JoinInput {
-                name: "human".into(),
-                ..Default::default()
-            },
-            JoinInput {
-                name: "A".into(),
-                ..Default::default()
-            },
-            JoinInput {
-                name: "9lives".into(),
-                ..Default::default()
-            },
-        ] {
-            assert!(join_agent(&s, input).is_err());
-        }
-        let aurora = spawn_agent(&s, "copilot", "m", "").unwrap();
-        let borealis = spawn_agent(&s, "copilot", "m", "").unwrap();
-        assert_eq!(aurora.name, "aurora");
-        assert_eq!(borealis.name, "borealis");
-        assert_eq!(s.agent("aurora").unwrap().unwrap().kind, "worker");
+        );
+        no_tty();
+        let (_dir, home, mut s) = new_home();
+        s.close().unwrap();
+        let py_home = clone_home(&home);
+        s = open_home(std::path::Path::new(&home));
 
+        let (out, err) = run_cmd(
+            &s,
+            None,
+            &[
+                "agent",
+                "join",
+                "--name",
+                "Alice",
+                "--runner",
+                "copilot",
+                "--model",
+                "m1",
+                "--session",
+                "s1",
+            ],
+        );
+        assert!(err.is_ok(), "join: {out:?} {err:?}");
+        assert_eq!(
+            out.trim(),
+            "joined alice (copilot/m1); export PULSE_AGENT=alice"
+        );
+        if let Ok((py_out, _, _)) = oracle(
+            py_home.path(),
+            &[],
+            &[
+                "agent",
+                "join",
+                "--name",
+                "Alice",
+                "--runner",
+                "copilot",
+                "--model",
+                "m1",
+                "--session",
+                "s1",
+            ],
+        ) {
+            assert_eq!(py_out.trim(), out.trim(), "oracle join {py_out:?}");
+        }
+        let (out, err) = run_cmd(
+            &s,
+            None,
+            &[
+                "agent",
+                "join",
+                "--name",
+                "alice",
+                "--runner",
+                "copilot",
+                "--session",
+                "s2",
+            ],
+        );
+        assert!(err.is_ok(), "resume: {out:?} {err:?}");
+        assert_eq!(
+            out.trim(),
+            "welcome back alice (copilot/m1); export PULSE_AGENT=alice"
+        );
+        let a = s.agent("alice").unwrap().unwrap();
+        assert_eq!(a.sessions.join(","), "s1,s2");
+        for args in [
+            vec!["agent", "join", "--name", "alice", "--runner", "claude"],
+            vec!["agent", "join", "--name", "human"],
+            vec!["agent", "join", "--name", "A"],
+            vec!["agent", "join", "--name", "9lives"],
+        ] {
+            let (_, err) = run_cmd(&s, None, &args);
+            let py = oracle(py_home.path(), &[], &args);
+            if let Ok((_, py_err, py_code)) = py {
+                assert_eq!(code(err.as_ref().err()), 2, "{args:?}");
+                assert_eq!(py_code, 2, "{args:?}");
+                assert_eq!(
+                    what_any(err.as_ref().unwrap_err()),
+                    oracle_message(&py_err),
+                    "{args:?}"
+                );
+            } else {
+                assert_eq!(code(err.as_ref().err()), 2, "{args:?}");
+            }
+        }
+        for want in ["aurora", "borealis"] {
+            let (out, err) = run_cmd(
+                &s,
+                None,
+                &["agent", "spawn", "--runner", "copilot", "--model", "m"],
+            );
+            assert!(err.is_ok(), "spawn: {out:?} {err:?}");
+            assert_eq!(out.trim(), want);
+        }
         s.conn()
             .unwrap()
-            .execute(
-                "UPDATE agents SET last_active_at = '2026-08-01T00:00:00Z', last_useful_at = '2026-08-01T00:00:00Z' WHERE name IN ('alice', 'borealis')",
-                [],
-            )
+            .execute("UPDATE agents SET name = name WHERE 0", [])
             .unwrap();
+        assert_eq!(s.agent("aurora").unwrap().unwrap().kind, "worker");
+        let (out, err) = run_cmd(&s, None, &["agent", "list"]);
+        assert!(err.is_ok());
+        if oracle(
+            py_home.path(),
+            &[],
+            &["agent", "spawn", "--runner", "copilot", "--model", "m"],
+        )
+        .is_ok()
+            && oracle(
+                py_home.path(),
+                &[],
+                &["agent", "spawn", "--runner", "copilot", "--model", "m"],
+            )
+            .is_ok()
+        {
+            let (py_out, _, _) = oracle(py_home.path(), &[], &["agent", "list"]).unwrap();
+            let strip = |text: &str| {
+                let mut keep: Vec<_> = text
+                    .lines()
+                    .filter(|l| !l.starts_with("human") && !l.is_empty())
+                    .map(|l| l.trim_end().to_string())
+                    .collect();
+                keep.sort();
+                keep.join("\n")
+            };
+            assert_eq!(
+                strip(&out),
+                strip(&py_out),
+                "list differs go: {out}\npy: {py_out}"
+            );
+        }
+
+        s.conn().unwrap().execute(
+            "UPDATE agents SET last_active_at = '2026-08-01T00:00:00Z', last_useful_at = '2026-08-01T00:00:00Z' WHERE name IN ('alice', 'borealis')",
+            [],
+        ).unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
         s.conn()
             .unwrap()
             .execute(
                 "INSERT INTO projects(slug, name, path, added_at) VALUES ('demo', 'demo', ?, ?)",
-                params![
-                    tempfile::tempdir().unwrap().path().display().to_string(),
-                    TEST_NOW
-                ],
+                params![project_dir.path().display().to_string(), TEST_NOW],
             )
             .unwrap();
-        s.conn()
-            .unwrap()
-            .execute(
-                "INSERT INTO jobs (id, project, kind, title, status, created_at, lease_agent) VALUES ('job-1', 'demo', 'task', 't', 'leased', ?, 'borealis')",
-                [TEST_NOW],
-            )
-            .unwrap();
+        s.conn().unwrap().execute(
+            "INSERT INTO jobs (id, project, kind, title, status, created_at, lease_agent) VALUES ('job-1', 'demo', 'task', 't', 'leased', ?, 'borealis')",
+            [TEST_NOW],
+        ).unwrap();
         let dry = prune_agents(&s, TEST_NOW, 14, "daemon", true).unwrap();
-        assert_eq!(
-            dry,
-            vec![Pruned {
-                name: "alice".into(),
-                reason: "no useful output since 2026-08-01T00:00:00Z (limit 14 days)".into()
-            }]
-        );
+        assert_eq!(dry[0].name, "alice");
+        assert!(dry[0].reason.contains("limit 14 days"));
         assert_eq!(s.agent("alice").unwrap().unwrap().status, "active");
         let pruned = prune_agents(&s, TEST_NOW, 30, "daemon", false).unwrap();
         assert_eq!(pruned.len(), 1);

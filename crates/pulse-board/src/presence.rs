@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn heartbeat_missing_malformed_and_ambiguous_evidence() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "SELECT status FROM runs WHERE id=?",
             "UPDATE agents SET last_useful_at='2026-08-01T00:00:00Z' WHERE name=?",
             "UPDATE agents SET last_useful_at='2026-08-01T00:00:00Z', last_active_at='2026-08-01T00:00:00Z' WHERE name IN ('proj-lead', 'stale-worker')",
@@ -781,7 +781,7 @@ mod tests {
             "stop before beat",
             "wrong agent",
             "wrong executor",
-        ];
+        );
         let (_dir, _home, s) = new_home();
         let id = presence_exec(&s, "quiet", "worker", "run-quiet", "job-quiet", 1);
         let base = presence_time();

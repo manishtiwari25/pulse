@@ -216,14 +216,14 @@ mod tests {
     #[test]
     fn redactor_scrubs_encoded_and_historical_values() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "\",\"b\":\"",
             "/private/\\u263a-\\\"quoted\\\"-heldout-canary",
             "\\u263a",
             "masked detail is not JSON:",
             "quoted",
             "{\"a\":\"",
-        ];
+        );
         let _guard = crate::test_global_guard();
         let s = temp_store();
         let canary = r#"/private/☺-"quoted"-heldout-canary"#;

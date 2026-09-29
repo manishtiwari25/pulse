@@ -691,7 +691,7 @@ mod tests {
     #[test]
     fn init_registers_project() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "--name",
             "--path",
             "--verify",
@@ -716,7 +716,7 @@ mod tests {
             "runner,tooling",
             "second init:",
             "store:",
-        ];
+        );
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
         let context = repo.path().join("docs").join("context");

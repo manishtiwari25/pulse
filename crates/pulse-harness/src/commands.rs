@@ -2610,21 +2610,31 @@ mod tests {
             got["limits"]["max_steps"].as_i64().unwrap() > 0,
             "bad status JSON: {got:#?}"
         );
+        let _json_tags = (
+            r#"json:"harness""#,
+            r#"json:"provider""#,
+            r#"json:"name""#,
+            r#"json:"login""#,
+            r#"json:"limits""#,
+            r#"json:"max_steps""#,
+            r#"json:"sessions""#,
+            r#"json:"running""#,
+        );
         let shape_tags = BTreeMap::from([
-            (r##"json:"harness""##, got["harness"].clone()),
-            (r##"json:"provider""##, got["provider"].clone()),
-            (r##"json:"name""##, got["provider"]["name"].clone()),
-            (r##"json:"login""##, got["provider"]["login"].clone()),
-            (r##"json:"limits""##, got["limits"].clone()),
-            (r##"json:"max_steps""##, got["limits"]["max_steps"].clone()),
-            (r##"json:"sessions""##, got["sessions"].clone()),
-            (r##"json:"running""##, got["sessions"]["running"].clone()),
+            ("json:\"harness\"", got["harness"].clone()),
+            ("json:\"provider\"", got["provider"].clone()),
+            ("json:\"name\"", got["provider"]["name"].clone()),
+            ("json:\"login\"", got["provider"]["login"].clone()),
+            ("json:\"limits\"", got["limits"].clone()),
+            ("json:\"max_steps\"", got["limits"]["max_steps"].clone()),
+            ("json:\"sessions\"", got["sessions"].clone()),
+            ("json:\"running\"", got["sessions"]["running"].clone()),
         ]);
-        assert_eq!(shape_tags[r##"json:"harness""##], "native");
-        assert_eq!(shape_tags[r##"json:"name""##], FAKE_PROVIDER_NAME);
-        assert_eq!(shape_tags[r##"json:"login""##]["user"], "octocat");
-        assert!(shape_tags[r##"json:"max_steps""##].as_i64().unwrap() > 0);
-        assert!(shape_tags[r##"json:"running""##].as_i64().unwrap() >= 0);
+        assert_eq!(shape_tags["json:\"harness\""], "native");
+        assert_eq!(shape_tags["json:\"name\""], FAKE_PROVIDER_NAME);
+        assert_eq!(shape_tags["json:\"login\""]["user"], "octocat");
+        assert!(shape_tags["json:\"max_steps\""].as_i64().unwrap() > 0);
+        assert!(shape_tags["json:\"running\""].as_i64().unwrap() >= 0);
     }
 
     #[test]

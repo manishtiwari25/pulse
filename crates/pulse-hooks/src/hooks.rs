@@ -1152,12 +1152,12 @@ mod tests {
     #[test]
     fn fire_redacts_private_settings() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "\"; cat >> \"",
             "event leaked the private path to the hook:",
             "event was not masked:",
             "printf '' \"$PULSE_EVENT_DETAIL\" > \"",
-        ];
+        );
         let s = new_store();
         let private_dir = tempfile::tempdir().unwrap();
         let private = private_dir

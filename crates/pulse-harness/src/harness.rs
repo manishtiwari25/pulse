@@ -1980,13 +1980,20 @@ mod tests {
         let p = Arc::new(FakeProvider::new(vec![resp(msg("SUMMARY: done"))]));
         let (h, got) =
             run_agent(p, Arc::new(Mutex::new(FakeEnv::default())), base_config()).unwrap();
-        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        if got.exit_status != EXIT_SUBMITTED {
+            panic!("{}", got.exit_status);
+        }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/trajectory.json");
-        super::write_trajectory(path.to_str().unwrap(), &h.trajectory()).unwrap();
-        let data = fs::read_to_string(path).unwrap();
-        assert!(data.contains("\"trajectory_format\": \"pulse-harness-1\""));
-        assert!(data.contains("\"exit_status\": \"submitted\""));
+        if let Err(err) = super::write_trajectory(path.to_str().unwrap(), &h.trajectory()) {
+            panic!("{err}");
+        }
+        let data = fs::read_to_string(&path).unwrap();
+        if !data.contains("\"trajectory_format\": \"pulse-harness-1\"")
+            || !data.contains("\"exit_status\": \"submitted\"")
+        {
+            panic!("bad trajectory: {data}");
+        }
     }
 
     #[test]

@@ -1,6 +1,4 @@
 //! Port of internal/board/helpers_test.go: shared fixtures (new_home, snapshot_home, fixture, run_cmd, what, code, count_rows, oracle helpers) for every module's #[cfg(test)] tests.
-#![allow(dead_code)]
-
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -275,12 +273,6 @@ pub(crate) fn run_cmd(
     }
     let result = (cmd.run)(&mut ctx, &fs, &positional);
     (out.string(), result)
-}
-
-pub(crate) fn what(err: &(dyn std::error::Error + 'static)) -> String {
-    err.downcast_ref::<CliError>()
-        .map(|e| e.what.clone())
-        .unwrap_or_else(|| err.to_string())
 }
 
 pub(crate) fn what_any(err: &anyhow::Error) -> String {

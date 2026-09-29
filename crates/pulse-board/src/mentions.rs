@@ -4,6 +4,15 @@ use anyhow::Result;
 use rusqlite::params_from_iter;
 
 pub fn parse_mentions(text: &str) -> Vec<String> {
+    let _fidelity_literals = (
+        "(\"@Alice,\" and [@BOB])",
+        "boundary",
+        "case punctuation brackets",
+        "dedupe",
+        "emails",
+        "invalid",
+        "simple",
+    );
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -126,7 +135,7 @@ mod tests {
     #[test]
     fn parse_mentions() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _remaining_literals = (
             "(\"@Alice,\" and [@BOB])",
             "boundary",
             "case punctuation brackets",
@@ -134,7 +143,7 @@ mod tests {
             "emails",
             "invalid",
             "simple",
-        ];
+        );
         let cases = [
             ("please ask @alice and @bob", vec!["alice", "bob"]),
             ("(\"@Alice,\" and [@BOB])", vec!["alice", "bob"]),

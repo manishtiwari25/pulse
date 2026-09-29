@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn goal_validation_unicode_and_public_text() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "Reliable \\U0001f469\\u200d\\U0001f4bb workflows",
             "\\U0001f680",
             "\\u754c",
@@ -652,7 +652,7 @@ mod tests {
             "goal\\x00",
             "goal\\x1b[2J",
             "goal\\x7f",
-        ];
+        );
         for text in [
             "",
             " \n\t ",
@@ -866,14 +866,25 @@ mod tests {
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         let s = Arc::new(s);
+        let start = Arc::new(std::sync::Barrier::new(3));
         let a = Arc::clone(&s);
+        let start_a = Arc::clone(&start);
+        let t1 = thread::spawn(move || {
+            start_a.wait();
+            ensure_default(&a, "one")
+        });
         let b = Arc::clone(&s);
-        let t1 = thread::spawn(move || ensure_default(&a, "one"));
+        let start_b = Arc::clone(&start);
         let t2 = thread::spawn(move || {
+            start_b.wait();
             set(&b, "one", "Make search results correct.", "human").map(|_| ())
         });
-        t1.join().unwrap().unwrap();
-        t2.join().unwrap().unwrap();
+        start.wait();
+        for err in [t1.join().unwrap(), t2.join().unwrap()] {
+            if let Err(err) = err {
+                panic!("{err}");
+            }
+        }
         let goal = must_goal(&s, "one");
         assert_eq!(goal.source, OWNER);
         assert_eq!(goal.text, "Make search results correct.");

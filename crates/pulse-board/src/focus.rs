@@ -373,12 +373,12 @@ mod tests {
     #[test]
     fn agent_focus_task_from_source() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "INSERT INTO jobs(id,project,kind,title,source,status,created_at,lease_agent,lease_until) VALUES('job-missing-task','proj','task','Missing task job','task:TASK-999','leased',?,'cygnus','2026-09-06T12:00:00Z')",
             "INSERT INTO jobs(id,project,kind,title,source,status,created_at,lease_agent,lease_until) VALUES('job-post','proj','improve','Post job','handoff:missing','leased',?,'borealis','2026-09-06T12:00:00Z')",
             "INSERT INTO jobs(id,project,kind,title,source,status,created_at,lease_agent,lease_until) VALUES('job-task','proj','task','Task job','task:TASK-001','leased',?,'aurora','2026-09-06T12:00:00Z')",
             "INSERT INTO tasks(id,project,title,status,priority,created_by,created_at,updated_at,current_rev) VALUES('TASK-001','proj','Task title','open',0,'owner',?,?,1)",
-        ];
+        );
         let (_home_dir, _, s) = new_home();
         add_focus_project(&s, "proj");
         for name in ["aurora", "borealis", "cygnus"] {

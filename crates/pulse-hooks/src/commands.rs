@@ -522,7 +522,7 @@ mod tests {
                 store: s,
                 home: home.to_string(),
                 out: Box::new(out.clone()),
-                err: Box::new(pulse_cli::Buffer::new()),
+                err: Box::new(out.clone()),
                 json,
                 quiet: false,
                 color: false,

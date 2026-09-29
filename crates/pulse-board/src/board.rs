@@ -187,7 +187,6 @@ pub(crate) fn trunc(text: &str, n: usize) -> String {
     chars.into_iter().collect()
 }
 
-#[allow(dead_code)]
 pub(crate) fn plural(n: usize, word: &str) -> String {
     if n == 1 {
         word.to_string()

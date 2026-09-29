@@ -444,14 +444,14 @@ fn trim(b: &[u8]) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::context_args;
+    use crate::commands::{context_args, register, set_stdin_for_tests};
     use crate::hooks::test_helpers::new_store;
     use pulse_cli::Context;
 
     #[test]
     fn install_copilot_and_claude() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "command",
             "hooks context --harness claude",
             "hooks stop --harness copilot",
@@ -463,7 +463,7 @@ mod tests {
             "json:\"version\"",
             "pulse hooks uninstall copilot --dir",
             "timeout",
-        ];
+        );
         let repo = tempfile::tempdir().unwrap();
         let repo_s = repo.path().display().to_string();
         let res = install_harness("copilot", &repo_s, true).unwrap();
@@ -531,10 +531,47 @@ mod tests {
         );
     }
 
+    fn ctx_for(
+        s: Option<pulse_store::Store>,
+        home: &str,
+        json: bool,
+    ) -> (Context, pulse_cli::Buffer) {
+        let out = pulse_cli::Buffer::new();
+        (
+            Context {
+                store: s,
+                home: home.to_string(),
+                out: Box::new(out.clone()),
+                err: Box::new(out.clone()),
+                json,
+                quiet: false,
+                color: false,
+                agent: String::new(),
+                project: String::new(),
+                session: String::new(),
+                now: "2026-09-06T21:00:00Z".into(),
+                args: vec![],
+            },
+            out,
+        )
+    }
+
+    fn run_cmd(c: &mut Context, name: &str, args: &[&str]) -> Result<()> {
+        register();
+        let cmd = pulse_cli::lookup(name).expect("command");
+        let mut fs = pulse_cli::FlagSet::new(name);
+        if let Some(flags) = cmd.flags {
+            flags(&mut fs);
+        }
+        let raw = args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let positional = pulse_cli::flags::parse_interleaved(&mut fs, &raw)?;
+        (cmd.run)(c, &fs, &positional)
+    }
+
     #[test]
     fn context_and_stop_json() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "\"; cat >> \"",
             "\"hookEventName\":\"Stop\"",
             "--dry-run",
@@ -554,7 +591,7 @@ mod tests {
             "script",
             "seen.txt",
             "would write",
-        ];
+        );
         let run = |args: &[&str]| format!("OUT:{}", args.join(" "));
         let cp: Value = serde_json::from_str(&context_json("copilot", run)).unwrap();
         assert!(
@@ -612,6 +649,26 @@ mod tests {
             stop_json("copilot", &home_s, None, b"not json" as &[u8])
                 .starts_with(r#"{"decision":"block""#)
         );
+        assert_eq!(cs["reason"], reminder(None));
+        set_stdin_for_tests(Some(br#"{"session_id":"cmd"}"#.to_vec()));
+        let (mut c, out) = ctx_for(None, &home_s, false);
+        run_cmd(&mut c, "hooks", &["stop", "--harness", "claude"]).unwrap();
+        assert!(
+            out.string().contains(r#""hookEventName":"Stop""#),
+            "{}",
+            out.string()
+        );
+        let (mut c, out) = ctx_for(None, &home_s, false);
+        run_cmd(
+            &mut c,
+            "hooks",
+            &["install", "copilot", "--dir", &home_s, "--dry-run"],
+        )
+        .unwrap();
+        assert!(out.string().contains("would write"));
+        assert!(out.string().contains("Undo: pulse hooks uninstall copilot"));
+        assert!(run_cmd(&mut c, "hooks", &["install", "vim"]).is_err());
+        set_stdin_for_tests(None);
     }
 
     fn test_reminder_some(s: Option<&pulse_store::Store>) -> String {

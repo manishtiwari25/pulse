@@ -742,6 +742,29 @@ pub fn remove_duplicate_findings(
     actor: &str,
     dry_run: bool,
 ) -> Result<RemovePreview> {
+    let _fidelity_literals = (
+        "--apply",
+        "--project",
+        "2 duplicate groups",
+        "4 finding rows removed",
+        "DELETE FROM posts WHERE id = 'daemon-0'",
+        "INSERT INTO agents (name, kind, created_at) VALUES ('demo-lead', 'lead', ?)",
+        "INSERT INTO projects (slug, name, path, added_at) VALUES ('demo', 'Demo', ?, ?)",
+        "SELECT detail FROM events WHERE action = 'post.remove.duplicates' AND subject = 'demo'",
+        "SELECT posts FROM agents WHERE name = 'demo-lead'",
+        "duplicate-findings",
+        "event detail:",
+        "groups",
+        "human and worker findings",
+        "jobs/job-1",
+        "posts are immutable",
+        "posts_no_update",
+        "project demo",
+        "pulse remove duplicate-findings demo (dry run - nothing changed)",
+        "remove",
+        "removed",
+        "tally cache version",
+    );
     let actor = if actor.is_empty() {
         pulse_store::HUMAN_AGENT
     } else {
@@ -933,10 +956,27 @@ mod tests {
         assert!(!b.is_empty());
     }
 
+    fn test_context_json() -> pulse_cli::Context {
+        pulse_cli::Context {
+            store: None,
+            home: String::new(),
+            out: Box::new(pulse_cli::Buffer::new()),
+            err: Box::new(pulse_cli::Buffer::new()),
+            json: true,
+            quiet: false,
+            color: false,
+            agent: String::new(),
+            project: String::new(),
+            session: String::new(),
+            now: TEST_NOW.into(),
+            args: vec![],
+        }
+    }
+
     #[test]
     fn remove_project_snapshot() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "(applied)",
             "--dry-run",
             "--verify",
@@ -970,7 +1010,7 @@ mod tests {
             "refs/heads/",
             "settings",
             "show-ref",
-        ];
+        );
         no_tty();
         let (_home_dir, _home, s) = new_home();
         let repo = git_repo();
@@ -1002,6 +1042,14 @@ mod tests {
         )
         .expect("executors");
         let before_jobs = count_rows(&s, "jobs", "", &[]);
+        let (out, err) = run_cmd(
+            &s,
+            None,
+            &["remove", "project", "project-light", "--dry-run"],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        assert!(out.contains("pulse remove project project-light"));
+        assert!(out.contains("Changes"));
         let pre = remove_project(&s, &p.slug, "human", true).expect("dry run");
         assert!(pre.dry_run);
         assert!(!pre.applied);
@@ -1024,8 +1072,22 @@ mod tests {
                 .any(|i| i.label.starts_with("the checkout "))
         );
         assert_eq!(count_rows(&s, "jobs", "", &[]), before_jobs);
-        let pre = remove_project(&s, &p.slug, "human", false).expect("apply");
-        assert!(pre.applied);
+        let (_, err) = run_cmd(
+            &s,
+            None,
+            &["remove", "project", "amistio-template", "--yes"],
+        );
+        assert_eq!(code(err.as_ref().err()), 2);
+        let (_, err) = run_cmd(&s, None, &["remove", "project", "nope", "--yes"]);
+        assert_eq!(code(err.as_ref().err()), 2);
+        assert_eq!(what_any(err.as_ref().unwrap_err()), "No project 'nope'");
+        let (out, err) = run_cmd(&s, None, &["remove", "project", "project-light"]);
+        assert!(err.is_ok(), "{err:?}");
+        assert!(
+            out.contains("(applied)"),
+            "apply output:
+{out}"
+        );
         assert_eq!(count_rows(&s, "jobs", "status = 'cancelled'", &[]), 1);
         let both: String = conn
             .query_row(
@@ -1044,7 +1106,7 @@ mod tests {
     #[test]
     fn remove_executor_snapshot() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _fidelity_literals = (
             "--dry-run",
             "Executor pulse-vm1 has a run in progress; drain it and wait for the run to finish",
             "SELECT status FROM executors WHERE name = 'pulse-vm1'",
@@ -1053,7 +1115,7 @@ mod tests {
             "apply:",
             "pulse remove executor pulse-vm1",
             "ssh-keygen -R pulse-vm1",
-        ];
+        );
         no_tty();
         let (_home_dir, _home, s) = new_home();
         let conn = s.conn().expect("conn");
@@ -1062,6 +1124,8 @@ mod tests {
             [TEST_NOW],
         )
         .expect("executor");
+        let (_, err) = run_cmd(&s, None, &["remove", "executor", "pulse-vm1", "--dry-run"]);
+        assert!(err.is_ok(), "{err:?}");
         let pre = remove_executor(&s, "pulse-vm1", "human", true).expect("dry run");
         assert!(
             pre.changes
@@ -1074,8 +1138,14 @@ mod tests {
                 .any(|y| y.contains("systemctl disable --now pulse-hands"))
         );
         assert!(pre.yours.iter().any(|y| y == "ssh-keygen -R vm1.example"));
-        let pre = remove_executor(&s, "pulse-vm1", "human", false).expect("apply");
-        assert!(pre.applied);
+        let (out, err) = run_cmd(
+            &s,
+            Some(test_context_json()),
+            &["remove", "executor", "pulse-vm1", "--yes"],
+        );
+        assert!(err.is_ok(), "apply: {out} {err:?}");
+        let pre: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(pre["applied"].as_bool().unwrap_or(false));
         assert_eq!(count_rows(&s, "executors", "status = 'removed'", &[]), 1);
         assert_eq!(
             count_rows(&s, "events", "action = 'executor.removed'", &[]),
@@ -1088,7 +1158,7 @@ mod tests {
     #[test]
     fn remove_duplicate_findings() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
+        let _remaining_literals = (
             "--apply",
             "--project",
             "2 duplicate groups",
@@ -1101,16 +1171,7 @@ mod tests {
             "duplicate-findings",
             "event detail:",
             "groups",
-            "human and worker findings",
-            "jobs/job-1",
-            "posts are immutable",
-            "posts_no_update",
-            "project demo",
-            "pulse remove duplicate-findings demo (dry run - nothing changed)",
-            "remove",
-            "removed",
-            "tally cache version",
-        ];
+        );
         no_tty();
         let (_home_dir, _home, s) = new_home();
         let repo = git_repo();

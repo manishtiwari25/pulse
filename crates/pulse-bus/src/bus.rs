@@ -293,7 +293,9 @@ fn reset_default_unlocked() -> Arc<Bus> {
 static DEFAULT_TESTS: RwLock<()> = RwLock::new(());
 
 /// Guard returned by [`exclusive_default`]; dropping it lets other fixtures reset the bus again.
-pub struct ExclusiveDefault(#[allow(dead_code)] RwLockWriteGuard<'static, ()>);
+pub struct ExclusiveDefault {
+    _guard: RwLockWriteGuard<'static, ()>,
+}
 
 /// exclusive_default gives a test that subscribes to the default bus a fresh
 /// bus that no other test can reset while the guard lives. Go runs a package's
@@ -303,7 +305,7 @@ pub struct ExclusiveDefault(#[allow(dead_code)] RwLockWriteGuard<'static, ()>);
 /// call `reset_default`, which blocks while the guard is held).
 pub fn exclusive_default() -> (Arc<Bus>, ExclusiveDefault) {
     let guard = DEFAULT_TESTS.write().unwrap_or_else(|e| e.into_inner());
-    (reset_default_unlocked(), ExclusiveDefault(guard))
+    (reset_default_unlocked(), ExclusiveDefault { _guard: guard })
 }
 
 pub fn install_store_observer() {
@@ -351,28 +353,48 @@ mod tests {
         let b = Arc::new(new());
         const SUBS: usize = 5;
         const EVENTS: i64 = 200;
-        let mut handles = Vec::new();
+        let mut counts = vec![0usize; SUBS];
         let mut cancels = Vec::new();
-        for _ in 0..SUBS {
-            let (ch, cancel) = b.subscribe(Filter::default(), EVENTS as usize);
-            cancels.push(cancel);
-            handles.push(thread::spawn(move || ch.iter().count()));
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for i in 0..SUBS {
+                let (ch, c) = b.subscribe(Filter::default(), EVENTS as usize);
+                cancels.push(c);
+                handles.push(scope.spawn(move || {
+                    let mut n = 0usize;
+                    for _ in ch {
+                        n += 1;
+                    }
+                    (i, n)
+                }));
+            }
+            for i in 0..EVENTS {
+                b.publish(Event {
+                    id: i,
+                    action: "post".to_string(),
+                    ..Event::default()
+                });
+            }
+            for c in cancels {
+                c();
+            }
+            for handle in handles {
+                let (i, n) = handle.join().unwrap();
+                counts[i] = n;
+            }
+        });
+        for (i, n) in counts.into_iter().enumerate() {
+            assert_eq!(
+                n, EVENTS as usize,
+                "subscriber {i} got {n} events, want {EVENTS}"
+            );
         }
-        for i in 0..EVENTS {
-            b.publish(Event {
-                id: i,
-                action: "post".to_string(),
-                ..Event::default()
-            });
+        if b.dropped() != 0 {
+            panic!("dropped {}", b.dropped());
         }
-        for cancel in cancels {
-            cancel();
+        if b.subscribers() != 0 {
+            panic!("subscribers left: {}", b.subscribers());
         }
-        for (i, h) in handles.into_iter().enumerate() {
-            assert_eq!(h.join().unwrap(), EVENTS as usize, "subscriber {i}");
-        }
-        assert_eq!(b.dropped(), 0);
-        assert_eq!(b.subscribers(), 0);
     }
 
     #[test]
@@ -386,10 +408,24 @@ mod tests {
                 p.publish(ev(i));
             }
         });
-        done.join().expect("publisher should not block");
-        let got = (0..3).map(|_| ch.recv().unwrap().id).collect::<Vec<_>>();
-        assert_eq!(got, vec![8, 9, 10]);
-        assert_eq!(b.dropped(), 7);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !done.is_finished() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        if !done.is_finished() {
+            panic!("publisher blocked on a slow subscriber");
+        }
+        done.join().unwrap();
+        let mut got = Vec::new();
+        while got.len() < 3 {
+            got.push(ch.recv().unwrap().id);
+        }
+        if got[0] != 8 || got[1] != 9 || got[2] != 10 {
+            panic!("kept {got:?}, want the newest three [8 9 10]");
+        }
+        if b.dropped() != 7 {
+            panic!("dropped {}, want 7", b.dropped());
+        }
         cancel();
     }
 
