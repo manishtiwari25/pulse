@@ -126,6 +126,9 @@ impl Server {
             while !flag.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        // BSD/macOS accepted sockets inherit the listener's
+                        // O_NONBLOCK; the per-connection reader must block.
+                        let _ = stream.set_nonblocking(false);
                         let h = handler.clone();
                         std::thread::spawn(move || serve(stream, &*h));
                     }

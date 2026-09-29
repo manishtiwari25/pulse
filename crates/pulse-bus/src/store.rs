@@ -5,14 +5,20 @@ use rusqlite::OptionalExtension;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// DefaultInterval is how often tail polls when interval is zero.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
 
+/// The stand-in for Go's context.Context: clones share one cancellation flag
+/// (handles to the same context); `with_timeout`/`child` derive a new context
+/// that is done when its parent is done, when it is cancelled itself, or when
+/// its deadline passes.
 #[derive(Clone, Debug, Default)]
 pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
+    deadline: Option<Instant>,
+    parent: Option<Arc<CancellationToken>>,
 }
 
 impl CancellationToken {
@@ -20,12 +26,54 @@ impl CancellationToken {
         Self::default()
     }
 
+    /// Go: context.WithCancel(parent).
+    pub fn child(&self) -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            deadline: self.deadline,
+            parent: Some(Arc::new(self.clone())),
+        }
+    }
+
+    /// Go: context.WithTimeout(parent, d).
+    pub fn with_timeout(&self, d: Duration) -> Self {
+        self.with_deadline(Instant::now() + d)
+    }
+
+    /// Go: context.WithDeadline(parent, at); an earlier parent deadline wins.
+    pub fn with_deadline(&self, at: Instant) -> Self {
+        let mut c = self.child();
+        c.deadline = Some(match self.deadline {
+            Some(p) if p < at => p,
+            _ => at,
+        });
+        c
+    }
+
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
+    /// Go: ctx.Err() != nil.
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+            || self.deadline_exceeded()
+            || self.parent.as_ref().is_some_and(|p| p.is_cancelled())
+    }
+
+    /// Go: ctx.Deadline().
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// Go: ctx.Err() == context.DeadlineExceeded.
+    pub fn deadline_exceeded(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+
+    /// Time left until the deadline, if any (zero once it has passed).
+    pub fn remaining(&self) -> Option<Duration> {
+        self.deadline.map(|d| d.saturating_duration_since(Instant::now()))
     }
 }
 
