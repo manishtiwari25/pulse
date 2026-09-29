@@ -84,7 +84,7 @@ fn json_list(text: String) -> Vec<String> {
     serde_json::from_str(&text).unwrap_or_default()
 }
 fn list_json(items: &[String]) -> String {
-    serde_json::to_string(items).unwrap_or_else(|_| "[]".into())
+    crate::gojson::to_string(items).unwrap_or_else(|_| "[]".into())
 }
 fn scan_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<Record> {
     Ok(Record {
@@ -280,7 +280,7 @@ impl Store {
             }
             .into());
         }
-        let front = serde_json::to_string(&frontmatter)?;
+        let front = crate::gojson::to_string(&frontmatter)?;
         if r.slug.is_empty() {
             r.slug = r.id.to_ascii_lowercase();
         }

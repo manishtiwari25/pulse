@@ -124,7 +124,7 @@ pub fn prepare_fleet(
         for clone in &fleet.paths {
             crate::clones::stripped_clone(cancel, &repo, &commit, clone, &keys)?;
         }
-        let encoded = serde_json::to_string(&keys)?;
+        let encoded = pulse_store::gojson::to_string(&keys)?;
         let tx = s.begin()?;
         tx.execute(
             "INSERT INTO evolution_fleets (id, project, ref, workers, stripped_json, at, created_by)

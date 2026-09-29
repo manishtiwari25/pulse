@@ -9,6 +9,7 @@ publish.workspace = true
 description = "PULSE: credential references: token, set, status, clear"
 
 [dependencies]
+pulse-gitenv.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true

@@ -200,7 +200,7 @@ pub fn mark_read(s: &pulse_store::Store, ids: &[String], agent: &str) -> Result<
         }
         list.push(agent.to_string());
         list.sort();
-        let text = serde_json::to_string(&list)?;
+        let text = pulse_store::gojson::to_string(&list)?;
         tx.execute(
             "UPDATE messages SET read_by = ? WHERE id = ?",
             params![text, id],

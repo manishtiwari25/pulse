@@ -85,7 +85,7 @@ impl Resolver {
 
     fn goos(&self) -> String {
         if self.goos.is_empty() {
-            std::env::consts::OS.to_string()
+            pulse_gitenv::GOOS.to_string()
         } else {
             self.goos.clone()
         }

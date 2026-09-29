@@ -352,7 +352,7 @@ fn save(
         conflict = "DO NOTHING";
         action = "project.goal.generated";
     }
-    let value = serde_json::to_string(&StoredGoal {
+    let value = pulse_store::gojson::to_string(&StoredGoal {
         text: goal.text.clone(),
         source: goal.source.clone(),
     })?;
@@ -896,7 +896,7 @@ mod tests {
         .unwrap_err();
         assert!(!err.to_string().contains(private));
         assert_eq!(goal_snapshot(&s), before);
-        let value = serde_json::to_string(&StoredGoal {
+        let value = pulse_store::gojson::to_string(&StoredGoal {
             text: format!("Improve the results from {private}."),
             source: OWNER.into(),
         })
@@ -1051,7 +1051,7 @@ mod tests {
             assert!(!err.to_string().contains(text));
             assert_eq!(must_goal(&s, "one"), owner);
             assert_eq!(goal_snapshot(&s), before);
-            let value = serde_json::to_string(&StoredGoal {
+            let value = pulse_store::gojson::to_string(&StoredGoal {
                 text: text.into(),
                 source: OWNER.into(),
             })

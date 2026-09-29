@@ -377,7 +377,7 @@ pub fn render_markdown(_rec: &pulse_store::Record, rev: &pulse_store::Revision) 
 }
 
 fn render_value(v: &Value) -> String {
-    serde_json::to_string(v).expect("records: frontmatter must contain JSON values")
+    pulse_store::gojson::to_string(v).expect("records: frontmatter must contain JSON values")
 }
 
 pub use parse_frontmatter as ParseFrontmatter;

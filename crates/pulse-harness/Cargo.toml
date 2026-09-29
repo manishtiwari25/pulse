@@ -11,6 +11,7 @@ description = "PULSE: the built-in agent harness: bash-tool loop, limits, deny r
 [dependencies]
 pulse-bus.workspace = true
 pulse-cli.workspace = true
+pulse-gitenv.workspace = true
 pulse-provider.workspace = true
 pulse-provider-fake.workspace = true
 pulse-store.workspace = true

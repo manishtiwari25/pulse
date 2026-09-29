@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(by_id["claude-session"].messages, 1);
         assert_eq!(by_id["codex-session"].total, Some(120));
         assert_eq!(by_id["open-session"].total, Some(13));
-        let encoded = serde_json::to_string(&reports).unwrap();
+        let encoded = pulse_store::gojson::to_string(&reports).unwrap();
         assert_private_absent(
             &encoded,
             &[

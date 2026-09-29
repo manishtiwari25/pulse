@@ -123,7 +123,7 @@ impl Environment for LocalEnv {
     fn info(&self) -> BTreeMap<String, String> {
         BTreeMap::from([
             ("cwd".to_string(), self.cwd.clone()),
-            ("os".to_string(), std::env::consts::OS.to_string()),
+            ("os".to_string(), pulse_gitenv::GOOS.to_string()),
             ("shell".to_string(), "/bin/sh".to_string()),
         ])
     }

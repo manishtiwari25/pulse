@@ -441,7 +441,7 @@ mod tests {
             std::fs::read_to_string(&request).unwrap(),
             "owner-controlled request"
         );
-        let encoded = serde_json::to_string(&second).unwrap();
+        let encoded = pulse_store::gojson::to_string(&second).unwrap();
         assert_private_absent(
             &encoded,
             &[
@@ -505,7 +505,7 @@ mod tests {
         }
         let err = load_private(&s).expect_err("world-readable private scorer accepted");
         assert_private_absent(&err.to_string(), &forbidden);
-        let encoded = serde_json::to_string(&heldout_count(&s)).unwrap();
+        let encoded = pulse_store::gojson::to_string(&heldout_count(&s)).unwrap();
         assert_private_absent(&encoded, &forbidden);
     }
 

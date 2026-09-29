@@ -106,7 +106,7 @@ fn record_heartbeat_tx(tx: &pulse_store::Tx, h: &ExecutionHeartbeat) -> Result<b
             return Ok(false);
         }
     }
-    tx.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![format!("{HEARTBEAT_PREFIX}{}", h.agent), serde_json::to_string(h)?])?;
+    tx.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![format!("{HEARTBEAT_PREFIX}{}", h.agent), pulse_store::gojson::to_string(h)?])?;
     Ok(true)
 }
 
@@ -773,7 +773,7 @@ mod tests {
             ("array", "[]".to_string()),
         ]);
         let mut add = |name: &'static str, h: ExecutionHeartbeat| {
-            cases.insert(name, serde_json::to_string(&h).unwrap());
+            cases.insert(name, pulse_store::gojson::to_string(&h).unwrap());
         };
         let mut h = good.clone();
         h.at.clear();

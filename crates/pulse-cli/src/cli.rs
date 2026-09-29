@@ -208,7 +208,7 @@ fn group_index(g: &str) -> usize {
 }
 
 pub fn write_json(w: &mut dyn Write, v: &impl Serialize) -> Result<()> {
-    serde_json::to_writer_pretty(&mut *w, v)?;
+    pulse_store::gojson::to_writer_pretty(&mut *w, v)?;
     writeln!(w)?;
     Ok(())
 }
@@ -289,6 +289,17 @@ pub fn reset_registry_for_tests() {
 mod tests {
     use super::*;
     use crate::{help, help_command, suggest, table};
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Go runs a package's tests one at a time; the registry is process-global,
+    /// so tests that reset it hold this lock.
+    static REGISTRY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn registry_lock() -> MutexGuard<'static, ()> {
+        REGISTRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
 
     fn noop(_c: &mut Context, _fs: &FlagSet, _args: &[String]) -> Result<()> {
         Ok(())
@@ -296,6 +307,7 @@ mod tests {
 
     #[test]
     fn register_lookup_all() {
+        let _g = registry_lock();
         reset_registry_for_tests();
         register(Command {
             name: "post".into(),
@@ -392,6 +404,7 @@ mod tests {
 
     #[test]
     fn help_rendering() {
+        let _g = registry_lock();
         reset_registry_for_tests();
         fn flags(fs: &mut FlagSet) {
             fs.string_var("summary", "", "one line");

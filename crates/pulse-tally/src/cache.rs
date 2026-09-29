@@ -57,7 +57,7 @@ pub(crate) fn expire_cache_for_test() {
 }
 
 fn stable_hash<T: Serialize>(value: &T) -> String {
-    let b = serde_json::to_vec(value).unwrap_or_default();
+    let b = pulse_store::gojson::to_vec(value).unwrap_or_default();
     let h = Sha256::digest(b);
     h[..8].iter().map(|b| format!("{b:02x}")).collect()
 }

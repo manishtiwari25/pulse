@@ -744,7 +744,7 @@ pub fn write_trajectory(path: &str, t: &Trajectory) -> anyhow::Result<()> {
         fs::create_dir_all(parent)?;
         chmod(parent, 0o700)?;
     }
-    let mut data = serde_json::to_vec_pretty(t)?;
+    let mut data = pulse_store::gojson::to_vec_pretty(t)?;
     data.push(b'\n');
     let tmp = format!("{path}.tmp");
     fs::write(&tmp, data)?;
@@ -1281,7 +1281,7 @@ mod tests {
             tool_calls: vec![ToolCall {
                 id: "call-1".into(),
                 name: "bash".into(),
-                arguments: serde_json::to_string(&json!({ "command": command })).unwrap(),
+                arguments: pulse_store::gojson::to_string(&json!({ "command": command })).unwrap(),
             }],
             tool_call_id: String::new(),
             name: String::new(),

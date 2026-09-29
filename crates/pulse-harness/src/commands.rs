@@ -1307,7 +1307,7 @@ impl StepsFileSink {
             self.warned = true;
             return;
         }
-        let mut data = match serde_json::to_vec(v) {
+        let mut data = match pulse_store::gojson::to_vec(v) {
             Ok(d) => d,
             Err(_) => {
                 self.warned = true;

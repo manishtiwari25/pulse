@@ -1,5 +1,58 @@
 //! Git environment scrubbing for child git commands.
 
+/// Go's runtime.GOOS for this build: PULSE stores and compares Go's names
+/// ("darwin", not "macos"), so every port of `runtime.GOOS` must use this.
+pub const GOOS: &str = if cfg!(target_os = "macos") {
+    "darwin"
+} else if cfg!(target_os = "linux") {
+    "linux"
+} else if cfg!(target_os = "windows") {
+    "windows"
+} else if cfg!(target_os = "freebsd") {
+    "freebsd"
+} else if cfg!(target_os = "openbsd") {
+    "openbsd"
+} else if cfg!(target_os = "netbsd") {
+    "netbsd"
+} else if cfg!(target_os = "dragonfly") {
+    "dragonfly"
+} else if cfg!(target_os = "android") {
+    "android"
+} else if cfg!(target_os = "ios") {
+    "ios"
+} else if cfg!(target_os = "illumos") {
+    "illumos"
+} else if cfg!(target_os = "solaris") {
+    "solaris"
+} else if cfg!(target_os = "aix") {
+    "aix"
+} else {
+    std::env::consts::OS
+};
+
+/// Go's runtime.GOARCH for this build ("amd64", "arm64", ...).
+pub const GOARCH: &str = if cfg!(target_arch = "x86_64") {
+    "amd64"
+} else if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else if cfg!(target_arch = "x86") {
+    "386"
+} else if cfg!(target_arch = "arm") {
+    "arm"
+} else if cfg!(target_arch = "powerpc64") {
+    "ppc64"
+} else if cfg!(target_arch = "s390x") {
+    "s390x"
+} else if cfg!(target_arch = "riscv64") {
+    "riscv64"
+} else if cfg!(target_arch = "mips64") {
+    "mips64"
+} else if cfg!(target_arch = "loongarch64") {
+    "loong64"
+} else {
+    std::env::consts::ARCH
+};
+
 /// Hook-exported Git variables that redirect nested git commands at the hook repository.
 pub const HOOK_VARS: &[&str] = &[
     "GIT_INDEX_FILE=",

@@ -72,7 +72,7 @@ pub(crate) fn emit_cycle(opts: &mut CycleOptions, result: CycleResult) -> Result
         return Ok(());
     };
     if opts.json {
-        serde_json::to_writer(&mut *out, &result)?;
+        pulse_store::gojson::to_writer(&mut *out, &result)?;
         writeln!(out)?;
         return Ok(());
     }

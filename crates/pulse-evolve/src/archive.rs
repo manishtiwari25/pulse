@@ -143,7 +143,7 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
             return Err(anyhow!("archive text must not contain credentials"));
         }
     }
-    let fixtures = serde_json::to_string(&ScorePair {
+    let fixtures = pulse_store::gojson::to_string(&ScorePair {
         baseline: Some(baseline.clone()),
         variant: Some(variant.clone()),
     })?;
@@ -305,7 +305,7 @@ mod tests {
             rows[0].fixtures.variant.as_ref().unwrap().fixtures[0].name,
             "H1"
         );
-        let data = serde_json::to_string(&rows).unwrap();
+        let data = pulse_store::gojson::to_string(&rows).unwrap();
         assert!(!data.contains("private-file-must-not-escape"));
         assert!(!data.contains("private annotation"));
         let mut row = row;

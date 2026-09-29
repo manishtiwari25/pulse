@@ -817,7 +817,7 @@ mod tests {
         assert_eq!(status.baseline, Some(0.2));
         assert_eq!(status.kept, 1);
         assert!(status.product_scope.allowed);
-        assert_private_absent(&serde_json::to_string(&status).unwrap(), &forbidden);
+        assert_private_absent(&pulse_store::gojson::to_string(&status).unwrap(), &forbidden);
         s.set_setting("human", "stop", "1").unwrap();
         read("B", "pulse start");
     }

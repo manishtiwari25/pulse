@@ -23,7 +23,7 @@ pub(crate) fn test_store() -> pulse_store::Store {
     unsafe {
         std::env::set_var("PULSE_HOME", &home);
         std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
-        std::env::set_var("GIT_CONFIG_GLOBAL", std::env::consts::OS);
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
     }
     pulse_bus::reset_default();
     pulse_store::Store::create(home.join(pulse_store::STORE_NAME)).expect("create test store");

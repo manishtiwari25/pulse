@@ -418,11 +418,11 @@ fn sanitize(s: &str) -> String {
 }
 
 fn plain_json(doc: &Value) -> String {
-    serde_json::to_string(doc).unwrap_or_else(|_| "{}".to_string())
+    pulse_store::gojson::to_string(doc).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn pretty(doc: &Value) -> Result<String> {
-    Ok(format!("{}\n", serde_json::to_string_pretty(doc)?))
+    Ok(format!("{}\n", pulse_store::gojson::to_string_pretty(doc)?))
 }
 
 fn trim(b: &[u8]) -> &str {

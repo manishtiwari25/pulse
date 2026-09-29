@@ -654,5 +654,5 @@ pub fn watch(
 }
 
 fn json_line(e: &Event) -> Result<Vec<u8>> {
-    Ok(serde_json::to_vec(e)?)
+    Ok(pulse_store::gojson::to_vec(e)?)
 }

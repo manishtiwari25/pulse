@@ -1186,7 +1186,7 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
                 )?;
                 let mut finding = String::new();
                 if shadow {
-                    let body = serde_json::to_string(&scores)?;
+                    let body = pulse_store::gojson::to_string(&scores)?;
                     let post = pulse_board::create_post(
                         s,
                         pulse_board::PostInput {

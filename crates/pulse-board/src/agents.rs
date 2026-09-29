@@ -155,7 +155,7 @@ pub fn join_agent(s: &pulse_store::Store, input: JoinInput) -> Result<(pulse_sto
         let promoted = row.kind == "legacy" && (kind == "session" || kind == "worker");
         let new_kind = if promoted { kind } else { &row.kind };
         conn.execute("UPDATE agents SET runner = COALESCE(NULLIF(?, ''), runner), model = COALESCE(NULLIF(?, ''), model), display = COALESCE(NULLIF(?, ''), display), kind = ?, status = 'active', last_active_at = ?, sessions = ? WHERE name = ?",
-            params![input.runner, input.model, input.display, new_kind, now, serde_json::to_string(&sessions)?, name])?;
+            params![input.runner, input.model, input.display, new_kind, now, pulse_store::gojson::to_string(&sessions)?, name])?;
         event(
             s,
             &name,
@@ -178,7 +178,7 @@ pub fn join_agent(s: &pulse_store::Store, input: JoinInput) -> Result<(pulse_sto
         input.display.clone()
     };
     conn.execute("INSERT INTO agents (name, display, runner, model, kind, status, created_at, last_active_at, sessions, legacy_id) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)",
-        params![name, display, input.runner, input.model, kind, now, now, serde_json::to_string(&sessions)?, input.legacy_id])?;
+        params![name, display, input.runner, input.model, kind, now, now, pulse_store::gojson::to_string(&sessions)?, input.legacy_id])?;
     event(
         s,
         &name,

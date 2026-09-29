@@ -285,7 +285,7 @@ pub fn sort_bundle(b: &mut Bundle) {
 }
 
 pub fn encode_bundle(b: &Bundle) -> Result<Vec<u8>> {
-    let mut data = serde_json::to_vec_pretty(b)?;
+    let mut data = pulse_store::gojson::to_vec_pretty(b)?;
     data.push(b'\n');
     Ok(data)
 }
@@ -363,7 +363,7 @@ fn same_bundle_record(a: &BundleRecord, b: &BundleRecord) -> bool {
     a.kind == b.kind
         && a.slug == b.slug
         && a.body == b.body
-        && serde_json::to_vec(&a.frontmatter).ok() == serde_json::to_vec(&b.frontmatter).ok()
+        && pulse_store::gojson::to_vec(&a.frontmatter).ok() == pulse_store::gojson::to_vec(&b.frontmatter).ok()
 }
 
 #[derive(Debug, Clone, Default, Serialize)]

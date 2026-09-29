@@ -432,7 +432,7 @@ fn event_by_seq(s: &Store, seq: i64) -> Result<Event> {
 }
 
 fn fire_once(ctx: &CancellationToken, home: &str, h: &Hook, e: &Event) -> Result<String> {
-    let body = serde_json::to_vec(&Payload {
+    let body = pulse_store::gojson::to_vec(&Payload {
         hook: h.id,
         id: e.id,
         at: e.at.clone(),
