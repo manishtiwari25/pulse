@@ -14,6 +14,7 @@ name = "pulse"
 path = "src/main.rs"
 
 [dependencies]
+pulse-bus.workspace = true
 pulse-cli.workspace = true
 pulse-store.workspace = true
 pulse-board.workspace = true
@@ -31,6 +32,7 @@ anyhow.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+pulse-parity.workspace = true
 tempfile.workspace = true
 pulse-testutil.workspace = true
 once_cell.workspace = true

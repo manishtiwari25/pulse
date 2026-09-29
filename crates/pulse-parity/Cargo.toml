@@ -10,6 +10,7 @@ description = "PULSE: the parity harness: compares the Rust binary with the Go o
 
 [dependencies]
 anyhow.workspace = true
+regex.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 rusqlite.workspace = true

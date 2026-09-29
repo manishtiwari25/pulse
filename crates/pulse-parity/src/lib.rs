@@ -15,11 +15,53 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result};
+use regex::Regex;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 
 /// The clock every parity scenario starts at (the one the Go golden tests used).
 pub const FIXED_NOW: &str = "2026-09-06T21:00:00Z";
+
+pub const REWRITES: &[(&str, &str)] = &[
+    (
+        "no self-votes - docs/workflows/pulse.md)",
+        "no self-votes - pulse guide)",
+    ),
+    (
+        "docs/evolution/STOP is present: the loop and ratification are paused until a human removes it",
+        "STOP is present: the loop and ratification are paused until the owner lifts it",
+    ),
+    (
+        "passed: ratify per docs/workflows/amend.md",
+        "passed: ratify with pulse amend apply",
+    ),
+    (
+        "unchecked: no docs/evolution/constitution.md",
+        "unchecked: no constitution record",
+    ),
+    (
+        "(pulse pair; docs/workflows/executors.md)",
+        "(pulse pair; pulse record show WF-executors)",
+    ),
+];
+
+pub fn expected(oracle: &str) -> String {
+    let mut out = oracle.to_string();
+    for (from, to) in REWRITES {
+        out = out.replace(from, to);
+    }
+    out
+}
+
+pub fn legacy_agent_listing(text: &str) -> String {
+    let presence_column = Regex::new(
+        r"(?m)^(\S+[ \t]+\S+[ \t]+\S+[ \t]+)presence[ \t]+(?:online|idle|offline|unknown|legacy|pruned)[ \t]+",
+    )
+    .unwrap();
+    let heartbeat_column = Regex::new(r"last heartbeat [^ \t\r\n]+  ").unwrap();
+    let text = presence_column.replace_all(text, "$1");
+    heartbeat_column.replace_all(&text, "").to_string()
+}
 
 /// The Go oracle binary: `$PULSE_GO_ORACLE`, else the coordinator's session
 /// copy, else `None` (tests skip).
@@ -317,7 +359,16 @@ fn format_utc(ts: i64) -> String {
 pub fn normalize(s: &str, home: &Path, project: &Path) -> String {
     let out = s.replace(&*project.to_string_lossy(), "<PROJECT>");
     let out = out.replace(&*home.to_string_lossy(), "<HOME>");
-    mask_versions(&out)
+    mask_random_ids(&mask_versions(&out))
+}
+
+/// `board.NewID`: `<prefix>-<yyyymmddThhmmssZ>-<6 random hex>` (job, fixture,
+/// measure, fleet, cycle ids). The stamp comes from the fixed clock and stays;
+/// only the random tail is masked.
+fn mask_random_ids(s: &str) -> String {
+    static RANDOM_ID: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"\b([a-z]+-\d{8}T\d{6}Z)-[0-9a-f]{6}\b").unwrap());
+    RANDOM_ID.replace_all(s, "$1-<rand>").into_owned()
 }
 
 fn mask_versions(s: &str) -> String {
@@ -330,9 +381,36 @@ fn mask_versions(s: &str) -> String {
                 l = l.replace(token, "<VERSION>");
             }
         }
-        result.push_str(&l);
+        result.push_str(&mask_build_stamp(&l));
     }
     result
+}
+
+/// `pulse@<12 hex>` (a stamped build) and `pulse@dev` (an unstamped one) name
+/// the build that seeded a record; the two binaries never agree on it.
+fn mask_build_stamp(line: &str) -> String {
+    const TAG: &str = "pulse@";
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(TAG) {
+        let (head, tail) = rest.split_at(at + TAG.len());
+        out.push_str(head);
+        let rev_len = tail
+            .char_indices()
+            .take_while(|(_, c)| c.is_ascii_alphanumeric())
+            .map(|(i, c)| i + c.len_utf8())
+            .last()
+            .unwrap_or(0);
+        let rev = &tail[..rev_len];
+        if rev == "dev" || (rev.len() == 12 && rev.chars().all(|c| c.is_ascii_hexdigit())) {
+            out.push_str("<REV>");
+        } else {
+            out.push_str(rev);
+        }
+        rest = &tail[rev_len..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A canonical text dump of the schema and every user table of the store,
@@ -425,12 +503,12 @@ pub fn compare(scenario: &Scenario, go: &Side, rs: &Side) -> Vec<Diff> {
         }
     }
     let scrub = |side: &Side| {
-        mask_versions(
+        mask_random_ids(&mask_versions(
             &side
                 .dump
                 .replace(&*side.project.to_string_lossy(), "<PROJECT>")
                 .replace(&*side.home.path().to_string_lossy(), "<HOME>"),
-        )
+        ))
     };
     let (go_dump, rs_dump) = (scrub(go), scrub(rs));
     if go_dump != rs_dump {
@@ -501,6 +579,23 @@ mod tests {
         assert_eq!(clock(61), "2026-09-06T21:01:01Z");
         assert_eq!(clock(3 * 3600), "2026-09-07T00:00:00Z");
         assert_eq!(clock(-21 * 3600), "2026-09-06T00:00:00Z");
+    }
+
+    #[test]
+    fn normalize_masks_random_id_tails_only() {
+        let s = "job-20260906T210000Z-3fa9c1 fixture-20260906T210000Z-00ab12 keep-20260906T210000Z";
+        assert_eq!(
+            mask_random_ids(s),
+            "job-20260906T210000Z-<rand> fixture-20260906T210000Z-<rand> keep-20260906T210000Z"
+        );
+    }
+
+    #[test]
+    fn normalize_masks_build_stamps() {
+        assert_eq!(
+            mask_build_stamp("seed:pulse@28f35b8d1694 (pulse@dev) pulse@vm-seven pulse@28f35b8d16941"),
+            "seed:pulse@<REV> (pulse@<REV>) pulse@vm-seven pulse@28f35b8d16941"
+        );
     }
 
     #[test]

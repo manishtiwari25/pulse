@@ -1,5 +1,5 @@
 use anyhow::Error as AnyError;
-use pulse_cli::flags::{FlagError, FlagSet, parse_interleaved};
+use pulse_cli::flags::{FlagError, FlagSet, Output, parse_interleaved};
 use pulse_cli::{Command, Context};
 use std::io::Write;
 use std::sync::Once;
@@ -67,6 +67,8 @@ static REGISTER: Once = Once::new();
 /// themselves). Order does not matter; the help output sorts by group and name.
 pub fn register_all() {
     REGISTER.call_once(|| {
+        // internal/bus init(): store events feed the process bus from the start.
+        pulse_bus::install_store_observer();
         register_version();
         pulse_board::register();
         pulse_cred_command::register();
@@ -117,6 +119,7 @@ fn version_run(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Resu
 pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     register_all();
     let mut gfs = FlagSet::new("pulse");
+    gfs.set_output(Output::Discard);
     Globals::default().bind(&mut gfs);
     if let Err(e) = gfs.parse(argv) {
         return match e {
@@ -170,6 +173,7 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     };
 
     let mut fs = FlagSet::new(name);
+    fs.set_output(Output::Discard);
     if let Some(bind) = cmd.flags {
         bind(&mut fs);
     }
