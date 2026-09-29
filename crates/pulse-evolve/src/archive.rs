@@ -246,6 +246,7 @@ mod tests {
 
     #[test]
     fn archive_immutable_atomic_event_and_per_project_ids() {
+        let _serial = crate::test_helpers::serial();
         let s = test_store();
         test_project(&s, "demo");
         test_project(&s, "other");
@@ -326,6 +327,7 @@ mod tests {
 
     #[test]
     fn archive_concurrent_ids_and_shadow_refusal() {
+        let _serial = crate::test_helpers::serial();
         let s = test_store();
         test_project(&s, "demo");
         let row = ArchiveRow {
@@ -365,6 +367,7 @@ mod tests {
 
     #[test]
     fn keep_contract_unchanged() {
+        let _serial = crate::test_helpers::serial();
         assert!(
             crate::api::keep(
                 Some(&crate::api::Scores {
@@ -408,6 +411,7 @@ mod tests {
 
     #[test]
     fn archive_accepts_the_baseline_shape_only() {
+        let _serial = crate::test_helpers::serial();
         let s = test_store();
         test_project(&s, "demo");
         let measured = || Scores {

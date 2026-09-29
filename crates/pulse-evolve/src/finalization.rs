@@ -38,6 +38,59 @@ pub(crate) fn archive_finalized(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_helpers_e2::*;
+
     #[test]
-    fn current_run_cannot_borrow_an_earlier_archive() {}
+    fn current_run_cannot_borrow_an_earlier_archive() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e2_guard();
+        let s = cycle_ready();
+        let p = voted_suggestion(&s, "candidate", "product", "value.txt", 2);
+        let (job, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "demo".into(),
+                kind: "experiment".into(),
+                title: "Experiment".into(),
+                brief: "Suggestion:\nHypothesis: one constant improves the weighted score".into(),
+                source: format!("suggestion:{}", p.id),
+                branch: format!("evolve/{}", p.id),
+                tier: 1,
+                created_by: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fake_archive(&s, &job.id).unwrap();
+        let prior = crate::fleet::archived_for_job(&s, "demo", &job.id)
+            .unwrap()
+            .unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE runs SET status = 'done' WHERE job_id = ?",
+                [&job.id],
+            )
+            .unwrap();
+        s.conn().unwrap().execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES ('current-run', ?, 'tester', 'demo', ?, 'done')",
+            rusqlite::params![job.id, (now + chrono::Duration::seconds(1)).format("%Y-%m-%dT%H:%M:%SZ").to_string()],
+        ).unwrap();
+        s.conn().unwrap().execute(
+            "UPDATE jobs SET status = 'done', branch = '', result = 'done', finished_at = ? WHERE id = ?",
+            rusqlite::params![s.now(), job.id],
+        ).unwrap();
+        s.event(
+            "tester",
+            "land.landed",
+            &prior.branch,
+            serde_json::json!({"project": "demo", "job": job.id, "archive": prior.id, "run_id": "current-run"}),
+        )
+        .unwrap();
+        assert!(
+            !super::archive_finalized(&s, "demo", &job.id, &prior.id).unwrap(),
+            "a current run borrowed a prior archive's landing evidence"
+        );
+    }
 }

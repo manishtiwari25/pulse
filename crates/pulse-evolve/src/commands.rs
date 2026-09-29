@@ -55,7 +55,23 @@ pub fn command_flags(
     Ok((copy, fs))
 }
 /// Go: func parseCommandFlags(fs *flag.FlagSet, args []string) error
-pub(crate) fn parse_command_flags(fs: &mut pulse_cli::FlagSet, args: &[String]) -> Result<()> {
+/// (the flag set was built with `fs.SetOutput(copy.Err)`, so what Parse
+/// prints reaches the command's error writer).
+pub(crate) fn parse_command_flags(
+    c: &mut pulse_cli::Context,
+    fs: &mut pulse_cli::FlagSet,
+    args: &[String],
+) -> Result<()> {
+    fs.set_output(pulse_cli::flags::Output::Capture);
+    let parsed = parse_command_flag_args(fs, args);
+    let printed = fs.take_output();
+    if !printed.is_empty() {
+        let _ = c.err.write_all(&printed);
+    }
+    parsed
+}
+
+fn parse_command_flag_args(fs: &mut pulse_cli::FlagSet, args: &[String]) -> Result<()> {
     let mut options = Vec::new();
     let mut positional = Vec::new();
     let mut i = 0;
@@ -142,24 +158,35 @@ where
 }
 /// Go: func commandError(err error, command string) error
 pub(crate) fn command_error(err: anyhow::Error, command: &str) -> anyhow::Error {
-    if err.downcast_ref::<pulse_cli::Error>().is_some()
-        || err.downcast_ref::<pulse_cli::FlagError>().is_some()
+    if err
+        .chain()
+        .any(|e| e.downcast_ref::<pulse_cli::FlagError>() == Some(&pulse_cli::FlagError::Help))
+        || chain_has::<pulse_cli::Error>(&err)
     {
         return err;
     }
-    if err
-        .downcast_ref::<crate::clones::ViolationError>()
-        .is_some()
+    if pulse_bus::ContextError::is(&err, pulse_bus::ContextError::Canceled) {
+        return pulse_cli::errorf(
+            130,
+            &format!("{command} interrupted"),
+            "the context was cancelled; owned temporary clones were cleaned",
+            "pulse evolve status",
+        )
+        .into();
+    }
+    if let Some(violation) = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<crate::clones::ViolationError>())
     {
         return pulse_cli::errorf(
             2,
             &format!("{command} stopped"),
-            &err.to_string(),
+            &violation.to_string(),
             "pulse reflect",
         )
         .into();
     }
-    if err.downcast_ref::<pulse_store::NotFoundError>().is_some() {
+    if chain_has::<pulse_store::NotFoundError>(&err) {
         return pulse_cli::errorf(
             2,
             &format!("{command} needs a store"),
@@ -178,6 +205,10 @@ pub(crate) fn command_error(err: anyhow::Error, command: &str) -> anyhow::Error 
         ),
     )
     .into()
+}
+/// Go: errors.As(err, &T) - true when a T is anywhere in the chain.
+fn chain_has<T: std::error::Error + 'static>(err: &anyhow::Error) -> bool {
+    err.chain().any(|e| e.downcast_ref::<T>().is_some())
 }
 /// Go: func currentProject(s *store.Store, c *cli.Context) (*store.Project, error)
 pub(crate) fn current_project(
@@ -334,7 +365,7 @@ pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result
     }
     let answer_keys = collect_repeated(rest, "answer-key");
     let filtered = filter_repeated(rest, "answer-key");
-    parse_command_flags(&mut fs, &filtered)?;
+    parse_command_flags(c, &mut fs, &filtered)?;
     apply_common_flags(c, &fs);
     let pos = fs.args().to_vec();
     if ((sub == "enable" || sub == "disable") && pos.len() != 1)
@@ -470,7 +501,7 @@ pub(crate) fn seed_targets(s: &pulse_store::Store, project: &str) -> Result<Vec<
 pub(crate) fn run_seed(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
     let mut fs = pulse_cli::FlagSet::new("evolve seed");
     add_common_flags(&mut fs, c);
-    parse_command_flags(&mut fs, args)?;
+    parse_command_flags(c, &mut fs, args)?;
     apply_common_flags(c, &fs);
     if fs.narg() != 0 {
         return Err(crate::fixtures::input_error(
@@ -535,7 +566,7 @@ pub(crate) fn seed_words(slug: &str, r: pulse_records::SeedResult) -> String {
 pub(crate) fn run_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
     let mut fs = pulse_cli::FlagSet::new("evolve score");
     add_common_flags(&mut fs, c);
-    parse_command_flags(&mut fs, args)?;
+    parse_command_flags(c, &mut fs, args)?;
     apply_common_flags(c, &fs);
     if fs.narg() != 1 {
         return Err(crate::fixtures::input_error(
@@ -545,9 +576,10 @@ pub(crate) fn run_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<(
         ));
     }
     let cancel = pulse_bus::CancellationToken::new();
+    let cwd = pulse_store::cwd();
     let (score, reason) = crate::score::score_tree(
         &cancel,
-        "",
+        &cwd,
         fs.arg(0),
         &std::env::var("PULSE_MEASURE_COMMIT").unwrap_or_default(),
     )?;
@@ -590,7 +622,7 @@ pub fn run_fleet(
             "pulse help fleet",
         ));
     }
-    parse_command_flags(&mut fs, rest)?;
+    parse_command_flags(c, &mut fs, rest)?;
     apply_common_flags(c, &fs);
     let pos = fs.args().to_vec();
     if ((sub == "verify" || sub == "clean") && pos.len() != 1)
@@ -743,7 +775,7 @@ pub fn run_reflect(
     let mut fs = pulse_cli::FlagSet::new("reflect");
     add_common_flags(&mut fs, c);
     fs.string_var("area", "", "board area");
-    parse_command_flags(&mut fs, args)?;
+    parse_command_flags(c, &mut fs, args)?;
     apply_common_flags(c, &fs);
     if fs.narg() != 0 {
         return Err(crate::fixtures::input_error(
@@ -807,7 +839,7 @@ pub fn run_usage(
         7,
         "sessions updated within this many days; 0 = all history",
     );
-    parse_command_flags(&mut fs, args)?;
+    parse_command_flags(c, &mut fs, args)?;
     apply_common_flags(c, &fs);
     if fs.narg() != 0 {
         return Err(crate::fixtures::input_error(
@@ -1065,7 +1097,7 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
         "status" | "gates" | "archive" | "setup" => {}
         _ => {}
     }
-    parse_command_flags(&mut fs, &filtered)?;
+    parse_command_flags(c, &mut fs, &filtered)?;
     apply_common_flags(c, &fs);
     let pos = fs.args().to_vec();
     if (sub == "setup" && pos.len() != 1) || (sub != "setup" && !pos.is_empty()) {
@@ -1243,16 +1275,271 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::test_helpers::*;
+    use crate::test_helpers_e3::*;
+    use std::io::Read;
+
     #[test]
-    fn go_command_registration_and_retired_legacy_names() {}
+    fn go_command_registration_and_retired_legacy_names() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        crate::register::register();
+        for (name, group) in [
+            ("evolve", "agents"),
+            ("reflect", "agents"),
+            ("fleet", "agents"),
+            ("usage", "inspect"),
+        ] {
+            let cmd = pulse_cli::lookup(name)
+                .unwrap_or_else(|| panic!("{name} was not registered as a native {group} command"));
+            assert_eq!(cmd.group, group);
+            assert!(cmd.no_store);
+        }
+        for name in ["nudge", "links"] {
+            assert!(pulse_cli::lookup(name).is_none());
+        }
+    }
+
     #[test]
-    fn command_json_and_shadow_finding_never_archive() {}
+    fn command_json_and_shadow_finding_never_archive() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        crate::register::register();
+        let s = test_store();
+        let _repo = test_project(&s, "demo");
+        join_test_agent(&s, "tester");
+        fake_harness(&s, "test ! -e \"$PULSE_HOME/pulse.sqlite\"; exit 0");
+        let (_, forbidden) = private_set(&s);
+        {
+            let mut guard = STDIN.lock().unwrap();
+            *guard = Some(Box::new(std::io::Cursor::new("one public request")));
+        }
+        let (out, _, err) = run_test_command(
+            &s,
+            "evolve",
+            &[
+                "fixture",
+                "add",
+                "--name",
+                "F01",
+                "--request",
+                "-",
+                "--scorer",
+                "printf 0.5",
+                "--answer-key",
+                "keys/answer.txt",
+                "--json",
+            ],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        require_json(&out);
+        let (out, progress, err) =
+            run_test_command(&s, "evolve", &["measure", "--shadow", "--json"]);
+        assert!(err.is_ok(), "{err:?}");
+        require_json(&out);
+        assert_private_absent(&(out + &progress), &forbidden);
+        assert_eq!(count_rows(&s, "evolution_archive"), 0);
+        let (kind, actor, body): (String, String, String) = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT kind, agent, body FROM posts ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "finding");
+        assert_eq!(actor, "tester");
+        assert_private_absent(&body, &forbidden);
+        for args in [
+            &["status", "--json"][..],
+            &["archive", "--json"][..],
+            &["fixture", "list", "--json"][..],
+        ] {
+            let before = count_rows(&s, "events");
+            let (out, _, err) = run_test_command(&s, "evolve", args);
+            assert!(err.is_ok(), "{err:?}");
+            require_json(&out);
+            assert_eq!(count_rows(&s, "events"), before);
+        }
+        let (out, _, err) = run_test_command(&s, "fleet", &["prepare", "--n", "2", "--json"]);
+        assert!(err.is_ok(), "{err:?}");
+        let fleet: crate::fleet::Fleet = serde_json::from_str(&out).unwrap();
+        assert_eq!(fleet.paths.len(), 2);
+        for args in [
+            vec!["verify", fleet.id.as_str(), "--json"],
+            vec!["list", "--json"],
+            vec!["clean", fleet.id.as_str(), "--json"],
+        ] {
+            let (out, _, err) = run_test_command(&s, "fleet", &args);
+            assert!(err.is_ok(), "{err:?}");
+            require_json(&out);
+        }
+        assert_no_clones(&s);
+    }
+
     #[test]
-    fn reflect_read_only_board_notices_ballot_hygiene_and_health() {}
+    fn reflect_read_only_board_notices_ballot_hygiene_and_health() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        crate::register::register();
+        let s = cycle_ready();
+        let p = s.project("demo").unwrap().unwrap();
+        let marker = tempfile::tempdir().unwrap().keep().join("health-was-run");
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET verify_cmd = ? WHERE slug='demo'",
+                [format!("touch '{}'", marker.display())],
+            )
+            .unwrap();
+        voted_suggestion(&s, "ballot-item", "product", "value.txt", 1);
+        test_git(&p.path, &["branch", "evolve/stray"]);
+        test_git(&p.path, &["branch", "pulse/stray"]);
+        let before = count_rows(&s, "events");
+        let (out, _, err) = run_test_command(&s, "reflect", &["--json", "--area", "evolution"]);
+        assert!(err.is_ok(), "{err:?}");
+        let reflected: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(reflected["level"], "D");
+        assert!(
+            reflected["board"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("NOTICES")
+        );
+        assert!(!reflected["ballot"].as_array().unwrap().is_empty());
+        assert_eq!(
+            reflected["hygiene"]["branches"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(
+            reflected["hygiene"]["worktrees"].as_array().unwrap().len(),
+            1
+        );
+        let commands = reflected["next_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for command in ["pulse post ", "pulse vote "] {
+            assert!(commands.contains(command));
+        }
+        assert!(std::fs::metadata(marker).is_err());
+        assert_eq!(count_rows(&s, "events"), before);
+    }
+
     #[test]
-    fn reflect_missing_store_still_observes() {}
+    fn reflect_missing_store_still_observes() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let _env = pulse_testutil::env_lock();
+        let home = tempfile::tempdir().unwrap().keep();
+        unsafe {
+            std::env::set_var("PULSE_HOME", &home);
+            std::env::set_var("PULSE_JOB", "");
+        }
+        let cwd = tempfile::tempdir().unwrap().keep();
+        std::env::set_current_dir(&cwd).unwrap();
+        let out = pulse_cli::Buffer::new();
+        let mut ctx = pulse_cli::Context {
+            store: None,
+            home: home.display().to_string(),
+            out: Box::new(out.clone()),
+            err: Box::new(out.clone()),
+            json: false,
+            quiet: false,
+            color: false,
+            project: String::new(),
+            agent: String::new(),
+            session: String::new(),
+            now: String::new(),
+            args: Vec::new(),
+        };
+        let fs = pulse_cli::FlagSet::new("reflect");
+        run_reflect(&mut ctx, &fs, &["--json".into()]).unwrap();
+        let result: crate::reflect::Reflection = serde_json::from_str(&out.string()).unwrap();
+        assert_eq!(result.level, "A");
+        assert_eq!(result.next_human_step, "pulse init PATH");
+        assert!(std::fs::metadata(home.join(pulse_store::STORE_NAME)).is_err());
+    }
+
     #[test]
-    fn usage_cli_without_store_and_stop_reminder() {}
+    fn usage_cli_without_store_and_stop_reminder() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let _env = pulse_testutil::env_lock();
+        let home = tempfile::tempdir().unwrap().keep();
+        unsafe {
+            std::env::set_var("HOME", &home);
+            for key in [
+                "COPILOT_STATE_DIR",
+                "CLAUDE_CONFIG_DIR",
+                "CODEX_HOME",
+                "OPENCODE_STORE",
+            ] {
+                std::env::set_var(key, "");
+            }
+        }
+        let out = pulse_cli::Buffer::new();
+        let mut ctx = pulse_cli::Context {
+            store: None,
+            home: tempfile::tempdir().unwrap().keep().display().to_string(),
+            out: Box::new(out.clone()),
+            err: Box::new(out.clone()),
+            json: false,
+            quiet: false,
+            color: false,
+            project: String::new(),
+            agent: String::new(),
+            session: String::new(),
+            now: String::new(),
+            args: Vec::new(),
+        };
+        let fs = pulse_cli::FlagSet::new("usage");
+        run_usage(&mut ctx, &fs, &["--days".into(), "7".into()]).unwrap();
+        for name in ["copilot", "claude", "codex", "opencode"] {
+            assert!(out.string().contains(&format!("{name}: not found")));
+        }
+        let out2 = pulse_cli::Buffer::new();
+        ctx.out = Box::new(out2.clone());
+        ctx.err = Box::new(out2.clone());
+        run_usage(&mut ctx, &fs, &["--json".into()]).unwrap();
+        require_json(&out2.string());
+        assert!(crate::status::stop_reminder(None).contains("pulse reflect"));
+        let s = test_store();
+        s.set_setting("human", "stop", "1").unwrap();
+        let reminder = crate::status::stop_reminder(Some(&s));
+        assert!(reminder.contains("STOP is engaged"));
+        assert!(!reminder.contains('\n'));
+    }
+
     #[test]
-    fn scorer_refuses_escaping_symlink() {}
+    fn scorer_refuses_escaping_symlink() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let clone = tempfile::tempdir().unwrap().keep();
+        let outside = tempfile::tempdir().unwrap().keep().join("preserve");
+        put_file(&outside, "keep", 0o600);
+        std::os::unix::fs::symlink(&outside, clone.join("outside")).unwrap();
+        let cancel = pulse_bus::CancellationToken::new();
+        let err = crate::measure::score_clone(
+            &cancel,
+            &clone.display().to_string(),
+            &crate::process::isolated_env(
+                &tempfile::tempdir().unwrap().keep().display().to_string(),
+            ),
+            &["sh".into(), "-c".into(), "printf 1".into()],
+        )
+        .expect_err("read-only scoring accepted an escaping symlink");
+        assert!(err.to_string().contains("symlink") || err.to_string().contains("constraint"));
+        let mut body = String::new();
+        std::fs::File::open(outside)
+            .unwrap()
+            .read_to_string(&mut body)
+            .unwrap();
+        assert_eq!(body, "keep");
+    }
 }

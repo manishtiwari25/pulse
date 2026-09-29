@@ -294,8 +294,217 @@ pub(crate) fn tail(from: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::test_helpers::{count_rows, test_project, test_store};
+    use crate::test_helpers_e1::*;
+
     #[test]
-    fn plan_draft_job_queues_one_job_for_seeded_records_and_waits() {}
+    fn plan_draft_job_queues_one_job_for_seeded_records_and_waits() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e1_test_lock();
+        let s = test_store();
+        crate::starter::init();
+        seed_templates(&s);
+        seeded_project(&s, "shop");
+        let now = "2026-09-06T10:00:00Z";
+
+        let (_, created, reason) = plan_draft_job(&s, "brain", "daemon", now, false).unwrap();
+        assert!(
+            !created && reason.contains("never seeded"),
+            "brain: created {created} reason {reason:?}"
+        );
+        let (_, created, reason) = plan_draft_job(&s, "nope", "daemon", now, false).unwrap();
+        assert!(
+            !created && reason == "no such project",
+            "unknown project: created {created} reason {reason:?}"
+        );
+
+        let states = loop_records(&s, "shop").unwrap();
+        assert!(
+            states.len() == 2
+                && states[0].seeded
+                && states[0].name == "constitution"
+                && states[0].seeded_from == "brain/TPL-evolution-constitution@r1"
+                && states[1].seeded
+                && states[1].name == "evaluators"
+                && states[0].draft.is_none()
+                && states[0].rev == 1,
+            "loop records: {states:?}"
+        );
+
+        let (job, created, reason) = plan_draft_job(&s, "shop", "daemon", now, false).unwrap();
+        let job = job.unwrap();
+        assert!(
+            created && reason.is_empty(),
+            "first plan: created {created} reason {reason:?}"
+        );
+        assert_eq!(job.kind, "reflect", "job: {job:?}");
+        assert_eq!(job.tier, 0);
+        assert_eq!(job.priority, DRAFT_JOB_PRIORITY);
+        assert_eq!(job.source, "draft:shop:20260906T100000Z");
+        assert_eq!(job.created_by, "daemon");
+        assert_eq!(
+            job.title,
+            "Draft the constitution and evaluators of shop from its repository"
+        );
+        for want in [
+            "`EVO-constitution-shop` (constitution, copied from TPL-evolution-constitution@r1)",
+            "`EVO-evaluators-shop` (evaluators",
+            "pulse record show EVO-constitution-shop",
+            "`make check`",
+            "pulse evolve fixture list --project shop",
+            "- `<product paths, e.g. `src/`>`",
+            "pulse record draft EVO-constitution-shop --body-file FILE",
+            "pulse record draft EVO-evaluators-shop --body-file FILE",
+            "never `pulse record amend`",
+            "Change no file in the clone and commit nothing",
+            "SUMMARY:",
+            "FINDING:",
+            "## Hard stops",
+        ] {
+            assert!(
+                job.brief.contains(want),
+                "brief lacks {want:?}:\n{}",
+                job.brief
+            );
+        }
+        let open = open_draft_job(&s, "shop").unwrap().unwrap();
+        assert_eq!(open.id, job.id);
+        assert_eq!(open.status, "queued");
+
+        for force in [false, true] {
+            let (again, created, reason) =
+                plan_draft_job(&s, "shop", "daemon", "2026-09-08T10:00:00Z", force).unwrap();
+            assert!(
+                !created
+                    && again.as_ref().is_some_and(|j| j.id == job.id)
+                    && reason.contains("a draft job is queued"),
+                "force={force} with one open: {again:?} created {created} reason {reason:?}"
+            );
+        }
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET status = 'done', finished_at = ?, created_at = ? WHERE id = ?",
+                rusqlite::params![now, now, job.id],
+            )
+            .unwrap();
+        let (_, created, reason) =
+            plan_draft_job(&s, "shop", "daemon", "2026-09-06T20:00:00Z", false).unwrap();
+        assert!(
+            !created && reason.contains("next after 24h"),
+            "inside the window: created {created} reason {reason:?}"
+        );
+        s.set_setting("human", "evolve.draft_hours", "0").unwrap();
+        let (_, created, reason) =
+            plan_draft_job(&s, "shop", "daemon", "2026-09-09T10:00:00Z", false).unwrap();
+        assert!(
+            !created && reason.contains("evolve.draft_hours 0"),
+            "switched off: created {created} reason {reason:?}"
+        );
+        let (forced, created, _) =
+            plan_draft_job(&s, "shop", "", "2026-09-06T20:00:00Z", true).unwrap();
+        let forced = forced.unwrap();
+        assert!(
+            created
+                && forced.id != job.id
+                && forced.created_by == pulse_store::HUMAN_AGENT
+                && forced.source == "draft:shop:20260906T200000Z",
+            "forced: {forced:?} created {created}"
+        );
+        s.set_setting("human", "evolve.draft_hours", "24").unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET status = 'failed', finished_at = ?, created_at = ? WHERE id = ?",
+                rusqlite::params![now, "2026-09-06T20:00:00Z", forced.id],
+            )
+            .unwrap();
+        let (_, created, _) =
+            plan_draft_job(&s, "shop", "daemon", "2026-09-08T10:00:00Z", false).unwrap();
+        assert!(created, "after the window: created {created}");
+    }
+
     #[test]
-    fn plan_draft_job_stops_once_drafts_wait_or_the_text_is_the_projects_own() {}
+    fn plan_draft_job_stops_once_drafts_wait_or_the_text_is_the_projects_own() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e1_test_lock();
+        let s = test_store();
+        crate::starter::init();
+        seed_templates(&s);
+        seeded_project(&s, "shop");
+        let now = "2026-09-06T10:00:00Z";
+        let (_, rev) = s.get_record("EVO-constitution-shop", 0).unwrap();
+        pulse_records::draft(
+            &s,
+            "EVO-constitution-shop",
+            pulse_records::DraftInput {
+                body: complete(&rev.unwrap().body),
+                author: "bot".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (job, created, _) = plan_draft_job(&s, "shop", "daemon", now, false).unwrap();
+        let job = job.unwrap();
+        assert!(
+            created
+                && job.title == "Draft the evaluators of shop from its repository"
+                && !job
+                    .brief
+                    .contains("pulse record draft EVO-constitution-shop"),
+            "with one draft waiting: {job:?} created {created}"
+        );
+        let states = loop_records(&s, "shop").unwrap();
+        assert!(
+            states[0]
+                .draft
+                .as_ref()
+                .is_some_and(|d| d.author == "bot" && d.body.is_empty())
+                && states[1].draft.is_none(),
+            "states: {states:?}"
+        );
+        s.conn()
+            .unwrap()
+            .execute("UPDATE jobs SET status = 'done' WHERE id = ?", [&job.id])
+            .unwrap();
+        let (_, ev_rev) = s.get_record("EVO-evaluators-shop", 0).unwrap();
+        pulse_records::draft(
+            &s,
+            "EVO-evaluators-shop",
+            pulse_records::DraftInput {
+                body: complete(&ev_rev.unwrap().body),
+                author: "bot".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (_, created, reason) =
+            plan_draft_job(&s, "shop", "daemon", "2026-09-09T10:00:00Z", true).unwrap();
+        assert!(!created);
+        assert_eq!(
+            reason,
+            "nothing to draft: constitution has a draft waiting for the owner; evaluators has a draft waiting for the owner"
+        );
+        for id in ["EVO-constitution-shop", "EVO-evaluators-shop"] {
+            pulse_records::adopt(&s, id, "", "").unwrap();
+        }
+        let (_, created, reason) =
+            plan_draft_job(&s, "shop", "daemon", "2026-09-09T10:00:00Z", true).unwrap();
+        assert!(!created);
+        assert_eq!(
+            reason,
+            "nothing to draft: constitution is the project's own text (r2); evaluators is the project's own text (r2)"
+        );
+        let previous = pulse_board::set_on_project_created(None);
+        test_project(&s, "bare");
+        pulse_board::set_on_project_created(previous);
+        let (_, created, reason) = plan_draft_job(&s, "bare", "daemon", now, true).unwrap();
+        assert!(!created);
+        assert_eq!(
+            reason,
+            "nothing to draft: no loop records yet (pulse evolve seed)"
+        );
+        assert!(count_rows(&s, "jobs") >= 1);
+    }
 }

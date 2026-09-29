@@ -162,14 +162,17 @@ pub(crate) fn run_process_to(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    if cancel.is_cancelled() {
-        return Err(anyhow!("context canceled"));
+    if let Some(err) = cancel.err() {
+        return Err(err.into());
     }
     if argv.is_empty() {
         return Err(anyhow!("empty command"));
     }
     let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..]).current_dir(cwd);
+    cmd.args(&argv[1..]);
+    if !cwd.is_empty() {
+        cmd.current_dir(cwd);
+    }
     cmd.env_clear();
     for entry in env {
         if let Some((k, v)) = entry.split_once('=') {
@@ -180,21 +183,18 @@ pub(crate) fn run_process_to(
     let cleanup = contain_process(&mut cmd);
     let mut child = cmd.spawn()?;
     loop {
-        if cancel.is_cancelled() {
+        if let Some(err) = cancel.err() {
             #[cfg(unix)]
             {
-                let _ = Command::new("kill")
-                    .arg("-KILL")
-                    .arg(format!("-{}", child.id()))
-                    .status();
+                // SAFETY: plain libc call on the child's own process group id.
+                unsafe {
+                    libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+                }
             }
-            #[cfg(not(unix))]
-            {
-                let _ = child.kill();
-            }
+            let _ = child.kill();
             cleanup();
             let _ = child.wait();
-            return Err(anyhow!("context canceled"));
+            return Err(err.into());
         }
         if let Some(status) = child.try_wait()? {
             let output = child.wait_with_output()?;
@@ -287,6 +287,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn process_cancellation_stops_descendant_work() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let cancel = pulse_bus::CancellationToken::new();
         let (tx, rx) = mpsc::channel();

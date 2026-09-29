@@ -348,20 +348,9 @@ pub(crate) fn select_fixtures(
     Ok(out)
 }
 
+/// Go: path.Clean
 fn path_clean(value: &str) -> String {
-    let mut parts = Vec::new();
-    for part in value.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => parts.push(".."),
-            p => parts.push(p),
-        }
-    }
-    if parts.is_empty() {
-        ".".to_string()
-    } else {
-        parts.join("/")
-    }
+    pulse_store::filepath::clean(value)
 }
 
 #[cfg(test)]
@@ -372,6 +361,7 @@ mod tests {
 
     #[test]
     fn fixtures_crud_and_secret_refusal() {
+        let _serial = crate::test_helpers::serial();
         let s = test_store();
         test_project(&s, "demo");
         let f = fixture(&s, "demo", "F01", "printf '0.5\\n'", 2.0);
@@ -424,6 +414,7 @@ mod tests {
 
     #[test]
     fn private_setup_counts_only_non_overwriting() {
+        let _serial = crate::test_helpers::serial();
         let s = test_store();
         let repo = test_project(&s, "demo");
         let dir = tempfile::tempdir().unwrap();
@@ -482,6 +473,7 @@ mod tests {
 
     #[test]
     fn private_validation_and_import_guard() {
+        let _serial = crate::test_helpers::serial();
         let s = test_store();
         test_project(&s, "demo");
         let (dir, forbidden) = private_set(&s);
@@ -511,6 +503,7 @@ mod tests {
 
     #[test]
     fn private_setup_failure_preserves_the_configured_set() {
+        let _serial = crate::test_helpers::serial();
         let s = test_store();
         test_project(&s, "demo");
         let (good, forbidden) = private_set(&s);

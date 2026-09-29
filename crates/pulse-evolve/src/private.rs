@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::LazyLock;
 
 /// Go: const maxFixtureBytes = 1 << 20
@@ -132,7 +132,7 @@ pub struct HeldoutWrite {
 pub(crate) fn canonical_path(value: &str) -> Result<String> {
     let mut value = value.to_string();
     if value == "~" || value.starts_with("~/") {
-        let home = std::env::var("HOME").map_err(|e| anyhow!(e))?;
+        let home = std::env::var("HOME").map_err(|_| anyhow!("$HOME is not defined"))?;
         value = if value == "~" {
             home
         } else {
@@ -142,24 +142,57 @@ pub(crate) fn canonical_path(value: &str) -> Result<String> {
                 .to_string()
         };
     }
-    let abs = match std::fs::canonicalize(&value) {
-        Ok(p) => p,
-        Err(_) => {
-            let p = PathBuf::from(&value);
-            if p.is_absolute() {
-                p
-            } else {
-                std::env::current_dir()?.join(p)
-            }
-        }
+    // Go: filepath.Abs - Clean(Join(cwd, value)).
+    let abs = if value.starts_with('/') {
+        pulse_store::filepath::clean(&value)
+    } else {
+        let cwd = std::env::current_dir()?;
+        pulse_store::filepath::clean(&format!("{}/{}", cwd.display(), value))
     };
-    Ok(abs.display().to_string())
+    // Resolve symlinks in the deepest existing ancestor, then re-append the
+    // path elements that do not exist yet.
+    let mut probe = abs;
+    let mut tail: Vec<String> = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(&probe) {
+            Ok(_) => {
+                let mut real = std::fs::canonicalize(&probe)?.display().to_string();
+                for part in tail.iter().rev() {
+                    real = pulse_store::filepath::clean(&format!("{real}/{part}"));
+                }
+                return Ok(real);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let parent = go_dir(&probe);
+                if parent == probe {
+                    return Err(e.into());
+                }
+                tail.push(go_base(&probe));
+                probe = parent;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+/// Go: filepath.Dir - the cleaned path without its last element.
+fn go_dir(path: &str) -> String {
+    let i = path.rfind('/').map(|i| i + 1).unwrap_or(0);
+    pulse_store::filepath::clean(&path[..i])
+}
+/// Go: filepath.Base - the last element after trailing slashes are removed.
+fn go_base(path: &str) -> String {
+    if path.is_empty() {
+        return ".".to_string();
+    }
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "/".to_string();
+    }
+    trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
 }
 /// Go: func within(child, parent string) bool
 pub(crate) fn within(child: &str, parent: &str) -> bool {
-    let child = Path::new(child);
-    let parent = Path::new(parent);
-    child.starts_with(parent)
+    pulse_store::filepath::within(child, parent)
 }
 /// Go: func outsideProjects(s *store.Store, target string) error
 pub(crate) fn outside_projects(s: &pulse_store::Store, target: &str) -> Result<()> {

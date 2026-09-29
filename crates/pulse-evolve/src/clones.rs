@@ -123,7 +123,7 @@ pub(crate) fn resolve_revision(
         {
             Ok((root, commit))
         }
-        _ if cancel.is_cancelled() => Err(anyhow!("context canceled")),
+        _ if cancel.is_cancelled() => Err(cancel.err().unwrap().into()),
         _ => Err(crate::fixtures::input_error(
             "Cannot resolve measurement revision",
             "the requested ref must name a local commit",
@@ -262,8 +262,8 @@ pub(crate) fn hide_stripped(
 
 /// Go: func cloneFailure(ctx context.Context, step string) error {
 pub(crate) fn clone_failure(cancel: &pulse_bus::CancellationToken, step: &str) -> anyhow::Error {
-    if cancel.is_cancelled() {
-        return anyhow!("context canceled");
+    if let Some(err) = cancel.err() {
+        return err.into();
     }
     crate::fixtures::input_error(
         "Cannot prepare isolated clone",
@@ -278,8 +278,8 @@ pub(crate) fn check_clone(
     dest: &str,
     keys: &[String],
 ) -> Result<()> {
-    if cancel.is_cancelled() {
-        return Err(anyhow!("context canceled"));
+    if let Some(err) = cancel.err() {
+        return Err(err.into());
     }
     let info = fs::symlink_metadata(Path::new(dest).join(".git"));
     if match info.as_ref() {
@@ -296,8 +296,8 @@ pub(crate) fn check_clone(
         dest,
         &["symbolic-ref".into(), "--quiet".into(), "HEAD".into()],
     );
-    if cancel.is_cancelled() {
-        return Err(anyhow!("context canceled"));
+    if let Some(err) = cancel.err() {
+        return Err(err.into());
     }
     if head.is_ok_and(|h| !h.is_empty()) {
         return Err(ViolationError {
@@ -312,8 +312,8 @@ pub(crate) fn check_clone(
     )
     .is_err()
     {
-        if cancel.is_cancelled() {
-            return Err(anyhow!("context canceled"));
+        if let Some(err) = cancel.err() {
+            return Err(err.into());
         }
         return Err(ViolationError {
             reason: "clone HEAD is unreadable".to_string(),
@@ -325,8 +325,8 @@ pub(crate) fn check_clone(
         vec!["tag".to_string(), "--list".to_string()],
     ] {
         let out = crate::process::git_output(cancel, dest, &args);
-        if cancel.is_cancelled() {
-            return Err(anyhow!("context canceled"));
+        if let Some(err) = cancel.err() {
+            return Err(err.into());
         }
         if match out.as_deref() {
             Ok(o) => !o.is_empty(),

@@ -624,6 +624,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 mod tests {
     #[test]
     fn editable_path_accepts_qualified_heading() {
+        let _serial = crate::test_helpers::serial();
         let table = "| File class | Paths | Stage | Autonomy |\n| --- | --- | --- | --- |\n| product | `src/` | 4 | standing |\n| memory | `docs/memory/` | 2 | standing |\n";
         for heading in [
             "## Editable scope",

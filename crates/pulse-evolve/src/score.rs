@@ -225,8 +225,8 @@ pub(crate) fn inspect_tree(
     )
     .unwrap_or_default();
     if head.is_empty() {
-        if cancel.is_cancelled() {
-            return Err(anyhow!("context canceled"));
+        if let Some(err) = cancel.err() {
+            return Err(err.into());
         }
         return Err(crate::fixtures::input_error(
             "Cannot score the working tree",
@@ -271,8 +271,8 @@ pub(crate) fn inspect_tree(
     )
     .unwrap_or_default();
     if resolved.is_empty() {
-        if cancel.is_cancelled() {
-            return Err(anyhow!("context canceled"));
+        if let Some(err) = cancel.err() {
+            return Err(err.into());
         }
         return Err(crate::fixtures::input_error(
             "Cannot score the working tree",
@@ -322,8 +322,8 @@ pub(crate) fn inspect_tree(
 
 /// Go: func scoreFailure(ctx context.Context, step string) error {
 pub(crate) fn score_failure(cancel: &pulse_bus::CancellationToken, step: &str) -> anyhow::Error {
-    if cancel.is_cancelled() {
-        anyhow!("context canceled")
+    if let Some(err) = cancel.err() {
+        err.into()
     } else {
         crate::fixtures::input_error(
             "Cannot score the working tree",

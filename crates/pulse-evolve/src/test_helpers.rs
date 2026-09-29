@@ -8,6 +8,16 @@ use std::process::Command;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Go runs a package's tests one at a time; every test here holds this guard
+/// for its whole body because the process-wide state the tests share (PULSE_*
+/// env, the working directory, the default bus, the measuring executable) is
+/// not per-test.
+pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub(crate) fn test_store() -> pulse_store::Store {
     let _guard = pulse_testutil::env_lock();
     let home = tempfile::tempdir().expect("temp PULSE_HOME").keep();

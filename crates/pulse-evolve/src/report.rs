@@ -12,6 +12,7 @@ pub struct Report {
     pub days: i64,
     pub since: String,
     pub now: String,
+    #[serde(default, deserialize_with = "deserialize_status")]
     pub status: Option<crate::status::LoopStatus>,
     pub posts: Vec<KindCount>,
     pub suggestions: Funnel,
@@ -23,7 +24,29 @@ pub struct Report {
     pub owner: OwnerInbox,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+fn deserialize_status<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<crate::status::LoopStatus>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(serde_json::Value::Object(ref mut status)) = value else {
+        return Ok(None);
+    };
+    if let Some(serde_json::Value::Object(planning)) = status.get_mut("planning") {
+        for key in ["query", "suggestion", "question"] {
+            planning
+                .entry(key)
+                .or_insert_with(|| serde_json::Value::String(String::new()));
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(status.clone()))
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Research {
     pub jobs: i64,
     pub suggestions: i64,
@@ -33,13 +56,13 @@ pub struct Research {
     pub answers: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct KindCount {
     pub kind: String,
     pub count: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Funnel {
     pub posted: i64,
     pub voted: i64,
@@ -55,7 +78,7 @@ pub struct Funnel {
     pub in_scope: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CardJobCount {
     pub queued: i64,
     pub carded: i64,
@@ -63,7 +86,7 @@ pub struct CardJobCount {
     pub failed: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct JobCount {
     pub kind: String,
     pub done_changed: i64,
@@ -73,7 +96,7 @@ pub struct JobCount {
     pub open: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Landings {
     pub landed: i64,
     pub code_files: i64,
@@ -84,7 +107,7 @@ pub struct Landings {
     pub failed_verify: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Experiments {
     pub planned: i64,
     pub kept: i64,
@@ -93,7 +116,7 @@ pub struct Experiments {
     pub cycles: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OwnerInbox {
     pub stop_questions: i64,
     pub questions: i64,
@@ -515,10 +538,334 @@ pub(crate) fn report_rows(r: &Report) -> Vec<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::test_helpers::join_test_agent;
+    use crate::test_helpers_e2::*;
+
     #[test]
-    fn build_report_counts_what_the_loop_and_the_operating_layer_did() {}
+    fn build_report_counts_what_the_loop_and_the_operating_layer_did() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e2_guard();
+        let s = cycle_ready();
+        join_test_agent(&s, "card-writer");
+        let cardless = cardless_suggestion(&s, "shape", "Shorten the daily brief", &["up", "up"]);
+        let carded = voted_suggestion(&s, "card", "product", "value.txt", 1);
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "orphan".into(),
+                kind: "finding".into(),
+                agent: "proposer".into(),
+                summary: "A finding is not a suggestion".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        report_job(
+            &s,
+            "reflect",
+            &(crate::card_job::CARD_JOB_TITLE.to_string() + &cardless.id),
+            &format!("suggestion:{}", cardless.id),
+            "done",
+            0,
+        );
+        report_job(
+            &s,
+            "improve",
+            "Improve: changed",
+            &format!("suggestion:{}", carded.id),
+            "done",
+            2,
+        );
+        report_job(&s, "improve", "Improve: unchanged", "board", "done", 0);
+        report_job(&s, "lead", "Lead: failed", "board", "failed", 0);
+        report_job(
+            &s,
+            "experiment",
+            "Experiment: open",
+            &format!("suggestion:{}", carded.id),
+            "",
+            0,
+        );
+        for detail in [
+            serde_json::json!({"project": "demo", "code_delivery": {"code_files": 2, "docs_files": 1, "files_changed": 3}}),
+            serde_json::json!({"project": "demo", "code_delivery": {"code_files": 0, "docs_files": 1, "files_changed": 1}}),
+            serde_json::json!({"project": "other", "code_delivery": {"code_files": 5}}),
+        ] {
+            s.event("daemon", "land.landed", "job", detail).unwrap();
+        }
+        s.event(
+            "daemon",
+            "land.held",
+            "job",
+            serde_json::json!({"project": "demo", "reason": "main moved"}),
+        )
+        .unwrap();
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "loop-gate".into(),
+                kind: "question".into(),
+                agent: "proposer".into(),
+                for_owner: true,
+                summary: crate::cycle::STOP_SUMMARY.into(),
+                body: "a stop rule fired".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let decided = pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "decided".into(),
+                kind: "question".into(),
+                agent: "proposer".into(),
+                for_owner: true,
+                summary: "Which scorer?".into(),
+                body: "answered by pulse decide".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        pulse_board::decide(&s, &decided.id, "yes", "keep the scorer", "human").unwrap();
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "open".into(),
+                kind: "question".into(),
+                agent: "proposer".into(),
+                for_owner: true,
+                summary: "Allow product scope?".into(),
+                body: "still waiting".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "agents".into(),
+                kind: "question".into(),
+                agent: "proposer".into(),
+                summary: "An agent question is not owner inbox".into(),
+                body: "peer question".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let r = build_report(&s, "demo", 0).unwrap();
+        assert!(r.days == 7 && r.since < r.now && r.status.as_ref().unwrap().project == "demo");
+        assert_eq!(r.suggestions.posted, 2);
+        assert_eq!(r.suggestions.voted, 2);
+        assert_eq!(r.suggestions.with_card, 1);
+        assert_eq!(r.suggestions.in_scope, 1);
+        assert_eq!(r.suggestions.carded, 1);
+        assert_eq!(r.card_jobs.no_card, 1);
+        assert_eq!(r.card_jobs.carded, 0);
+        assert_eq!(r.card_jobs.queued, 0);
+        let got: std::collections::BTreeMap<_, _> =
+            r.jobs.iter().map(|j| (j.kind.as_str(), j)).collect();
+        assert_eq!(got["improve"].done_changed, 1);
+        assert_eq!(got["improve"].done_unchanged, 1);
+        assert_eq!(got["lead"].failed, 1);
+        assert_eq!(got["experiment"].open, 1);
+        assert_eq!(got["reflect"].done_unchanged, 1);
+        assert_eq!(r.landings.landed, 2);
+        assert_eq!(r.landings.code_files, 1);
+        assert_eq!(r.landings.docs_only, 1);
+        assert_eq!(r.landings.held, 1);
+        assert_eq!(r.experiments.planned, 1);
+        assert_eq!(r.owner.stop_questions, 1);
+        assert_eq!(r.owner.questions, 1);
+        let kinds: std::collections::BTreeMap<_, _> =
+            r.posts.iter().map(|k| (k.kind.as_str(), k.count)).collect();
+        assert_eq!(kinds["suggestion"], 2);
+        assert_eq!(kinds["finding"], 1);
+        assert_eq!(kinds["question"], 4);
+        let text = report_rows(&r)
+            .into_iter()
+            .map(|row| row.join(" | "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for want in [
+            "Suggestions posted",
+            "Card jobs",
+            "improve",
+            "Landings",
+            "Owner inbox",
+        ] {
+            assert!(text.contains(want), "{text}");
+        }
+        let raw = serde_json::to_string(&r).unwrap();
+        let back: Report = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.suggestions, r.suggestions);
+        assert_eq!(back.landings, r.landings);
+        assert_eq!(back.owner, r.owner);
+    }
     #[test]
-    fn build_report_window_excludes_older_work() {}
+    fn build_report_window_excludes_older_work() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e2_guard();
+        let s = cycle_ready();
+        join_test_agent(&s, "card-writer");
+        report_job(&s, "improve", "Improve: old", "board", "done", 1);
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "open".into(),
+                kind: "question".into(),
+                agent: "proposer".into(),
+                for_owner: true,
+                summary: "Allow product scope?".into(),
+                body: "still waiting".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.conn()
+            .unwrap()
+            .execute("UPDATE jobs SET created_at = '2020-01-01T00:00:00Z'", [])
+            .unwrap();
+        let r = build_report(&s, "demo", 3).unwrap();
+        assert_eq!(r.days, 3);
+        assert!(r.jobs.is_empty(), "{:?}", r.jobs);
+        assert_eq!(r.suggestions.posted, 0);
+        assert_eq!(r.landings.landed, 0);
+        assert_eq!(r.experiments.cycles, r.status.as_ref().unwrap().cycles);
+        assert_eq!(r.owner.questions, 1);
+    }
     #[test]
-    fn build_report_counts_what_research_left_behind() {}
+    fn build_report_counts_what_research_left_behind() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e2_guard();
+        let s = cycle_ready();
+        join_test_agent(&s, "card-writer");
+        let research = report_job(
+            &s,
+            "reflect",
+            "Research (checks): the project's own checks of demo",
+            "research:demo:20260906T100000Z",
+            "done",
+            1,
+        );
+        let daily = report_job(
+            &s,
+            "reflect",
+            "Daily reflect: find and fix one provable Tier 0 issue",
+            "reflect:demo:2026-09-06",
+            "done",
+            0,
+        );
+        s.conn().unwrap().execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, commits) VALUES (?, ?, 'card-writer', 'demo', ?, ?, 'done', 0)",
+            rusqlite::params![format!("run-{}", daily.id), daily.id, s.now(), s.now()],
+        ).unwrap();
+        let post = |kind: &str,
+                    session: &str,
+                    summary: &str,
+                    body: &str,
+                    extra: Option<(&str, &str, &str)>| {
+            let mut input = pulse_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "research".into(),
+                kind: kind.into(),
+                agent: "card-writer".into(),
+                session: session.into(),
+                summary: summary.into(),
+                body: body.into(),
+                ..Default::default()
+            };
+            if let Some((on, vote, thread)) = extra {
+                input.on = on.into();
+                input.vote = vote.into();
+                input.thread = thread.into();
+            }
+            pulse_board::create_post(&s, input).unwrap()
+        };
+        post(
+            "suggestion",
+            &format!("run-{}", research.id),
+            "Make the flaky test deterministic",
+            "Class: operating-layer\nFile: internal/x/y_test.go\nVariable: fix the clock\nHypothesis: go test passes 10 times\nTier: 0\nSignal: internal/x/y_test.go",
+            None,
+        );
+        post(
+            "suggestion",
+            &format!("run-{}", research.id),
+            "A one-liner without a card",
+            "",
+            None,
+        );
+        post(
+            "finding",
+            &format!("run-{}", research.id),
+            "The lint step is not in CI",
+            "",
+            None,
+        );
+        post(
+            "answer",
+            &format!("run-{}", research.id),
+            "The scorer lives in score.go",
+            "",
+            None,
+        );
+        let target = cardless_suggestion(&s, "shape", "Shorten the daily brief", &["up"]);
+        post(
+            "vote",
+            &format!("run-{}", research.id),
+            "up",
+            "",
+            Some((&target.id, "up", &target.thread)),
+        );
+        post(
+            "finding",
+            &format!("run-{}", daily.id),
+            "Daily reflect finding",
+            "",
+            None,
+        );
+        post("suggestion", "", "Interactive suggestion", "", None);
+        let r = build_report(&s, "demo", 0).unwrap();
+        assert_eq!(
+            r.research,
+            Research {
+                jobs: 1,
+                suggestions: 2,
+                cards: 1,
+                votes: 1,
+                findings: 1,
+                answers: 1
+            }
+        );
+        let got: std::collections::BTreeMap<_, _> =
+            r.jobs.iter().map(|j| (j.kind.as_str(), j)).collect();
+        assert_eq!(got["research"].done_changed, 1);
+        assert_eq!(got["reflect"].done_unchanged, 1);
+        assert_eq!(got["reflect"].done_changed, 0);
+        let text = report_rows(&r)
+            .into_iter()
+            .map(|row| row.join(" | "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Research | 1 job(s); left 2 suggestion(s) (1 cards), 1 vote(s), 1 finding(s), 1 answer(s)"), "{text}");
+        assert!(
+            text.contains("Jobs research | 1 done with commits"),
+            "{text}"
+        );
+    }
 }

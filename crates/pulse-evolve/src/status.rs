@@ -775,6 +775,7 @@ mod tests {
 
     #[test]
     fn status_ladder_baseline_counts_and_next_steps() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         let s = test_store();
         disable_project_hook();
@@ -817,13 +818,17 @@ mod tests {
         assert_eq!(status.baseline, Some(0.2));
         assert_eq!(status.kept, 1);
         assert!(status.product_scope.allowed);
-        assert_private_absent(&pulse_store::gojson::to_string(&status).unwrap(), &forbidden);
+        assert_private_absent(
+            &pulse_store::gojson::to_string(&status).unwrap(),
+            &forbidden,
+        );
         s.set_setting("human", "stop", "1").unwrap();
         read("B", "pulse start");
     }
 
     #[test]
     fn limits_use_loop_event_epoch_and_do_not_reset_on_repeated_on() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         let _guard = pulse_testutil::env_lock();
         let s = test_store();
@@ -872,6 +877,7 @@ mod tests {
 
     #[test]
     fn status_voted_versus_signal_hit_rate() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         let s = test_store();
         disable_project_hook();
@@ -939,6 +945,7 @@ mod tests {
 
     #[test]
     fn status_baseline_row_job_and_failure() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         let _guard = pulse_testutil::env_lock();
         let s = test_store();
@@ -1086,6 +1093,7 @@ mod tests {
 
     #[test]
     fn limit_and_product_scope_parsing() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         for value in ["none", "cycles=0", "hours=0.5", "cycles=3,hours=2"] {
             assert!(super::parse_limits(value).is_ok(), "{value}");
@@ -1110,6 +1118,7 @@ mod tests {
 
     #[test]
     fn status_gates_the_loop_when_no_class_has_reached_stage_two() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         let s = cycle_ready();
         put_constitution(
@@ -1135,6 +1144,7 @@ mod tests {
 
     #[test]
     fn status_names_staged_classes_whose_paths_are_absent() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         let s = cycle_ready();
         put_constitution(
@@ -1172,6 +1182,7 @@ mod tests {
 
     #[test]
     fn parse_editable_scope_without_a_checkout_trusts_the_stage() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         let header = "| File class | Paths | Stage | Autonomy | Clean cycles required | Clean cycles so far | Incidents |\n| --- | --- | --- | --- | --- | --- | --- |\n";
         let table = format!(
@@ -1189,6 +1200,7 @@ mod tests {
 
     #[test]
     fn registering_a_project_seeds_the_records_then_the_fixtures() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         crate::starter::init();
         let s = test_store();
@@ -1237,6 +1249,7 @@ mod tests {
 
     #[test]
     fn records_seed_failure_is_recorded_and_fixtures_still_seed() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         crate::starter::init();
         let s = test_store();
@@ -1264,6 +1277,7 @@ mod tests {
 
     #[test]
     fn evolve_seed_command() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         crate::register::register();
         let s = test_store();
@@ -1298,6 +1312,7 @@ mod tests {
 
     #[test]
     fn evolve_seed_indexes_the_checkouts_records() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         crate::register::register();
         let s = test_store();
@@ -1332,6 +1347,7 @@ mod tests {
 
     #[test]
     fn status_offers_the_record_seed_first() {
+        let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
         let s = test_store();
         disable_project_hook();

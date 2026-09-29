@@ -126,8 +126,105 @@ If evidence supports another hypothesis, use `pulse post suggestion --project {}
 
 #[cfg(test)]
 mod tests {
+    use crate::test_helpers::*;
+    use crate::test_helpers_e3::*;
+    use std::time::Duration;
+
     #[test]
-    fn feedback_queue_is_atomic_and_durable() {}
+    fn feedback_queue_is_atomic_and_durable() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = cycle_ready();
+        voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
+        let planned = crate::plan::plan_experiment(
+            &s,
+            "demo",
+            crate::plan::PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fake_landing(&s, &planned.job_id, Duration::ZERO).unwrap();
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let s = s.clone();
+            handles.push(std::thread::spawn(move || {
+                super::plan_feedback(&s, "demo", "tester").map(|_| ())
+            }));
+        }
+        for h in handles {
+            h.join().unwrap().unwrap();
+        }
+        assert_eq!(
+            count_rows(&s, "jobs WHERE source = 'evolve-feedback:demo:B-002'"),
+            1
+        );
+        assert_eq!(
+            count_rows(&s, "events WHERE action = 'evolution.feedback'"),
+            1
+        );
+        for state in ["done", "failed", "cancelled"] {
+            s.conn()
+                .unwrap()
+                .execute(
+                    "UPDATE jobs SET status = ? WHERE source = 'evolve-feedback:demo:B-002'",
+                    [state],
+                )
+                .unwrap();
+            let job = super::plan_feedback(&s, "demo", "tester").unwrap();
+            assert!(
+                job.is_none(),
+                "reconciliation repeated a {state} follow-up: {job:?}"
+            );
+        }
+    }
+
     #[test]
-    fn finalized_feedback_supports_both_classes_and_outcomes() {}
+    fn finalized_feedback_supports_both_classes_and_outcomes() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        for class in ["operating-layer", "product"] {
+            for outcome in ["kept", "discarded"] {
+                let s = cycle_ready();
+                let file = if class == "product" {
+                    "value.txt"
+                } else {
+                    "README.md"
+                };
+                voted_suggestion(&s, "candidate", class, file, 2);
+                let planned = crate::plan::plan_experiment(
+                    &s,
+                    "demo",
+                    crate::plan::PlanOptions {
+                        agent: "tester".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert!(planned.created, "planned: {planned:?}");
+                fake_archive_outcome(&s, &planned.job_id, outcome == "kept").unwrap();
+                let archive = crate::fleet::archived_for_job(&s, "demo", &planned.job_id)
+                    .unwrap()
+                    .expect("archive");
+                let action = if archive.kept {
+                    "land.landed"
+                } else {
+                    "land.dropped"
+                };
+                fake_finalize_archive(&s, &planned.job_id, action, Some(&archive)).unwrap();
+                for i in 0..2 {
+                    let feedback = super::plan_feedback(&s, "demo", "tester").unwrap();
+                    assert_eq!(feedback.is_some(), i == 0, "feedback reconciliation {i}");
+                    if let Some(feedback) = feedback {
+                        assert!(
+                            feedback.brief.contains(&format!("Outcome: {outcome}")),
+                            "feedback lost its measured disposition: {}",
+                            feedback.brief
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

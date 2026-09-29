@@ -58,6 +58,12 @@ pub use usage::*;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
+#[cfg(test)]
+pub(crate) mod test_helpers_e1;
+#[cfg(test)]
+pub(crate) mod test_helpers_e2;
+#[cfg(test)]
+pub(crate) mod test_helpers_e3;
 
 /// The Go package's `init()` side effects that are not command registration:
 /// evolve seeds a project's starter records when the board registers one

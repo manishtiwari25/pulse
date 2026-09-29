@@ -713,6 +713,7 @@ mod tests {
 
     #[test]
     fn usage_collectors_only_read_local_token_fields() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let home = tempfile::tempdir().unwrap();
         unsafe {
@@ -828,6 +829,7 @@ mod tests {
 
     #[test]
     fn usage_days_missing_and_configuration_overrides() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let home = tempfile::tempdir().unwrap();
         unsafe {

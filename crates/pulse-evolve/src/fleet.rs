@@ -350,10 +350,101 @@ pub(crate) fn archived_for_job(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_helpers::*;
+    use crate::test_helpers_e3::*;
+    use std::path::Path;
+
     #[test]
-    fn fleet_prepare_verify_store_results_and_clean() {}
+    fn fleet_prepare_verify_store_results_and_clean() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        fixture(&s, "demo", "F01", "printf 1", 1.0);
+        let ref_ = test_git(&repo, &["rev-parse", "HEAD"]);
+        let cancel = pulse_bus::CancellationToken::new();
+        let fleet = super::prepare_fleet(&cancel, &s, "demo", &ref_, 2, "human").unwrap();
+        assert_eq!(fleet.paths.len(), 2);
+        for (i, clone) in fleet.paths.iter().enumerate() {
+            assert_eq!(Path::new(clone).file_name().unwrap(), ["w1", "w2"][i]);
+            assert_eq!(test_git(clone, &["rev-parse", "HEAD"]), ref_);
+            assert_eq!(test_git(clone, &["remote"]), "");
+            assert_eq!(test_git(clone, &["tag", "--list"]), "");
+            assert!(std::fs::metadata(Path::new(clone).join("keys/answer.txt")).is_err());
+            put_file(
+                Path::new(clone).join("worker-result.json"),
+                "this is deliberately not JSON; never read it",
+                0o600,
+            );
+        }
+        let (job, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "demo".into(),
+                kind: "task".into(),
+                title: "fleet worker".into(),
+                source: format!("fleet:{}", fleet.id),
+                created_by: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(super::clean_fleet(&s, &fleet.id, "human").is_err());
+        pulse_board::finish_job(
+            &s,
+            &job.id,
+            "human",
+            "done",
+            "result recorded in the store",
+            "",
+            None,
+        )
+        .unwrap();
+        let report = super::verify_fleet(&cancel, &s, &fleet.id).unwrap();
+        assert!(report.ok);
+        assert_eq!(report.jobs.len(), 1);
+        assert_eq!(report.jobs[0].result, "result recorded in the store");
+        super::clean_fleet(&s, &fleet.id, "human").unwrap();
+        super::clean_fleet(&s, &fleet.id, "human").unwrap();
+        assert_no_clones(&s);
+        let list = super::list_fleets(&s, "demo").unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(!list[0].cleaned_at.is_empty());
+        assert!(list[0].paths.is_empty());
+    }
+
     #[test]
-    fn fleet_refuses_project_and_symlink_destinations() {}
+    fn fleet_refuses_project_and_symlink_destinations() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        let mut alias = s.clone();
+        alias.home = Path::new(&repo).join("wrong-home").display().to_string();
+        let cancel = pulse_bus::CancellationToken::new();
+        assert!(super::prepare_fleet(&cancel, &alias, "demo", "HEAD", 1, "human").is_err());
+        let outside = tempfile::tempdir().unwrap().keep();
+        put_file(outside.join("preserve"), "untouched", 0o600);
+        std::os::unix::fs::symlink(&outside, Path::new(&s.home).join("fleet")).unwrap();
+        assert!(super::prepare_fleet(&cancel, &s, "demo", "HEAD", 1, "human").is_err());
+        assert!(crate::clones::remove_managed(&s, "../outside").is_err());
+        assert!(std::fs::metadata(outside.join("preserve")).is_ok());
+    }
+
     #[test]
-    fn fleet_detects_reattached_clone() {}
+    fn fleet_detects_reattached_clone() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        test_project(&s, "demo");
+        let cancel = pulse_bus::CancellationToken::new();
+        let fleet = super::prepare_fleet(&cancel, &s, "demo", "HEAD", 1, "human").unwrap();
+        test_git(
+            &fleet.paths[0],
+            &["switch", "--quiet", "-c", "worker-branch"],
+        );
+        let report = super::verify_fleet(&cancel, &s, &fleet.id).unwrap();
+        assert!(!report.ok);
+        super::clean_fleet(&s, &fleet.id, "human").unwrap();
+    }
 }

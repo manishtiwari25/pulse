@@ -145,14 +145,17 @@ pub(crate) fn measure(
         }
     }
     let minutes: f64 = s.setting("minutes_per_job", "").parse().unwrap_or(f64::NAN);
-    if !crate::fixtures::finite(minutes) || minutes <= 0.0 {
+    if !crate::fixtures::finite(minutes)
+        || minutes <= 0.0
+        || minutes > (i64::MAX / 60_000_000_000) as f64
+    {
         return Err(crate::fixtures::input_error(
             "Cannot run measurement",
             "minutes_per_job must allow a positive bounded deadline",
             "pulse settings set minutes_per_job 10",
         ));
     }
-    let _timeout = Duration::from_secs_f64(minutes * 60.0);
+    let timeout = Duration::from_secs_f64(minutes * 60.0);
     let keys = crate::clones::project_answer_keys(s, project)?;
     let base = crate::clones::fleet_root(s, true)?;
     let id = pulse_board::new_id(s, "measure");
@@ -184,8 +187,8 @@ pub(crate) fn measure(
         let len = matrix.len();
         let mut out = opts.out;
         for (i, f) in matrix.iter().enumerate() {
-            if cancel.is_cancelled() {
-                return Err(anyhow!("context deadline exceeded"));
+            if let Some(err) = cancel.err() {
+                return Err(err.into());
             }
             let label = if f.kind == "heldout" {
                 "held-out fixture"
@@ -208,8 +211,9 @@ pub(crate) fn measure(
             fs::create_dir_all(&home)?;
             let argv = crate::process::harness_args(&s.setting("runner_cmd", ""), &f.request)?;
             let mut sink = std::io::sink();
+            let job_cancel = cancel.with_timeout(timeout);
             crate::process::run_process(
-                cancel,
+                &job_cancel,
                 &clone,
                 &crate::process::isolated_env(&home),
                 &argv,
@@ -217,9 +221,14 @@ pub(crate) fn measure(
             )
             .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
             crate::clones::check_clone(cancel, &clone, &keys)?;
-            let (value, reason) =
-                score_clone(cancel, &clone, &scorer_env(&home, &commit, &exe), &f.scorer)
-                    .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))?;
+            let score_cancel = cancel.with_timeout(timeout);
+            let (value, reason) = score_clone(
+                &score_cancel,
+                &clone,
+                &scorer_env(&home, &commit, &exe),
+                &f.scorer,
+            )
+            .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))?;
             scores.fixtures.push(crate::api::FixtureScore {
                 name: f.name.clone(),
                 kind: f.kind.clone(),
@@ -265,18 +274,22 @@ pub(crate) fn measurement_failure(
     step: &str,
     err: anyhow::Error,
 ) -> anyhow::Error {
-    if cancel.is_cancelled() {
-        return anyhow!("context deadline exceeded");
+    if let Some(ctx_err) = cancel.err() {
+        return ctx_err.into();
     }
     if err
-        .downcast_ref::<crate::clones::ViolationError>()
-        .is_some()
+        .chain()
+        .any(|e| e.downcast_ref::<crate::clones::ViolationError>().is_some())
     {
         return err;
     }
+    let mut why = format!("{step} failed; command output is withheld");
+    if pulse_bus::ContextError::is(&err, pulse_bus::ContextError::DeadlineExceeded) {
+        why = format!("{step} exceeded minutes_per_job");
+    }
     crate::fixtures::input_error(
         &format!("Measurement failed for {label}"),
-        &format!("{step} failed; command output is withheld"),
+        &why,
         "pulse evolve fixture list (owner: review the scorer and runner_cmd)",
     )
 }
@@ -401,16 +414,211 @@ fn select_fixtures(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_helpers::*;
+    use crate::test_helpers_e3::*;
+    use std::path::Path;
+    use std::time::Duration;
+
     #[test]
-    fn measure_weighted_isolated_and_private() {}
+    fn measure_weighted_isolated_and_private() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        fixture(&s, "demo", "F01", "printf 'score: 0.2\\n'", 1.0);
+        fixture(&s, "demo", "F02", "printf '0.6\\n'", 3.0);
+        let (_, forbidden) = private_set(&s);
+        let log = tempfile::tempdir().unwrap().keep().join("invocations");
+        fake_harness(
+            &s,
+            &format!(
+                r#"
+test "$1" = "-p"
+test -n "$2"
+test ! -e "$PULSE_HOME/pulse.sqlite"
+test "$PULSE_JOB" = measurement
+test -z "${{PULSE_AGENT:-}}"
+test ! -e .pulse
+test ! -e keys/answer.txt
+test -z "$(git remote)"
+test -z "$(git tag --list)"
+if git symbolic-ref -q HEAD >/dev/null; then exit 3; fi
+printf '%s\n' "$PWD" >> '{}'
+printf 'changed in the clone\n' > value.txt
+printf 'HIDDEN_HARNESS_OUTPUT\n'
+"#,
+                log.display()
+            ),
+        );
+        let mut out = Vec::new();
+        let cancel = pulse_bus::CancellationToken::new();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions {
+                out: Some(&mut out),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(scores.fixtures.len(), 4);
+        assert_eq!(scores.heldout, 2);
+        assert!((scores.total - 0.6).abs() <= 1e-9);
+        assert_eq!(scores.fixtures[2].name, "H1");
+        assert_eq!(scores.fixtures[3].name, "H2");
+        assert_private_absent(
+            &(serde_json::to_string(&scores).unwrap() + &String::from_utf8_lossy(&out)),
+            &[forbidden, vec!["HIDDEN_HARNESS_OUTPUT".into()]].concat(),
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&repo).join("value.txt")).unwrap(),
+            "original\n"
+        );
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(lines(&calls).len(), 4);
+        let unique: std::collections::BTreeSet<_> = lines(&calls).into_iter().collect();
+        assert_eq!(unique.len(), 4);
+        for name in unique {
+            assert!(
+                std::fs::metadata(name).is_err(),
+                "measurement clone survived completion"
+            );
+        }
+        assert_eq!(count_rows(&s, "evolution_archive"), 0);
+        assert_no_clones(&s);
+    }
+
     #[test]
-    fn measure_subset_always_includes_private_set() {}
+    fn measure_subset_always_includes_private_set() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        fixture(&s, "demo", "F01", "printf 0.2", 1.0);
+        fixture(&s, "demo", "F02", "printf 0.6", 1.0);
+        private_set(&s);
+        fake_harness(&s, "exit 0");
+        let cancel = pulse_bus::CancellationToken::new();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions {
+                fixtures: vec!["F02".into()],
+                shadow: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(scores.fixtures.len(), 3);
+        assert_eq!(scores.heldout, 2);
+        assert!(scores.shadow);
+        assert!(
+            super::measure(
+                &cancel,
+                &s,
+                "demo",
+                &repo,
+                "HEAD",
+                crate::api::MeasureOptions {
+                    fixtures: vec!["missing".into()],
+                    ..Default::default()
+                },
+            )
+            .is_err()
+        );
+        assert_no_clones(&s);
+    }
+
     #[test]
-    fn measure_read_only_scorer_violation() {}
+    fn measure_read_only_scorer_violation() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        fixture(
+            &s,
+            "demo",
+            "F01",
+            "chmod u+w value.txt; printf changed > value.txt; printf 1",
+            1.0,
+        );
+        fake_harness(&s, "exit 0");
+        let cancel = pulse_bus::CancellationToken::new();
+        let err = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions::default(),
+        )
+        .expect_err("mutating scorer reported success");
+        assert!(
+            err.downcast_ref::<crate::clones::ViolationError>()
+                .is_some(),
+            "mutating scorer did not fail as a constraint: {err}"
+        );
+        assert_no_clones(&s);
+        assert_eq!(count_rows(&s, "evolution_archive"), 0);
+    }
+
     #[test]
-    fn measure_failure_and_cancellation_cleanup() {}
+    fn measure_failure_and_cancellation_cleanup() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        for mode in ["harness failure", "bad scorer", "cancel"] {
+            let s = test_store();
+            let repo = test_project(&s, "demo");
+            let scorer = if mode == "bad scorer" {
+                "printf 'invalid score\\n'"
+            } else {
+                "printf 0.5"
+            };
+            fixture(&s, "demo", "F01", scorer, 1.0);
+            let body = if mode == "harness failure" {
+                "printf 'HIDDEN_FAILURE\\n' >&2; exit 7"
+            } else if mode == "cancel" {
+                "sleep 30"
+            } else {
+                "exit 0"
+            };
+            fake_harness(&s, body);
+            let mut cancel = pulse_bus::CancellationToken::new();
+            if mode == "cancel" {
+                cancel = cancel.with_timeout(Duration::from_millis(250));
+            }
+            let mut out = Vec::new();
+            let err = super::measure(
+                &cancel,
+                &s,
+                "demo",
+                &repo,
+                "HEAD",
+                crate::api::MeasureOptions {
+                    out: Some(&mut out),
+                    ..Default::default()
+                },
+            )
+            .expect_err("failed measurement reported success");
+            if mode == "cancel" {
+                assert!(
+                    err.to_string().contains("context deadline exceeded"),
+                    "{err}"
+                );
+            }
+            assert!(!(err.to_string() + &String::from_utf8_lossy(&out)).contains("HIDDEN_FAILURE"));
+            assert_no_clones(&s);
+        }
+    }
     #[test]
     fn score_protocol() {
+        let _serial = crate::test_helpers::serial();
         for (text, want, ok) in [
             ("0", 0.0, true),
             ("1\n", 1.0, true),
@@ -430,7 +638,105 @@ mod tests {
         }
     }
     #[test]
-    fn harness_prompt_is_one_literal_argument() {}
+    fn harness_prompt_is_one_literal_argument() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let request = "literal '; $(do-not-execute) \"\nrequest";
+        for command in [
+            "'/tmp/runner with spaces' --flag",
+            "fake -p {prompt} --allow-all-tools",
+            "fake -p",
+        ] {
+            let args = crate::process::harness_args(command, request).unwrap();
+            assert_eq!(args.iter().filter(|arg| arg.as_str() == request).count(), 1);
+        }
+        assert!(crate::process::harness_args("fake -p old-request", request).is_err());
+    }
+
     #[test]
-    fn measure_runs_a_written_judge() {}
+    fn measure_runs_a_written_judge() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        let dir = tempfile::tempdir().unwrap().keep();
+        crate::private::setup(&s, &dir.display().to_string()).unwrap();
+        let pulse = test_pulse();
+        use_test_executable(&pulse);
+        crate::private::write_heldout(
+            &s,
+            crate::private::HeldoutWrite {
+                request: "Leave the checkout exactly as it is.".into(),
+                judge: "starter-hardstop-history".into(),
+                generated: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::private::write_heldout(
+            &s,
+            crate::private::HeldoutWrite {
+                request: "The owner's own check.".into(),
+                scorer: "#!/bin/sh\nprintf '0.5\\n'\n".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fake_harness(&s, "exit 0");
+        let mut out = Vec::new();
+        let cancel = pulse_bus::CancellationToken::new();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions {
+                out: Some(&mut out),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(scores.fixtures.len(), 2);
+        assert_eq!(scores.heldout, 2);
+        assert_eq!(scores.heldout_generated, 1);
+        assert_eq!(scores.fixtures[0].score, 1.0);
+        assert_eq!(scores.fixtures[1].score, 0.5);
+        assert_eq!(scores.total, 0.75);
+        assert!(heldout_json(&scores).contains("\"heldout_generated\":1"));
+        assert_private_absent(
+            &(heldout_json(&scores) + &String::from_utf8_lossy(&out)),
+            &[
+                dir.display().to_string(),
+                "H01".into(),
+                "H02".into(),
+                "Leave the checkout".into(),
+                "own check".into(),
+                pulse.clone(),
+            ],
+        );
+        assert_no_clones(&s);
+        crate::private::write_heldout(
+            &s,
+            crate::private::HeldoutWrite {
+                request: "Another of the owner's checks.".into(),
+                scorer: "#!/bin/sh\nprintf '1\\n'\n".into(),
+                slot: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        clear_test_executable();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(scores.total, 0.75);
+        assert_no_clones(&s);
+    }
 }
