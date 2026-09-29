@@ -345,6 +345,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "erased-serde"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2add8a07dd6a8d93ff627029c51de145e12686fbc36ecb298ac22e74cf02dec"
+dependencies = [
+ "serde",
+ "serde_core",
+ "typeid",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1213,7 +1224,6 @@ name = "pulse"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "once_cell",
  "pulse-board",
  "pulse-bus",
  "pulse-cli",
@@ -1222,14 +1232,17 @@ dependencies = [
  "pulse-goals-command",
  "pulse-harness",
  "pulse-hooks",
+ "pulse-inspect",
  "pulse-parity",
  "pulse-provider-copilot",
  "pulse-provider-openai",
  "pulse-records",
+ "pulse-runner",
  "pulse-store",
  "pulse-tally",
  "pulse-tasks",
  "pulse-testutil",
+ "serde",
  "serde_json",
  "tempfile",
 ]
@@ -1500,7 +1513,9 @@ dependencies = [
  "pulse-tally",
  "pulse-tasks",
  "pulse-testutil",
+ "regex",
  "reqwest",
+ "rusqlite",
  "rust-embed",
  "serde",
  "serde_json",
@@ -1550,6 +1565,7 @@ name = "pulse-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "pulse-store",
  "pulse-testutil",
  "regex",
  "reqwest",
@@ -1567,6 +1583,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "pulse-provider",
+ "pulse-store",
  "pulse-testutil",
  "rand",
  "regex",
@@ -1583,6 +1600,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "pulse-provider",
+ "pulse-store",
  "pulse-testutil",
  "serde",
  "serde_json",
@@ -1596,6 +1614,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "pulse-provider",
+ "pulse-store",
  "pulse-testutil",
  "reqwest",
  "serde",
@@ -1672,6 +1691,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "erased-serde",
  "home",
  "pulse-cred",
  "pulse-gitenv",
@@ -2556,6 +2576,12 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "typenum"

@@ -30,7 +30,7 @@ pub struct Reflection {
     pub board: String,
     #[serde(default, skip_deserializing)]
     pub ballot: Vec<pulse_tally::BallotItem>,
-    pub proposals: Vec<pulse_tally::Proposal>,
+    pub proposals: pulse_store::gojson::GoSlice<pulse_tally::Proposal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gates: Option<crate::status::LoopStatus>,
     pub hygiene: Hygiene,
@@ -179,7 +179,7 @@ pub fn reflect(
         board: "NOTICES\n  no PULSE store or registered project; observation is still available"
             .to_string(),
         ballot: Vec::new(),
-        proposals: Vec::new(),
+        proposals: pulse_store::gojson::GoSlice::empty(),
         problems: Vec::new(),
         next_commands: Vec::new(),
         ..Default::default()

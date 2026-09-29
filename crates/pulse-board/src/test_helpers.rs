@@ -323,14 +323,15 @@ mod tests {
 
     #[test]
     fn new_home_with_runner_environment() {
-        {
-            let _guard = pulse_testutil::env_lock();
-            let parent = tempfile::tempdir().unwrap();
-            unsafe {
-                std::env::set_var("PULSE_HOME", parent.path());
-                for name in ["PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"] {
-                    std::env::set_var(name, "parent");
-                }
+        // Go runs the package's tests one after another; hold the (reentrant)
+        // env lock for the whole test so no parallel test observes
+        // PULSE_AGENT=parent between the set_var and new_home's reset.
+        let _guard = pulse_testutil::env_lock();
+        let parent = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("PULSE_HOME", parent.path());
+            for name in ["PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"] {
+                std::env::set_var(name, "parent");
             }
         }
         let (_dir, home, _s) = new_home();

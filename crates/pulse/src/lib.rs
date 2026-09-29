@@ -2,7 +2,28 @@ use anyhow::Error as AnyError;
 use pulse_cli::flags::{FlagError, FlagSet, Output, parse_interleaved};
 use pulse_cli::{Command, Context};
 use std::io::Write;
-use std::sync::Once;
+use std::sync::{Arc, Mutex, Once};
+
+/// One writer shared between `run` and the command's `Context` (Go hands the
+/// same `os.Stdout` to both). Lines stream through as they are written, which
+/// `pulse daemon` and `pulse hub` need for their service logs.
+#[derive(Clone)]
+struct Shared(Arc<Mutex<Box<dyn Write + Send>>>);
+
+impl Shared {
+    fn new(w: Box<dyn Write + Send>) -> Self {
+        Shared(Arc::new(Mutex::new(w)))
+    }
+}
+
+impl Write for Shared {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).flush()
+    }
+}
 
 #[derive(Default)]
 struct Globals {
@@ -76,14 +97,15 @@ pub fn register_all() {
         pulse_goals_command::register();
         pulse_harness::register();
         pulse_hooks::register();
+        pulse_inspect::register();
         pulse_provider_copilot::register();
         pulse_provider_openai::register();
         pulse_records::register();
+        pulse_runner::register();
         pulse_tally::register();
         pulse_tasks::register();
         pulse_evolve::init();
-        // Still to land: hub, inspect, runner (+ runner's init() side effects:
-        // its compute providers and tasks.LoginSourceCheck).
+        // Still to land: hub (its register() is a skeleton until the hub fill wave completes).
     });
 }
 
@@ -116,15 +138,43 @@ fn version_run(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Resu
     Ok(())
 }
 
+/// Go: func run(argv []string, stdout, stderr io.Writer) int — for callers that
+/// lend borrowed writers (tests). Output is collected and copied out at the end.
 pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    let out_buf = pulse_cli::Buffer::new();
+    let err_buf = pulse_cli::Buffer::new();
+    let code = run_streaming(
+        argv,
+        Box::new(out_buf.clone()),
+        Box::new(err_buf.clone()),
+        false,
+    );
+    let _ = write!(out, "{}", out_buf.string());
+    let _ = write!(err, "{}", err_buf.string());
+    code
+}
+
+/// The binary's entry: writes stream straight through to `out`/`err`.
+/// `out_is_tty` stands in for Go's `out.(*os.File) && IsTTY(f)` check, which a
+/// `dyn Write` cannot answer for itself.
+pub fn run_streaming(
+    argv: &[String],
+    out: Box<dyn Write + Send>,
+    err: Box<dyn Write + Send>,
+    out_is_tty: bool,
+) -> i32 {
     register_all();
+    let mut out = Shared::new(out);
+    let mut err = Shared::new(err);
+    let out = &mut out;
+    let err = &mut err;
     let mut gfs = FlagSet::new("pulse");
     gfs.set_output(Output::Discard);
     Globals::default().bind(&mut gfs);
     if let Err(e) = gfs.parse(argv) {
         return match e {
             FlagError::Help => {
-                let help_color = pulse_cli::color_enabled(out, false);
+                let help_color = color_enabled(out_is_tty, false);
                 let _ = pulse_cli::help(out, help_color);
                 0
             }
@@ -136,7 +186,7 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     }
     let mut g = Globals::default();
     g.apply(&gfs);
-    let color = pulse_cli::color_enabled(out, g.no_color);
+    let color = color_enabled(out_is_tty, g.no_color);
     let rest = gfs.args();
     if rest.is_empty() {
         let _ = pulse_cli::help(out, color);
@@ -155,13 +205,11 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         Err(e) => return report(name, e, err),
     };
 
-    let out_buf = pulse_cli::Buffer::new();
-    let err_buf = pulse_cli::Buffer::new();
     let mut ctx = Context {
         store: None,
         home,
-        out: Box::new(out_buf.clone()),
-        err: Box::new(err_buf.clone()),
+        out: Box::new(out.clone()),
+        err: Box::new(err.clone()),
         json: g.json,
         quiet: g.quiet,
         color,
@@ -213,24 +261,22 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         }
     }
     match (cmd.run)(&mut ctx, &fs, &args) {
-        Ok(()) => {
-            let _ = write!(out, "{}", out_buf.string());
-            let _ = write!(err, "{}", err_buf.string());
-            0
-        }
+        Ok(()) => 0,
         // Go: errors.Is(err, flag.ErrHelp) -> the command's help, exit 0
         Err(e) if matches!(e.downcast_ref::<FlagError>(), Some(FlagError::Help)) => {
-            let _ = write!(out, "{}", out_buf.string());
-            let _ = write!(err, "{}", err_buf.string());
             let _ = pulse_cli::help_command(out, color, &cmd);
             0
         }
-        Err(e) => {
-            let _ = write!(out, "{}", out_buf.string());
-            let _ = write!(err, "{}", err_buf.string());
-            report(name, e, err)
-        }
+        Err(e) => report(name, e, err),
     }
+}
+
+/// Go: cli.ColorEnabled(out, noColor) — colour only on a terminal, never under NO_COLOR.
+fn color_enabled(out_is_tty: bool, no_color: bool) -> bool {
+    if no_color || std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    out_is_tty
 }
 
 fn late_bind(fs: &mut FlagSet) {
@@ -329,65 +375,106 @@ fn report(name: &str, errv: AnyError, err: &mut dyn Write) -> i32 {
 }
 
 #[cfg(test)]
+pub(crate) mod test_helpers {
+    use std::sync::{Mutex, MutexGuard};
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// Go runs a package's tests one at a time; the command registry, the
+    /// process env and the captured `SEEN` context are shared, so every test
+    /// holds this lock first.
+    pub(crate) fn serial() -> MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+// Ports of cmd/pulse/main_test.go and cmd/pulse/settings_test.go.
+#[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
+    use pulse_testutil::setenv;
     use std::path::Path;
     use std::sync::Mutex;
     use tempfile::tempdir;
-
-    type Seen = Option<(String, String, String, String, Vec<String>)>;
-
-    static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
-    static SEEN: Lazy<Mutex<Seen>> = Lazy::new(|| Mutex::new(None));
 
     fn sv(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_string()).collect()
     }
 
-    fn test_flags(fs: &mut FlagSet) {
-        fs.string_var("kind", "", "kind");
+    fn run_s(args: &[&str], out: &mut Vec<u8>, err: &mut Vec<u8>) -> i32 {
+        run(&sv(args), out, err)
     }
 
-    fn test_run(c: &mut Context, fs: &FlagSet, args: &[String]) -> anyhow::Result<()> {
-        *SEEN.lock().unwrap() = Some((
-            c.agent.clone(),
-            c.project.clone(),
-            c.now.clone(),
-            fs.get_string("kind"),
-            args.to_vec(),
-        ));
-        if args.first().is_some_and(|s| s == "fail") {
-            return Err(pulse_cli::errorf(3, "boom", "because", "pulse zz-post ok").into());
+    fn s(b: &[u8]) -> String {
+        String::from_utf8(b.to_vec()).unwrap()
+    }
+
+    /// Go: func TestHelpAndVersion(t *testing.T)
+    #[test]
+    fn help_and_version() {
+        let _serial = crate::test_helpers::serial();
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run_s(&["help"], &mut out, &mut errb);
+        if code != 0 || !s(&out).starts_with(pulse_cli::TITLE) {
+            panic!("help: {code} {:?}", s(&out));
         }
-        if args.first().is_some_and(|s| s == "input") {
-            return Err(pulse_store::InputError {
-                msg: "quorum takes a whole number, not 'x'".into(),
-            }
-            .into());
+        out.clear();
+        let code = run(&[], &mut out, &mut errb);
+        if code != 0 || !s(&out).contains("Runner - jobs, workers and landing") {
+            panic!("bare: {code} {:?}", s(&out));
         }
-        Ok(())
+        out.clear();
+        let code = run_s(&["-h"], &mut out, &mut errb);
+        if code != 0 || !s(&out).starts_with(pulse_cli::TITLE) {
+            panic!("-h: {code}");
+        }
+        out.clear();
+        let code = run_s(&["help", "work"], &mut out, &mut errb);
+        if code != 0 || !s(&out).contains("Usage: pulse work") {
+            panic!("help work: {code} {:?}", s(&out));
+        }
+        out.clear();
+        let code = run_s(&["version"], &mut out, &mut errb);
+        if code != 0 || s(&out).trim().is_empty() {
+            panic!("version: {code} {:?}", s(&out));
+        }
+        out.clear();
+        let code = run_s(&["--json", "version"], &mut out, &mut errb);
+        if code != 0 || !s(&out).contains("\"version\":") {
+            panic!("version --json: {code} {:?}", s(&out));
+        }
+    }
+
+    /// Go: func TestUnknownCommand(t *testing.T)
+    #[test]
+    fn unknown_command() {
+        let _serial = crate::test_helpers::serial();
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let home = tempdir().unwrap();
+        let code = run_s(
+            &["--home", home.path().to_str().unwrap(), "statuz"],
+            &mut out,
+            &mut errb,
+        );
+        if code != 2
+            || !s(&errb).contains("unknown command \"statuz\"")
+            || !s(&errb).contains("did you mean:")
+        {
+            panic!("code {code} stderr {:?}", s(&errb));
+        }
     }
 
     fn needs_store(_c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn register_test_commands() {
-        if pulse_cli::lookup("zz-post").is_none() {
-            pulse_cli::register(Command {
-                name: "zz-post".into(),
-                group: "agents".into(),
-                summary: "test".into(),
-                usage: String::new(),
-                aliases: vec![],
-                no_store: false,
-                read_only: false,
-                raw: false,
-                run: test_run,
-                flags: Some(test_flags),
-            });
-        }
+    /// Go: func TestNoStoreMapping(t *testing.T)
+    #[test]
+    fn no_store_mapping() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let home = tempdir().unwrap();
+        let home = home.path().to_str().unwrap();
         if pulse_cli::lookup("zz-needs-store").is_none() {
             pulse_cli::register(Command {
                 name: "zz-needs-store".into(),
@@ -402,166 +489,326 @@ mod tests {
                 flags: None,
             });
         }
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run_s(&["--home", home, "zz-needs-store"], &mut out, &mut errb);
+        let want = pulse_store::store_path(home).unwrap();
+        if code != 2
+            || !s(&errb).contains(&format!("No store at {want}"))
+            || !s(&errb).contains("fix: pulse init <project-path>")
+        {
+            panic!("code {code} stderr {:?}", s(&errb));
+        }
+        if Path::new(&want).exists() {
+            panic!("store created by a non-init command");
+        }
     }
 
-    #[test]
-    fn help_and_version() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        assert_eq!(run(&sv(&["help"]), &mut out, &mut err), 0);
-        assert!(
-            String::from_utf8(out.clone())
-                .unwrap()
-                .starts_with(pulse_cli::TITLE)
-        );
-        out.clear();
-        assert_eq!(run(&[], &mut out, &mut err), 0);
-        assert!(
-            String::from_utf8(out.clone())
-                .unwrap()
-                .contains("Inspect - read the store")
-        );
-        out.clear();
-        assert_eq!(run(&sv(&["-h"]), &mut out, &mut err), 0);
-        assert!(
-            String::from_utf8(out.clone())
-                .unwrap()
-                .starts_with(pulse_cli::TITLE)
-        );
-        out.clear();
-        assert_eq!(run(&sv(&["help", "version"]), &mut out, &mut err), 0);
-        assert!(
-            String::from_utf8(out.clone())
-                .unwrap()
-                .contains("Usage: pulse version [--json]")
-        );
-        out.clear();
-        assert_eq!(run(&sv(&["version"]), &mut out, &mut err), 0);
-        assert!(!String::from_utf8(out.clone()).unwrap().trim().is_empty());
-        out.clear();
-        assert_eq!(run(&sv(&["--json", "version"]), &mut out, &mut err), 0);
-        assert!(String::from_utf8(out).unwrap().contains("\"version\""));
+    /// What the zz-post command saw: (Agent, Project, JSON, Now, Store.Now(), Home), args, kind.
+    type Seen = Option<((String, String, bool, String, Option<String>, String), Vec<String>, String)>;
+    static SEEN: Mutex<Seen> = Mutex::new(None);
+
+    fn zz_post_flags(fs: &mut FlagSet) {
+        fs.string_var("kind", "", "kind");
     }
 
-    #[test]
-    fn unknown_and_store_mapping() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        register_test_commands();
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let home = tempdir().unwrap();
-        assert_eq!(
-            run(
-                &sv(&["--home", home.path().to_str().unwrap(), "statuz"]),
-                &mut out,
-                &mut err
+    fn zz_post_run(c: &mut Context, fs: &FlagSet, args: &[String]) -> anyhow::Result<()> {
+        *SEEN.lock().unwrap() = Some((
+            (
+                c.agent.clone(),
+                c.project.clone(),
+                c.json,
+                c.now.clone(),
+                c.store.as_ref().map(|st| st.now()),
+                c.home.clone(),
             ),
-            2
-        );
-        let stderr = String::from_utf8(err.clone()).unwrap();
-        assert!(stderr.contains("unknown command \"statuz\""));
-        assert!(stderr.contains("did you mean:"));
-        err.clear();
-        assert_eq!(
-            run(
-                &sv(&["--home", home.path().to_str().unwrap(), "zz-needs-store"]),
-                &mut out,
-                &mut err
-            ),
-            2
-        );
-        let want = pulse_store::store_path(home.path().to_str().unwrap()).unwrap();
-        let stderr = String::from_utf8(err).unwrap();
-        assert!(stderr.contains(&format!("No store at {want}")));
-        assert!(stderr.contains("fix: pulse init <project-path>"));
-        assert!(!Path::new(&want).exists());
+            args.to_vec(),
+            fs.get_string("kind"),
+        ));
+        if args.first().is_some_and(|a| a == "fail") {
+            return Err(pulse_cli::errorf(3, "boom", "because", "pulse zz-post ok").into());
+        }
+        if args.first().is_some_and(|a| a == "input") {
+            return c
+                .store
+                .as_ref()
+                .expect("store")
+                .set_setting("human", "quorum", "x");
+        }
+        Ok(())
     }
 
+    /// Go: func TestInterleavedFlagsAndErrors(t *testing.T)
     #[test]
     fn interleaved_flags_and_errors() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        register_test_commands();
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let _no_color = setenv("NO_COLOR", "1");
         let home = tempdir().unwrap();
-        pulse_store::create(home.path().join(pulse_store::STORE_NAME)).unwrap();
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        assert_eq!(
-            run(
-                &sv(&[
-                    "--home",
-                    home.path().to_str().unwrap(),
-                    "--agent",
-                    "early",
-                    "zz-post",
-                    "one",
-                    "--kind",
-                    "finding",
-                    "two",
-                    "--project",
-                    "pulse",
-                    "--json",
-                    "--now",
-                    "2026-09-06T10:00:00Z",
-                    "--",
-                    "-three"
-                ]),
-                &mut out,
-                &mut err
-            ),
-            0
-        );
-        let seen = SEEN.lock().unwrap().clone().unwrap();
-        assert_eq!(seen.0, "early");
-        assert_eq!(seen.1, "pulse");
-        assert_eq!(seen.2, "2026-09-06T10:00:00Z");
-        assert_eq!(seen.3, "finding");
-        assert_eq!(seen.4, sv(&["one", "two", "-three"]));
+        let home = home.path().to_str().unwrap();
+        pulse_store::create(Path::new(home).join(pulse_store::STORE_NAME)).unwrap();
+        if pulse_cli::lookup("zz-post").is_none() {
+            pulse_cli::register(Command {
+                name: "zz-post".into(),
+                group: "agents".into(),
+                summary: "test".into(),
+                usage: String::new(),
+                aliases: vec![],
+                no_store: false,
+                read_only: false,
+                raw: false,
+                run: zz_post_run,
+                flags: Some(zz_post_flags),
+            });
+        }
 
-        err.clear();
-        assert_eq!(
-            run(
-                &sv(&["--home", home.path().to_str().unwrap(), "zz-post", "fail"]),
-                &mut out,
-                &mut err
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run_s(
+            &[
+                "--home", home, "--agent", "early", "zz-post", "one", "--kind", "finding", "two",
+                "--project", "pulse", "--json", "--now", "2026-09-06T10:00:00Z", "--", "-three",
+            ],
+            &mut out,
+            &mut errb,
+        );
+        if code != 0 {
+            panic!("code {code} stderr {:?}", s(&errb));
+        }
+        let (seen, seen_args, seen_kind) = SEEN.lock().unwrap().clone().unwrap();
+        if seen_args.join(",") != "one,two,-three" || seen_kind != "finding" {
+            panic!("args {seen_args:?} kind {seen_kind:?}");
+        }
+        let (agent, project, json, now, store_now, seen_home) = seen;
+        if agent != "early"
+            || project != "pulse"
+            || !json
+            || now != "2026-09-06T10:00:00Z"
+            || store_now.as_deref() != Some("2026-09-06T10:00:00Z")
+        {
+            panic!("context {agent:?} {project:?} {json} {now:?} {store_now:?}");
+        }
+        let base = Path::new(home).file_name().unwrap().to_str().unwrap();
+        if !seen_home.ends_with(base) {
+            panic!("home {seen_home:?}");
+        }
+
+        errb.clear();
+        let code = run_s(&["--home", home, "zz-post", "fail"], &mut out, &mut errb);
+        if code != 3 || s(&errb) != "boom\n  why: because\n  fix: pulse zz-post ok\n" {
+            panic!("cli.Error: {code} {:?}", s(&errb));
+        }
+        errb.clear();
+        let code = run_s(&["--home", home, "zz-post", "input"], &mut out, &mut errb);
+        if code != 2 || s(&errb) != "pulse zz-post: quorum takes a whole number, not 'x'\n" {
+            panic!("InputError: {code} {:?}", s(&errb));
+        }
+        errb.clear();
+        let code = run_s(&["--home", home, "zz-post", "--bogus"], &mut out, &mut errb);
+        if code != 2 || !s(&errb).contains("flag provided but not defined: -bogus") {
+            panic!("bad flag: {code} {:?}", s(&errb));
+        }
+        out.clear();
+        let code = run_s(&["--home", home, "zz-post", "-h"], &mut out, &mut errb);
+        if code != 0 || !s(&out).contains("-kind string") {
+            panic!("command -h: {code} {:?}", s(&out));
+        }
+    }
+
+    /// Go: func TestSettingsHelpWithoutStore(t *testing.T)
+    #[test]
+    fn settings_help_without_store() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("missing");
+        let home_s = home.to_str().unwrap().to_string();
+        let _home = setenv("PULSE_HOME", &home_s);
+        let mut first = String::new();
+        for args in [
+            vec!["settings", "help"],
+            vec!["settings", "--help"],
+            vec!["settings", "-h"],
+            vec!["help", "settings"],
+        ] {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run_s(&args, &mut out, &mut errb);
+            if code != 0 || !errb.is_empty() {
+                panic!(
+                    "{}: help: code {code}, stdout {:?}, stderr {:?}",
+                    args.join(" "),
+                    s(&out),
+                    s(&errb)
+                );
+            }
+            for want in [
+                "Usage: pulse settings [get NAME | set NAME VALUE | list | help]".to_string(),
+                "minutes_per_job".to_string(),
+                format!(
+                    "default {} minutes",
+                    pulse_store::DEFAULT_SETTINGS["minutes_per_job"]
+                ),
+                "max_ai_credits".to_string(),
+                format!(
+                    "default {} credits",
+                    pulse_store::DEFAULT_SETTINGS["max_ai_credits"]
+                ),
+                "evolve.limits".to_string(),
+                format!("default {}", pulse_store::EVOLVE_SETTINGS["evolve.limits"]),
+                "evolve_minutes and evolve_credits are not supported".to_string(),
+                "not aliases".to_string(),
+                "pulse settings get NAME".to_string(),
+                "pulse settings list --json".to_string(),
+            ] {
+                if !s(&out).contains(&want) {
+                    panic!("{}: help missing {want:?}:\n{}", args.join(" "), s(&out));
+                }
+            }
+            if first.is_empty() {
+                first = s(&out);
+            } else if s(&out) != first {
+                panic!(
+                    "{}: help routes disagree:\n{}\nwant:\n{first}",
+                    args.join(" "),
+                    s(&out)
+                );
+            }
+            if home.exists() {
+                panic!("{}: help touched the store home", args.join(" "));
+            }
+        }
+    }
+
+    /// Go: func TestSettingsHelpRejectsArguments(t *testing.T)
+    #[test]
+    fn settings_help_rejects_arguments() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("missing");
+        let _home = setenv("PULSE_HOME", home.to_str().unwrap());
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run_s(&["settings", "help", "extra"], &mut out, &mut errb);
+        if code != 2 || !out.is_empty() || !s(&errb).contains("unrecognized arguments: extra") {
+            panic!(
+                "help arguments: code {code}, stdout {:?}, stderr {:?}",
+                s(&out),
+                s(&errb)
+            );
+        }
+        if home.exists() {
+            panic!("invalid help touched the store home");
+        }
+    }
+
+    /// Go: func TestSettingsActionsNeedStore(t *testing.T)
+    #[test]
+    fn settings_actions_need_store() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("missing");
+        let _home = setenv("PULSE_HOME", home.to_str().unwrap());
+        for args in [
+            vec!["settings"],
+            vec!["settings", "list"],
+            vec!["settings", "get", "minutes_per_job"],
+            vec!["settings", "set", "minutes_per_job", "11"],
+        ] {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run_s(&args, &mut out, &mut errb);
+            let want = format!(
+                "No store at {}",
+                home.join(pulse_store::STORE_NAME).to_str().unwrap()
+            );
+            if code != 2 || !out.is_empty() || !s(&errb).contains(&want) {
+                panic!(
+                    "{args:?}: code {code}, stdout {:?}, stderr {:?}",
+                    s(&out),
+                    s(&errb)
+                );
+            }
+            if home.exists() {
+                panic!("{args:?} created a store home");
+            }
+        }
+    }
+
+    /// Go: func TestSettingsStoreActions(t *testing.T)
+    #[test]
+    fn settings_store_actions() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let _agent = setenv("PULSE_AGENT", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path();
+        let _home = setenv("PULSE_HOME", home.to_str().unwrap());
+        pulse_store::create(home.join(pulse_store::STORE_NAME)).unwrap();
+        for (args, want) in [
+            (
+                vec!["get", "minutes_per_job"],
+                format!("{}\n", pulse_store::DEFAULT_SETTINGS["minutes_per_job"]),
             ),
-            3
-        );
-        assert_eq!(
-            String::from_utf8(err.clone()).unwrap(),
-            "boom\n  why: because\n  fix: pulse zz-post ok\n"
-        );
-        err.clear();
-        assert_eq!(
-            run(
-                &sv(&["--home", home.path().to_str().unwrap(), "zz-post", "input"]),
-                &mut out,
-                &mut err
+            (
+                vec!["set", "minutes_per_job", "11"],
+                "minutes_per_job=11\n".to_string(),
             ),
-            2
-        );
-        assert_eq!(
-            String::from_utf8(err.clone()).unwrap(),
-            "pulse zz-post: quorum takes a whole number, not 'x'\n"
-        );
-        err.clear();
-        assert_eq!(
-            run(
-                &sv(&[
-                    "--home",
-                    home.path().to_str().unwrap(),
-                    "zz-post",
-                    "--bogus"
-                ]),
-                &mut out,
-                &mut err
+            (vec!["get", "minutes_per_job"], "11\n".to_string()),
+            (
+                vec!["get", "evolve.limits"],
+                format!("{}\n", pulse_store::EVOLVE_SETTINGS["evolve.limits"]),
             ),
-            2
-        );
-        assert!(
-            String::from_utf8(err)
-                .unwrap()
-                .contains("flag provided but not defined: -bogus")
-        );
+        ] {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let mut full = vec!["settings"];
+            full.extend(args.iter().copied());
+            let code = run_s(&full, &mut out, &mut errb);
+            if code != 0 || s(&out) != want || !errb.is_empty() {
+                panic!(
+                    "{args:?}: code {code}, stdout {:?}, stderr {:?}",
+                    s(&out),
+                    s(&errb)
+                );
+            }
+        }
+        for name in ["evolve_minutes", "evolve_credits"] {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run_s(&["settings", "set", name, "60"], &mut out, &mut errb);
+            if code != 2
+                || !out.is_empty()
+                || !s(&errb).contains(&format!("Unknown setting '{name}'"))
+            {
+                panic!(
+                    "unsupported {name}: code {code}, stdout {:?}, stderr {:?}",
+                    s(&out),
+                    s(&errb)
+                );
+            }
+        }
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run_s(&["settings", "list", "--json"], &mut out, &mut errb);
+        if code != 0 || !errb.is_empty() {
+            panic!("list: code {code}, stdout {:?}, stderr {:?}", s(&out), s(&errb));
+        }
+        #[derive(serde::Deserialize, Debug)]
+        struct Row {
+            name: String,
+            value: String,
+            default: String,
+        }
+        let rows: Vec<Row> = serde_json::from_slice(&out).unwrap();
+        let mut found = false;
+        for row in &rows {
+            if row.name == "evolve_minutes" || row.name == "evolve_credits" {
+                panic!("unsupported setting advertised as configurable: {row:?}");
+            }
+            if row.name == "minutes_per_job" {
+                found = true;
+                if row.value != "11" || row.default != pulse_store::DEFAULT_SETTINGS[&row.name] {
+                    panic!("effective value and default lost: {row:?}");
+                }
+            }
+        }
+        if !found {
+            panic!("settings list omitted minutes_per_job");
+        }
     }
 }

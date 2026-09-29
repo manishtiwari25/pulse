@@ -9,6 +9,7 @@ publish.workspace = true
 description = "PULSE: the model-provider contract and registry"
 
 [dependencies]
+pulse-store.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true

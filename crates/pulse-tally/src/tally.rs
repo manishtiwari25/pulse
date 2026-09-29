@@ -200,6 +200,8 @@ pub struct Amendment {
     pub session: String,
 }
 
+/// Go: every slice here is append-built (or `scanPosts`' `var out`), so an
+/// empty one marshals as `null`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TallyResult {
     pub project: String,
@@ -207,16 +209,24 @@ pub struct TallyResult {
     pub area: String,
     pub now: String,
     pub params: Thresholds,
+    #[serde(with = "pulse_store::gojson::nil_slice", default)]
     pub posts: Vec<Post>,
     pub nokind: i32,
+    #[serde(with = "pulse_store::gojson::nil_slice", default)]
     pub claims: Vec<Claim>,
+    #[serde(with = "pulse_store::gojson::nil_slice", default)]
     pub threads: Vec<Thread>,
+    #[serde(with = "pulse_store::gojson::nil_slice", default)]
     pub proposals: Vec<Proposal>,
+    #[serde(with = "pulse_store::gojson::nil_slice", default)]
     pub svotes: Vec<SVote>,
+    #[serde(with = "pulse_store::gojson::nil_slice", default)]
     pub suggestions: Vec<Suggestion>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub duplicates: BTreeMap<String, String>,
+    #[serde(with = "pulse_store::gojson::nil_slice", default)]
     pub avotes: Vec<AVote>,
+    #[serde(with = "pulse_store::gojson::nil_slice", default)]
     pub amendments: Vec<Amendment>,
 }
 

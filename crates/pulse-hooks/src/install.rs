@@ -418,7 +418,7 @@ fn sanitize(s: &str) -> String {
 }
 
 fn plain_json(doc: &Value) -> String {
-    pulse_store::gojson::to_string(doc).unwrap_or_else(|_| "{}".to_string())
+    pulse_store::gojson::to_string_no_html(doc).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn pretty(doc: &Value) -> Result<String> {

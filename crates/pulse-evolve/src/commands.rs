@@ -92,7 +92,9 @@ fn parse_command_flag_args(fs: &mut pulse_cli::FlagSet, args: &[String]) -> Resu
             .map_or(arg.trim_start_matches('-'), |x| x.0);
         if fs.lookup(name).is_none() {
             if name == "h" || name == "help" {
-                return Err(pulse_cli::FlagError::Help.into());
+                // Go: return fs.Parse([]string{"-h"}) — prints "Usage of NAME:" and
+                // the defaults on the FlagSet's output, then flag.ErrHelp
+                return fs.parse(&["-h".to_string()]).map_err(Into::into);
             }
             return Err(crate::fixtures::input_error(
                 "Unknown command flag",
@@ -385,7 +387,7 @@ pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result
             if c.json {
                 return pulse_cli::write_json(
                     &mut *c.out,
-                    &serde_json::json!({"fixtures": fixtures}),
+                    &pulse_store::gomap! {"fixtures": fixtures},
                 );
             }
             if !c.quiet {

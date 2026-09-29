@@ -46,46 +46,48 @@ pub static DEFAULT_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
 });
 pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
-    "jobs_per_day"=>("count-or-none",Some(0),[],None,"worker runs the runner may start per UTC day on every executor together; 0 or none means no daily cap"),
-    "minutes_per_job"=>("count",Some(0),[],None,"wall-clock minutes one worker run may take before the runner stops it"),
-    "workers"=>("count",Some(0),[],None,"parallel slots on this machine (the local executor); 0 keeps it idle while remote hands exist"),
-    "parallel_per_project"=>("count",Some(1),[],None,"leased jobs one project may have in flight at once; 1 is one at a time"),
-    "max_ai_credits"=>("credits",Some(30),[],None,"AI credits one copilot CLI worker run may spend; the copilot CLI refuses anything below 30"),
-    "prune_after_days"=>("count",Some(1),[],None,"days without useful output after which an agent is pruned (its history stays)"),
-    "claim_hours"=>("count",Some(1),[],None,"hours a board claim stays active before it is treated as stale"),
-    "quorum"=>("count",Some(1),[],None,"distinct voters a suggestion needs before it is eligible for the queue"),
-    "expiry_days"=>("count",Some(1),[],None,"days a suggestion may wait for votes before it expires"),
-    "stale_days"=>("count",Some(1),[],None,"days after which an untouched thread counts as stale"),
-    "amend_quorum"=>("count",Some(1),[],None,"distinct sessions an amendment needs; may be raised by vote, lowered only by a human"),
-    "amend_majority"=>("fraction",None,[],None,"share of counted votes an amendment needs, as a fraction such as 2/3"),
-    "runner_cmd"=>("command",None,[],None,"the worker program the runner starts in each clone when harness is copilot-cli (copilot, or a path to a stand-in)"),
-    "worker_model"=>("text",None,[],None,"the model of the runs that change code - task, improve and experiment jobs - and of every other run while light_model is empty; empty means the runner's default"),
-    "stop"=>("switch",None,["0","1"],None,"the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)"),
-    "landing"=>("choice",None,["agents","human"],None,"agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)"),
-    "records.auto_adopt"=>("switch",None,["0","1"],None,"1: when the owner is away the daemon adopts waiting record drafts on its own; 0: drafts wait for the owner (ADR-046)"),
+        "jobs_per_day"=>("count-or-none",Some(0),[],None,"worker runs the runner may start per UTC day on every executor together; 0 or none means no daily cap"),
+        "minutes_per_job"=>("count",Some(0),[],None,"wall-clock minutes one worker run may take before the runner stops it"),
+        "workers"=>("count",Some(0),[],None,"parallel slots on this machine (the local executor); 0 keeps it idle while remote hands exist"),
+        "parallel_per_project"=>("count",Some(1),[],None,"leased jobs one project may have in flight at once; 1 is one at a time"),
+        "max_ai_credits"=>("credits",Some(30),[],None,"AI credits one copilot CLI worker run may spend; the copilot CLI refuses anything below 30"),
+        "prune_after_days"=>("count",Some(1),[],None,"days without useful output after which an agent is pruned (its history stays)"),
+        "claim_hours"=>("count",Some(1),[],None,"hours a board claim stays active before it is treated as stale"),
+        "quorum"=>("count",Some(1),[],None,"distinct voters a suggestion needs before it is eligible for the queue"),
+        "expiry_days"=>("count",Some(1),[],None,"days a suggestion may wait for votes before it expires"),
+        "stale_days"=>("count",Some(1),[],None,"days after which an untouched thread counts as stale"),
+        "amend_quorum"=>("count",Some(1),[],None,"distinct sessions an amendment needs; may be raised by vote, lowered only by a human"),
+        "amend_majority"=>("fraction",None,[],None,"share of counted votes an amendment needs, as a fraction such as 2/3"),
+        "runner_cmd"=>("command",None,[],None,"the worker program the runner starts in each clone when harness is copilot-cli (copilot, or a path to a stand-in)"),
+        "worker_model"=>("text",None,[],None,"the model of the runs that change code - task, improve and experiment jobs - and of every other run while light_model is empty; empty means the runner's default"),
+        "stop"=>("switch",None,["0","1"],None,"the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)"),
+        "landing"=>("choice",None,["agents","human"],None,"agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)"),
+        "records.auto_adopt"=>("switch",None,["0","1"],None,"1: when the owner is away the daemon adopts waiting record drafts on its own; 0: drafts wait for the owner (ADR-046)"),
     }
 });
 
 pub const IMPLEMENTATION_JOB_KINDS: &[&str] = &["task", "improve", "experiment"];
 pub static MODEL_SETTINGS: LazyLock<BTreeMap<String, String>> =
     LazyLock::new(|| map! {"light_model"=>"",});
-pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
-    || rules! {"light_model"=>("text",None,[],None,"the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model"),},
-);
+pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
+    rules! {
+        "light_model"=>("text",None,[],None,"the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model"),
+    }
+});
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
     || map! {"harness"=>"native","provider"=>"copilot","provider.openai.base_url"=>"https://api.openai.com/v1","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.output_limit"=>"20000",},
 );
 pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
-    "harness"=>("choice",None,["native","copilot-cli"],None,"native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone"),
-    "provider"=>("choice",None,["copilot","openai"],None,"the model provider of the native harness; copilot signs in with GitHub; openai takes an API key and a base URL; the login lives on this machine, never in the store"),
-    "provider.openai.base_url"=>("text",None,[],None,"the OpenAI-compatible endpoint the openai provider calls: OpenAI, Azure OpenAI, Ollama (http://127.0.0.1:11434/v1), LM Studio, OpenRouter"),
-    "harness.max_steps"=>("count",Some(1),[],None,"model calls one native-harness run may make before it stops"),
-    "harness.max_cost"=>("number",Some(0),[],None,"provider-reported cost one native-harness run may spend before it stops (0 = no cap); the unit is the provider's - Copilot reports usage.cost only when the vendor sends it"),
-    "harness.keep_observations"=>("count",Some(1),[],None,"observations kept verbatim in the model's context; older ones collapse to their first and last lines"),
-    "harness.system_prompt"=>("text",None,[],None,"Go text/template for the harness system prompt; empty = the built-in one (pulse harness prompt --default prints it)"),
-    "harness.step_timeout"=>("count",Some(10),[],None,"seconds one command of a native-harness run may take before it is killed"),
-    "harness.output_limit"=>("count",Some(1000),[],None,"characters of one command's output kept for the model; longer output is cut in the middle"),
+        "harness"=>("choice",None,["native","copilot-cli"],None,"native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone"),
+        "provider"=>("choice",None,["copilot","openai"],None,"the model provider of the native harness; copilot signs in with GitHub; openai takes an API key and a base URL; the login lives on this machine, never in the store"),
+        "provider.openai.base_url"=>("text",None,[],None,"the OpenAI-compatible endpoint the openai provider calls: OpenAI, Azure OpenAI, Ollama (http://127.0.0.1:11434/v1), LM Studio, OpenRouter"),
+        "harness.max_steps"=>("count",Some(1),[],None,"model calls one native-harness run may make before it stops"),
+        "harness.max_cost"=>("number",Some(0),[],None,"provider-reported cost one native-harness run may spend before it stops (0 = no cap); the unit is the provider's - Copilot reports usage.cost only when the vendor sends it"),
+        "harness.keep_observations"=>("count",Some(1),[],None,"observations kept verbatim in the model's context; older ones collapse to their first and last lines"),
+        "harness.system_prompt"=>("text",None,[],None,"Go text/template for the harness system prompt; empty = the built-in one (pulse harness prompt --default prints it)"),
+        "harness.step_timeout"=>("count",Some(10),[],None,"seconds one command of a native-harness run may take before it is killed"),
+        "harness.output_limit"=>("count",Some(1000),[],None,"characters of one command's output kept for the model; longer output is cut in the middle"),
     }
 });
 pub const COMPUTE_PROVIDERS: &[&str] = &["azure", "aws", "gcp", "multipass"];
@@ -98,90 +100,83 @@ pub static COMPUTE_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
     }
 });
 pub static COMPUTE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
-    let mut m = BTreeMap::new();
-    for k in COMPUTE_SETTINGS.keys() {
-        let kind = if k == "compute.provider" {
-            "choice"
-        } else if k.ends_with("max_vms")
-            || k.ends_with("max_hours_per_day")
-            || k.ends_with("budget_credits")
-        {
-            "count"
-        } else if k.ends_with("auto_approve")
-            || k.ends_with("self_heal")
-            || k.ends_with("self_retire")
-        {
-            "switch"
-        } else if k.ends_with("retire_grace_hours") {
-            "count"
-        } else {
-            "identifier"
-        };
-        let min = if kind == "count" {
-            if k.ends_with("retire_grace_hours") {
-                Some(1)
-            } else {
-                Some(0)
-            }
-        } else {
-            None
-        };
-        let choices = if k == "compute.provider" {
-            COMPUTE_PROVIDERS.to_vec()
-        } else if kind == "switch" {
-            vec!["0", "1"]
-        } else {
-            vec![]
-        };
-        m.insert(
-            k.clone(),
-            SettingRule::new(
-                kind,
-                min,
-                &choices,
-                None,
-                "compute provider setting; authenticate on this machine, never in the store",
-            ),
-        );
-    }
+    let mut m = rules! {
+        "compute.azure.subscription"=>("identifier",None,[],None,"Azure subscription id or name the runner provisions in (auth is az login on this machine)"),
+        "compute.azure.resource_group"=>("identifier",None,[],None,"Azure resource group that holds the provisioned hands"),
+        "compute.azure.location"=>("identifier",None,[],None,"Azure region, e.g. westeurope"),
+        "compute.azure.vm_size"=>("identifier",None,[],None,"VM size for a provisioned hand, e.g. Standard_B2ms"),
+        "compute.azure.image"=>("identifier",None,[],None,"VM image alias or URN, e.g. Ubuntu2404"),
+        "compute.aws.profile"=>("identifier",None,[],None,"AWS CLI profile the runner provisions with; empty means the CLI's default (auth is aws configure or aws sso login on this machine)"),
+        "compute.aws.region"=>("identifier",None,[],None,"AWS region the instances are created in, e.g. eu-west-1"),
+        "compute.aws.instance_type"=>("identifier",None,[],None,"EC2 instance type for a provisioned hand, e.g. t3.medium"),
+        "compute.aws.image"=>("identifier",None,[],None,"AMI id (ami-...) or an SSM public parameter path resolved at launch; the default is Canonical's current Ubuntu 24.04 amd64 image"),
+        "compute.aws.subnet"=>("identifier",None,[],None,"subnet id the instances join; empty means the default VPC's default subnet in the region"),
+        "compute.aws.security_group"=>("identifier",None,[],None,"security group id the instances get; empty means a group named pulse-hands that allows ssh in, created when missing"),
+        "compute.gcp.project"=>("identifier",None,[],None,"Google Cloud project the instances are created in; empty means gcloud's current project (auth is gcloud auth login on this machine)"),
+        "compute.gcp.zone"=>("identifier",None,[],None,"Compute Engine zone, e.g. europe-west4-a"),
+        "compute.gcp.machine_type"=>("identifier",None,[],None,"machine type for a provisioned hand, e.g. e2-medium"),
+        "compute.gcp.image"=>("identifier",None,[],None,"Ubuntu image family in ubuntu-os-cloud, e.g. ubuntu-2404-lts-amd64, or a full image path projects/P/global/images/I"),
+        "compute.gcp.network"=>("identifier",None,[],None,"VPC network the instances join; empty means default. A firewall rule pulse-hands-ssh (tcp 22 to the tag pulse-hands) is created on it when missing"),
+        "compute.multipass.size"=>("identifier",None,[],None,"size of a local multipass hand as cpus=N,mem=SIZE,disk=SIZE, e.g. cpus=2,mem=4G,disk=32G"),
+        "compute.multipass.image"=>("identifier",None,[],None,"multipass image a local hand launches from, e.g. 24.04"),
+        "compute.max_vms"=>("count",Some(0),[],None,"provisioned machines that may exist at once; 0 means agents cannot get compute"),
+        "compute.max_hours_per_day"=>("count",Some(0),[],None,"machine-hours agents may consume per UTC day across provisioned hands; 0 means none"),
+        "compute.auto_approve"=>("switch",None,["0","1"],None,"1: requests under the caps are approved without the owner; 0: every request becomes a proposal"),
+        "compute.budget_credits"=>("count",Some(0),[],None,"AI credits the provisioned hands may spend per UTC day together; 0 means no extra budget"),
+        "compute.self_heal"=>("switch",None,["0","1"],None,"1: the daemon places the executor token (pulse executor token) on a drained executor whose login is refused, once per drain; 0: it leaves the login to you (ADR-034)"),
+        "compute.self_retire"=>("switch",None,["0","1"],None,"1: the daemon deallocates a VM it created whose login stays refused and retires its executor row, then deletes the VM after compute.retire_grace_hours; 0: it only reports (ADR-034)"),
+        "compute.retire_grace_hours"=>("count",Some(1),[],None,"hours a retired VM stays stopped before the daemon deletes it; starting it again at the provider (the finding names the command) and `pulse executor activate NAME` within them keep it"),
+    };
+    m.insert("compute.provider".to_string(), SettingRule::new("choice", None, COMPUTE_PROVIDERS, None, "where agents get more machines from: azure (az login), aws (aws configure / aws sso login), gcp (gcloud auth login) or multipass (local VMs on the hub machine); each provider reads its own compute.<provider>.* settings"));
     m
 });
 pub static EVOLVE_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
     || map! {"evolve.loop"=>"0","evolve.limits"=>"none","evolve.tolerance"=>"0.02","evolve.heldout_dir"=>"","evolve.heldout"=>"auto","evolve.draft_hours"=>"24",},
 );
-pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
-    || rules! {"evolve.loop"=>("switch",None,["0","1"],None,"1: pulse evolve cycle may run experiments; 0: the loop is off (STOP is the stop setting)"),"evolve.limits"=>("text",None,[],None,"none, or a budget such as cycles=20,hours=48 after which the loop stops by itself"),"evolve.tolerance"=>("decimal",None,[],Some(1.0),"score improvement a variant needs over the baseline to be kept, a share between 0 and 1 such as 0.02"),"evolve.heldout_dir"=>("identifier",None,[],None,"owner-private directory outside every repository holding held-out fixtures; never quoted to agents"),"evolve.heldout"=>("choice",None,["auto","owner"],None,"auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)"),"evolve.draft_hours"=>("count",Some(0),[],None,"hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button"),},
-);
+pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
+    rules! {
+        "evolve.loop"=>("switch",None,["0","1"],None,"1: pulse evolve cycle may run experiments; 0: the loop is off (STOP is the stop setting)"),
+        "evolve.limits"=>("text",None,[],None,"none, or a budget such as cycles=20,hours=48 after which the loop stops by itself"),
+        "evolve.tolerance"=>("decimal",None,[],Some(1.0),"score improvement a variant needs over the baseline to be kept, a share between 0 and 1 such as 0.02"),
+        "evolve.heldout_dir"=>("identifier",None,[],None,"owner-private directory outside every repository holding held-out fixtures; never quoted to agents"),
+        "evolve.heldout"=>("choice",None,["auto","owner"],None,"auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)"),
+        "evolve.draft_hours"=>("count",Some(0),[],None,"hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button"),
+    }
+});
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
     || map! {"daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"1024","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.sweep_keep_days"=>"30","landing.push"=>"off","landing.auto_stash"=>"on","push.credential"=>"",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
-    "daemon.self_update"=>("choice",None,["on","off"],None,"on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)"),
-    "daemon.self_update_retry_minutes"=>("count",Some(1),[],None,"minutes the daemon waits before building again after a failed build or smoke test"),
-    "daemon.recover"=>("choice",None,["on","off"],None,"on: the daemon recovers failed jobs by itself"),"daemon.recover_limit"=>("count",Some(0),[],None,"recoveries one failed job may receive"),"daemon.recover_days"=>("count",Some(1),[],None,"days a failed job stays eligible for recovery"),"daemon.min_free_mb"=>("count",Some(0),[],None,"megabytes free required"),"daemon.sweep"=>("choice",None,["on","off"],None,"on: every ten minutes the daemon removes leftovers"),"daemon.sweep_grace_minutes"=>("count",Some(0),[],None,"minutes leftovers must sit"),"daemon.sweep_branch_days"=>("count",Some(0),[],None,"days before branch sweep"),"daemon.sweep_keep_days"=>("count",Some(1),[],None,"days run logs, saved patches and work files are kept"),"landing.push"=>("choice",None,["off","main"],None,"main: after a landing the daemon pushes the project's default branch to its upstream (ADR-037)"),"landing.auto_stash"=>("choice",None,["on","off"],None,"on: before landing, the daemon stashes uncommitted changes"),"push.credential"=>("reference",None,[],None,"where the daemon's own SSH push key lives, as a reference and never the key itself (ADR-041)"),}
+        "daemon.self_update"=>("choice",None,["on","off"],None,"on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)"),
+        "daemon.self_update_retry_minutes"=>("count",Some(1),[],None,"minutes the daemon waits before building again after a failed build or smoke test"),
+        "daemon.recover"=>("choice",None,["on","off"],None,"on: the daemon recovers failed jobs by itself - a transient failure runs again after a growing pause, a failure in the work becomes one corrected job carrying the failure, a structural one waits for its own fix - and writes the repeated causes down as memory records that later briefs carry; off: a failed job stays failed until `pulse job retry` (ADR-036)"),
+        "daemon.recover_limit"=>("count",Some(0),[],None,"recoveries one failed job may receive (the same job run again or a corrected job queued for it) before the daemon holds it for the lead and the owner; 0 holds every failure at once"),
+        "daemon.recover_days"=>("count",Some(1),[],None,"days a failed job stays eligible for recovery and counts toward a repeated-failure lesson"),
+        "daemon.min_free_mb"=>("count",Some(0),[],None,"megabytes an executor's workdir filesystem must have free for its probe to pass; under it the probe note says `under N free on <workdir>` and the hand takes no job until space returns; 0 turns the check off"),
+        "daemon.sweep"=>("choice",None,["on","off"],None,"on: every ten minutes the daemon removes what its runs and landings left on this machine and nothing holds any more - clones, keys and bundles of finished jobs under PULSE_HOME/work, landing worktrees whose process is gone, holding refs, run logs and patches past daemon.sweep_keep_days, and pulse/* or evolve/* branches no job will land (saved as a patch first); a run in flight, a branch waiting to land and the owner's own files are never touched. off: `pulse sweep` by hand"),
+        "daemon.sweep_grace_minutes"=>("count",Some(0),[],None,"minutes a finished job's clone, key or bundle and a dead landing's worktree must sit untouched before the sweep removes them; a lost run's leftovers go at once"),
+        "daemon.sweep_branch_days"=>("count",Some(0),[],None,"days since its last commit before a pulse/* or evolve/* branch that no job will land is removed; its commits are saved under PULSE_HOME/patches first unless they are already on the default branch"),
+        "daemon.sweep_keep_days"=>("count",Some(1),[],None,"days run logs, saved patches and work files of jobs this store does not know are kept before the sweep removes them"),
+        "landing.push"=>("choice",None,["off","main"],None,"main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)"),
+        "landing.auto_stash"=>("choice",None,["on","off"],None,"on: before landing, the daemon stashes uncommitted changes in the checkout with a clear message so the landing can proceed; off: a dirty checkout defers landing (ADR-024)"),
+        "push.credential"=>("reference",None,[],None,"where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)"),
+    }
 });
 pub static LEAD_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
     || map! {"lead.idle_hours"=>"6","lead.idle_max_jobs"=>"3","lead.stuck_thread_jobs"=>"3","lead.research_minutes"=>"60","lead.research_per_day"=>"12","lead.ballot_hours"=>"1","lead.ballot_cap"=>"10","plan.operating_layer_per_day"=>"3",},
 );
 pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
-    let mut m = BTreeMap::new();
-    for (k, _) in LEAD_SETTINGS.iter() {
-        let min = if k == "lead.idle_hours"
-            || k == "lead.stuck_thread_jobs"
-            || k == "lead.research_minutes"
-            || k == "plan.operating_layer_per_day"
-        {
-            Some(0)
-        } else {
-            Some(1)
-        };
-        m.insert(
-            k.clone(),
-            SettingRule::new("count", min, &[], None, "lead standing brief setting"),
-        );
+    rules! {
+        "lead.idle_hours"=>("count",Some(0),[],None,"hours a project may sit with no job queued, leased or created before its lead is asked to find the next work by itself and tell the owner; research, ballot and reflect jobs the planner seeds on its own do not count as the project moving; 0 turns the standing brief off"),
+        "lead.idle_max_jobs"=>("count",Some(1),[],None,"worker jobs one idle lead run may queue"),
+        "lead.stuck_thread_jobs"=>("count",Some(0),[],None,"finished worker jobs one board thread may seed in a row (from its suggestions, handoffs and questions) that commit nothing - read-only triage, claims, questions - before the planner stops seeding that thread and asks the lead to decide it; a job from the thread that commits resets the count; 0 turns the cap off"),
+        "lead.research_minutes"=>("count",Some(0),[],None,"minutes a project must sit with nothing queued or leased, no research job and no job that decided work (ballots and reflects do not count) created, before the planner seeds one research job: a worker investigates one focus in turn (the product as its user sees it, the code that changes most, the checks, the loop's report, the docs, the dependencies, the board, the memory) and ends with one to three experiment cards and a vote on every card below quorum; 0 turns research off (ADR-045)"),
+        "lead.research_per_day"=>("count",Some(1),[],None,"research jobs one project may receive per UTC day"),
+        "lead.ballot_hours"=>("count",Some(1),[],None,"hours a card may wait below the vote quorum before the planner seeds a ballot job, at most one per project per that many hours, and only when nothing else is queued"),
+        "lead.ballot_cap"=>("count",Some(1),[],None,"maximum number of below-quorum cards a single ballot job asks a worker to vote on; closest-to-quorum cards are listed first"),
+        "plan.operating_layer_per_day"=>("count",Some(0),[],None,"operating-layer improve jobs the planner may create from suggestion cards for one project per UTC day; product cards are unaffected and are planned first; 0 turns this cap off"),
     }
-    m
 });
 pub const OWNER_PRESENT: &str = "present";
 pub const OWNER_AWAY: &str = "away";
@@ -194,9 +189,11 @@ pub const OWNER_PATHS: &[&str] = &[
     "docs/decisions/",
     ".github/",
 ];
-pub static OWNER_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
-    || rules! {"owner.presence"=>("choice",None,["present","away"],None,"present: proposals, compute requests and owner questions wait for you; away: each project's lead decides the board's proposals on your behalf"),},
-);
+pub static OWNER_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
+    rules! {
+        "owner.presence"=>("choice",None,["present","away"],None,"present: proposals, compute requests and owner questions wait for you; away: each project's lead decides the board's proposals on your behalf with its best judgement, recorded as the lead's decision and never as yours - hard stops, money (compute), Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch still wait for you"),
+    }
+});
 pub const NONE_WORDS: &[&str] = &["none", "off", "unlimited"];
 
 pub fn default_settings() -> BTreeMap<String, String> {

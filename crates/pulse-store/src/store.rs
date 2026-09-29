@@ -524,6 +524,23 @@ pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+/// Go `t.UTC().Format(time.RFC3339Nano)`: the fraction keeps only its
+/// significant digits and disappears entirely on whole seconds
+/// (`2026-01-02T03:04:05.5Z`, `2026-01-02T03:04:05Z`), unlike chrono's
+/// `SecondsFormat::Nanos`, which always prints nine digits.
+pub fn rfc3339_nano<Tz: chrono::TimeZone>(t: chrono::DateTime<Tz>) -> String {
+    let t = t.with_timezone(&Utc);
+    let mut s = t.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let nanos = t.timestamp_subsec_nanos();
+    if nanos != 0 {
+        let frac = format!("{nanos:09}");
+        s.push('.');
+        s.push_str(frac.trim_end_matches('0'));
+    }
+    s.push('Z');
+    s
+}
+
 pub fn resolve_home(explicit: &str) -> Result<String> {
     let mut home = if explicit.is_empty() {
         std::env::var("PULSE_HOME").unwrap_or_default()
@@ -1032,6 +1049,30 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("must live outside the project"));
         assert!(err.downcast_ref::<InputError>().is_some());
+    }
+
+    #[test]
+    fn rfc3339_nano_trims_like_go() {
+        let base = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(super::rfc3339_nano(base), "2026-01-02T03:04:05Z");
+        assert_eq!(
+            super::rfc3339_nano(base + chrono::Duration::milliseconds(500)),
+            "2026-01-02T03:04:05.5Z"
+        );
+        assert_eq!(
+            super::rfc3339_nano(base + chrono::Duration::nanoseconds(120_000_000)),
+            "2026-01-02T03:04:05.12Z"
+        );
+        assert_eq!(
+            super::rfc3339_nano(base + chrono::Duration::nanoseconds(123_456_789)),
+            "2026-01-02T03:04:05.123456789Z"
+        );
+        assert_eq!(
+            super::rfc3339_nano(base + chrono::Duration::nanoseconds(1_000)),
+            "2026-01-02T03:04:05.000001Z"
+        );
     }
 
     #[test]

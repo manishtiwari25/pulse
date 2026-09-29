@@ -170,7 +170,10 @@ pub(crate) fn agent_session(s: &pulse_store::Store, agent: &str) -> String {
         .unwrap_or_default()
 }
 
-pub fn proposals(s: &pulse_store::Store, project: &str) -> Result<Vec<Proposal>> {
+pub fn proposals(
+    s: &pulse_store::Store,
+    project: &str,
+) -> Result<pulse_store::gojson::GoSlice<Proposal>> {
     let slugs = if project.is_empty() {
         s.projects(true)?
             .into_iter()
@@ -179,7 +182,8 @@ pub fn proposals(s: &pulse_store::Store, project: &str) -> Result<Vec<Proposal>>
     } else {
         vec![project.to_string()]
     };
-    let mut out = Vec::new();
+    // Go: var out []Proposal — nil (JSON null) when nothing was appended.
+    let mut out = pulse_store::gojson::GoSlice::nil();
     for slug in slugs {
         out.extend(compute(s, &slug, "", Thresholds::default())?.proposals);
     }

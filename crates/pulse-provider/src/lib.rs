@@ -567,7 +567,7 @@ pub fn write_private_json<T: Serialize>(
         .ok_or_else(|| anyhow!("private provider path has no parent"))?;
     fs::create_dir_all(dir)?;
     chmod(dir, 0o700)?;
-    let mut data = serde_json::to_vec_pretty(value)?;
+    let mut data = pulse_store::gojson::to_vec_pretty(value)?;
     data.push(b'\n');
     fs::write(&path, data)?;
     chmod(&path, 0o600)?;

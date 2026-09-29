@@ -4,6 +4,7 @@ pub mod ddl;
 pub mod evolve_ddl;
 pub mod filepath;
 pub mod gojson;
+pub use erased_serde;
 pub mod harness;
 pub mod harness_ddl;
 pub mod hooks_ddl;

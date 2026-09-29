@@ -309,19 +309,11 @@ pub fn prune_agents(
     Ok(out)
 }
 
+/// Go: `type Scorecard struct { store.Agent; AgentPresence; ... }` — the
+/// embedded fields are promoted, so `card.name` reads through [`Deref`] to
+/// the agent and presence fields through `card.presence`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Scorecard {
-    pub name: String,
-    pub runner: String,
-    pub model: String,
-    pub kind: String,
-    pub status: String,
-    pub last_useful_at: String,
-    pub sessions: Vec<String>,
-    pub jobs_done: i64,
-    pub jobs_failed: i64,
-    pub posts: i64,
-    pub last_heartbeat_at: String,
     #[serde(flatten)]
     pub agent: pulse_store::Agent,
     #[serde(flatten)]
@@ -335,6 +327,14 @@ pub struct Scorecard {
     pub last_post: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus: Option<Focus>,
+}
+
+impl std::ops::Deref for Scorecard {
+    type Target = pulse_store::Agent;
+
+    fn deref(&self) -> &pulse_store::Agent {
+        &self.agent
+    }
 }
 
 pub fn scorecards(s: &pulse_store::Store, include_pruned: bool) -> Result<Vec<Scorecard>> {
@@ -364,20 +364,6 @@ pub fn scorecards(s: &pulse_store::Store, include_pruned: bool) -> Result<Vec<Sc
             );
             let (f, sg, v, an, r, n, last): PostCounts = conn.query_row("SELECT SUM(kind = 'finding'), SUM(kind = 'suggestion'), SUM(kind = 'vote'), SUM(kind = 'answer'), SUM(kind = 'result'), COUNT(*), MAX(date) FROM posts WHERE agent = ?", [&name], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)))?;
             out.push(Scorecard {
-                name: agent.name.clone(),
-                runner: agent.runner.clone(),
-                model: agent.model.clone(),
-                kind: agent.kind.clone(),
-                status: agent.status.clone(),
-                last_useful_at: agent.last_useful_at.clone(),
-                sessions: agent.sessions.clone(),
-                jobs_done: agent.jobs_done,
-                jobs_failed: agent.jobs_failed,
-                posts: agent.posts,
-                last_heartbeat_at: presence
-                    .get(&name)
-                    .map(|p| p.last_heartbeat_at.clone())
-                    .unwrap_or_default(),
                 agent,
                 presence: presence.get(&name).cloned().unwrap_or_default(),
                 findings: f.unwrap_or(0),

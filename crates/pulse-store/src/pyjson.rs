@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 /// compact text is re-read token by token so a struct's field order survives
 /// (`serde_json::Value` objects would sort it).
 pub fn py_json<T: Serialize>(value: T) -> Result<String> {
-    py_json_str(&serde_json::to_string(&value)?)
+    py_json_str(&crate::gojson::to_string_no_html(&value)?)
 }
 
 /// Go `PyJSON`'s token loop over compact JSON text.

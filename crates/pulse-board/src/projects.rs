@@ -534,6 +534,8 @@ mod tests {
 
     #[test]
     fn project_goal_canonical_slug_registration() {
+        // goals::require_owner reads PULSE_AGENT: hold the env lock like Go's serial run.
+        let _env = pulse_testutil::env_lock();
         let (_dir, _home, s) = new_home();
         const NAME: &str = "customer-support-ticket-management-system";
         let slug = slugify(NAME);
@@ -581,6 +583,8 @@ mod tests {
 
     #[test]
     fn project_goal_registration_reinit_and_restore() {
+        // goals::require_owner reads PULSE_AGENT: hold the env lock like Go's serial run.
+        let _env = pulse_testutil::env_lock();
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
         let result = init(
@@ -640,6 +644,8 @@ mod tests {
 
     #[test]
     fn project_goal_legacy_registration_preserves_explicit_value() {
+        // goals::require_owner reads PULSE_AGENT: hold the env lock like Go's serial run.
+        let _env = pulse_testutil::env_lock();
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
         s.conn()

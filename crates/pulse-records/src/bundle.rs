@@ -285,7 +285,7 @@ pub fn sort_bundle(b: &mut Bundle) {
 }
 
 pub fn encode_bundle(b: &Bundle) -> Result<Vec<u8>> {
-    let mut data = pulse_store::gojson::to_vec_pretty(b)?;
+    let mut data = pulse_store::gojson::to_vec_pretty_no_html(b)?;
     data.push(b'\n');
     Ok(data)
 }

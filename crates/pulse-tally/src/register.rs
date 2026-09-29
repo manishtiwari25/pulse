@@ -204,11 +204,21 @@ fn run_board(c: &mut pulse_cli::Context, fs: &pulse_cli::FlagSet, _: &[String]) 
     }
     if c.json {
         let goal = project_goal(store(c)?, &slug)?;
-        let mut value = serde_json::to_value(&warning_res)?;
-        if let serde_json::Value::Object(ref mut obj) = value {
-            obj.insert("goal".into(), serde_json::to_value(goal)?);
+        // Go: struct { *Result; Goal *goals.Goal `json:"goal,omitempty"` }
+        #[derive(serde::Serialize)]
+        struct BoardJson<'a> {
+            #[serde(flatten)]
+            result: &'a crate::TallyResult,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            goal: Option<pulse_goals::Goal>,
         }
-        return pulse_cli::write_json(&mut *c.out, &value);
+        return pulse_cli::write_json(
+            &mut *c.out,
+            &BoardJson {
+                result: &warning_res,
+                goal,
+            },
+        );
     }
     let session = if !agent.is_empty() && c.session.is_empty() {
         crate::digest::agent_session(store(c)?, &agent)
@@ -322,10 +332,17 @@ fn run_ballot(c: &mut pulse_cli::Context, _: &pulse_cli::FlagSet, _: &[String]) 
     if c.json {
         let (sugs, ams) = crate::digest::split_ballot(&items);
         let goal = project_goal(store(c)?, &slug)?;
-        return pulse_cli::write_json(
-            &mut *c.out,
-            &serde_json::json!({"project": slug, "agent": agent, "goal": goal, "suggestions": sugs, "amendments": ams}),
-        );
+        // Go: result := map[string]any{...}; if goal != nil { result["goal"] = goal }
+        return match goal {
+            Some(goal) => pulse_cli::write_json(
+                &mut *c.out,
+                &pulse_store::gomap! {"project": slug, "agent": agent, "suggestions": sugs, "amendments": ams, "goal": goal},
+            ),
+            None => pulse_cli::write_json(
+                &mut *c.out,
+                &pulse_store::gomap! {"project": slug, "agent": agent, "suggestions": sugs, "amendments": ams},
+            ),
+        };
     }
     if let Some(goal) = project_goal(store(c)?, &slug)? {
         write!(c.out, "{}", pulse_goals::context(&goal))?;
@@ -337,9 +354,22 @@ fn run_ballot(c: &mut pulse_cli::Context, _: &pulse_cli::FlagSet, _: &[String]) 
 }
 
 fn run_proposals(c: &mut pulse_cli::Context, _: &pulse_cli::FlagSet, _: &[String]) -> Result<()> {
+    if !c.project.is_empty()
+        && c.project != pulse_store::COMMONS_SLUG
+        && store(c)?.project(&c.project)?.is_none()
+    {
+        return Err(pulse_cli::errorf(
+            2,
+            &format!("No project {:?}", c.project),
+            "it is not registered in this store",
+            "pulse projects",
+        )
+        .into());
+    }
     let items = proposals(store(c)?, &c.project).map_err(wrap)?;
     if c.json {
-        return pulse_cli::write_json(&mut *c.out, &items);
+        // Go: if items == nil { items = []Proposal{} }
+        return pulse_cli::write_json(&mut *c.out, &items.into_vec());
     }
     c.out.write_all(proposals_text(&items).as_bytes())?;
     Ok(())

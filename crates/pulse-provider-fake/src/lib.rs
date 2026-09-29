@@ -148,7 +148,7 @@ impl Provider for FakeProvider {
         let mut msg = Message::new(Role::Assistant);
         let mut finish = "stop".to_string();
         if !reply.command.is_empty() {
-            let args = serde_json::to_string(&CommandArgs {
+            let args = pulse_store::gojson::to_string(&CommandArgs {
                 command: reply.command.clone(),
             })?;
             msg.content = reply.content.clone();

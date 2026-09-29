@@ -561,6 +561,12 @@ fn run_thread(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             if args.len() != 2 {
                 return Err(usage("thread", "resolve needs AREA/THREAD"));
             }
+            if fs.get_string("as").is_empty() || fs.get_string("summary").is_empty() {
+                return Err(usage(
+                    "thread",
+                    "resolve needs --as RESOLUTION and --summary TEXT",
+                ));
+            }
             let p = current_project(s, &c.project)?;
             let body = read_body(fs)?;
             let row = resolve_thread(

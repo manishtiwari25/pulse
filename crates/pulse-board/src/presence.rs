@@ -130,7 +130,7 @@ pub fn stop_heartbeat(
     if h.identity != e || !h.stopped_at.is_empty() {
         return Ok(false);
     }
-    h.stopped_at = at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    h.stopped_at = pulse_store::rfc3339_nano(at);
     h.validate()?;
     let changed = record_heartbeat_tx(&tx, &h)?;
     if changed {
@@ -228,7 +228,7 @@ fn calculate_presence(
     let mut p = AgentPresence {
         presence: "unknown".into(),
         presence_reason: "no supervised heartbeat".into(),
-        presence_checked_at: now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        presence_checked_at: pulse_store::rfc3339_nano(now),
         ..Default::default()
     };
     let start = chrono::DateTime::parse_from_rfc3339(&e.started).ok();
@@ -312,9 +312,9 @@ fn calculate_presence(
                 } else {
                     p.presence = "online".into();
                     p.presence_reason = "supervised execution".into();
-                    p.presence_expires_at = (at
-                        + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap())
-                    .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                    p.presence_expires_at = pulse_store::rfc3339_nano(
+                        at + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
+                    );
                 }
             }
         }
@@ -336,11 +336,7 @@ mod tests {
     }
 
     fn heartbeat_time(at: chrono::DateTime<chrono::Utc>) -> String {
-        if at.timestamp_subsec_nanos() == 0 {
-            at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        } else {
-            at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
-        }
+        pulse_store::rfc3339_nano(at)
     }
 
     fn presence_sql(s: &pulse_store::Store, query: &str, args: &[&dyn rusqlite::ToSql]) {
@@ -394,13 +390,13 @@ mod tests {
         want: &str,
     ) -> AgentPresence {
         let rows =
-            agent_presences(s, &at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)).unwrap();
+            agent_presences(s, &pulse_store::rfc3339_nano(at)).unwrap();
         let p = rows.get(agent).unwrap_or_else(|| panic!("missing {agent}"));
         assert_eq!(
             p.presence,
             want,
             "{agent} at {}: {p:?}",
-            at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+            pulse_store::rfc3339_nano(at)
         );
         p.clone()
     }
@@ -684,8 +680,9 @@ mod tests {
         record_beat(&s, &id, base);
         let reopened = pulse_store::Store::open(pulse_store::Options {
             home,
-            now: (base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap())
-                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+            now: pulse_store::rfc3339_nano(
+                base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
+            ),
             ..Default::default()
         })
         .unwrap();
@@ -783,7 +780,7 @@ mod tests {
         add("malformed time", h);
         let mut h = good.clone();
         h.at =
-            (base + chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            pulse_store::rfc3339_nano(base + chrono::Duration::hours(1));
         add("future", h);
         let mut h = good.clone();
         h.identity.session = "old-session".into();

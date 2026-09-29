@@ -396,7 +396,7 @@ impl Copilot {
         if src.token.is_empty() {
             return Err(err_not_logged_in().into());
         }
-        let body = serde_json::to_vec(&open_ai_request(&req))?;
+        let body = pulse_store::gojson::to_vec(&open_ai_request(&req))?;
         let mut refreshed_for_401 = false;
         let mut attempt = 0usize;
         loop {

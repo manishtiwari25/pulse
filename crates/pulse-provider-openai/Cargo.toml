@@ -9,6 +9,7 @@ publish.workspace = true
 description = "PULSE: OpenAI-compatible model provider"
 
 [dependencies]
+pulse-store.workspace = true
 pulse-provider.workspace = true
 anyhow.workspace = true
 serde.workspace = true

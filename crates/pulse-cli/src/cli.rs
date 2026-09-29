@@ -208,7 +208,7 @@ fn group_index(g: &str) -> usize {
 }
 
 pub fn write_json(w: &mut dyn Write, v: &impl Serialize) -> Result<()> {
-    pulse_store::gojson::to_writer_pretty(&mut *w, v)?;
+    pulse_store::gojson::to_writer_pretty_no_html(&mut *w, v)?;
     writeln!(w)?;
     Ok(())
 }

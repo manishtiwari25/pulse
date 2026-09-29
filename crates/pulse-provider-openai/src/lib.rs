@@ -129,7 +129,7 @@ impl Provider for OpenAI {
         if src.token.is_empty() {
             return Err(err_not_logged_in().into());
         }
-        let body = serde_json::to_vec(&open_ai_request(req))?;
+        let body = pulse_store::gojson::to_vec(&open_ai_request(req))?;
         let backoffs = [
             Duration::from_secs(1),
             Duration::from_secs(3),

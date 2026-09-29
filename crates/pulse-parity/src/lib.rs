@@ -174,7 +174,7 @@ pub struct Outcome {
 #[derive(Debug)]
 pub struct Side {
     pub label: &'static str,
-    pub home: tempfile::TempDir,
+    pub home: PathBuf,
     pub project: PathBuf,
     pub outcomes: Vec<Outcome>,
     pub dump: String,
@@ -200,25 +200,46 @@ impl std::fmt::Display for Diff {
     }
 }
 
-/// Plays `scenario` on both binaries and returns the differences (empty = parity).
+/// Plays `scenario` on both binaries, one after the other in the SAME
+/// directory, and returns the differences (empty = parity).
+///
+/// Sharing the directory is what makes paths comparable: the project slug and
+/// name derive from the checkout's basename, events store absolute paths, and
+/// commands truncate long detail columns, so masking alone cannot line two
+/// differently named roots up.
 pub fn run_both(scenario: &Scenario, oracle_bin: &Path, rust_bin: &Path) -> Result<Vec<Diff>> {
-    let go = play("oracle", oracle_bin, scenario)?;
-    let rs = play("rust", rust_bin, scenario)?;
+    let root = tempfile::Builder::new().prefix("pulse-parity-").tempdir()?;
+    let go = play_in(root.path(), "oracle", oracle_bin, scenario)?;
+    let rs = play_in(root.path(), "rust", rust_bin, scenario)?;
     Ok(compare(scenario, &go, &rs))
 }
 
-/// Plays `scenario` on one binary in a fresh home, with a fresh git checkout
-/// beside it as the project.
+/// Plays `scenario` on one binary in a fresh temporary root; see [`play_in`].
+/// The root is removed when the function returns, so only the captured
+/// outcomes and store dump survive.
 pub fn play(label: &'static str, bin: &Path, scenario: &Scenario) -> Result<Side> {
-    let home = tempfile::Builder::new()
-        .prefix(&format!("pulse-parity-{label}-"))
-        .tempdir()?;
-    let project = fresh_checkout(home.path(), &scenario.project_files)?;
+    let root = tempfile::Builder::new().prefix("pulse-parity-").tempdir()?;
+    play_in(root.path(), label, bin, scenario)
+}
+
+/// Plays `scenario` on one binary with `<root>/home` as the PULSE home and a
+/// fresh git checkout at `<root>/demo-project` as the project. Anything left
+/// in `root` from an earlier play is removed first.
+pub fn play_in(root: &Path, label: &'static str, bin: &Path, scenario: &Scenario) -> Result<Side> {
+    // the project must live outside the home (the store refuses to sit inside a
+    // checkout) and carry the SAME basename on both sides: the project slug and
+    // name derive from it and appear in the output being compared
+    let home = root.join("home");
+    if home.exists() {
+        std::fs::remove_dir_all(&home)?;
+    }
+    std::fs::create_dir_all(&home)?;
+    let project = fresh_checkout(&root.join("demo-project"), &scenario.project_files)?;
     let mut outcomes = Vec::with_capacity(scenario.steps.len());
     for step in &scenario.steps {
-        outcomes.push(run_step(bin, home.path(), &project, step)?);
+        outcomes.push(run_step(bin, &home, &project, step)?);
     }
-    let db = home.path().join("pulse.sqlite");
+    let db = home.join("pulse.sqlite");
     let dump = if db.is_file() {
         dump_store(&db)?
     } else {
@@ -233,12 +254,19 @@ pub fn play(label: &'static str, bin: &Path, scenario: &Scenario) -> Result<Side
     })
 }
 
-fn fresh_checkout(home: &Path, files: &BTreeMap<String, String>) -> Result<PathBuf> {
-    // the project must live outside the home: the store refuses to sit inside a checkout
-    let project = home.parent().unwrap_or(home).join(format!(
-        "{}-project",
-        home.file_name().unwrap_or_default().to_string_lossy()
-    ));
+/// The one commit every parity checkout starts from; fixed identity and dates
+/// so both sides see the same hash (`reflect` prints it).
+const GIT_IDENTITY: [(&str, &str); 6] = [
+    ("GIT_AUTHOR_NAME", "parity"),
+    ("GIT_AUTHOR_EMAIL", "parity@example.com"),
+    ("GIT_AUTHOR_DATE", "2026-09-06T20:00:00Z"),
+    ("GIT_COMMITTER_NAME", "parity"),
+    ("GIT_COMMITTER_EMAIL", "parity@example.com"),
+    ("GIT_COMMITTER_DATE", "2026-09-06T20:00:00Z"),
+];
+
+fn fresh_checkout(project: &Path, files: &BTreeMap<String, String>) -> Result<PathBuf> {
+    let project = project.to_path_buf();
     if project.exists() {
         std::fs::remove_dir_all(&project)?;
     }
@@ -272,6 +300,7 @@ where
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
+        .envs(GIT_IDENTITY)
         .output()
         .context("running git")?;
     anyhow::ensure!(
@@ -320,8 +349,14 @@ fn run_step(bin: &Path, home: &Path, project: &Path, step: &Step) -> Result<Outc
     let out = child.wait_with_output()?;
     Ok(Outcome {
         code: out.status.code().unwrap_or(-1),
-        stdout: normalize(&String::from_utf8_lossy(&out.stdout), home, project),
-        stderr: normalize(&String::from_utf8_lossy(&out.stderr), home, project),
+        stdout: mask_exe(
+            &normalize(&String::from_utf8_lossy(&out.stdout), home, project),
+            bin,
+        ),
+        stderr: mask_exe(
+            &normalize(&String::from_utf8_lossy(&out.stderr), home, project),
+            bin,
+        ),
     })
 }
 
@@ -360,6 +395,19 @@ pub fn normalize(s: &str, home: &Path, project: &Path) -> String {
     let out = s.replace(&*project.to_string_lossy(), "<PROJECT>");
     let out = out.replace(&*home.to_string_lossy(), "<HOME>");
     mask_random_ids(&mask_versions(&out))
+}
+
+/// `os.Executable()` shows up in installed hook commands; each side prints its
+/// own binary, so both become `<EXE>`.
+fn mask_exe(s: &str, bin: &Path) -> String {
+    let shown = bin.to_string_lossy();
+    let out = s.replace(&*shown, "<EXE>");
+    match std::fs::canonicalize(bin) {
+        Ok(real) if real.to_string_lossy() != shown => {
+            out.replace(&*real.to_string_lossy(), "<EXE>")
+        }
+        _ => out,
+    }
 }
 
 /// `board.NewID`: `<prefix>-<yyyymmddThhmmssZ>-<6 random hex>` (job, fixture,
@@ -507,7 +555,7 @@ pub fn compare(scenario: &Scenario, go: &Side, rs: &Side) -> Vec<Diff> {
             &side
                 .dump
                 .replace(&*side.project.to_string_lossy(), "<PROJECT>")
-                .replace(&*side.home.path().to_string_lossy(), "<HOME>"),
+                .replace(&*side.home.to_string_lossy(), "<HOME>"),
         ))
     };
     let (go_dump, rs_dump) = (scrub(go), scrub(rs));

@@ -43,8 +43,8 @@ pub struct SettingReport {
     pub value: String,
     pub default: String,
     pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub min: Option<i64>,
+    #[serde(with = "pulse_store::gojson::nil_slice", default)]
     pub choices: Vec<String>,
     pub description: String,
     pub updated_at: String,
