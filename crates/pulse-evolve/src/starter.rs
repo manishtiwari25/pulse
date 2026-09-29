@@ -55,7 +55,6 @@ pub(crate) fn init() {
 }
 
 /// Go: func seedOnCreate(s *store.Store, p *store.Project, actor string) error {
-#[allow(dead_code)]
 pub(crate) fn seed_on_create(
     s: &pulse_store::Store,
     p: Option<&pulse_store::Project>,
@@ -167,7 +166,6 @@ pub fn seed_starter_fixtures(s: &pulse_store::Store, project: &str, actor: &str)
     Ok(added.len() as i64)
 }
 
-#[allow(dead_code)]
 pub(crate) fn seed_on_create_hook(
     s: &pulse_store::Store,
     p: &pulse_store::Project,

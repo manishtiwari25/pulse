@@ -431,6 +431,12 @@ mod tests {
         s.revisions(id).unwrap().len()
     }
 
+    fn git_fixture(repo: &std::path::Path, args: &[&str]) -> String {
+        let mut full = vec!["-C", repo.to_str().unwrap()];
+        full.extend_from_slice(args);
+        pulse_testutil::git(&full).unwrap()
+    }
+
     fn cli_code(err: &anyhow::Error) -> Option<i32> {
         err.downcast_ref::<pulse_cli::Error>().map(|e| e.code)
     }
@@ -699,79 +705,147 @@ mod tests {
     #[test]
     fn seed_loop_records_indexes_the_checkouts_committed_file() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "# Amistio ConstitutionThe owner's own rules.",
-            "# Unstaged",
-            "---id: ADR-001title: Firststatus: Accepted---# First",
-            "---title: Amistio Constitutionstatus: Activeloop: on---# Amistio ConstitutionThe owner's own rules.",
-            "---title: Uncommitted---# Not yet committed",
-            "---title: broken",
-            "Broken",
-            "EVO-evaluators-amistio",
-            "TPL-evolution-constitution@r2",
-            "TPL-evolution-evaluators@r1",
-            "What better means for Amistio.",
-            "broken",
-            "docs/decisions/ADR-001-first.md",
-            "docs/evolution/evaluators.md",
-            "evolution.records.seeded",
-            "frontmatter",
-            "import docs/evolution/constitution.md@",
-            "records.migrated",
-            "seeded_from",
-        ];
         let s = temp_store();
-        let _brain = seed_templates(&s);
+        seed_templates(&s);
         let repo = tempfile::tempdir().unwrap();
-        pulse_testutil::git(&[
-            "-C",
-            repo.path().to_str().unwrap(),
-            "init",
-            "-q",
-            "-b",
-            "main",
-        ])
-        .unwrap();
-        std::fs::create_dir_all(repo.path().join("docs/evolution")).unwrap();
-        std::fs::write(repo.path().join("docs/evolution/constitution.md"), "---\ntitle: Amistio Constitution\nstatus: Active\nloop: on\n---\n\n# Amistio Constitution\n").unwrap();
-        pulse_testutil::git(&["-C", repo.path().to_str().unwrap(), "add", "."]).unwrap();
-        pulse_testutil::git(&[
-            "-C",
-            repo.path().to_str().unwrap(),
-            "commit",
-            "-q",
-            "-m",
-            "rules",
-        ])
-        .unwrap();
-        let short = pulse_testutil::git(&[
-            "-C",
-            repo.path().to_str().unwrap(),
-            "rev-parse",
-            "--short",
-            "HEAD",
-        ])
-        .unwrap()
-        .trim()
-        .to_string();
-        add_project(&s, "amistio", "Amistio", repo.path(), false);
+        let repo = std::fs::canonicalize(repo.path()).unwrap_or_else(|_| repo.path().to_path_buf());
+        git_fixture(&repo, &["init", "-q", "-b", "main"]);
+        let write = |name: &str, text: &str| {
+            let path = repo.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "docs/evolution/constitution.md",
+            "---\ntitle: Amistio Constitution\nstatus: Active\nloop: on\n---\n\n# Amistio Constitution\n\nThe owner's own rules.\n",
+        );
+        write(
+            "docs/decisions/ADR-001-first.md",
+            "---\nid: ADR-001\ntitle: First\nstatus: Accepted\n---\n\n# First\n",
+        );
+        git_fixture(&repo, &["add", "."]);
+        git_fixture(&repo, &["commit", "-q", "-m", "rules"]);
+        let commit = git_fixture(&repo, &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        let short = git_fixture(&repo, &["rev-parse", "--short", "HEAD"])
+            .trim()
+            .to_string();
+        write(
+            "docs/evolution/evaluators.md",
+            "---\ntitle: Uncommitted\n---\n\n# Not yet committed\n",
+        );
+        named_project(&s, "amistio", "Amistio", &repo);
         let summary = seed_loop_records(&s, "amistio", "alice").unwrap();
-        assert_eq!(summary.constitution.action, "imported");
         assert_eq!(
-            summary.constitution.source,
-            format!("docs/evolution/constitution.md@{short}")
+            summary.constitution,
+            SeedResult {
+                id: "EVO-constitution-amistio".into(),
+                action: "imported".into(),
+                source: format!("docs/evolution/constitution.md@{short}"),
+                rev: 1,
+            },
+            "checkout seeding: {summary:?}"
         );
-        assert_eq!(summary.evaluators.action, "copied");
+        assert_eq!(
+            summary.evaluators,
+            SeedResult {
+                id: "EVO-evaluators-amistio".into(),
+                action: "copied".into(),
+                source: "TPL-evolution-evaluators@r1".into(),
+                rev: 1,
+            },
+            "checkout seeding: {summary:?}"
+        );
         let (rec, rev) = crate::records::get(&s, "EVO-constitution-amistio", 0).unwrap();
-        assert_eq!(
-            rec.origin,
-            format!(
-                "markdown:docs/evolution/constitution.md@{}",
-                crate::import::git_read(repo.path(), &["rev-parse", "HEAD"])
-                    .unwrap()
-                    .trim()
-            )
+        assert!(
+            rec.origin == format!("markdown:docs/evolution/constitution.md@{commit}")
+                && rec.path == "docs/evolution/constitution.md"
+                && rec.title == "Amistio Constitution"
+                && rec.status == "Active"
+                && !rec.date.is_empty(),
+            "imported head row: {rec:?}"
         );
-        assert_eq!(rev.frontmatter["loop"], json!("on"));
+        assert!(
+            rev.body == "\n# Amistio Constitution\n\nThe owner's own rules.\n"
+                && rev.frontmatter["loop"] == json!("on")
+                && !rev.frontmatter.contains_key("seeded_from")
+                && rev.author == "alice"
+                && rev.note == format!("import docs/evolution/constitution.md@{commit}"),
+            "imported revision: {rev:?}"
+        );
+        let (_, evaluators) = crate::records::get(&s, "EVO-evaluators-amistio", 0).unwrap();
+        assert!(
+            evaluators.body.contains("What better means for Amistio."),
+            "evaluators were not copied from the template: {:?}",
+            evaluators.body
+        );
+        let rows = s
+            .list_records(pulse_store::RecordFilter {
+                project: "amistio".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "seeding indexed more than the loop's records: {rows:?}"
+        );
+        assert!(
+            event_count(&s, "records.migrated") == 1
+                && event_count(&s, "evolution.records.seeded") == 1,
+            "the import and the seeding were not each recorded once"
+        );
+        let again = seed_loop_records(&s, "amistio", "alice").unwrap();
+        assert!(
+            again.constitution.action == "kept"
+                && again.evaluators.action == "kept"
+                && again.constitution.rev == 1,
+            "repeat: {again:?}"
+        );
+
+        let broken = tempfile::tempdir().unwrap();
+        git_fixture(broken.path(), &["init", "-q", "-b", "main"]);
+        std::fs::create_dir_all(broken.path().join("docs/evolution")).unwrap();
+        std::fs::write(
+            broken.path().join("docs/evolution/constitution.md"),
+            "---\ntitle: broken\n",
+        )
+        .unwrap();
+        git_fixture(broken.path(), &["add", "."]);
+        git_fixture(broken.path(), &["commit", "-q", "-m", "broken"]);
+        named_project(&s, "broken", "Broken", broken.path());
+        let err = seed_loop_records(&s, "broken", "alice").unwrap_err();
+        assert!(
+            err.to_string().contains("frontmatter"),
+            "unindexable file: {err}"
+        );
+        let rows = s
+            .list_records(pulse_store::RecordFilter {
+                project: "broken".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(rows.is_empty(), "a broken file produced records: {rows:?}");
+
+        let bare = tempfile::tempdir().unwrap();
+        git_fixture(bare.path(), &["init", "-q", "-b", "main"]);
+        std::fs::create_dir_all(bare.path().join("docs/evolution")).unwrap();
+        std::fs::write(
+            bare.path().join("docs/evolution/constitution.md"),
+            "# Unstaged\n",
+        )
+        .unwrap();
+        named_project(&s, "fresh", "Fresh", bare.path());
+        let plain = tempfile::tempdir().unwrap();
+        named_project(&s, "plain", "Plain", plain.path());
+        for slug in ["fresh", "plain"] {
+            let summary = seed_loop_records(&s, slug, "alice").unwrap();
+            assert!(
+                summary.constitution.action == "copied"
+                    && summary.constitution.source == "TPL-evolution-constitution@r2",
+                "{slug}: {summary:?}"
+            );
+        }
     }
 }

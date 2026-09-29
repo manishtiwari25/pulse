@@ -317,37 +317,6 @@ pub fn set_fixture_enabled(
     tx.commit()
 }
 
-/// Go: func selectFixtures(s *store.Store, project string, names []string) ([]Fixture, error)
-#[allow(dead_code)]
-pub(crate) fn select_fixtures(
-    s: &pulse_store::Store,
-    project: &str,
-    names: &[String],
-) -> Result<Vec<Fixture>> {
-    let all = list_fixtures(s, project, true)?;
-    if names.is_empty() {
-        return Ok(all);
-    }
-    let mut wanted: BTreeMap<String, bool> = names.iter().map(|n| (n.clone(), true)).collect();
-    let mut out = Vec::new();
-    for f in all {
-        if wanted.remove(&f.name).is_some() {
-            out.push(f);
-        }
-    }
-    if !wanted.is_empty() {
-        return Err(input_error(
-            "Cannot select fixtures",
-            &format!(
-                "{} requested public fixture(s) are missing or disabled",
-                wanted.len()
-            ),
-            &format!("pulse evolve fixture list --project {project}"),
-        ));
-    }
-    Ok(out)
-}
-
 /// Go: path.Clean
 fn path_clean(value: &str) -> String {
     pulse_store::filepath::clean(value)

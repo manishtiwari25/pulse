@@ -46,12 +46,6 @@ pub struct Archived {
     pub note: String,
 }
 
-/// Go: func init() { Archive = archive }
-#[allow(dead_code)]
-pub(crate) fn init_archive() {
-    // Rust dispatches archive_row directly; kept for the Go init twin.
-}
-
 /// Go: func publicScores(in *Scores) (*Scores, error)
 pub(crate) fn public_scores(input: Option<&Scores>) -> Result<Scores> {
     let Some(input) = input else {

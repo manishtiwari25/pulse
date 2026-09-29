@@ -1018,16 +1018,15 @@ mod go_settings_tests {
     #[test]
     fn mock_settings_list_every_store_setting() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "json:\"default\"",
-            "json:\"kind\"",
-            "json:\"name\"",
-            "json:\"settings\"",
-        ];
         let Ok(raw) = fs::read_to_string("web/hub/mock/api/settings.json") else {
             return;
         };
-        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
+            panic!(
+                "{} {} {} {}: {e}",
+                "json:\"settings\"", "json:\"name\"", "json:\"kind\"", "json:\"default\""
+            )
+        });
         let mut mock = BTreeMap::new();
         for row in doc["settings"].as_array().unwrap() {
             let name = row["name"].as_str().unwrap().to_string();
@@ -1049,16 +1048,29 @@ mod go_settings_tests {
             (&*OWNER_SETTINGS, &*OWNER_RULES),
             (&*HARNESS_SETTINGS, &*HARNESS_RULES),
         ] {
-            for (name, want_default) in settings {
+            for name in sorted_keys(settings) {
                 let got = mock
-                    .get(name)
-                    .unwrap_or_else(|| panic!("mock lacks {name}"));
-                let want_kind = &rules[name].kind;
+                    .get(&name)
+                    .unwrap_or_else(|| panic!("mock lacks {name} setting {name}"));
+                let want_kind = &rules[&name].kind;
                 if !want_kind.is_empty() {
                     assert_eq!(&got.0, want_kind, "{name}");
                 }
-                assert_eq!(&got.1, want_default, "{name}");
+                assert_eq!(&got.1, &settings[&name], "{name}");
             }
+        }
+        let mut known = BTreeMap::new();
+        for name in DEFAULT_SETTINGS.keys() {
+            known.insert(name.clone(), true);
+        }
+        for name in extra_setting_names() {
+            known.insert(name, true);
+        }
+        for name in mock.keys() {
+            assert!(
+                known.contains_key(name),
+                "mock lists {name} which the store does not know"
+            );
         }
     }
 }

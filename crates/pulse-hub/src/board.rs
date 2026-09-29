@@ -12,26 +12,8 @@ pub trait TallySource: Send + Sync {
     fn records(&self, project: &str, area: &str) -> Result<String>;
 }
 
-#[allow(dead_code)]
-pub(crate) struct NativeTally {
-    pub(crate) store: pulse_store::Store,
-}
-
-impl TallySource for NativeTally {
-    fn records(&self, project: &str, area: &str) -> Result<String> {
-        pulse_tally::records(
-            &self.store,
-            project,
-            area,
-            pulse_tally::Thresholds::default(),
-        )
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BoardData {
-    #[allow(dead_code)]
-    pub(crate) project: Option<pulse_store::Project>,
     pub(crate) meta: JsonMap,
     pub(crate) params: JsonMap,
     pub(crate) posts: Vec<JsonMap>,
@@ -95,7 +77,6 @@ impl crate::server::Handler {
             .map(|p| (p.id.clone(), p))
             .collect::<BTreeMap<_, _>>();
         let mut d = BoardData {
-            project: Some(p.clone()),
             params: JsonMap::new(),
             by_id: BTreeMap::new(),
             posts: Vec::new(),

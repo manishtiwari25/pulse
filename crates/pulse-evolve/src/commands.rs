@@ -578,6 +578,7 @@ pub(crate) fn run_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<(
         ));
     }
     let cancel = pulse_bus::CancellationToken::new();
+    let _stop = crate::process::SignalStop::notify(&cancel)?;
     let cwd = pulse_store::cwd();
     let (score, reason) = crate::score::score_tree(
         &cancel,
@@ -643,6 +644,7 @@ pub fn run_fleet(
                 let p = current_project(s, c)?;
                 let actor = calling_actor(s, c)?;
                 let cancel = pulse_bus::CancellationToken::new();
+                let _stop = crate::process::SignalStop::notify(&cancel)?;
                 let fleet = crate::fleet::prepare_fleet(
                     &cancel,
                     s,
@@ -1211,6 +1213,7 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
                     Some(&mut *c.out)
                 };
                 let cancel = pulse_bus::CancellationToken::new();
+                let _stop = crate::process::SignalStop::notify(&cancel)?;
                 let scores = crate::measure::measure(
                     &cancel,
                     s,
@@ -1260,6 +1263,7 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
             }
             "cycle" => {
                 let cancel = pulse_bus::CancellationToken::new();
+                let _stop = crate::process::SignalStop::notify(&cancel)?;
                 crate::cycle::cycle(
                     &cancel,
                     s,

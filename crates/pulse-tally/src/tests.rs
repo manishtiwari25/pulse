@@ -52,7 +52,6 @@ fn git_in(dir: impl AsRef<std::path::Path>, args: &[&str]) {
     );
 }
 
-#[allow(dead_code)]
 const FIXTURE_CONSTITUTION_BODY: &str = r#"# Constitution (test fixture)
 
 ## Hard stops
@@ -134,7 +133,6 @@ fn amendment(current: &str, proposed: &str) -> String {
 
 const FIXTURE_NOW: &str = "2026-09-10T12:00:00Z";
 
-#[allow(dead_code)]
 pub(crate) mod test_fixture {
     use super::*;
 
@@ -3763,7 +3761,30 @@ fn work_wanted_uses_plan_gate_for_in_flight_and_worker_evidence() {
 #[test]
 fn code_delivery_votes_reject_incomplete_iteration() {
     let _serial = crate::test_helpers::serial();
-    let _go_litdiff_literals = &[r#"cancelled-at-eof"#, r#"row-error"#, r#"source"#];
+    for (name, want_cancelled) in [("row-error", false), ("cancelled-at-eof", true)] {
+        let f = test_fixture::new_fixture(true);
+        let source = "source";
+        let ctx = pulse_store::CancellationToken::new();
+        if want_cancelled {
+            ctx.cancel();
+        } else {
+            f.st.conn()
+                .unwrap()
+                .execute("DROP TABLE posts", [])
+                .unwrap();
+        }
+        let err = suggestion_vote_counts_context(&ctx, &f.st, "demo", source)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            if want_cancelled {
+                err.contains("context canceled")
+            } else {
+                err.contains("no such table") || err.contains("cancel")
+            },
+            "{name}: {err}"
+        );
+    }
     let f = test_fixture::new_fixture(true);
     let source = &f.ids["eligible"];
     {

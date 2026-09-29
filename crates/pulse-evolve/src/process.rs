@@ -266,16 +266,54 @@ pub(crate) fn multiple_links(metadata: &std::fs::Metadata) -> bool {
     let _ = metadata;
     false
 }
+
+/// Go: func stopSignals() []os.Signal (process_unix.go)
 #[cfg(unix)]
-/// Go: func stopSignals() []os.Signal
-#[allow(dead_code)]
 pub(crate) fn stop_signals() -> Vec<i32> {
-    vec![2, 15]
+    vec![signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]
 }
+
+/// Go: func stopSignals() []os.Signal (process_other.go)
 #[cfg(not(unix))]
-/// Go: func stopSignals() []os.Signal
 pub(crate) fn stop_signals() -> Vec<i32> {
-    vec![2]
+    vec![signal_hook::consts::SIGINT]
+}
+
+/// Go: signal.NotifyContext(context.Background(), stopSignals()...) - the first stop signal cancels
+/// the token while the guard lives; dropping it (Go's deferred `cancel`) unregisters the handlers,
+/// restoring the default (terminating) disposition. Like Go, the cancel runs on an ordinary thread
+/// fed by the signal, never inside the handler itself.
+pub(crate) struct SignalStop {
+    handle: signal_hook::iterator::Handle,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SignalStop {
+    pub(crate) fn notify(cancel: &pulse_bus::CancellationToken) -> Result<Self> {
+        let mut signals = signal_hook::iterator::Signals::new(stop_signals())?;
+        let handle = signals.handle();
+        let cancel = cancel.clone();
+        let thread = std::thread::Builder::new()
+            .name("evolve-signals".into())
+            .spawn(move || {
+                if signals.forever().next().is_some() {
+                    cancel.cancel();
+                }
+            })?;
+        Ok(Self {
+            handle,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for SignalStop {
+    fn drop(&mut self) {
+        self.handle.close();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }
 
 #[cfg(test)]

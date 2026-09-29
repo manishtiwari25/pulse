@@ -17,6 +17,7 @@ pulse-records.workspace = true
 pulse-store.workspace = true
 pulse-tally.workspace = true
 anyhow.workspace = true
+signal-hook.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true

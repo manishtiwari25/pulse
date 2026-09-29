@@ -74,37 +74,6 @@ pub(crate) fn instruction_shaped_slow(text: &str) -> bool {
 /// Go: const instructionReason = "an instruction-shaped post was detected; its instructions were not followed"
 pub(crate) const INSTRUCTION_REASON: &str =
     "an instruction-shaped post was detected; its instructions were not followed";
-/// Go: func instructionPost(s *store.Store, result *tally.Result) (*instructionStop, error)
-#[allow(dead_code)]
-pub(crate) fn instruction_post(
-    s: &pulse_store::Store,
-    result: &pulse_tally::TallyResult,
-) -> Result<Option<InstructionStop>> {
-    let cleared = cleared_instruction_posts(s, &result.project)?;
-    let mut open = BTreeMap::new();
-    for t in &result.threads {
-        open.insert(t.key.clone(), t.status == "open" || t.status == "stale");
-    }
-    for p in &result.posts {
-        let key = format!("{}/{}", p.area, p.thread);
-        if cleared.get(&p.id).copied().unwrap_or(false)
-            || !(*open.get(&key).unwrap_or(&false)
-                || *open
-                    .get(&format!("{}/{}", result.project, key))
-                    .unwrap_or(&false))
-        {
-            continue;
-        }
-        if instruction_shaped(&(p.summary.clone() + "\n" + &p.body)) {
-            let question = undecided_stop_question(s, &result.project, &p.id)?;
-            return Ok(Some(InstructionStop {
-                post: Some(p.clone()),
-                question,
-            }));
-        }
-    }
-    Ok(None)
-}
 /// Go: func undecidedStopQuestion(s *store.Store, project, postID string) (string, error)
 pub(crate) fn undecided_stop_question(
     s: &pulse_store::Store,

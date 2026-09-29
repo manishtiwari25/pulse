@@ -290,19 +290,14 @@ mod tests {
     use super::*;
     use crate::{Options, Store};
 
+    fn step_numbers(steps: &[HarnessStep]) -> Vec<i64> {
+        steps.iter().map(|s| s.n).collect()
+    }
+
     #[test]
     fn harness_session_accessors() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "/tmp/traj.json",
-            "PULSE_JOB",
-            "collapsed observations",
-            "go test ./internal/store/...",
-            "large submission",
-            "missing",
-            "observation",
-            "run tests",
-        ];
+        unsafe { std::env::set_var("PULSE_JOB", "") };
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(Options {
             home: dir.path().display().to_string(),
@@ -324,36 +319,122 @@ mod tests {
             ..HarnessSession::default()
         })
         .unwrap();
+        for step in [
+            HarnessStep {
+                session_id: "hs-1".into(),
+                n: 3,
+                kind: "exit".into(),
+                content: "done".into(),
+                ..HarnessStep::default()
+            },
+            HarnessStep {
+                session_id: "hs-1".into(),
+                n: 1,
+                kind: "assistant".into(),
+                content: "run tests".into(),
+                prompt_tokens: 11,
+                completion_tokens: 7,
+                model: "gpt".into(),
+                ..HarnessStep::default()
+            },
+            HarnessStep {
+                session_id: "hs-1".into(),
+                n: 2,
+                kind: "command".into(),
+                command: "go test ./internal/store/...".into(),
+                ..HarnessStep::default()
+            },
+            HarnessStep {
+                session_id: "hs-1".into(),
+                n: 4,
+                kind: "observation".into(),
+                content: "ok".into(),
+                exit_code: Some(0),
+                duration_ms: 1500,
+                prompt_tokens: 3,
+                ..HarnessStep::default()
+            },
+        ] {
+            s.append_harness_step(step).unwrap();
+        }
+        let (h, steps) = s.harness_session("hs-1").unwrap();
+        let h = h.unwrap();
+        assert!(
+            h.status == "running"
+                && h.started_at == "2026-09-11T05:00:00Z"
+                && h.updated_at == "2026-09-11T05:00:00Z",
+            "session timestamps/status: {h:?}"
+        );
+        assert_eq!(
+            h.cancel_requested_at, "",
+            "fresh session has cancel_requested_at"
+        );
+        assert!(
+            h.steps == 1 && h.calls == 1 && h.prompt_tokens == 14 && h.completion_tokens == 7,
+            "session totals: {h:?}"
+        );
+        let head = s.harness_session_head("hs-1").unwrap().unwrap();
+        assert!(
+            head.id == "hs-1" && head.steps == 1 && head.calls == 1,
+            "session head: {head:?}"
+        );
+        assert_eq!(step_numbers(&steps), vec![1, 2, 3, 4], "steps ordered by n");
+        let after = s.harness_steps("hs-1", 1).unwrap();
+        assert_eq!(step_numbers(&after), vec![2, 3, 4], "steps after 1");
+        assert!(
+            steps[3].exit_code == Some(0) && steps[3].duration_ms == 1500,
+            "observation scan: {:?}",
+            steps[3]
+        );
         s.append_harness_step(HarnessStep {
             session_id: "hs-1".into(),
             n: 1,
             kind: "assistant".into(),
-            prompt_tokens: 11,
-            completion_tokens: 7,
-            model: "gpt".into(),
+            prompt_tokens: 5,
+            completion_tokens: 2,
             ..HarnessStep::default()
         })
         .unwrap();
+        let h = s.harness_session("hs-1").unwrap().0.unwrap();
+        assert!(
+            h.prompt_tokens == 8 && h.completion_tokens == 2 && h.calls == 1,
+            "replacement double-counted: {h:?}"
+        );
         s.append_harness_step(HarnessStep {
             session_id: "hs-1".into(),
-            n: 2,
-            kind: "command".into(),
-            command: "cargo test".into(),
+            n: 5,
+            kind: "note".into(),
+            content: "collapsed observations".into(),
             ..HarnessStep::default()
         })
         .unwrap();
-        let (h, steps) = s.harness_session("hs-1").unwrap();
-        let h = h.unwrap();
-        assert_eq!(h.status, "running");
-        assert_eq!(h.steps, 1);
-        assert_eq!(h.calls, 1);
-        assert_eq!(h.prompt_tokens, 11);
-        assert_eq!(steps.len(), 2);
-        s.finish_harness_session("hs-1", "submitted", "0", "sub", "", 1.25, "/tmp/t.json")
-            .unwrap();
+        let h = s.harness_session("hs-1").unwrap().0.unwrap();
+        assert!(
+            h.steps == 1 && h.calls == 1,
+            "note changed command/call counts: {h:?}"
+        );
+        let (missing, missing_steps) = s.harness_session("missing").unwrap();
+        assert!(
+            missing.is_none() && missing_steps.is_empty(),
+            "missing session = {missing:?} {missing_steps:?}"
+        );
+        assert!(
+            s.harness_session_head("missing").unwrap().is_none(),
+            "missing session head"
+        );
+        s.finish_harness_session(
+            "hs-1",
+            "submitted",
+            "0",
+            "large submission",
+            "",
+            1.25,
+            "/tmp/traj.json",
+        )
+        .unwrap();
         assert_eq!(
-            s.harness_session_head("hs-1").unwrap().unwrap().status,
-            "submitted"
+            s.harness_session("hs-1").unwrap().0.unwrap().submission,
+            "large submission"
         );
     }
 }
@@ -373,7 +454,7 @@ mod go_harness_tests {
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     struct TestStore {
-        _dir: TempDir,
+        _dir: Option<TempDir>,
         store: Store,
     }
     impl std::ops::Deref for TestStore {
@@ -393,10 +474,39 @@ mod go_harness_tests {
             ..Options::default()
         })
         .unwrap();
+        TestStore {
+            _dir: Some(dir),
+            store,
+        }
+    }
+    fn open_temp(o: Options) -> TestStore {
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let dir = if o.home.is_empty() {
+            Some(tempfile::tempdir().unwrap())
+        } else {
+            None
+        };
+        let home = dir
+            .as_ref()
+            .map(|d| d.path().display().to_string())
+            .unwrap_or_else(|| o.home.clone());
+        let store = Store::open(Options { home, ..o }).unwrap();
         TestStore { _dir: dir, store }
     }
-    fn ids(sessions: &[HarnessSession]) -> Vec<String> {
-        sessions.iter().map(|s| s.id.clone()).collect()
+    fn session_ids(sessions: &[HarnessSession]) -> Vec<String> {
+        sessions.iter().map(|session| session.id.clone()).collect()
+    }
+    fn table_exists(s: &Store, table: &str) -> bool {
+        let n: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        n == 1
     }
 
     #[test]
@@ -597,24 +707,26 @@ mod go_harness_tests {
         s.finish_harness_session("today-failed", "provider_error", "1", "", "boom", 0.0, "")
             .unwrap();
         assert_eq!(
-            ids(&s
-                .harness_sessions(HarnessSessionFilter {
+            session_ids(
+                &s.harness_sessions(HarnessSessionFilter {
                     project: "proj".into(),
                     limit: 2,
                     ..HarnessSessionFilter::default()
                 })
-                .unwrap()),
+                .unwrap()
+            ),
             vec!["today-failed", "today-running"]
         );
         assert_eq!(
-            ids(&s
-                .harness_sessions(HarnessSessionFilter {
+            session_ids(
+                &s.harness_sessions(HarnessSessionFilter {
                     agent: "agent-a".into(),
                     status: "running".into(),
                     job_id: "job-2".into(),
                     ..HarnessSessionFilter::default()
                 })
-                .unwrap()),
+                .unwrap()
+            ),
             vec!["today-running"]
         );
         let counts = s.harness_session_counts().unwrap();
@@ -639,9 +751,13 @@ mod go_harness_tests {
     }
 
     #[test]
-    fn harness_sessions_before_and_kp_is() {
+    fn harness_sessions_before_and_kpis() {
         let _serial = crate::test_helpers::serial();
-        let s = store("2026-09-11T05:00:00Z");
+        let s = open_temp(Options {
+            create: true,
+            now: "2026-09-11T05:00:00Z".into(),
+            ..Options::default()
+        });
         for h in [
             HarnessSession {
                 id: "new".into(),
@@ -675,13 +791,14 @@ mod go_harness_tests {
         )
         .unwrap();
         assert_eq!(
-            ids(&s
-                .harness_sessions(HarnessSessionFilter {
+            session_ids(
+                &s.harness_sessions(HarnessSessionFilter {
                     before: "2026-09-11T04:00:00Z".into(),
                     limit: 2,
                     ..HarnessSessionFilter::default()
                 })
-                .unwrap()),
+                .unwrap()
+            ),
             vec!["submitted", "old"]
         );
         for id in ["twin-a", "twin-b", "twin-c"] {
@@ -704,7 +821,7 @@ mod go_harness_tests {
                 ..HarnessSessionFilter::default()
             })
             .unwrap();
-        assert_eq!(ids(&page), vec!["twin-c", "twin-b"]);
+        assert_eq!(session_ids(&page), vec!["twin-c", "twin-b"]);
         let page2 = s
             .harness_sessions(HarnessSessionFilter {
                 before: harness_session_cursor(page.last().unwrap()),
@@ -712,7 +829,7 @@ mod go_harness_tests {
                 ..HarnessSessionFilter::default()
             })
             .unwrap();
-        assert_eq!(ids(&page2), vec!["twin-a"]);
+        assert_eq!(session_ids(&page2), vec!["twin-a"]);
         let counts = s.harness_session_counts().unwrap();
         assert_eq!(
             (
@@ -736,22 +853,15 @@ mod go_harness_tests {
         crate::store::configure_conn(&db, false).unwrap();
         init_schema(&db, "2026-09-11T00:00:00Z").unwrap();
         drop(db);
-        let s = Store::open(Options {
+        let s = open_temp(Options {
             home: home.path().display().to_string(),
             ..Options::default()
-        })
-        .unwrap();
+        });
         for table in ["harness_sessions", "harness_steps"] {
-            let n: i64 = s
-                .conn()
-                .unwrap()
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
-                    [table],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(n, 1, "{table}");
+            assert!(
+                table_exists(&s, table),
+                "{table} missing after EnsureRecords"
+            );
         }
     }
 

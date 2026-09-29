@@ -23,8 +23,6 @@ pub struct Handler {
     pub port: i64,
     pub handover: Option<HandoverFn>,
     pub(crate) provider_cache: ProviderCache,
-    #[allow(dead_code)]
-    pub(crate) org_mu: Mutex<()>,
     pub(crate) org_cache: Mutex<Vec<u8>>,
     pub(crate) org_cache_at: Mutex<Option<SystemTime>>,
     pub(crate) org_cache_ttl: Duration,
@@ -272,7 +270,6 @@ pub fn new_handler(
         port: 0,
         handover: None,
         provider_cache: Arc::new(Mutex::new(BTreeMap::new())),
-        org_mu: Mutex::new(()),
         org_cache: Mutex::new(Vec::new()),
         org_cache_at: Mutex::new(None),
         org_cache_ttl: Duration::from_secs(60),
@@ -498,7 +495,6 @@ impl Handler {
             port: self.port,
             handover: self.handover.clone(),
             provider_cache: self.provider_cache.clone(),
-            org_mu: Mutex::new(()),
             org_cache: Mutex::new(self.org_cache.lock().expect("org cache").clone()),
             org_cache_at: Mutex::new(*self.org_cache_at.lock().expect("org cache at")),
             org_cache_ttl: self.org_cache_ttl,
@@ -1148,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn static_export_directory_redirect_ur_ls() {
+    fn static_export_directory_redirect_urls() {
         let _serial = crate::test_helpers::serial();
         let mut h = new_handler(None, None);
         h.ui = map_fs(&[

@@ -272,7 +272,21 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const TEMPLATE: &str = "# <Project> Evolution Constitution\n\nRules.\n\n## Hard stops\n\nKeep.\n\n## Vote rules\n\n| Rule | Value |\n| --- | --- |\n| Not amendable by vote | Hard stops, Kill switch, Amendments, frontmatter |\n\n## Amendments\n\nHuman.\n\n## Kill switch\n\n`loop: off` stops everything.\n";
+    const DRAFT_TEMPLATE: &str = "# <Project> Evolution Constitution\n\nRules the loop can never change.\n\n## Hard stops\n\n- Never push to `main` directly.\n- Never touch production, deploy, billing.\n\n## Immutable paths\n\n| Path | Why |\n| --- | --- |\n| <product hard-stop surfaces only> | Tier 2 surfaces |\n\n## Editable scope by stage\n\n| Stage | Paths |\n| --- | --- |\n| Product | <product paths, e.g. `src/`> |\n\n## Budget\n\n| Setting | Value |\n| --- | --- |\n| Runs per fixture | <N> |\n\n## Vote rules\n\n| Rule | Value |\n| --- | --- |\n| Suggestion expiry with no votes | <N> days |\n| Not amendable by vote | Hard stops, Kill switch, Amendments, frontmatter |\n\n## Amendments\n\nA human edits this record; `git diff <parent>..<variant>` shows the change.\n\n## Kill switch\n\n`loop: off` in the frontmatter stops everything.\n";
+    const TEMPLATE_EVALUATORS: &str =
+        "# <Project> Evaluators\n\nWhat better means for <Project>.\n";
+
+    fn complete_draft(project: &str) -> String {
+        DRAFT_TEMPLATE
+            .replace("<Project>", project)
+            .replace(
+                "<product hard-stop surfaces only>",
+                "`deploy/`, `migrations/`",
+            )
+            .replace("<product paths, e.g. `src/`>", "`cmd/`, `internal/`")
+            .replace("| <N> |", "| 3 |")
+            .replace("<N> days", "14 days")
+    }
 
     struct TestStore {
         _home: tempfile::TempDir,
@@ -308,125 +322,186 @@ mod tests {
             .unwrap();
     }
 
-    fn seed_project(s: &pulse_store::Store) -> String {
-        add_project(s, "shop", false);
+    fn seed_draft_project(s: &pulse_store::Store, slug: &str) -> String {
+        add_project(s, "brain", true);
         let rec = pulse_store::Record {
-            id: "EVO-constitution-shop".into(),
-            project: "shop".into(),
-            kind: "evolution".into(),
-            slug: "constitution".into(),
-            title: "Shop Evolution Constitution".into(),
+            id: "TPL-evolution-constitution".into(),
+            project: "brain".into(),
+            kind: "template".into(),
+            slug: "evolution-constitution".into(),
+            title: "<Project> Evolution Constitution".into(),
             status: "Active".into(),
+            path: "docs/evolution/_template-constitution.md".into(),
+            origin: "markdown:x@0000000".into(),
             ..pulse_store::Record::default()
         };
         let front = [
-            (
-                "seeded_from".into(),
-                json!("brain/TPL-evolution-constitution@r1"),
-            ),
+            ("id".into(), json!("CONSTITUTION")),
+            ("title".into(), json!("<Project> Evolution Constitution")),
+            ("status".into(), json!("Active")),
+            ("date".into(), json!("YYYY-MM-DD")),
             ("loop".into(), json!("off")),
-            ("title".into(), json!("Shop Evolution Constitution")),
         ]
         .into();
-        s.put_record(rec, front, TEMPLATE, "alice", "seed").unwrap();
-        "EVO-constitution-shop".into()
+        s.put_record(rec, front, DRAFT_TEMPLATE, "tester", "import")
+            .unwrap();
+        let evaluators = pulse_store::Record {
+            id: "TPL-evolution-evaluators".into(),
+            project: "brain".into(),
+            kind: "template".into(),
+            slug: "evolution-evaluators".into(),
+            title: "<Project> Evaluators".into(),
+            status: "Active".into(),
+            path: "docs/evolution/_template-evaluators.md".into(),
+            origin: "markdown:y@0000000".into(),
+            ..pulse_store::Record::default()
+        };
+        s.put_record(
+            evaluators,
+            [
+                ("id".into(), json!("EVALUATORS")),
+                ("title".into(), json!("<Project> Evaluators")),
+                ("status".into(), json!("Active")),
+                ("date".into(), json!("YYYY-MM-DD")),
+                ("baseline".into(), json!("pending")),
+            ]
+            .into(),
+            TEMPLATE_EVALUATORS,
+            "tester",
+            "import",
+        )
+        .unwrap();
+        add_project(s, slug, false);
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET name = ? WHERE slug = ?",
+                rusqlite::params![format!("{}{}", slug[..1].to_uppercase(), &slug[1..]), slug],
+            )
+            .unwrap();
+        crate::seed::seed_loop_records(s, slug, "alice").unwrap();
+        format!("EVO-constitution-{slug}")
+    }
+
+    fn event_count(s: &pulse_store::Store, action: &str) -> i64 {
+        s.conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = ?",
+                [action],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn revision_count(s: &pulse_store::Store, id: &str) -> usize {
+        s.revisions(id).unwrap().len()
     }
 
     #[test]
     fn draft_checks_the_loop_record_before_filing_it() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "## Vote rules",
-            "## Vote rules section is missing",
-            "## Voting",
-            "<product hard-stop surfaces only>|<product paths, e.g. `src/`>|<N>",
-            "Hard stops section differs",
-            "Kill switch section differs",
-            "Never push to `main` directly.",
-            "PULSE_JOB",
-            "Push to `main` when tests pass.",
-            "Shop Evolution Constitution",
-            "current text",
-            "from the README and Makefile",
-            "killswitch",
-            "no content",
-            "placeholder",
-            "protected",
-            "record.draft",
-            "section",
-            "stops everything.",
-            "stops most things.",
-            "unchanged",
-            "| <N> |",
-        ];
         let s = temp_store();
-        let id = seed_project(&s);
-        let (head, rev) = crate::records::get(&s, &id, 0).unwrap();
+        let id = seed_draft_project(&s, "shop");
+        let (_, current) = crate::records::get(&s, &id, 0).unwrap();
+        let (head, _) = s.get_record(&id, 0).unwrap();
+        let (is_seeded, from) = seeded(Some(&head), Some(&current));
+        assert!(
+            is_seeded && from == "brain/TPL-evolution-constitution@r1",
+            "seeded = {is_seeded:?} {from:?}"
+        );
+        let got = placeholders(&current.body);
         assert_eq!(
-            seeded(Some(&head), Some(&rev)),
-            (true, "brain/TPL-evolution-constitution@r1".into())
+            got.join("|"),
+            "<product hard-stop surfaces only>|<product paths, e.g. `src/`>|<N>",
+            "placeholders: {got:?}"
         );
-        assert_eq!(placeholders(&rev.body), vec!["<Project>"]);
-        assert!(
-            draft(
+        let complete = complete_draft("Shop");
+        let refusals = [
+            ("empty", "   \n".to_string()),
+            ("unchanged", current.body.clone()),
+            ("placeholder", complete.replacen("| 3 |", "| <N> |", 1)),
+            (
+                "section",
+                complete.replacen("## Vote rules", "## Voting", 1),
+            ),
+            (
+                "protected",
+                complete.replacen(
+                    "Never push to `main` directly.",
+                    "Push to `main` when tests pass.",
+                    1,
+                ),
+            ),
+            (
+                "killswitch",
+                complete.replacen("stops everything.", "stops most things.", 1),
+            ),
+        ];
+        let reasons = [
+            ("empty", "no content"),
+            ("unchanged", "current text"),
+            ("placeholder", "<N>"),
+            ("section", "\"## Vote rules\" section is missing"),
+            ("protected", "\"Hard stops\" section differs"),
+            ("killswitch", "\"Kill switch\" section differs"),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+        for (name, body) in refusals {
+            let err = draft(
                 &s,
-                &head.id,
+                &id,
                 DraftInput {
-                    body: " \n".into(),
+                    body,
                     author: "bot".into(),
                     ..DraftInput::default()
-                }
+                },
             )
-            .is_err()
-        );
+            .err();
+            let want = reasons[name];
+            assert!(
+                err.as_ref()
+                    .is_some_and(|err| err.to_string().contains(want)),
+                "{name}: err = {err:?}, want {want:?}"
+            );
+        }
         assert!(
-            draft(
-                &s,
-                &head.id,
-                DraftInput {
-                    body: rev.body.clone(),
-                    author: "bot".into(),
-                    ..DraftInput::default()
-                }
-            )
-            .is_err()
+            s.get_draft(&id).unwrap().is_none() && event_count(&s, "record.draft") == 0,
+            "a refused draft was stored"
         );
-        let complete = TEMPLATE.replace("<Project>", "Shop");
-        assert!(
-            draft(
-                &s,
-                &head.id,
-                DraftInput {
-                    body: complete.replace("Keep.", "Change."),
-                    author: "bot".into(),
-                    ..DraftInput::default()
-                }
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("Hard stops")
-        );
+        let _guard = pulse_testutil::setenv("PULSE_JOB", "job-1");
         let filed = draft(
             &s,
-            &head.id,
+            &id,
             DraftInput {
                 body: complete.clone(),
                 author: "bot".into(),
-                note: "  based on docs ".into(),
+                note: "  from the README and Makefile ".into(),
                 job_id: "job-1".into(),
             },
         )
         .unwrap()
         .unwrap();
-        assert_eq!(filed.base_rev, 1);
-        assert_eq!(filed.note, "based on docs");
-        assert_eq!(filed.job_id, "job-1");
+        assert!(
+            filed.record_id == id
+                && filed.base_rev == 1
+                && filed.author == "bot"
+                && filed.note == "from the README and Makefile"
+                && filed.job_id == "job-1"
+                && filed.body == complete
+                && filed.project == "shop"
+                && filed.kind == "evolution"
+                && filed.title == "Shop Evolution Constitution"
+                && !filed.at.is_empty(),
+            "draft row: {filed:?}"
+        );
         let rows = drafts(&s, "shop").unwrap();
         assert_eq!(rows.len(), 1);
-        let again = complete.replace("Rules.", "Rules!");
+        let again = complete.replacen("| 3 |", "| 5 |", 1);
         draft(
             &s,
-            &head.id,
+            &id,
             DraftInput {
                 body: again.clone(),
                 author: "bot2".into(),
@@ -435,9 +510,22 @@ mod tests {
         )
         .unwrap();
         let rows = drafts(&s, "shop").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].body, again);
-        assert!(drafts(&s, "elsewhere").unwrap().is_empty());
+        assert!(
+            rows.len() == 1
+                && rows[0].body == again
+                && rows[0].author == "bot2"
+                && rows[0].note.is_empty()
+                && rows[0].job_id.is_empty(),
+            "drafts after refiling: {rows:?}"
+        );
+        assert!(
+            drafts(&s, "elsewhere").unwrap().is_empty(),
+            "project filter ignored"
+        );
+        assert!(
+            event_count(&s, "record.draft") == 2 && revision_count(&s, &id) == 1,
+            "filing a draft must record an event and never revise the record"
+        );
         let plan = pulse_store::Record {
             id: "PLAN-001".into(),
             project: "shop".into(),
@@ -474,8 +562,8 @@ mod tests {
     fn adopt_is_the_humans_and_writes_the_next_revision() {
         let _serial = crate::test_helpers::serial();
         let s = temp_store();
-        let id = seed_project(&s);
-        let complete = TEMPLATE.replace("<Project>", "Shop");
+        let id = seed_draft_project(&s, "shop");
+        let complete = complete_draft("Shop");
         assert!(
             adopt(&s, &id, "", "")
                 .unwrap_err()
@@ -499,6 +587,11 @@ mod tests {
                 .to_string()
                 .contains("human only")
         );
+        assert_eq!(
+            revision_count(&s, &id),
+            1,
+            "a refused adoption revised the record"
+        );
         let rec = adopt(&s, &id, "", "  checked the paths  ").unwrap();
         assert_eq!(rec.current_rev, 2);
         let (head, rev) = crate::records::get(&s, &id, 0).unwrap();
@@ -510,13 +603,23 @@ mod tests {
             json!("brain/TPL-evolution-constitution@r1")
         );
         assert_eq!(rev.frontmatter["loop"], json!("off"));
+        assert_eq!(
+            rev.frontmatter["title"],
+            json!("Shop Evolution Constitution")
+        );
         assert!(!seeded(Some(&head), Some(&rev)).0);
         assert!(s.get_draft(&id).unwrap().is_none());
+        assert!(
+            event_count(&s, "record.adopted") == 1 && event_count(&s, "record.revised") == 1,
+            "events: adopted {} revised {}",
+            event_count(&s, "record.adopted"),
+            event_count(&s, "record.revised")
+        );
         draft(
             &s,
             &id,
             DraftInput {
-                body: complete.replace("Rules.", "Rules!"),
+                body: complete.replacen("| 3 |", "| 5 |", 1),
                 author: "bot".into(),
                 ..DraftInput::default()
             },
@@ -526,7 +629,7 @@ mod tests {
         s.put_record(
             head,
             rev.frontmatter,
-            complete.replace("Human.", "Owner edit.").as_str(),
+            complete.replacen("14 days", "21 days", 1).as_str(),
             pulse_store::HUMAN_AGENT,
             "owner edit",
         )
@@ -541,21 +644,35 @@ mod tests {
     fn discard_drops_the_draft_once() {
         let _serial = crate::test_helpers::serial();
         let s = temp_store();
-        let id = seed_project(&s);
-        assert!(!discard(&s, &id, "", "").unwrap());
-        assert!(discard(&s, "EVO-constitution-nope", "", "").is_err());
+        let id = seed_draft_project(&s, "shop");
+        let gone = discard(&s, &id, "", "").unwrap();
+        assert!(!gone, "discard with nothing filed: {gone:?}");
+        assert!(
+            discard(&s, "EVO-constitution-nope", "", "").is_err(),
+            "discard on a missing record must fail"
+        );
         draft(
             &s,
             &id,
             DraftInput {
-                body: TEMPLATE.replace("<Project>", "Shop"),
+                body: complete_draft("Shop"),
                 author: "bot".into(),
                 ..DraftInput::default()
             },
         )
         .unwrap();
-        assert!(discard(&s, &id, "bot", "wrong paths").unwrap());
-        assert!(s.get_draft(&id).unwrap().is_none());
-        assert!(!discard(&s, &id, "", "").unwrap());
+        let gone = discard(&s, &id, "bot", "wrong paths").unwrap();
+        assert!(gone, "discard: {gone:?}");
+        assert!(
+            s.get_draft(&id).unwrap().is_none()
+                && event_count(&s, "record.draft.discarded") == 1
+                && revision_count(&s, &id) == 1,
+            "discard must clear the draft, record one event and leave the record alone"
+        );
+        let gone = discard(&s, &id, "", "").unwrap();
+        assert!(
+            !gone && event_count(&s, "record.draft.discarded") == 1,
+            "a second discard has nothing to do"
+        );
     }
 }

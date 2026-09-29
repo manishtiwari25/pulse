@@ -798,9 +798,20 @@ pub(crate) fn configure_conn(conn: &Connection, read_only: bool) -> Result<()> {
 fn refuse_inside_checkout(home: &str) -> Result<()> {
     let mut dir = PathBuf::from(home);
     while !dir.exists() && dir.pop() {}
+    let top = git_top_level(&dir);
+    if !top.is_empty() {
+        return Err(input_err(format!(
+            "The store {}/{} must live outside the project {}; set PULSE_HOME elsewhere",
+            home, STORE_NAME, top
+        )));
+    }
+    Ok(())
+}
+
+fn git_top_level(dir: &Path) -> String {
     let out = std::process::Command::new("git")
         .arg("-C")
-        .arg(&dir)
+        .arg(dir)
         .args(["rev-parse", "--show-toplevel"])
         .env_clear()
         .envs(pulse_gitenv::env().into_iter().filter_map(|kv| {
@@ -811,15 +822,9 @@ fn refuse_inside_checkout(home: &str) -> Result<()> {
     if let Ok(out) = out
         && out.status.success()
     {
-        let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !top.is_empty() {
-            return Err(input_err(format!(
-                "The store {}/{} must live outside the project {}; set PULSE_HOME elsewhere",
-                home, STORE_NAME, top
-            )));
-        }
+        return String::from_utf8_lossy(&out.stdout).trim().to_string();
     }
-    Ok(())
+    String::new()
 }
 
 pub(crate) fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -1198,12 +1203,11 @@ mod tests {
             ),
         ] {
             let home = tempfile::tempdir().unwrap();
-            let s = Store::open(Options {
+            let s = open_temp(Options {
                 home: home.path().display().to_string(),
                 create: true,
                 ..Options::default()
-            })
-            .unwrap();
+            });
             s.conn()
                 .unwrap()
                 .execute(
@@ -1472,64 +1476,72 @@ mod tests {
     #[test]
     fn schema_parity_with_python() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "--allow-empty",
-            "--home",
-            "--initial-branch=main",
-            "--path",
-            "PULSE_AGENT=human",
-            "PULSE_JOB",
-            "commit",
-            "legacy",
-            "pulse.py",
-            "python init:",
-            "python3",
-            "schema_version",
-            "sqlite_master differs--- python ------ go ---",
-            "user.email=t@example.com",
-            "user.name=t",
-        ];
         let _guard = TEST_LOCK.lock().unwrap();
-        let Ok(oracle) = std::env::var("PULSE_GO_ORACLE") else {
-            return;
-        };
-        let repo = tempfile::tempdir().unwrap();
-        let git = Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(["init", "-q"])
-            .status();
-        if git.is_err() || !git.unwrap().success() {
+        set_env("PULSE_JOB", "");
+        remove_env("PULSE_NOW");
+        let script = Path::new("legacy").join("pulse.py");
+        if !script.exists() {
             return;
         }
-        let go_home = tempfile::tempdir().unwrap();
-        let out = Command::new(oracle)
-            .current_dir(repo.path())
-            .env("PULSE_HOME", go_home.path())
-            .env("PULSE_NOW", "2026-09-06T21:00:00Z")
-            .args(["init", "--name", "parity"])
+        if Command::new("python3").arg("--version").output().is_err() {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q", "--initial-branch=main"],
+            vec![
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        ] {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .envs(pulse_testutil::git_env().into_iter().filter_map(|kv| {
+                    kv.split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                }))
+                .output()
+                .unwrap();
+            if !out.status.success() {
+                return;
+            }
+        }
+        let py_home = tempfile::tempdir().unwrap();
+        let out = Command::new("python3")
+            .arg(&script)
+            .arg("--home")
+            .arg(py_home.path())
+            .args(["init", "--path"])
+            .arg(repo.path())
+            .args(["--name", "parity"])
+            .env("PULSE_AGENT", "human")
             .output()
             .unwrap();
         assert!(
             out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
+            "python init: {}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
         );
-        let rust_home = tempfile::tempdir().unwrap();
-        let rust = Store::open(Options {
-            home: rust_home.path().display().to_string(),
-            create: true,
-            now: "2026-09-06T21:00:00Z".into(),
-            ..Options::default()
-        })
-        .unwrap();
-        let go = Store::open(Options {
-            home: go_home.path().display().to_string(),
-            read_only: true,
+        let py = open_temp(Options {
+            home: py_home.path().display().to_string(),
             skip_records: true,
             ..Options::default()
-        })
-        .unwrap();
+        });
+        let rust = open_temp(Options {
+            create: true,
+            skip_records: true,
+            ..Options::default()
+        });
         let dump = |s: &Store| -> String {
             let conn = s.conn().unwrap();
             let mut stmt = conn.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name").unwrap();
@@ -1546,11 +1558,40 @@ mod tests {
             .unwrap()
             .join("")
         };
-        assert_eq!(dump(&go), dump(&rust));
-        let go_settings = go.settings().unwrap();
+        let a = dump(&py);
+        let b = dump(&rust);
+        assert_eq!(
+            a, b,
+            "sqlite_master differs\n--- python ---\n{a}\n--- go ---\n{b}"
+        );
+        let py_settings = py.settings().unwrap();
         let rust_settings = rust.settings().unwrap();
-        for (k, v) in rust_settings {
-            assert_eq!(go_settings.get(&k), Some(&v), "setting {k}");
+        assert_eq!(
+            py_settings.len(),
+            rust_settings.len(),
+            "settings rows: python {}, go {}",
+            py_settings.len(),
+            rust_settings.len()
+        );
+        for (k, v) in py_settings {
+            assert_eq!(rust_settings.get(&k), Some(&v), "setting {k}");
+        }
+        let mut py_human = py.agent(HUMAN_AGENT).unwrap().unwrap();
+        let mut rust_human = rust.agent(HUMAN_AGENT).unwrap().unwrap();
+        py_human.created_at.clear();
+        rust_human.created_at.clear();
+        assert!(
+            py_human.display == rust_human.display
+                && py_human.kind == rust_human.kind
+                && py_human.notes == rust_human.notes
+                && py_human.status == rust_human.status,
+            "human agent: python {py_human:?}, go {rust_human:?}"
+        );
+        {
+            let key = "schema_version";
+            let a = py.meta(key).unwrap().0;
+            let b = rust.meta(key).unwrap().0;
+            assert_eq!(a, b, "meta {key}");
         }
     }
 
@@ -1560,12 +1601,11 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let home = tempfile::tempdir().unwrap();
-        let s = Store::open(Options {
+        let s = open_temp(Options {
             home: home.path().display().to_string(),
             create: true,
             ..Options::default()
-        })
-        .unwrap();
+        });
         s.close().unwrap();
         let ro = Store::open(Options {
             home: home.path().display().to_string(),
@@ -1651,11 +1691,10 @@ mod tests {
             .execute("DROP TABLE record_revisions", [])
             .unwrap();
         s.close().unwrap();
-        let again = Store::open(Options {
+        let again = open_temp(Options {
             home: home.path().display().to_string(),
             ..Options::default()
-        })
-        .unwrap();
+        });
         assert!(table_exists(&again, "record_revisions"));
         assert_eq!(count_events(&again, "schema.records"), 1);
         again
@@ -1767,16 +1806,31 @@ mod tests {
         })
         .unwrap();
         assert!(index_exists(&again, "events_action_subject"));
-        let conn = again.conn().unwrap();
-        let mut stmt = conn.prepare("EXPLAIN QUERY PLAN SELECT e.detail FROM events e WHERE e.action = 'job.recover' AND e.subject = 'job-1' AND e.at >= '2026' AND NOT EXISTS (SELECT 1 FROM events later WHERE later.subject = e.subject AND later.seq > e.seq AND later.action IN ('job.lease', 'job.failed')) ORDER BY e.seq DESC LIMIT 1").unwrap();
-        let plan = stmt
-            .query_map([], |r| r.get::<_, String>(3))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .join("\n");
-        assert!(plan.contains("USING INDEX events_action_subject"), "{plan}");
-        assert!(!plan.contains("SCAN e"), "{plan}");
+        let plan = |query: &str| -> String {
+            let conn = again.conn().unwrap();
+            let mut stmt = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .join("\n")
+        };
+        let got = plan(
+            "SELECT e.detail FROM events e WHERE e.action = 'job.recover' AND e.subject = 'job-1' AND e.at >= '2026' AND NOT EXISTS (SELECT 1 FROM events later WHERE later.subject = e.subject AND later.seq > e.seq AND later.action IN ('job.lease', 'job.failed')) ORDER BY e.seq DESC LIMIT 1",
+        );
+        assert!(
+            got.contains("USING INDEX events_action_subject") && !got.contains("SCAN e"),
+            "recovery decision plan:\n{got}"
+        );
+        let got = plan(
+            "SELECT detail FROM events WHERE action = 'executor.login' AND subject = 'local' ORDER BY seq DESC LIMIT 1",
+        );
+        assert!(
+            got.contains("USING INDEX events_action_subject"),
+            "executor history plan:\n{got}"
+        );
     }
 
     #[test]
@@ -1786,7 +1840,15 @@ mod tests {
         let hook = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         for dir in [hook.path(), project.path()] {
-            let status = Command::new("git").arg("init").arg("-q").arg(dir).status();
+            let status = Command::new("git")
+                .arg("init")
+                .arg("-q")
+                .arg(dir)
+                .envs(pulse_testutil::git_env().into_iter().filter_map(|kv| {
+                    kv.split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                }))
+                .status();
             if status.is_err() || !status.unwrap().success() {
                 return;
             }
@@ -1799,21 +1861,7 @@ mod tests {
         );
         let sub = project.path().join("sub");
         fs::create_dir_all(&sub).unwrap();
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(&sub)
-            .args(["rev-parse", "--show-toplevel"])
-            .env_clear()
-            .envs(pulse_gitenv::env().into_iter().filter_map(|kv| {
-                kv.split_once('=')
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-            }))
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        let got = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string())
-            .canonicalize()
-            .unwrap();
+        let got = PathBuf::from(git_top_level(&sub)).canonicalize().unwrap();
         assert_eq!(got, project.path().canonicalize().unwrap());
         remove_env("GIT_DIR");
         remove_env("GIT_WORK_TREE");

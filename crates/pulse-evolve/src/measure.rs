@@ -13,15 +13,9 @@ pub(crate) type ExecutableHook = fn() -> std::io::Result<String>;
 pub(crate) static EXECUTABLE: LazyLock<RwLock<Option<ExecutableHook>>> =
     LazyLock::new(|| RwLock::new(None));
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn set_executable(f: Option<ExecutableHook>) {
     *EXECUTABLE.write().expect("executable hook poisoned") = f;
-}
-
-/// Go: func init() { Measure = measure }
-#[allow(dead_code)]
-pub(crate) fn init() {
-    // The Rust facade delegates directly to this module through crate::api::measure callers.
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

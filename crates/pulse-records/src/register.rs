@@ -988,31 +988,6 @@ mod tests {
     #[test]
     fn cli_commands_and_guide() {
         let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "# agents# claude# copilot-instructions",
-            "--date",
-            "--full",
-            "--note",
-            "--project",
-            "--words",
-            "2026-09-06",
-            "Clarified",
-            "From stdin",
-            "INSTR-",
-            "MISSING",
-            "The owner approves",
-            "accept",
-            "agents",
-            "claude",
-            "copilot-instructions",
-            "deliver",
-            "instruction",
-            "lead-time",
-            "no-kind",
-            "partially delivered",
-            "revisions",
-            "tester",
-        ];
         register();
         register();
         assert!(pulse_cli::lookup("record").is_some());
@@ -1022,14 +997,44 @@ mod tests {
         add_project(&s, "brain", true);
         let (mut c, out) = context(s.clone());
         run_guide(&mut c, &FlagSet::new(""), &[]).unwrap();
-        assert!(out.string().contains("pulse migrate --records"));
+        assert!(
+            out.string().lines().count() == 1 && out.string().contains("pulse migrate --records"),
+            "empty guide: {:?}",
+            out.string()
+        );
+        for slug in ["agents", "claude", "copilot-instructions"] {
+            s.put_record(
+                pulse_store::Record {
+                    id: format!("INSTR-{slug}"),
+                    project: "brain".into(),
+                    kind: "instruction".into(),
+                    slug: slug.into(),
+                    ..Default::default()
+                },
+                Default::default(),
+                &format!("# {slug}\n"),
+                "tester",
+                "",
+            )
+            .unwrap();
+        }
+        out.clear();
+        run_guide(
+            &mut c,
+            &FlagSet::new(""),
+            &["--full".into(), "--project".into(), "brain".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            out.string(),
+            "# agents\n\n\n# claude\n\n\n# copilot-instructions\n",
+            "full guide order"
+        );
         out.clear();
         let body = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(body.path(), "# New body\n").unwrap();
-        run_record(
-            &mut c,
-            &FlagSet::new(""),
-            &[
+        let calls: Vec<Vec<String>> = vec![
+            vec![
                 "new".into(),
                 "adr".into(),
                 "--title".into(),
@@ -1041,14 +1046,7 @@ mod tests {
                 "--body-file".into(),
                 body.path().display().to_string(),
             ],
-        )
-        .unwrap();
-        assert!(out.string().contains("ADR-001 revision 1: Proposed"));
-        out.clear();
-        run_record(
-            &mut c,
-            &FlagSet::new(""),
-            &[
+            vec![
                 "list".into(),
                 "ADR".into(),
                 "--status".into(),
@@ -1057,23 +1055,60 @@ mod tests {
                 "cli".into(),
                 "--json".into(),
             ],
-        )
-        .unwrap();
-        let v: Value = serde_json::from_str(&out.string()).unwrap();
-        assert_eq!(v["records"].as_array().unwrap().len(), 1);
-        out.clear();
-        run_record(
-            &mut c,
-            &FlagSet::new(""),
-            &[
+            vec![
+                "show".into(),
+                "ADR-001".into(),
+                "--rev".into(),
+                "1".into(),
+                "--json".into(),
+            ],
+            vec![
                 "status".into(),
                 "ADR-001".into(),
                 "Draft".into(),
                 "--json".into(),
             ],
-        )
-        .unwrap();
-        assert!(serde_json::from_str::<Value>(&out.string()).is_ok());
+            vec![
+                "accept".into(),
+                "ADR-001".into(),
+                "--words".into(),
+                "The owner approves".into(),
+            ],
+            vec![
+                "deliver".into(),
+                "ADR-001".into(),
+                "partially delivered".into(),
+                "--date".into(),
+                "2026-09-06".into(),
+            ],
+            vec![
+                "amend".into(),
+                "ADR-001".into(),
+                "--body-file".into(),
+                body.path().display().to_string(),
+                "--note".into(),
+                "Clarified".into(),
+            ],
+            vec!["revisions".into(), "ADR-001".into(), "--json".into()],
+            vec![
+                "lead-time".into(),
+                "--project".into(),
+                "brain".into(),
+                "--json".into(),
+            ],
+        ];
+        for args in calls {
+            out.clear();
+            run_record(&mut c, &FlagSet::new(""), &args)
+                .unwrap_or_else(|err| panic!("record {args:?}: {err}"));
+            if args.last().is_some_and(|arg| arg == "--json") {
+                assert!(
+                    serde_json::from_str::<Value>(&out.string()).is_ok(),
+                    "invalid JSON for {args:?}: {}",
+                    out.string()
+                );
+            }
+        }
         assert!(
             run_record(
                 &mut c,
@@ -1089,14 +1124,36 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            run_record(
-                &mut c,
-                &FlagSet::new(""),
-                &["list".into(), "--bogus".into()]
-            )
-            .is_err()
-        );
+        for args in [
+            vec!["show".into(), "MISSING".into()],
+            vec!["show".into(), "ADR-001".into(), "--rev".into(), "-1".into()],
+            vec!["new".into(), "wu".into()],
+            vec!["list".into(), "no-kind".into()],
+            vec!["list".into(), "--bogus".into()],
+            vec!["amend".into(), "ADR-001".into()],
+            vec!["new".into(), "wu".into(), "--title".into()],
+            vec!["status".into(), "ADR-001".into()],
+        ] {
+            assert!(
+                run_record(&mut c, &FlagSet::new(""), &args).is_err(),
+                "accepted invalid CLI arguments {args:?}"
+            );
+        }
+        let stdin_body = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(stdin_body.path(), "From stdin\n").unwrap();
+        run_record(
+            &mut c,
+            &FlagSet::new(""),
+            &[
+                "amend".into(),
+                "ADR-001".into(),
+                "--body-file".into(),
+                stdin_body.path().display().to_string(),
+            ],
+        )
+        .unwrap();
+        let (_, rev) = crate::records::get(&s, "ADR-001", 0).unwrap();
+        assert_eq!(rev.body, "From stdin\n", "stdin body not stored");
     }
 
     #[test]
