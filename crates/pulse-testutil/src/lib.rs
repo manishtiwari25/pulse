@@ -21,6 +21,47 @@ pub fn env_lock() -> EnvGuard {
     ENV_LOCK.get_or_init(|| ReentrantMutex::new(())).lock()
 }
 
+/// Go: `t.Setenv(key, value)` - the variable holds `value` while the guard lives and reverts to its
+/// previous state (set or unset) when the guard drops. Callers hold [`env_lock`] (or run serially).
+#[must_use = "the variable reverts as soon as the guard drops"]
+pub struct SetenvGuard {
+    key: String,
+    prev: Option<std::ffi::OsString>,
+}
+
+pub fn setenv(key: &str, value: impl AsRef<std::ffi::OsStr>) -> SetenvGuard {
+    let prev = std::env::var_os(key);
+    // SAFETY: tests serialize environment mutation behind env_lock()/the crate's serial guard.
+    unsafe { std::env::set_var(key, value) };
+    SetenvGuard {
+        key: key.to_string(),
+        prev,
+    }
+}
+
+/// Go: `t.Setenv` followed by `os.Unsetenv` - unset for the guard's lifetime, restored on drop.
+pub fn unsetenv(key: &str) -> SetenvGuard {
+    let prev = std::env::var_os(key);
+    // SAFETY: as in setenv.
+    unsafe { std::env::remove_var(key) };
+    SetenvGuard {
+        key: key.to_string(),
+        prev,
+    }
+}
+
+impl Drop for SetenvGuard {
+    fn drop(&mut self) {
+        // SAFETY: as in setenv.
+        unsafe {
+            match &self.prev {
+                Some(v) => std::env::set_var(&self.key, v),
+                None => std::env::remove_var(&self.key),
+            }
+        }
+    }
+}
+
 /// Environment for test git invocations: hook vars stripped and host config disabled.
 pub fn git_env() -> Vec<String> {
     let mut env =
@@ -57,13 +98,47 @@ pub fn git(args: &[&str]) -> anyhow::Result<String> {
 mod tests {
     #[test]
     fn git_env_drops_hook_variables() {
-        let env = vec![
-            "GIT_DIR=/tmp/repo/.git".to_string(),
-            "GIT_SSH_COMMAND=ssh -F none".to_string(),
-            "PATH=/bin".to_string(),
+        let _guard = super::env_lock();
+        let set = [
+            ("GIT_DIR", "/tmp/x"),
+            ("GIT_WORK_TREE", "/tmp/x"),
+            ("GIT_INDEX_FILE", "/tmp/x/index"),
+            ("GIT_AUTHOR_NAME", "hook"),
+            ("PULSE_TESTUTIL_KEEP", "1"),
         ];
-        let got = pulse_gitenv::strip_hook(env);
-        assert!(!got.iter().any(|kv| kv.starts_with("GIT_DIR=")));
-        assert!(got.iter().any(|kv| kv.starts_with("GIT_SSH_COMMAND=")));
+        let previous: Vec<(&str, Option<String>)> =
+            set.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
+        for (k, v) in set {
+            unsafe { std::env::set_var(k, v) };
+        }
+
+        let env = super::git_env();
+        for kv in &env {
+            assert!(
+                !pulse_gitenv::hook_var(kv),
+                "GitEnv leaked hook variable {kv:?}"
+            );
+        }
+        let dev_null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let mut want = std::collections::BTreeMap::from([
+            ("PULSE_TESTUTIL_KEEP=1".to_string(), false),
+            ("GIT_CONFIG_NOSYSTEM=1".to_string(), false),
+            (format!("GIT_CONFIG_GLOBAL={dev_null}"), false),
+        ]);
+        for kv in &env {
+            if let Some(seen) = want.get_mut(kv) {
+                *seen = true;
+            }
+        }
+        for (kv, seen) in &want {
+            assert!(seen, "GitEnv missing {kv:?}");
+        }
+
+        for (k, old) in previous {
+            match old {
+                Some(v) => unsafe { std::env::set_var(k, v) },
+                None => unsafe { std::env::remove_var(k) },
+            }
+        }
     }
 }

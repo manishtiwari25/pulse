@@ -79,7 +79,11 @@ impl Formatter for GoPretty<'_> {
         self.0.end_array(writer)
     }
 
-    fn begin_array_value<W: ?Sized + Write>(&mut self, writer: &mut W, first: bool) -> io::Result<()> {
+    fn begin_array_value<W: ?Sized + Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
         self.0.begin_array_value(writer, first)
     }
 
@@ -95,7 +99,11 @@ impl Formatter for GoPretty<'_> {
         self.0.end_object(writer)
     }
 
-    fn begin_object_key<W: ?Sized + Write>(&mut self, writer: &mut W, first: bool) -> io::Result<()> {
+    fn begin_object_key<W: ?Sized + Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
         self.0.begin_object_key(writer, first)
     }
 
@@ -193,6 +201,8 @@ mod tests {
         );
         assert_eq!(to_string_pretty(&json!([])).unwrap(), "[]");
         assert_eq!(to_string_pretty(&json!({})).unwrap(), "{}");
-        assert!(to_string(&json!(f64::NAN)).is_err() || to_string(&json!(f64::NAN)).unwrap() == "null");
+        assert!(
+            to_string(&json!(f64::NAN)).is_err() || to_string(&json!(f64::NAN)).unwrap() == "null"
+        );
     }
 }

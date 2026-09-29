@@ -10,6 +10,38 @@ use std::time::{Duration, Instant};
 /// DefaultInterval is how often tail polls when interval is zero.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Go: context.Canceled and context.DeadlineExceeded - the two errors a done
+/// context reports; Display is the exact Go text so wrapped messages match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ContextError {
+    Canceled,
+    DeadlineExceeded,
+}
+
+impl std::fmt::Display for ContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ContextError::Canceled => "context canceled",
+            ContextError::DeadlineExceeded => "context deadline exceeded",
+        })
+    }
+}
+
+impl std::error::Error for ContextError {}
+
+impl ContextError {
+    /// Go: errors.Is(err, want) - true when `want` is anywhere in the chain.
+    pub fn is(err: &anyhow::Error, want: ContextError) -> bool {
+        Self::of(err) == Some(want)
+    }
+
+    /// The context cause wrapped anywhere in `err`, if any.
+    pub fn of(err: &anyhow::Error) -> Option<ContextError> {
+        err.chain()
+            .find_map(|e| e.downcast_ref::<ContextError>().copied())
+    }
+}
+
 /// The stand-in for Go's context.Context: clones share one cancellation flag
 /// (handles to the same context); `with_timeout`/`child` derive a new context
 /// that is done when its parent is done, when it is cancelled itself, or when
@@ -19,6 +51,53 @@ pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
     deadline: Option<Instant>,
     parent: Option<Arc<CancellationToken>>,
+    done: Arc<DoneSignal>,
+}
+
+/// Go: the channel behind ctx.Done(). Closing it (dropping the only sender)
+/// wakes every receiver, now and forever, exactly like a closed Go channel;
+/// descendants register here so a parent's cancel closes theirs too.
+struct DoneSignal {
+    tx: parking_lot::Mutex<Option<crossbeam_channel::Sender<()>>>,
+    rx: Receiver<()>,
+    waiters: parking_lot::Mutex<Vec<std::sync::Weak<DoneSignal>>>,
+    timer: std::sync::OnceLock<()>,
+}
+
+impl Default for DoneSignal {
+    fn default() -> Self {
+        let (tx, rx) = bounded(1);
+        Self {
+            tx: parking_lot::Mutex::new(Some(tx)),
+            rx,
+            waiters: parking_lot::Mutex::new(Vec::new()),
+            timer: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for DoneSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoneSignal")
+            .field("closed", &self.tx.lock().is_none())
+            .finish()
+    }
+}
+
+impl DoneSignal {
+    fn close(&self) {
+        self.tx.lock().take();
+        let waiters = std::mem::take(&mut *self.waiters.lock());
+        for w in waiters {
+            if let Some(d) = w.upgrade() {
+                d.close();
+            }
+        }
+    }
+
+    fn closed(&self) -> bool {
+        self.tx.lock().is_none()
+    }
 }
 
 impl CancellationToken {
@@ -28,11 +107,25 @@ impl CancellationToken {
 
     /// Go: context.WithCancel(parent).
     pub fn child(&self) -> Self {
-        Self {
+        let done = Arc::new(DoneSignal::default());
+        // Register with every ancestor so any of their cancels closes this one.
+        let mut cur = Some(self);
+        while let Some(t) = cur {
+            let mut ws = t.done.waiters.lock();
+            ws.retain(|w| w.strong_count() > 0);
+            ws.push(Arc::downgrade(&done));
+            cur = t.parent.as_deref();
+        }
+        let c = Self {
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: self.deadline,
             parent: Some(Arc::new(self.clone())),
+            done,
+        };
+        if self.is_cancelled() {
+            c.done.close();
         }
+        c
     }
 
     /// Go: context.WithTimeout(parent, d).
@@ -51,7 +144,46 @@ impl CancellationToken {
     }
 
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+        // Go: the first cause wins - cancelling after the deadline has already
+        // passed leaves Err() as DeadlineExceeded.
+        if !self.deadline_exceeded() {
+            self.cancelled.store(true, Ordering::SeqCst);
+        }
+        self.done.close();
+    }
+
+    /// Go: ctx.Done() - a receiver that is ready (disconnected) once the
+    /// context is done and stays ready; every clone of it wakes, so it can sit
+    /// in a `crossbeam_channel::select!` next to other channels.
+    pub fn done(&self) -> Receiver<()> {
+        if self.is_cancelled() {
+            self.done.close();
+        } else if let Some(at) = self.deadline
+            && !self.done.closed()
+        {
+            let done = Arc::downgrade(&self.done);
+            self.done.timer.get_or_init(|| {
+                thread::Builder::new()
+                    .name("ctx-deadline".into())
+                    .spawn(move || {
+                        loop {
+                            let Some(strong) = done.upgrade() else { return };
+                            if strong.closed() {
+                                return;
+                            }
+                            let now = Instant::now();
+                            if now >= at {
+                                strong.close();
+                                return;
+                            }
+                            drop(strong);
+                            thread::sleep((at - now).min(Duration::from_millis(250)));
+                        }
+                    })
+                    .expect("spawn ctx deadline timer");
+            });
+        }
+        self.done.rx.clone()
     }
 
     /// Go: ctx.Err() != nil.
@@ -59,6 +191,19 @@ impl CancellationToken {
         self.cancelled.load(Ordering::SeqCst)
             || self.deadline_exceeded()
             || self.parent.as_ref().is_some_and(|p| p.is_cancelled())
+    }
+
+    /// Go: ctx.Err() - None while the context is live, otherwise the typed
+    /// cause whose Display text is Go's ("context canceled" or "context
+    /// deadline exceeded").
+    pub fn err(&self) -> Option<ContextError> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Some(ContextError::Canceled);
+        }
+        if self.deadline_exceeded() {
+            return Some(ContextError::DeadlineExceeded);
+        }
+        self.parent.as_ref().and_then(|p| p.err())
     }
 
     /// Go: ctx.Deadline().
@@ -73,7 +218,8 @@ impl CancellationToken {
 
     /// Time left until the deadline, if any (zero once it has passed).
     pub fn remaining(&self) -> Option<Duration> {
-        self.deadline.map(|d| d.saturating_duration_since(Instant::now()))
+        self.deadline
+            .map(|d| d.saturating_duration_since(Instant::now()))
     }
 }
 
@@ -135,6 +281,71 @@ pub fn publish_after(events: &[Event]) {
     for e in events {
         b.publish_once(e.clone());
     }
+}
+
+/// Go's board `writer.event`: `Emit` on a plain connection (the row commits
+/// and the event is published at once); `EmitTx` inside a transaction, where
+/// the event is held and published only when that transaction commits
+/// (`PublishAfter`) and dropped if it rolls back — an event must never reach
+/// subscribers before its row is durable.
+pub fn emit_conn(
+    conn: &rusqlite::Connection,
+    now: &str,
+    actor: &str,
+    action: &str,
+    subject: &str,
+    detail: impl Into<pulse_store::Detail>,
+) -> Result<Event> {
+    let text = detail_text(detail)?;
+    conn.execute(
+        "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, ?, ?, ?, ?)",
+        rusqlite::params![now, actor, action, subject, text],
+    )
+    .with_context(|| format!("event {action}"))?;
+    let e = Event {
+        id: conn.last_insert_rowid(),
+        at: now.to_string(),
+        actor: actor.to_string(),
+        action: action.to_string(),
+        subject: subject.to_string(),
+        detail: text,
+    };
+    if conn.is_autocommit() {
+        default().publish_once(e.clone());
+    } else {
+        hold_until_commit(conn, e.clone());
+    }
+    Ok(e)
+}
+
+type Pending = std::collections::HashMap<usize, Vec<Event>>;
+static PENDING: std::sync::LazyLock<std::sync::Mutex<Pending>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Pending::new()));
+
+fn pending() -> std::sync::MutexGuard<'static, Pending> {
+    PENDING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The events written on `conn`'s open transaction, published by its commit
+/// hook and forgotten by its rollback hook (keyed by the connection's address,
+/// which cannot change while the transaction holds the borrow).
+fn hold_until_commit(conn: &rusqlite::Connection, e: Event) {
+    let key = conn as *const rusqlite::Connection as usize;
+    let mut held = pending();
+    let entry = held.entry(key).or_default();
+    if entry.is_empty() {
+        let _ = conn.commit_hook(Some(move || {
+            let events = pending().remove(&key);
+            if let Some(events) = events {
+                publish_after(&events);
+            }
+            false
+        }));
+        let _ = conn.rollback_hook(Some(move || {
+            pending().remove(&key);
+        }));
+    }
+    entry.push(e);
 }
 
 pub fn detail_text(detail: impl Into<pulse_store::Detail>) -> Result<String> {
@@ -317,6 +528,104 @@ mod tests {
             ..pulse_store::Options::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn cancellation_token_err_reports_the_first_cause_like_context_err() {
+        let root = CancellationToken::new();
+        assert_eq!(root.err(), None);
+        let child = root.child();
+        root.cancel();
+        assert_eq!(child.err(), Some(ContextError::Canceled));
+        assert_eq!(child.err().unwrap().to_string(), "context canceled");
+
+        let timed = CancellationToken::new().with_timeout(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(5));
+        assert!(timed.is_cancelled());
+        assert_eq!(timed.err(), Some(ContextError::DeadlineExceeded));
+        timed.cancel();
+        assert_eq!(timed.err(), Some(ContextError::DeadlineExceeded));
+        assert_eq!(
+            timed.child().err().unwrap().to_string(),
+            "context deadline exceeded"
+        );
+
+        let explicit = CancellationToken::new().with_timeout(Duration::from_secs(60));
+        explicit.cancel();
+        assert_eq!(explicit.err(), Some(ContextError::Canceled));
+
+        let wrapped = anyhow::Error::from(ContextError::DeadlineExceeded).context("git in /r");
+        assert!(ContextError::is(&wrapped, ContextError::DeadlineExceeded));
+        assert!(!ContextError::is(&wrapped, ContextError::Canceled));
+        assert_eq!(ContextError::of(&anyhow::anyhow!("other")), None);
+    }
+
+    #[test]
+    fn cancellation_token_done_closes_like_ctx_done() {
+        use crossbeam_channel::{after, select};
+        // Live: nothing to receive; the tick wins.
+        let root = CancellationToken::new();
+        let rx = root.done();
+        assert!(rx.try_recv().is_err());
+        select! {
+            recv(rx) -> _ => panic!("live context reported done"),
+            recv(after(Duration::from_millis(20))) -> _ => {}
+        }
+        // Cancelled: every clone of the channel, taken before or after, wakes at once and forever.
+        let grandchild = root.child().child();
+        let before = grandchild.done();
+        root.cancel();
+        assert!(before.recv().is_err(), "closed channel disconnects");
+        assert!(grandchild.done().recv().is_err());
+        assert!(root.done().recv().is_err());
+        assert!(rx.recv().is_err());
+        // A child made after the cancel is done from birth.
+        assert!(root.child().done().recv().is_err());
+        // Deadline: done() fires when the deadline passes, without a cancel.
+        let timed = CancellationToken::new().with_timeout(Duration::from_millis(30));
+        let t = Instant::now();
+        select! {
+            recv(timed.done()) -> _ => {}
+            recv(after(Duration::from_secs(5))) -> _ => panic!("deadline never closed done()"),
+        }
+        assert!(t.elapsed() >= Duration::from_millis(25));
+        assert_eq!(timed.err(), Some(ContextError::DeadlineExceeded));
+        // Descendants of a timed-out context are done too.
+        assert!(timed.child().done().recv().is_err());
+    }
+
+    #[test]
+    fn emit_conn_publishes_at_once_outside_and_after_commit_inside_a_transaction() {
+        let _guard = crate::test_global_guard();
+        reset_default();
+        let s = temp_store();
+        let b = default();
+        let (ch, cancel) = b.subscribe(
+            Filter {
+                actions: vec!["job.*".to_string()],
+                ..Filter::default()
+            },
+            8,
+        );
+        let conn = s.conn().unwrap();
+        let direct = emit_conn(&conn, &s.now(), "alice", "job.add", "J-1", "plain").unwrap();
+        assert_eq!(ch.recv_timeout(Duration::from_secs(2)).unwrap(), direct);
+
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let held = emit_conn(&conn, &s.now(), "alice", "job.done", "J-1", "held").unwrap();
+        assert!(
+            ch.recv_timeout(Duration::from_millis(200)).is_err(),
+            "an event must not reach subscribers before its row is durable"
+        );
+        conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(ch.recv_timeout(Duration::from_secs(2)).unwrap(), held);
+
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        emit_conn(&conn, &s.now(), "alice", "job.failed", "J-1", "dropped").unwrap();
+        conn.execute_batch("ROLLBACK").unwrap();
+        assert!(ch.recv_timeout(Duration::from_millis(200)).is_err());
+        assert_eq!(last_id(&s).unwrap(), held.id);
+        cancel();
     }
 
     #[test]

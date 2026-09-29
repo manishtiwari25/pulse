@@ -37,6 +37,7 @@ pub const ROLE_TOOL: Role = Role::Tool;
 #[derive(Clone, Debug, Default)]
 pub struct CancelToken {
     cancelled: Arc<AtomicBool>,
+    deadline: Option<std::time::Instant>,
 }
 
 impl CancelToken {
@@ -45,14 +46,35 @@ impl CancelToken {
         Self::default()
     }
 
+    /// Go: context.WithTimeout(parent, d) - a token that is also cancelled
+    /// once `d` has elapsed; an earlier parent deadline wins.
+    pub fn with_timeout(&self, d: Duration) -> Self {
+        let at = std::time::Instant::now() + d;
+        Self {
+            cancelled: Arc::clone(&self.cancelled),
+            deadline: Some(match self.deadline {
+                Some(p) if p < at => p,
+                _ => at,
+            }),
+        }
+    }
+
+    /// Go: ctx.Deadline().
+    pub fn deadline(&self) -> Option<std::time::Instant> {
+        self.deadline
+    }
+
     /// Requests cancellation.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
-    /// Reports whether cancellation has been requested.
+    /// Reports whether cancellation has been requested or the deadline passed.
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+            || self
+                .deadline
+                .is_some_and(|d| std::time::Instant::now() >= d)
     }
 
     /// Fails with [`CancelledError`] when cancellation has been requested.

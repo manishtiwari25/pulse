@@ -24,9 +24,46 @@ pub fn post_for_owner(extra: &str) -> Result<bool> {
 mod tests {
     #[test]
     fn post_for_owner() {
-        assert!(!super::post_for_owner(r#"{}"#).unwrap());
-        assert!(super::post_for_owner(r#"{"for_owner":" TRUE "}"#).unwrap());
-        assert!(super::post_for_owner(r#"{"for_owner":1}"#).is_err());
-        assert!(super::post_for_owner(r#"[]"#).is_err());
+        for (name, extra, want, want_error) in [
+            ("missing", r#"{}"#, false, false),
+            (
+                "unrelated metadata",
+                r#"{"mentions":["human"],"ticket":"owner-review"}"#,
+                false,
+                false,
+            ),
+            ("true", r#"{"for_owner":true}"#, true, false),
+            ("false", r#"{"for_owner":false}"#, false, false),
+            ("frontmatter true", r#"{"for_owner":"true"}"#, true, false),
+            (
+                "frontmatter false",
+                r#"{"for_owner":"false"}"#,
+                false,
+                false,
+            ),
+            ("normalized true", r#"{"for_owner":" TRUE "}"#, true, false),
+            (
+                "normalized false",
+                r#"{"for_owner":" FALSE "}"#,
+                false,
+                false,
+            ),
+            ("number", r#"{"for_owner":1}"#, false, true),
+            ("zero", r#"{"for_owner":0}"#, false, true),
+            ("null flag", r#"{"for_owner":null}"#, false, true),
+            ("object", r#"{"for_owner":{}}"#, false, true),
+            ("array flag", r#"{"for_owner":[]}"#, false, true),
+            ("invalid text", r#"{"for_owner":"yes"}"#, false, true),
+            ("empty text", r#"{"for_owner":""}"#, false, true),
+            ("invalid json", r#"{"for_owner":"#, false, true),
+            ("array metadata", r#"[]"#, false, true),
+        ] {
+            let res = super::post_for_owner(extra);
+            let got = *res.as_ref().unwrap_or(&false);
+            assert!(
+                res.is_err() == want_error && got == want,
+                "{name}: PostForOwner({extra}) = {got}, {res:?}; want {want}, error={want_error}"
+            );
+        }
     }
 }

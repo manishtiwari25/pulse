@@ -43,7 +43,7 @@ pulse-parity = { path = "crates/pulse-parity" }
 anyhow = "1.0"
 thiserror = "2.0"
 # sqlite (bundled: no system library, like modernc.org/sqlite was)
-rusqlite = { version = "0.40", features = ["bundled", "backup", "functions", "column_decltype"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup", "functions", "column_decltype", "hooks"] }
 # serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
@@ -84,7 +84,8 @@ url = "2.5"
 tokio = { version = "1.53", features = ["full"] }
 axum = { version = "0.8", features = ["json", "query", "tokio", "http1", "macros"] }
 tower-http = { version = "0.7", features = ["fs", "cors", "trace"] }
-hyper = "1.11"
+hyper = { version = "1.11", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
 http-body-util = "0.1"
 bytes = "1.12"
 futures = "0.3"

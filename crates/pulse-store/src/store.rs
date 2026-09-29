@@ -475,8 +475,10 @@ impl Detail {
             Detail::Json(v) => py_json_value(&v),
         }
     }
+    /// Go: a struct or map handed to `Event`, rendered by `PyJSON` (struct
+    /// fields keep their declaration order; map keys are sorted).
     pub fn json<T: Serialize>(value: T) -> Result<Self> {
-        Ok(Self::Json(serde_json::to_value(value)?))
+        Ok(Self::Text(crate::pyjson::py_json(value)?))
     }
 }
 impl From<&str> for Detail {
@@ -570,7 +572,10 @@ pub fn worker_guard(home: &str) -> bool {
     is_inside(&exe, Path::new(home)) && !is_inside(&exe, &Path::new(home).join("bin"))
 }
 fn is_inside(path: &Path, root: &Path) -> bool {
-    path.strip_prefix(root).is_ok()
+    match crate::filepath::rel(&root.display().to_string(), &path.display().to_string()) {
+        Ok(rel) => rel == "." || (rel != ".." && !rel.starts_with("../")),
+        Err(_) => false,
+    }
 }
 
 pub fn create(path: impl AsRef<Path>) -> Result<()> {

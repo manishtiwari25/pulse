@@ -4,12 +4,12 @@ mod bus;
 mod redact;
 mod store;
 
-pub use bus::{Bus, Event, Filter, glob, new, reset_default};
+pub use bus::{Bus, Event, ExclusiveDefault, Filter, exclusive_default, glob, new, reset_default};
 pub use bus::{default, detail_field, install_store_observer};
 pub use redact::{PRIVATE_SETTINGS, PRIVATE_VALUE, private_needles, redact, redactor};
 pub use store::{
-    CancellationToken, DEFAULT_INTERVAL, bridge, bridge_on, detail_text, emit, emit_on, last_id,
-    latest, publish_after, since, tail,
+    CancellationToken, ContextError, DEFAULT_INTERVAL, bridge, bridge_on, detail_text, emit,
+    emit_conn, emit_on, last_id, latest, publish_after, since, tail,
 };
 
 #[cfg(test)]

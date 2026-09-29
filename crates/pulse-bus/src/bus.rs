@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock, RwLockWriteGuard};
 
 /// Event is one row of the events table (seq is ID).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,11 +275,35 @@ pub fn default() -> Arc<Bus> {
 }
 
 /// ResetDefault replaces the process-wide bus with a fresh one and returns it.
+/// Tests call it when they build a new store; it waits for any test that holds
+/// [`exclusive_default`], so a parallel fixture never swaps the bus out from
+/// under a subscriber.
 pub fn reset_default() -> Arc<Bus> {
+    let _shared = DEFAULT_TESTS.read().unwrap_or_else(|e| e.into_inner());
+    reset_default_unlocked()
+}
+
+fn reset_default_unlocked() -> Arc<Bus> {
     install_store_observer();
     let bus = Arc::new(new());
     *DEFAULT.get_or_init(|| Mutex::new(Arc::clone(&bus))).lock() = Arc::clone(&bus);
     bus
+}
+
+static DEFAULT_TESTS: RwLock<()> = RwLock::new(());
+
+/// Guard returned by [`exclusive_default`]; dropping it lets other fixtures reset the bus again.
+pub struct ExclusiveDefault(#[allow(dead_code)] RwLockWriteGuard<'static, ()>);
+
+/// exclusive_default gives a test that subscribes to the default bus a fresh
+/// bus that no other test can reset while the guard lives. Go runs a package's
+/// tests one after another, so its fixtures may reset the default bus freely;
+/// Rust runs them in parallel threads, and a subscriber that lost the bus it
+/// subscribed to would wait forever. Call it AFTER the store fixture (fixtures
+/// call `reset_default`, which blocks while the guard is held).
+pub fn exclusive_default() -> (Arc<Bus>, ExclusiveDefault) {
+    let guard = DEFAULT_TESTS.write().unwrap_or_else(|e| e.into_inner());
+    (reset_default_unlocked(), ExclusiveDefault(guard))
 }
 
 pub fn install_store_observer() {

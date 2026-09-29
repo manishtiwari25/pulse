@@ -2,6 +2,7 @@
 
 pub mod ddl;
 pub mod evolve_ddl;
+pub mod filepath;
 pub mod gojson;
 pub mod harness;
 pub mod harness_ddl;
