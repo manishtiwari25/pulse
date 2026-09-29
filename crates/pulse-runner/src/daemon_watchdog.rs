@@ -323,16 +323,7 @@ mod tests {
     use chrono::TimeZone;
     use std::sync::Mutex;
 
-    /// Go: func testWait(d time.Duration) time.Duration
-    fn test_wait(d: Duration) -> Duration {
-        let mult = std::env::var("PULSE_TEST_DEADLINE_MULT")
-            .ok()
-            .and_then(|v| v.parse::<f64>().ok())
-            .filter(|f| *f > 0.0)
-            .map(|f| f.max(1.0))
-            .unwrap_or(1.0);
-        d.mul_f64(mult)
-    }
+    use crate::test_helpers_f5::test_wait;
 
     type Calls = Arc<Mutex<Vec<String>>>;
     type Clock = Arc<Mutex<chrono::DateTime<chrono::Utc>>>;

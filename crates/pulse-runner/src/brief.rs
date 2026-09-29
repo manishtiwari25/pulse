@@ -1,4 +1,4 @@
-//! Skeleton port of internal/runner/brief.go.
+//! Port of internal/runner/brief.go.
 
 #![cfg_attr(
     not(test),

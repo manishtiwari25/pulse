@@ -124,6 +124,7 @@ mod tests {
     #[test]
     fn signing_gives_every_build_the_same_requirement() {
         let _serial = crate::test_helpers::serial();
+        let _deadline = crate::test_helpers_f5::test_deadline(std::time::Duration::from_secs(60));
         let dir = tempfile::tempdir().unwrap();
         let binary = dir.path().join("pulse");
         std::fs::write(&binary, b"not a mach-o").unwrap();
@@ -155,10 +156,10 @@ mod tests {
             assert!(!std::path::Path::new(&(missing + ".signing")).exists());
 
             let build = dir.path().join("hello").display().to_string();
-            let src = dir.path().join("hello.go").display().to_string();
-            std::fs::write(&src, b"package main\nfunc main() {}\n").unwrap();
-            let built = std::process::Command::new("go")
-                .args(["build", "-o", &build, &src])
+            let src = dir.path().join("hello.rs").display().to_string();
+            std::fs::write(&src, b"fn main() {}\n").unwrap();
+            let built = std::process::Command::new("rustc")
+                .args(["-o", &build, &src])
                 .output();
             let Ok(built) = built else {
                 *SIGNING_SYSTEM.write().unwrap() = String::new();

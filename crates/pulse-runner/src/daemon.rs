@@ -345,7 +345,7 @@ pub(crate) fn daemon(
             .map(|b| (**b).clone())
             .unwrap_or(crate::selfupdate::SelfUpdateEnv {
                 binary: crate::service::pulse_binary(),
-                go_cmd: "go".into(),
+                cargo_cmd: "cargo".into(),
                 revision: pulse_cli::revision(),
                 actor: actor.clone(),
                 ..Default::default()
@@ -590,25 +590,32 @@ pub(crate) fn daemon(
             }
             let mut planned = BTreeMap::new();
             for slug in &slugs {
-                match crate::plan::plan_jobs(s, slug.clone(), now.clone(), actor.clone()) {
-                    Ok(jobs) => {
-                        planned.insert(slug.clone(), jobs.len() as i32);
-                        for job in jobs {
-                            say(
-                                &o,
-                                format!(
-                                    "planned {} {}: {}",
-                                    job.str("kind"),
-                                    job.str("id"),
-                                    job.str("title")
-                                ),
-                            );
-                        }
+                let before_plan = crate::plan::last_event_seq(s);
+                let jobs = match crate::plan::plan_jobs(s, slug.clone(), now.clone(), actor.clone())
+                {
+                    Ok(jobs) => jobs,
+                    Err(e) => {
+                        say(
+                            &o,
+                            format!("planning {slug}: {}", crate::run::err_message(&e)),
+                        );
+                        Vec::new()
                     }
-                    Err(e) => say(
+                };
+                for l in crate::plan::plan_deferred_lines_since(s, before_plan) {
+                    say(&o, l);
+                }
+                planned.insert(slug.clone(), jobs.len() as i32);
+                for job in jobs {
+                    say(
                         &o,
-                        format!("planning {slug}: {}", crate::run::err_message(&e)),
-                    ),
+                        format!(
+                            "planned {} {}: {}",
+                            job.str("kind"),
+                            job.str("id"),
+                            job.str("title")
+                        ),
+                    );
                 }
             }
             let mut cur_idle = BTreeMap::new();
@@ -1030,8 +1037,23 @@ pub(crate) fn bool_keys(m: BTreeMap<String, bool>) -> BTreeMap<String, String> {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+    use crate::test_helpers_f4::with_closed_login_gate;
+    use crate::test_helpers_f5::{exec1, test_wait};
+    use crate::test_helpers_selfupdate::{head_of, self_update_fixture, wait_self_update_idle};
+    use crate::util::file_exists;
     use std::io::Write;
     use std::time::Duration;
+
+    static TEST_RESTART_CHANGED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    fn test_restart_stamp() -> String {
+        if TEST_RESTART_CHANGED.load(std::sync::atomic::Ordering::SeqCst) {
+            "new-fake-binary".into()
+        } else {
+            "old-fake-binary".into()
+        }
+    }
 
     struct SignalWriter {
         out: OutBuf,
@@ -1461,74 +1483,129 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         for exit in ["done", "restart"] {
             pulse_bus::reset_default();
-            let s = new_store();
-            new_bare_repo(&s);
-            join(&s, "aurora");
-            s.set_setting(pulse_store::HUMAN_AGENT, "landing", "agents")
-                .unwrap();
-            s.set_setting(pulse_store::HUMAN_AGENT, "landing.auto_stash", "off")
-                .unwrap();
-            s.conn().unwrap().execute(
-                "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at) VALUES ('draining', 'proj', 'experiment', 'Fake pending measurement', 'done', 'evolve/draining', ?, ?)",
-                rusqlite::params![TEST_NOW, TEST_NOW],
-            ).unwrap();
-            s.conn()
-                .unwrap()
-                .execute(
-                    "INSERT INTO runs (id, job_id, agent, project, started_at, status)
-                 VALUES ('slow-run', 'draining', 'aurora', 'proj', ?, 'done')",
-                    rusqlite::params![TEST_NOW],
-                )
-                .unwrap();
-            daemon_heartbeat(&s, 1, DEFAULT_DAEMON_INTERVAL_SECONDS, "drain began".into());
-            let cancel = pulse_bus::CancellationToken::new();
-            if exit == "done" {
-                cancel.cancel();
-            } else {
-                set_binary_stamp(|| "new-fake-binary".into());
-                let before = (BINARY_STAMP.read().unwrap())();
-                assert_eq!(before, "new-fake-binary");
-                pulse_bus::emit(
-                    &s,
-                    "human",
-                    "post.question",
-                    "wake-restart",
-                    serde_json::json!({"project": "proj"}),
-                )
-                .unwrap();
-                cancel.cancel();
-            }
-            let result = daemon(
-                &cancel,
-                &s,
-                DaemonOpts {
-                    interval: 300,
-                    max_loops: if exit == "done" { 1 } else { 0 },
-                    restart_on_change: exit == "restart",
-                    ..Default::default()
+            let _env_guard = pulse_testutil::env_lock();
+            let (s, root, binary, _fixture) = self_update_fixture();
+            let _login = with_closed_login_gate();
+            crate::test_helpers_f3b::set_setting(&s, "landing", "agents");
+            run(&root, &["git", "branch", "evolve/draining"]);
+            exec1(&s,
+                "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at)
+                 VALUES ('draining', 'proj', 'experiment', 'Fake pending measurement', 'done', 'evolve/draining', ?, ?)",
+                &[&TEST_NOW, &TEST_NOW],
+            );
+            let (started_tx, started_rx) = crossbeam_channel::bounded::<()>(1);
+            let (cancelled_tx, cancelled_rx) = crossbeam_channel::bounded::<()>(1);
+            let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
+            let old_measure = pulse_evolve::set_measure(Box::new(
+                move |ctx, _s, _project, _repo, _ref_name, _opts| {
+                    let _ = started_tx.send(());
+                    loop {
+                        if ctx.is_cancelled() {
+                            let _ = cancelled_tx.send(());
+                            anyhow::bail!("context canceled");
+                        }
+                        if release_rx.try_recv().is_ok() {
+                            anyhow::bail!("fake measurement released by test cleanup");
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
                 },
-            );
-            assert_eq!(result, "interrupted", "{exit}");
-            let (raw, ok) = s.meta("daemon").unwrap();
-            assert!(ok, "{exit}: daemon meta missing");
-            assert!(raw.contains("\"note\":\"exited\""), "{exit}: {raw}");
-            let job = crate::util::must_one(
-                &*s.conn().unwrap(),
-                "SELECT status, branch FROM jobs WHERE id = 'draining'",
-                &[],
-            );
-            assert_eq!(job.str("branch"), "evolve/draining", "{exit}");
-            assert_eq!(job.str("status"), "done", "{exit}");
-            assert_eq!(
-                count(
-                    &s,
-                    "SELECT COUNT(*) AS n FROM events WHERE action = ?",
-                    &[&crate::selfupdate::SELF_UPDATE_EVENT]
-                ),
-                0,
-                "{exit}"
-            );
-            set_binary_stamp(pulse_cli::binary_stamp);
+            ));
+            let old_stamp = *BINARY_STAMP.read().unwrap();
+            TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+            set_binary_stamp(test_restart_stamp);
+            if exit == "restart" {
+                TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+            let cancel = pulse_bus::CancellationToken::new();
+            let out = OutBuf::new();
+            let (waiting_tx, waiting_rx) = crossbeam_channel::bounded(1);
+            let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(SignalWriter {
+                out: out.clone(),
+                waiting: waiting_tx,
+                needle: "waiting for landing maintenance to finish".into(),
+                sent: false,
+            }));
+            let opts = DaemonOpts {
+                interval: 300,
+                out: Some(writer),
+                self_update: Some(Box::new(binary.clone())),
+                max_loops: if exit == "done" { 1 } else { 0 },
+                restart_on_change: exit == "restart",
+                ..Default::default()
+            };
+            let s_daemon = s.clone();
+            let cancel_daemon = cancel.clone();
+            let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+            std::thread::spawn(move || {
+                let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+            });
+            let mut joined = false;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                started_rx
+                    .recv_timeout(test_wait(Duration::from_secs(20)))
+                    .expect("fake measurement never started");
+                if exit == "restart" {
+                    TEST_RESTART_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    pulse_bus::emit(
+                        &s,
+                        "human",
+                        "post.question",
+                        "wake-restart",
+                        serde_json::json!({"project": "proj"}),
+                    )
+                    .unwrap();
+                }
+                waiting_rx
+                    .recv_timeout(test_wait(Duration::from_secs(20)))
+                    .expect("daemon did not enter its maintenance drain");
+                assert!(
+                    cancelled_rx.try_recv().is_err(),
+                    "normal drain cancelled the lane before the caller cancelled"
+                );
+                cancel.cancel();
+                let result = done_rx
+                    .recv_timeout(test_wait(Duration::from_secs(10)))
+                    .expect("caller cancellation was ignored after drain began");
+                joined = true;
+                assert_eq!(
+                    result, "interrupted",
+                    "late cancellation returned {result} instead of interrupted"
+                );
+                cancelled_rx
+                    .recv_timeout(test_wait(Duration::from_secs(10)))
+                    .expect("daemon returned without cancelling and joining its measurement");
+                let job = crate::jobs::job_row(&*s.conn().unwrap(), "draining".into());
+                assert_eq!(
+                    job.str("branch"),
+                    "evolve/draining",
+                    "cancelled drain removed the unmeasured branch"
+                );
+                let building = crate::selfupdate::SELF_UPDATE_STATE
+                    .read()
+                    .unwrap()
+                    .inflight;
+                assert!(
+                    !building
+                        && count(
+                            &s,
+                            "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                            &[&crate::selfupdate::SELF_UPDATE_EVENT]
+                        ) == 0,
+                    "self-update ran before the cancelled measurement finished"
+                );
+            }));
+            cancel.cancel();
+            let _ = release_tx.send(());
+            if !joined {
+                let _ = done_rx.recv_timeout(test_wait(Duration::from_secs(10)));
+            }
+            let _ = pulse_evolve::set_measure(old_measure);
+            set_binary_stamp(old_stamp);
+            wait_self_update_idle();
+            if let Err(panic) = result {
+                std::panic::resume_unwind(panic);
+            }
         }
     }
 
@@ -1630,53 +1707,14 @@ mod tests {
     #[test]
     fn daemon_slow_measurement_does_not_block_dispatch_or_stop() {
         let _serial = crate::test_helpers::serial();
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicI32, Ordering},
-        };
-        let s = new_store();
-        let (_, root) = new_bare_repo(&s);
-        run(&root, &["git", "branch", "evolve/slow-measurement"]);
-        let other_root = std::path::Path::new(&s.home).join("other");
-        std::fs::create_dir_all(&other_root).unwrap();
-        std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&other_root)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&other_root)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(&other_root)
-            .status()
-            .unwrap();
-        std::fs::write(other_root.join("README.md"), "other\n").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "README.md"])
-            .current_dir(&other_root)
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args([
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "gpg.format=openpgp",
-                "commit",
-                "-q",
-                "-m",
-                "init",
-            ])
-            .current_dir(&other_root)
-            .status()
-            .unwrap();
+        pulse_bus::reset_default();
+        let _env_guard = pulse_testutil::env_lock();
+        let (s, root, self_env, _fixture) = self_update_fixture();
+        let other = std::path::Path::new(&s.home).join("other");
+        crate::test_helpers_selfupdate::copy_dir(std::path::Path::new(&template_repo()), &other);
         let _ = crate::board::add_project(
             &s,
-            other_root.display().to_string(),
+            other.display().to_string(),
             "Other".into(),
             String::new(),
             false,
@@ -1686,25 +1724,21 @@ mod tests {
         )
         .unwrap();
         join(&s, "aurora");
-        s.set_setting(pulse_store::HUMAN_AGENT, "landing", "agents")
-            .unwrap();
-        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.sweep", "off")
-            .unwrap();
-        s.set_setting(pulse_store::HUMAN_AGENT, "minutes_per_job", "1000")
-            .unwrap();
-        s.conn().unwrap().execute(
+        crate::test_helpers_f3b::set_setting(&s, "landing", "agents");
+        crate::test_helpers_f3b::set_setting(&s, "daemon.sweep", "off");
+        crate::test_helpers_f3b::set_setting(&s, "minutes_per_job", "1000");
+        run(&root, &["git", "branch", "evolve/slow-measurement"]);
+        exec1(&s,
             "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at)
              VALUES ('slow-measurement', 'proj', 'experiment', 'Fake measurement', 'done', 'evolve/slow-measurement', ?, ?)",
-            rusqlite::params![TEST_NOW, TEST_NOW],
-        ).unwrap();
-        s.conn()
-            .unwrap()
-            .execute(
-                "INSERT INTO runs (id, job_id, agent, project, started_at, status)
+            &[&TEST_NOW, &TEST_NOW],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status)
              VALUES ('slow-run', 'slow-measurement', 'aurora', 'proj', ?, 'done')",
-                rusqlite::params![TEST_NOW],
-            )
-            .unwrap();
+            &[&TEST_NOW],
+        );
         let (fast, _) = crate::jobs::add_job(
             &s,
             "other".into(),
@@ -1719,129 +1753,170 @@ mod tests {
         )
         .unwrap();
         for slug in ["proj", "other"] {
-            s.conn()
-                .unwrap()
-                .execute(
-                    "INSERT INTO jobs (id, project, kind, title, status, source, created_at)
+            let id = format!("reflected-{slug}");
+            let source = format!("reflect:{slug}:{}", &TEST_NOW[..10]);
+            exec1(
+                &s,
+                "INSERT INTO jobs (id, project, kind, title, status, source, created_at)
                  VALUES (?, ?, 'reflect', 'Already reflected', 'done', ?, ?)",
-                    rusqlite::params![
-                        format!("reflected-{slug}"),
-                        slug,
-                        format!("reflect:{slug}:{}", &TEST_NOW[..10]),
-                        TEST_NOW
-                    ],
-                )
-                .unwrap();
+                &[&id, &slug, &source, &TEST_NOW],
+            );
         }
-        assert!(run_budget(&s) >= Duration::from_secs(120_000));
-        let started_measure = Arc::new(AtomicBool::new(false));
-        let release_measure = Arc::new(AtomicBool::new(false));
-        let calls = Arc::new(AtomicI32::new(0));
-        let old_measure = pulse_evolve::set_measure(Box::new({
-            let started_measure = Arc::clone(&started_measure);
-            let release_measure = Arc::clone(&release_measure);
-            let calls = Arc::clone(&calls);
-            move |cancel, _s, _project, _repo, _ref_name, _opts| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                started_measure.store(true, Ordering::SeqCst);
-                while !release_measure.load(Ordering::SeqCst) && !cancel.is_cancelled() {
+        let (started_tx, started_rx) = crossbeam_channel::bounded::<()>(1);
+        let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let calls_for_measure = calls.clone();
+        let once = std::sync::Arc::new(std::sync::Once::new());
+        let once_for_measure = once.clone();
+        let old = pulse_evolve::set_measure(Box::new(
+            move |ctx, _s, _project, _repo, _ref_name, _opts| {
+                calls_for_measure.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                once_for_measure.call_once(|| {
+                    let _ = started_tx.send(());
+                });
+                loop {
+                    if ctx.is_cancelled() {
+                        anyhow::bail!("context canceled");
+                    }
+                    if release_rx.try_recv().is_ok() {
+                        anyhow::bail!("fake measurement intentionally left unmeasured");
+                    }
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                anyhow::bail!("fake measurement intentionally left unmeasured")
-            }
-        }));
+            },
+        ));
         let cancel = pulse_bus::CancellationToken::new();
-        let s_for_daemon = (*s).clone();
-        let cancel_for_daemon = cancel.clone();
-        let handle = std::thread::spawn(move || {
-            daemon(
-                &cancel_for_daemon,
-                &s_for_daemon,
+        let s_daemon = s.clone();
+        let cancel_daemon = cancel.clone();
+        let self_env_daemon = self_env.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = daemon(
+                &cancel_daemon,
+                &s_daemon,
                 DaemonOpts {
                     interval: 300,
-                    max_loops: 1,
                     worker_cmd: "sh -c 'echo SUMMARY: fake work complete'".into(),
+                    out: Some(OutBuf::new().writer()),
+                    self_update: Some(Box::new(self_env_daemon)),
                     ..Default::default()
                 },
-            )
+            );
+            let _ = done_tx.send(result);
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !started_measure.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            started_measure.load(Ordering::SeqCst),
-            "fake measurement did not start"
-        );
-        release_measure.store(true, Ordering::SeqCst);
-        let result = handle.join().unwrap();
-        let _ = pulse_evolve::set_measure(old_measure);
-        assert_eq!(result, "done");
-        let runs = count(
-            &s,
-            "SELECT COUNT(*) AS n FROM runs WHERE job_id = ?",
-            &[&fast.str("id")],
-        );
-        assert!(runs > 0, "a blocked measurement prevented dispatch");
-        let job = crate::util::must_one(
-            &*s.conn().unwrap(),
-            "SELECT status FROM jobs WHERE id = ?",
-            &[&fast.str("id")],
-        );
-        assert!(
-            ["done", "failed"].contains(&job.str("status").as_str()),
-            "{job:?}"
-        );
-        let (raw, ok) = s.meta("daemon").unwrap();
-        assert!(ok && raw.contains("\"loops\":1"), "{raw}");
-        let binary = std::path::Path::new(&s.home).join("pulse");
-        std::fs::write(&binary, b"old binary").unwrap();
-        let data = std::fs::read(&binary).unwrap();
-        assert_eq!(data, b"old binary");
-        s.set_setting(pulse_store::HUMAN_AGENT, "stop", "1")
+        let release_measurement = || {
+            let _ = release_tx.send(());
+        };
+        let mut joined = false;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            started_rx
+                .recv_timeout(test_wait(Duration::from_secs(10)))
+                .expect("fake measurement did not start");
+            pulse_bus::emit(
+                &s,
+                pulse_store::HUMAN_AGENT,
+                "post.question",
+                "wake-control",
+                serde_json::json!({"project": "other"}),
+            )
             .unwrap();
-        let stopped = daemon(
-            &cancel,
-            &s,
-            DaemonOpts {
-                max_loops: 1,
-                ..Default::default()
-            },
-        );
-        assert_eq!(stopped, "stopped");
-        let slow = crate::util::must_one(
-            &*s.conn().unwrap(),
-            "SELECT branch FROM jobs WHERE id = 'slow-measurement'",
-            &[],
-        );
-        assert_eq!(slow.str("branch"), "evolve/slow-measurement");
+            let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(10));
+            let mut progress = false;
+            while std::time::Instant::now() < deadline {
+                let raw = crate::util::must_one(
+                    &*s.conn().unwrap(),
+                    "SELECT value FROM meta WHERE key = 'daemon'",
+                    &[],
+                )
+                .str("value");
+                let loops = serde_json::from_str::<serde_json::Value>(&raw)
+                    .ok()
+                    .and_then(|v| v.get("loops").and_then(|v| v.as_i64()))
+                    .unwrap_or(0);
+                if loops > 1
+                    && count(
+                        &s,
+                        "SELECT COUNT(*) AS n FROM runs WHERE job_id = ?",
+                        &[&fast.str("id")],
+                    ) > 0
+                {
+                    progress = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                progress,
+                "a blocked measurement prevented another project's dispatch or a supervisor heartbeat"
+            );
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "started measurements while the first was still pending"
+            );
+            let data = std::fs::read(&self_env.binary).unwrap_or_default();
+            assert_eq!(
+                String::from_utf8_lossy(&data),
+                "old binary",
+                "self-update installed before measurement/landing finished"
+            );
+            let building = crate::selfupdate::SELF_UPDATE_STATE
+                .read()
+                .unwrap()
+                .inflight;
+            assert!(
+                !building && !file_exists(&format!("{}.new", self_env.binary)),
+                "self-update started while landing verification was pending"
+            );
+            crate::test_helpers_f3b::set_setting(&s, "stop", "1");
+            match done_rx.recv_timeout(test_wait(Duration::from_secs(60))) {
+                Ok(result) => {
+                    joined = true;
+                    assert_eq!(result, "stopped", "STOP result = {result}");
+                    let job = crate::jobs::job_row(&*s.conn().unwrap(), "slow-measurement".into());
+                    assert_eq!(
+                        job.str("branch"),
+                        "evolve/slow-measurement",
+                        "STOP discarded the unmeasured branch: {job:?}"
+                    );
+                }
+                Err(_) => panic!("STOP could not cancel a fake blocked measurement"),
+            }
+        }));
+        release_measurement();
+        cancel.cancel();
+        if !joined {
+            let _ = done_rx.recv_timeout(test_wait(Duration::from_secs(10)));
+        }
+        let _ = pulse_evolve::set_measure(old);
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     #[test]
     fn daemon_maintenance_preserves_self_update() {
         let _serial = crate::test_helpers::serial();
-        let s = new_store();
-        let env = crate::selfupdate::SelfUpdateEnv {
-            binary: std::path::Path::new(&s.home)
-                .join("pulse")
-                .display()
-                .to_string(),
-            go_cmd: "go".into(),
-            actor: "daemon".into(),
-            ..Default::default()
-        };
-        let cancel = pulse_bus::CancellationToken::new();
-        let result = daemon(
-            &cancel,
+        let _env_guard = pulse_testutil::env_lock();
+        let (s, root, env, _fixture) = self_update_fixture();
+        let _login = with_closed_login_gate();
+        let out = once_daemon(
             &s,
             DaemonOpts {
-                max_loops: 1,
-                self_update: Some(Box::new(env)),
+                self_update: Some(Box::new(env.clone())),
                 ..Default::default()
             },
         );
-        assert_eq!(result, "done");
-        assert!(!(BINARY_STAMP.read().unwrap())().is_empty());
+        wait_self_update_idle();
+        assert!(
+            out.contains("self-update: brain HEAD"),
+            "a completed maintenance pass omitted the self-update phase:\n{out}"
+        );
+        let data = std::fs::read(&env.binary).unwrap_or_default();
+        assert!(
+            String::from_utf8_lossy(&data).contains(&format!("dev-{}", &head_of(&root)[..12])),
+            "fake self-update did not finish: {data:?}"
+        );
     }
 
     #[test]

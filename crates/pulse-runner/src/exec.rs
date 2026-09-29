@@ -1070,32 +1070,39 @@ mod tests {
     #[test]
     fn preflight_run_key_remote_check_cmd() {
         let _serial = crate::test_helpers::serial();
+        let _deadline = crate::test_helpers_f5::test_deadline(std::time::Duration::from_secs(60));
         let dir = tempfile::tempdir().unwrap();
-        let key = dir.path().join("run.key").display().to_string();
-        assert!(
-            !std::process::Command::new("/bin/sh")
-                .args(["-c", &remote_key_check_cmd(&key)])
-                .status()
-                .unwrap()
-                .success()
-        );
+        let key = dir.path().join("run.key");
+        if std::process::Command::new("/bin/sh")
+            .args(["-c", &remote_key_check_cmd(key.to_str().unwrap())])
+            .status()
+            .unwrap()
+            .success()
+        {
+            panic!("missing remote key must fail test -s");
+        }
         std::fs::write(&key, []).unwrap();
-        assert!(
-            !std::process::Command::new("/bin/sh")
-                .args(["-c", &remote_key_check_cmd(&key)])
-                .status()
-                .unwrap()
-                .success()
-        );
+        if std::process::Command::new("/bin/sh")
+            .args(["-c", &remote_key_check_cmd(key.to_str().unwrap())])
+            .status()
+            .unwrap()
+            .success()
+        {
+            panic!("empty remote key must fail test -s");
+        }
         std::fs::write(&key, b"k").unwrap();
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", &remote_key_check_cmd(key.to_str().unwrap())])
+            .status()
+            .unwrap();
+        if !status.success() {
+            panic!("non-empty remote key must pass: {status}");
+        }
+        let cmd = remote_key_check_cmd("/w/job 1/run.key");
         assert!(
-            std::process::Command::new("/bin/sh")
-                .args(["-c", &remote_key_check_cmd(&key)])
-                .status()
-                .unwrap()
-                .success()
+            cmd.contains("'/w/job 1/run.key'"),
+            "path must be shell-quoted, got {cmd:?}"
         );
-        assert!(remote_key_check_cmd("/w/job 1/run.key").contains("'/w/job 1/run.key'"));
     }
 
     #[test]
@@ -1145,37 +1152,42 @@ mod tests {
     #[test]
     fn preflight_remote_cli_check_cmd() {
         let _serial = crate::test_helpers::serial();
+        let _deadline = crate::test_helpers_f5::test_deadline(std::time::Duration::from_secs(60));
         let dir = tempfile::tempdir().unwrap();
-        let cli = dir.path().join("pulse").display().to_string();
-        assert!(
-            !std::process::Command::new("/bin/sh")
-                .args(["-c", &remote_cli_check_cmd(&cli)])
-                .status()
-                .unwrap()
-                .success()
-        );
+        let cli = dir.path().join("pulse");
+        if std::process::Command::new("/bin/sh")
+            .args(["-c", &remote_cli_check_cmd(cli.to_str().unwrap())])
+            .status()
+            .unwrap()
+            .success()
+        {
+            panic!("missing PULSE_CLI must fail test -x");
+        }
         std::fs::write(&cli, b"#!/bin/sh\n").unwrap();
-        assert!(
-            !std::process::Command::new("/bin/sh")
-                .args(["-c", &remote_cli_check_cmd(&cli)])
-                .status()
-                .unwrap()
-                .success()
-        );
+        if std::process::Command::new("/bin/sh")
+            .args(["-c", &remote_cli_check_cmd(cli.to_str().unwrap())])
+            .status()
+            .unwrap()
+            .success()
+        {
+            panic!("non-executable PULSE_CLI must fail test -x");
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", &remote_cli_check_cmd(cli.to_str().unwrap())])
+            .status()
+            .unwrap();
+        if !status.success() {
+            panic!("executable PULSE_CLI must pass: {status}");
+        }
+        let cmd = remote_cli_check_cmd("/usr/local/bin/my pulse");
         assert!(
-            std::process::Command::new("/bin/sh")
-                .args(["-c", &remote_cli_check_cmd(&cli)])
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(
-            remote_cli_check_cmd("/usr/local/bin/my pulse").contains("'/usr/local/bin/my pulse'")
+            cmd.contains("'/usr/local/bin/my pulse'"),
+            "path must be shell-quoted, got {cmd:?}"
         );
     }
 

@@ -9,6 +9,7 @@ use std::time::Duration;
 pub(crate) const SELF_UPDATE_AREA: &str = "runner";
 pub(crate) const SELF_UPDATE_THREAD: &str = "release";
 pub(crate) const SELF_UPDATE_EVENT: &str = "daemon.self_update";
+/// selfUpdateBuildTimeout bounds `cargo build` and each smoke command.
 pub(crate) const SELF_UPDATE_BUILD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub(crate) const RESTORED_MARKER: &str = ".restored";
 
@@ -27,7 +28,7 @@ pub(crate) static SELF_UPDATE_STATE: LazyLock<RwLock<SelfUpdateState>> =
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SelfUpdateEnv {
     pub binary: String,
-    pub go_cmd: String,
+    pub cargo_cmd: String,
     pub timeout: std::time::Duration,
     pub revision: String,
     pub actor: String,
@@ -76,11 +77,14 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
     if !st.last_failure_at.is_empty() {
         let retry = s
             .setting("daemon.self_update_retry_minutes", "60")
-            .parse::<f64>()
-            .unwrap_or(60.0)
-            .max(1.0);
+            .parse::<i32>()
+            .unwrap_or(0);
+        let retry = if retry < 1 { 60 } else { retry };
         if crate::util::must_iso(&now)
-            < crate::util::must_iso(&crate::util::plus_minutes(&st.last_failure_at, retry))
+            < crate::util::must_iso(&crate::util::plus_minutes(
+                &st.last_failure_at,
+                f64::from(retry),
+            ))
         {
             return lines;
         }
@@ -135,13 +139,13 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
         );
         return lines;
     }
-    if which::which(&env.go_cmd).is_err() {
+    if which::which(&env.cargo_cmd).is_err() {
         say(
             &mut st,
             &mut lines,
             format!(
                 "{} is not on the daemon's PATH; builds are yours until it is",
-                env.go_cmd
+                env.cargo_cmd
             ),
         );
         return lines;
@@ -185,24 +189,40 @@ pub(crate) fn build_and_install(
     };
     let new_binary = format!("{}.new", env.binary);
     let _ = std::fs::remove_file(&new_binary);
+    let target_dir = std::path::Path::new(&repo).join("target");
     let build_args = vec![
         "build".to_string(),
-        "-trimpath".to_string(),
-        "-o".to_string(),
-        new_binary.clone(),
-        "./cmd/pulse".to_string(),
+        "--release".to_string(),
+        "--locked".to_string(),
+        "--bin".to_string(),
+        "pulse".to_string(),
+        "--target-dir".to_string(),
+        target_dir.display().to_string(),
     ];
-    if let Err(err) = run_in(repo.clone(), timeout, env.go_cmd.clone(), &build_args) {
-        return self_update_failure(s, rev, env, "build".into(), String::new(), err);
+    let (out, err) = run_in(repo.clone(), timeout, env.cargo_cmd.clone(), &build_args);
+    if let Some(err) = err {
+        return self_update_failure(s, rev, env, "build".into(), out, err);
+    }
+    let built = target_dir.join("release").join("pulse");
+    if let Err(err) = std::fs::copy(&built, &new_binary) {
+        return self_update_failure(s, rev, env, "build".into(), String::new(), err.into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(mut perms) = std::fs::metadata(&new_binary).map(|m| m.permissions()) {
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&new_binary, perms);
+        }
     }
     if let Err(err) = crate::sign::sign_new_build(s, &new_binary) {
         return self_update_failure(s, rev, env, "sign".into(), String::new(), err);
     }
     let version_args = vec!["version".to_string()];
-    let version = match run_in(repo.clone(), timeout, new_binary.clone(), &version_args) {
-        Ok(version) => version,
-        Err(err) => return self_update_failure(s, rev, env, "smoke".into(), String::new(), err),
-    };
+    let (version, err) = run_in(repo.clone(), timeout, new_binary.clone(), &version_args);
+    if let Some(err) = err {
+        return self_update_failure(s, rev, env, "smoke".into(), version, err);
+    }
     if !version.contains(&short_rev(rev.clone())) {
         return self_update_failure(
             s,
@@ -218,8 +238,9 @@ pub(crate) fn build_and_install(
         );
     }
     let help_args = vec!["help".to_string()];
-    if let Err(err) = run_in(repo.clone(), timeout, new_binary.clone(), &help_args) {
-        return self_update_failure(s, rev, env, "smoke".into(), String::new(), err);
+    let (out, err) = run_in(repo.clone(), timeout, new_binary.clone(), &help_args);
+    if let Some(err) = err {
+        return self_update_failure(s, rev, env, "smoke".into(), out, err);
     }
     let prev = format!("{}.prev", env.binary);
     let _ = std::fs::remove_file(&prev);
@@ -344,10 +365,10 @@ pub(crate) fn self_update_finding(
 /// Go: func runIn(dir string, timeout time.Duration, name string, args ...string) (string, error)
 pub(crate) fn run_in(
     dir: String,
-    _timeout: std::time::Duration,
+    timeout: std::time::Duration,
     name: String,
     args: &[String],
-) -> anyhow::Result<String> {
+) -> (String, Option<anyhow::Error>) {
     let mut cmd = Command::new(&name);
     cmd.args(args)
         .current_dir(dir)
@@ -366,21 +387,65 @@ pub(crate) fn run_in(
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let out = cmd.output()?;
+    let base = std::path::Path::new(&name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&name)
+        .to_string();
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => return (String::new(), Some(err.into())),
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let out = child.wait_with_output();
+                    let text = out
+                        .map(|out| {
+                            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+                            text.push_str(&String::from_utf8_lossy(&out.stderr));
+                            text
+                        })
+                        .unwrap_or_default();
+                    return (
+                        text,
+                        Some(anyhow!(
+                            "{} timed out after {}",
+                            base,
+                            pulse_cli::format_duration(timeout)
+                        )),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => {
+                let _ = child.kill();
+                let out = child.wait_with_output().ok();
+                let text = out
+                    .map(|out| {
+                        let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+                        text.push_str(&String::from_utf8_lossy(&out.stderr));
+                        text
+                    })
+                    .unwrap_or_default();
+                return (text, Some(err.into()));
+            }
+        }
+    }
+    let out = match child.wait_with_output() {
+        Ok(out) => out,
+        Err(err) => return (String::new(), Some(err.into())),
+    };
     let mut text = String::from_utf8_lossy(&out.stdout).to_string();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     if out.status.success() {
-        Ok(text)
+        (text, None)
     } else {
-        Err(anyhow!(
-            "{} exited {}",
-            std::path::Path::new(&name)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&name),
-            out.status.code().unwrap_or(-1)
-        )
-        .context(text))
+        (text, Some(anyhow!(pulse_hooks::exit_text(out.status))))
     }
 }
 
@@ -474,357 +539,320 @@ pub(crate) fn json_field(text: String, key: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{TEST_NOW, count, run, serial};
+    use crate::test_helpers_f3b::set_setting;
+    use crate::test_helpers_f5::exec1;
+    use crate::test_helpers_selfupdate::{
+        head_of, reset_self_update, self_update_fixture, wait_self_update_idle,
+    };
+    use crate::util::{file_exists, query_one};
 
     #[test]
     fn self_update_builds_smokes_installs_and_reports() {
-        let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers::new_store();
-        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.self_update", "on")
-            .unwrap();
-        let binary = std::path::Path::new(&s.home).join("pulse");
-        std::fs::write(&binary, b"old pulse").unwrap();
-        let env = SelfUpdateEnv {
-            binary: binary.display().to_string(),
-            go_cmd: "go".into(),
-            revision: "abcdef1234567890".into(),
-            actor: "daemon".into(),
-            ..Default::default()
-        };
-        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), env.clone());
-        assert!(lines.iter().all(|l| l.contains("self-update")));
-        assert!(std::path::Path::new(&env.binary).exists());
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        reset_self_update();
+        let (s, repo, env, _fixture) = self_update_fixture();
+        let rev = head_of(&repo);
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
         assert!(
-            !std::path::Path::new(&(env.binary.clone() + ".prev")).exists()
-                || lines.iter().any(|l| l.contains("installed"))
+            lines.len() == 1
+                && lines[0].contains(&format!(
+                    "brain HEAD {} differs from the running 000000000000; building",
+                    &rev[..12]
+                )),
+            "first tick: {lines:?}"
         );
-        let (state, exists) = s.meta("self-update").unwrap_or_default();
-        if exists {
-            assert!(
-                state.contains("abcdef") || state.contains("inflight") || state.contains("last")
-            );
-        }
-        let event_count = crate::test_helpers::count(
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.is_empty(),
+            "a second tick during the build said {lines:?}"
+        );
+        wait_self_update_idle();
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0]
+                    == format!(
+                        "self-update: pulse rebuilt from {}: restarts after 2 run(s) in flight",
+                        &rev[..12]
+                    ),
+            "after the build: {lines:?}"
+        );
+        let data = std::fs::read(format!("{}.prev", env.binary)).unwrap_or_default();
+        assert_eq!(
+            String::from_utf8_lossy(&data),
+            "old binary",
+            "pulse.prev = {data:?}"
+        );
+        let data = std::fs::read(&env.binary).unwrap_or_default();
+        assert!(
+            String::from_utf8_lossy(&data).contains(&format!("dev-{}", &rev[..12])),
+            "pulse was not replaced by the build:\n{}",
+            String::from_utf8_lossy(&data)
+        );
+        assert!(
+            !file_exists(&format!("{}.new", env.binary)),
+            "pulse.new left behind"
+        );
+        let n = count(
             &s,
-            "SELECT COUNT(*) AS n FROM events WHERE action = ?",
-            &[&SELF_UPDATE_EVENT],
+            "SELECT count(*) AS n FROM events WHERE action = ? AND detail LIKE ?",
+            &[&SELF_UPDATE_EVENT, &format!("%{rev}%")],
         );
-        assert!(event_count >= 0);
-
-        let parity_probe = r#": restarts after 2 run(s) in flight SELECT * FROM posts WHERE kind = 'finding' AND area = ? AND thread = ? ORDER BY id DESC LIMIT 1 SELECT count(*) AS n FROM events WHERE action = ? AND detail LIKE ? brain HEAD differs from the running 000000000000; building old binary project pulse rebuilt from pulse was not replaced by the build: self-update: pulse rebuilt from summary"#;
-        assert!(
-            parity_probe.contains(r#": restarts after 2 run(s) in flight"#),
-            "parity probe lacks {}",
-            r#": restarts after 2 run(s) in flight"#
-        );
-        assert!(parity_probe.contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND area = ? AND thread = ? ORDER BY id DESC LIMIT 1"#), "parity probe lacks {}", r#"SELECT * FROM posts WHERE kind = 'finding' AND area = ? AND thread = ? ORDER BY id DESC LIMIT 1"#);
-        assert!(
-            parity_probe
-                .contains(r#"SELECT count(*) AS n FROM events WHERE action = ? AND detail LIKE ?"#),
-            "parity probe lacks {}",
-            r#"SELECT count(*) AS n FROM events WHERE action = ? AND detail LIKE ?"#
+        assert_eq!(n, 1, "self_update events = {n}");
+        let post = query_one(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'finding' AND area = ? AND thread = ? ORDER BY id DESC LIMIT 1",
+            &[&SELF_UPDATE_AREA, &SELF_UPDATE_THREAD],
         );
         assert!(
-            parity_probe.contains(r#"brain HEAD"#),
-            "parity probe lacks {}",
-            r#"brain HEAD"#
+            matches!(&post, Ok(Some(post)) if post.str("project") == "proj"
+                && post
+                    .str("summary")
+                    .contains(&format!("pulse rebuilt from {}", &rev[..12]))
+                && post.str("body").contains(&format!("{}.prev", env.binary))),
+            "finding: {post:?}"
         );
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
         assert!(
-            parity_probe.contains(r#"differs from the running 000000000000; building"#),
-            "parity probe lacks {}",
-            r#"differs from the running 000000000000; building"#
-        );
-        assert!(
-            parity_probe.contains(r#"old binary"#),
-            "parity probe lacks {}",
-            r#"old binary"#
-        );
-        assert!(
-            parity_probe.contains(r#"project"#),
-            "parity probe lacks {}",
-            r#"project"#
-        );
-        assert!(
-            parity_probe.contains(r#"pulse rebuilt from"#),
-            "parity probe lacks {}",
-            r#"pulse rebuilt from"#
-        );
-        assert!(
-            parity_probe.contains(r#"pulse was not replaced by the build:"#),
-            "parity probe lacks {}",
-            r#"pulse was not replaced by the build:"#
-        );
-        assert!(
-            parity_probe.contains(r#"self-update: pulse rebuilt from"#),
-            "parity probe lacks {}",
-            r#"self-update: pulse rebuilt from"#
-        );
-        assert!(
-            parity_probe.contains(r#"summary"#),
-            "parity probe lacks {}",
-            r#"summary"#
+            lines.is_empty() && !file_exists(&format!("{}.new", env.binary)),
+            "rebuilt the installed revision: {lines:?}"
         );
     }
+
     #[test]
     fn self_update_waits_out_every_other_state_and_says_so_once() {
-        let _serial = crate::test_helpers::serial();
-        *SELF_UPDATE_STATE.write().unwrap() = SelfUpdateState::default();
-        let s = crate::test_helpers::new_store();
-        crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.self_update", "off")
-            .unwrap();
-        let env = SelfUpdateEnv {
-            binary: std::path::Path::new(&s.home)
-                .join("pulse")
-                .display()
-                .to_string(),
-            revision: "abcdef123456".into(),
-            actor: "daemon".into(),
-            ..Default::default()
-        };
-        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), env.clone());
-        assert!(lines.is_empty());
-        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), env.clone());
-        assert!(lines.is_empty());
-        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.self_update", "on")
-            .unwrap();
-        let missing_go = SelfUpdateEnv {
-            go_cmd: std::path::Path::new(&s.home)
-                .join("missing-go")
-                .display()
-                .to_string(),
-            ..env.clone()
-        };
-        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), missing_go);
-        assert!(lines.iter().all(|l| l.contains("self-update")));
-        let stop = s.set_setting(pulse_store::HUMAN_AGENT, "stop", "1");
-        assert!(stop.is_ok());
-        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), env);
-        assert!(lines.is_empty() || lines.iter().all(|l| l.contains("self-update")));
-
-        let parity_probe = r#"UPDATE projects SET path = ? WHERE slug = 'proj' brain checkout is dirty brain checkout is on feature, not main; waiting checkout feature git exited 128 without a message go-that-does-not-exist go-that-does-not-exist is not on the daemon's PATH is not a readable git checkout: killed before it answered old binary scratch.txt"#;
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        reset_self_update();
+        let (s, repo, env, _fixture) = self_update_fixture();
+        let rev = head_of(&repo);
+        let mut same = env.clone();
+        same.revision = rev;
+        let lines = tend_binary(&s, TEST_NOW.into(), same);
+        assert!(lines.is_empty(), "same revision: {lines:?}");
+        std::fs::write(std::path::Path::new(&repo).join("scratch.txt"), b"x").unwrap();
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
         assert!(
-            parity_probe.contains(r#"UPDATE projects SET path = ? WHERE slug = 'proj'"#),
-            "parity probe lacks {}",
-            r#"UPDATE projects SET path = ? WHERE slug = 'proj'"#
+            lines.len() == 1 && lines[0].contains("brain checkout is dirty"),
+            "dirty: {lines:?}"
+        );
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(lines.is_empty(), "dirty again: {lines:?}");
+        std::fs::remove_file(std::path::Path::new(&repo).join("scratch.txt")).unwrap();
+        run(&repo, &["git", "checkout", "-q", "-b", "feature"]);
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains("brain checkout is on feature, not main; waiting"),
+            "branch: {lines:?}"
+        );
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        set_setting(&s, "stop", "1");
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.len() == 1 && lines[0].contains("stop is set; no build"),
+            "stop: {lines:?}"
+        );
+        set_setting(&s, "stop", "0");
+        set_setting(&s, "daemon.self_update", "off");
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(lines.is_empty(), "off: {lines:?}");
+        set_setting(&s, "daemon.self_update", "on");
+        let mut no_cargo = env.clone();
+        no_cargo.cargo_cmd = "cargo-that-does-not-exist".into();
+        let lines = tend_binary(&s, TEST_NOW.into(), no_cargo);
+        assert!(
+            lines.len() == 1
+                && lines[0].contains("cargo-that-does-not-exist is not on the daemon's PATH"),
+            "no go: {lines:?}"
+        );
+        let gone = std::path::Path::new(&s.home).join("gone");
+        exec1(
+            &s,
+            "UPDATE projects SET path = ? WHERE slug = 'proj'",
+            &[&gone.display().to_string()],
+        );
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains("is not a readable git checkout: ")
+                && !lines[0].trim().ends_with(':'),
+            "unreadable checkout: {lines:?}"
+        );
+        let got = git_reason(&[crate::util::GitResult {
+            code: -1,
+            stdout: String::new(),
+            stderr: String::new(),
+            err: None,
+        }]);
+        assert!(
+            got.contains("killed before it answered"),
+            "a killed git needs a reason: {got:?}"
+        );
+        let got = git_reason(&[crate::util::GitResult {
+            code: 128,
+            stdout: String::new(),
+            stderr: String::new(),
+            err: None,
+        }]);
+        assert_eq!(
+            got, "git exited 128 without a message",
+            "a silent exit needs a reason: {got:?}"
+        );
+        exec1(
+            &s,
+            "UPDATE projects SET path = ? WHERE slug = 'proj'",
+            &[&repo],
         );
         assert!(
-            parity_probe.contains(r#"brain checkout is dirty"#),
-            "parity probe lacks {}",
-            r#"brain checkout is dirty"#
+            !file_exists(&format!("{}.new", env.binary))
+                && !file_exists(&format!("{}.prev", env.binary)),
+            "something was built while waiting"
         );
-        assert!(
-            parity_probe.contains(r#"brain checkout is on feature, not main; waiting"#),
-            "parity probe lacks {}",
-            r#"brain checkout is on feature, not main; waiting"#
-        );
-        assert!(
-            parity_probe.contains(r#"checkout"#),
-            "parity probe lacks {}",
-            r#"checkout"#
-        );
-        assert!(
-            parity_probe.contains(r#"feature"#),
-            "parity probe lacks {}",
-            r#"feature"#
-        );
-        assert!(
-            parity_probe.contains(r#"git exited 128 without a message"#),
-            "parity probe lacks {}",
-            r#"git exited 128 without a message"#
-        );
-        assert!(
-            parity_probe.contains(r#"go-that-does-not-exist"#),
-            "parity probe lacks {}",
-            r#"go-that-does-not-exist"#
-        );
-        assert!(
-            parity_probe.contains(r#"go-that-does-not-exist is not on the daemon's PATH"#),
-            "parity probe lacks {}",
-            r#"go-that-does-not-exist is not on the daemon's PATH"#
-        );
-        assert!(
-            parity_probe.contains(r#"is not a readable git checkout:"#),
-            "parity probe lacks {}",
-            r#"is not a readable git checkout:"#
-        );
-        assert!(
-            parity_probe.contains(r#"killed before it answered"#),
-            "parity probe lacks {}",
-            r#"killed before it answered"#
-        );
-        assert!(
-            parity_probe.contains(r#"old binary"#),
-            "parity probe lacks {}",
-            r#"old binary"#
-        );
-        assert!(
-            parity_probe.contains(r#"scratch.txt"#),
-            "parity probe lacks {}",
-            r#"scratch.txt"#
+        let data = std::fs::read(&env.binary).unwrap_or_default();
+        assert_eq!(
+            String::from_utf8_lossy(&data),
+            "old binary",
+            "pulse was touched while waiting"
         );
     }
+
     #[test]
     fn self_update_failure_leaves_pulse_alone_and_retries_later() {
-        let _serial = crate::test_helpers::serial();
-        *SELF_UPDATE_STATE.write().unwrap() = SelfUpdateState::default();
-        let s = crate::test_helpers::new_store();
-        crate::test_helpers::new_bare_repo(&s);
-        s.conn()
-            .unwrap()
-            .execute("UPDATE projects SET brain = 1 WHERE slug = 'proj'", [])
-            .unwrap();
-        let out = self_update_failure(
-            &s,
-            "abcdef123456".into(),
-            SelfUpdateEnv {
-                binary: std::path::Path::new(&s.home)
-                    .join("pulse")
-                    .display()
-                    .to_string(),
-                actor: "daemon".into(),
-                ..Default::default()
-            },
-            "build".into(),
-            "line1\nline2".into(),
-            anyhow::anyhow!("boom"),
-        );
-        assert!(out.line.contains("self-update: build"));
-        assert!(!out.installed);
-        assert!(out.line.contains("failed"));
-        let posts = crate::test_helpers::count(
-            &s,
-            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'release'",
-            &[],
-        );
-        assert_eq!(posts, 1);
-        let out = self_update_failure(
-            &s,
-            "abcdef123456".into(),
-            SelfUpdateEnv {
-                binary: std::path::Path::new(&s.home)
-                    .join("pulse")
-                    .display()
-                    .to_string(),
-                actor: "daemon".into(),
-                ..Default::default()
-            },
-            "smoke".into(),
-            "bad version\n".into(),
-            anyhow::anyhow!("version mismatch"),
-        );
-        assert!(out.line.contains("smoke"));
-
-        let parity_probe = r#"--allow-empty FAKE_GO_BADVERSION FAKE_GO_FAIL SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1 build of building commit daemon.self_update_retry_minutes failed; the running binary is untouched not the revision old binary pulse rebuilt from"#;
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        reset_self_update();
+        let (s, repo, env, _fixture) = self_update_fixture();
+        let rev = head_of(&repo);
+        let _fail = pulse_testutil::setenv("FAKE_CARGO_FAIL", "1");
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
         assert!(
-            parity_probe.contains(r#"--allow-empty"#),
-            "parity probe lacks {}",
-            r#"--allow-empty"#
+            lines.len() == 1 && lines[0].contains("building"),
+            "start: {lines:?}"
+        );
+        wait_self_update_idle();
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains(&format!("self-update: build of {} failed", &rev[..12])),
+            "after the failed build: {lines:?}"
+        );
+        let data = std::fs::read(&env.binary).unwrap_or_default();
+        assert!(
+            String::from_utf8_lossy(&data) == "old binary"
+                && !file_exists(&format!("{}.prev", env.binary)),
+            "pulse was touched by a failed build"
+        );
+        let post = query_one(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1",
+            &[&SELF_UPDATE_THREAD],
         );
         assert!(
-            parity_probe.contains(r#"FAKE_GO_BADVERSION"#),
-            "parity probe lacks {}",
-            r#"FAKE_GO_BADVERSION"#
+            matches!(&post, Ok(Some(post)) if post.str("summary").contains(&format!(
+                    "build of {} failed; the running binary is untouched",
+                    &rev[..12]
+                ))
+                && post.str("body").contains("cannot find value `nope`")),
+            "failure finding: {post:?}"
+        );
+        drop(_fail);
+        let lines = tend_binary(&s, crate::util::plus_minutes(TEST_NOW, 30.0), env.clone());
+        assert!(lines.is_empty(), "retried early: {lines:?}");
+        set_setting(&s, "daemon.self_update_retry_minutes", "15");
+        let lines = tend_binary(&s, crate::util::plus_minutes(TEST_NOW, 30.0), env.clone());
+        assert!(
+            lines.len() == 1 && lines[0].contains("building"),
+            "retry after the window: {lines:?}"
+        );
+        wait_self_update_idle();
+        let lines = tend_binary(&s, crate::util::plus_minutes(TEST_NOW, 31.0), env.clone());
+        assert!(
+            lines.len() == 1 && lines[0].contains(&format!("pulse rebuilt from {}", &rev[..12])),
+            "retry outcome: {lines:?}"
+        );
+        reset_self_update();
+        run(
+            &repo,
+            &["git", "commit", "-q", "--allow-empty", "-m", "next"],
+        );
+        let next = head_of(&repo);
+        let _bad = pulse_testutil::setenv("FAKE_CARGO_BADVERSION", "1");
+        let _ = tend_binary(&s, TEST_NOW.into(), env.clone());
+        wait_self_update_idle();
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains(&format!("smoke of {} failed", &next[..12]))
+                && lines[0].contains(&format!("not the revision {}", &next[..12])),
+            "smoke: {lines:?}"
         );
         assert!(
-            parity_probe.contains(r#"FAKE_GO_FAIL"#),
-            "parity probe lacks {}",
-            r#"FAKE_GO_FAIL"#
+            file_exists(&format!("{}.new", env.binary)),
+            "pulse.new was not kept after the smoke failure"
         );
-        assert!(parity_probe.contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1"#), "parity probe lacks {}", r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1"#);
+        let data = std::fs::read(&env.binary).unwrap_or_default();
         assert!(
-            parity_probe.contains(r#"build of"#),
-            "parity probe lacks {}",
-            r#"build of"#
-        );
-        assert!(
-            parity_probe.contains(r#"building"#),
-            "parity probe lacks {}",
-            r#"building"#
-        );
-        assert!(
-            parity_probe.contains(r#"commit"#),
-            "parity probe lacks {}",
-            r#"commit"#
-        );
-        assert!(
-            parity_probe.contains(r#"daemon.self_update_retry_minutes"#),
-            "parity probe lacks {}",
-            r#"daemon.self_update_retry_minutes"#
-        );
-        assert!(
-            parity_probe.contains(r#"failed; the running binary is untouched"#),
-            "parity probe lacks {}",
-            r#"failed; the running binary is untouched"#
-        );
-        assert!(
-            parity_probe.contains(r#"not the revision"#),
-            "parity probe lacks {}",
-            r#"not the revision"#
-        );
-        assert!(
-            parity_probe.contains(r#"old binary"#),
-            "parity probe lacks {}",
-            r#"old binary"#
-        );
-        assert!(
-            parity_probe.contains(r#"pulse rebuilt from"#),
-            "parity probe lacks {}",
-            r#"pulse rebuilt from"#
+            String::from_utf8_lossy(&data).contains(&format!("dev-{}", &rev[..12])),
+            "pulse changed after a failed smoke"
         );
     }
+
     #[test]
     fn check_restored_turns_self_update_off_and_names_the_build() {
-        let _serial = crate::test_helpers::serial();
-        *SELF_UPDATE_STATE.write().unwrap() = SelfUpdateState::default();
-        let s = crate::test_helpers::new_store();
-        crate::test_helpers::new_bare_repo(&s);
-        s.conn()
-            .unwrap()
-            .execute("UPDATE projects SET brain = 1 WHERE slug = 'proj'", [])
-            .unwrap();
-        let binary = std::path::Path::new(&s.home).join("pulse");
-        let marker = std::path::PathBuf::from(format!("{}{}", binary.display(), RESTORED_MARKER));
-        std::fs::write(&marker, "abcdef123456").unwrap();
-        let env = SelfUpdateEnv {
-            binary: binary.display().to_string(),
-            ..Default::default()
-        };
-        let lines = check_restored(&s, env);
-        assert!(
-            lines
-                .iter()
-                .any(|l| l.contains("restored") || l.contains("self-update"))
-        );
-        assert_eq!(s.setting("daemon.self_update", ""), "off");
-        assert!(!marker.exists());
-        let posts = crate::test_helpers::count(
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        reset_self_update();
+        let (s, _, env, _fixture) = self_update_fixture();
+        let lines = check_restored(&s, env.clone());
+        assert!(lines.is_empty(), "no marker: {lines:?}");
+        exec1(
             &s,
-            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'release'",
-            &[],
+            "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', ?, 'pulse', ?)",
+            &[
+                &TEST_NOW,
+                &SELF_UPDATE_EVENT,
+                &r#"{"from":"aaa","to":"deadbeefcafe0000"}"#,
+            ],
         );
-        assert_eq!(posts, 1);
-        let lines = check_restored(
-            &s,
-            SelfUpdateEnv {
-                binary: binary.display().to_string(),
-                ..Default::default()
-            },
-        );
-        assert!(lines.is_empty());
-
-        let parity_probe = r#"2026-09-08T10:00:00Z INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', ?, 'pulse', ?) SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1 pulse settings set daemon.self_update on restored the previous pulse after 3 early exits: the build of deadbeefcafe did not start; self-update is off"#;
+        std::fs::write(
+            format!("{}{}", env.binary, RESTORED_MARKER),
+            b"2026-09-08T10:00:00Z\n",
+        )
+        .unwrap();
+        let lines = check_restored(&s, env.clone());
         assert!(
-            parity_probe.contains(r#"2026-09-08T10:00:00Z"#),
-            "parity probe lacks {}",
-            r#"2026-09-08T10:00:00Z"#
+            lines.len() == 1
+                && lines[0].contains(
+                    "restored the previous pulse after 3 early exits: the build of deadbeefcafe did not start; self-update is off"
+                ),
+            "restored: {lines:?}"
         );
-        assert!(parity_probe.contains(r#"INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', ?, 'pulse', ?)"#), "parity probe lacks {}", r#"INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', ?, 'pulse', ?)"#);
-        assert!(parity_probe.contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1"#), "parity probe lacks {}", r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1"#);
+        assert_eq!(
+            s.setting("daemon.self_update", ""),
+            "off",
+            "self_update = {:?} after a restore",
+            s.setting("daemon.self_update", "")
+        );
         assert!(
-            parity_probe.contains(r#"pulse settings set daemon.self_update on"#),
-            "parity probe lacks {}",
-            r#"pulse settings set daemon.self_update on"#
+            !file_exists(&format!("{}{}", env.binary, RESTORED_MARKER)),
+            "marker kept"
         );
-        assert!(parity_probe.contains(r#"restored the previous pulse after 3 early exits: the build of deadbeefcafe did not start; self-update is off"#), "parity probe lacks {}", r#"restored the previous pulse after 3 early exits: the build of deadbeefcafe did not start; self-update is off"#);
+        let post = query_one(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1",
+            &[&SELF_UPDATE_THREAD],
+        );
+        assert!(
+            matches!(&post, Ok(Some(post)) if post.str("body").contains("2026-09-08T10:00:00Z")
+                && post
+                    .str("body")
+                    .contains("pulse settings set daemon.self_update on")),
+            "restore finding: {post:?}"
+        );
+        let lines = tend_binary(&s, TEST_NOW.into(), env);
+        assert!(lines.is_empty(), "after the restore: {lines:?}");
     }
 }

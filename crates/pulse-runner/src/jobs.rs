@@ -276,6 +276,7 @@ pub(crate) fn renew_lease(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_helpers::join;
     use serde_json::json;
     use std::sync::{LazyLock, Mutex, RwLock};
 
@@ -318,21 +319,6 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             pulse_store::OWNER_AWAY,
         )
         .unwrap();
-    }
-
-    fn join_worker(s: &pulse_store::Store, name: &str) -> crate::util::Row {
-        crate::board::join_agent(
-            s,
-            name.into(),
-            "r".into(),
-            "m".into(),
-            String::new(),
-            String::new(),
-            "worker".into(),
-            String::new(),
-        )
-        .unwrap()
-        .0
     }
 
     fn agreed_proposal(
@@ -1770,6 +1756,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
     #[test]
     fn service_render() {
         let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
         let plist = crate::service::service_file_text(
             "launchd".into(),
             120,
@@ -1779,23 +1766,24 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "/h/.pulse".into(),
         );
         for want in [
-            "<string>pulse.daemon</string>",
-            "<string>/bin/sh</string>",
-            "<string>/h/.pulse/bin/pulse-daemon.sh</string>",
-            "<key>KeepAlive</key>",
-            "PULSE_HOME",
-            "/h/.pulse/logs/daemon.log",
+            format!("<string>{}</string>", crate::service::SERVICE_LABEL),
+            "<string>/bin/sh</string>".into(),
+            "<string>/h/.pulse/bin/pulse-daemon.sh</string>".into(),
+            "<key>KeepAlive</key>".into(),
+            "PULSE_HOME".into(),
+            "/h/.pulse/logs/daemon.log".into(),
         ] {
-            assert!(plist.contains(want), "plist lacks {want:?}");
+            assert!(plist.contains(&want), "plist lacks {want:?}");
         }
         assert!(
             !plist.contains("<string>/opt/pulse</string>")
                 && !plist.contains("<string>daemon</string>"),
             "plist runs pulse directly"
         );
+        let got = crate::service::launcher_from_plist(plist);
         assert_eq!(
-            crate::service::launcher_from_plist(plist.clone()),
-            "/h/.pulse/bin/pulse-daemon.sh"
+            got, "/h/.pulse/bin/pulse-daemon.sh",
+            "launcherFromPlist = {got:?}"
         );
         let launcher = crate::service::launcher_text("/opt/my pulse".into(), 120);
         for want in [
@@ -1836,10 +1824,226 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         ] {
             assert!(unit.contains(want), "unit lacks {want:?}");
         }
+        let got = crate::service::launcher_from_plist(unit);
         assert_eq!(
-            crate::service::launcher_from_plist(unit),
-            "/h/.pulse/bin/pulse-daemon.sh"
+            got, "/h/.pulse/bin/pulse-daemon.sh",
+            "launcherFromPlist(unit) = {got:?}"
         );
+
+        let old = crate::service::set_run_service(Box::new(|_argv| (0, String::new())));
+        let calls = std::sync::Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let _ = crate::service::set_run_service(Box::new({
+            let calls = calls.clone();
+            move |argv| {
+                calls.lock().unwrap().push(argv);
+                (0, String::new())
+            }
+        }));
+        let user_home = tempfile::tempdir().unwrap();
+        let pulse_home = tempfile::tempdir().unwrap();
+        let user_home_s = user_home.path().display().to_string();
+        let pulse_home_s = pulse_home.path().display().to_string();
+        let mut out = Vec::new();
+        let (path, err) = match crate::service::install_service_inner(
+            &mut out,
+            90,
+            pulse_home_s.clone(),
+            "darwin".into(),
+            user_home_s.clone(),
+            true,
+        ) {
+            Ok(p) => (p, None),
+            Err(e) => (String::new(), Some(e)),
+        };
+        if err.is_some()
+            || !path.ends_with(&format!(
+                "Library/LaunchAgents/{}.plist",
+                crate::service::SERVICE_LABEL
+            ))
+        {
+            panic!("dry run: {path} {err:?}");
+        }
+        if crate::util::file_exists(&path)
+            || crate::util::file_exists(&crate::service::launcher_path(pulse_home_s.clone()))
+            || !calls.lock().unwrap().is_empty()
+            || !String::from_utf8_lossy(&out).contains("--interval 90 &")
+        {
+            panic!(
+                "dry run wrote or loaded something: {:?}\n{}",
+                calls.lock().unwrap(),
+                String::from_utf8_lossy(&out)
+            );
+        }
+        out.clear();
+        let (path, err) = match crate::service::install_service_inner(
+            &mut out,
+            90,
+            pulse_home_s.clone(),
+            "linux".into(),
+            user_home_s.clone(),
+            false,
+        ) {
+            Ok(p) => (p, None),
+            Err(e) => (String::new(), Some(e)),
+        };
+        if err.is_some()
+            || !crate::util::file_exists(&path)
+            || !path.ends_with(".config/systemd/user/pulse-daemon.service")
+        {
+            panic!("install: {path} {err:?}");
+        }
+        if calls.lock().unwrap().is_empty() || calls.lock().unwrap()[0][0] != "systemctl" {
+            panic!("systemctl not called: {:?}", calls.lock().unwrap());
+        }
+        if !crate::util::file_exists(pulse_home.path().join("logs").to_str().unwrap()) {
+            panic!("no logs dir");
+        }
+        if !crate::util::file_exists(&crate::service::launcher_path(pulse_home_s.clone())) {
+            panic!("the linux install wrote no launcher");
+        }
+        calls.lock().unwrap().clear();
+        crate::service::uninstall_service(&mut out, "linux", &user_home_s);
+        if crate::util::file_exists(&path)
+            || crate::util::file_exists(&crate::service::launcher_path(pulse_home_s.clone()))
+            || calls.lock().unwrap().is_empty()
+        {
+            panic!(
+                "uninstall: exists={} calls={:?}",
+                crate::util::file_exists(&path),
+                calls.lock().unwrap()
+            );
+        }
+        // The exported wrapper resolves OS and home itself (W's `pulse remove service`).
+        let fake_home = tempfile::tempdir().unwrap();
+        let _home = pulse_testutil::setenv("HOME", fake_home.path());
+        let (_, want) =
+            crate::service::service_paths(String::new(), fake_home.path().display().to_string());
+        let _ = std::fs::create_dir_all(std::path::Path::new(&want).parent().unwrap());
+        let _ = std::fs::write(&want, "x");
+        calls.lock().unwrap().clear();
+        out.clear();
+        let got = crate::service::uninstall_service_inner(&mut out, String::new(), String::new());
+        if got != want
+            || crate::util::file_exists(&want)
+            || calls.lock().unwrap().is_empty()
+            || !String::from_utf8_lossy(&out).contains(&format!("removed {want}"))
+        {
+            panic!(
+                "UninstallService: path={got} exists={} calls={:?}\n{}",
+                crate::util::file_exists(&want),
+                calls.lock().unwrap(),
+                String::from_utf8_lossy(&out)
+            );
+        }
+        // launchd: a bootstrap right after bootout fails with EIO (exit 5) while the old
+        // instance is torn down; install waits once and retries before giving up.
+        static SLEPT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let old_sleep = crate::service::set_service_sleep(|_| {
+            SLEPT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        SLEPT.store(0, std::sync::atomic::Ordering::SeqCst);
+        calls.lock().unwrap().clear();
+        let bootstraps = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let _ = crate::service::set_run_service(Box::new({
+            let calls = calls.clone();
+            let bootstraps = bootstraps.clone();
+            move |argv| {
+                calls.lock().unwrap().push(argv.clone());
+                if argv[1] == "bootstrap"
+                    && bootstraps.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == 1
+                {
+                    return (5, "Bootstrap failed: 5: Input/output error".into());
+                }
+                (0, String::new())
+            }
+        }));
+        out.clear();
+        let (darwin_path, err) = match crate::service::install_service_inner(
+            &mut out,
+            90,
+            pulse_home_s.clone(),
+            "darwin".into(),
+            user_home_s.clone(),
+            false,
+        ) {
+            Ok(p) => (p, None),
+            Err(e) => (String::new(), Some(e)),
+        };
+        if err.is_some()
+            || bootstraps.load(std::sync::atomic::Ordering::SeqCst) != 2
+            || SLEPT.load(std::sync::atomic::Ordering::SeqCst) != 1
+            || String::from_utf8_lossy(&out).contains("exit 5")
+        {
+            panic!(
+                "bootstrap retry: err={err:?} bootstraps={} slept={}\n{}",
+                bootstraps.load(std::sync::atomic::Ordering::SeqCst),
+                SLEPT.load(std::sync::atomic::Ordering::SeqCst),
+                String::from_utf8_lossy(&out)
+            );
+        }
+        // The darwin install writes the launcher, executable, and the plist points at it; uninstall removes both.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let fi = std::fs::metadata(crate::service::launcher_path(pulse_home_s.clone()));
+            if fi.is_err() || fi.as_ref().unwrap().permissions().mode() & 0o100 == 0 {
+                panic!("launcher: {fi:?}");
+            }
+        }
+        let data = std::fs::read_to_string(&darwin_path).unwrap_or_default();
+        if !data.contains(&format!(
+            "<string>{}</string>",
+            crate::service::launcher_path(pulse_home_s.clone())
+        )) {
+            panic!("plist does not run the launcher:\n{data}");
+        }
+        out.clear();
+        crate::service::uninstall_service(&mut out, "darwin", &user_home_s);
+        if crate::util::file_exists(&darwin_path)
+            || crate::util::file_exists(&crate::service::launcher_path(pulse_home_s.clone()))
+            || !String::from_utf8_lossy(&out).contains(&format!(
+                "removed {}",
+                crate::service::launcher_path(pulse_home_s.clone())
+            ))
+        {
+            panic!(
+                "darwin uninstall left files:\n{}",
+                String::from_utf8_lossy(&out)
+            );
+        }
+        bootstraps.store(0, std::sync::atomic::Ordering::SeqCst);
+        SLEPT.store(0, std::sync::atomic::Ordering::SeqCst);
+        let _ = crate::service::set_run_service(Box::new({
+            let bootstraps = bootstraps.clone();
+            move |argv| {
+                if argv[1] == "bootstrap" {
+                    bootstraps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return (5, "Bootstrap failed: 5: Input/output error".into());
+                }
+                (0, String::new())
+            }
+        }));
+        out.clear();
+        let err = crate::service::install_service_inner(
+            &mut out,
+            90,
+            pulse_home_s.clone(),
+            "darwin".into(),
+            user_home_s.clone(),
+            false,
+        )
+        .err();
+        if err.is_none()
+            || bootstraps.load(std::sync::atomic::Ordering::SeqCst) != 2
+            || !String::from_utf8_lossy(&out).contains("exit 5")
+        {
+            panic!(
+                "persistent failure: err={err:?} bootstraps={}\n{}",
+                bootstraps.load(std::sync::atomic::Ordering::SeqCst),
+                String::from_utf8_lossy(&out)
+            );
+        }
+        crate::service::set_service_sleep(old_sleep);
+        let _ = crate::service::set_run_service(old);
     }
     #[test]
     fn service_hub_unit_and_idempotent_install() {
@@ -1895,77 +2099,190 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let units = crate::service::service_units(60, 0, false);
         assert_eq!(units.len(), 2);
         assert_eq!(units[1].label, "pulse.hub");
-        assert!(
-            plist.contains(".plist") || crate::service::SERVICE_LABEL == "pulse.daemon",
-            "plist render changed"
-        );
-        let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
-        let old_run_service = crate::service::set_run_service(Box::new({
-            let calls = calls.clone();
+
+        let old = crate::service::set_run_service(Box::new(|_| (0, String::new())));
+        let loaded =
+            std::sync::Arc::new(Mutex::new(std::collections::BTreeMap::<String, bool>::new()));
+        let loads = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let uid = format!("gui/{}/", unsafe { libc::getuid() });
+        let _ = crate::service::set_run_service(Box::new({
+            let loaded = loaded.clone();
+            let loads = loads.clone();
             move |argv| {
-                let joined = argv.join(" ");
-                calls.lock().unwrap().push(joined.clone());
-                if joined.contains("bootout") {
-                    return (5, "Could not find service".into());
+                let mut label = argv[argv.len() - 1].clone();
+                match argv[1].as_str() {
+                    "bootstrap" => {
+                        label = std::path::Path::new(&argv[3])
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .trim_end_matches(".plist")
+                            .to_string();
+                        loaded.lock().unwrap().insert(label.clone(), true);
+                        loads.lock().unwrap().push(label);
+                    }
+                    "bootout" => {
+                        loaded
+                            .lock()
+                            .unwrap()
+                            .remove(label.trim_start_matches(uid.as_str()));
+                    }
+                    "print"
+                        if !loaded
+                            .lock()
+                            .unwrap()
+                            .get(label.trim_start_matches(uid.as_str()))
+                            .copied()
+                            .unwrap_or(false) =>
+                    {
+                        return (113, "Could not find service".into());
+                    }
+                    _ => {}
                 }
                 (0, String::new())
             }
         }));
-        let old_service_sleep = crate::service::set_service_sleep(|_| {});
-        let user_home = tempfile::tempdir().unwrap();
-        let pulse_home = tempfile::tempdir().unwrap();
+        let (user_home, pulse_home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let user_home_s = user_home.path().display().to_string();
+        let pulse_home_s = pulse_home.path().display().to_string();
         let mut out = Vec::new();
-        let path = crate::service::install_service_inner(
+        let mut paths = Vec::new();
+        for u in crate::service::service_units(90, 0, false) {
+            let name = u.name.clone();
+            match crate::service::install_unit(
+                &mut out,
+                u,
+                pulse_home_s.clone(),
+                "darwin".into(),
+                user_home_s.clone(),
+                false,
+            ) {
+                Ok(path) => paths.push(path),
+                Err(err) => panic!("install {name}: {err}\n{}", String::from_utf8_lossy(&out)),
+            }
+        }
+        if loads.lock().unwrap().join(",") != "pulse.daemon,pulse.hub"
+            || !crate::util::file_exists(&crate::service::unit_launcher_path(
+                hub.clone(),
+                pulse_home_s.clone(),
+            ))
+        {
+            panic!(
+                "first install loads={:?}\n{}",
+                loads.lock().unwrap(),
+                String::from_utf8_lossy(&out)
+            );
+        }
+        // Second install, nothing changed: no bootout, no bootstrap.
+        loads.lock().unwrap().clear();
+        out.clear();
+        for u in crate::service::service_units(90, 0, false) {
+            crate::service::install_unit(
+                &mut out,
+                u,
+                pulse_home_s.clone(),
+                "darwin".into(),
+                user_home_s.clone(),
+                false,
+            )
+            .unwrap();
+        }
+        if !loads.lock().unwrap().is_empty()
+            || String::from_utf8_lossy(&out)
+                .matches("unchanged and loaded; left running")
+                .count()
+                != 2
+            || !loaded
+                .lock()
+                .unwrap()
+                .get("pulse.daemon")
+                .copied()
+                .unwrap_or(false)
+        {
+            panic!(
+                "repeat install reloaded: loads={:?}\n{}",
+                loads.lock().unwrap(),
+                String::from_utf8_lossy(&out)
+            );
+        }
+        // A changed interval touches the daemon only.
+        loads.lock().unwrap().clear();
+        out.clear();
+        for u in crate::service::service_units(120, 0, false) {
+            crate::service::install_unit(
+                &mut out,
+                u,
+                pulse_home_s.clone(),
+                "darwin".into(),
+                user_home_s.clone(),
+                false,
+            )
+            .unwrap();
+        }
+        if loads.lock().unwrap().join(",") != "pulse.daemon"
+            || !String::from_utf8_lossy(&out).contains("hub: unchanged and loaded")
+        {
+            panic!(
+                "changed daemon: loads={:?}\n{}",
+                loads.lock().unwrap(),
+                String::from_utf8_lossy(&out)
+            );
+        }
+        // Unchanged file but unloaded unit (someone booted it out): loaded again.
+        loaded.lock().unwrap().remove("pulse.hub");
+        loads.lock().unwrap().clear();
+        let err = crate::service::install_unit(
             &mut out,
-            90,
-            pulse_home.path().display().to_string(),
+            crate::service::hub_unit(0),
+            pulse_home_s.clone(),
             "darwin".into(),
-            user_home.path().display().to_string(),
+            user_home_s.clone(),
             false,
         )
-        .unwrap();
-        let output = String::from_utf8(out).unwrap();
-        let loads = calls.lock().unwrap().join("\n");
-        assert!(
-            path.contains("Library/LaunchAgents") && path.ends_with(".plist"),
-            "install : {path}\n{output}"
-        );
-        assert!(
-            loads.contains("bootout") && loads.contains("bootstrap"),
-            "first install loads={loads}"
-        );
-        assert!(
-            loads.contains("Could not find service")
-                || calls.lock().unwrap().iter().any(|c| c.contains("bootout")),
-            "changed daemon: loads={loads}"
-        );
-        let labels = crate::service::service_units(90, crate::service::HUB_PORT, false)
-            .into_iter()
-            .map(|u| u.label)
-            .collect::<Vec<_>>()
-            .join(",");
-        assert_eq!(labels, "pulse.daemon,pulse.hub");
-        assert_eq!(crate::service::daemon_unit(90).label, "pulse.daemon");
-        assert!(pulse_gitenv::GOOS == "darwin" || "darwin" == "darwin");
-        let mut removed = Vec::new();
-        crate::service::uninstall_service(
-            &mut removed,
-            "darwin",
-            user_home.path().to_str().unwrap(),
-        );
-        assert!(
-            String::from_utf8_lossy(&removed).contains("removed")
-                || calls.lock().unwrap().iter().any(|c| c.contains("bootout")),
-            "removed output: {}",
-            String::from_utf8_lossy(&removed)
-        );
-        assert_eq!(
-            crate::service::hub_unit(crate::service::HUB_PORT).label,
-            "pulse.hub",
-            "hub: unchanged and loaded"
-        );
-        let _ = crate::service::set_run_service(old_run_service);
-        let _ = crate::service::set_service_sleep(old_service_sleep);
+        .err();
+        if err.is_some() || loads.lock().unwrap().join(",") != "pulse.hub" {
+            panic!(
+                "unloaded hub: err={err:?} loads={:?}",
+                loads.lock().unwrap()
+            );
+        }
+        out.clear();
+        let got =
+            crate::service::uninstall_service_inner(&mut out, "darwin".into(), user_home_s.clone());
+        if got != paths[0] {
+            panic!(
+                "uninstall returned {got}, want the daemon path {}",
+                paths[0]
+            );
+        }
+        for p in paths.iter().cloned().chain([
+            crate::service::launcher_path(pulse_home_s.clone()),
+            crate::service::unit_launcher_path(hub.clone(), pulse_home_s.clone()),
+        ]) {
+            if crate::util::file_exists(&p) {
+                panic!("uninstall left {p}");
+            }
+        }
+        if !loaded.lock().unwrap().is_empty()
+            || !String::from_utf8_lossy(&out).contains(&format!(
+                "removed {}",
+                crate::service::unit_launcher_path(hub.clone(), pulse_home_s.clone())
+            ))
+        {
+            panic!(
+                "uninstall: loaded={:?}\n{}",
+                loaded.lock().unwrap(),
+                String::from_utf8_lossy(&out)
+            );
+        }
+        // Uninstalling when nothing is installed runs no service-manager command and reports nothing removed.
+        out.clear();
+        loads.lock().unwrap().clear();
+        crate::service::uninstall_service(&mut out, "darwin", &user_home_s);
+        if !out.is_empty() || !loads.lock().unwrap().is_empty() {
+            panic!("uninstall of nothing:\n{}", String::from_utf8_lossy(&out));
+        }
+        let _ = crate::service::set_run_service(old);
     }
     #[test]
     fn onboard_queues_the_job_and_writes_no_files() {
@@ -2041,7 +2358,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         let (r, reason) = crate::run::work_once(
             &s,
             "aurora",
@@ -2342,6 +2659,11 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
     #[test]
     fn launcher_restores_the_previous_pulse_after_three_early_exits() {
         let _serial = crate::test_helpers::serial();
+        let _deadline = crate::test_helpers_f5::test_deadline(std::time::Duration::from_secs(60));
+        crate::test_helpers_f5::skip_slow();
+        if which::which("sh").is_err() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("pulse");
         let failing = "#!/bin/sh\necho failing\nexit 7\n";
@@ -2363,49 +2685,55 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             .arg(&launcher)
             .output()
             .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout);
-        assert_eq!(
-            out.status.code(),
-            Some(3),
-            "exit after the restore:\n{text}"
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
         );
+        if out.status.code() != Some(3) {
+            panic!("exit after the restore: {:?}\n{text}", out.status);
+        }
         assert!(
             text.matches("failing\n").count() == 3
                 && text.matches("\nprevious\n").count() == 1
                 && text.contains("restored the previous pulse after 3 early exits (last exit 7)"),
             "launcher output:\n{text}"
         );
+        let data = std::fs::read_to_string(&fake).unwrap_or_default();
         assert!(
-            std::fs::read_to_string(&fake).unwrap().contains("previous"),
-            "pulse is not the previous build"
+            data.contains("previous"),
+            "pulse is not the previous build:\n{data}"
         );
-        assert_eq!(
-            std::fs::read_to_string(fake.with_extension("failed")).unwrap(),
-            failing,
-            "the failed build was not kept"
-        );
+        let data = std::fs::read_to_string(fake.with_extension("failed")).unwrap_or_default();
+        assert_eq!(data, failing, "the failed build was not kept:\n{data}");
         assert!(
-            !fake.with_extension("prev").exists(),
+            !crate::util::file_exists(fake.with_extension("prev").to_str().unwrap()),
             "pulse.prev still there"
         );
-        let marker = std::fs::read_to_string(format!("{}.restored", fake.display())).unwrap();
-        assert!(marker.trim_end().ends_with('Z'), "marker: {marker:?}");
-
-        let _ = std::fs::remove_file(format!("{}.restored", fake.display()));
+        let marker_path = format!("{}{}", fake.display(), crate::selfupdate::RESTORED_MARKER);
+        let marker = std::fs::read_to_string(&marker_path);
+        if marker.is_err() || !marker.as_ref().unwrap().trim().ends_with('Z') {
+            panic!("marker: {marker:?}");
+        }
+        // No pulse.prev: three early exits end with the child's code.
+        let _ = std::fs::remove_file(&marker_path);
         std::fs::write(&fake, failing).unwrap();
         crate::test_helpers::run(dir.path(), &["chmod", "+x", "pulse"]);
         let out = std::process::Command::new("sh")
             .arg(&launcher)
             .output()
             .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            out.status.code() == Some(7)
-                && text.matches("failing").count() == 3
-                && !text.contains("restored"),
-            "without prev: {:?}\n{text}",
-            out.status
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
         );
+        if out.status.code() != Some(7)
+            || text.matches("failing").count() != 3
+            || text.contains("restored")
+        {
+            panic!("without prev: {:?}\n{text}", out.status);
+        }
     }
     #[test]
     fn probe_executor_native_uses_harness_login() {
@@ -2732,7 +3060,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_repo(&s);
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         crate::lead::ensure_lead(&s, "proj".into()).unwrap();
         let (lead_job, _) = crate::jobs::add_job(
             &s,
@@ -3335,166 +3663,265 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
     fn daemon_once_compute_approve_to_ready_to_released() {
         let _serial = crate::test_helpers::serial();
         let _lock = crate::test_helpers_f6::provider_test_lock();
+        pulse_bus::reset_default();
         let s = crate::test_helpers::new_store();
-        let h = crate::test_helpers_f6::new_compute_harness(
-            &s,
-            &[
-                ("compute.provider", "aws"),
-                ("compute.aws.region", "eu-west-1"),
-                ("compute.aws.profile", "pulse"),
-            ],
-        );
-        let aws = crate::test_helpers_f6::new_fake_aws();
-        let _fake = crate::test_helpers_f6::install_fake(crate::aws::set_run_aws, {
-            let aws = aws.clone();
-            Box::new(move |ctx, args, timeout| aws.run(ctx, args, timeout))
-        });
-        h.provision_and_release(&s, "aws", "203.0.113.9");
-
-        let req = pulse_tasks::get_compute(&s, "CR-001").unwrap();
-        assert_eq!(
-            (req.status.as_str(), req.executor.as_str()),
-            ("released", "hands-cr-001"),
-            "after the hours: {req:?}"
-        );
-        assert_eq!("active", "active", "after provisioning: {req:?}");
-        assert!(
-            !req.proposal_post.is_empty(),
-            "request proposal missing: {req:?}"
-        );
+        crate::test_helpers::new_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+        let hub_home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(hub_home.path().join(".ssh")).unwrap();
+        std::fs::write(
+            hub_home.path().join(".ssh/pulse_hands_ed25519"),
+            "fake private key\n",
+        )
+        .unwrap();
+        std::fs::write(
+            hub_home.path().join(".ssh/pulse_hands_ed25519.pub"),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUB pulse-hub\n",
+        )
+        .unwrap();
         for (k, v) in [
+            ("compute.provider", "azure"),
             ("compute.max_vms", "2"),
             ("compute.max_hours_per_day", "24"),
             ("compute.azure.resource_group", "pulse-hands"),
             ("compute.azure.location", "westeurope"),
+            ("compute.azure.vm_size", "Standard_B2ms"),
             ("minutes_per_job", "1"),
         ] {
-            assert!(!k.is_empty() && !v.is_empty(), "setting {k}={v}");
+            crate::test_helpers_f5::set_setting(&s, k, v);
         }
-        assert_eq!("go ahead", "go ahead");
-        for action in [
-            "compute.approved",
-            "compute.provisioning",
-            "compute.ready",
-            "compute.released",
-        ] {
-            let n = crate::test_helpers::count(
+        let az = crate::test_helpers_f6::new_fake_az();
+        let old_az = crate::azure::set_run_az(Box::new({
+            let az = az.clone();
+            move |ctx, args, timeout| az.run(ctx, args, timeout)
+        }));
+        let old_ssh = crate::executor::run_ssh_hook();
+        // ADR-034: with an executor token on the hub the machine is born logged in.
+        crate::test_helpers_f1b::write_executor_token(&s);
+        let placed = crate::test_helpers_f3b::stub_place_login(true);
+        let ssh_calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        crate::executor::set_run_ssh({
+            let ssh_calls = ssh_calls.clone();
+            move |_ctx, argv, _stdin, _timeout| {
+                ssh_calls.lock().unwrap().push(argv.join(" "));
+                Ok((0, "pulse-ready\n".into(), String::new()))
+            }
+        });
+        #[derive(Default)]
+        struct Paired {
+            admin: String,
+            name: String,
+            opts: crate::pair::PairOpts,
+        }
+        let paired = std::sync::Arc::new(Mutex::new(Paired::default()));
+        let old_pair = crate::provider::set_pair_hands(Box::new({
+            let paired = paired.clone();
+            move |st, admin, name, now, o| {
+                let mut p = paired.lock().unwrap();
+                p.admin = admin.to_string();
+                p.name = name.to_string();
+                p.opts = o.clone();
+                crate::executor::add_executor(
+                    st,
+                    now,
+                    name,
+                    admin,
+                    &o.workdir,
+                    o.workers,
+                    &o.projects,
+                    crate::util::HUMAN_AGENT,
+                )?;
+                // the real pairing probes it active
+                crate::test_helpers_f5::exec1(
+                    st,
+                    "UPDATE executors SET status = 'active' WHERE name = ?",
+                    &[&name],
+                );
+                Ok(Some(Box::new(crate::pair::PairReport {
+                    ok: true,
+                    lines: vec![format!("paired {name}")],
+                    ..Default::default()
+                })))
+            }
+        }));
+
+        let req = pulse_tasks::request_compute(
+            &s,
+            "proj",
+            "aurora",
+            "",
+            2,
+            "the fixtures take an hour here",
+        )
+        .unwrap();
+        assert!(
+            req.status == "pending" && !req.proposal_post.is_empty(),
+            "request: {req:?}"
+        );
+        pulse_tasks::approve(&s, &req.id, "go ahead", crate::util::HUMAN_AGENT).unwrap();
+        let log = crate::test_helpers::once_daemon(
+            &s,
+            crate::daemon::DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: nothing'".into(),
+                hub_home: hub_home.path().display().to_string(),
+                ..Default::default()
+            },
+        );
+
+        let got = pulse_tasks::get_compute(&s, &req.id);
+        if got.is_err()
+            || got.as_ref().unwrap().status != "ready"
+            || got.as_ref().unwrap().executor != "hands-cr-001"
+        {
+            panic!("after provisioning: {got:?}\n{log}");
+        }
+        for action in ["compute.provisioning", "compute.ready"] {
+            if crate::test_helpers::count(
                 &s,
                 "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = ?",
                 &[&action, &req.id],
-            );
-            assert_eq!(n, 1, "{action} not logged once");
+            ) != 1
+            {
+                panic!("{action} not logged once\n{log}");
+            }
         }
-
-        let run = aws.first("ec2 run-instances");
-        for want in [
-            &format!("--image-id resolve:ssm:{}", crate::aws::AWS_IMAGE),
-            "--instance-type t3.medium",
-            "--subnet-id subnet-1",
-            "--security-group-ids sg-pulse",
-            "--associate-public-ip-address",
-            "--user-data file://",
-            &format!("VolumeSize={}", crate::provider::HANDS_DISK_GB),
-            "HttpTokens=required",
-            "Tags=[{Key=Name,Value=pulse-cr-001},{Key=pulse,Value=hands},{Key=pulse-request,Value=CR-001},{Key=pulse-project,Value=proj}]",
-            "--profile pulse --region eu-west-1 --output json",
-        ] {
-            assert!(run.contains(want), "run-instances lacks {want:?}: {run}");
+        if !az.has(
+            "vm create --resource-group pulse-hands --name pulse-cr-001 --location westeurope --image Ubuntu2404 --size Standard_B2ms --admin-username pulseadmin",
+        ) {
+            panic!("az calls: {:?}", az.calls());
         }
-        let azure_create_shape = format!(
-            "vm create --resource-group pulse-hands --name pulse-cr-001 --location westeurope --image Ubuntu2404 --size {} --admin-username pulseadmin --custom-data cloud-init --tags pulse=hands pulse-request=CR-001 pulse-project=proj",
-            "Standard_B2ms"
-        );
+        if !az.has("group create") || !az.has("vm run-command invoke") {
+            panic!("az calls: {:?}", az.calls());
+        }
+        let mut create = String::new();
+        for c in az.calls() {
+            if c.join(" ").starts_with("vm create") {
+                create = c.join(" ");
+            }
+        }
+        if !create.contains("--tags pulse=hands pulse-request=CR-001 pulse-project=proj")
+            || !create.contains("--custom-data ")
+        {
+            panic!("vm create: {create}");
+        }
+        {
+            let paired = paired.lock().unwrap();
+            if paired.name != "hands-cr-001"
+                || paired.admin != "pulseadmin@pulse-cr-001-admin"
+                || paired.opts.projects != "proj"
+                || paired.opts.install_copilot
+                || paired.opts.workdir != crate::provider::HANDS_WORKDIR
+            {
+                panic!(
+                    "pairing: {} {} {:?}",
+                    paired.admin, paired.name, paired.opts
+                );
+            }
+        }
+        let ex = crate::executor::executor_row(&s, "hands-cr-001");
+        if ex.0.is_empty()
+            || ex.str("status") != "active"
+            || ex.str("admin") != "pulseadmin@203.0.113.5"
+        {
+            panic!("executor: {ex:?}");
+        }
+        let calls = placed.calls();
         assert!(
-            azure_create_shape.contains("--custom-data")
-                && azure_create_shape
-                    .contains("--tags pulse=hands pulse-request=CR-001 pulse-project=proj")
-                && azure_create_shape.contains("Standard_B2ms")
+            calls.len() == 1
+                && calls[0].name == "hands-cr-001"
+                && calls[0].admin == "pulseadmin@203.0.113.5"
+                && calls[0].token == crate::test_helpers_f1b::TEST_EXECUTOR_TOKEN,
+            "login placement: {calls:?}"
         );
-        assert_eq!("203.0.113.5", "203.0.113.5");
+        let known =
+            std::fs::read_to_string(hub_home.path().join(".ssh/known_hosts")).unwrap_or_default();
+        assert!(known.contains("203.0.113.5"), "known_hosts: {known:?}");
+        let ssh_cfg =
+            std::fs::read_to_string(hub_home.path().join(".ssh/config")).unwrap_or_default();
         assert!(
-            "Host pulse-cr-001-admin\n  HostName 203.0.113.5\n".contains("HostName 203.0.113.5")
+            ssh_cfg.contains("Host pulse-cr-001-admin") && ssh_cfg.contains("HostName 203.0.113.5"),
+            "ssh config: {ssh_cfg:?}"
         );
-        crate::util::exec1(
-            &*s.conn().unwrap(),
-            "UPDATE executors SET status = 'active' WHERE name = ?",
-            &[&"hands-cr-001"],
-        );
-        assert_eq!("2026-09-06T13:00:00Z", "2026-09-06T13:00:00Z");
-        assert_eq!("aurora", "aurora");
+        let (m, mrow) = crate::compute::load_machine(&s, &req.id);
+        let m = m.unwrap();
         assert!(
-            aws.has("ec2 create-security-group --group-name pulse-hands")
-                && aws.has("ec2 authorize-security-group-ingress --group-id sg-pulse --protocol tcp --port 22 --cidr 0.0.0.0/0"),
-            "security group: {:?}",
-            aws.joined()
+            m.name == "pulse-cr-001"
+                && m.tags.get("pulse").map(String::as_str) == Some("hands")
+                && m.tags.get("pulse-request").map(String::as_str) == Some(req.id.as_str())
+                && mrow.str("released_at").is_empty(),
+            "machine memory: {m:?} {mrow:?}"
         );
-        assert!("group create".contains("group create"));
-        assert!("cloud-init status --wait".contains("cloud-init status --wait"));
-        assert!("fake private key".contains("private key"));
-        assert!("known_hosts".contains("known_hosts"));
-        assert!("hour(s) are up".contains("hour(s) are up"));
-        assert_eq!(
-            aws.0.lock().unwrap().consoles,
-            2,
-            "console reads: {:?}",
-            aws.joined()
-        );
-        assert!(
-            aws.has("ec2 get-console-output --instance-id i-0abc --latest --query Output --profile pulse --region eu-west-1 --output text"),
-            "console reads: {:?}",
-            aws.joined()
-        );
-        assert_eq!(aws.0.lock().unwrap().terminate, vec!["i-0abc"]);
-
-        let ready = crate::util::must_one(
-            &s.conn().unwrap(),
-            "SELECT * FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'compute' AND summary LIKE '%ready: executor hands-cr-001%'",
+        let findings = crate::test_helpers_f5::must_rows(
+            &s,
+            "SELECT * FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'compute'",
             &[],
         );
-        assert_eq!(
-            ready.str("on_post"),
-            req.proposal_post,
-            "ready finding: {ready:?}"
+        assert!(
+            findings.len() == 1
+                && findings[0]
+                    .str("summary")
+                    .contains("ready: executor hands-cr-001")
+                && findings[0].str("on_post") == req.proposal_post,
+            "findings: {findings:?}"
         );
-        let released = crate::test_helpers::count(
+        assert!(
+            !ssh_calls.lock().unwrap().is_empty()
+                && ssh_calls.lock().unwrap()[0].contains("cloud-init status --wait"),
+            "ssh: {:?}",
+            ssh_calls.lock().unwrap()
+        );
+
+        let log2 = crate::test_helpers::once_daemon(
             &s,
+            crate::daemon::DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: nothing'".into(),
+                hub_home: hub_home.path().display().to_string(),
+                ..Default::default()
+            },
+        );
+        let got = pulse_tasks::get_compute(&s, &req.id).unwrap();
+        assert_eq!(got.status, "ready", "released too early: {got:?}\n{log2}");
+        let later = pulse_store::Store::open(pulse_store::Options {
+            home: s.home.clone(),
+            now: "2026-09-06T13:00:00Z".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let log3 = crate::test_helpers::once_daemon(
+            &later,
+            crate::daemon::DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: nothing'".into(),
+                hub_home: hub_home.path().display().to_string(),
+                ..Default::default()
+            },
+        );
+        let got = pulse_tasks::get_compute(&later, &req.id).unwrap();
+        assert_eq!(got.status, "released", "after the hours: {got:?}\n{log3}");
+        if az.deleted().len() != 1 || az.deleted()[0] != "pulse-cr-001" {
+            panic!("deleted: {:?}", az.deleted());
+        }
+        assert!(
+            crate::executor::executor_row(&later, "hands-cr-001")
+                .0
+                .is_empty(),
+            "executor still registered"
+        );
+        let (_, mrow) = crate::compute::load_machine(&later, &req.id);
+        assert!(
+            !mrow.str("released_at").is_empty(),
+            "machine not marked released: {mrow:?}"
+        );
+        let n = crate::test_helpers::count(
+            &later,
             "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND thread = 'compute' AND summary LIKE '%released%'",
             &[],
         );
-        assert_eq!(released, 1, "release finding: {released}");
-
-        let (m, mrow) = crate::compute::load_machine(&s, "CR-001");
-        let m = m.expect("machine");
-        assert_eq!(m.provider, "aws");
-        assert_eq!(m.name, "pulse-cr-001");
-        assert_eq!(m.executor, "hands-cr-001");
-        assert_eq!(m.address, "pulseadmin@203.0.113.9");
-        assert_eq!(m.tags.get("pulse").map(String::as_str), Some("hands"));
-        assert_eq!(
-            m.tags.get("pulse-request").map(String::as_str),
-            Some("CR-001")
-        );
-        assert!(!mrow.str("released_at").is_empty(), "machine row: {mrow:?}");
-        assert_eq!(
-            m.detail.get("instance_id").map(String::as_str),
-            Some("i-0abc")
-        );
-        assert_eq!(
-            m.detail.get("region").map(String::as_str),
-            Some("eu-west-1")
-        );
-        assert_eq!(
-            m.detail.get("security_group").map(String::as_str),
-            Some("sg-pulse")
-        );
-        assert_eq!(m.detail.get("subnet").map(String::as_str), Some("subnet-1"));
-
-        let (exists, err_text, code) =
-            crate::test_helpers_f6::invoke(&s, "compute", "", &["providers"]);
-        assert_eq!(code, 0, "compute providers: {code} {err_text}");
+        assert_eq!(n, 1, "release finding: {n}\n{log3}");
+        assert!(log3.contains("hour(s) are up"), "log:\n{log3}");
+        let exists = crate::test_helpers_f6::invoke_ok(&s, "compute", "", &["providers"]);
         for want in [
-            "aws        EC2 instance; auth: aws configure or aws sso login; size: compute.aws.instance_type  (setting compute.provider)",
-            "azure      Azure VM; auth: az login; size: compute.azure.vm_size",
+            "azure      Azure VM; auth: az login; size: compute.azure.vm_size  (setting compute.provider)",
+            "aws        EC2 instance; auth: aws configure or aws sso login; size: compute.aws.instance_type",
             "gcp        Compute Engine instance; auth: gcloud auth login; size: compute.gcp.machine_type",
             "multipass  Multipass instance; auth: multipassd running locally; size: compute.multipass.size",
         ] {
@@ -3503,10 +3930,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 "pulse compute providers lacks {want:?}:\n{exists}"
             );
         }
-        assert!(
-            "azure      Azure VM; auth: az login; size: compute.azure.vm_size  (setting compute.provider)"
-                .contains("compute.provider")
-        );
+        crate::executor::restore_run_ssh(old_ssh);
+        let _ = crate::azure::set_run_az(old_az);
+        let _ = crate::provider::set_pair_hands(old_pair);
     }
 
     #[test]
@@ -3515,7 +3941,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         pulse_bus::reset_default();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_repo(&s);
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         for (k, v) in [
             ("compute.provider", "azure"),
             ("compute.max_vms", "1"),
@@ -3560,7 +3986,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         pulse_bus::reset_default();
         let s = crate::test_helpers::new_store();
         let (proj, dir) = crate::test_helpers::new_repo(&s);
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         s.set_setting(crate::util::HUMAN_AGENT, "landing", "agents")
             .unwrap();
         s.set_setting(crate::util::HUMAN_AGENT, "evolve.tolerance", "0.05")
@@ -4040,8 +4466,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         let (project, _) = crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "aurora");
-        join_worker(&s, "borealis");
+        join(&s, "aurora");
+        join(&s, "borealis");
         let (self_job, _) = crate::jobs::add_job(
             &s,
             "proj".into(),
@@ -4129,7 +4555,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         let (project, _) = crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         let (job, _) = crate::jobs::add_job(
             &s,
             "proj".into(),
@@ -4163,7 +4589,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "borealis");
+        join(&s, "borealis");
         let (other, _) = crate::jobs::add_job(
             &s,
             "proj".into(),
@@ -4261,7 +4687,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "borealis");
+        join(&s, "borealis");
         crate::board::create_post(
             &s,
             crate::test_helpers::TEST_NOW.into(),
@@ -4311,8 +4737,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         let (project, _) = crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "aurora");
-        join_worker(&s, "borealis");
+        join(&s, "aurora");
+        join(&s, "borealis");
         let (job, _) = crate::jobs::add_job(
             &s,
             "proj".into(),
@@ -4417,7 +4843,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "borealis");
+        join(&s, "borealis");
         let (lead, _) = crate::lead::ensure_lead(&s, "proj".into()).unwrap();
         let lead = lead.unwrap();
         let q = post_runner_focus(
@@ -4560,7 +4986,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         for tt in tests {
             let s = crate::test_helpers::new_store();
             crate::test_helpers::new_bare_repo(&s);
-            join_worker(&s, "aurora");
+            join(&s, "aurora");
             if tt.away {
                 set_owner_away(&s);
             }
@@ -4589,7 +5015,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         set_owner_away(&s);
         let p = agreed_proposal(&s, "proj", "small", "Evidence: tests pass.");
 
@@ -4742,9 +5168,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "aurora");
-        join_worker(&s, "boreas");
-        join_worker(&s, "castor");
+        join(&s, "aurora");
+        join(&s, "boreas");
+        join(&s, "castor");
         set_owner_away(&s);
         let card = crate::board::create_post(
             &s,
@@ -4976,7 +5402,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         for tt in tests {
             let s = crate::test_helpers::new_store();
             crate::test_helpers::new_bare_repo(&s);
-            join_worker(&s, "aurora");
+            join(&s, "aurora");
             if tt.project == "other" {
                 let conn = s.conn().unwrap();
                 crate::util::exec1(
@@ -5161,7 +5587,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         pulse_goals::set(&s, "proj", "Earlier project direction.", "human").unwrap();
         let (job, _) = crate::jobs::add_job(
             &s,
@@ -5317,7 +5743,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             40,
             "fixture is not a 40-character canonical ID: {slug}"
         );
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         let mut task = crate::util::Row::new();
         let mut queued = Vec::new();
         for kind in [

@@ -401,8 +401,8 @@ mod tests {
         v.iter().map(|s| (*s).to_string()).collect()
     }
 
-    fn run_s(args: &[&str], out: &mut Vec<u8>, err: &mut Vec<u8>) -> i32 {
-        run(&sv(args), out, err)
+    fn run(args: &[&str], out: &mut Vec<u8>, err: &mut Vec<u8>) -> i32 {
+        super::run(&sv(args), out, err)
     }
 
     fn s(b: &[u8]) -> String {
@@ -414,7 +414,7 @@ mod tests {
     fn help_and_version() {
         let _serial = crate::test_helpers::serial();
         let (mut out, mut errb) = (Vec::new(), Vec::new());
-        let code = run_s(&["help"], &mut out, &mut errb);
+        let code = run(&["help"], &mut out, &mut errb);
         if code != 0 || !s(&out).starts_with(pulse_cli::TITLE) {
             panic!("help: {code} {:?}", s(&out));
         }
@@ -424,22 +424,22 @@ mod tests {
             panic!("bare: {code} {:?}", s(&out));
         }
         out.clear();
-        let code = run_s(&["-h"], &mut out, &mut errb);
+        let code = run(&["-h"], &mut out, &mut errb);
         if code != 0 || !s(&out).starts_with(pulse_cli::TITLE) {
             panic!("-h: {code}");
         }
         out.clear();
-        let code = run_s(&["help", "work"], &mut out, &mut errb);
+        let code = run(&["help", "work"], &mut out, &mut errb);
         if code != 0 || !s(&out).contains("Usage: pulse work") {
             panic!("help work: {code} {:?}", s(&out));
         }
         out.clear();
-        let code = run_s(&["version"], &mut out, &mut errb);
+        let code = run(&["version"], &mut out, &mut errb);
         if code != 0 || s(&out).trim().is_empty() {
             panic!("version: {code} {:?}", s(&out));
         }
         out.clear();
-        let code = run_s(&["--json", "version"], &mut out, &mut errb);
+        let code = run(&["--json", "version"], &mut out, &mut errb);
         if code != 0 || !s(&out).contains("\"version\":") {
             panic!("version --json: {code} {:?}", s(&out));
         }
@@ -451,7 +451,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let (mut out, mut errb) = (Vec::new(), Vec::new());
         let home = tempdir().unwrap();
-        let code = run_s(
+        let code = run(
             &["--home", home.path().to_str().unwrap(), "statuz"],
             &mut out,
             &mut errb,
@@ -490,7 +490,7 @@ mod tests {
             });
         }
         let (mut out, mut errb) = (Vec::new(), Vec::new());
-        let code = run_s(&["--home", home, "zz-needs-store"], &mut out, &mut errb);
+        let code = run(&["--home", home, "zz-needs-store"], &mut out, &mut errb);
         let want = pulse_store::store_path(home).unwrap();
         if code != 2
             || !s(&errb).contains(&format!("No store at {want}"))
@@ -566,7 +566,7 @@ mod tests {
         }
 
         let (mut out, mut errb) = (Vec::new(), Vec::new());
-        let code = run_s(
+        let code = run(
             &[
                 "--home",
                 home,
@@ -610,22 +610,22 @@ mod tests {
         }
 
         errb.clear();
-        let code = run_s(&["--home", home, "zz-post", "fail"], &mut out, &mut errb);
+        let code = run(&["--home", home, "zz-post", "fail"], &mut out, &mut errb);
         if code != 3 || s(&errb) != "boom\n  why: because\n  fix: pulse zz-post ok\n" {
             panic!("cli.Error: {code} {:?}", s(&errb));
         }
         errb.clear();
-        let code = run_s(&["--home", home, "zz-post", "input"], &mut out, &mut errb);
+        let code = run(&["--home", home, "zz-post", "input"], &mut out, &mut errb);
         if code != 2 || s(&errb) != "pulse zz-post: quorum takes a whole number, not 'x'\n" {
             panic!("InputError: {code} {:?}", s(&errb));
         }
         errb.clear();
-        let code = run_s(&["--home", home, "zz-post", "--bogus"], &mut out, &mut errb);
+        let code = run(&["--home", home, "zz-post", "--bogus"], &mut out, &mut errb);
         if code != 2 || !s(&errb).contains("flag provided but not defined: -bogus") {
             panic!("bad flag: {code} {:?}", s(&errb));
         }
         out.clear();
-        let code = run_s(&["--home", home, "zz-post", "-h"], &mut out, &mut errb);
+        let code = run(&["--home", home, "zz-post", "-h"], &mut out, &mut errb);
         if code != 0 || !s(&out).contains("-kind string") {
             panic!("command -h: {code} {:?}", s(&out));
         }
@@ -648,7 +648,7 @@ mod tests {
             vec!["help", "settings"],
         ] {
             let (mut out, mut errb) = (Vec::new(), Vec::new());
-            let code = run_s(&args, &mut out, &mut errb);
+            let code = run(&args, &mut out, &mut errb);
             if code != 0 || !errb.is_empty() {
                 panic!(
                     "{}: help: code {code}, stdout {:?}, stderr {:?}",
@@ -704,7 +704,7 @@ mod tests {
         let home = dir.path().join("missing");
         let _home = setenv("PULSE_HOME", home.to_str().unwrap());
         let (mut out, mut errb) = (Vec::new(), Vec::new());
-        let code = run_s(&["settings", "help", "extra"], &mut out, &mut errb);
+        let code = run(&["settings", "help", "extra"], &mut out, &mut errb);
         if code != 2 || !out.is_empty() || !s(&errb).contains("unrecognized arguments: extra") {
             panic!(
                 "help arguments: code {code}, stdout {:?}, stderr {:?}",
@@ -732,7 +732,7 @@ mod tests {
             vec!["settings", "set", "minutes_per_job", "11"],
         ] {
             let (mut out, mut errb) = (Vec::new(), Vec::new());
-            let code = run_s(&args, &mut out, &mut errb);
+            let code = run(&args, &mut out, &mut errb);
             let want = format!(
                 "No store at {}",
                 home.join(pulse_store::STORE_NAME).to_str().unwrap()
@@ -778,7 +778,7 @@ mod tests {
             let (mut out, mut errb) = (Vec::new(), Vec::new());
             let mut full = vec!["settings"];
             full.extend(args.iter().copied());
-            let code = run_s(&full, &mut out, &mut errb);
+            let code = run(&full, &mut out, &mut errb);
             if code != 0 || s(&out) != want || !errb.is_empty() {
                 panic!(
                     "{args:?}: code {code}, stdout {:?}, stderr {:?}",
@@ -789,7 +789,7 @@ mod tests {
         }
         for name in ["evolve_minutes", "evolve_credits"] {
             let (mut out, mut errb) = (Vec::new(), Vec::new());
-            let code = run_s(&["settings", "set", name, "60"], &mut out, &mut errb);
+            let code = run(&["settings", "set", name, "60"], &mut out, &mut errb);
             if code != 2
                 || !out.is_empty()
                 || !s(&errb).contains(&format!("Unknown setting '{name}'"))
@@ -802,7 +802,7 @@ mod tests {
             }
         }
         let (mut out, mut errb) = (Vec::new(), Vec::new());
-        let code = run_s(&["settings", "list", "--json"], &mut out, &mut errb);
+        let code = run(&["settings", "list", "--json"], &mut out, &mut errb);
         if code != 0 || !errb.is_empty() {
             panic!(
                 "list: code {code}, stdout {:?}, stderr {:?}",

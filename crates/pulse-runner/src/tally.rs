@@ -1,4 +1,4 @@
-//! Skeleton port of internal/runner/tally.go.
+//! Port of internal/runner/tally.go.
 
 use serde_json::json;
 

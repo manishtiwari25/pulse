@@ -644,100 +644,74 @@ mod tests {
     #[test]
     fn landing_receipt_failure_after_evidence_keeps_carrier() {
         let _serial = crate::test_helpers::serial();
-        let _env = pulse_testutil::env_lock();
-        let (s, project, job, _root, _calls) = measured_keep_fixture();
+        let s = new_store();
+        let (project, root) = new_repo(&s);
+        join(&s, "aurora");
+        let branch = "pulse/aurora/receipt-failure";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        crate::test_helpers_landing::write_file(&root, "internal/api.go", "package internal\n");
+        run(&root, &["git", "add", "-A"]);
+        run(&root, &["git", "commit", "-q", "-m", "source change"]);
+        run(&root, &["git", "switch", "-q", "main"]);
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Deliver source".into(),
+            "do it".into(),
+            1,
+            0,
+            "manual".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
         exec1(
             &s,
-            "CREATE TRIGGER reject_finalization BEFORE INSERT ON events WHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'fake finalization refused'); END",
+            "UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?",
+            &[&branch, &"aurora", &job.str("id")],
+        );
+        exec1(
+            &s,
+            "CREATE TRIGGER reject_code_delivery_receipt BEFORE INSERT ON events\n\t\tWHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'receipt refused'); END",
             &[],
         );
-        let (state, note) = land_experiment(
+
+        let result = crate::land::land_branch(
             &s,
             project,
-            job.clone(),
+            branch.into(),
             "daemon".into(),
             TEST_NOW.into(),
-            true,
+            crate::land::LandOpts {
+                job: job_row(&s, &job.str("id")),
+                verify: false,
+                ..Default::default()
+            },
         );
-        assert_eq!(
-            state, "error",
-            "receipt failure was hidden: {state}: {note}"
-        );
-        assert!(
-            note.contains("fake finalization refused"),
-            "receipt failure was hidden: {state}: {note}"
-        );
+        match &result {
+            Err(err) if err.to_string().contains("receipt refused") => {}
+            Ok((state, note)) => {
+                panic!("receipt failure hidden: state={state:?} note={note:?} err=<nil>")
+            }
+            Err(err) => panic!("receipt failure hidden: state=\"\" note=\"\" err={err}"),
+        }
         let current = job_row(&s, &job.str("id"));
-        assert_eq!(current.str("status"), "done");
-        assert_eq!(current.str("branch"), job.str("branch"));
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.landed'",
-                &[]
-            ),
-            0
+        if current.str("branch") != branch || current.str("status") != "done" {
+            panic!("failed receipt cleared carrier: {current:?}");
+        }
+        let (exists, why) = crate::land::branch_exists(root.clone(), branch.into());
+        if !exists || !why.is_empty() {
+            panic!("failed receipt removed branch: exists={exists} why={why:?}");
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'land.landed'",
+            &[],
         );
-
-        let parity_probe = r#"CREATE TRIGGER reject_code_delivery_receipt BEFORE INSERT ON events WHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'receipt refused'); END Deliver source UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ? aurora commit internal/api.go manual package internal pulse/aurora/receipt-failure receipt refused source change switch"#;
-        assert!(parity_probe.contains(r#"CREATE TRIGGER reject_code_delivery_receipt BEFORE INSERT ON events WHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"#), "parity probe lacks {}", r#"CREATE TRIGGER reject_code_delivery_receipt BEFORE INSERT ON events WHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"#);
-        assert!(
-            parity_probe.contains(r#"Deliver source"#),
-            "parity probe lacks {}",
-            r#"Deliver source"#
-        );
-        assert!(
-            parity_probe.contains(
-                r#"UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?"#
-            ),
-            "parity probe lacks {}",
-            r#"UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?"#
-        );
-        assert!(
-            parity_probe.contains(r#"aurora"#),
-            "parity probe lacks {}",
-            r#"aurora"#
-        );
-        assert!(
-            parity_probe.contains(r#"commit"#),
-            "parity probe lacks {}",
-            r#"commit"#
-        );
-        assert!(
-            parity_probe.contains(r#"internal/api.go"#),
-            "parity probe lacks {}",
-            r#"internal/api.go"#
-        );
-        assert!(
-            parity_probe.contains(r#"manual"#),
-            "parity probe lacks {}",
-            r#"manual"#
-        );
-        assert!(
-            parity_probe.contains(r#"package internal"#),
-            "parity probe lacks {}",
-            r#"package internal"#
-        );
-        assert!(
-            parity_probe.contains(r#"pulse/aurora/receipt-failure"#),
-            "parity probe lacks {}",
-            r#"pulse/aurora/receipt-failure"#
-        );
-        assert!(
-            parity_probe.contains(r#"receipt refused"#),
-            "parity probe lacks {}",
-            r#"receipt refused"#
-        );
-        assert!(
-            parity_probe.contains(r#"source change"#),
-            "parity probe lacks {}",
-            r#"source change"#
-        );
-        assert!(
-            parity_probe.contains(r#"switch"#),
-            "parity probe lacks {}",
-            r#"switch"#
-        );
+        if n != 0 {
+            panic!("failed receipt left success event: {n}");
+        }
     }
 
     #[test]

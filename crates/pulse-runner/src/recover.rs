@@ -1509,6 +1509,7 @@ impl RecoveryStats {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+    use crate::test_helpers_f5::{exec1, must_one, must_rows};
     use crate::test_helpers_f7::*;
     use base64::Engine;
     use serde_json::{Value, json};
@@ -1586,31 +1587,6 @@ mod tests {
         s.conn().expect("conn")
     }
 
-    fn event_at_test(
-        s: &pulse_store::Store,
-        at: &str,
-        actor: &str,
-        action: &str,
-        subject: &str,
-        detail: Value,
-    ) {
-        super::event_at(&conn(s), at, actor, action, subject, detail).expect("event");
-    }
-
-    fn exec1_test(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) {
-        conn(s).execute(sql, args).expect("exec");
-    }
-
-    fn one(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Row {
-        crate::util::query_one(&conn(s), sql, args)
-            .expect("query")
-            .unwrap_or_default()
-    }
-
-    fn rows(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Vec<Row> {
-        crate::util::query_rows(&conn(s), sql, args).expect("query")
-    }
-
     #[test]
     fn retry_title_prefixes_once() {
         let _serial = crate::test_helpers::serial();
@@ -1659,7 +1635,7 @@ mod tests {
             &[&normalized],
         );
         assert_eq!(n, 1, "findings on normalized thread");
-        let post = one(
+        let post = must_one(
             &s,
             "SELECT thread FROM posts WHERE project = 'proj' AND kind = 'finding'",
             &[],
@@ -1740,14 +1716,14 @@ mod tests {
             "recovery off (daemon.recover)"
         );
 
-        exec1_test(
+        exec1(
             &s,
             "UPDATE jobs SET status = 'done' WHERE id = 'job-off'",
             &[],
         );
         super::recover_failed_jobs(
             &s,
-            one(&s, "SELECT * FROM projects WHERE slug = 'proj'", &[]),
+            must_one(&s, "SELECT * FROM projects WHERE slug = 'proj'", &[]),
             TEST_NOW.into(),
             "daemon".into(),
         );
@@ -1870,7 +1846,7 @@ mod tests {
         let out = super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
         assert_eq!(out.len(), 1, "lines = {out:?}");
         assert!(out[0].contains("re-planned job-det as"), "lines = {out:?}");
-        let copy = one(
+        let copy = must_one(
             &s,
             "SELECT * FROM jobs WHERE source = 'manual' AND status = 'queued'",
             &[],
@@ -1916,8 +1892,8 @@ mod tests {
             "verify exit 1",
             &crate::util::plus_hours(TEST_NOW, -2.0),
         );
-        event_at_test(
-            &s,
+        crate::util::event_at(
+            &conn(&s),
             &crate::util::plus_hours(TEST_NOW, -1.0),
             "daemon",
             pulse_board::JOB_RECOVER_ACTION,
@@ -2004,7 +1980,7 @@ mod tests {
             "verify exit 1",
             &crate::util::plus_minutes(TEST_NOW, -30.0),
         );
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO jobs (id, project, kind, tier, title, brief, source, status, created_at)
 \t\tVALUES ('job-open-recover', 'proj', 'improve', 1, 'open', 'open', 'manual', 'queued', ?)",
@@ -2153,8 +2129,8 @@ mod tests {
             "verify exit 1",
             &crate::util::plus_minutes(TEST_NOW, -39.0),
         );
-        event_at_test(
-            &s,
+        crate::util::event_at(
+            &conn(&s),
             &crate::util::plus_hours(TEST_NOW, -2.0),
             "daemon",
             pulse_board::JOB_RECOVER_ACTION,
@@ -2185,7 +2161,7 @@ mod tests {
             ),
             1
         );
-        let post = one(
+        let post = must_one(
             &s,
             "SELECT body FROM posts WHERE kind = 'finding' AND thread = 'job-limit'",
             &[],
@@ -2286,7 +2262,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         let (p, _) = new_bare_repo(&s);
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO meta (key, value) VALUES ('recovery', ?)",
             &[&r#"{"other":{"at":"2026-09-06T09:00:00Z","note":"kept"}}"#],
@@ -2305,7 +2281,7 @@ mod tests {
         assert!(notes["proj"].note.contains("1 failed in 7d"));
         assert_eq!(notes["other"].note, "kept");
 
-        exec1_test(
+        exec1(
             &s,
             "UPDATE jobs SET status = 'done' WHERE id = 'job-meta'",
             &[],
@@ -2374,7 +2350,7 @@ mod tests {
             "runner error: connection reset",
             &crate::util::plus_hours(TEST_NOW, -3.0),
         );
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO jobs (id, project, kind, tier, title, brief, source, priority, status, created_at, created_by)
 \t\tVALUES ('job-later', 'proj', 'improve', 1, 'Later carrier', 'brief', 'suggestion:POST-1', 0, 'done', ?, 'lead')",
@@ -2423,8 +2399,8 @@ mod tests {
             &crate::util::plus_hours(TEST_NOW, -1.0),
         );
         assert!(super::recovery_pending(&s, job.str("id")));
-        event_at_test(
-            &s,
+        crate::util::event_at(
+            &conn(&s),
             &crate::util::plus_minutes(TEST_NOW, -30.0),
             "daemon",
             FOLLOW_UP_ACTION,
@@ -2465,8 +2441,8 @@ mod tests {
             &crate::util::plus_hours(TEST_NOW, -1.0),
         );
         assert!(super::recovery_pending(&s, "job-tr".into()));
-        event_at_test(
-            &s,
+        crate::util::event_at(
+            &conn(&s),
             TEST_NOW,
             "daemon",
             pulse_board::JOB_RECOVER_ACTION,
@@ -2493,7 +2469,7 @@ mod tests {
         let s = new_store();
         let (p, _) = new_bare_repo(&s);
         for i in 0..RECOVER_QUEUE_ROOM {
-            exec1_test(
+            exec1(
                 &s,
                 "INSERT INTO jobs (id, project, kind, tier, title, brief, source, status, created_at)
 \t\t\tVALUES (?, 'proj', 'improve', 1, 'fresh', 'fresh', ?, 'queued', ?)",
@@ -2536,7 +2512,7 @@ mod tests {
             "note = {note}"
         );
 
-        exec1_test(
+        exec1(
             &s,
             "UPDATE jobs SET status = 'done' WHERE id LIKE 'job-fresh-%'",
             &[],
@@ -2649,7 +2625,7 @@ mod tests {
                 &crate::util::plus_minutes(TEST_NOW, -30.0),
             );
             run(&root, &["git", "branch", &job.str("branch")]);
-            exec1_test(
+            exec1(
                 &s,
                 &format!(
                     "CREATE TRIGGER reject_recovery_write BEFORE INSERT ON events
@@ -2725,7 +2701,7 @@ mod tests {
                 .ok(),
                 "{class}/{action}: branch was deleted before recovery writes succeeded"
             );
-            exec1_test(&s, "DROP TRIGGER reject_recovery_write", &[]);
+            exec1(&s, "DROP TRIGGER reject_recovery_write", &[]);
             let (line, acted) = super::recover_one(
                 &s,
                 p,
@@ -2784,17 +2760,17 @@ mod tests {
                 false,
             );
             match mode {
-                "leased" | "done" | "cancelled" => exec1_test(
+                "leased" | "done" | "cancelled" => exec1(
                     &s,
                     "UPDATE jobs SET status = ?, lease_agent = 'other', generation = generation + 1 WHERE id = ?",
                     &[&mode, &job.str("id")],
                 ),
-                "owner result" => exec1_test(
+                "owner result" => exec1(
                     &s,
                     "UPDATE jobs SET result = 'cancelled by the owner: stop retrying' WHERE id = ?",
                     &[&job.str("id")],
                 ),
-                "new failure" => exec1_test(
+                "new failure" => exec1(
                     &s,
                     "UPDATE jobs SET finished_at = ?, generation = generation + 1 WHERE id = ?",
                     &[&crate::util::plus_minutes(TEST_NOW, -10.0), &job.str("id")],
@@ -2972,7 +2948,7 @@ mod tests {
                     &["git", "checkout", "-q", "-b", "unrelated-checkout"],
                 );
                 if source == "job" {
-                    exec1_test(
+                    exec1(
                         &s,
                         "UPDATE jobs SET branch = ? WHERE id = ?",
                         &[&branch, &job.str("id")],
@@ -3172,8 +3148,8 @@ mod tests {
             1,
             "one chain produced duplicate corrected jobs"
         );
-        let carrier = one(&s, "SELECT id FROM jobs WHERE status = 'queued'", &[]);
-        exec1_test(
+        let carrier = must_one(&s, "SELECT id FROM jobs WHERE status = 'queued'", &[]);
+        exec1(
             &s,
             "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
             &[&TEST_NOW, &carrier.str("id")],
@@ -3211,7 +3187,7 @@ mod tests {
                 &crate::util::plus_hours(TEST_NOW, -1.0),
             );
         }
-        exec1_test(
+        exec1(
             &s,
             "CREATE TRIGGER reject_recovery_write BEFORE INSERT ON events
 \t\tWHEN NEW.action = 'job.recover' BEGIN SELECT RAISE(ABORT, 'injected recovery write failure'); END",
@@ -3299,14 +3275,14 @@ mod tests {
                 }
             }
             if mode == "cap finding" {
-                exec1_test(
+                exec1(
                     &s,
                     "CREATE TRIGGER reject_held_write BEFORE INSERT ON posts
 \t\t\t\t\tWHEN NEW.kind = 'finding' BEGIN SELECT RAISE(ABORT, 'injected held write failure'); END",
                     &[],
                 );
             } else {
-                exec1_test(
+                exec1(
                     &s,
                     "CREATE TRIGGER reject_held_write BEFORE INSERT ON events
 \t\t\t\t\tWHEN NEW.action = 'job.recover' BEGIN SELECT RAISE(ABORT, 'injected held write failure'); END",
@@ -3327,7 +3303,7 @@ mod tests {
                 "{mode}: note = {note}"
             );
             if mode == "cap finding" {
-                exec1_test(&s, "DROP TRIGGER reject_held_write", &[]);
+                exec1(&s, "DROP TRIGGER reject_held_write", &[]);
                 for (i, want) in [RECOVER_PER_TICK, RECOVER_PER_TICK + 1]
                     .into_iter()
                     .enumerate()
@@ -3438,14 +3414,14 @@ mod tests {
             );
             match mode {
                 "answer" | "lead" | "baseline" | "experiment" => {
-                    exec1_test(
+                    exec1(
                         &s,
                         "UPDATE jobs SET kind = ? WHERE id = ?",
                         &[&mode, &job.str("id")],
                     );
                 }
                 "old" => {
-                    exec1_test(
+                    exec1(
                         &s,
                         "UPDATE jobs SET finished_at = ? WHERE id = ?",
                         &[
@@ -3455,14 +3431,14 @@ mod tests {
                     );
                 }
                 "cancelled" => {
-                    exec1_test(
+                    exec1(
                         &s,
                         "UPDATE jobs SET result = 'cancelled by the owner: runner error' WHERE id = ?",
                         &[&job.str("id")],
                     );
                 }
-                "lead followup" => event_at_test(
-                    &s,
+                "lead followup" => crate::util::event_at(
+                    &conn(&s),
                     TEST_NOW,
                     "daemon",
                     FOLLOW_UP_ACTION,
@@ -3672,15 +3648,15 @@ mod tests {
             "verify exit 1: parser still rejects empty input",
             &crate::util::plus_minutes(TEST_NOW, -30.0),
         );
-        event_at_test(
-            &s,
+        crate::util::event_at(
+            &conn(&s),
             &crate::util::plus_hours(TEST_NOW, -2.0),
             "daemon",
             pulse_board::JOB_RECOVER_ACTION,
             &job.str("id"),
             json!({"outcome": "requeued", "root": job.str("id"), "n": 1}),
         );
-        exec1_test(
+        exec1(
             &s,
             "CREATE TRIGGER reject_cap_finding BEFORE INSERT ON posts
 \t\tWHEN NEW.kind = 'finding' BEGIN SELECT RAISE(ABORT, 'injected finding write failure'); END",
@@ -3691,7 +3667,7 @@ mod tests {
             lines.join("\n").contains("injected finding write failure"),
             "capped finding write failure was hidden: {lines:?}"
         );
-        exec1_test(&s, "DROP TRIGGER reject_cap_finding", &[]);
+        exec1(&s, "DROP TRIGGER reject_cap_finding", &[]);
         super::recover_failed_jobs(
             &s,
             p.clone(),
@@ -3712,7 +3688,7 @@ mod tests {
             ),
             1
         );
-        let post = one(
+        let post = must_one(
             &s,
             "SELECT body FROM posts WHERE kind = 'finding' AND thread = ?",
             &[&job.str("id")],
@@ -3761,19 +3737,19 @@ mod tests {
         )
         .expect("lease");
         assert!(!leased.0.is_empty(), "lease returned no row");
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) VALUES ('run-1', ?, 'w0', 'proj', ?, 'running', '', '', 'real', 'local')",
             &[&job.str("id"), &TEST_NOW],
         );
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) VALUES ('run-0', 'job-other', 'w0', 'proj', ?, 'done', '', '', 'real', 'local')",
             &[&TEST_NOW],
         );
         assert_eq!(crate::run::sweep_lost_runs(&s, TEST_NOW), 1);
         assert_eq!(
-            one(&s, "SELECT status FROM runs WHERE id = 'run-1'", &[]).str("status"),
+            must_one(&s, "SELECT status FROM runs WHERE id = 'run-1'", &[]).str("status"),
             "lost"
         );
         let j = crate::jobs::job_row(&conn(&s), job.str("id"));
@@ -3788,12 +3764,12 @@ mod tests {
             ),
             1
         );
-        exec1_test(
+        exec1(
             &s,
             "UPDATE jobs SET status = 'leased', lease_agent = 'w0', lease_until = '2099-01-01T00:00:00Z', attempts = ? WHERE id = ?",
             &[&crate::run::MAX_ATTEMPTS, &job.str("id")],
         );
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) VALUES ('run-2', ?, 'w0', 'proj', ?, 'running', '', '', 'real', 'local')",
             &[&job.str("id"), &TEST_NOW],
@@ -3803,12 +3779,12 @@ mod tests {
         assert_eq!(j.str("status"), "failed", "third loss: {j:?}");
         assert!(j.str("result").contains("3 times"), "third loss: {j:?}");
         assert_eq!(j.str("lease_agent"), "", "third loss: {j:?}");
-        exec1_test(
+        exec1(
             &s,
             "UPDATE jobs SET status = 'leased', lease_agent = 'w1', attempts = 1 WHERE id = ?",
             &[&job.str("id")],
         );
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) VALUES ('run-3', ?, 'w0', 'proj', ?, 'running', '', '', 'real', 'local')",
             &[&job.str("id"), &TEST_NOW],
@@ -4325,7 +4301,7 @@ mod tests {
         )
         .expect("create question");
         let lines = crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
-        let jobs = rows(
+        let jobs = must_rows(
             &s,
             "SELECT * FROM jobs WHERE kind = ?",
             &[&crate::lead::LEAD_KIND],
@@ -4356,7 +4332,7 @@ mod tests {
             0,
             "lead-directed question also dispatched ordinary workers"
         );
-        exec1_test(
+        exec1(
             &s,
             "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
             &[&TEST_NOW, &jobs[0].str("id")],
@@ -4521,7 +4497,7 @@ mod tests {
         for (i, want) in [10, 4].into_iter().enumerate() {
             let now = crate::util::plus_minutes(TEST_NOW, i as f64);
             crate::lead::tend_lead(&s, "proj".into(), now.clone(), "daemon".into());
-            let jobs = rows(
+            let jobs = must_rows(
                 &s,
                 "SELECT * FROM jobs WHERE kind = ? ORDER BY rowid",
                 &[&crate::lead::LEAD_KIND],
@@ -4539,7 +4515,7 @@ mod tests {
                 "batch {i}: brief = {}",
                 jobs[i].str("brief")
             );
-            exec1_test(
+            exec1(
                 &s,
                 "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
                 &[&now, &jobs[i].str("id")],
@@ -4624,7 +4600,7 @@ mod tests {
                 crate::util::plus_minutes(TEST_NOW, 1.0),
                 "daemon".into(),
             );
-            let leads = rows(
+            let leads = must_rows(
                 &s,
                 "SELECT * FROM jobs WHERE kind = ?",
                 &[&crate::lead::LEAD_KIND],

@@ -1,6 +1,6 @@
 #![allow(dead_code, clippy::too_many_arguments, clippy::type_complexity)]
 
-//! Skeleton port of internal/runner/daemon_maintenance.go.
+//! Port of internal/runner/daemon_maintenance.go.
 
 use std::collections::BTreeMap;
 
@@ -11,7 +11,7 @@ pub(crate) struct DaemonMaintenance {
     pub(crate) done: Option<crossbeam_channel::Receiver<(Vec<String>, BTreeMap<String, String>)>>,
     pub(crate) lines: Vec<String>,
     pub(crate) held: BTreeMap<String, String>,
-    pub(crate) last_sweep: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) last_sweep: std::sync::Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
     pub(crate) pending: BTreeMap<String, bool>,
 }
 
@@ -75,7 +75,7 @@ impl DaemonMaintenance {
         let cancel = cancel.clone();
         let s = s.clone();
         let held = self.held.clone();
-        let last_sweep = self.last_sweep;
+        let last_sweep = self.last_sweep.clone();
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let (mut lines, held) = crate::landing_hold::tend_landings_context(
@@ -93,7 +93,7 @@ impl DaemonMaintenance {
                         s.now(),
                         actor.clone(),
                         inflight,
-                        last_sweep,
+                        &mut last_sweep.lock().unwrap_or_else(|e| e.into_inner()),
                     ));
                     if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                         lines.extend(crate::selfupdate::tend_binary(&s, s.now(), binary));

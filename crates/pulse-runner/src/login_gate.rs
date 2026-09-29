@@ -188,12 +188,26 @@ CLI path meanwhile. Remote executors keep working. This post is a measurement, n
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::TEST_NOW;
+    use crate::test_helpers_f5::set_setting;
+    use crate::test_helpers_f6::{invoke, invoke_ok, stub_gh};
+    use crate::test_helpers_login_reuse::{
+        LOGIN_REUSE_GH_TOKEN, LOGIN_REUSE_PROVIDER_NAME, LOGIN_REUSE_PROVIDER_TOKEN,
+        login_reuse_store,
+    };
+    use crate::test_helpers_token::{
+        FakeGitHub, FakeGitHubState, advance_wall_clock, fixed_wall_clock, time_date,
+    };
+    use crate::token::{
+        LOGIN_SOURCE_HUB_LOGIN, LOGIN_SOURCE_NONE, LOGIN_SOURCE_PROVIDER, has_login_source,
+        login_source,
+    };
     use anyhow::Result;
-    use std::sync::{LazyLock, Mutex, Once};
+    use std::sync::{Arc, LazyLock, Mutex, Once};
+    use std::time::Duration;
 
     #[derive(Clone, Default)]
     struct GateFakeState {
-        token: String,
         login: pulse_provider::Login,
         err: String,
         calls: i32,
@@ -237,20 +251,6 @@ mod tests {
             }
             Ok(st.login.clone())
         }
-        fn as_login_exporter(&self) -> Option<&dyn pulse_provider::LoginExporter> {
-            Some(self)
-        }
-    }
-
-    impl pulse_provider::LoginExporter for GateFakeProvider {
-        fn export_login(&self) -> Result<(String, pulse_provider::Login)> {
-            let states = GATE_FAKE_STATES.lock().unwrap();
-            let st = states.get(&self.home).cloned().unwrap_or_default();
-            if !st.err.is_empty() {
-                anyhow::bail!("{}", st.err);
-            }
-            Ok((st.token, st.login))
-        }
     }
 
     fn gate_fake_factory(o: pulse_provider::Options) -> Result<Box<dyn pulse_provider::Provider>> {
@@ -282,11 +282,6 @@ mod tests {
         let st = states.entry(s.home.clone()).or_default();
         st.login = login;
         st.err = err.into();
-    }
-
-    fn set_gate_token(s: &pulse_store::Store, token: &str) {
-        let mut states = GATE_FAKE_STATES.lock().unwrap();
-        states.entry(s.home.clone()).or_default().token = token.into();
     }
 
     fn gate_calls(s: &pulse_store::Store) -> i32 {
@@ -484,91 +479,111 @@ mod tests {
     #[test]
     fn native_login_source_uses_provider_exporter_and_cache() {
         let _serial = crate::test_helpers::serial();
-        let s = gate_store();
-        set_gate_state(
-            &s,
-            pulse_provider::Login {
-                logged_in: true,
-                user: "octocat".into(),
-                source: "stored".into(),
-                ..Default::default()
-            },
-            "",
+        let (s, state, _cleanup) = login_reuse_store();
+        state.lock().token = LOGIN_REUSE_PROVIDER_TOKEN.into();
+        state.lock().login = pulse_provider::Login {
+            logged_in: true,
+            user: "octocat".into(),
+            source: "stored".into(),
+            ..Default::default()
+        };
+        let gh = FakeGitHub::new(FakeGitHubState {
+            login: "octocat".into(),
+            ..Default::default()
+        });
+        let _gh = gh.install();
+        let _clock = fixed_wall_clock(time_date(2026, 9, 11, 7, 0, 0));
+
+        let res = login_source(&s);
+        assert!(
+            matches!(&res, Ok((tok, origin)) if tok.as_slice() == LOGIN_REUSE_PROVIDER_TOKEN.as_bytes() && origin == LOGIN_SOURCE_PROVIDER),
+            "provider source: {res:?}"
         );
-        assert_eq!(
-            provider_settings_key(std::collections::BTreeMap::from([
-                ("b".into(), "2".into()),
-                ("a".into(), "1".into())
-            ])),
-            "a=1\0b=2"
+        assert!(
+            has_login_source(&s),
+            "provider login did not satisfy hasLoginSource"
         );
-        assert_eq!(provider_settings_key(std::collections::BTreeMap::new()), "");
-        let settings_a =
-            std::collections::BTreeMap::from([("b".into(), "2".into()), ("a".into(), "1".into())]);
-        let settings_b =
-            std::collections::BTreeMap::from([("a".into(), "1".into()), ("b".into(), "2".into())]);
-        let p1 = local_provider(s.home.clone(), "gatefake".into(), settings_a).unwrap();
-        let p2 = local_provider(s.home.clone(), "gatefake".into(), settings_b).unwrap();
-        assert!(std::sync::Arc::ptr_eq(&p1, &p2));
-        let p3 = local_provider(
-            s.home.clone(),
-            "gatefake".into(),
-            std::collections::BTreeMap::from([("a".into(), "changed".into())]),
-        )
-        .unwrap();
-        assert!(!std::sync::Arc::ptr_eq(&p1, &p3));
-        let before = gate_calls(&s);
-        assert_eq!(local_login_gate(&s), "");
-        assert_eq!(gate_calls(&s), before + 1);
-        set_gate_state(
-            &s,
-            pulse_provider::Login {
-                logged_in: false,
-                detail: "stored login expired".into(),
-                ..Default::default()
-            },
-            "",
-        );
-        let gate = local_login_gate(&s);
-        assert!(gate.contains("Gate Fake login"));
-        assert!(gate.contains("stored login expired"));
-        let after = gate_calls(&s);
-        assert_eq!(after, before + 2);
+        let n = gh.count();
+        assert!(n == 2, "GitHub checks = {n}, calls {:?}", gh.lock().calls);
+        let _ = login_source(&s);
+        let _ = login_source(&s);
+        let n = gh.count();
+        assert!(n == 2, "provider acceptance cache missed: {n}");
+        advance_wall_clock(Duration::from_secs(11 * 60));
+        let _ = login_source(&s);
+        let n = gh.count();
+        assert!(n == 4, "provider acceptance cache did not expire: {n}");
+        for tok in &gh.lock().tokens {
+            assert!(
+                tok == LOGIN_REUSE_PROVIDER_TOKEN,
+                "GitHub saw token {tok:?}"
+            );
+        }
     }
     #[test]
     fn native_login_source_never_uses_gh_token() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers::new_store();
-        s.set_setting(pulse_store::HUMAN_AGENT, "harness", "native")
-            .unwrap();
-        assert!(s.harness_native());
+        let (s, state, _cleanup) = login_reuse_store();
+        state.lock().err = Some(pulse_provider::ProviderError::new(
+            LOGIN_REUSE_PROVIDER_NAME,
+            0,
+            "no_stored_login",
+            "none",
+            false,
+        ));
+        let _stub = stub_gh(LOGIN_REUSE_GH_TOKEN);
+        let gh = FakeGitHub::default();
+        let _gh = gh.install();
+
+        let res = login_source(&s);
+        assert!(
+            matches!(&res, Ok((tok, origin)) if tok.is_empty() && origin == LOGIN_SOURCE_NONE),
+            "native gh fallback: {res:?}"
+        );
+        assert!(
+            gh.count() == 0,
+            "native mode asked GitHub about gh token: {:?}",
+            gh.lock().calls
+        );
     }
     #[test]
     fn legacy_login_source_still_uses_gh_token() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers::new_store();
-        s.set_setting(pulse_store::HUMAN_AGENT, "harness", "copilot-cli")
-            .unwrap();
-        assert!(!s.harness_native());
+        let (s, _, _cleanup) = login_reuse_store();
+        set_setting(&s, "harness", "copilot-cli");
+        let _stub = stub_gh(LOGIN_REUSE_GH_TOKEN);
+        let gh = FakeGitHub::new(FakeGitHubState {
+            login: "hub-user".into(),
+            ..Default::default()
+        });
+        let _gh = gh.install();
+
+        let res = login_source(&s);
+        assert!(
+            matches!(&res, Ok((tok, origin)) if tok.as_slice() == LOGIN_REUSE_GH_TOKEN.as_bytes() && origin == LOGIN_SOURCE_HUB_LOGIN),
+            "legacy gh source: {res:?}"
+        );
+        assert!(gh.count() == 2, "legacy gh checks = {}", gh.count());
     }
     #[test]
     fn executor_login_without_token_reuses_login_source() {
         let _serial = crate::test_helpers::serial();
-        let s = gate_store();
-        set_gate_token(&s, "gho_provider000000000000000000000000");
-        set_gate_state(
-            &s,
-            pulse_provider::Login {
-                logged_in: true,
-                user: "octocat".into(),
-                source: "stored".into(),
-                ..Default::default()
-            },
-            "",
-        );
+        let (s, state, _cleanup) = login_reuse_store();
+        state.lock().token = LOGIN_REUSE_PROVIDER_TOKEN.into();
+        state.lock().login = pulse_provider::Login {
+            logged_in: true,
+            user: "octocat".into(),
+            source: "stored".into(),
+            ..Default::default()
+        };
+        let gh = FakeGitHub::new(FakeGitHubState {
+            login: "octocat".into(),
+            ..Default::default()
+        });
+        let _gh = gh.install();
         crate::executor::add_executor(
             &s,
-            crate::test_helpers::TEST_NOW,
+            TEST_NOW,
             "hands",
             "pulse@hands",
             "/srv/pulse",
@@ -577,73 +592,75 @@ mod tests {
             crate::util::HUMAN_AGENT,
         )
         .unwrap();
-        let sent = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
-        let calls = std::sync::Arc::new(Mutex::new(0));
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hand_calls = Arc::new(Mutex::new(0));
         let _ssh = crate::test_helpers_f1b::install_run_ssh({
             let sent = sent.clone();
-            let calls = calls.clone();
-            move |_ctx, argv, stdin, _timeout| {
-                let cmd = argv.join(" ");
-                if cmd.contains("pulse harness login --with-token") {
+            let hand_calls = hand_calls.clone();
+            move |_, argv, stdin, _| {
+                if argv.join(" ").contains("pulse harness login --with-token") {
                     sent.lock()
                         .unwrap()
                         .push(String::from_utf8_lossy(stdin).trim().to_string());
                     return Ok((0, String::new(), String::new()));
                 }
-                assert!(cmd.contains("b64 "), "unexpected ssh argv {argv:?}");
-                let mut calls = calls.lock().unwrap();
-                *calls += 1;
-                match *calls {
+                if argv.is_empty() || !argv[argv.len() - 1].starts_with("b64 ") {
+                    panic!("unexpected ssh argv {argv:?}");
+                }
+                let mut hand_calls = hand_calls.lock().unwrap();
+                *hand_calls += 1;
+                match *hand_calls {
                     1 => Ok((0, "hands=ok user=pulse workdir=/srv/pulse git=2.40 harness=yes pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=4096 jobs=- keys=- heartbeat=1\n".into(), String::new())),
                     2 => Ok((0, String::new(), String::new())),
                     _ => Ok((0, "SUMMARY: ok\n".into(), String::new())),
                 }
             }
         });
-        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
-        let res = crate::executor::executor_login(
+
+        let out = invoke_ok(
             &s,
-            crate::test_helpers::TEST_NOW,
-            "hands",
-            "admin@hands",
-            &mut empty,
-            false,
-            false,
-            crate::util::HUMAN_AGENT,
-        )
-        .unwrap();
-        assert_eq!(
-            sent.lock().unwrap().as_slice(),
-            ["gho_provider000000000000000000000000"]
+            "executor",
+            "",
+            &["login", "hands", "--admin", "admin@hands"],
         );
-        let out = res.lines.join("\n");
+        let sent = sent.lock().unwrap();
         assert!(
-            out.contains("login source: stored") && !out.contains("gho_provider"),
-            "{out}"
+            sent.len() == 1 && sent[0] == LOGIN_REUSE_PROVIDER_TOKEN,
+            "sent tokens = {sent:#?}"
         );
-        let ev = crate::util::must_one(
-            &*s.conn().unwrap(),
+        assert!(
+            out.contains(&format!("login source: {LOGIN_SOURCE_PROVIDER}"))
+                && !out.contains(LOGIN_REUSE_PROVIDER_TOKEN),
+            "executor login output: {out:?}"
+        );
+        let ev = crate::test_helpers_f5::must_one(
+            &s,
             "SELECT detail FROM events WHERE action = 'executor.login' ORDER BY seq DESC LIMIT 1",
             &[],
         );
         let detail = ev.str("detail");
         assert!(
-            detail.contains("stored") && !detail.contains("gho_provider"),
-            "detail leaked or missed source: {detail}"
+            detail.contains(LOGIN_SOURCE_PROVIDER) && !detail.contains(LOGIN_REUSE_PROVIDER_TOKEN),
+            "event detail leaked or missed source: {detail:?}"
         );
     }
     #[test]
     fn executor_login_without_token_explains_missing_source() {
         let _serial = crate::test_helpers::serial();
-        let s = gate_store();
-        set_gate_state(
-            &s,
-            pulse_provider::Login::default(),
-            "no_stored_login: none",
-        );
+        let (s, state, _cleanup) = login_reuse_store();
+        state.lock().err = Some(pulse_provider::ProviderError::new(
+            LOGIN_REUSE_PROVIDER_NAME,
+            0,
+            "no_stored_login",
+            "none",
+            false,
+        ));
+        let _stub = stub_gh(LOGIN_REUSE_GH_TOKEN);
+        let gh = FakeGitHub::default();
+        let _gh = gh.install();
         crate::executor::add_executor(
             &s,
-            crate::test_helpers::TEST_NOW,
+            TEST_NOW,
             "hands",
             "pulse@hands",
             "/srv/pulse",
@@ -652,32 +669,28 @@ mod tests {
             crate::util::HUMAN_AGENT,
         )
         .unwrap();
-        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
-        let err = crate::executor::executor_login(
+        let (out, err_text, code) = invoke(
             &s,
-            crate::test_helpers::TEST_NOW,
-            "hands",
-            "admin@hands",
-            &mut empty,
-            false,
-            false,
-            crate::util::HUMAN_AGENT,
-        )
-        .unwrap_err()
-        .to_string();
+            "executor",
+            "",
+            &["login", "hands", "--admin", "admin@hands"],
+        );
+        assert!(
+            code == 2 && out.is_empty(),
+            "missing source code/out = {code} {out:?}"
+        );
         for want in [
             "Settings -> Harness",
             "pulse harness login",
             "pulse executor token --with-token",
             "--with-token",
-            "--admin",
-            "/srv/pulse",
-            "pulse@hands",
-            "admin@hands",
-            "executor",
-            "no_stored_login",
         ] {
-            assert!(err.contains(want), "missing {want:?} in {err:?}");
+            assert!(err_text.contains(want), "missing {want:?} in {err_text:?}");
         }
+        assert!(
+            !err_text.contains(LOGIN_REUSE_GH_TOKEN) && gh.count() == 0,
+            "missing source leaked token or used gh: {err_text:?} calls={:?}",
+            gh.lock().calls
+        );
     }
 }

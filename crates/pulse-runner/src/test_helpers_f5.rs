@@ -11,15 +11,74 @@ use crate::util::{self, Row};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub(crate) const FAKE_PUSH_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nZmFrZSBrZXkgZm9yIHRlc3Rz\n-----END OPENSSH PRIVATE KEY-----\n";
 
+/// Go: func setSetting(t *testing.T, s *store.Store, key, value string)
 pub(crate) fn set_setting(s: &pulse_store::Store, key: &str, value: &str) {
-    s.set_setting(util::HUMAN_AGENT, key, value)
-        .expect("set setting");
+    if let Err(err) = s.set_setting(util::HUMAN_AGENT, key, value) {
+        panic!("setting {key}: {err}");
+    }
 }
 
+/// Go: func skipSlow(t *testing.T)
+///
+/// Go skips these worker/daemon tests under `go test -short`; libtest has no -short, so the
+/// full suite always runs them, as Go's does.
 pub(crate) fn skip_slow() {}
+
+/// Go: const defaultTestDeadline = 60 * time.Second
+pub(crate) const DEFAULT_TEST_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Go: func testDeadline(t *testing.T, d time.Duration)
+///
+/// Fails the test with a stack note when it runs past d, so a worker clone whose spawned
+/// git/worker subprocess blocks reports the stuck test by name instead of letting the whole
+/// package hit the harness timeout. Go's version panics from a goroutine, which kills the test
+/// process (exit 2); the guard here does the same once its deadline passes. Hold the returned
+/// guard for the test's life: dropping it is Go's t.Cleanup closing `done`.
+#[must_use = "bind the guard (`let _deadline = test_deadline(..)`) or the deadline is cancelled at once"]
+pub(crate) fn test_deadline(d: Duration) -> TestDeadline {
+    let d = test_wait(d);
+    let name = std::thread::current().name().unwrap_or("test").to_string();
+    let (done, wait) = crossbeam_channel::bounded::<()>(0);
+    std::thread::spawn(move || {
+        if wait.recv_timeout(d) == Err(crossbeam_channel::RecvTimeoutError::Timeout) {
+            eprintln!("{name} ran past its {d:?} deadline");
+            eprintln!("test {name} exceeded {d:?} deadline");
+            std::process::exit(2);
+        }
+    });
+    TestDeadline { _done: done }
+}
+
+pub(crate) struct TestDeadline {
+    _done: crossbeam_channel::Sender<()>,
+}
+
+/// Go: func testWait(d time.Duration) time.Duration
+pub(crate) fn test_wait(d: Duration) -> Duration {
+    d.mul_f64(deadline_mult())
+}
+
+/// Go: func deadlineMult() float64
+///
+/// PULSE_TEST_DEADLINE_MULT (a positive float, e.g. "2.5"); unset or invalid means 1. Values
+/// below 1 are clamped to 1 so a budget can only grow. (Go doubles the budget under -short.)
+pub(crate) fn deadline_mult() -> f64 {
+    if let Ok(v) = std::env::var("PULSE_TEST_DEADLINE_MULT")
+        && !v.is_empty()
+        && let Ok(f) = v.parse::<f64>()
+        && f > 0.0
+    {
+        if f < 1.0 {
+            return 1.0;
+        }
+        return f;
+    }
+    1.0
+}
 
 pub(crate) fn exec1(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) {
     s.conn().expect("conn").execute(sql, args).expect("exec1");
@@ -41,6 +100,89 @@ pub(crate) fn must_one(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite:
 
 pub(crate) fn job_row(s: &pulse_store::Store, id: &str) -> Row {
     crate::jobs::job_row(&s.conn().expect("conn"), id.to_string())
+}
+
+/// Go: fakeMeasure stands in for evolve.Measure: one public and one held-out score, or an error; the real Archive
+/// still writes the row.
+#[derive(Default)]
+pub(crate) struct FakeMeasureState {
+    pub total: f64,
+    pub err: Option<anyhow::Error>,
+    pub calls: Vec<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct FakeMeasure(pub Arc<Mutex<FakeMeasureState>>);
+
+/// Go: t.Cleanup(func() { evolve.Measure = old })
+pub(crate) struct MeasureGuard(Option<Box<pulse_evolve::api::MeasureFn>>);
+
+impl Drop for MeasureGuard {
+    fn drop(&mut self) {
+        if let Some(old) = self.0.take() {
+            let _ = pulse_evolve::set_measure(old);
+        }
+    }
+}
+
+impl FakeMeasure {
+    /// Go: &fakeMeasure{total: .75} / &fakeMeasure{err: errors.New("...")}
+    pub(crate) fn new(total: f64, err: Option<anyhow::Error>) -> Self {
+        FakeMeasure(Arc::new(Mutex::new(FakeMeasureState {
+            total,
+            err,
+            calls: Vec::new(),
+        })))
+    }
+
+    /// Go: func (f *fakeMeasure) install(t *testing.T)
+    pub(crate) fn install(&self) -> MeasureGuard {
+        let f = self.clone();
+        let old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, project, repo, ref_name, _opts| {
+                let mut f = f.0.lock().expect("fake measure");
+                f.calls.push(format!("{project}@{ref_name}"));
+                if let Some(err) = &f.err {
+                    return Err(anyhow::anyhow!("{err:#}"));
+                }
+                Ok(pulse_evolve::Scores {
+                    project: project.into(),
+                    repo: repo.into(),
+                    ref_name: ref_name.into(),
+                    total: f.total,
+                    heldout: 1,
+                    sandbox: "fake-sandbox".into(),
+                    fixtures: vec![
+                        pulse_evolve::FixtureScore {
+                            name: "starter-readme".into(),
+                            kind: "public".into(),
+                            score: f.total,
+                            weight: 1.0,
+                            ..Default::default()
+                        },
+                        pulse_evolve::FixtureScore {
+                            name: "PRIVATE-NAME".into(),
+                            kind: "heldout".into(),
+                            score: 1.0,
+                            weight: 1.0,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                })
+            }));
+        MeasureGuard(Some(old))
+    }
+
+    /// Go: measure.calls
+    pub(crate) fn calls(&self) -> Vec<String> {
+        self.0.lock().expect("fake measure").calls.clone()
+    }
+
+    /// Go: measure.err = ...
+    pub(crate) fn set_err(&self, err: anyhow::Error) {
+        self.0.lock().expect("fake measure").err = Some(err);
+    }
 }
 
 pub(crate) fn baseline_jobs(s: &pulse_store::Store, slug: &str) -> Vec<Row> {
@@ -70,23 +212,6 @@ pub(crate) fn loop_records(s: &pulse_store::Store, slug: &str) {
             "fixture",
         )
         .expect("put loop record");
-    }
-    seed_public_fixtures(s, slug);
-}
-
-pub(crate) fn seed_public_fixtures(s: &pulse_store::Store, slug: &str) {
-    for i in 1..=6 {
-        exec1(
-            s,
-            "INSERT OR IGNORE INTO evolution_fixtures (id, project, name, request, scorer_cmd, weight, kind, enabled, created_by, at)
-            VALUES (?, ?, ?, 'read README', 'printf 1', 1, 'public', 1, 'fixture', ?)",
-            &[
-                &format!("FX-{slug}-{i}"),
-                &slug,
-                &format!("starter-{i}"),
-                &TEST_NOW,
-            ],
-        );
     }
 }
 
@@ -225,7 +350,6 @@ exec sh -c "$last"
 pub(crate) fn evolve_plan_ready(s: &pulse_store::Store) {
     set_setting(s, "evolve.loop", "1");
     set_setting(s, "quorum", "2");
-    seed_public_fixtures(s, "proj");
     let constitution = "# Constitution\n\n## Editable scope\n| File class | Paths | Stage | Autonomy |\n| --- | --- | --- | --- |\n| operating | `README.md` | 2 | standing |\n\n## Immutable paths\n| Path | Why |\n| --- | --- |\n| `docs/evolution/**` | owner-owned |\n";
     for (slug, body) in [
         ("constitution", constitution),
@@ -294,6 +418,73 @@ pub(crate) fn evolve_plan_ready(s: &pulse_store::Store) {
     )
     .expect("baseline archive");
     s.close().expect("close helper connections");
+}
+
+/// Go: func finishMeasuredExperiment(t *testing.T, s *store.Store, job row, kept bool) string
+/// (evolve_feedback_test.go:12)
+pub(crate) fn finish_measured_experiment(s: &pulse_store::Store, job: Row, kept: bool) -> String {
+    let run_id = format!("run-{}", job.str("id"));
+    exec1(
+        s,
+        "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES (?, ?, 'proposer', 'proj', ?, 'done')",
+        &[&run_id, &job.str("id"), &TEST_NOW],
+    );
+    let mut variant = 0.7;
+    if kept {
+        variant = 0.9;
+    }
+    let (suggestion, hypothesis) = crate::experiment::experiment_suggestion(job.clone());
+    let id = pulse_evolve::archive_row(
+        s,
+        pulse_evolve::ArchiveRow {
+            project: "proj".into(),
+            suggestion_post: suggestion,
+            hypothesis,
+            branch: job.str("branch"),
+            baseline: Some(pulse_evolve::Scores {
+                total: 0.8,
+                ..Default::default()
+            }),
+            variant: Some(pulse_evolve::Scores {
+                total: variant,
+                ..Default::default()
+            }),
+            tolerance: 0.02,
+            kept,
+            run_id: run_id.clone(),
+            note: "fake measured outcome".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    exec1(
+        s,
+        "UPDATE jobs SET status = 'done', finished_at = ?, result = 'measured; finalization pending' WHERE id = ?",
+        &[&TEST_NOW, &job.str("id")],
+    );
+    let mut action = "land.dropped";
+    if kept {
+        action = "land.landed";
+    }
+    let project = must_one(s, "SELECT * FROM projects WHERE slug = 'proj'", &[]);
+    if let Err(err) = crate::landing_evidence::record_landing(
+        s,
+        project,
+        job.str("branch"),
+        "daemon".into(),
+        action.into(),
+        " | fake finalization".into(),
+        crate::land::LandOpts {
+            job: job.clone(),
+            archive_id: id.clone(),
+            run_id,
+            ..Default::default()
+        },
+        BTreeMap::from([("fake".to_string(), serde_json::json!(true))]),
+    ) {
+        panic!("{err}");
+    }
+    id
 }
 
 pub(crate) fn evolve_suggestion(s: &pulse_store::Store) -> pulse_board::Post {
@@ -431,4 +622,31 @@ pub(crate) fn defer_measured_keep(s: &pulse_store::Store, project: Row, job: Row
         state == "deferred" && note.contains("archive B-002"),
         "fake measured keep did not defer landing: {state}: {note}"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn deadline_mult() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for (env, want) in [
+            ("3", 3.0),
+            ("2.5", 2.5),
+            ("0.5", 1.0),
+            ("0", 0.0),
+            ("abc", 0.0),
+        ] {
+            let _env = pulse_testutil::setenv("PULSE_TEST_DEADLINE_MULT", env);
+            let mut want = want;
+            if want == 0.0 {
+                want = 1.0;
+            }
+            let got = super::deadline_mult();
+            assert_eq!(
+                got, want,
+                "PULSE_TEST_DEADLINE_MULT={env:?}: got {got} want {want}"
+            );
+        }
+    }
 }

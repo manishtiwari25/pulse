@@ -92,3 +92,11 @@ pub(crate) mod test_helpers_f5;
 pub(crate) mod test_helpers_f6;
 #[cfg(test)]
 pub(crate) mod test_helpers_f7;
+#[cfg(test)]
+pub(crate) mod test_helpers_landing;
+#[cfg(test)]
+pub(crate) mod test_helpers_login_reuse;
+#[cfg(test)]
+pub(crate) mod test_helpers_selfupdate;
+#[cfg(test)]
+pub(crate) mod test_helpers_token;

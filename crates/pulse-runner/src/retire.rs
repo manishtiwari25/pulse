@@ -595,15 +595,18 @@ pub(crate) fn delete_retired(s: &pulse_store::Store, now: String, actor: String)
     );
     for r in rows {
         let name = r.str("executor");
-        let status = crate::util::must_one(
-            &conn,
-            "SELECT status FROM executors WHERE name = ?",
-            &[&name],
-        )
-        .str("status");
         let Some(m) = retired_machine(r.clone()) else {
             continue;
         };
+        let mut status = String::new();
+        let e = crate::util::must_one(
+            &conn,
+            "SELECT status FROM executors WHERE name = ?",
+            &[&name],
+        );
+        if !e.0.is_empty() {
+            status = e.str("status");
+        }
         if status == "active" {
             let _ = conn.execute(
                 "UPDATE retired_vms SET deleted_at = ?, note = 'kept by the owner' WHERE executor = ?",
@@ -615,7 +618,13 @@ pub(crate) fn delete_retired(s: &pulse_store::Store, now: String, actor: String)
                 &actor,
                 "executor.kept",
                 &name,
-                serde_json::json!({"provider": m.provider, "name": m.name}),
+                serde_json::json!(machine_detail(
+                    &m,
+                    BTreeMap::from([
+                        ("provider".to_string(), serde_json::json!(m.provider)),
+                        ("name".to_string(), serde_json::json!(m.name)),
+                    ]),
+                )),
             );
             lines.push(format!(
                 "kept {name}: the owner activated it again; {} stays",
@@ -624,10 +633,13 @@ pub(crate) fn delete_retired(s: &pulse_store::Store, now: String, actor: String)
             continue;
         }
         let Some(p) = crate::compute::provider_named(&m.provider) else {
-            let note = format!("no delete step for provider {}", m.provider);
             let _ = conn.execute(
                 "UPDATE retired_vms SET deleted_at = ?, note = ? WHERE executor = ?",
-                rusqlite::params![now, note, name],
+                rusqlite::params![
+                    now,
+                    format!("no delete step for provider {}", m.provider),
+                    name
+                ],
             );
             lines.push(format!(
                 "retired {name}: no delete step for provider {}",
@@ -636,42 +648,88 @@ pub(crate) fn delete_retired(s: &pulse_store::Store, now: String, actor: String)
             continue;
         };
         let place = p.place(&m);
-        match p.delete(&pulse_bus::CancellationToken::new(), &m) {
-            Ok((found, gone)) => {
-                let note = if found {
-                    ""
-                } else {
-                    "vm not found at delete time"
-                };
-                let _ = conn.execute(
-                    "UPDATE retired_vms SET deleted_at = ?, note = ? WHERE executor = ?",
-                    rusqlite::params![now, note, name],
-                );
-                crate::util::event_at(
-                    &conn,
-                    &now,
-                    &actor,
-                    "executor.deleted",
-                    &name,
-                    serde_json::json!({"provider": m.provider, "name": m.name, "place": place, "deleted": gone, "missing": !found}),
-                );
-                if found {
-                    lines.push(format!(
-                        "deleted {} ({}): {}",
+        let (found, gone) = match p.delete(&pulse_bus::CancellationToken::new(), &m) {
+            Ok(v) => v,
+            Err(err) => {
+                lines.push(format!(
+                    "delete {} postponed: {}",
+                    m.name,
+                    crate::compute::redact_secrets(&crate::run::err_message(&err))
+                ));
+                continue;
+            }
+        };
+        let mut detail = machine_detail(
+            &m,
+            BTreeMap::from([
+                ("provider".to_string(), serde_json::json!(m.provider)),
+                ("name".to_string(), serde_json::json!(m.name)),
+                ("place".to_string(), serde_json::json!(place)),
+                ("deleted".to_string(), serde_json::json!(gone)),
+            ]),
+        );
+        if !found {
+            let _ = conn.execute(
+                "UPDATE retired_vms SET deleted_at = ?, note = 'vm not found at delete time' WHERE executor = ?",
+                rusqlite::params![now, name],
+            );
+            detail.insert("missing".into(), serde_json::json!(true));
+            crate::util::event_at(
+                &conn,
+                &now,
+                &actor,
+                "executor.deleted",
+                &name,
+                serde_json::json!(detail),
+            );
+            lines.push(format!("retired {name}: {} was already gone", m.name));
+            continue;
+        }
+        let _ = conn.execute(
+            "UPDATE retired_vms SET deleted_at = ? WHERE executor = ?",
+            rusqlite::params![now, name],
+        );
+        crate::util::event_at(
+            &conn,
+            &now,
+            &actor,
+            "executor.deleted",
+            &name,
+            serde_json::json!(detail),
+        );
+        let proj = crate::token::finding_project(s);
+        if !proj.is_empty() {
+            let _ = crate::board::create_post(
+                s,
+                now.clone(),
+                crate::board::PostOpts {
+                    kind: "finding".into(),
+                    project: proj,
+                    area: crate::compute::COMPUTE_AREA.into(),
+                    thread: crate::compute::COMPUTE_THREAD.into(),
+                    summary: format!("deleted {} ({})", m.name, place),
+                    body: format!(
+                        "The {} `{}` in {}, stopped on {} when executor `{}` was retired, is deleted with {} (ADR-034). \
+                         What may be shared with other machines (on Azure the virtual network and network security group) stays. Only this finding remains of the machine.\n",
+                        p.kind(),
                         m.name,
                         place,
+                        r.str("deallocated_at"),
+                        name,
                         gone.join(", ")
-                    ));
-                } else {
-                    lines.push(format!("retired {name}: {} was already gone", m.name));
-                }
-            }
-            Err(err) => lines.push(format!(
-                "delete {} postponed: {}",
-                m.name,
-                crate::compute::redact_secrets(&crate::run::err_message(&err))
-            )),
+                    ),
+                    agent: crate::board::actor_agent(s, actor.clone()),
+                    date: now.clone(),
+                    ..Default::default()
+                },
+            );
         }
+        lines.push(format!(
+            "deleted {} ({}): {}",
+            m.name,
+            place,
+            gone.join(", ")
+        ));
     }
     lines
 }
@@ -682,19 +740,10 @@ mod tests {
     use crate::test_helpers::*;
     use crate::test_helpers_f3::drained_by_login;
     use crate::test_helpers_f3b::*;
+    use crate::test_helpers_f5::must_one;
+    use crate::test_helpers_f6::{invoke_ok, stub_gh};
+    use crate::util::json_map;
     use rusqlite::params;
-
-    fn one(s: &pulse_store::Store, sql: &str) -> crate::util::Row {
-        crate::util::must_one(&*s.conn().unwrap(), sql, &[])
-    }
-
-    fn count_sql(s: &pulse_store::Store, sql: &str) -> i32 {
-        crate::test_helpers::count(s, sql, &[])
-    }
-
-    fn json_map(text: &str) -> serde_json::Value {
-        serde_json::from_str(text).unwrap()
-    }
 
     #[test]
     fn retire_candidates_rule() {
@@ -753,6 +802,7 @@ mod tests {
             r#"[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]"#,
         );
         let _az_guard = install_retire_az(&az);
+        let _stub = stub_gh("");
         let placed = stub_place_login(true);
 
         let lines = tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
@@ -765,10 +815,19 @@ mod tests {
             "vm deallocate -g pulse-hands -n pulse-cr-007 -o none"
         );
         assert_eq!(
-            one(&s, "SELECT status FROM executors WHERE name = 'vm-seven'").str("status"),
+            must_one(
+                &s,
+                "SELECT status FROM executors WHERE name = 'vm-seven'",
+                &[]
+            )
+            .str("status"),
             "removed"
         );
-        let r = one(&s, "SELECT * FROM retired_vms WHERE executor = 'vm-seven'");
+        let r = must_one(
+            &s,
+            "SELECT * FROM retired_vms WHERE executor = 'vm-seven'",
+            &[],
+        );
         assert_eq!(r.str("provider"), "azure");
         assert_eq!(r.str("resource_group"), "pulse-hands");
         assert_eq!(r.str("name"), "pulse-cr-007");
@@ -778,9 +837,10 @@ mod tests {
             crate::util::plus_hours(TEST_NOW, 24.0)
         );
         assert_eq!(r.str("deleted_at"), "");
-        let ev = one(
+        let ev = must_one(
             &s,
             "SELECT * FROM events WHERE action = 'executor.retired' AND subject = 'vm-seven'",
+            &[],
         );
         let d = json_map(&ev.str("detail"));
         assert_eq!(d["delete_after"], crate::util::plus_hours(TEST_NOW, 24.0));
@@ -822,9 +882,10 @@ mod tests {
             "lines: {lines:?}"
         );
         assert_eq!(
-            count_sql(
+            count(
                 &s,
-                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question'"
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question'",
+                &[]
             ),
             0
         );
@@ -842,15 +903,22 @@ mod tests {
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
         let az = RetireAz::broken();
         let _az_guard = install_retire_az(&az);
+        let _stub = stub_gh("");
         let lines = tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         assert!(!az.has("vm deallocate"), "az calls: {:?}", az.joined());
         assert_eq!(
-            one(&s, "SELECT status FROM executors WHERE name = 'vm-seven'").str("status"),
+            must_one(
+                &s,
+                "SELECT status FROM executors WHERE name = 'vm-seven'",
+                &[]
+            )
+            .str("status"),
             "removed"
         );
-        let p = one(
+        let p = must_one(
             &s,
             "SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'",
+            &[],
         );
         assert!(
             p.str("body").contains(
@@ -873,6 +941,7 @@ mod tests {
         drained_by_login(&s, "laptop", "pulse@laptop.local");
         let az = RetireAz::default();
         let _az_guard = install_retire_az(&az);
+        let _stub = stub_gh("");
         tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         assert!(
             !az.has("vm deallocate") && az.has("vm list"),
@@ -880,13 +949,19 @@ mod tests {
             az.joined()
         );
         assert_eq!(
-            one(&s, "SELECT status FROM executors WHERE name = 'laptop'").str("status"),
+            must_one(
+                &s,
+                "SELECT status FROM executors WHERE name = 'laptop'",
+                &[]
+            )
+            .str("status"),
             "removed"
         );
-        assert_eq!(count_sql(&s, "SELECT COUNT(*) AS n FROM retired_vms"), 0);
-        let p = one(
+        assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM retired_vms", &[]), 0);
+        let p = must_one(
             &s,
             "SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'",
+            &[],
         );
         assert_eq!(
             p.str("summary"),
@@ -925,15 +1000,17 @@ mod tests {
         assert_eq!(ex.str("status"), "active");
         assert_eq!(ex.str("healed_at"), "");
         assert_eq!(
-            count_sql(
+            count(
                 &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.healed' AND subject = 'vm-seven'"
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.healed' AND subject = 'vm-seven'",
+                &[]
             ),
             1
         );
-        let p = one(
+        let p = must_one(
             &s,
             "SELECT * FROM posts WHERE kind = 'finding' AND thread = 'executors'",
+            &[],
         );
         assert_eq!(
             p.str("summary"),
@@ -944,7 +1021,7 @@ mod tests {
             lines,
             vec!["healed vm-seven: login placed from executor token"]
         );
-        assert_eq!(count_sql(&s, "SELECT COUNT(*) AS n FROM retired_vms"), 0);
+        assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM retired_vms", &[]), 0);
     }
 
     #[test]
@@ -972,9 +1049,10 @@ mod tests {
         tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         assert_eq!(placed.calls().len(), 1);
         assert_eq!(
-            count_sql(
+            count(
                 &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.healed'"
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.healed'",
+                &[]
             ),
             0
         );
@@ -983,7 +1061,12 @@ mod tests {
         assert_eq!(placed.calls().len(), 1);
         assert!(az.has("vm deallocate -g pulse-hands -n pulse-cr-007 -o none"));
         assert_eq!(
-            one(&s, "SELECT status FROM executors WHERE name = 'vm-seven'").str("status"),
+            must_one(
+                &s,
+                "SELECT status FROM executors WHERE name = 'vm-seven'",
+                &[]
+            )
+            .str("status"),
             "removed"
         );
         set_setting(&s, "compute.self_heal", "0");
@@ -1002,30 +1085,29 @@ mod tests {
     fn tend_postpones_while_a_run_is_in_flight() {
         let _serial = crate::test_helpers::serial();
         let _lock = crate::test_helpers_f6::provider_test_lock();
-        let s = crate::test_helpers::new_store();
-        crate::test_helpers_f3::drained_by_login(&s, "vm-seven", "pulse@vm-seven");
-        s.conn().unwrap().execute("INSERT INTO runs(id, job_id, agent, project, started_at, status, executor) VALUES('r', 'j', 'a', 'proj', ?, 'running', 'vm-seven')", rusqlite::params![crate::test_helpers::TEST_NOW]).unwrap();
-        let lines = tend_executors(&s, crate::test_helpers::TEST_NOW.into(), "daemon".into());
-        assert!(
-            lines.iter().any(|l| l.contains("postponed")) || lines.iter().all(|l| !l.is_empty())
+        let s = new_store();
+        let (_, slug) = new_bare_repo(&s);
+        drained_by_login(&s, "vm-seven", "pulse@vm-seven");
+        let az = RetireAz::with_list(
+            r#"[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]"#,
         );
-
-        let parity_probe = r#"INSERT INTO runs (id, job_id, project, agent, status, started_at, executor) VALUES ('run-1', 'job-1', ?, 'aurora', 'running', ?, ?) drained retire vm-seven postponed vm deallocate"#;
-        assert!(parity_probe.contains(r#"INSERT INTO runs (id, job_id, project, agent, status, started_at, executor) VALUES ('run-1', 'job-1', ?, 'aurora', 'running', ?, ?)"#), "parity probe lacks {}", r#"INSERT INTO runs (id, job_id, project, agent, status, started_at, executor) VALUES ('run-1', 'job-1', ?, 'aurora', 'running', ?, ?)"#);
+        let _az_guard = install_retire_az(&az);
+        let _stub = stub_gh("");
+        crate::test_helpers_f5::exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, project, agent, status, started_at, executor) VALUES ('run-1', 'job-1', ?, 'aurora', 'running', ?, 'vm-seven')",
+            &[&slug, &TEST_NOW],
+        );
+        let lines = tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         assert!(
-            parity_probe.contains(r#"drained"#),
-            "parity probe lacks {}",
-            r#"drained"#
+            !az.has("vm deallocate")
+                && crate::executor::executor_row(&s, "vm-seven").str("status") == "drained",
+            "retired with a run in flight: {lines:?} {:?}",
+            az.joined()
         );
         assert!(
-            parity_probe.contains(r#"retire vm-seven postponed"#),
-            "parity probe lacks {}",
-            r#"retire vm-seven postponed"#
-        );
-        assert!(
-            parity_probe.contains(r#"vm deallocate"#),
-            "parity probe lacks {}",
-            r#"vm deallocate"#
+            lines.join("\n").contains("retire vm-seven postponed"),
+            "lines: {lines:?}"
         );
     }
     #[test]
@@ -1040,21 +1122,29 @@ mod tests {
             r#"[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]"#,
         );
         let _az_guard = install_retire_az(&az);
+        let _stub = stub_gh("");
         tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         assert_eq!(
-            count_sql(
+            count(
                 &s,
-                "SELECT COUNT(*) AS n FROM retired_vms WHERE deleted_at = ''"
+                "SELECT COUNT(*) AS n FROM retired_vms WHERE deleted_at = ''",
+                &[]
             ),
             2
         );
-        s.conn()
-            .unwrap()
-            .execute(
-                "UPDATE executors SET status = 'active' WHERE name = 'vm-nine'",
-                [],
-            )
-            .unwrap();
+        // The owner starts vm-nine's machine again and activates it before the grace ends: the row revives.
+        let _probe = crate::test_helpers_f1b::install_run_ssh(|_, _argv, _stdin, _| {
+            Ok((0, "hands=ok git=ok copilot=ok keys=- keys_ok=yes remotes=0 workdir=/srv/pulse logged_in=yes harness=yes pulse=1.2.3 disk_free_mb=20000\n".into(), String::new()))
+        });
+        let out = invoke_ok(&s, "executor", "", &["activate", "vm-nine"]);
+        assert!(out.contains("vm-nine"), "activate: {out:?}");
+        let ex = crate::executor::executor_row(&s, "vm-nine");
+        assert!(
+            !ex.0.is_empty() && ex.str("status") == "active",
+            "revived executor: {ex:?}"
+        );
+
+        // Before the grace ends nothing is deleted.
         az.reset();
         tend_executors(
             &s,
@@ -1062,6 +1152,8 @@ mod tests {
             TEST_DAEMON.into(),
         );
         assert!(az.joined().is_empty(), "deleted early: {:?}", az.joined());
+
+        // At the grace: vm-seven's machine goes (VM, NIC, public IP, OS disk; never the VNet or NSG); vm-nine is kept.
         let later = crate::util::plus_hours(TEST_NOW, 24.0);
         let lines = tend_executors(&s, later.clone(), TEST_DAEMON.into());
         let got = az.joined();
@@ -1079,23 +1171,33 @@ mod tests {
             got.iter()
                 .all(|c| !c.contains("vnet") && !c.contains("nsg") && !c.contains("NSG"))
         );
-        let seven = one(&s, "SELECT * FROM retired_vms WHERE executor = 'vm-seven'");
+        let seven = must_one(
+            &s,
+            "SELECT * FROM retired_vms WHERE executor = 'vm-seven'",
+            &[],
+        );
         assert_eq!(seven.str("deleted_at"), later);
         assert_eq!(seven.str("note"), "");
-        let nine = one(&s, "SELECT * FROM retired_vms WHERE executor = 'vm-nine'");
+        let nine = must_one(
+            &s,
+            "SELECT * FROM retired_vms WHERE executor = 'vm-nine'",
+            &[],
+        );
         assert_eq!(nine.str("deleted_at"), later);
         assert_eq!(nine.str("note"), "kept by the owner");
         assert_eq!(
-            count_sql(
+            count(
                 &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.deleted' AND subject = 'vm-seven'"
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.deleted' AND subject = 'vm-seven'",
+                &[]
             ),
             1
         );
         assert_eq!(
-            count_sql(
+            count(
                 &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.kept' AND subject = 'vm-nine'"
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.kept' AND subject = 'vm-nine'",
+                &[]
             ),
             1
         );
@@ -1124,7 +1226,11 @@ mod tests {
             az.joined(),
             vec!["vm show -g pulse-hands -n pulse-cr-gone -o json"]
         );
-        let r = one(&s, "SELECT * FROM retired_vms WHERE executor = 'vm-gone'");
+        let r = must_one(
+            &s,
+            "SELECT * FROM retired_vms WHERE executor = 'vm-gone'",
+            &[],
+        );
         assert_eq!(r.str("deleted_at"), TEST_NOW);
         assert_eq!(r.str("note"), "vm not found at delete time");
         assert!(lines.join("\n").contains("was already gone"));
@@ -1132,36 +1238,30 @@ mod tests {
     #[test]
     fn daemon_tick_tends_executors() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers::new_store();
-        assert!(
-            tend_executors(&s, crate::test_helpers::TEST_NOW.into(), "daemon".into()).is_empty()
+        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        drained_by_login(&s, "vm-seven", "pulse@vm-seven");
+        let az = RetireAz::with_list(
+            r#"[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]"#,
         );
-
-        let parity_probe = r#"pulse@vm-seven retired vm-seven: stopped pulse-cr-007 (pulse-hands) sh -c 'echo SUMMARY: nothing' vm deallocate -g pulse-hands -n pulse-cr-007 -o none vm-seven"#;
-        assert!(
-            parity_probe.contains(r#"pulse@vm-seven"#),
-            "parity probe lacks {}",
-            r#"pulse@vm-seven"#
-        );
-        assert!(
-            parity_probe.contains(r#"retired vm-seven: stopped pulse-cr-007 (pulse-hands)"#),
-            "parity probe lacks {}",
-            r#"retired vm-seven: stopped pulse-cr-007 (pulse-hands)"#
-        );
-        assert!(
-            parity_probe.contains(r#"sh -c 'echo SUMMARY: nothing'"#),
-            "parity probe lacks {}",
-            r#"sh -c 'echo SUMMARY: nothing'"#
+        let _az_guard = install_retire_az(&az);
+        let _stub = stub_gh("");
+        let log = once_daemon(
+            &s,
+            crate::daemon::DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: nothing'".into(),
+                ..Default::default()
+            },
         );
         assert!(
-            parity_probe.contains(r#"vm deallocate -g pulse-hands -n pulse-cr-007 -o none"#),
-            "parity probe lacks {}",
-            r#"vm deallocate -g pulse-hands -n pulse-cr-007 -o none"#
+            log.contains("retired vm-seven: stopped pulse-cr-007 (pulse-hands)"),
+            "log:\n{log}"
         );
         assert!(
-            parity_probe.contains(r#"vm-seven"#),
-            "parity probe lacks {}",
-            r#"vm-seven"#
+            az.has("vm deallocate -g pulse-hands -n pulse-cr-007 -o none"),
+            "az calls: {:?}",
+            az.joined()
         );
     }
     #[test]
@@ -1183,19 +1283,28 @@ mod tests {
         ] {
             set_setting(&s, k, v);
         }
-        let az = RetireAz::default();
-        let _az_guard = install_retire_az(&az);
+        let _stub = stub_gh("");
+        let _az = install_run_az(|_, _, _| {
+            panic!("az was called without a login source");
+        });
+        // Auto-approval holds: the request stays pending and its proposal says why.
         let req = pulse_tasks::request_compute(&s, "proj", "aurora", "", 2, "long run").unwrap();
-        assert_eq!(req.status, "pending");
-        assert!(!req.proposal_post.is_empty());
-        let p = crate::util::must_one(
-            &*s.conn().unwrap(),
+        assert!(
+            req.status == "pending" && !req.proposal_post.is_empty(),
+            "auto-approved without a source: {req:?}"
+        );
+        let p = must_one(
+            &s,
             "SELECT body FROM posts WHERE id = ?",
             &[&req.proposal_post],
         );
-        assert!(p.str("body").contains(pulse_tasks::NO_LOGIN_SOURCE));
-        let caps = pulse_tasks::get_caps(&s).unwrap();
-        assert!(!caps.login_source);
+        assert!(
+            p.str("body").contains(pulse_tasks::NO_LOGIN_SOURCE),
+            "proposal: {p:?}"
+        );
+        let caps = pulse_tasks::get_caps(&s).unwrap_or_default();
+        assert!(!caps.login_source, "caps: {caps:?}");
+        // The worker explains the hold once a day, and never buys.
         let cancel = pulse_bus::CancellationToken::new();
         let w =
             crate::compute::new_compute_worker(&cancel, &s, crate::compute::ComputeOpts::default());
@@ -1203,39 +1312,71 @@ mod tests {
         w.wait(std::time::Duration::ZERO);
         w.tick(&cancel, &crate::util::plus_hours(TEST_NOW, 1.0));
         w.wait(std::time::Duration::ZERO);
-        assert_eq!(
-            count_sql(
-                &s,
-                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND thread = 'compute'"
-            ),
-            1
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND thread = 'compute'",
+            &[],
         );
-        let f = one(
+        assert_eq!(n, 1, "hold findings on one day: {n}");
+        let f = must_one(
             &s,
             "SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'",
+            &[],
         );
-        assert!(f.str("summary").starts_with(&format!("{}: compute {} waits; place a Copilot-only token with `pulse executor token --with-token`", pulse_tasks::NO_LOGIN_SOURCE, req.id)));
+        assert!(
+            f.str("summary").starts_with(&format!(
+                "{}: compute {} waits; place a Copilot-only token with `pulse executor token --with-token`",
+                pulse_tasks::NO_LOGIN_SOURCE,
+                req.id
+            )),
+            "summary: {:?}",
+            f.str("summary")
+        );
+        // An approved request (the owner said yes) is held the same way, not failed.
         pulse_tasks::approve(&s, &req.id, "fine", pulse_store::HUMAN_AGENT).unwrap();
         w.tick(&cancel, &crate::util::plus_hours(TEST_NOW, 2.0));
         w.wait(std::time::Duration::ZERO);
-        assert_eq!(
-            pulse_tasks::get_compute(&s, &req.id).unwrap().status,
-            "approved"
+        let got = pulse_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "approved", "held request: {got:?}");
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND thread = 'compute'",
+            &[],
         );
-        assert_eq!(
-            count_sql(
-                &s,
-                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND thread = 'compute'"
-            ),
-            1
+        assert_eq!(n, 1, "hold findings on one day: {n}");
+        // A new day, a fresh worker (as after a daemon restart): one more note, still no machine.
+        let next_day = crate::util::plus_hours(TEST_NOW, 24.0);
+        let later = pulse_store::Store::open(pulse_store::Options {
+            home: s.home.clone(),
+            now: next_day.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+        let w2 = crate::compute::new_compute_worker(
+            &cancel,
+            &later,
+            crate::compute::ComputeOpts::default(),
         );
-        write_executor_token(&s);
-        w.tick(&cancel, &crate::util::plus_hours(TEST_NOW, 3.0));
-        w.wait(std::time::Duration::ZERO);
-        assert_ne!(
-            pulse_tasks::get_compute(&s, &req.id).unwrap().status,
-            "approved"
+        w2.tick(&cancel, &next_day);
+        w2.wait(std::time::Duration::ZERO);
+        w2.tick(&cancel, &crate::util::plus_hours(&next_day, 1.0));
+        w2.wait(std::time::Duration::ZERO);
+        let n = count(
+            &later,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND thread = 'compute'",
+            &[],
         );
+        assert_eq!(n, 2, "hold findings over two days: {n}");
+        let got = pulse_tasks::get_compute(&later, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "approved", "held request: {got:?}");
+        // With a source the same request goes on to provisioning (az answers, so it fails there - not a hold).
+        write_executor_token(&later);
+        let _az_2 = install_run_az(|_, _, _| Ok((1, String::new(), "no subscription".into())));
+        w2.tick(&cancel, &crate::util::plus_hours(&next_day, 2.0));
+        w2.wait(std::time::Duration::ZERO);
+        let got = pulse_tasks::get_compute(&later, &req.id).unwrap_or_default();
+        assert_ne!(got.status, "approved", "still held with a source: {got:?}");
+        later.close().unwrap();
     }
 
     #[test]

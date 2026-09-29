@@ -1,4 +1,4 @@
-//! Skeleton port of internal/runner/research.go.
+//! Port of internal/runner/research.go.
 
 use crate::util::{Row, must_one, plus_minutes, setting_int, stamp_of};
 

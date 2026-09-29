@@ -3,6 +3,8 @@
 use base64::Engine;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
+#[cfg(test)]
+use std::sync::RwLock;
 
 pub(crate) const PAIR_HANDS_MODULE: &str = "github.com/manishtiwari25/pulse";
 pub(crate) static PAIR_HANDS_VERSION_RE: LazyLock<regex::Regex> =
@@ -59,9 +61,29 @@ pub(crate) static PAIR_LEGACY_HANDS: &[(&str, &str)] = &[
     ),
 ];
 
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+static PAIR_LEGACY_HANDS_TEST: LazyLock<RwLock<Option<Vec<(String, String)>>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+fn pair_legacy_hands() -> Vec<(String, String)> {
+    #[cfg(test)]
+    if let Some(v) = PAIR_LEGACY_HANDS_TEST
+        .read()
+        .expect("legacy hands poisoned")
+        .clone()
+    {
+        return v;
+    }
+    PAIR_LEGACY_HANDS
+        .iter()
+        .map(|(revision, hash)| ((*revision).to_string(), (*hash).to_string()))
+        .collect()
+}
+
 /// Go: func pairLegacyHandsIndex(hash string) int
 pub(crate) fn pair_legacy_hands_index(hash: String) -> i32 {
-    PAIR_LEGACY_HANDS
+    pair_legacy_hands()
         .iter()
         .position(|(_, h)| *h == hash)
         .map(|i| i as i32)
@@ -102,81 +124,37 @@ fi
 }
 
 /// Go: func pairHandsBuildVersion(info *debug.BuildInfo) string
-pub(crate) fn pair_hands_build_version(info: &serde_json::Value) -> String {
-    let path = info
-        .pointer("/Main/Path")
-        .or_else(|| info.pointer("/main/path"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if path != PAIR_HANDS_MODULE {
+pub(crate) fn pair_hands_build_version(info: &pulse_cli::BuildInfo) -> String {
+    if info.main.path != PAIR_HANDS_MODULE {
         return "unknown".into();
     }
-    let mut version = info
-        .pointer("/Main/Version")
-        .or_else(|| info.pointer("/main/version"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("(devel)")
-        .to_string();
-    let mut revision = String::new();
-    let mut modified = false;
-    if let Some(settings) = info
-        .get("Settings")
-        .or_else(|| info.get("settings"))
-        .and_then(|v| v.as_array())
-    {
-        for s in settings {
-            let key = s
-                .get("Key")
-                .or_else(|| s.get("key"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let value = s
-                .get("Value")
-                .or_else(|| s.get("value"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            match key {
-                "vcs.revision" => revision = value.to_string(),
-                "vcs.modified" => modified = value == "true",
-                "-ldflags" => {
-                    let args = crate::util::split_shell(value);
-                    let mut i = 0;
-                    while i < args.len() {
-                        let mut arg = args[i].clone();
-                        if arg == "-X" && i + 1 < args.len() {
-                            i += 1;
-                            arg = args[i].clone();
-                        } else if let Some(rest) = arg.strip_prefix("-X=") {
-                            arg = rest.to_string();
-                        } else {
-                            i += 1;
-                            continue;
-                        }
-                        if let Some(v) =
-                            arg.strip_prefix(&format!("{PAIR_HANDS_MODULE}/internal/cli.version="))
-                        {
-                            version = if v.is_empty() {
-                                version.clone()
-                            } else {
-                                v.to_string()
-                            };
-                        }
-                        i += 1;
-                    }
-                }
-                _ => {}
-            }
+    let mut version = pulse_cli::build_version(info);
+    for setting in &info.settings {
+        if setting.key != "-ldflags" {
+            continue;
         }
-    }
-    if version == "(devel)" {
-        let short = revision.chars().take(12).collect::<String>();
-        version = if short.is_empty() {
-            "dev".into()
-        } else {
-            format!("dev-{short}")
-        };
-        if modified {
-            version.push_str("-dirty");
+        let args = crate::util::split_shell(&setting.value);
+        let mut i = 0;
+        while i < args.len() {
+            let mut arg = args[i].clone();
+            if arg == "-X" && i + 1 < args.len() {
+                i += 1;
+                arg = args[i].clone();
+            } else if let Some(rest) = arg.strip_prefix("-X=") {
+                arg = rest.to_string();
+            } else {
+                i += 1;
+                continue;
+            }
+            if let Some(v) = arg.strip_prefix(&format!("{PAIR_HANDS_MODULE}/internal/cli.version="))
+            {
+                version = if v.is_empty() {
+                    pulse_cli::build_version(info)
+                } else {
+                    v.to_string()
+                };
+            }
+            i += 1;
         }
     }
     if !PAIR_HANDS_VERSION_RE.is_match(&version) {
@@ -186,9 +164,28 @@ pub(crate) fn pair_hands_build_version(info: &serde_json::Value) -> String {
     }
 }
 
+fn pair_buildinfo_from_grep_bytes(data: &[u8]) -> Option<pulse_cli::BuildInfo> {
+    let mut text = String::new();
+    for raw in data.split(|b| *b == b'\n') {
+        let mut line = raw;
+        if let Some(i) = line.iter().position(|b| *b == 0) {
+            line = &line[..i];
+        }
+        if line.starts_with(format!("mod\t{PAIR_HANDS_MODULE}\t").as_bytes())
+            || line.starts_with(b"build\t-ldflags=")
+            || line.starts_with(b"build\tvcs.revision=")
+            || line.starts_with(b"build\tvcs.modified=")
+        {
+            text.push_str(&String::from_utf8_lossy(line));
+            text.push('\n');
+        }
+    }
+    pulse_cli::parse_build_info(&text)
+}
+
 /// Go: func pairHandsVersion(data []byte) string
 pub(crate) fn pair_hands_version(data: Vec<u8>) -> String {
-    if let Some((rev, _)) = PAIR_LEGACY_HANDS
+    if let Some((rev, _)) = pair_legacy_hands()
         .iter()
         .find(|(_, h)| *h == crate::pair::sha256_bytes(data.clone()))
     {
@@ -199,7 +196,9 @@ pub(crate) fn pair_hands_version(data: Vec<u8>) -> String {
     if let Some(c) = PAIR_HANDS_MARKER_RE.captures(&head) {
         return c[1].to_string();
     }
-    parse_buildinfo_text(&String::from_utf8_lossy(&data)).unwrap_or_else(|| "unknown".into())
+    pair_buildinfo_from_grep_bytes(&data)
+        .map(|info| pair_hands_build_version(&info))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// Go: func pairInstalledHandsVersion(insp map[string]string) string
@@ -210,13 +209,15 @@ pub(crate) fn pair_installed_hands_version(insp: BTreeMap<String, String>) -> St
         return version.clone();
     }
     let encoded = insp.get("hands_buildinfo").cloned().unwrap_or_default();
-    if encoded.len() > 12_000 {
+    if encoded.len() > 10924 {
         return "unknown".into();
     }
     let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
         return "unknown".into();
     };
-    parse_buildinfo_text(&String::from_utf8_lossy(&raw)).unwrap_or_else(|| "unknown".into())
+    pulse_cli::parse_build_info(&String::from_utf8_lossy(&raw))
+        .map(|info| pair_hands_build_version(&info))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// Go: func pairHandsSHA7(hash string) string
@@ -246,7 +247,7 @@ pub(crate) fn pair_hands_summary(insp: BTreeMap<String, String>, template: Vec<u
     let template_version = pair_hands_version(template);
     let i = pair_legacy_hands_index(installed_hash.clone());
     if i >= 0 {
-        installed_version = format!("legacy-{}", PAIR_LEGACY_HANDS[i as usize].0);
+        installed_version = format!("legacy-{}", pair_legacy_hands()[i as usize].0);
         if template_version != "unknown" && i > pair_legacy_hands_index(template_hash.clone()) {
             status = "older".into();
         }
@@ -261,73 +262,6 @@ pub(crate) fn pair_hands_summary(insp: BTreeMap<String, String>, template: Vec<u
     )
 }
 
-fn parse_buildinfo_text(text: &str) -> Option<String> {
-    let mut module = String::new();
-    let mut version = "(devel)".to_string();
-    let mut revision = String::new();
-    let mut modified = false;
-    let mut ldflags = String::new();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("mod\t") {
-            let parts = rest.split('\t').collect::<Vec<_>>();
-            module = parts.first().copied().unwrap_or("").to_string();
-            version = parts.get(1).copied().unwrap_or("(devel)").to_string();
-        } else if let Some(rest) = line.strip_prefix("build\t") {
-            if let Some(v) = rest.strip_prefix("-ldflags=") {
-                if v.starts_with('"') && !v.ends_with('"') {
-                    return Some("unknown".into());
-                }
-                ldflags = v.trim_matches('"').to_string();
-            } else if let Some(v) = rest.strip_prefix("vcs.revision=") {
-                revision = v.to_string();
-            } else if let Some(v) = rest.strip_prefix("vcs.modified=") {
-                modified = v == "true";
-            }
-        }
-    }
-    if module != PAIR_HANDS_MODULE {
-        return None;
-    }
-    if !ldflags.is_empty() {
-        let args = crate::util::split_shell(&ldflags);
-        let mut i = 0;
-        while i < args.len() {
-            let mut arg = args[i].clone();
-            if arg == "-X" && i + 1 < args.len() {
-                i += 1;
-                arg = args[i].clone();
-            } else if let Some(rest) = arg.strip_prefix("-X=") {
-                arg = rest.to_string();
-            } else {
-                i += 1;
-                continue;
-            }
-            if let Some(v) = arg.strip_prefix(&format!("{PAIR_HANDS_MODULE}/internal/cli.version="))
-                && !v.is_empty()
-            {
-                version = v.to_string();
-            }
-            i += 1;
-        }
-    }
-    if version == "(devel)" {
-        let short = revision.chars().take(12).collect::<String>();
-        version = if short.is_empty() {
-            "dev".into()
-        } else {
-            format!("dev-{short}")
-        };
-        if modified {
-            version.push_str("-dirty");
-        }
-    }
-    if PAIR_HANDS_VERSION_RE.is_match(&version) {
-        Some(version)
-    } else {
-        Some("unknown".into())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,20 +270,36 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
     use std::process::Command;
+    use std::time::Duration;
 
-    fn b64(text: &str) -> String {
+    fn base64_std(text: &str) -> String {
         base64::engine::general_purpose::STANDARD.encode(text)
     }
 
-    fn build_info(module_version: &str, flags: &str, revision: &str) -> serde_json::Value {
-        serde_json::json!({
-            "Main": {"Path": PAIR_HANDS_MODULE, "Version": module_version},
-            "Settings": [
-                {"Key": "vcs.revision", "Value": revision},
-                {"Key": "vcs.modified", "Value": "true"},
-                {"Key": "-ldflags", "Value": flags}
-            ]
-        })
+    fn build_info(module_version: &str, flags: &str, revision: &str) -> pulse_cli::BuildInfo {
+        pulse_cli::BuildInfo {
+            path: String::new(),
+            main: pulse_cli::Module {
+                path: PAIR_HANDS_MODULE.to_string(),
+                version: module_version.to_string(),
+                sum: String::new(),
+            },
+            deps: Vec::new(),
+            settings: vec![
+                pulse_cli::BuildSetting {
+                    key: "vcs.revision".to_string(),
+                    value: revision.to_string(),
+                },
+                pulse_cli::BuildSetting {
+                    key: "vcs.modified".to_string(),
+                    value: "true".to_string(),
+                },
+                pulse_cli::BuildSetting {
+                    key: "-ldflags".to_string(),
+                    value: flags.to_string(),
+                },
+            ],
+        }
     }
 
     fn write_exe(path: &Path, text: &str) {
@@ -420,7 +370,7 @@ mod tests {
             assert_eq!(
                 super::pair_installed_hands_version(BTreeMap::from([(
                     "hands_buildinfo".into(),
-                    b64(&text)
+                    base64_std(&text)
                 )])),
                 want,
                 "{name} installed"
@@ -428,8 +378,8 @@ mod tests {
         }
         for encoded in [
             "not base64".to_string(),
-            b64("mod\tnot-pulse\tv9.0.0\n"),
-            b64("build\tbroken\n"),
+            base64_std("mod\tnot-pulse\tv9.0.0\n"),
+            base64_std("build\tbroken\n"),
             "A".repeat(12000),
         ] {
             assert_eq!(
@@ -453,6 +403,7 @@ mod tests {
     #[test]
     fn pair_inspect_hands_script() {
         let _serial = crate::test_helpers::serial();
+        let _deadline = crate::test_helpers_f5::test_deadline(Duration::from_secs(60));
         let shared_bin = tempfile::tempdir().expect("shared bin");
         for name in ["head", "sed", "grep", "base64", "tr"] {
             let tool = which::which(name).unwrap_or_else(|_| panic!("{name} missing"));
@@ -700,49 +651,30 @@ mod tests {
     #[test]
     fn pair_hands_go_binary_metadata() {
         let _serial = crate::test_helpers::serial();
-        let dir = tempfile::tempdir().expect("go fixture dir");
-        std::fs::create_dir_all(dir.path().join("internal/cli")).expect("cli dir");
-        let version_source = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join("internal/cli/version.go"),
-        )
-        .expect("read version.go");
+        let _deadline = crate::test_helpers_f5::test_deadline(Duration::from_secs(60));
+        let dir = tempfile::tempdir().expect("rust fixture dir");
+        let path = dir.path().join("pulse-hands");
+        let src = dir.path().join("main.rs");
+        let build_info = format!(
+            "\npath\t{PAIR_HANDS_MODULE}/cmd/pulse\nmod\t{PAIR_HANDS_MODULE}\t(devel)\t\nbuild\t-ldflags=\"-X {PAIR_HANDS_MODULE}/internal/cli.version=v8.7.6\"\nbuild\tvcs.revision={}\nbuild\tvcs.modified=false\n",
+            "ab".repeat(20)
+        );
         std::fs::write(
-            dir.path().join("go.mod"),
-            format!("module {PAIR_HANDS_MODULE}\n\ngo 1.26\n"),
-        )
-        .expect("write go.mod");
-        std::fs::write(dir.path().join("internal/cli/version.go"), version_source)
-            .expect("write version.go");
-        std::fs::write(
-            dir.path().join("main.go"),
+            &src,
             format!(
-                "package main\nimport (\n\"fmt\"\n\"{PAIR_HANDS_MODULE}/internal/cli\"\n)\nfunc main() {{ fmt.Println(cli.Version()) }}\n"
+                "#[used]\nstatic BUILD_INFO: &str = {build_info:?};\nfn main() {{ println!(\"{{}}\", BUILD_INFO.len()); }}\n"
             ),
         )
-        .expect("write main.go");
-        let path = dir.path().join("pulse-hands");
-        let out = Command::new("go")
+        .expect("write main.rs");
+        let out = Command::new("rustc")
             .args([
-                "build",
+                "-O",
                 "-o",
                 &path.display().to_string(),
-                "-ldflags",
-                &format!("-X {PAIR_HANDS_MODULE}/internal/cli.version=v8.7.6"),
-                ".",
+                &src.display().to_string(),
             ])
-            .current_dir(dir.path())
-            .env("GOOS", "linux")
-            .env("GOARCH", "amd64")
-            .env("CGO_ENABLED", "0")
-            .env("GOWORK", "off")
-            .env("GOPROXY", "off")
-            .env("GOSUMDB", "off")
-            .env("GOTOOLCHAIN", "local")
-            .env("GOFLAGS", "")
             .output()
-            .expect("spawn go build");
+            .expect("spawn rustc");
         assert!(
             out.status.success(),
             "build fixture: {}\n{}",

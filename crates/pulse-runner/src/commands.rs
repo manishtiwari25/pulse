@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-//! Skeleton port of internal/runner/commands.go.
+//! Port of internal/runner/commands.go.
 
 use anyhow::{Result, anyhow};
 use pulse_cli::{Command, Context, FlagSet, register as cli_register};
@@ -601,6 +601,7 @@ pub(crate) fn cmd_service(c: &mut Context, fs: &FlagSet, args: &[String]) -> Res
                     hub_port: int_flag(fs, "hub-port"),
                     no_hub: bool_flag(fs, "no-hub"),
                     dry_run: bool_flag(fs, "dry-run"),
+                    defer_hub: false,
                 },
             )?;
         }
@@ -759,13 +760,16 @@ pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Re
                             .into(),
                     );
                 }
-                (true, false) => crate::token::executor_token_set(
-                    &s,
-                    &now,
-                    &mut std::io::stdin(),
-                    false,
-                    crate::util::HUMAN_AGENT,
-                )?,
+                (true, false) => {
+                    use std::io::IsTerminal;
+                    crate::token::executor_token_set(
+                        &s,
+                        &now,
+                        &mut std::io::stdin(),
+                        std::io::stdin().is_terminal(),
+                        crate::util::HUMAN_AGENT,
+                    )?
+                }
                 (false, true) => {
                     crate::token::executor_token_remove(&s, &now, crate::util::HUMAN_AGENT)?
                 }

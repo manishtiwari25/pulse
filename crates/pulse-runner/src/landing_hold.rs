@@ -375,7 +375,6 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_f5::*;
-    use crate::util::Row;
     use std::collections::BTreeMap;
 
     #[test]
@@ -608,162 +607,231 @@ mod tests {
         );
     }
 
-    fn auto_stash_fixture(
-        s: &pulse_store::Store,
-        branch: &str,
-        title: &str,
-    ) -> (Row, String, String) {
-        let (proj, dir) = new_bare_repo(s);
-        join(s, "aurora");
-        set_setting(s, "landing", "agents");
+    #[test]
+    fn landing_auto_stash_lands() {
+        let _serial = crate::test_helpers::serial();
+        skip_slow();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (proj, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+
+        let branch = "pulse/aurora/auto";
         run(&dir, &["git", "checkout", "-q", "-b", branch, "main"]);
-        std::fs::write(std::path::Path::new(&dir).join("feature.txt"), "feature\n")
-            .expect("feature");
+        std::fs::write(std::path::Path::new(&dir).join("feature.txt"), b"feature\n").unwrap();
         run(&dir, &["git", "add", "-A"]);
         run(&dir, &["git", "commit", "-q", "-m", "add feature"]);
         run(&dir, &["git", "checkout", "-q", "main"]);
+
         let (j, _) = pulse_board::add_job(
-            s,
+            &s,
             pulse_board::JobInput {
                 project: "proj".into(),
                 kind: "task".into(),
-                title: title.into(),
+                title: "auto stash".into(),
                 brief: "b".into(),
                 tier: 1,
                 created_by: "aurora".into(),
                 ..Default::default()
             },
         )
-        .unwrap();
+        .unwrap_or_else(|err| panic!("{err}"));
         exec1(
-            s,
+            &s,
             "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
             &[&TEST_NOW, &branch, &j.id],
         );
-        (proj, dir, j.id)
-    }
 
-    #[test]
-    fn landing_auto_stash_lands() {
-        let _serial = crate::test_helpers::serial();
-        let _env = pulse_testutil::env_lock();
-        let s = new_store();
-        let branch = "pulse/aurora/auto";
-        let (proj, dir, job_id) = auto_stash_fixture(&s, branch, "auto stash");
         std::fs::write(
             std::path::Path::new(&dir).join("README.md"),
-            "# proj\n\nowner's work\n",
+            b"# proj\n\nowner's work\n",
         )
-        .expect("owner work");
+        .unwrap();
+
+        let projects = vec![proj];
         let (lines, held) = tend_landings(
             &s,
-            vec![proj],
+            projects,
             "daemon".into(),
             TEST_NOW.into(),
             BTreeMap::new(),
         );
         let joined = lines.join("\n");
-        assert!(
-            held.is_empty() && joined.contains(&format!("landing landed: {branch}")),
-            "lines={lines:?} held={held:?}"
+        if !held.is_empty() || !joined.contains(&format!("landing landed: {branch}")) {
+            panic!("expected landing to succeed; lines={lines:?} held={held:?}");
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'land.landed' AND subject = ?",
+            &[&branch],
         );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.landed' AND subject = ?",
-                &[&branch]
-            ),
-            1
+        if n != 1 {
+            panic!("land.landed events: {n}");
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM jobs WHERE id = ? AND status = 'done' AND branch = ''",
+            &[&j.id],
         );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE id = ? AND status = 'done' AND branch = ''",
-                &[&job_id]
-            ),
-            1
+        if n != 1 {
+            panic!("job not finished: {:?}", job_row(&s, &j.id));
+        }
+
+        let stash_list = run(&dir, &["git", "stash", "list"]);
+        if !stash_list.contains(&format!("pulse auto-stash before landing {}", j.id)) {
+            panic!("stash list missing expected message: {stash_list:?}");
+        }
+        let status = run(
+            &dir,
+            &["git", "status", "--porcelain", "--untracked-files=no"],
         );
-        assert!(
-            run(&dir, &["git", "stash", "list"])
-                .contains(&format!("pulse auto-stash before landing {job_id}"))
-        );
-        assert_eq!(
-            run(
-                &dir,
-                &["git", "status", "--porcelain", "--untracked-files=no"]
-            )
-            .trim(),
-            ""
-        );
+        if status.trim() != "" {
+            panic!("checkout not clean after landing: {status:?}");
+        }
     }
 
     #[test]
     fn landing_auto_stash_off_defers() {
         let _serial = crate::test_helpers::serial();
-        let _env = pulse_testutil::env_lock();
+        skip_slow();
+        pulse_bus::reset_default();
         let s = new_store();
-        let branch = "pulse/aurora/manual";
-        let (proj, dir, job_id) = auto_stash_fixture(&s, branch, "manual stash");
+        let (proj, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
         set_setting(&s, "landing.auto_stash", "off");
+
+        let branch = "pulse/aurora/manual";
+        run(&dir, &["git", "checkout", "-q", "-b", branch, "main"]);
+        std::fs::write(std::path::Path::new(&dir).join("feature.txt"), b"feature\n").unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "add feature"]);
+        run(&dir, &["git", "checkout", "-q", "main"]);
+
+        let (j, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "proj".into(),
+                kind: "task".into(),
+                title: "manual stash".into(),
+                brief: "b".into(),
+                tier: 1,
+                created_by: "aurora".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &j.id],
+        );
         std::fs::write(
             std::path::Path::new(&dir).join("README.md"),
-            "# proj\n\nowner's work\n",
+            b"# proj\n\nowner's work\n",
         )
-        .expect("owner work");
-        let (lines, _held) = tend_landings(
+        .unwrap();
+
+        let projects = vec![proj];
+        let (lines, held) = tend_landings(
             &s,
-            vec![proj],
+            projects,
             "daemon".into(),
             TEST_NOW.into(),
             BTreeMap::new(),
         );
-        assert_eq!(
-            lines,
-            vec![format!(
-                "landing held proj: 1 pending landing job; deferred: the checkout of {dir} has uncommitted changes"
-            )]
+        let want = format!(
+            "landing held proj: 1 pending landing job; deferred: the checkout of {dir} has uncommitted changes"
         );
-        assert_eq!(job_row(&s, &job_id).str("branch"), branch);
-        assert_eq!(run(&dir, &["git", "stash", "list"]).trim(), "");
+        if lines.len() != 1 || lines[0] != want {
+            panic!("expected deferral; lines={lines:?} held={held:?}");
+        }
+        let r = job_row(&s, &j.id);
+        if r.str("branch") != branch {
+            panic!("deferred job lost its branch: {r:?}");
+        }
+        let stash_list = run(&dir, &["git", "stash", "list"]);
+        if stash_list.trim() != "" {
+            panic!("unexpected stash created: {stash_list:?}");
+        }
     }
 
     #[test]
     fn landing_auto_stash_failed_blocked() {
         let _serial = crate::test_helpers::serial();
-        let _env = pulse_testutil::env_lock();
+        skip_slow();
+        pulse_bus::reset_default();
         let s = new_store();
+        let (proj, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+
         let branch = "pulse/aurora/conflict";
-        let (proj, dir, job_id) = auto_stash_fixture(&s, branch, "stash fails");
+        run(&dir, &["git", "checkout", "-q", "-b", branch, "main"]);
+        std::fs::write(std::path::Path::new(&dir).join("feature.txt"), b"feature\n").unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "add feature"]);
+        run(&dir, &["git", "checkout", "-q", "main"]);
+
+        let (j, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "proj".into(),
+                kind: "task".into(),
+                title: "stash fails".into(),
+                brief: "b".into(),
+                tier: 1,
+                created_by: "aurora".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &j.id],
+        );
+
         run(&dir, &["git", "checkout", "-q", "-b", "side", "main"]);
-        std::fs::write(std::path::Path::new(&dir).join("a.txt"), "side\n").expect("side");
+        std::fs::write(std::path::Path::new(&dir).join("a.txt"), b"side\n").unwrap();
         run(&dir, &["git", "add", "-A"]);
         run(&dir, &["git", "commit", "-q", "-m", "side commit"]);
         run(&dir, &["git", "checkout", "-q", "main"]);
-        std::fs::write(std::path::Path::new(&dir).join("a.txt"), "main\n").expect("main");
+        std::fs::write(std::path::Path::new(&dir).join("a.txt"), b"main\n").unwrap();
         run(&dir, &["git", "add", "-A"]);
         run(&dir, &["git", "commit", "-q", "-m", "main commit"]);
-        let _ = std::process::Command::new("git")
-            .args(["-C", &dir, "merge", "side"])
-            .output();
+        let mut merge = std::process::Command::new("git");
+        merge.args(["-C", &dir, "merge", "side"]);
+        merge.env_clear();
+        for kv in crate::proc::environ() {
+            if let Some((key, value)) = kv.split_once('=') {
+                merge.env(key, value);
+            }
+        }
+        let _ = merge.output();
+
+        let projects = vec![proj];
         let (lines, held) = tend_landings(
             &s,
-            vec![proj],
+            projects,
             "daemon".into(),
             TEST_NOW.into(),
             BTreeMap::new(),
         );
-        assert!(
-            lines.len() == 1
-                && lines[0].contains("blocked")
-                && lines[0].contains("could not be auto-stashed"),
-            "lines={lines:?} held={held:?}"
-        );
-        assert!(
-            held.get("proj").is_some_and(|h| h.contains("blocked")),
-            "expected hold to say blocked: {held:?}"
-        );
-        let row = job_row(&s, &job_id);
-        assert_eq!(row.str("branch"), branch);
+        if lines.len() != 1
+            || !lines[0].contains("blocked")
+            || !lines[0].contains("could not be auto-stashed")
+        {
+            panic!("expected blocked with auto-stash reason; lines={lines:?} held={held:?}");
+        }
+        if !held.get("proj").is_some_and(|h| h.contains("blocked")) {
+            panic!("expected hold to say blocked: {held:?}");
+        }
+        let r = job_row(&s, &j.id);
+        if r.str("branch") != branch {
+            panic!("blocked job lost its branch: {r:?}");
+        }
     }
 
     #[test]

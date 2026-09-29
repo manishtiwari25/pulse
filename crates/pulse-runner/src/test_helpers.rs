@@ -16,11 +16,17 @@ pub(crate) const TEST_NOW: &str = "2026-09-06T10:00:00Z";
 static TEMPLATE_REPO: OnceLock<(TempDir, String)> = OnceLock::new();
 static TEMPLATE_STORE: OnceLock<TemplateStoreInfo> = OnceLock::new();
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
+/// Go: templateStoreInfo describes the per-binary template store newRepo copies from.
 pub(crate) struct TemplateStoreInfo {
+    /// the closed template store file
     pub(crate) path: String,
+    /// the project path registered in it
     pub(crate) root: String,
-    pub(crate) base_seq: i32,
+    /// events.seq before addProject ran; later rows belong to the project
+    pub(crate) base_seq: i64,
+    /// Go leaves the MkdirTemp home behind; the guard keeps it for the binary's life.
+    _home: TempDir,
 }
 
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -38,6 +44,9 @@ pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
 pub(crate) fn test_main_setup() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        // Go ran every package init() (tasks.LoginSourceCheck, the compute providers, the command table)
+        // before TestMain; the crate's register() is that init.
+        crate::commands::register();
         // The pre-commit hook runs this suite from inside `git commit`, where git exports GIT_INDEX_FILE and
         // friends; tests that drive git in temp repositories must not inherit the committing repo's index.
         for (k, _) in std::env::vars().collect::<Vec<_>>() {
@@ -268,7 +277,49 @@ pub(crate) fn run(dir: impl AsRef<Path>, argv: &[&str]) -> String {
 
 /// Go: func newRepo(t *testing.T, s *store.Store) (row, string)
 pub(crate) fn new_repo(s: &pulse_store::Store) -> (Row, String) {
-    new_bare_repo(s)
+    let dir = test_temp_dir(s).join("proj");
+    // Copying the per-binary template repo is a pure file copy: no git subprocess per test.
+    copy_dir(Path::new(&template_repo()), &dir).expect("copy template repo");
+    let root = std::fs::canonicalize(&dir)
+        .unwrap_or(dir)
+        .display()
+        .to_string();
+    // addProject seeds ~65 framework records plus the starter fixtures per call (ADR-029/030; ~200ms).
+    // The seeded rows are byte-identical for every test except the project path, so they are built
+    // once into a template store and copied into this store with ATTACH + INSERT ... SELECT.
+    let tpl = template_store();
+    let conn = s.conn().expect("conn");
+    conn.execute("ATTACH DATABASE ? AS tpl", rusqlite::params![tpl.path])
+        .expect("attach template store");
+    for q in [
+        "INSERT INTO main.projects SELECT * FROM tpl.projects WHERE slug = 'proj'",
+        "UPDATE main.projects SET path = REPLACE(path, ?, ?) WHERE slug = 'proj'",
+        "INSERT INTO main.settings SELECT * FROM tpl.settings WHERE name NOT IN (SELECT name FROM main.settings)",
+        "INSERT INTO main.records SELECT * FROM tpl.records",
+        "INSERT INTO main.record_revisions SELECT * FROM tpl.record_revisions",
+        "INSERT INTO main.evolution_fixtures SELECT * FROM tpl.evolution_fixtures",
+        "INSERT INTO main.events (at, actor, action, subject, detail) SELECT at, actor, action, subject, REPLACE(detail, ?, ?) FROM tpl.events WHERE seq > ? ORDER BY seq",
+    ] {
+        let mut args: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        if q.contains("REPLACE") {
+            args.push(&tpl.root);
+            args.push(&root);
+        }
+        if q.contains("seq >") {
+            args.push(&tpl.base_seq);
+        }
+        if let Err(err) = conn.execute(q, args.as_slice()) {
+            panic!("{q}: {err}");
+        }
+    }
+    conn.execute_batch("DETACH DATABASE tpl")
+        .expect("detach template store");
+    let p = crate::board::project_by_slug(&conn, "proj".into());
+    if p.0.is_empty() {
+        panic!("project proj not found after copy");
+    }
+    let path = p.str("path");
+    (p, path)
 }
 
 /// Go: type templateStoreInfo struct {...}
@@ -277,24 +328,79 @@ pub(crate) fn template_store_info() -> &'static TemplateStoreInfo {
 }
 
 /// Go: func templateStore(t *testing.T) *templateStoreInfo
+///
+/// templateStore builds, once per binary, a store in which addProject registered `proj` at a copy
+/// of the template repo, then closes it so newRepo can ATTACH the file and copy its rows.
 pub(crate) fn template_store() -> &'static TemplateStoreInfo {
     TEMPLATE_STORE.get_or_init(|| {
-        let s = new_store();
-        let root = template_repo();
+        test_main_setup();
+        let home = tempfile::Builder::new()
+            .prefix("pulse-template-store-")
+            .tempdir()
+            .expect("template store home");
+        let dir = home.path().join("proj");
+        copy_dir(Path::new(&template_repo()), &dir).expect("copy template repo");
+        pulse_store::Store::create(home.path().join(pulse_store::STORE_NAME))
+            .expect("create template store");
+        let s = pulse_store::Store::open(pulse_store::Options {
+            home: home.path().display().to_string(),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        })
+        .expect("open template store");
+        let base_seq: i64 = {
+            let conn = s.conn().expect("conn");
+            conn.execute_batch("PRAGMA synchronous = OFF")
+                .expect("template store pragma");
+            conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))
+                .expect("template store base seq")
+        };
+        let (p, _) = crate::board::add_project(
+            &s,
+            dir.display().to_string(),
+            "Proj".into(),
+            String::new(),
+            false,
+            String::new(),
+            util::HUMAN_AGENT.into(),
+            "proj".into(),
+        )
+        .expect("template store addProject");
+        let root = p.str("path");
+        let path = home
+            .path()
+            .join(pulse_store::STORE_NAME)
+            .display()
+            .to_string();
+        s.close().expect("close template store");
         TemplateStoreInfo {
-            path: s.db_path().to_string(),
+            path,
             root,
-            base_seq: 0,
+            base_seq,
+            _home: home,
         }
     })
 }
 
-/// Go: func newBareRepo(t *testing.T, s *store.Store) (row, string)
-pub(crate) fn new_bare_repo(s: &pulse_store::Store) -> (Row, String) {
+/// Go: t.TempDir() for a repo copy. The runner has no per-test cleanup hook, so the directory lives
+/// under the test store's home (removed with it) instead of the process temp dir.
+fn test_temp_dir(s: &pulse_store::Store) -> PathBuf {
     let dir = Path::new(&s.home)
         .join("repos")
-        .join(uuid::Uuid::new_v4().to_string())
-        .join("proj");
+        .join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&dir).expect("test temp dir");
+    dir
+}
+
+/// Go: func newBareRepo(t *testing.T, s *store.Store) (row, string)
+///
+/// newBareRepo is newRepo without the project's seeded records (ADR-029/030) and without the three
+/// git subprocesses RegisterProject runs per call (top-level, remote, branch: ~280ms together). It
+/// copies the template repo and writes the same projects row, generated goal setting and
+/// project.add event RegisterProject would, all in-process; the template is known to be a checkout
+/// on main with no remote. Tests that consult seeded records must keep using newRepo.
+pub(crate) fn new_bare_repo(s: &pulse_store::Store) -> (Row, String) {
+    let dir = test_temp_dir(s).join("proj");
     copy_dir(Path::new(&template_repo()), &dir).expect("copy template repo");
     let root = std::fs::canonicalize(&dir)
         .unwrap_or(dir)
@@ -302,12 +408,16 @@ pub(crate) fn new_bare_repo(s: &pulse_store::Store) -> (Row, String) {
         .to_string();
     let now = s.now();
     let conn = s.conn().expect("conn");
-    conn.execute("INSERT OR REPLACE INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES (?, ?, ?, '', 0, '', 'main', 'active', ?, ?, ?)", rusqlite::params!["proj", "Proj", root, now, util::HUMAN_AGENT, now]).expect("insert project");
-    let mut r = Row::new();
-    r.insert("slug", serde_json::json!("proj"));
-    r.insert("name", serde_json::json!("Proj"));
-    r.insert("path", serde_json::json!(root.clone()));
-    (r, root)
+    conn.execute("INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES (?, ?, ?, '', 0, '', 'main', 'active', ?, ?, ?)", rusqlite::params!["proj", "Proj", root, now, util::HUMAN_AGENT, now]).expect("insert project");
+    pulse_bus::emit(s, util::HUMAN_AGENT, "project.add", "proj", root.as_str())
+        .expect("project.add event");
+    pulse_goals::ensure_default(s, "proj").expect("default goal");
+    let p = crate::board::project_by_slug(&conn, "proj".into());
+    if p.0.is_empty() {
+        panic!("project proj not found after insert");
+    }
+    let path = p.str("path");
+    (p, path)
 }
 
 /// Go: func templateRepo(t *testing.T) string
@@ -329,11 +439,17 @@ pub(crate) fn template_repo() -> String {
 
 /// Go: func join(t *testing.T, s *store.Store, name string) row
 pub(crate) fn join(s: &pulse_store::Store, name: &str) -> Row {
-    let now = s.now();
-    let conn = s.conn().expect("conn");
-    let _ = conn.execute("INSERT OR IGNORE INTO agents (name, runner, model, role, joined_at, last_active_at) VALUES (?, 'r', 'm', 'worker', ?, ?)", rusqlite::params![name, now, now]);
-    let mut r = Row::new();
-    r.insert("name", serde_json::json!(name));
+    let (r, _) = crate::board::join_agent(
+        s,
+        name.into(),
+        "r".into(),
+        "m".into(),
+        "".into(),
+        "".into(),
+        "worker".into(),
+        "".into(),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
     r
 }
 

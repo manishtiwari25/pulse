@@ -67,6 +67,81 @@ pub(crate) fn invoke(
     (out.string(), err.string(), code)
 }
 
+/// Go: func invokeOK(t *testing.T, s *store.Store, name, project string, args ...string) string
+pub(crate) fn invoke_ok(
+    s: &pulse_store::Store,
+    name: &str,
+    project: &str,
+    args: &[&str],
+) -> String {
+    let (out, err_text, code) = invoke(s, name, project, args);
+    if code != 0 {
+        panic!("{name} {args:?}: {code} {err_text}");
+    }
+    out
+}
+
+/// Go: func withStdin(t *testing.T, text string, f func())
+///
+/// Runs f with stdin reading text, as `... | pulse executor token --with-token` would. Go swaps
+/// `os.Stdin` for the pipe's read end; the process-wide equivalent here is dup2 onto fd 0, restored
+/// afterwards. Callers hold `serial()` so nothing else reads stdin meanwhile.
+pub(crate) fn with_stdin(text: &str, f: impl FnOnce()) {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let (r, mut w) = std::io::pipe().expect("pipe");
+    // SAFETY: fd 0 is open for the process's life; dup returns a fresh descriptor we own.
+    let old = unsafe {
+        let saved = libc::dup(0);
+        assert!(saved >= 0, "dup(0): {}", std::io::Error::last_os_error());
+        OwnedFd::from_raw_fd(saved)
+    };
+    // SAFETY: r stays open until the end of this function, so fd 0 aliases a live pipe.
+    let rc = unsafe { libc::dup2(r.as_raw_fd(), 0) };
+    assert!(rc >= 0, "dup2: {}", std::io::Error::last_os_error());
+    let text = text.to_string();
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+        let _ = w.write_all(text.as_bytes());
+        drop(w);
+    });
+    f();
+    // SAFETY: old is the saved copy of the original fd 0, still open.
+    let rc = unsafe { libc::dup2(old.as_raw_fd(), 0) };
+    assert!(rc >= 0, "dup2 restore: {}", std::io::Error::last_os_error());
+    drop(r);
+    let _ = writer.join();
+}
+
+static STUB_GH_TOKEN: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
+
+fn stub_gh_auth_token() -> anyhow::Result<String> {
+    Ok(STUB_GH_TOKEN.lock().unwrap().clone())
+}
+
+/// Go: func stubGh(t *testing.T, tok string)
+///
+/// Makes the hub's `gh auth token` answer tok for the test; dropping the guard is Go's t.Cleanup
+/// (the old ghAuthToken back, the gh source cache forgotten).
+#[must_use = "hold the guard for the test's life; dropping it restores gh auth token"]
+pub(crate) fn stub_gh(tok: &str) -> StubGh {
+    let old = *crate::token::GH_AUTH_TOKEN.read().unwrap();
+    crate::token::GH_SOURCE.lock().unwrap().forget();
+    *STUB_GH_TOKEN.lock().unwrap() = tok.to_string();
+    *crate::token::GH_AUTH_TOKEN.write().unwrap() = stub_gh_auth_token;
+    StubGh { old }
+}
+
+pub(crate) struct StubGh {
+    old: crate::token::GhAuthTokenFn,
+}
+
+impl Drop for StubGh {
+    fn drop(&mut self) {
+        *crate::token::GH_AUTH_TOKEN.write().unwrap() = self.old;
+        crate::token::GH_SOURCE.lock().unwrap().forget();
+    }
+}
+
 pub(crate) const TEST_HOST_KEY: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE root@vm";
 
@@ -165,6 +240,102 @@ fn arg_after(args: &[String], flag: &str) -> String {
 
 fn contains(values: &[&str], want: &str) -> bool {
     values.contains(&want)
+}
+
+/// Go: type fakeAz struct (runner4_test.go)
+#[derive(Clone)]
+pub(crate) struct FakeAz(pub Arc<Mutex<FakeAzState>>);
+
+#[derive(Default)]
+pub(crate) struct FakeAzState {
+    pub calls: Vec<Vec<String>>,
+    pub created: BTreeMap<String, bool>,
+    pub deleted: Vec<String>,
+}
+
+/// Go: az := &fakeAz{created: map[string]bool{}}
+pub(crate) fn new_fake_az() -> FakeAz {
+    FakeAz(Arc::new(Mutex::new(FakeAzState::default())))
+}
+
+impl FakeAz {
+    /// Go: func (f *fakeAz) run(_ context.Context, args []string, _ time.Duration) (int, string, string, error)
+    pub(crate) fn run(
+        &self,
+        _ctx: &pulse_bus::CancellationToken,
+        args: Vec<String>,
+        _timeout: Duration,
+    ) -> anyhow::Result<(i32, String, String)> {
+        let mut f = self.0.lock().expect("fake az");
+        f.calls.push(args.clone());
+        for a in &args {
+            if pulse_store::secret_shaped(a) {
+                return Err(anyhow!("secret-shaped argument reached az: {a}"));
+            }
+        }
+        let cmd = args.join(" ");
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(match () {
+            _ if cmd.starts_with("account show") => (0, "Pulse Sub\n".into(), String::new()),
+            _ if cmd.starts_with("group show") => {
+                (3, String::new(), "ResourceGroupNotFound".into())
+            }
+            _ if cmd.starts_with("group create") => (0, String::new(), String::new()),
+            _ if cmd.starts_with("vm show") => {
+                let name = arg_after(&args, "--name");
+                if !f.created.get(&name).copied().unwrap_or(false) {
+                    return Ok((3, String::new(), "ResourceNotFound".into()));
+                }
+                if contains(&refs, "powerState") {
+                    return Ok((0, "VM running\n".into(), String::new()));
+                }
+                if contains(&refs, "publicIps") {
+                    return Ok((0, "203.0.113.5\n".into(), String::new()));
+                }
+                (0, String::new(), String::new())
+            }
+            _ if cmd.starts_with("vm create") => {
+                let name = arg_after(&args, "--name");
+                f.created.insert(name, true);
+                (
+                    0,
+                    r#"{"publicIpAddress": "203.0.113.5", "powerState": "VM running"}"#.into(),
+                    String::new(),
+                )
+            }
+            _ if cmd.starts_with("vm run-command invoke") => (
+                0,
+                "Enable succeeded: \n[stdout]\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE root@vm\n[stderr]\n".into(),
+                String::new(),
+            ),
+            _ if cmd.starts_with("vm delete") => {
+                let name = arg_after(&args, "--name");
+                f.created.remove(&name);
+                f.deleted.push(name);
+                (0, String::new(), String::new())
+            }
+            _ if cmd.starts_with("network") => (3, String::new(), "ResourceNotFound".into()),
+            _ => (1, String::new(), format!("unexpected az {cmd}")),
+        })
+    }
+
+    /// Go: func (f *fakeAz) has(prefix string) bool
+    pub(crate) fn has(&self, prefix: &str) -> bool {
+        self.0
+            .lock()
+            .expect("fake az")
+            .calls
+            .iter()
+            .any(|c| c.join(" ").starts_with(prefix))
+    }
+
+    pub(crate) fn calls(&self) -> Vec<Vec<String>> {
+        self.0.lock().expect("fake az").calls.clone()
+    }
+
+    pub(crate) fn deleted(&self) -> Vec<String> {
+        self.0.lock().expect("fake az").deleted.clone()
+    }
 }
 
 #[derive(Clone)]

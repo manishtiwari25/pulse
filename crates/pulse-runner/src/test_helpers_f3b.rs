@@ -210,6 +210,58 @@ impl Drop for RetireAzGuard {
     }
 }
 
+/// Go: `oldHost := sshHostname; t.Cleanup(func() { sshHostname = oldHost }); sshHostname = f` (providers_test.go:510)
+pub(crate) struct SshHostnameGuard {
+    old: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
+}
+
+impl Drop for SshHostnameGuard {
+    fn drop(&mut self) {
+        if let Some(old) = self.old.take() {
+            drop(crate::retire::set_ssh_hostname(old));
+        }
+    }
+}
+
+pub(crate) fn install_ssh_hostname<F>(f: F) -> SshHostnameGuard
+where
+    F: Fn(&str) -> String + Send + Sync + 'static,
+{
+    SshHostnameGuard {
+        old: Some(crate::retire::set_ssh_hostname(Box::new(f))),
+    }
+}
+
+/// Go: `old := runAz; t.Cleanup(func() { runAz = old }); runAz = f` (retire_test.go:532, runner4_test.go:740)
+pub(crate) struct RunAzGuard {
+    old: Option<Box<crate::provider::CliRunner>>,
+}
+
+impl Drop for RunAzGuard {
+    fn drop(&mut self) {
+        if let Some(old) = self.old.take() {
+            drop(crate::azure::set_run_az(old));
+        }
+    }
+}
+
+pub(crate) fn install_run_az<F>(f: F) -> RunAzGuard
+where
+    F: Fn(
+            &pulse_bus::CancellationToken,
+            Vec<String>,
+            std::time::Duration,
+        ) -> anyhow::Result<(i32, String, String)>
+        + Send
+        + Sync
+        + 'static,
+{
+    crate::azure::init();
+    RunAzGuard {
+        old: Some(crate::azure::set_run_az(Box::new(f))),
+    }
+}
+
 pub(crate) fn install_retire_az(f: &RetireAz) -> RetireAzGuard {
     crate::azure::init();
     let fake = f.clone();
@@ -229,19 +281,39 @@ pub(crate) fn install_retire_az(f: &RetireAz) -> RetireAzGuard {
     }
 }
 
-pub(crate) fn set_setting(s: &pulse_store::Store, k: &str, v: &str) {
-    s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
-}
-
-pub(crate) fn write_executor_token(s: &pulse_store::Store) {
-    crate::test_helpers_f1b::write_executor_token(s);
-}
+pub(crate) use crate::test_helpers_f1b::write_executor_token;
+pub(crate) use crate::test_helpers_f5::set_setting;
 
 pub(crate) fn sweep_store() -> crate::test_helpers::TestStore {
     let s = new_store();
     set_setting(&s, "daemon.sweep_grace_minutes", "0");
     set_setting(&s, "daemon.sweep_branch_days", "0");
     s
+}
+
+/// Go: func writeSweepWAL(t *testing.T, s *store.Store)
+pub(crate) fn write_sweep_wal(s: &pulse_store::Store) {
+    let mut conn = s.conn().unwrap();
+    conn.execute_batch("PRAGMA wal_autocheckpoint = 0").unwrap();
+    let tx = conn.transaction().unwrap();
+    let payload = "x".repeat(8192);
+    for _ in 0..1200 {
+        if let Err(err) = tx.execute(
+            "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'test', 'checkpoint.write', 'wal', ?)",
+            params![TEST_NOW, payload],
+        ) {
+            tx.rollback().unwrap();
+            panic!("{err}");
+        }
+    }
+    tx.commit().unwrap();
+    let wal = format!("{}-wal", s.path);
+    let st = std::fs::metadata(&wal);
+    assert!(
+        st.as_ref().is_ok_and(|m| m.len() != 0),
+        "test did not create a WAL: {:?}",
+        st.err()
+    );
 }
 
 pub(crate) fn sweep_job(s: &pulse_store::Store, status: &str, branch: &str) -> String {

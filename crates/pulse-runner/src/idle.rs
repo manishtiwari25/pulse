@@ -1,4 +1,4 @@
-//! Skeleton port of internal/runner/idle.go.
+//! Port of internal/runner/idle.go.
 #![allow(dead_code)]
 
 use chrono::TimeDelta;
@@ -556,18 +556,36 @@ mod tests {
             ] {
                 let s = new_store();
                 status_truth_project(&s);
-                s.conn()
-                    .unwrap()
-                    .execute(
-                        "INSERT INTO jobs(id, project, kind, title, status, source, created_at)
+                if let Err(err) = s.conn().unwrap().execute(
+                    "INSERT INTO jobs(id, project, kind, title, status, source, created_at)
 					VALUES('J-reflect', 'proj', 'reflect', 'Daily reflect', ?, ?, ?)",
-                        params![status, source, TEST_NOW],
-                    )
-                    .unwrap();
-                assert_eq!(
+                    params![status, source, TEST_NOW],
+                ) {
+                    panic!("{err}");
+                }
+                let (got, want) = (
                     reflect_idle_part(&s, "proj".into(), TEST_NOW.into()),
-                    format!("reflect {status} today")
+                    format!("reflect {status} today"),
                 );
+                if got != want {
+                    panic!("idle diagnostic = {got:?}, want {want:?}");
+                }
+                let planned =
+                    crate::plan::plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+                match &planned {
+                    Ok(planned) if planned.is_empty() => {}
+                    _ => {
+                        panic!("an existing daily attempt must not be scheduled again: {planned:?}")
+                    }
+                }
+                let n = count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE project = 'proj' AND kind = 'reflect'",
+                    &[],
+                );
+                if n != 1 {
+                    panic!("daily attempts = {n}, want 1");
+                }
             }
         }
     }
@@ -575,89 +593,82 @@ mod tests {
     #[test]
     fn reflect_idle_part_status_truth_due() {
         let _serial = crate::test_helpers::serial();
-        for (project, kind, source, created) in [
-            ("", "", "", ""),
-            (
-                "proj",
-                "reflect",
-                "reflect:proj:2026-09-05",
-                "2026-09-05T10:00:00Z",
-            ),
-            (
-                "proj",
-                "reflect",
-                "onboard-reflect:proj",
-                "2026-09-05T10:00:00Z",
-            ),
-            (
-                "other",
-                "reflect",
-                &format!("reflect:proj:{}", &TEST_NOW[..10]),
-                TEST_NOW,
-            ),
-            (
-                "proj",
-                "task",
-                &format!("reflect:proj:{}", &TEST_NOW[..10]),
-                TEST_NOW,
-            ),
-            ("proj", "reflect", "manual-reflect", TEST_NOW),
+        struct Tc {
+            name: &'static str,
+            project: &'static str,
+            kind: &'static str,
+            source: String,
+            created: &'static str,
+        }
+        for tc in [
+            Tc {
+                name: "no reflect",
+                project: "",
+                kind: "",
+                source: "".into(),
+                created: "",
+            },
+            Tc {
+                name: "previous daily attempt",
+                project: "proj",
+                kind: "reflect",
+                source: "reflect:proj:2026-09-05".into(),
+                created: "2026-09-05T10:00:00Z",
+            },
+            Tc {
+                name: "previous onboarding attempt",
+                project: "proj",
+                kind: "reflect",
+                source: "onboard-reflect:proj".into(),
+                created: "2026-09-05T10:00:00Z",
+            },
+            Tc {
+                name: "another project",
+                project: "other",
+                kind: "reflect",
+                source: format!("reflect:proj:{}", &TEST_NOW[..10]),
+                created: TEST_NOW,
+            },
+            Tc {
+                name: "another kind",
+                project: "proj",
+                kind: "task",
+                source: format!("reflect:proj:{}", &TEST_NOW[..10]),
+                created: TEST_NOW,
+            },
+            Tc {
+                name: "unrelated source",
+                project: "proj",
+                kind: "reflect",
+                source: "manual-reflect".into(),
+                created: TEST_NOW,
+            },
         ] {
             let s = new_store();
             status_truth_project(&s);
-            if !source.is_empty() {
-                s.conn()
-                    .unwrap()
-                    .execute(
-                        "INSERT INTO jobs(id, project, kind, title, status, source, created_at)
+            if !tc.source.is_empty()
+                && let Err(err) = s.conn().unwrap().execute(
+                    "INSERT INTO jobs(id, project, kind, title, status, source, created_at)
 					VALUES('J-other', ?, ?, 'Earlier work', 'done', ?, ?)",
-                        params![project, kind, source, created],
-                    )
-                    .unwrap();
+                    params![tc.project, tc.kind, tc.source, tc.created],
+                )
+            {
+                panic!("{}: {err}", tc.name);
             }
-            assert_eq!(
-                reflect_idle_part(&s, "proj".into(), TEST_NOW.into()),
-                "reflect due"
-            );
+            let got = reflect_idle_part(&s, "proj".into(), TEST_NOW.into());
+            if got != "reflect due" {
+                panic!("{}: idle diagnostic = {got:?}, want reflect due", tc.name);
+            }
+            let planned =
+                crate::plan::plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+            match &planned {
+                Ok(planned) if planned.len() == 1 && planned[0].str("kind") == "reflect" => {}
+                _ => panic!(
+                    "{}: a due reflect must still be scheduled: {planned:?}",
+                    tc.name
+                ),
+            }
         }
-
-        let parity_probe = r#"INSERT INTO jobs(id, project, kind, title, status, source, created_at) VALUES('J-other', ?, ?, 'Earlier work', 'done', ?, ?) another kind another project daemon no reflect previous daily attempt previous onboarding attempt unrelated source"#;
-        assert!(parity_probe.contains(r#"INSERT INTO jobs(id, project, kind, title, status, source, created_at) VALUES('J-other', ?, ?, 'Earlier work', 'done', ?, ?)"#), "parity probe lacks {}", r#"INSERT INTO jobs(id, project, kind, title, status, source, created_at) VALUES('J-other', ?, ?, 'Earlier work', 'done', ?, ?)"#);
-        assert!(
-            parity_probe.contains(r#"another kind"#),
-            "parity probe lacks {}",
-            r#"another kind"#
-        );
-        assert!(
-            parity_probe.contains(r#"another project"#),
-            "parity probe lacks {}",
-            r#"another project"#
-        );
-        assert!(
-            parity_probe.contains(r#"daemon"#),
-            "parity probe lacks {}",
-            r#"daemon"#
-        );
-        assert!(
-            parity_probe.contains(r#"no reflect"#),
-            "parity probe lacks {}",
-            r#"no reflect"#
-        );
-        assert!(
-            parity_probe.contains(r#"previous daily attempt"#),
-            "parity probe lacks {}",
-            r#"previous daily attempt"#
-        );
-        assert!(
-            parity_probe.contains(r#"previous onboarding attempt"#),
-            "parity probe lacks {}",
-            r#"previous onboarding attempt"#
-        );
-        assert!(
-            parity_probe.contains(r#"unrelated source"#),
-            "parity probe lacks {}",
-            r#"unrelated source"#
-        );
     }
 
     #[test]

@@ -527,7 +527,7 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<Vec<u8>> {
 }
 
 /// Go's (*exec.ExitError).Error(): "exit status N" or "signal: <name>".
-fn exit_text(status: ExitStatus) -> String {
+pub fn exit_text(status: ExitStatus) -> String {
     if let Some(code) = status.code() {
         return format!("exit status {code}");
     }

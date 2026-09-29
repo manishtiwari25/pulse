@@ -33,7 +33,7 @@ fn is_nil(r: &Row) -> bool {
 fn conn(s: &pulse_store::Store) -> pulse_store::PooledConn {
     s.conn().expect("store connection")
 }
-fn wall_clock() -> SystemTime {
+pub(crate) fn wall_clock() -> SystemTime {
     (*WALL_CLOCK.read().expect("wall clock"))()
 }
 fn since_seconds(start: SystemTime) -> f64 {
@@ -538,8 +538,8 @@ pub(crate) fn run_job(
     let owner_cancelled = Arc::new(AtomicBool::new(false));
     let stop_watch = watch_run_harness_cancel(&cancel, s, &run_id, Arc::clone(&owner_cancelled));
     if job.str("kind") == "baseline" {
-        stop_watch();
-        return crate::baseline::run_baseline(
+        // ADR-031: the runner measures the default branch itself; no clone, brief, worker or landing.
+        let r = crate::baseline::run_baseline(
             s,
             job,
             project,
@@ -547,9 +547,11 @@ pub(crate) fn run_job(
             now.to_string(),
             run_id,
             log_path,
-            Value::Null,
+            &*ex,
             o,
         );
+        stop_watch();
+        return r;
     }
     if agent != crate::util::HUMAN_AGENT {
         let mut model = s.run_model(&job.str("kind"));
@@ -2015,29 +2017,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-
-    #[test]
-    fn deadline_mult() {
-        let _serial = crate::test_helpers::serial();
-        let _guard = pulse_testutil::env_lock();
-        for (env, want) in [
-            ("3", 3.0),
-            ("2.5", 2.5),
-            ("0.5", 1.0),
-            ("0", 1.0),
-            ("abc", 1.0),
-        ] {
-            let _env_1 = pulse_testutil::setenv("PULSE_TEST_DEADLINE_MULT", env);
-            let got = std::env::var("PULSE_TEST_DEADLINE_MULT")
-                .ok()
-                .and_then(|v| v.parse::<f64>().ok())
-                .filter(|f| *f > 0.0)
-                .map(|f| f.max(1.0))
-                .unwrap_or(1.0);
-            assert_eq!(got, want, "PULSE_TEST_DEADLINE_MULT={env}");
-        }
-        let _env_2 = pulse_testutil::unsetenv("PULSE_TEST_DEADLINE_MULT");
-    }
 
     #[test]
     fn cli_on_path_prepends_when_needed() {

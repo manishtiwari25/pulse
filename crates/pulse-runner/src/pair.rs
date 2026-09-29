@@ -866,9 +866,9 @@ pub(crate) fn module_root() -> String {
     }
     for start in starts {
         for dir in start.ancestors() {
-            let go_mod = dir.join("go.mod");
-            if std::fs::read_to_string(&go_mod)
-                .is_ok_and(|d| d.contains("module github.com/manishtiwari25/pulse"))
+            let manifest = dir.join("Cargo.toml");
+            if std::fs::read_to_string(&manifest).is_ok_and(|d| d.contains("[workspace]"))
+                && dir.join("crates/pulse/Cargo.toml").is_file()
             {
                 return dir.to_string_lossy().to_string();
             }
@@ -1346,14 +1346,14 @@ fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {
         }
         #[cfg(target_os = "linux")]
         {
-            let go_arch = if cfg!(target_arch = "x86_64") {
+            let rust_arch = if cfg!(target_arch = "x86_64") {
                 "amd64"
             } else if cfg!(target_arch = "aarch64") {
                 "arm64"
             } else {
                 ""
             };
-            if go_arch == arch {
+            if rust_arch == arch {
                 return Ok((std::fs::read(&exe)?, exe.to_string_lossy().to_string()));
             }
         }
@@ -1362,36 +1362,50 @@ fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {
     if root.is_empty() {
         return Err(crate::util::fail(1, format!("no linux/{arch} pulse binary to ship: set PULSE_HANDS_BINARY, place pulse-linux-{arch} beside this binary, or run from the pulse source tree")).into());
     }
-    let tmp = std::env::temp_dir().join(format!("pulse-linux-{arch}-{}", uuid::Uuid::new_v4()));
-    let out = Command::new("go")
+    let triple = match arch {
+        "amd64" => "x86_64-unknown-linux-musl",
+        "arm64" => "aarch64-unknown-linux-musl",
+        _ => "",
+    };
+    if triple.is_empty() {
+        return Err(crate::util::fail(1, format!("no linux/{arch} pulse binary to ship: set PULSE_HANDS_BINARY, place pulse-linux-{arch} beside this binary, or run from the pulse source tree")).into());
+    }
+    let out = Command::new("cargo")
         .args([
             "build",
-            "-trimpath",
-            "-o",
-            &tmp.to_string_lossy(),
-            "./cmd/pulse",
+            "--release",
+            "--locked",
+            "--bin",
+            "pulse",
+            "--target",
+            triple,
+            "--target-dir",
+            &format!("{root}/target"),
         ])
         .current_dir(&root)
-        .env("GOOS", "linux")
-        .env("GOARCH", arch)
-        .env("CGO_ENABLED", "0")
         .output()?;
     if !out.status.success() {
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
+        );
         return Err(crate::util::fail(
             1,
             format!(
-                "go build for linux/{arch} failed: {}",
-                pair_tail(String::from_utf8_lossy(&out.stderr).to_string())
+                "cargo build for linux/{arch} failed: {}",
+                pair_tail(combined)
             ),
         )
         .into());
     }
-    let data = std::fs::read(&tmp)?;
-    let _ = std::fs::remove_file(&tmp);
-    Ok((
-        data,
-        format!("go build GOOS=linux GOARCH={arch} ./cmd/pulse"),
-    ))
+    let artifact = Path::new(&root)
+        .join("target")
+        .join(triple)
+        .join("release")
+        .join("pulse");
+    let data = std::fs::read(&artifact)?;
+    Ok((data, format!("cargo build --target {triple} --bin pulse")))
 }
 
 fn parse_pair_ssh_address(text: &str) -> anyhow::Result<(String, String, i32)> {

@@ -73,17 +73,19 @@ impl Handler {
         let _guard = crate::additions::ADDITION_WRITES
             .lock()
             .expect("addition write lock poisoned");
+        let defer_hub = !dry_run && !self.service && self.port == SERVICE_HUB_PORT;
         let mut out = Vec::new();
         let result = pulse_runner::install_service(
             &mut out,
             &store.home,
             pulse_runner::ServiceInstallOptions {
                 dry_run,
+                defer_hub,
                 ..Default::default()
             },
         );
         match result {
-            Ok(Some(result)) => {
+            Ok(result) => {
                 let handover = result.load_hub.is_some() && self.handover.is_some();
                 crate::server::write_json(
                     w,
@@ -109,23 +111,6 @@ impl Handler {
                     std::thread::spawn(move || handover(Box::new(move || load_hub())));
                 }
             }
-            Ok(None) => crate::server::write_json(
-                w,
-                200,
-                json!(map_from_pairs(vec![
-                    ("dry_run", json!(dry_run)),
-                    ("installed", json!(!dry_run)),
-                    ("kind", json!("")),
-                    ("daemon_path", json!("")),
-                    ("hub_path", json!("")),
-                    ("output", json!(String::from_utf8_lossy(&out).to_string())),
-                    ("handover", json!(false)),
-                    (
-                        "hub_url",
-                        json!(format!("http://127.0.0.1:{SERVICE_HUB_PORT}"))
-                    ),
-                ])),
-            ),
             Err(err) => crate::server::write_json(
                 w,
                 409,

@@ -487,7 +487,8 @@ mod tests {
     use super::*;
     use crate::test_helpers::{TEST_NOW, new_bare_repo, new_store};
     use crate::test_helpers_f3::drained_by_login;
-    use crate::test_helpers_f5::must_one;
+    use crate::test_helpers_f3b::{TEST_DAEMON, install_ssh_hostname};
+    use crate::test_helpers_f5::{exec1, must_one, set_setting};
     use crate::test_helpers_f6::*;
 
     const TEST_HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKB root@pulse";
@@ -813,26 +814,27 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
             2,
             "the fixtures take an hour here",
         )
-        .expect("request compute");
-        pulse_tasks::approve(&s, &req.id, "go ahead", pulse_store::HUMAN_AGENT).expect("approve");
+        .unwrap_or_else(|err| panic!("{err}"));
+        pulse_tasks::approve(&s, &req.id, "go ahead", crate::util::HUMAN_AGENT)
+            .unwrap_or_else(|err| panic!("{err}"));
         let log = crate::test_helpers::once_daemon(
             &s,
             crate::daemon::DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: nothing'".into(),
                 hub_home: h.hub_home.clone(),
                 ..Default::default()
             },
         );
-        let got = pulse_tasks::get_compute(&s, &req.id).expect("get compute");
-        assert!(
-            got.status == "failed" && log.contains("gcloud) is not installed"),
-            "request: {got:?}\n{log}"
-        );
-        assert!(
-            crate::executor::executor_row(&s, "hands-cr-001")
-                .0
-                .is_empty(),
-            "an executor was registered without a machine"
-        );
+        let got = pulse_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        if got.status != "failed" || !log.contains("gcloud) is not installed") {
+            panic!("request: {got:?}\n{log}");
+        }
+        if !crate::executor::executor_row(&s, "hands-cr-001")
+            .0
+            .is_empty()
+        {
+            panic!("an executor was registered without a machine");
+        }
     }
 
     #[test]
@@ -876,13 +878,10 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
     fn tend_retires_and_deletes_our_ec2_instance() {
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
-        crate::commands::register();
         let s = new_store();
         new_bare_repo(&s);
-        s.set_setting(crate::util::HUMAN_AGENT, "compute.provider", "aws")
-            .unwrap();
-        s.set_setting(crate::util::HUMAN_AGENT, "compute.aws.region", "eu-west-1")
-            .unwrap();
+        set_setting(&s, "compute.provider", "aws");
+        set_setting(&s, "compute.aws.region", "eu-west-1");
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
         let aws = new_fake_aws();
         aws.0.lock().unwrap().instances.insert(
@@ -901,113 +900,131 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
             let aws = aws.clone();
             Box::new(move |ctx, args, timeout| aws.run(ctx, args, timeout))
         });
-        let old_host = crate::retire::set_ssh_hostname(Box::new(|_| "203.0.113.7".into()));
-        let lines = crate::retire::tend_executors(&s, TEST_NOW.into(), "daemon".into());
-        let _ = crate::retire::set_ssh_hostname(old_host);
+        let _host = install_ssh_hostname(|_host| "203.0.113.7".into());
+        let _stub = stub_gh("");
+
+        let lines = crate::retire::tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         let calls = aws.joined();
-        assert_eq!(
-            calls,
-            vec![
-                "ec2 describe-instances --filters Name=tag:pulse,Values=hands Name=instance-state-name,Values=pending,running,stopping,stopped --region eu-west-1 --output json",
-                "ec2 stop-instances --instance-ids i-0777 --region eu-west-1 --output json",
-            ],
-            "aws calls"
-        );
+        if calls.len() != 2
+            || calls[0]
+                != "ec2 describe-instances --filters Name=tag:pulse,Values=hands Name=instance-state-name,Values=pending,running,stopping,stopped --region eu-west-1 --output json"
+            || calls[1]
+                != "ec2 stop-instances --instance-ids i-0777 --region eu-west-1 --output json"
+        {
+            panic!("aws calls: {calls:?}");
+        }
         let r = must_one(
             &s,
             "SELECT * FROM retired_vms WHERE executor = 'vm-seven'",
             &[],
         );
-        assert!(
-            r.str("provider") == "aws"
-                && r.str("name") == "pulse-cr-007"
-                && r.str("delete_after") == crate::util::plus_hours(TEST_NOW, 24.0)
-                && r.str("detail").contains(r#""instance_id":"i-0777""#),
-            "retired_vms: {r:?}"
+        if r.0.is_empty()
+            || r.str("provider") != "aws"
+            || r.str("name") != "pulse-cr-007"
+            || r.str("delete_after") != crate::util::plus_hours(TEST_NOW, 24.0)
+            || !r.str("detail").contains(r#""instance_id":"i-0777""#)
+        {
+            panic!("retired_vms: {r:?}");
+        }
+        let ev = must_one(
+            &s,
+            "SELECT * FROM events WHERE action = 'executor.retired' AND subject = 'vm-seven'",
+            &[],
         );
-        assert!(
-            lines
-                .join("\n")
-                .contains("retired vm-seven: stopped pulse-cr-007 (eu-west-1)"),
-            "lines: {lines:?}"
+        let d = crate::util::json_map(&ev.str("detail"));
+        if d["provider"] != "aws" || d["instance_id"] != "i-0777" || d["place"] != "eu-west-1" {
+            panic!("event: {ev:?}");
+        }
+        let p = must_one(
+            &s,
+            "SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'",
+            &[],
         );
-        s.set_setting(crate::util::HUMAN_AGENT, "compute.provider", "azure")
-            .unwrap();
+        if p.str("summary")
+            != format!(
+                "retired vm-seven: login refused; EC2 instance pulse-cr-007 (eu-west-1) stopped now, deleted at {} unless kept",
+                crate::util::plus_hours(TEST_NOW, 24.0)
+            )
+        {
+            panic!("summary: {:?}", p.str("summary"));
+        }
+        if !p.str("body").contains("Undo: `aws ec2 start-instances --instance-ids i-0777 --region eu-west-1` then `pulse executor activate vm-seven`") {
+            panic!("body:\n{}", p.str("body"));
+        }
+        if !lines
+            .join("\n")
+            .contains("retired vm-seven: stopped pulse-cr-007 (eu-west-1)")
+        {
+            panic!("lines: {lines:?}");
+        }
+
+        // At the grace the instance is terminated through the row's provider, whatever compute.provider says now.
+        set_setting(&s, "compute.provider", "azure");
         aws.reset();
         let later = crate::util::plus_hours(TEST_NOW, 24.0);
-        let lines = crate::retire::tend_executors(&s, later.clone(), "daemon".into());
+        let lines = crate::retire::tend_executors(&s, later.clone(), TEST_DAEMON.into());
         let calls = aws.joined();
-        assert!(
-            calls.len() == 2
-                && calls[0].starts_with("ec2 describe-instances --filters Name=instance-id,Values=i-0777 --region eu-west-1")
-                && calls[1] == "ec2 terminate-instances --instance-ids i-0777 --region eu-west-1 --output json",
-            "delete calls: {calls:?}"
-        );
+        if calls.len() != 2
+            || !calls[0].starts_with("ec2 describe-instances --filters Name=instance-id,Values=i-0777 --region eu-west-1")
+            || calls[1] != "ec2 terminate-instances --instance-ids i-0777 --region eu-west-1 --output json"
+        {
+            panic!("delete calls: {calls:?}");
+        }
         let r = must_one(
             &s,
             "SELECT * FROM retired_vms WHERE executor = 'vm-seven'",
             &[],
         );
-        assert!(
-            r.str("deleted_at") == later && r.str("note").is_empty(),
-            "row: {r:?}"
+        if r.str("deleted_at") != later || !r.str("note").is_empty() {
+            panic!("row: {r:?}");
+        }
+        if must_one(
+            &s,
+            "SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute' AND summary = 'deleted pulse-cr-007 (eu-west-1)'",
+            &[],
+        )
+        .0
+        .is_empty()
+        {
+            panic!(
+                "delete finding missing: {:?}",
+                crate::test_helpers_f5::must_rows(&s, "SELECT summary FROM posts", &[])
+            );
+        }
+        if !lines
+            .join("\n")
+            .contains("deleted pulse-cr-007 (eu-west-1): instance i-0777 with its root volume")
+        {
+            panic!("lines: {lines:?}");
+        }
+        // Already gone: closed without a terminate.
+        aws.reset();
+        exec1(
+            &s,
+            "INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, detail) VALUES ('vm-gone', 'aws', '', 'pulse-cr-gone', ?, ?, ?)",
+            &[
+                &TEST_NOW,
+                &TEST_NOW,
+                &r#"{"detail":{"instance_id":"i-gone","region":"eu-west-1"}}"#,
+            ],
         );
-        assert!(
-            lines
-                .join("\n")
-                .contains("deleted pulse-cr-007 (eu-west-1): instance i-0777 with its root volume"),
-            "lines: {lines:?}"
+        let lines = crate::retire::tend_executors(&s, later.clone(), TEST_DAEMON.into());
+        let calls = aws.joined();
+        if calls.len() != 1
+            || !calls[0]
+                .starts_with("ec2 describe-instances --filters Name=instance-id,Values=i-gone")
+        {
+            panic!("missing instance calls: {calls:?}");
+        }
+        let r = must_one(
+            &s,
+            "SELECT * FROM retired_vms WHERE executor = 'vm-gone'",
+            &[],
         );
-
-        let parity_probe = r#""instance_id":"i-0777" INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, detail) VALUES SELECT * FROM events WHERE action = 'executor.retired' AND subject = 'vm-seven' SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute' SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute' AND summary = 'deleted pulse-cr-007 (eu-west SELECT * FROM retired_vms WHERE executor = 'vm-gone' SELECT summary FROM posts Undo: `aws ec2 start-instances --instance-ids i-0777 --region eu-west-1` then `pulse executor activate vm-seven` ec2 describe-instances --filters Name=instance-id,Values=i-gone instance_id retired vm-seven: login refused; EC2 instance pulse-cr-007 (eu-west-1) stopped now, deleted at summary"#;
-        assert!(
-            parity_probe.contains(r#""instance_id":"i-0777""#),
-            "parity probe lacks {}",
-            r#""instance_id":"i-0777""#
-        );
-        assert!(parity_probe.contains(r#"INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, detail) VALUES"#), "parity probe lacks {}", r#"INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, detail) VALUES"#);
-        assert!(
-            parity_probe.contains(
-                r#"SELECT * FROM events WHERE action = 'executor.retired' AND subject = 'vm-seven'"#
-            ),
-            "parity probe lacks {}",
-            r#"SELECT * FROM events WHERE action = 'executor.retired' AND subject = 'vm-seven'"#
-        );
-        assert!(
-            parity_probe
-                .contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'"#),
-            "parity probe lacks {}",
-            r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'"#
-        );
-        assert!(parity_probe.contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute' AND summary = 'deleted pulse-cr-007 (eu-west"#), "parity probe lacks {}", r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute' AND summary = 'deleted pulse-cr-007 (eu-west"#);
-        assert!(
-            parity_probe.contains(r#"SELECT * FROM retired_vms WHERE executor = 'vm-gone'"#),
-            "parity probe lacks {}",
-            r#"SELECT * FROM retired_vms WHERE executor = 'vm-gone'"#
-        );
-        assert!(
-            parity_probe.contains(r#"SELECT summary FROM posts"#),
-            "parity probe lacks {}",
-            r#"SELECT summary FROM posts"#
-        );
-        assert!(parity_probe.contains(r#"Undo: `aws ec2 start-instances --instance-ids i-0777 --region eu-west-1` then `pulse executor activate vm-seven`"#), "parity probe lacks {}", r#"Undo: `aws ec2 start-instances --instance-ids i-0777 --region eu-west-1` then `pulse executor activate vm-seven`"#);
-        assert!(
-            parity_probe
-                .contains(r#"ec2 describe-instances --filters Name=instance-id,Values=i-gone"#),
-            "parity probe lacks {}",
-            r#"ec2 describe-instances --filters Name=instance-id,Values=i-gone"#
-        );
-        assert!(
-            parity_probe.contains(r#"instance_id"#),
-            "parity probe lacks {}",
-            r#"instance_id"#
-        );
-        assert!(parity_probe.contains(r#"retired vm-seven: login refused; EC2 instance pulse-cr-007 (eu-west-1) stopped now, deleted at"#), "parity probe lacks {}", r#"retired vm-seven: login refused; EC2 instance pulse-cr-007 (eu-west-1) stopped now, deleted at"#);
-        assert!(
-            parity_probe.contains(r#"summary"#),
-            "parity probe lacks {}",
-            r#"summary"#
-        );
+        if r.str("note") != "vm not found at delete time" {
+            panic!("row: {r:?}");
+        }
+        let _ = lines;
     }
 
     #[test]
@@ -1041,9 +1058,8 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
             let gcp = gcp.clone();
             Box::new(move |ctx, args, timeout| gcp.run(ctx, args, timeout))
         });
-        let old_host = crate::retire::set_ssh_hostname(Box::new(|_| "203.0.113.7".into()));
+        let _host = install_ssh_hostname(|_| "203.0.113.7".into());
         let lines = crate::retire::tend_executors(&s, TEST_NOW.into(), "daemon".into());
-        let _ = crate::retire::set_ssh_hostname(old_host);
         let calls = gcp.joined();
         assert_eq!(
             calls,
@@ -1111,15 +1127,14 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
             let mp = mp.clone();
             Box::new(move |ctx, args, timeout| mp.run(ctx, args, timeout))
         });
-        let old_host = crate::retire::set_ssh_hostname(Box::new(|host| {
+        let _host = install_ssh_hostname(|host| {
             if host == "vm-seven" {
                 "192.168.64.7".into()
             } else {
                 host.into()
             }
-        }));
+        });
         let lines = crate::retire::tend_executors(&s, TEST_NOW.into(), "daemon".into());
-        let _ = crate::retire::set_ssh_hostname(old_host);
         let calls = mp.joined();
         assert_eq!(
             calls,

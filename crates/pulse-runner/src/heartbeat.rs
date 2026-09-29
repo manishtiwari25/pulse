@@ -21,16 +21,26 @@ pub(crate) type HeartbeatTicksFn = dyn Fn(
 #[allow(dead_code)]
 pub(crate) static HEARTBEAT_TICKS: LazyLock<RwLock<Box<HeartbeatTicksFn>>> = LazyLock::new(|| {
     RwLock::new(Box::new(|period| {
-        let (tx, rx) = crossbeam_channel::bounded(8);
+        // time.NewTicker: a one-slot channel that drops ticks nobody is reading; Stop ends it.
+        let (tx, rx) = crossbeam_channel::bounded(1);
         let stopped = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stopped);
         std::thread::spawn(move || {
-            while !thread_stop.load(Ordering::SeqCst) {
-                std::thread::sleep(period);
+            let mut next = std::time::Instant::now() + period;
+            loop {
+                let now = std::time::Instant::now();
+                if next > now {
+                    std::thread::sleep(next - now);
+                }
                 if thread_stop.load(Ordering::SeqCst) {
                     break;
                 }
-                let _ = tx.send(Utc::now());
+                if let Err(crossbeam_channel::TrySendError::Disconnected(_)) =
+                    tx.try_send(Utc::now())
+                {
+                    break;
+                }
+                next += period;
             }
         });
         (
@@ -494,9 +504,18 @@ impl crate::exec::SshExec {
                 Err(e) => err = Some(e),
             }
             report_presence(err, &reported);
-            if cancel.is_cancelled() || ticks.recv().is_err() {
-                stop();
-                return;
+            let done = cancel.done();
+            crossbeam_channel::select! {
+                recv(done) -> _ => {
+                    stop();
+                    return;
+                }
+                recv(ticks) -> tick => {
+                    if tick.is_err() {
+                        stop();
+                        return;
+                    }
+                }
             }
         }
     }

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-//! Skeleton port of internal/runner/service.go.
+//! Port of internal/runner/service.go.
 
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -57,9 +57,34 @@ pub struct ServiceInstallOptions {
     pub hub_port: i32,
     pub no_hub: bool,
     pub dry_run: bool,
+    /// DeferHub writes the hub's unit but leaves its load to the caller (load_hub in the result): a foreground
+    /// hub on the same port must stop listening first, or the service's hub cannot bind.
+    pub defer_hub: bool,
 }
 
 pub type LoadUnitFn = Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>;
+
+/// Go: the `func() error` prepareUnit returns. Go's closure captures the install's writer; here the
+/// step is handed the writer when it runs, so the load's lines reach the same `out` as the rest.
+pub(crate) type LoadStep = Box<dyn Fn(&mut dyn std::io::Write) -> anyhow::Result<()> + Send + Sync>;
+
+/// Go: io.MultiWriter(out, &buf) in InstallService.
+struct Tee<'a> {
+    out: &'a mut dyn std::io::Write,
+    buf: &'a mut Vec<u8>,
+}
+
+impl std::io::Write for Tee<'_> {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.buf.extend_from_slice(b);
+        self.out.write_all(b)?;
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
+}
 
 #[derive(Clone, Default, Serialize)]
 pub struct ServiceInstall {
@@ -521,7 +546,7 @@ pub(crate) fn install_unit(
 ) -> anyhow::Result<String> {
     let (path, load) = prepare_unit(out, u, pulse_home, system, user_home, dry_run)?;
     if let Some(load) = load {
-        load()?;
+        load(out)?;
     }
     Ok(path)
 }
@@ -534,7 +559,7 @@ pub(crate) fn prepare_unit(
     system: String,
     user_home: String,
     dry_run: bool,
-) -> anyhow::Result<(String, Option<LoadUnitFn>)> {
+) -> anyhow::Result<(String, Option<LoadStep>)> {
     let (kind, path) = unit_paths(u.clone(), system, user_home);
     let log_dir = Path::new(&pulse_home).join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
@@ -582,9 +607,8 @@ pub(crate) fn prepare_unit(
     let path2 = path.clone();
     Ok((
         path,
-        Some(Arc::new(move || {
-            let mut sink = Vec::new();
-            load_unit(&mut sink, u2.clone(), kind2.clone(), path2.clone())
+        Some(Box::new(move |out: &mut dyn std::io::Write| {
+            load_unit(out, u2.clone(), kind2.clone(), path2.clone())
         })),
     ))
 }
@@ -631,7 +655,7 @@ pub fn install_service(
     out: &mut dyn std::io::Write,
     pulse_home: &str,
     o: ServiceInstallOptions,
-) -> anyhow::Result<Option<ServiceInstall>> {
+) -> anyhow::Result<ServiceInstall> {
     let mut o = o;
     let pulse_home = if pulse_home.is_empty() {
         crate::util::home_dir()
@@ -645,18 +669,20 @@ pub fn install_service(
         o.hub_port = HUB_PORT;
     }
     let mut buf = Vec::new();
-    if !o.dry_run {
-        crate::sign::ensure_signed(&mut buf, &pulse_binary());
-    }
+    let mut w = Tee { out, buf: &mut buf };
     let (kind, daemon_path) = service_paths(String::new(), String::new());
     let mut result = ServiceInstall {
         kind,
         daemon_path,
         ..Default::default()
     };
+    if !o.dry_run {
+        // Sign before the units load, so the first daemon to run is the one whose folder answer sticks.
+        crate::sign::ensure_signed(&mut w, &pulse_binary());
+    }
     for u in service_units(o.interval, o.hub_port, o.no_hub) {
         let (path, load) = prepare_unit(
-            &mut buf,
+            &mut w,
             u.clone(),
             pulse_home.clone(),
             String::new(),
@@ -666,13 +692,22 @@ pub fn install_service(
         if u.name == "hub" {
             result.hub_path = path;
         }
-        if let Some(load) = load {
-            load()?;
+        let Some(load) = load else {
+            continue;
+        };
+        if u.name == "hub" && o.defer_hub {
+            // Go's deferred load writes to the install's writer after Output was taken; its only caller
+            // (the console's service route) passes no writer, so the lines land in a buffer nobody reads.
+            result.load_hub = Some(Arc::new(move || {
+                let mut sink = Vec::new();
+                load(&mut sink)
+            }));
+            continue;
         }
+        load(&mut w)?;
     }
     result.output = String::from_utf8_lossy(&buf).to_string();
-    out.write_all(result.output.as_bytes())?;
-    Ok(Some(result))
+    Ok(result)
 }
 
 /// Go: func ServiceStatus(pulseHome string) ServiceState
@@ -872,37 +907,49 @@ mod tests {
 
     static SERVICE_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+    struct SigningSystemGuard;
+
+    impl Drop for SigningSystemGuard {
+        fn drop(&mut self) {
+            *crate::sign::SIGNING_SYSTEM.write().unwrap() = String::new();
+        }
+    }
+
     #[test]
     fn install_service_and_service_status() {
         let _serial = crate::test_helpers::serial();
         let _guard = SERVICE_TEST_LOCK.lock().unwrap();
-        let user_home = tempfile::tempdir().unwrap().keep();
-        let _env_1 = pulse_testutil::setenv("HOME", &user_home);
-        let pulse_home = tempfile::tempdir().unwrap().keep();
-        let old = std::mem::replace(
-            &mut *RUN_SERVICE.write().expect("run service"),
-            Box::new(|_| (0, String::new())),
-        );
+        let user_home = tempfile::tempdir().unwrap();
+        let _env_1 = pulse_testutil::setenv("HOME", user_home.path());
+        let pulse_home = tempfile::tempdir().unwrap();
+        let pulse_home_s = pulse_home.path().display().to_string();
+        *crate::sign::SIGNING_SYSTEM.write().unwrap() = "linux".into();
+        let _signing = SigningSystemGuard;
+        let old = set_run_service(Box::new(|_| (0, String::new())));
         let calls = std::sync::Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
         let loaded =
             std::sync::Arc::new(Mutex::new(std::collections::BTreeMap::<String, bool>::new()));
-        let calls_for_fn = std::sync::Arc::clone(&calls);
-        let loaded_for_fn = std::sync::Arc::clone(&loaded);
-        *RUN_SERVICE.write().expect("run service") = Box::new(move |argv| {
-            calls_for_fn.lock().unwrap().push(argv.clone());
-            let which = if argv.join(" ").contains("hub") {
-                "hub"
-            } else {
-                "daemon"
+        let which = |argv: &[String]| -> String {
+            if argv.join(" ").contains("hub") {
+                return "hub".into();
             }
-            .to_string();
-            if argv.len() >= 2 {
+            "daemon".into()
+        };
+        let _ = set_run_service(Box::new({
+            let calls = calls.clone();
+            let loaded = loaded.clone();
+            move |argv| {
+                calls.lock().unwrap().push(argv.clone());
+                if argv.len() < 2 {
+                    return (0, String::new());
+                }
                 match argv[1].as_str() {
+                    // launchctl print / systemctl status: exit 0 once the unit's load ran
                     "print" | "status" => {
-                        if loaded_for_fn
+                        if loaded
                             .lock()
                             .unwrap()
-                            .get(&which)
+                            .get(&which(&argv))
                             .copied()
                             .unwrap_or(false)
                         {
@@ -911,110 +958,169 @@ mod tests {
                         return (113, "not loaded".into());
                     }
                     "bootstrap" | "enable" => {
-                        loaded_for_fn.lock().unwrap().insert(which, true);
+                        loaded.lock().unwrap().insert(which(&argv), true);
                     }
                     _ => {}
                 }
+                (0, String::new())
             }
-            (0, String::new())
-        });
+        }));
         let (kind, daemon_path) = service_paths(String::new(), String::new());
         let (_, hub_path) = unit_paths(hub_unit(0), String::new(), String::new());
-        let before = service_status(pulse_home.display().to_string());
-        assert_eq!(before.kind, kind);
-        assert!(before.supported);
-        assert!(!before.installed);
-        assert_eq!(before.units.len(), 2);
-        assert_eq!(before.units[0].name, "daemon");
-        assert_eq!(before.units[0].path, daemon_path);
-        assert!(!before.units[0].present);
-        assert_eq!(before.units[1].name, "hub");
-        assert_eq!(before.units[1].path, hub_path);
-        assert_eq!(before.logs, pulse_home.join("logs").display().to_string());
-        assert!(calls.lock().unwrap().is_empty());
+
+        let before = service_status(pulse_home_s.clone());
+        if before.kind != kind
+            || !before.supported
+            || before.installed
+            || before.units.len() != 2
+            || before.units[0].name != "daemon"
+            || before.units[0].path != daemon_path
+            || before.units[0].present
+            || before.units[1].name != "hub"
+            || before.units[1].path != hub_path
+            || before.logs != pulse_home.path().join("logs").display().to_string()
+            || !calls.lock().unwrap().is_empty()
+        {
+            panic!(
+                "status before install: {before:?} (calls {:?})",
+                calls.lock().unwrap()
+            );
+        }
 
         let mut out = Vec::new();
         let dry = install_service(
             &mut out,
-            pulse_home.to_str().unwrap(),
+            &pulse_home_s,
             ServiceInstallOptions {
                 dry_run: true,
                 ..Default::default()
             },
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(dry.kind, kind);
-        assert_eq!(dry.daemon_path, daemon_path);
-        assert_eq!(dry.hub_path, hub_path);
-        assert!(dry.load_hub.is_none());
-        assert!(!crate::util::file_exists(&daemon_path));
-        assert!(!crate::util::file_exists(&hub_path));
-        assert!(calls.lock().unwrap().is_empty());
-        assert_eq!(dry.output, String::from_utf8(out).unwrap());
-        assert!(dry.output.contains("--port 8765"));
-        assert!(dry.output.contains(&format!(
-            "--interval {} &",
-            crate::daemon::DEFAULT_DAEMON_INTERVAL_SECONDS
-        )));
+        );
+        let dry = match dry {
+            Ok(dry)
+                if dry.kind == kind
+                    && dry.daemon_path == daemon_path
+                    && dry.hub_path == hub_path
+                    && dry.load_hub.is_none() =>
+            {
+                dry
+            }
+            Ok(dry) => panic!("dry run: {:?} {:?}", dry.output, dry.hub_path),
+            Err(err) => panic!("dry run: {err}"),
+        };
+        if crate::util::file_exists(&daemon_path)
+            || crate::util::file_exists(&hub_path)
+            || !calls.lock().unwrap().is_empty()
+            || dry.output != String::from_utf8_lossy(&out)
+            || !dry.output.contains("--port 8765")
+            || !dry.output.contains(&format!(
+                "--interval {} &",
+                crate::daemon::DEFAULT_DAEMON_INTERVAL_SECONDS
+            ))
+        {
+            panic!(
+                "dry run wrote or loaded something: {:?}\n{}",
+                calls.lock().unwrap(),
+                dry.output
+            );
+        }
 
-        let mut sink = Vec::new();
-        let installed = install_service(
-            &mut sink,
-            pulse_home.to_str().unwrap(),
+        // A foreground hub installs with the hub's load deferred: the daemon loads, the hub unit is written, its load waits.
+        out.clear();
+        let deferred = install_service(
+            &mut std::io::sink(),
+            &pulse_home_s,
             ServiceInstallOptions {
                 interval: 45,
                 hub_port: 8765,
+                defer_hub: true,
                 ..Default::default()
             },
-        )
-        .unwrap()
-        .unwrap();
-        assert!(installed.load_hub.is_none());
-        assert!(crate::util::file_exists(&daemon_path));
-        assert!(crate::util::file_exists(&hub_path));
-        assert!(
-            loaded
-                .lock()
-                .unwrap()
-                .get("daemon")
-                .copied()
-                .unwrap_or(false)
         );
-        assert!(loaded.lock().unwrap().get("hub").copied().unwrap_or(false));
-        let launcher =
-            std::fs::read_to_string(launcher_path(pulse_home.display().to_string())).unwrap();
-        assert!(launcher.contains("--interval 45 &"), "{launcher}");
-        let after = service_status(pulse_home.display().to_string());
-        assert!(after.installed);
-        assert!(after.units[1].loaded);
+        let deferred = match deferred {
+            Ok(deferred)
+                if deferred.load_hub.is_some()
+                    && crate::util::file_exists(&daemon_path)
+                    && crate::util::file_exists(&hub_path) =>
+            {
+                deferred
+            }
+            Ok(deferred) => panic!("deferred install: {:?}", deferred.output),
+            Err(err) => panic!("deferred install: {err}"),
+        };
+        if !loaded
+            .lock()
+            .unwrap()
+            .get("daemon")
+            .copied()
+            .unwrap_or(false)
+            || loaded.lock().unwrap().get("hub").copied().unwrap_or(false)
+        {
+            panic!(
+                "deferred install loaded the wrong units: {:?}",
+                loaded.lock().unwrap()
+            );
+        }
+        let launcher = std::fs::read_to_string(launcher_path(pulse_home_s.clone()));
+        if launcher.is_err() || !launcher.as_ref().unwrap().contains("--interval 45 &") {
+            panic!("daemon launcher: {launcher:?}");
+        }
+        if !out.is_empty() || !deferred.output.contains("hub launcher: ") {
+            panic!("deferred output:\n{}", deferred.output);
+        }
+        let mid = service_status(pulse_home_s.clone());
+        if !mid.installed || !mid.units[0].loaded || !mid.units[1].present || mid.units[1].loaded {
+            panic!("status between: {mid:?}");
+        }
+        let load_hub = deferred.load_hub.as_ref().unwrap();
+        if let Err(err) = load_hub() {
+            panic!("LoadHub: {err} {:?}", loaded.lock().unwrap());
+        }
+        if !loaded.lock().unwrap().get("hub").copied().unwrap_or(false) {
+            panic!("LoadHub: {:?}", loaded.lock().unwrap());
+        }
+        let after = service_status(pulse_home_s.clone());
+        if !after.installed || !after.units[1].loaded {
+            panic!("status after: {after:?}");
+        }
 
+        // Installing again with the same files is a no-op that leaves both running.
         calls.lock().unwrap().clear();
         let again = install_service(
-            &mut Vec::new(),
-            pulse_home.to_str().unwrap(),
+            &mut std::io::sink(),
+            &pulse_home_s,
             ServiceInstallOptions {
                 interval: 45,
                 ..Default::default()
             },
-        )
-        .unwrap()
-        .unwrap();
-        assert!(again.load_hub.is_none());
-        assert!(again.output.contains("unchanged and loaded"));
+        );
+        let again = match again {
+            Ok(again)
+                if again.load_hub.is_none() && again.output.contains("unchanged and loaded") =>
+            {
+                again
+            }
+            Ok(again) => panic!("second install: {:?}", again.output),
+            Err(err) => panic!("second install: {err}"),
+        };
+        let _ = again;
         for argv in calls.lock().unwrap().iter() {
-            assert!(
-                !(argv.len() > 1
-                    && matches!(
-                        argv[1].as_str(),
-                        "bootstrap" | "bootout" | "enable" | "restart"
-                    )),
-                "an unchanged install reloaded a unit: {:?}",
-                calls.lock().unwrap()
-            );
+            if argv.len() > 1
+                && (argv[1] == "bootstrap"
+                    || argv[1] == "bootout"
+                    || argv[1] == "enable"
+                    || argv[1] == "restart")
+            {
+                panic!(
+                    "an unchanged install reloaded a unit: {:?}",
+                    calls.lock().unwrap()
+                );
+            }
         }
-        let hub = std::fs::read_to_string(hub_path).unwrap();
-        assert!(hub.contains("pulse-hub.sh"));
-        *RUN_SERVICE.write().expect("run service") = old;
+        let data = std::fs::read_to_string(&hub_path);
+        if data.is_err() || !data.as_ref().unwrap().contains("pulse-hub.sh") {
+            panic!("hub unit: {data:?}");
+        }
+        let _ = set_run_service(old);
     }
 }

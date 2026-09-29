@@ -1,4 +1,4 @@
-//! Skeleton port of internal/runner/plan.go.
+//! Port of internal/runner/plan.go.
 
 #![cfg_attr(
     not(test),
@@ -755,20 +755,6 @@ mod tests {
             .expect("set setting");
     }
 
-    fn join_worker(s: &pulse_store::Store, name: &str) {
-        crate::board::join_agent(
-            s,
-            name.into(),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            "worker".into(),
-            String::new(),
-        )
-        .expect("join worker");
-    }
-
     fn research_on(s: &pulse_store::Store, minutes: &str) {
         set_setting(s, "lead.research_minutes", minutes);
     }
@@ -781,21 +767,21 @@ mod tests {
         );
     }
 
+    /// Go: func loopFirstSuggestion(t *testing.T, s *store.Store, thread, summary string, votes int) *board.Post
     fn loop_first_suggestion(
         s: &pulse_store::Store,
         thread: &str,
         summary: &str,
         votes: usize,
-    ) -> Row {
-        let post = crate::board::create_post(
+    ) -> pulse_board::Post {
+        let post = pulse_board::create_post(
             s,
-            TEST_NOW.into(),
-            crate::board::PostOpts {
+            pulse_board::PostInput {
                 kind: "suggestion".into(),
                 project: "proj".into(),
                 area: "evolution".into(),
                 thread: thread.into(),
-                agent: crate::board::actor_agent(s, "proposer".into()),
+                agent: "proposer".into(),
                 summary: summary.into(),
                 files: "README.md".into(),
                 body: format!(
@@ -804,41 +790,46 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("loop suggestion");
-        for voter in ["voter-one", "voter-two", "voter-three"]
-            .into_iter()
-            .take(votes)
-        {
-            crate::board::create_post(
+        .unwrap_or_else(|err| panic!("{err}"));
+        let voters = ["voter-one", "voter-two", "voter-three"];
+        for voter in voters.iter().take(votes) {
+            if let Err(err) = pulse_board::create_post(
                 s,
-                TEST_NOW.into(),
-                crate::board::PostOpts {
+                pulse_board::PostInput {
                     kind: "vote".into(),
                     project: "proj".into(),
                     area: "evolution".into(),
                     thread: thread.into(),
-                    agent: crate::board::actor_agent(s, voter.into()),
+                    agent: (*voter).into(),
                     summary: "measured".into(),
-                    on: post.str("id"),
+                    on: post.id.clone(),
                     vote: "up".into(),
                     ..Default::default()
                 },
-            )
-            .expect("vote");
+            ) {
+                panic!("{err}");
+            }
         }
         post
     }
 
-    fn plain_suggestion(s: &pulse_store::Store, thread: &str, summary: &str, votes: usize) -> Row {
-        let post = crate::board::create_post(
+    /// Go: func plainSuggestion(t *testing.T, s *store.Store, thread, summary string, votes int) *board.Post
+    /// plainSuggestion is a worker's one-line SUGGESTION: voted and pointing at evidence, but naming no File: and
+    /// no Variable:, so the loop cannot run it as an experiment and does not claim it.
+    fn plain_suggestion(
+        s: &pulse_store::Store,
+        thread: &str,
+        summary: &str,
+        votes: usize,
+    ) -> pulse_board::Post {
+        let post = pulse_board::create_post(
             s,
-            TEST_NOW.into(),
-            crate::board::PostOpts {
+            pulse_board::PostInput {
                 kind: "suggestion".into(),
                 project: "proj".into(),
                 area: "evolution".into(),
                 thread: thread.into(),
-                agent: crate::board::actor_agent(s, "proposer".into()),
+                agent: "proposer".into(),
                 summary: summary.into(),
                 body: format!(
                     "Class: operating-layer\nOne-variable improvement seen by the worker in run `r` of job `j` (Reflect), not made there.\n\n{summary}\nSignal: README.md\n"
@@ -846,27 +837,25 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("plain suggestion");
-        for voter in ["voter-one", "voter-two", "voter-three"]
-            .into_iter()
-            .take(votes)
-        {
-            crate::board::create_post(
+        .unwrap_or_else(|err| panic!("{err}"));
+        let voters = ["voter-one", "voter-two", "voter-three"];
+        for voter in voters.iter().take(votes) {
+            if let Err(err) = pulse_board::create_post(
                 s,
-                TEST_NOW.into(),
-                crate::board::PostOpts {
+                pulse_board::PostInput {
                     kind: "vote".into(),
                     project: "proj".into(),
                     area: "evolution".into(),
                     thread: thread.into(),
-                    agent: crate::board::actor_agent(s, voter.into()),
+                    agent: (*voter).into(),
                     summary: "measured".into(),
-                    on: post.str("id"),
+                    on: post.id.clone(),
                     vote: "up".into(),
                     ..Default::default()
                 },
-            )
-            .expect("vote");
+            ) {
+                panic!("{err}");
+            }
         }
         post
     }
@@ -978,7 +967,7 @@ mod tests {
         set_setting(&s, "quorum", "1");
         set_setting(&s, "evolve.draft_hours", "0");
         for agent in ["alice", "bob", "carol"] {
-            join_worker(&s, agent);
+            join(&s, agent);
         }
         let plumbing = crate::board::create_post(&s, TEST_NOW.into(), crate::board::PostOpts { kind: "suggestion".into(), project: "proj".into(), area: "evolution".into(), thread: "plumbing".into(), agent: crate::board::actor_agent(&s, "alice".into()), session: "s".into(), summary: "GIT_DIR=/tmp/x/.git go test ./internal/hub goes FAIL -> ok".into(), body: "Class: product\nFile: internal/hub/board_test.go\nVariable: test git env\nHypothesis: passes under GIT_DIR\nSignal: check:hub".into(), ..Default::default() }).expect("plumbing post");
         let product = crate::board::create_post(&s, TEST_NOW.into(), crate::board::PostOpts { kind: "suggestion".into(), project: "proj".into(), area: "evolution".into(), thread: "product".into(), agent: crate::board::actor_agent(&s, "alice".into()), session: "s".into(), summary: "German-locale user with a failed OAuth callback sees a localized error message".into(), body: "Class: product\nFile: src/oauth.go\nVariable: callback error copy\nHypothesis: a German-locale user sees the localized failure message\nSignal: check:product".into(), ..Default::default() }).expect("product post");
@@ -1034,8 +1023,8 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         new_repo(&s);
-        join_worker(&s, "aurora");
-        join_worker(&s, "boris");
+        join(&s, "aurora");
+        join(&s, "boris");
         research_on(&s, "60");
         suppress_planner_reflect(&s);
         age_jobs(&s, &crate::util::plus_hours(TEST_NOW, -2.0));
@@ -1084,7 +1073,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         new_repo(&s);
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         research_on(&s, "60");
         suppress_planner_reflect(&s);
         let (worker, _) = crate::jobs::add_job(
@@ -1165,7 +1154,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         new_repo(&s);
-        join_worker(&s, "aurora");
+        join(&s, "aurora");
         research_on(&s, "60");
         set_setting(&s, "lead.research_per_day", "1");
         suppress_planner_reflect(&s);
@@ -1233,8 +1222,8 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         new_repo(&s);
-        join_worker(&s, "aurora");
-        join_worker(&s, "boris");
+        join(&s, "aurora");
+        join(&s, "boris");
         suppress_planner_reflect(&s);
         plan_handoff(
             &s,
@@ -1289,7 +1278,7 @@ mod tests {
         let s = new_store();
         new_repo(&s);
         for name in ["aurora", "boris", "cora", "dora"] {
-            join_worker(&s, name);
+            join(&s, name);
         }
         suppress_planner_reflect(&s);
         set_setting(&s, "lead.ballot_cap", "2");
@@ -1624,11 +1613,10 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         new_repo(&s);
-        suppress_planner_reflect(&s);
-        set_setting(&s, "quorum", "2");
-        for name in ["author-one", "author-two", "voter-one", "voter-two"] {
-            join_worker(&s, name);
-        }
+        let author1 = crate::board::actor_agent(&s, "author-one".into());
+        let author2 = crate::board::actor_agent(&s, "author-two".into());
+        let voter1 = crate::board::actor_agent(&s, "voter-one".into());
+        let voter2 = crate::board::actor_agent(&s, "voter-two".into());
         let top = crate::board::create_post(
             &s,
             crate::util::plus_hours(TEST_NOW, -4.0),
@@ -1638,12 +1626,12 @@ mod tests {
                 area: "code".into(),
                 thread: "top".into(),
                 summary: "Top blocked suggestion".into(),
-                body: "first eligible card\nSignal: README.md\n".into(),
-                agent: crate::board::actor_agent(&s, "author-one".into()),
+                body: "first eligible card\n".into(),
+                agent: author1,
                 ..Default::default()
             },
         )
-        .expect("top");
+        .unwrap_or_else(|err| panic!("{err}"));
         let next = crate::board::create_post(
             &s,
             crate::util::plus_hours(TEST_NOW, -3.0),
@@ -1653,15 +1641,15 @@ mod tests {
                 area: "code".into(),
                 thread: "next".into(),
                 summary: "Next suggestion".into(),
-                body: "second eligible card\nSignal: README.md\n".into(),
-                agent: crate::board::actor_agent(&s, "author-two".into()),
+                body: "second eligible card\n".into(),
+                agent: author2,
                 ..Default::default()
             },
         )
-        .expect("next");
+        .unwrap_or_else(|err| panic!("{err}"));
         for card in [&top, &next] {
-            for voter in ["voter-one", "voter-two"] {
-                crate::board::create_post(
+            for voter in [&voter1, &voter2] {
+                if let Err(err) = crate::board::create_post(
                     &s,
                     crate::util::plus_hours(TEST_NOW, -2.0),
                     crate::board::PostOpts {
@@ -1671,16 +1659,17 @@ mod tests {
                         thread: card.str("thread"),
                         summary: "up".into(),
                         body: "ready\n".into(),
-                        agent: crate::board::actor_agent(&s, voter.into()),
+                        agent: voter.clone(),
                         on: card.str("id"),
                         vote: "up".into(),
                         ..Default::default()
                     },
-                )
-                .expect("vote");
+                ) {
+                    panic!("{err}");
+                }
             }
         }
-        crate::jobs::add_job(
+        if let Err(err) = crate::jobs::add_job(
             &s,
             "proj".into(),
             "improve".into(),
@@ -1691,20 +1680,23 @@ mod tests {
             format!("suggestion:{}", top.str("id")),
             "daemon".into(),
             true,
-        )
-        .expect("blocked job");
+        ) {
+            panic!("{err}");
+        }
         crate::util::exec1(
             &s.conn().expect("conn"),
             "UPDATE jobs SET status = 'blocked' WHERE source = ?",
             &[&format!("suggestion:{}", top.str("id"))],
         );
 
-        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
-        assert!(
-            jobs.len() == 1 && jobs[0].str("source") == format!("suggestion:{}", next.str("id")),
-            "planned jobs = {jobs:?}, want next suggestion {}",
-            next.str("id")
-        );
+        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into())
+            .unwrap_or_else(|err| panic!("{err}"));
+        if jobs.len() != 1 || jobs[0].str("source") != format!("suggestion:{}", next.str("id")) {
+            panic!(
+                "planned jobs = {jobs:?}, want next suggestion {}",
+                next.str("id")
+            );
+        }
     }
 
     #[test]
@@ -1862,6 +1854,8 @@ mod tests {
         );
     }
 
+    /// The loop runs the top valid card as an experiment and claims every other valid card (ADR-044 D4); the
+    /// improve planner defers those once each and builds what the loop cannot measure - a card-less one-liner.
     #[test]
     fn daemon_gives_evolution_loop_every_valid_card_and_planner_builds_rest() {
         let _serial = crate::test_helpers::serial();
@@ -1872,11 +1866,15 @@ mod tests {
         new_repo(&s);
         crate::test_helpers_f5::evolve_plan_ready(&s);
         for name in ["proposer", "voter-one", "voter-two", "voter-three"] {
-            join_worker(&s, name);
+            join(&s, name);
         }
+        // the planner walks the tally in vote order and stops at the first job it builds: second, a valid card
+        // ranked before the one-liner, must be passed over (deferred) for the one-liner to be built
         let second = loop_first_suggestion(&s, "second", "Tune README second", 2);
         let plain = plain_suggestion(&s, "plain", "Tune the README intro", 2);
         let top = loop_first_suggestion(&s, "top", "Tune README top", 3);
+
+        let out = OutBuf::new();
         let result = crate::daemon::daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
@@ -1884,148 +1882,118 @@ mod tests {
                 interval: 1,
                 max_loops: 1,
                 worker_cmd: "sh -c 'echo SUMMARY: all good'".into(),
+                out: Some(out.writer()),
                 ..Default::default()
             },
         );
-        assert_eq!(result, "done");
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'experiment' AND source = ?",
-                &[&format!("suggestion:{}", top.str("id"))]
-            ),
-            1
-        );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'improve' AND source = ?",
-                &[&format!("suggestion:{}", plain.str("id"))]
-            ),
-            1
-        );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'improve' AND source IN (?, ?)",
-                &[
-                    &format!("suggestion:{}", top.str("id")),
-                    &format!("suggestion:{}", second.str("id"))
-                ]
-            ),
-            0
-        );
-        for claimed in [&top, &second] {
-            assert_eq!(
-                count(
-                    &s,
-                    "SELECT COUNT(*) AS n FROM events WHERE action = 'plan.deferred' AND subject = ?",
-                    &[&claimed.str("id")]
-                ),
-                1,
-                "plan.deferred events for {}",
-                claimed.str("id")
-            );
+        if result != "done" {
+            panic!("daemon = {result}\n{}", out.string());
         }
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'plan.deferred' AND subject = ?",
-                &[&plain.str("id")]
-            ),
-            0
-        );
-        let result = crate::daemon::daemon(
-            &pulse_bus::CancellationToken::new(),
+        let n = count(
             &s,
-            crate::daemon::DaemonOpts {
-                interval: 1,
-                max_loops: 1,
-                worker_cmd: "sh -c 'echo SUMMARY: all good'".into(),
-                ..Default::default()
-            },
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'experiment' AND source = ?",
+            &[&format!("suggestion:{}", top.id)],
         );
-        assert_eq!(result, "done");
-        for claimed in [&top, &second] {
-            assert_eq!(
-                count(
-                    &s,
-                    "SELECT COUNT(*) AS n FROM events WHERE action = 'plan.deferred' AND subject = ?",
-                    &[&claimed.str("id")]
-                ),
-                1,
-                "plan.deferred repeated for {}",
-                claimed.str("id")
-            );
+        if n != 1 {
+            panic!("top suggestion experiment count = {n}\n{}", out.string());
         }
-        let final_jobs = crate::util::must_rows(
-            &s.conn().expect("conn"),
-            "SELECT kind, source, title FROM jobs WHERE source IN (?, ?, ?) ORDER BY rowid",
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'improve' AND source = ?",
+            &[&format!("suggestion:{}", plain.id)],
+        );
+        if n != 1 {
+            panic!("card-less suggestion improve count = {n}\n{}", out.string());
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'improve' AND source IN (?, ?)",
             &[
-                &format!("suggestion:{}", top.str("id")),
-                &format!("suggestion:{}", second.str("id")),
-                &format!("suggestion:{}", plain.str("id")),
+                &format!("suggestion:{}", top.id),
+                &format!("suggestion:{}", second.id),
             ],
         );
-        assert_eq!(
-            final_jobs.len(),
-            2,
-            "jobs after second tick = {final_jobs:?}, want the experiment and the improve job only"
+        if n != 0 {
+            panic!("improve jobs for the loop's cards = {n}\n{}", out.string());
+        }
+        for claimed in [&top, &second] {
+            let line = format!(
+                "plan proj: left suggestion {} to the evolution loop",
+                claimed.id
+            );
+            if out.string().matches(&line).count() != 1 {
+                panic!("deferral line missing once ({line:?}):\n{}", out.string());
+            }
+            let n = count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'plan.deferred' AND subject = ?",
+                &[&claimed.id],
+            );
+            if n != 1 {
+                panic!("plan.deferred events for {} = {n}", claimed.id);
+            }
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'plan.deferred' AND subject = ?",
+            &[&plain.id],
         );
+        if n != 0 {
+            panic!("the card-less suggestion was deferred to the loop {n} time(s)");
+        }
 
-        let parity_probe = r#"SELECT COUNT(*) AS n FROM jobs WHERE source IN (?, ?, ?) card-less suggestion improve count = daemon = deferral line missing once (): deferral line repeated (): improve jobs for the loop's cards = plan proj: left suggestion second daemon = to the evolution loop top suggestion experiment count ="#;
-        assert!(
-            parity_probe.contains(r#"SELECT COUNT(*) AS n FROM jobs WHERE source IN (?, ?, ?)"#),
-            "parity probe lacks {}",
-            r#"SELECT COUNT(*) AS n FROM jobs WHERE source IN (?, ?, ?)"#
+        let result = crate::daemon::daemon(
+            &pulse_bus::CancellationToken::new(),
+            &s,
+            crate::daemon::DaemonOpts {
+                interval: 1,
+                max_loops: 1,
+                worker_cmd: "sh -c 'echo SUMMARY: all good'".into(),
+                out: Some(out.writer()),
+                ..Default::default()
+            },
         );
-        assert!(
-            parity_probe.contains(r#"card-less suggestion improve count ="#),
-            "parity probe lacks {}",
-            r#"card-less suggestion improve count ="#
+        if result != "done" {
+            panic!("second daemon = {result}\n{}", out.string());
+        }
+        for claimed in [&top, &second] {
+            let line = format!(
+                "plan proj: left suggestion {} to the evolution loop",
+                claimed.id
+            );
+            if out.string().matches(&line).count() != 1 {
+                panic!("deferral line repeated ({line:?}):\n{}", out.string());
+            }
+            let n = count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'plan.deferred' AND subject = ?",
+                &[&claimed.id],
+            );
+            if n != 1 {
+                panic!(
+                    "plan.deferred events for {} after second tick = {n}",
+                    claimed.id
+                );
+            }
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM jobs WHERE source IN (?, ?, ?)",
+            &[
+                &format!("suggestion:{}", top.id),
+                &format!("suggestion:{}", second.id),
+                &format!("suggestion:{}", plain.id),
+            ],
         );
-        assert!(
-            parity_probe.contains(r#"daemon ="#),
-            "parity probe lacks {}",
-            r#"daemon ="#
-        );
-        assert!(
-            parity_probe.contains(r#"deferral line missing once ():"#),
-            "parity probe lacks {}",
-            r#"deferral line missing once ():"#
-        );
-        assert!(
-            parity_probe.contains(r#"deferral line repeated ():"#),
-            "parity probe lacks {}",
-            r#"deferral line repeated ():"#
-        );
-        assert!(
-            parity_probe.contains(r#"improve jobs for the loop's cards ="#),
-            "parity probe lacks {}",
-            r#"improve jobs for the loop's cards ="#
-        );
-        assert!(
-            parity_probe.contains(r#"plan proj: left suggestion"#),
-            "parity probe lacks {}",
-            r#"plan proj: left suggestion"#
-        );
-        assert!(
-            parity_probe.contains(r#"second daemon ="#),
-            "parity probe lacks {}",
-            r#"second daemon ="#
-        );
-        assert!(
-            parity_probe.contains(r#"to the evolution loop"#),
-            "parity probe lacks {}",
-            r#"to the evolution loop"#
-        );
-        assert!(
-            parity_probe.contains(r#"top suggestion experiment count ="#),
-            "parity probe lacks {}",
-            r#"top suggestion experiment count ="#
-        );
+        if n != 2 {
+            panic!(
+                "jobs after the second tick = {n}, want the experiment and the improve job only"
+            );
+        }
     }
 
+    /// A voted one-liner the loop ranks first gets an agent's card job instead of an owner question (ADR-044 D1),
+    /// and while that job is open the improve planner leaves the suggestion alone.
     #[test]
     fn daemon_queues_card_job_for_cardless_top_pick() {
         let _serial = crate::test_helpers::serial();
@@ -2036,9 +2004,11 @@ mod tests {
         new_repo(&s);
         crate::test_helpers_f5::evolve_plan_ready(&s);
         for name in ["proposer", "voter-one", "voter-two", "voter-three"] {
-            join_worker(&s, name);
+            join(&s, name);
         }
         let plain = plain_suggestion(&s, "plain", "Tune the README intro", 3);
+
+        let out = OutBuf::new();
         let result = crate::daemon::daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
@@ -2046,31 +2016,42 @@ mod tests {
                 interval: 1,
                 max_loops: 1,
                 worker_cmd: "sh -c 'echo SUMMARY: all good'".into(),
+                out: Some(out.writer()),
                 ..Default::default()
             },
         );
-        assert_eq!(result, "done");
+        if result != "done" {
+            panic!("daemon = {result}\n{}", out.string());
+        }
         let jobs = crate::util::must_rows(
             &s.conn().expect("conn"),
             "SELECT kind, title FROM jobs WHERE source = ?",
-            &[&format!("suggestion:{}", plain.str("id"))],
+            &[&format!("suggestion:{}", plain.id)],
         );
-        assert!(
-            jobs.len() == 1
-                && jobs[0].str("kind") == "reflect"
-                && jobs[0].str("title").starts_with(
-                    &(pulse_evolve::card_job::CARD_JOB_TITLE.to_string() + &plain.str("id"))
-                ),
-            "jobs for card-less pick = {jobs:?}"
+        if jobs.len() != 1
+            || jobs[0].str("kind") != "reflect"
+            || !jobs[0].str("title").starts_with(&format!(
+                "{}{}",
+                pulse_evolve::card_job::CARD_JOB_TITLE,
+                plain.id
+            ))
+        {
+            panic!("jobs for the card-less pick = {jobs:?}\n{}", out.string());
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question'",
+            &[],
         );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question'",
-                &[]
-            ),
-            0
-        );
+        if n != 0 {
+            panic!(
+                "the owner was asked {n} question(s) for the card\n{}",
+                out.string()
+            );
+        }
+        if !out.string().contains("planned card") {
+            panic!("the card job was not logged:\n{}", out.string());
+        }
     }
 
     #[test]
@@ -2082,12 +2063,16 @@ mod tests {
         let s = new_store();
         new_repo(&s);
         crate::test_helpers_f5::evolve_plan_ready(&s);
-        set_setting(&s, "evolve.loop", "0");
+        if let Err(err) = s.set_setting(crate::util::HUMAN_AGENT, "evolve.loop", "0") {
+            panic!("{err}");
+        }
         for name in ["proposer", "voter-one", "voter-two", "voter-three"] {
-            join_worker(&s, name);
+            join(&s, name);
         }
         loop_first_suggestion(&s, "second", "Tune README second", 2);
         let top = loop_first_suggestion(&s, "top", "Tune README top", 3);
+
+        let out = OutBuf::new();
         let result = crate::daemon::daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
@@ -2095,25 +2080,31 @@ mod tests {
                 interval: 1,
                 max_loops: 1,
                 worker_cmd: "sh -c 'echo SUMMARY: all good'".into(),
+                out: Some(out.writer()),
                 ..Default::default()
             },
         );
-        assert_eq!(result, "done");
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'improve' AND source = ?",
-                &[&format!("suggestion:{}", top.str("id"))]
-            ),
-            1
+        if result != "done" {
+            panic!("daemon = {result}\n{}", out.string());
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'improve' AND source = ?",
+            &[&format!("suggestion:{}", top.id)],
         );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'experiment'",
-                &[]
-            ),
-            0
+        if n != 1 {
+            panic!("top suggestion improve count = {n}\n{}", out.string());
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'experiment'",
+            &[],
         );
+        if n != 0 {
+            panic!("experiment count with loop off = {n}\n{}", out.string());
+        }
+        if out.string().contains("to the evolution loop") {
+            panic!("loop-off daemon deferred a suggestion:\n{}", out.string());
+        }
     }
 }

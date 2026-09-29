@@ -823,23 +823,13 @@ pub fn repair_failed_jobs(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+    use crate::test_helpers_f5::exec1;
     use crate::test_helpers_f7::*;
     use crate::util::Row;
     use std::path::PathBuf;
 
     fn conn(s: &pulse_store::Store) -> pulse_store::PooledConn {
         s.conn().expect("conn")
-    }
-
-    fn count(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) -> i32 {
-        let r = crate::util::query_one(&conn(s), sql, args)
-            .expect("count")
-            .unwrap_or_default();
-        r.int("n")
-    }
-
-    fn exec1_test(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) {
-        conn(s).execute(sql, args).expect(sql);
     }
 
     fn repair_fixture() -> (crate::test_helpers::TestStore, PathBuf) {
@@ -857,7 +847,7 @@ mod tests {
             result,
             &crate::util::plus_minutes(TEST_NOW, -30.0),
         );
-        exec1_test(
+        exec1(
             s,
             "UPDATE jobs SET branch = '', lease_agent = '' WHERE id = ?",
             &[&id],
@@ -1081,7 +1071,7 @@ mod tests {
                         "",
                     );
                 }
-                "cancelled status" => exec1_test(
+                "cancelled status" => exec1(
                     &s,
                     "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
                     &[&id],
@@ -1089,7 +1079,7 @@ mod tests {
                 "active run" => {
                     insert_recover_run(&s, id, "run-repair", "running", "", "", "");
                 }
-                "inactive" => exec1_test(
+                "inactive" => exec1(
                     &s,
                     "UPDATE projects SET status = 'inactive' WHERE slug = 'proj'",
                     &[],
@@ -1098,7 +1088,7 @@ mod tests {
                 "project stop" | "project dangling stop" | "brain stop" => {
                     if name == "brain stop" {
                         root = tempfile::tempdir().expect("tempdir").keep();
-                        exec1_test(
+                        exec1(
                             &s,
                             "INSERT INTO projects(slug,name,path,brain,added_at) VALUES ('brain','Brain',?,1,?)",
                             &[&root.to_string_lossy().to_string(), &TEST_NOW],
@@ -1115,22 +1105,22 @@ mod tests {
                 }
                 "recovery off" => set_recover_setting(&s, "daemon.recover", "off"),
                 "cap" => set_recover_setting(&s, "daemon.recover_limit", "0"),
-                "backoff" => exec1_test(
+                "backoff" => exec1(
                     &s,
                     "UPDATE jobs SET finished_at = ? WHERE id = ?",
                     &[&crate::util::plus_minutes(TEST_NOW, -2.0), &id],
                 ),
-                "history" => exec1_test(
+                "history" => exec1(
                     &s,
                     "UPDATE jobs SET finished_at = ? WHERE id = ?",
                     &[&crate::util::plus_hours(TEST_NOW, -24.0 * 30.0), &id],
                 ),
                 "bad timestamp" => {
-                    exec1_test(&s, "UPDATE jobs SET finished_at = '' WHERE id = ?", &[&id])
+                    exec1(&s, "UPDATE jobs SET finished_at = '' WHERE id = ?", &[&id])
                 }
-                "tier 2" => exec1_test(&s, "UPDATE jobs SET tier = 2 WHERE id = ?", &[&id]),
+                "tier 2" => exec1(&s, "UPDATE jobs SET tier = 2 WHERE id = ?", &[&id]),
                 "lead" | "baseline" | "experiment" | "answer" => {
-                    exec1_test(&s, "UPDATE jobs SET kind = ? WHERE id = ?", &[&name, &id]);
+                    exec1(&s, "UPDATE jobs SET kind = ? WHERE id = ?", &[&name, &id]);
                 }
                 "question" => {
                     crate::board::create_post(
@@ -1170,7 +1160,7 @@ mod tests {
                 _ => {}
             }
             if name.starts_with("task ") {
-                exec1_test(
+                exec1(
                     &s,
                     "UPDATE jobs SET source = 'task:TASK-1' WHERE id = ?",
                     &[&id],
@@ -1181,14 +1171,14 @@ mod tests {
                     } else {
                         "in_progress"
                     };
-                    exec1_test(
+                    exec1(
                         &s,
                         "INSERT INTO tasks(id,project,title,status,job_id,created_by,created_at,updated_at) VALUES ('TASK-1','proj','Task',?,?,'human',?,?)",
                         &[&status, &id, &TEST_NOW, &TEST_NOW],
                     );
                 }
                 if name == "task followed up" {
-                    exec1_test(
+                    exec1(
                         &s,
                         "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'proj-lead', ?, 'TASK-1', 'followed up')",
                         &[&TEST_NOW, &crate::recover::FOLLOW_UP_ACTION],
@@ -1333,7 +1323,7 @@ mod tests {
         }
         assert_eq!(copy.str("created_by"), pulse_store::HUMAN_AGENT);
         for status in ["queued", "done"] {
-            exec1_test(
+            exec1(
                 &s,
                 "UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?",
                 &[&status, &TEST_NOW, &copy.str("id")],
@@ -1371,14 +1361,14 @@ mod tests {
                 let (s, _) = repair_fixture();
                 let job = repair_failure(&s, "job-old", "connection reset");
                 let carrier = repair_failure(&s, "job-carrier", "verify exit 1");
-                exec1_test(&s, "UPDATE jobs SET source = ?", &[&source]);
+                exec1(&s, "UPDATE jobs SET source = ?", &[&source]);
                 let actual = if status == "active provisional" {
                     insert_recover_run(&s, &carrier.str("id"), "run-active", "running", "", "", "");
                     "failed"
                 } else {
                     status
                 };
-                exec1_test(
+                exec1(
                     &s,
                     "UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?",
                     &[&actual, &TEST_NOW, &carrier.str("id")],
@@ -1439,7 +1429,7 @@ mod tests {
                     String::new(),
                 )
                 .expect("recovery event");
-                exec1_test(
+                exec1(
                     &s,
                     "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'worker', 'job.failed', ?, 'fresh failure')",
                     &[&crate::util::plus_minutes(TEST_NOW, -30.0), &id],
@@ -1447,7 +1437,7 @@ mod tests {
             }
             if mode == "completed" || mode == "queued" {
                 let status = if mode == "queued" { "queued" } else { "done" };
-                exec1_test(
+                exec1(
                     &s,
                     "UPDATE jobs SET status = ? WHERE id = ?",
                     &[&status, &id],
@@ -1527,7 +1517,7 @@ mod tests {
             let id = format!("job-{i}");
             repair_failure(&s, &id, "verify exit 1");
             if i < 4 {
-                exec1_test(&s, "UPDATE jobs SET status = 'queued' WHERE id = ?", &[&id]);
+                exec1(&s, "UPDATE jobs SET status = 'queued' WHERE id = ?", &[&id]);
             }
         }
         for id in ["job-4", "job-5"] {
@@ -1555,7 +1545,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let (s, _) = repair_fixture();
         let other = tempfile::tempdir().expect("tempdir").keep();
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO projects(slug,name,path,added_at) VALUES ('other','Other',?,?)",
             &[&other.to_string_lossy().to_string(), &TEST_NOW],
@@ -1563,7 +1553,7 @@ mod tests {
         for id in ["job-good", "job-error", "job-other"] {
             repair_failure(&s, id, "verify exit 1");
         }
-        exec1_test(
+        exec1(
             &s,
             "UPDATE jobs SET project = 'other' WHERE id = 'job-other'",
             &[],
@@ -1588,7 +1578,7 @@ mod tests {
             )
             .is_err()
         );
-        exec1_test(
+        exec1(
             &s,
             "CREATE TRIGGER reject_one_repair BEFORE INSERT ON events
 \t\tWHEN NEW.action = 'job.recover' AND NEW.subject = 'job-error'
@@ -1633,7 +1623,7 @@ mod tests {
             out.results[3]
         );
         assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM jobs", &[]), 4);
-        exec1_test(&s, "DROP TRIGGER reject_one_repair", &[]);
+        exec1(&s, "DROP TRIGGER reject_one_repair", &[]);
         assert_eq!(repair_one(&s, "job-error").outcome, "replanned");
     }
     #[test]
@@ -1642,7 +1632,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let (s, _) = repair_fixture();
         for i in 0..1644 {
-            exec1_test(
+            exec1(
                 &s,
                 "INSERT INTO jobs(id,project,kind,tier,title,status,created_at,finished_at,result)
 \t\t\t\tVALUES (?,'proj','improve',1,'Historical failure','failed',?,?,'verify exit 1')",
@@ -1735,12 +1725,12 @@ mod tests {
             assert_eq!(page.jobs.len(), 1, "{change}: {page:?}");
             assert!(page.jobs[0].eligible, "{change}: {page:?}");
             match change {
-                "owner cancellation" => exec1_test(
+                "owner cancellation" => exec1(
                     &s,
                     "UPDATE jobs SET result = 'cancelled by the owner' WHERE id = 'job-changed'",
                     &[],
                 ),
-                "structural result" => exec1_test(
+                "structural result" => exec1(
                     &s,
                     "UPDATE jobs SET result = 'verify exit 127' WHERE id = 'job-changed'",
                     &[],
@@ -1749,7 +1739,7 @@ mod tests {
                     insert_recover_run(&s, "job-changed", "run-changed", "running", "", "", "");
                 }
                 "STOP" => set_recover_setting(&s, "stop", "1"),
-                "inactive project" => exec1_test(
+                "inactive project" => exec1(
                     &s,
                     "UPDATE projects SET status = 'inactive' WHERE slug = 'proj'",
                     &[],
@@ -1774,15 +1764,15 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let (s, _) = repair_fixture();
         let other = tempfile::tempdir().expect("tempdir").keep();
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO projects(slug,name,path,added_at) VALUES ('other','Other',?,?)",
             &[&other.to_string_lossy().to_string(), &TEST_NOW],
         );
         repair_failure(&s, "job-source", "verify exit 1");
         repair_failure(&s, "job-other", "verify exit 1");
-        exec1_test(&s, "UPDATE jobs SET source = 'shared-source'", &[]);
-        exec1_test(
+        exec1(&s, "UPDATE jobs SET source = 'shared-source'", &[]);
+        exec1(
             &s,
             "UPDATE jobs SET project = 'other', status = 'queued' WHERE id = 'job-other'",
             &[],
@@ -1798,12 +1788,12 @@ mod tests {
         );
         repair_failure(&s, "job-task-old", "connection reset");
         repair_failure(&s, "job-task-current", "verify exit 1");
-        exec1_test(
+        exec1(
             &s,
             "UPDATE jobs SET source = 'task:TASK-1' WHERE id = 'job-task-old'",
             &[],
         );
-        exec1_test(
+        exec1(
             &s,
             "INSERT INTO tasks(id,project,title,status,job_id,created_by,created_at,updated_at)
 \t\tVALUES ('TASK-1','proj','Task','in_progress','job-task-current','human',?,?)",
@@ -1837,9 +1827,9 @@ mod tests {
             let (s, _) = repair_fixture();
             repair_failure(&s, "job-invalid-gate", "verify exit 1");
             if gate == "checkout path" {
-                exec1_test(&s, "UPDATE projects SET path = '' WHERE slug = 'proj'", &[]);
+                exec1(&s, "UPDATE projects SET path = '' WHERE slug = 'proj'", &[]);
             } else {
-                exec1_test(
+                exec1(
                     &s,
                     "INSERT OR REPLACE INTO settings(name,value,updated_at,updated_by) VALUES (?,'invalid',?,'human')",
                     &[&gate, &TEST_NOW],
@@ -1888,7 +1878,7 @@ mod tests {
             ] {
                 let (s, _) = repair_fixture();
                 let root = repair_failure(&s, "job-cancelled-root", "verify exit 1");
-                exec1_test(
+                exec1(
                     &s,
                     "UPDATE jobs SET source = ? WHERE id = ?",
                     &[&source, &root.str("id")],
@@ -2056,7 +2046,7 @@ mod tests {
             ] {
                 let (s, _) = repair_fixture();
                 let root = repair_failure(&s, "job-cancelled-root", "verify exit 1");
-                exec1_test(
+                exec1(
                     &s,
                     "UPDATE jobs SET source = ? WHERE id = ?",
                     &[&source, &root.str("id")],
@@ -2103,7 +2093,7 @@ mod tests {
                 } else {
                     status
                 };
-                exec1_test(
+                exec1(
                     &s,
                     "UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?",
                     &[
@@ -2138,7 +2128,7 @@ mod tests {
         for source in ["", "manual:cancelled-branches"] {
             let (s, _) = repair_fixture();
             let root = repair_failure(&s, "job-root", "verify exit 1");
-            exec1_test(
+            exec1(
                 &s,
                 "UPDATE jobs SET source = ? WHERE id = ?",
                 &[&source, &root.str("id")],
@@ -2201,7 +2191,7 @@ mod tests {
         for source in ["", "manual:cancelled-chain"] {
             let (s, _) = repair_fixture();
             let root = repair_failure(&s, "job-root", "verify exit 1");
-            exec1_test(
+            exec1(
                 &s,
                 "UPDATE jobs SET source = ? WHERE id = ?",
                 &[&source, &root.str("id")],

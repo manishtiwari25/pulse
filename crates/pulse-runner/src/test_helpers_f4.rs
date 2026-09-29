@@ -687,15 +687,16 @@ pub(crate) mod tests {
             )
             .0,
         );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'answer' AND on_post = ?",
-                &[&q.str("id")],
-            ),
-            1,
-            "an older answer with the same timestamp suppressed the new answer"
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'answer' AND on_post = ?",
+            &[&q.str("id")],
         );
+        if n != 1 {
+            panic!(
+                "an older answer with the same timestamp suppressed the new answer: {n} linked answers"
+            );
+        }
     }
 
     #[test]

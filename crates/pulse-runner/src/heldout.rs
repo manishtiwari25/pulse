@@ -3,7 +3,7 @@
     reason = "ported Go runner APIs are consumed incrementally across slices"
 )]
 
-//! Skeleton port of internal/runner/heldout.go.
+//! Port of internal/runner/heldout.go.
 
 use anyhow::anyhow;
 use std::sync::{LazyLock, RwLock};

@@ -90,10 +90,9 @@ pub(crate) fn executor_token_set(
         "the token reaches no repository".into(),
         format!("executor token stored in {path}"),
     ];
-    if let Some(warn) =
-        expiry_warning_local(&facts.expires, now, crate::executor::LOGIN_EXPIRY_WARN)
-            .filter(|s| !s.is_empty())
-    {
+    let warn =
+        crate::executor::expiry_warning(&facts.expires, now, crate::executor::LOGIN_EXPIRY_WARN);
+    if !warn.is_empty() {
         lines.push(format!("warning: {warn}"));
     }
     if let Ok(conn) = s.conn() {
@@ -104,6 +103,34 @@ pub(crate) fn executor_token_set(
             "executor.token",
             "hub",
             serde_json::json!({"ok": true, "login": facts.user, "expires": facts.expires}),
+        );
+    }
+    let proj = finding_project(s);
+    if !proj.is_empty() {
+        let mut summary = String::from("executor token placed on the hub");
+        if !facts.user.is_empty() {
+            summary += &format!(" for {}", facts.user);
+        }
+        let _ = crate::board::create_post(
+            s,
+            now.to_string(),
+            crate::board::PostOpts {
+                kind: "finding".into(),
+                project: proj,
+                area: "runner".into(),
+                thread: "executors".into(),
+                summary,
+                body: format!(
+                    "The owner placed a fine-grained GitHub token that reaches no repository (account {}{}). The daemon \
+                     places it on a drained executor whose login was refused and on every machine compute provisions, so they work \
+                     without an owner step (ADR-034). `pulse executor token --remove` withdraws it.\n",
+                    or_dash(&facts.user),
+                    expires_text(&facts.expires)
+                ),
+                agent: crate::board::actor_agent(s, actor.to_string()),
+                date: now.to_string(),
+                ..Default::default()
+            },
         );
     }
     Ok(lines)
@@ -150,25 +177,18 @@ pub(crate) fn executor_token_report(s: &pulse_store::Store, now: &str) -> Vec<St
             &[],
         );
         let d = crate::util::json_map(&r.str("detail"));
-        if let Some(login) = d
-            .get("login")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
+        let login = d.get("login").and_then(|v| v.as_str()).unwrap_or("");
+        let expires = d.get("expires").and_then(|v| v.as_str()).unwrap_or("");
+        if !login.is_empty() {
             lines.push(format!("account {login}"));
         }
-        if let Some(expires) = d
-            .get("expires")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
+        if !expires.is_empty() {
             lines.push(format!("expires {expires}"));
-            if let Some(warn) =
-                expiry_warning_local(expires, now, crate::executor::LOGIN_EXPIRY_WARN)
-                    .filter(|s| !s.is_empty())
-            {
-                lines.push(format!("WARNING {warn}"));
-            }
+        }
+        let warn =
+            crate::executor::expiry_warning(expires, now, crate::executor::LOGIN_EXPIRY_WARN);
+        if !warn.is_empty() {
+            lines.push(format!("WARNING {warn}"));
         }
     }
     lines
@@ -241,11 +261,31 @@ impl GhSourceCache {
         Ok(tok)
     }
     /// Go: func (c *ghSourceCache) passes(tok string) bool
-    pub(crate) fn passes(&self, tok: &str) -> bool {
-        self.ok && self.token == tok
+    ///
+    /// Says whether tok is an acceptable source, asking GitHub only when the cache is cold or stale.
+    pub(crate) fn passes(&mut self, tok: &str) -> bool {
+        let now = (*crate::run::WALL_CLOCK.read().expect("wall clock"))();
+        if self.token == tok
+            && self.at.is_some_and(|t| {
+                now.duration_since(t).unwrap_or(Duration::ZERO)
+                    < Duration::from_secs(GH_SOURCE_CACHE_MINS * 60)
+            })
+        {
+            return self.ok;
+        }
+        let err = check_executor_token(tok).err();
+        self.token = tok.to_string();
+        self.ok = err.is_none();
+        self.at = Some(now);
+        self.ok
     }
 }
 /// Go: func loginSource(s *store.Store) ([]byte, string, error)
+///
+/// ADR-034 rule 2: the executor token on file, else (native) the stored provider login or (legacy)
+/// the hub's `gh auth token` when the source reaches no repository, else none. The file is trusted
+/// after classifyToken alone (it was checked when placed); borrowed sources are checked against
+/// GitHub and cached per process for GH_SOURCE_CACHE_MINS.
 pub(crate) fn login_source(s: &pulse_store::Store) -> Result<(Vec<u8>, String)> {
     match std::fs::read_to_string(executor_token_path(s)) {
         Ok(data) => {
@@ -258,63 +298,40 @@ pub(crate) fn login_source(s: &pulse_store::Store) -> Result<(Vec<u8>, String)> 
         Err(e) => return Err(e.into()),
     }
     if s.harness_native() {
-        let provider_name = s.setting("provider", "");
-        if provider_name.is_empty() {
-            return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
-        }
-        let Ok(provider) =
-            crate::login_gate::local_provider(s.home.clone(), provider_name, s.provider_settings())
-        else {
+        let p = crate::login_gate::local_provider(
+            s.home.clone(),
+            s.setting("provider", pulse_provider::DEFAULT),
+            s.provider_settings(),
+        )?;
+        let Some(exporter) = p.as_login_exporter() else {
             return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
         };
-        if let Some(exporter) = provider.as_login_exporter() {
-            match exporter.export_login() {
-                Ok((tok, login)) if classify_executor_token(tok.trim()).is_ok() => {
-                    let origin = if login.source.is_empty() {
-                        LOGIN_SOURCE_PROVIDER.to_string()
-                    } else {
-                        login.source
-                    };
-                    return Ok((tok.trim().as_bytes().to_vec(), origin));
-                }
-                Ok(_) => return Ok((Vec::new(), LOGIN_SOURCE_NONE.into())),
-                Err(err) if is_no_stored_login(&err) => {
+        let tok = match exporter.export_login() {
+            Ok((tok, _)) => tok,
+            Err(err) => {
+                if is_no_stored_login(&err) {
                     return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
                 }
-                Err(_) => return Ok((Vec::new(), LOGIN_SOURCE_NONE.into())),
+                return Err(err);
             }
+        };
+        let tok = tok.trim();
+        if !tok.is_empty() && PROVIDER_SOURCE.lock().unwrap().passes(tok) {
+            return Ok((tok.as_bytes().to_vec(), LOGIN_SOURCE_PROVIDER.into()));
         }
         return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
     }
-    let tok = {
-        let mut gh = GH_SOURCE.lock().unwrap();
-        gh.fetch()?
-    };
-    if !tok.is_empty() {
-        let mut gh = GH_SOURCE.lock().unwrap();
-        let now = (*crate::run::WALL_CLOCK.read().expect("wall clock"))();
-        let fresh = gh.token == tok
-            && gh.at.is_some_and(|t| {
-                now.duration_since(t).unwrap_or(Duration::ZERO)
-                    < Duration::from_secs(GH_SOURCE_CACHE_MINS * 60)
-            });
-        if !fresh {
-            gh.ok = check_executor_token(&tok).is_ok();
-            gh.token = tok.clone();
-            gh.at = Some(now);
-        }
-        if gh.ok {
-            return Ok((tok.into_bytes(), LOGIN_SOURCE_HUB_LOGIN.into()));
-        }
+    let tok = GH_SOURCE.lock().unwrap().fetch()?;
+    if !tok.is_empty() && GH_SOURCE.lock().unwrap().passes(&tok) {
+        return Ok((tok.into_bytes(), LOGIN_SOURCE_HUB_LOGIN.into()));
     }
     Ok((Vec::new(), LOGIN_SOURCE_NONE.into()))
 }
 /// Go: func isNoStoredLogin(err error) bool
 pub(crate) fn is_no_stored_login(err: &anyhow::Error) -> bool {
-    let text = err.to_string();
-    text.contains("no stored login")
-        || text.contains("no stored GitHub Copilot login")
-        || text.contains("no_stored_login")
+    err.chain()
+        .filter_map(|e| e.downcast_ref::<pulse_provider::ProviderError>())
+        .any(|perr| perr.code == "no_stored_login")
 }
 /// Go: func hasLoginSource(s *store.Store) bool
 pub(crate) fn has_login_source(s: &pulse_store::Store) -> bool {
@@ -340,281 +357,232 @@ fn classify_executor_token(token: &str) -> Result<()> {
     Err(crate::util::fail(2, "not a GitHub token").into())
 }
 
-fn expiry_warning_local(expires: &str, now: &str, days: i32) -> Option<String> {
-    if expires.is_empty() {
-        return None;
-    }
-    let exp =
-        chrono::NaiveDate::parse_from_str(&expires[..expires.len().min(10)], "%Y-%m-%d").ok()?;
-    let now = chrono::NaiveDate::parse_from_str(&now[..now.len().min(10)], "%Y-%m-%d").ok()?;
-    let left = (exp - now).num_days();
-    if left < 0 {
-        Some(format!("expired {}", expires))
-    } else if left <= days as i64 {
-        Some(format!("expires in {left} days ({expires})"))
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-    use std::time::{Duration as StdDuration, SystemTime};
-
-    const TEST_EXECUTOR_TOKEN: &str = "github_pat_11ATESTTOKEN0000000000_TESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTEST";
-    static TEST_GH_TOKEN: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
-    static TEST_CLOCK: LazyLock<Mutex<SystemTime>> =
-        LazyLock::new(|| Mutex::new(SystemTime::UNIX_EPOCH));
-
-    #[derive(Default)]
-    struct FakeGitHubState {
-        repos: usize,
-        status: u16,
-        login: String,
-        calls: Vec<String>,
-        tokens: Vec<String>,
-    }
-
-    fn test_gh_auth_token() -> Result<String> {
-        Ok(TEST_GH_TOKEN.lock().unwrap().clone())
-    }
-
-    fn test_wall_clock() -> SystemTime {
-        *TEST_CLOCK.lock().unwrap()
-    }
-
-    fn set_test_clock(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) {
-        let dt = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, year, month, day, hour, min, sec)
-            .unwrap();
-        *TEST_CLOCK.lock().unwrap() =
-            SystemTime::UNIX_EPOCH + StdDuration::from_secs(dt.timestamp() as u64);
-    }
-
-    fn install_fake_github(state: Arc<Mutex<FakeGitHubState>>) -> pulse_testutil::httptest::Server {
-        pulse_testutil::httptest::Server::new(move |req| {
-            let mut st = state.lock().unwrap();
-            st.calls.push(format!("{}?{}", req.path(), req.query()));
-            st.tokens.push(
-                req.header("Authorization")
-                    .unwrap_or("")
-                    .trim_start_matches("Bearer ")
-                    .to_string(),
-            );
-            let mut status = 200;
-            let body = match req.path() {
-                "/user" => {
-                    if st.status != 0 {
-                        status = st.status;
-                    }
-                    let login = if st.login.is_empty() {
-                        "hands-bot"
-                    } else {
-                        &st.login
-                    };
-                    serde_json::json!({"login": login})
-                }
-                "/user/repos" => {
-                    let repos = (0..st.repos)
-                        .map(|_| serde_json::json!({"full_name": "acme/repo"}))
-                        .collect::<Vec<_>>();
-                    serde_json::Value::Array(repos)
-                }
-                _ => {
-                    status = 404;
-                    serde_json::Value::String(String::new())
-                }
-            };
-            pulse_testutil::httptest::Response::json(status, &body).header(
-                "github-authentication-token-expiration",
-                "2027-01-01 00:00:00 UTC",
-            )
-        })
-    }
-
-    fn write_executor_token(s: &pulse_store::Store) -> String {
-        let path = executor_token_path(s);
-        std::fs::create_dir_all(std::path::Path::new(&path).parent().unwrap()).unwrap();
-        std::fs::write(&path, format!("{TEST_EXECUTOR_TOKEN}\n")).unwrap();
-        path
-    }
+    use crate::test_helpers::{TEST_NOW, new_bare_repo, new_store, serial};
+    use crate::test_helpers_f1b::{TEST_EXECUTOR_TOKEN, write_executor_token};
+    use crate::test_helpers_f5::{must_one, must_rows, set_setting};
+    use crate::test_helpers_f6::{invoke, invoke_ok, stub_gh, with_stdin};
+    use crate::test_helpers_token::{
+        FakeGitHub, FakeGitHubState, advance_wall_clock, fixed_wall_clock, time_date,
+    };
+    use crate::util::json_map;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
 
     #[test]
     fn executor_token_command() {
-        let _serial = crate::test_helpers::serial();
-        let _guard = pulse_testutil::env_lock();
-        let gh = Arc::new(Mutex::new(FakeGitHubState {
-            login: "hands-bot".to_string(),
+        let _serial = serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        let gh = FakeGitHub::new(FakeGitHubState {
+            login: "hands-bot".into(),
             ..Default::default()
-        }));
-        let srv = install_fake_github(Arc::clone(&gh));
-        let _env_1 = pulse_testutil::setenv("PULSE_GITHUB_API", srv.url());
-        let s = crate::test_helpers::new_store();
-        let mut report = executor_token_report(&s, crate::test_helpers::TEST_NOW).join("\n");
-        assert!(report.contains("no executor token on file"), "{report}");
+        });
+        let _gh = gh.install();
 
-        let mut classic: &[u8] = b"ghp_classic0000000000000000000000000000\n";
-        let err = executor_token_set(
-            &s,
-            crate::test_helpers::TEST_NOW,
-            &mut classic,
-            false,
-            crate::util::HUMAN_AGENT,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("classic personal access token"), "{err}");
-        assert_eq!(gh.lock().unwrap().calls.len(), 0);
+        // Report before anything is placed: no file, no token anywhere.
+        let mut out = invoke_ok(&s, "executor", "", &["token"]);
+        assert!(out.contains("no executor token on file"), "report: {out:?}");
 
-        gh.lock().unwrap().repos = 1;
-        let mut refused: &[u8] = TEST_EXECUTOR_TOKEN.as_bytes();
-        let err = executor_token_set(
-            &s,
-            crate::test_helpers::TEST_NOW,
-            &mut refused,
-            false,
-            crate::util::HUMAN_AGENT,
-        )
-        .unwrap_err()
-        .to_string();
+        // A classic token is refused before GitHub is asked.
+        with_stdin("ghp_classic0000000000000000000000000000\n", || {
+            let (_, err_text, code) = invoke(&s, "executor", "", &["token", "--with-token"]);
+            assert!(
+                code == 2 && err_text.contains("classic personal access token"),
+                "ghp_: {code} {err_text:?}"
+            );
+        });
         assert!(
-            err.contains(crate::executor::NO_REPOSITORY_REFUSAL),
-            "{err}"
+            gh.count() == 0,
+            "GitHub asked about a classic token: {:?}",
+            gh.lock().calls
         );
-        assert!(!std::path::Path::new(&executor_token_path(&s)).exists());
 
-        gh.lock().unwrap().repos = 0;
-        let mut input: &[u8] = TEST_EXECUTOR_TOKEN.as_bytes();
-        let lines = executor_token_set(
-            &s,
-            crate::test_helpers::TEST_NOW,
-            &mut input,
-            false,
-            crate::util::HUMAN_AGENT,
-        )
-        .unwrap();
-        let out = lines.join("\n");
+        // A token that reaches one repository is refused with the fixed sentence; nothing is written.
+        gh.lock().repos = 1;
+        with_stdin(&format!("{TEST_EXECUTOR_TOKEN}\n"), || {
+            let (_, err_text, code) = invoke(&s, "executor", "", &["token", "--with-token"]);
+            assert!(
+                code == 1 && err_text.contains(crate::executor::NO_REPOSITORY_REFUSAL),
+                "one repo: {code} {err_text:?}"
+            );
+        });
         assert!(
-            out.contains("GitHub accepts the token for hands-bot"),
-            "{out}"
+            !Path::new(&executor_token_path(&s)).exists(),
+            "a refused token was written"
         );
-        assert!(out.contains("reaches no repository"), "{out}");
-        assert!(!out.contains(TEST_EXECUTOR_TOKEN), "{out}");
+
+        // Zero repositories: accepted, written 0600 under private/ 0700, finding and event carry the login only.
+        gh.lock().repos = 0;
+        with_stdin(&format!("{TEST_EXECUTOR_TOKEN}\n"), || {
+            out = invoke_ok(&s, "executor", "", &["token", "--with-token"]);
+        });
+        assert!(
+            out.contains("GitHub accepts the token for hands-bot")
+                && out.contains("reaches no repository")
+                && !out.contains(TEST_EXECUTOR_TOKEN),
+            "accept: {out:?}"
+        );
         let path = executor_token_path(&s);
-        assert_eq!(
-            path,
-            std::path::Path::new(&s.home)
-                .join("private/executor-token")
-                .display()
-                .to_string()
-        );
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap().trim(),
-            TEST_EXECUTOR_TOKEN
-        );
-        let joined = gh.lock().unwrap().calls.join(" ");
-        assert!(joined.contains("/user?"), "{joined}");
         assert!(
-            joined.contains(
-                "/user/repos?per_page=1&affiliation=owner,collaborator,organization_member"
-            ),
-            "{joined}"
+            path == Path::new(&s.home)
+                .join("private")
+                .join("executor-token")
+                .display()
+                .to_string(),
+            "token path: {path}"
         );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-            assert_eq!(
-                std::fs::metadata(std::path::Path::new(&path).parent().unwrap())
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o700
-            );
+        let fi = std::fs::metadata(&path);
+        assert!(
+            matches!(&fi, Ok(fi) if fi.permissions().mode() & 0o777 == 0o600),
+            "token file: {fi:?}"
+        );
+        let di = std::fs::metadata(Path::new(&path).parent().unwrap()).unwrap();
+        assert!(
+            di.permissions().mode() & 0o777 == 0o700,
+            "private dir mode: {:o}",
+            di.permissions().mode()
+        );
+        let data = std::fs::read(&path).unwrap_or_default();
+        assert!(
+            String::from_utf8_lossy(&data).trim() == TEST_EXECUTOR_TOKEN,
+            "token file content differs"
+        );
+        let joined = gh.lock().calls.join(" ");
+        assert!(
+            joined.contains("/user?")
+                && joined.contains(
+                    "/user/repos?per_page=1&affiliation=owner,collaborator,organization_member"
+                ),
+            "GitHub calls: {:?}",
+            gh.lock().calls
+        );
+        let ev = must_one(
+            &s,
+            "SELECT * FROM events WHERE action = 'executor.token' ORDER BY seq DESC LIMIT 1",
+            &[],
+        );
+        let d = json_map(&ev.str("detail"));
+        assert!(
+            !crate::util::is_nil(&ev)
+                && d.get("login") == Some(&serde_json::json!("hands-bot"))
+                && d.get("ok") == Some(&serde_json::json!(true)),
+            "event: {ev:?}"
+        );
+        let posts = must_rows(
+            &s,
+            "SELECT * FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'executors'",
+            &[],
+        );
+        assert!(
+            posts.len() == 1
+                && posts[0].str("summary") == "executor token placed on the hub for hands-bot",
+            "finding: {posts:?}"
+        );
+        for r in posts.iter().chain(std::iter::once(&ev)) {
+            for col in ["summary", "body", "detail"] {
+                assert!(
+                    !r.str(col).contains(TEST_EXECUTOR_TOKEN),
+                    "token leaked into {col}"
+                );
+            }
         }
-        report = executor_token_report(&s, crate::test_helpers::TEST_NOW).join("\n");
-        assert!(report.contains("executor token on file"), "{report}");
-        assert!(report.contains("account hands-bot"), "{report}");
-        assert!(report.contains("expires 2027-01-01"), "{report}");
-        assert!(!report.contains(TEST_EXECUTOR_TOKEN), "{report}");
 
-        let lines =
-            executor_token_remove(&s, crate::test_helpers::TEST_NOW, crate::util::HUMAN_AGENT)
-                .unwrap();
-        assert!(lines.join("\n").contains("executor token removed"));
-        assert!(!std::path::Path::new(&path).exists());
-        let lines =
-            executor_token_remove(&s, crate::test_helpers::TEST_NOW, crate::util::HUMAN_AGENT)
-                .unwrap();
-        assert!(lines.join("\n").contains("no executor token on file"));
+        // Report: presence, account, expiry - never the token.
+        out = invoke_ok(&s, "executor", "", &["token"]);
+        assert!(
+            out.contains("executor token on file")
+                && out.contains("account hands-bot")
+                && out.contains("expires 2027-01-01")
+                && !out.contains(TEST_EXECUTOR_TOKEN),
+            "report: {out:?}"
+        );
+        let (_, _, code) = invoke(&s, "executor", "", &["token", "--with-token", "--remove"]);
+        assert!(code == 2, "both flags accepted: {code}");
+
+        // Remove.
+        out = invoke_ok(&s, "executor", "", &["token", "--remove"]);
+        assert!(out.contains("executor token removed"), "remove: {out:?}");
+        assert!(!Path::new(&path).exists(), "token file still there");
+        out = invoke_ok(&s, "executor", "", &["token", "--remove"]);
+        assert!(
+            out.contains("no executor token on file"),
+            "second remove: {out:?}"
+        );
     }
 
     #[test]
     fn login_source_precedence_and_cache() {
-        let _serial = crate::test_helpers::serial();
-        let _guard = pulse_testutil::env_lock();
-        let s = crate::test_helpers::new_store();
-        let gh = Arc::new(Mutex::new(FakeGitHubState::default()));
-        let srv = install_fake_github(Arc::clone(&gh));
-        let _env_2 = pulse_testutil::setenv("PULSE_GITHUB_API", srv.url());
-        *TEST_GH_TOKEN.lock().unwrap() = String::new();
-        let old_gh = *GH_AUTH_TOKEN.read().unwrap();
-        *GH_AUTH_TOKEN.write().unwrap() = test_gh_auth_token;
-        let old_clock = *crate::run::WALL_CLOCK.read().expect("wall clock");
-        set_test_clock(2026, 9, 6, 10, 0, 0);
-        *crate::run::WALL_CLOCK.write().expect("wall clock") = test_wall_clock;
-        GH_SOURCE.lock().unwrap().forget();
+        let _serial = serial();
+        let s = new_store();
+        let gh = FakeGitHub::default();
+        let _gh = gh.install();
+        // Each stubGh stacks a cleanup; the guards drop in the same LIFO order.
+        let _stub_1 = stub_gh("");
+        let _clock = fixed_wall_clock(time_date(2026, 9, 6, 10, 0, 0));
 
-        let (tok, origin) = login_source(&s).unwrap();
-        assert!(tok.is_empty());
-        assert_eq!(origin, LOGIN_SOURCE_NONE);
-        assert_eq!(gh.lock().unwrap().calls.len(), 0);
-        assert!(!has_login_source(&s));
-
-        s.set_setting(crate::util::HUMAN_AGENT, "harness", "copilot-cli")
-            .unwrap();
-        *TEST_GH_TOKEN.lock().unwrap() = "gho_hubtoken00000000000000000000000000".to_string();
-        GH_SOURCE.lock().unwrap().forget();
-        let (tok, origin) = login_source(&s).unwrap();
-        assert_eq!(
-            String::from_utf8(tok).unwrap(),
-            "gho_hubtoken00000000000000000000000000"
+        // Nothing anywhere: none, and GitHub is not asked.
+        let res = login_source(&s);
+        assert!(
+            matches!(&res, Ok((tok, origin)) if tok.is_empty() && origin == LOGIN_SOURCE_NONE)
+                && gh.count() == 0,
+            "empty: {res:?} {}",
+            gh.count()
         );
-        assert_eq!(origin, LOGIN_SOURCE_HUB_LOGIN);
-        assert_eq!(gh.lock().unwrap().calls.len(), 2);
-        let _ = login_source(&s).unwrap();
-        let _ = login_source(&s).unwrap();
-        assert_eq!(gh.lock().unwrap().calls.len(), 2);
-        *TEST_CLOCK.lock().unwrap() += StdDuration::from_secs(11 * 60);
-        let _ = login_source(&s).unwrap();
-        assert_eq!(gh.lock().unwrap().calls.len(), 4);
+        assert!(!has_login_source(&s), "has a source from nothing");
 
-        gh.lock().unwrap().repos = 1;
-        *TEST_GH_TOKEN.lock().unwrap() = "gho_reaches000000000000000000000000000000".to_string();
-        GH_SOURCE.lock().unwrap().forget();
-        let (tok, origin) = login_source(&s).unwrap();
-        assert!(tok.is_empty());
-        assert_eq!(origin, LOGIN_SOURCE_NONE);
+        // The hub's gh token counts only after passing the same checks; the answer is cached for ten minutes.
+        set_setting(&s, "harness", "copilot-cli");
+        let _stub_2 = stub_gh("gho_hubtoken00000000000000000000000000");
+        let (tok, origin) = login_source(&s).unwrap_or_default();
+        assert!(
+            tok.as_slice() == b"gho_hubtoken00000000000000000000000000"
+                && origin == LOGIN_SOURCE_HUB_LOGIN,
+            "gh: {tok:?} {origin}"
+        );
+        let n = gh.count();
+        assert!(
+            n == 2,
+            "GitHub calls for the hub login: {n} {:?}",
+            gh.lock().calls
+        );
+        let _ = login_source(&s);
+        let _ = login_source(&s);
+        let n = gh.count();
+        assert!(n == 2, "cache missed: {n} calls");
+        advance_wall_clock(Duration::from_secs(11 * 60));
+        let _ = login_source(&s);
+        let n = gh.count();
+        assert!(n == 4, "cache never expired: {n} calls");
 
-        let before = gh.lock().unwrap().calls.len();
+        // A hub login that reaches a repository is not a source.
+        gh.lock().repos = 1;
+        let _stub_3 = stub_gh("gho_reaches000000000000000000000000000000");
+        let (tok, origin) = login_source(&s).unwrap_or_default();
+        assert!(
+            tok.is_empty() && origin == LOGIN_SOURCE_NONE,
+            "repo-reaching gh token accepted: {tok:?} {origin}"
+        );
+
+        // The file wins over gh and is trusted without a network call.
+        let before = gh.count();
         write_executor_token(&s);
-        let (tok, origin) = login_source(&s).unwrap();
-        assert_eq!(String::from_utf8(tok).unwrap(), TEST_EXECUTOR_TOKEN);
-        assert_eq!(origin, LOGIN_SOURCE_TOKEN);
-        assert_eq!(gh.lock().unwrap().calls.len(), before);
-
-        std::fs::write(executor_token_path(&s), b"not a token\n").unwrap();
-        let (tok, origin) = login_source(&s).unwrap();
-        assert!(tok.is_empty());
-        assert_eq!(origin, LOGIN_SOURCE_NONE);
-        *crate::run::WALL_CLOCK.write().expect("wall clock") = old_clock;
-        *GH_AUTH_TOKEN.write().unwrap() = old_gh;
-        GH_SOURCE.lock().unwrap().forget();
-        let _env_3 = pulse_testutil::unsetenv("PULSE_GITHUB_API");
+        let (tok, origin) = login_source(&s).unwrap_or_default();
+        assert!(
+            tok.as_slice() == TEST_EXECUTOR_TOKEN.as_bytes()
+                && origin == LOGIN_SOURCE_TOKEN
+                && gh.count() == before,
+            "file: {tok:?} {origin} ({} calls)",
+            gh.count() - before
+        );
+        // A damaged file falls back to gh (which here is refused): none.
+        let _ = std::fs::write(executor_token_path(&s), b"not a token\n");
+        let (tok, origin) = login_source(&s).unwrap_or_default();
+        assert!(
+            tok.is_empty() && origin == LOGIN_SOURCE_NONE,
+            "damaged file: {tok:?} {origin}"
+        );
     }
 }

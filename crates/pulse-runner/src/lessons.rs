@@ -1,4 +1,4 @@
-//! Skeleton port of internal/runner/lessons.go.
+//! Port of internal/runner/lessons.go.
 
 #![cfg_attr(
     not(test),

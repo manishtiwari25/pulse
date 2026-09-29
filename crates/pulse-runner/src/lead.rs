@@ -1,4 +1,4 @@
-//! Skeleton port of internal/runner/lead.go.
+//! Port of internal/runner/lead.go.
 
 #![cfg_attr(
     not(test),

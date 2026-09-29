@@ -611,116 +611,140 @@ exec "$PULSE_REAL_GIT" "$@"
     #[test]
     fn landing_evidence_records_no_code_when_default_already_at_target() {
         let _serial = crate::test_helpers::serial();
-        let _env = pulse_testutil::env_lock();
         let s = new_store();
-        let (_proj, repo) = new_repo(&s);
-        let head = ref_of(&repo, "HEAD");
-        let ctx = pulse_bus::CancellationToken::new();
-        let evidence = landing_code_delivery_evidence(&ctx, repo, head.clone(), head.clone());
+        let (mut project, root) = new_repo(&s);
+        join(&s, "aurora");
+        let branch = "pulse/aurora/no-op-default";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        crate::test_helpers_landing::write_file(&root, "a.go", "package main\n");
+        crate::test_helpers_landing::write_file(&root, "b.go", "package main\n");
+        run(&root, &["git", "add", "-A"]);
+        run(&root, &["git", "commit", "-q", "-m", "add files"]);
+        let target = crate::test_helpers_selfupdate::head_of(&root);
+        run(&root, &["git", "switch", "-q", "main"]);
         let (job, _) = crate::jobs::add_job(
             &s,
             "proj".into(),
             "task".into(),
             "Deliver source".into(),
-            "package main\n".into(),
+            "do it".into(),
             1,
             0,
             "manual".into(),
-            "aurora".into(),
+            crate::util::HUMAN_AGENT.into(),
             false,
         )
-        .unwrap();
+        .unwrap_or_else(|err| panic!("{err}"));
         exec1(
             &s,
             "UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?",
-            &[&"pulse/aurora/no-op-default", &"aurora", &job.str("id")],
+            &[&branch, &"aurora", &job.str("id")],
         );
-        for want in [
-            "Deliver source",
-            "package main",
-            "manual",
-            "aurora",
-            "commit",
-            "add files",
-            "pulse/aurora/no-op-default",
-            "git -C",
-            "merge --ff-only",
-            "landed",
-            "daemon",
-        ] {
-            let probe = format!(
-                "Deliver source package main manual aurora commit add files pulse/aurora/no-op-default git -C merge --ff-only landed daemon {}",
-                job.str("id")
-            );
-            assert!(probe.contains(want), "probe lacks {want}");
+        project.insert(
+            "verify_cmd",
+            format!(
+                "git -C {} merge --ff-only {}",
+                crate::util::shell_quote(&root),
+                crate::util::shell_quote(&target)
+            )
+            .into(),
+        );
+
+        let (state, note) = crate::land::land_branch(
+            &s,
+            project,
+            branch.into(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            crate::land::LandOpts {
+                job: job_row(&s, &job.str("id")),
+                verify: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        if state != "landed" {
+            panic!("landBranch = {state} {note} <nil>");
         }
-        assert_eq!(evidence.before, head);
-        assert_eq!(evidence.after, head);
-        assert_eq!(evidence.files_changed, 0, "evidence = {evidence:?}");
-        assert!(evidence.code_paths.is_empty(), "evidence = {evidence:?}");
-        assert!(evidence.reason.is_empty(), "evidence = {evidence:?}");
+        let evidence = crate::test_helpers_landing::landed_evidence(&s);
+        if evidence.evidence != pulse_codedelivery::EVIDENCE_UNAVAILABLE
+            || evidence.reason != pulse_codedelivery::REASON_MISSING_TRANSITION
+            || evidence.files_changed != 0
+            || evidence.code_files != 0
+            || !evidence.code_paths.is_empty()
+        {
+            panic!("no-op transition counted stale code: {evidence:?}");
+        }
     }
 
     #[test]
     fn landing_evidence_uses_actual_advanced_default_transition() {
         let _serial = crate::test_helpers::serial();
-        let _env = pulse_testutil::env_lock();
         let s = new_store();
-        let (_proj, repo) = new_repo(&s);
-        let before = ref_of(&repo, "HEAD");
-        std::fs::write(
-            std::path::Path::new(&repo).join("feature.rs"),
-            "fn feature() {}\n",
-        )
-        .unwrap();
-        run(&repo, &["git", "add", "-A"]);
-        run(&repo, &["git", "commit", "-q", "-m", "feature"]);
-        let after = ref_of(&repo, "HEAD");
-        let ctx = pulse_bus::CancellationToken::new();
-        let evidence = landing_code_delivery_evidence(&ctx, repo, before.clone(), after.clone());
+        let (mut project, root) = new_repo(&s);
+        join(&s, "aurora");
+        let branch = "pulse/aurora/advanced-default";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        crate::test_helpers_landing::write_file(&root, "a.go", "package main\n");
+        run(&root, &["git", "add", "-A"]);
+        run(&root, &["git", "commit", "-q", "-m", "add a"]);
+        let first = crate::test_helpers_selfupdate::head_of(&root);
+        crate::test_helpers_landing::write_file(&root, "b.go", "package main\n");
+        run(&root, &["git", "add", "-A"]);
+        run(&root, &["git", "commit", "-q", "-m", "add b"]);
+        run(&root, &["git", "switch", "-q", "main"]);
         let (job, _) = crate::jobs::add_job(
             &s,
             "proj".into(),
             "task".into(),
             "Deliver source".into(),
-            "switch verify_cmd package main".into(),
+            "do it".into(),
             1,
             0,
             "manual".into(),
-            "aurora".into(),
+            crate::util::HUMAN_AGENT.into(),
             false,
         )
-        .unwrap();
+        .unwrap_or_else(|err| panic!("{err}"));
         exec1(
             &s,
             "UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?",
-            &[&"pulse/aurora/advanced-default", &"aurora", &job.str("id")],
+            &[&branch, &"aurora", &job.str("id")],
         );
-        for want in [
-            "Deliver source",
-            "package main",
-            "manual",
-            "aurora",
-            "switch",
+        project.insert(
             "verify_cmd",
-            "pulse/aurora/advanced-default",
-            "git -C",
-            "merge --ff-only",
-            "landed",
-            "daemon",
-        ] {
-            let probe = "Deliver source package main manual aurora switch verify_cmd pulse/aurora/advanced-default git -C merge --ff-only landed daemon";
-            assert!(probe.contains(want), "probe lacks {want}");
-        }
-        assert_eq!(evidence.before, before);
-        assert_eq!(evidence.after, after);
-        assert_eq!(evidence.files_changed, 1, "evidence = {evidence:?}");
-        assert_eq!(
-            evidence.code_paths,
-            vec!["feature.rs"],
-            "evidence = {evidence:?}"
+            format!(
+                "git -C {} merge --ff-only {}",
+                crate::util::shell_quote(&root),
+                crate::util::shell_quote(&first)
+            )
+            .into(),
         );
-        assert!(evidence.reason.is_empty(), "evidence = {evidence:?}");
+
+        let (state, note) = crate::land::land_branch(
+            &s,
+            project,
+            branch.into(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            crate::land::LandOpts {
+                job: job_row(&s, &job.str("id")),
+                verify: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("landBranch = {}", err));
+        if state != "landed" {
+            panic!("landBranch = {state} {note} <nil>");
+        }
+        let evidence = crate::test_helpers_landing::landed_evidence(&s);
+        if evidence.before != first
+            || evidence.after != crate::test_helpers_selfupdate::head_of(&root)
+            || evidence.code_files != 1
+            || evidence.code_paths.join(",") != "b.go"
+        {
+            panic!("stale pre-verification evidence was recorded: {evidence:?}");
+        }
     }
 
     #[test]
