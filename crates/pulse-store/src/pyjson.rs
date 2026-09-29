@@ -196,6 +196,7 @@ mod tests {
     use super::*;
     #[test]
     fn py_json_keeps_struct_field_order_and_sorts_maps() {
+        let _serial = crate::test_helpers::serial();
         #[derive(Serialize)]
         struct Inner {
             id: String,
@@ -237,6 +238,7 @@ mod tests {
 
     #[test]
     fn py_json_sorts_spaces_and_escapes_non_ascii() {
+        let _serial = crate::test_helpers::serial();
         let v = serde_json::json!({"b": [1, true], "a": "é", "emoji":"😀"});
         assert_eq!(
             py_json(v).unwrap(),

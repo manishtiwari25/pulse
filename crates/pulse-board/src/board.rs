@@ -320,6 +320,7 @@ mod tests {
 
     #[test]
     fn helpers() {
+        let _serial = crate::test_helpers::serial();
         let a50 = "a".repeat(50);
         let a40 = "a".repeat(40);
         let a39_bcd = format!("{}-bcd", "a".repeat(39));
@@ -346,13 +347,18 @@ mod tests {
             assert_eq!(valid_name(input), ok, "valid_name({input:?}) != {ok}");
         }
         assert!(
-            py_repr("it's") == r#""it's""# && py_repr("plain") == "'plain'" && py_repr(r#"a"b'c"#) == r#"'a"b\'c'"#,
+            py_repr("it's") == r#""it's""#
+                && py_repr("plain") == "'plain'"
+                && py_repr(r#"a"b'c"#) == r#"'a"b\'c'"#,
             "pyRepr: {} {} {}",
             py_repr("it's"),
             py_repr("plain"),
             py_repr(r#"a"b'c"#)
         );
-        assert!(trunc("abcdef", 4) == "abc~" && trunc("abc", 4) == "abc", "trunc");
+        assert!(
+            trunc("abcdef", 4) == "abc~" && trunc("abc", 4) == "abc",
+            "trunc"
+        );
         assert_eq!(
             plus_hours("2026-09-06T10:00:00Z", -0.5).unwrap(),
             "2026-09-06T09:30:00Z",

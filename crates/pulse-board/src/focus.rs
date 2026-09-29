@@ -324,12 +324,14 @@ mod tests {
 
     #[test]
     fn focus_types_exist() {
+        let _serial = crate::test_helpers::serial();
         let f = super::Focus::default();
         assert!(f.agent.is_empty());
     }
 
     #[test]
     fn agent_focus_leased_job_and_source_thread() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s) = new_home();
         add_focus_project(&s, "proj");
         join_focus_agent(&s, "aurora");
@@ -370,6 +372,13 @@ mod tests {
 
     #[test]
     fn agent_focus_task_from_source() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "INSERT INTO jobs(id,project,kind,title,source,status,created_at,lease_agent,lease_until) VALUES('job-missing-task','proj','task','Missing task job','task:TASK-999','leased',?,'cygnus','2026-09-06T12:00:00Z')",
+            "INSERT INTO jobs(id,project,kind,title,source,status,created_at,lease_agent,lease_until) VALUES('job-post','proj','improve','Post job','handoff:missing','leased',?,'borealis','2026-09-06T12:00:00Z')",
+            "INSERT INTO jobs(id,project,kind,title,source,status,created_at,lease_agent,lease_until) VALUES('job-task','proj','task','Task job','task:TASK-001','leased',?,'aurora','2026-09-06T12:00:00Z')",
+            "INSERT INTO tasks(id,project,title,status,priority,created_by,created_at,updated_at,current_rev) VALUES('TASK-001','proj','Task title','open',0,'owner',?,?,1)",
+        ];
         let (_home_dir, _, s) = new_home();
         add_focus_project(&s, "proj");
         for name in ["aurora", "borealis", "cygnus"] {
@@ -403,6 +412,7 @@ mod tests {
 
     #[test]
     fn agent_focus_running_run_executor_and_claims() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s) = new_home();
         add_focus_project(&s, "proj");
         join_focus_agent(&s, "aurora");
@@ -452,6 +462,7 @@ mod tests {
 
     #[test]
     fn agent_focus_claim_only_and_project_filter() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s) = new_home();
         add_focus_project(&s, "proj");
         add_focus_project(&s, "other");

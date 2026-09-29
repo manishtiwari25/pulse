@@ -1302,11 +1302,41 @@ mod tests {
             "demo: constitution copied from TPL-evolution-constitution@r1, evaluators copied from TPL-evolution-evaluators@r1, 6 starter fixture(s) added; 6 in the set\n"
         );
         let (_, rev) = s.get_record("EVO-constitution-demo", 0).unwrap();
-        assert_eq!(rev.unwrap().author, "tester");
+        let rev = rev.unwrap();
+        assert_eq!(rev.author, "tester");
+        assert_eq!(rev.frontmatter["seeded_by"], "tester");
+        assert_eq!(
+            rev.note,
+            "seeded from TPL-evolution-constitution@r1 (ADR-030)"
+        );
+        let (out, _, err) = run_test_command(&s, "evolve", &["seed", "--project", ""]);
+        assert!(err.is_ok(), "{out}");
+        assert!(out.contains("demo: constitution kept (EVO-constitution-demo r1), evaluators kept (EVO-evaluators-demo r1), 0 starter fixture(s) added; 6 in the set\n"), "seed all: {out}");
+        assert!(out.contains("other: constitution kept (EVO-constitution-other r1), evaluators kept (EVO-evaluators-other r2), 6 starter fixture(s) added; 6 in the set\n"), "seed all: {out}");
+        assert!(out.contains("brain: constitution absent (EVO-constitution; the brain's records arrive by import), evaluators absent (EVO-evaluators; the brain's records arrive by import), 6 starter fixture(s) added; 6 in the set\n"), "seed all: {out}");
+        let seeded_events: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'evolution.records.seeded'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(seeded_events >= 1);
+        let fixtures: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM evolution_fixtures", [], |r| r.get(0))
+            .unwrap();
+        assert!(fixtures >= 6);
         let (out, _, err) =
             run_test_command(&s, "evolve", &["seed", "--json", "--project", "demo"]);
         assert!(err.is_ok(), "{out}");
         assert!(out.contains("\"added\": 0"));
+        assert!(out.contains("\"action\": \"kept\""));
+        assert!(out.contains("\"id\": \"EVO-evaluators-demo\""));
+        assert!(!out.contains("missing"));
         require_json(&out);
     }
 

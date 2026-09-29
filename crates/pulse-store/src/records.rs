@@ -179,7 +179,7 @@ impl Store {
             )
             .optional()?;
         let Some((raw, body, author, at, note)) = row else {
-            return Ok((r, None));
+            return Err(anyhow!("{id} has no revision {want}"));
         };
         let frontmatter = serde_json::from_str(&raw).unwrap_or_default();
         Ok((
@@ -398,6 +398,7 @@ mod tests {
 
     #[test]
     fn put_get_record() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(Options {
             home: dir.path().display().to_string(),
@@ -477,6 +478,7 @@ mod go_record_tests {
 
     #[test]
     fn compute_settings() {
+        let _serial = crate::test_helpers::serial();
         assert!(validate_setting("compute.max_vms", "-1").is_err());
         assert_eq!(validate_setting("compute.max_vms", "3").unwrap(), "3");
         assert!(validate_setting("compute.azure.subscription", "ghp_abcdefghijklmnop").is_err());
@@ -537,6 +539,7 @@ mod go_record_tests {
 
     #[test]
     fn additive_columns() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         unsafe { std::env::set_var("PULSE_JOB", "") };
         let home = tempfile::tempdir().unwrap();

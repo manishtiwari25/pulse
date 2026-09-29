@@ -503,19 +503,31 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn temp_store() -> pulse_store::Store {
-        let home = tempfile::tempdir().unwrap().keep();
-        pulse_store::Store::open(pulse_store::Options {
-            home: home.display().to_string(),
+    struct TestStore {
+        _home: tempfile::TempDir,
+        store: pulse_store::Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = pulse_store::Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+    fn temp_store() -> TestStore {
+        let home = tempfile::tempdir().unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: home.path().display().to_string(),
             create: true,
             now: "2026-09-06T21:00:00Z".into(),
             ..pulse_store::Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _home: home, store }
     }
 
     fn add_project(s: &pulse_store::Store, slug: &str, brain: bool) {
-        let dir = tempfile::tempdir().unwrap().keep();
+        let dir = std::path::Path::new(&s.home).join(format!("project-{slug}"));
+        std::fs::create_dir_all(&dir).unwrap();
         s.conn()
             .unwrap()
             .execute(
@@ -538,6 +550,7 @@ mod tests {
 
     #[test]
     fn new_numbering_templates_and_wip() {
+        let _serial = crate::test_helpers::serial();
         let s = temp_store();
         add_project(&s, "brain", true);
         add_project(&s, "app", false);
@@ -648,6 +661,7 @@ mod tests {
 
     #[test]
     fn status_acceptance_amendment_and_delivery() {
+        let _serial = crate::test_helpers::serial();
         let s = temp_store();
         add_project(&s, "brain", true);
         let rec = new_record(
@@ -706,6 +720,7 @@ mod tests {
 
     #[test]
     fn concurrent_new_does_not_revise_existing_ids() {
+        let _serial = crate::test_helpers::serial();
         let s = std::sync::Arc::new(temp_store());
         add_project(&s, "brain", true);
         let n = 12;
@@ -745,6 +760,7 @@ mod tests {
 
     #[test]
     fn concurrent_processes_reserve_new_ids() {
+        let _serial = crate::test_helpers::serial();
         let s = temp_store();
         add_project(&s, "brain", true);
         let n = 4;
@@ -789,6 +805,7 @@ mod tests {
 
     #[test]
     fn record_writer_process() {
+        let _serial = crate::test_helpers::serial();
         if std::env::var("PULSE_RECORDS_HELPER").ok().as_deref() != Some("1") {
             return;
         }
@@ -813,6 +830,7 @@ mod tests {
 
     #[test]
     fn apply_columns_and_record_kind_validation() {
+        let _serial = crate::test_helpers::serial();
         let mut rec = pulse_store::Record {
             kind: "adr".into(),
             slug: "fallback".into(),

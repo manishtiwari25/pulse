@@ -432,8 +432,15 @@ mod tests {
         let (_dir, s) = temporary_store();
         exec_sql(
             &s,
-            "INSERT INTO jobs(id,project,kind,tier,title,status,created_at,created_by,finished_at,result) VALUES ('job-held','demo','task',1,'Held job','failed','2026-09-06T19:00:00Z','human','2026-09-06T19:00:00Z','failed')",
+            "INSERT INTO jobs(id,project,kind,tier,title,brief,status,created_at,created_by,finished_at,result) VALUES ('job-held','demo','task',1,'Held job','','failed','2026-09-06T19:00:00Z','human','2026-09-06T19:00:00Z','failed'),('job-plain','demo','task',1,'Plain job','','failed','2026-09-06T19:00:00Z','human','2026-09-06T19:00:00Z','failed')",
         );
+        s.event(
+            "daemon",
+            pulse_board::JOB_RECOVER_ACTION,
+            "job-held",
+            serde_json::json!({"outcome":"replanned","root":"job-held","job":"job-copy"}),
+        )
+        .unwrap();
         s.event(
             "daemon",
             pulse_board::JOB_RECOVER_ACTION,
@@ -442,12 +449,21 @@ mod tests {
         )
         .unwrap();
         let rows = jobs(&s, "", true).unwrap();
-        assert_eq!(rows[0].recovery, "held: owner must inspect");
-        let text = invoke(Some(s), false, "", "jobs", &["--all"]);
+        let by_id: std::collections::BTreeMap<_, _> =
+            rows.into_iter().map(|j| (j.id.clone(), j)).collect();
+        assert_eq!(by_id["job-held"].recovery, "held: owner must inspect");
+        assert_eq!(by_id["job-plain"].recovery, "");
+        let text = invoke(Some(s.clone()), false, "", "jobs", &["--all"]);
         assert!(
             text.out.contains("recovery: held: owner must inspect"),
             "{text:?}"
         );
+        let js = invoke(Some(s), true, "", "jobs", &["--all"]);
+        let decoded: Vec<Job> = serde_json::from_str(&js.out).unwrap();
+        let by_id: std::collections::BTreeMap<_, _> =
+            decoded.into_iter().map(|j| (j.id.clone(), j)).collect();
+        assert_eq!(by_id["job-held"].recovery, "held: owner must inspect");
+        assert_eq!(by_id["job-plain"].recovery, "");
     }
 
     #[test]
@@ -542,7 +558,12 @@ mod tests {
             s.event("human", "test", subject, detail).unwrap();
         }
         assert_eq!(events(&s, "one", "", -1).unwrap().len(), 4);
+        assert_eq!(
+            events(&s, "one", "2026-09-06T18:59:59Z", 40).unwrap().len(),
+            4
+        );
         assert_eq!(events(&s, "one", PARITY_NOW, 40).unwrap().len(), 0);
+        assert!(events(&s, "", "2026-99-99T19:00:00Z", 40).is_err());
         assert!(events(&s, "", "yesterday", 40).is_err());
     }
 
@@ -563,6 +584,14 @@ mod tests {
                 .iter()
                 .any(|c| c.agent.name == "old" && c.findings == 1)
         );
+        let old = agent_scorecards(&s, true)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.agent.name == "old")
+            .unwrap();
+        assert_eq!(old.answers, 0, "answer");
+        assert_eq!(old.results, 0, "result");
+        assert_eq!(old.suggestions, 0, "suggestion");
         assert!(
             !agent_scorecards(&s, false)
                 .unwrap()
@@ -580,6 +609,10 @@ mod tests {
         );
         let got = invoke(Some(s), false, "", "jobs", &["--all"]);
         assert!(got.out.contains("a-project-slug-longer-than-the-column"));
+        assert!(got.out.contains("界"));
+        for status in ["blocked", "finished", "queued"] {
+            assert!(!got.out.contains(status));
+        }
         assert!(got.out.contains(" by worker until 2026-09-07T19:00:00Z"));
     }
 

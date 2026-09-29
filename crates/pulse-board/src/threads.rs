@@ -400,12 +400,14 @@ mod tests {
 
     #[test]
     fn parse_key() {
+        let _serial = crate::test_helpers::serial();
         assert!(super::parse_thread_key("a/b").is_some());
         assert!(super::parse_thread_key("a").is_none());
     }
 
     #[test]
     fn thread_summaries_status_participants_questions_claims_and_handoffs() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         s.set_setting("human", "stale_days", "2").unwrap();
         make_thread_post(
@@ -605,6 +607,7 @@ mod tests {
 
     #[test]
     fn thread_detail_missing_thread_refuses() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         let err = thread_detail(&s, "demo", "api/missing", TEST_NOW).unwrap_err();
         assert_eq!(code(Some(&err)), 2);
@@ -613,6 +616,7 @@ mod tests {
 
     #[test]
     fn resolve_thread_rules_and_success() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         make_thread_post(
             &s,

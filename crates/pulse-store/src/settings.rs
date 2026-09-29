@@ -605,6 +605,7 @@ mod tests {
 
     #[test]
     fn test_settings() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(Options {
             home: dir.path().display().to_string(),
@@ -638,6 +639,7 @@ mod go_settings_tests {
     use crate::{Options, Store};
     use std::fs;
     use std::sync::Mutex;
+    use tempfile::TempDir;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     fn set_job_empty() -> std::sync::MutexGuard<'static, ()> {
@@ -645,19 +647,31 @@ mod go_settings_tests {
         unsafe { std::env::set_var("PULSE_JOB", "") };
         guard
     }
-    fn store(now: &str) -> Store {
-        let dir = tempfile::tempdir().unwrap().keep();
-        Store::open(Options {
-            home: dir.display().to_string(),
+    struct TestStore {
+        _dir: TempDir,
+        store: Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+    fn store(now: &str) -> TestStore {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(Options {
+            home: dir.path().display().to_string(),
             create: true,
             now: now.into(),
             ..Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _dir: dir, store }
     }
 
     #[test]
     fn decimal_setting() {
+        let _serial = crate::test_helpers::serial();
         let _guard = set_job_empty();
         let s = store("2026-09-06T10:00:00Z");
         for (input, want) in [
@@ -706,6 +720,7 @@ mod go_settings_tests {
 
     #[test]
     fn heldout_mode_setting() {
+        let _serial = crate::test_helpers::serial();
         let _guard = set_job_empty();
         let s = store("2026-09-08T10:00:00Z");
         assert_eq!(s.setting("evolve.heldout", ""), "auto");
@@ -730,6 +745,7 @@ mod go_settings_tests {
 
     #[test]
     fn daemon_self_update_settings() {
+        let _serial = crate::test_helpers::serial();
         let _guard = set_job_empty();
         let s = store("2026-09-08T10:00:00Z");
         assert_eq!(s.setting("daemon.self_update", ""), "on");
@@ -834,6 +850,7 @@ mod go_settings_tests {
 
     #[test]
     fn daemon_sweep_settings() {
+        let _serial = crate::test_helpers::serial();
         let _guard = set_job_empty();
         let s = store("2026-09-08T10:00:00Z");
         for (key, want) in [
@@ -868,6 +885,7 @@ mod go_settings_tests {
 
     #[test]
     fn lead_idle_settings() {
+        let _serial = crate::test_helpers::serial();
         let _guard = set_job_empty();
         let s = store("2026-09-08T10:00:00Z");
         assert_eq!(s.setting("lead.idle_hours", ""), "6");
@@ -902,6 +920,7 @@ mod go_settings_tests {
 
     #[test]
     fn light_model_setting() {
+        let _serial = crate::test_helpers::serial();
         let _guard = set_job_empty();
         let s = store("2026-09-08T10:00:00Z");
         assert_eq!(s.setting("light_model", ""), "");
@@ -959,6 +978,7 @@ mod go_settings_tests {
 
     #[test]
     fn owner_presence_setting() {
+        let _serial = crate::test_helpers::serial();
         let _guard = set_job_empty();
         let s = store("2026-09-08T10:00:00Z");
         assert_eq!(s.setting("owner.presence", ""), OWNER_PRESENT);
@@ -997,6 +1017,13 @@ mod go_settings_tests {
 
     #[test]
     fn mock_settings_list_every_store_setting() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "json:\"default\"",
+            "json:\"kind\"",
+            "json:\"name\"",
+            "json:\"settings\"",
+        ];
         let Ok(raw) = fs::read_to_string("web/hub/mock/api/settings.json") else {
             return;
         };

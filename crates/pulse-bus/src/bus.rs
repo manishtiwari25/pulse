@@ -347,6 +347,7 @@ mod tests {
 
     #[test]
     fn fan_out_one_publisher_many_subscribers() {
+        let _serial = crate::test_helpers::serial();
         let b = Arc::new(new());
         const SUBS: usize = 5;
         const EVENTS: i64 = 200;
@@ -376,6 +377,7 @@ mod tests {
 
     #[test]
     fn slow_subscriber_drops_oldest_never_blocks() {
+        let _serial = crate::test_helpers::serial();
         let b = Arc::new(new());
         let (ch, cancel) = b.subscribe(Filter::default(), 3);
         let p = Arc::clone(&b);
@@ -393,6 +395,7 @@ mod tests {
 
     #[test]
     fn cancel_stops_delivery_and_is_idempotent() {
+        let _serial = crate::test_helpers::serial();
         let b = Arc::new(new());
         let (ch, cancel) = b.subscribe(Filter::default(), 4);
         b.publish(ev(1));
@@ -405,6 +408,7 @@ mod tests {
 
     #[test]
     fn filter_match() {
+        let _serial = crate::test_helpers::serial();
         let post = Event {
             action: "post".to_string(),
             subject: "20260906T210000Z-a".to_string(),
@@ -532,6 +536,7 @@ mod tests {
 
     #[test]
     fn publish_once_dedups_by_id() {
+        let _serial = crate::test_helpers::serial();
         let b = Arc::new(new());
         let (ch, cancel) = b.subscribe(Filter::default(), 8);
         assert!(b.publish_once(Event {

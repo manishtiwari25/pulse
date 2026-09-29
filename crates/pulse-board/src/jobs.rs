@@ -1228,6 +1228,7 @@ mod tests {
 
     #[test]
     fn retry_title_once() {
+        let _serial = crate::test_helpers::serial();
         assert_eq!(retry_title("job-1", "Retry job-1: x"), "Retry job-1: x");
     }
 
@@ -1237,6 +1238,7 @@ mod tests {
 
     #[test]
     fn retry_job_in_place_queues_failed_job() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let job = make_failed_job(&s, &p.slug, "task:one");
 
@@ -1287,6 +1289,7 @@ mod tests {
 
     #[test]
     fn retry_job_keeps_recover_root_and_increments() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let job = make_failed_job(&s, &p.slug, "task:chain");
         event(
@@ -1322,6 +1325,7 @@ mod tests {
 
     #[test]
     fn retry_job_as_new_queues_one_corrected_copy() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let job = make_failed_job(&s, &p.slug, "task:copy");
 
@@ -1380,6 +1384,7 @@ mod tests {
 
     #[test]
     fn retry_job_refusals_and_cancelled() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         assert_eq!(
             err_what(retry_job(
@@ -1474,6 +1479,7 @@ mod tests {
 
     #[test]
     fn retry_job_active_run_refused() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let job = make_failed_job(&s, &p.slug, "");
         s.conn()
@@ -1501,6 +1507,7 @@ mod tests {
 
     #[test]
     fn retry_job_source_dedupe_stays_in_project() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let job = make_failed_job(&s, &p.slug, "shared-source");
         s.conn()
@@ -1541,6 +1548,7 @@ mod tests {
 
     #[test]
     fn retry_job_no_source_and_superseded_in_place() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let job = make_failed_job(&s, &p.slug, "");
         let first = retry_job(
@@ -1625,6 +1633,7 @@ mod tests {
 
     #[test]
     fn retry_job_cancelled_root_allows_later_child_recovery() {
+        let _serial = crate::test_helpers::serial();
         for source in ["", "manual:cancelled-chain"] {
             for as_new in [false, true] {
                 let (_dir, s, p) = fixture();
@@ -1733,6 +1742,7 @@ mod tests {
 
     #[test]
     fn completion_finalize_replaces_branch() {
+        let _serial = crate::test_helpers::serial();
         for (status, branch) in [
             ("done", ""),
             ("done", "pulse/alice/verified"),
@@ -1766,6 +1776,7 @@ mod tests {
 
     #[test]
     fn completion_finalize_rejects_stale_ownership() {
+        let _serial = crate::test_helpers::serial();
         for name in [
             "missing run",
             "finished run",
@@ -1828,6 +1839,7 @@ mod tests {
 
     #[test]
     fn completion_finalize_rolls_back_on_event_failure() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, before, input) = completion_run_fixture();
         s.conn()
             .unwrap()
@@ -1843,6 +1855,7 @@ mod tests {
 
     #[test]
     fn decide_no_and_markers() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let sug = seed_proposal(&s, &p.slug);
         let d = decide(&s, &sug.id, "no", "", "").unwrap();
@@ -1905,6 +1918,7 @@ mod tests {
 
     #[test]
     fn stop_question_is_the_owners_alone_and_queues_no_job() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         crate::agents::join_agent(
             &s,
@@ -1969,6 +1983,20 @@ mod tests {
 
     #[test]
     fn owner_away_lead_decide_guards() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "\"on_behalf\": \"owner-away\"",
+            ") is the approval for what it proposes, nothing more",
+            "Act on the lead's yes (owner away):",
+            "SELECT decided_by FROM decisions WHERE post_id = ?",
+            "SELECT detail FROM events WHERE action = 'decide' AND subject = ?",
+            "The owner is away (owner.presence = away); **demo-lead** answered **yes** on the owner's behalf.ship itProposal:",
+            "demo-lead, deciding for the owner who is away (owner.presence), answered YES",
+            "result body:want:",
+            "sess-lead",
+            "sess-other-lead",
+            "the recorded decision (result",
+        ];
         let (_dir, s, p) = fixture();
         for slug in [&p.slug, "other"] {
             crate::agents::join_agent(
@@ -2023,6 +2051,7 @@ mod tests {
 
     #[test]
     fn owner_away_lead_decide_still_waits_for_owner() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let lead = lead_name(&p.slug);
         crate::agents::join_agent(
@@ -2152,6 +2181,7 @@ mod tests {
 
     #[test]
     fn lead_yes_job_brief_never_accepts_an_adr() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let lead = lead_name(&p.slug);
         crate::agents::join_agent(
@@ -2198,6 +2228,7 @@ mod tests {
 
     #[test]
     fn jobs_add_finish() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         let (job, created) = add_job(
             &s,
@@ -2324,6 +2355,7 @@ mod tests {
 
     #[test]
     fn board_writes_reach_bus_subscribers() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
         join_alice(&s);
         let (bus, _exclusive) = pulse_bus::exclusive_default();
@@ -2377,6 +2409,7 @@ mod tests {
 
     #[test]
     fn decide_is_atomic_under_race() {
+        let _serial = crate::test_helpers::serial();
         for answers in [vec!["yes"], vec!["no"], vec!["yes", "no"]] {
             let (_dir, s, p) = fixture();
             let sug = seed_proposal(&s, &p.slug);
@@ -2423,6 +2456,23 @@ mod tests {
 
     #[test]
     fn decide_yes_queues_job() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "--words",
+            "-human",
+            "PROPOSAL: Cache the build",
+            "SELECT action, actor, substr(subject, 1, 4) FROM events WHERE action IN ('decide', 'decide.job', 'job.add') ORDER BY seq",
+            "SELECT brief FROM jobs WHERE source = ?",
+            "SELECT kind, project, area, thread, agent, summary, body, on_post, resolution, session, branch, name FROM posts WHERE kind = 'result'",
+            "SELECT post_id, project, answer, words, decided_by FROM decisions",
+            "SELECT project, kind, tier, title, source, priority, status, created_by FROM jobs WHERE source LIKE 'decide:%'",
+            "human's call",
+            "recorded yes as",
+            "rows differ for go: py:",
+            "source = ?",
+            "was already decided; a new proposal needs a new post",
+            "with the words 'do it'",
+        ];
         let (_dir, s, p) = fixture();
         let proposal = seed_proposal(&s, &p.slug);
 

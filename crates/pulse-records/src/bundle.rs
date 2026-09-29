@@ -426,15 +426,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn temp_store() -> pulse_store::Store {
-        let home = tempfile::tempdir().unwrap().keep();
-        pulse_store::Store::open(pulse_store::Options {
-            home: home.display().to_string(),
+    struct TestStore {
+        _home: tempfile::TempDir,
+        store: pulse_store::Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = pulse_store::Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+    fn temp_store() -> TestStore {
+        let home = tempfile::tempdir().unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: home.path().display().to_string(),
             create: true,
             now: "2026-09-06T21:00:00Z".into(),
             ..pulse_store::Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _home: home, store }
     }
 
     fn add_project(s: &pulse_store::Store, slug: &str, path: &std::path::Path, brain: bool) {
@@ -449,6 +460,7 @@ mod tests {
 
     #[test]
     fn framework_bundle_carries_the_framework() {
+        let _serial = crate::test_helpers::serial();
         let b = framework_bundle().unwrap();
         assert!(
             b.version == BUNDLE_VERSION && b.records.len() >= 60,
@@ -525,6 +537,7 @@ mod tests {
 
     #[test]
     fn ensure_framework_seeds_a_fresh_store_once_and_keeps_what_is_there() {
+        let _serial = crate::test_helpers::serial();
         let b = framework_bundle().unwrap();
         let s = temp_store();
         let mine = pulse_store::Record {
@@ -566,6 +579,7 @@ mod tests {
 
     #[test]
     fn framework_records_serve_the_loop_and_the_guide_without_a_brain() {
+        let _serial = crate::test_helpers::serial();
         let s = temp_store();
         let project_dir = tempfile::tempdir().unwrap();
         add_project(&s, "lamplitlabs", project_dir.path(), false);
@@ -613,6 +627,7 @@ mod tests {
 
     #[test]
     fn export_bundle_writes_the_framework_records_and_refuses_secrets() {
+        let _serial = crate::test_helpers::serial();
         let s = temp_store();
         let brain_dir = tempfile::tempdir().unwrap();
         add_project(&s, "brain", brain_dir.path(), true);

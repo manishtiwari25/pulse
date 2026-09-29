@@ -208,10 +208,16 @@ impl std::fmt::Display for Diff {
 /// commands truncate long detail columns, so masking alone cannot line two
 /// differently named roots up.
 pub fn run_both(scenario: &Scenario, oracle_bin: &Path, rust_bin: &Path) -> Result<Vec<Diff>> {
+    let (go, rs) = run_sides(scenario, oracle_bin, rust_bin)?;
+    Ok(compare(scenario, &go, &rs))
+}
+
+/// Plays `scenario` on both binaries and returns the two sides.
+pub fn run_sides(scenario: &Scenario, oracle_bin: &Path, rust_bin: &Path) -> Result<(Side, Side)> {
     let root = tempfile::Builder::new().prefix("pulse-parity-").tempdir()?;
     let go = play_in(root.path(), "oracle", oracle_bin, scenario)?;
     let rs = play_in(root.path(), "rust", rust_bin, scenario)?;
-    Ok(compare(scenario, &go, &rs))
+    Ok((go, rs))
 }
 
 /// Plays `scenario` on one binary in a fresh temporary root; see [`play_in`].
@@ -397,25 +403,61 @@ pub fn normalize(s: &str, home: &Path, project: &Path) -> String {
     mask_random_ids(&mask_versions(&out))
 }
 
-/// `os.Executable()` shows up in installed hook commands; each side prints its
-/// own binary, so both become `<EXE>`.
+/// `os.Executable()` shows up in installed hook commands and its directory in
+/// service units (`WorkingDirectory`); each side prints its own binary, so
+/// both become `<EXE>` / `<EXEDIR>`. The daemon banner's `pid N` is masked
+/// too: two processes never share one.
 fn mask_exe(s: &str, bin: &Path) -> String {
-    let shown = bin.to_string_lossy();
-    let out = s.replace(&*shown, "<EXE>");
-    match std::fs::canonicalize(bin) {
-        Ok(real) if real.to_string_lossy() != shown => {
-            out.replace(&*real.to_string_lossy(), "<EXE>")
-        }
-        _ => out,
+    let mut out = mask_pid(s);
+    let mut names = vec![bin.to_path_buf()];
+    if let Ok(real) = std::fs::canonicalize(bin)
+        && real != bin
+    {
+        names.push(real);
     }
+    for name in &names {
+        out = out.replace(&*name.to_string_lossy(), "<EXE>");
+    }
+    for dir in names.iter().filter_map(|n| n.parent()) {
+        out = out.replace(&*dir.to_string_lossy(), "<EXEDIR>");
+    }
+    out
+}
+
+fn mask_pid(s: &str) -> String {
+    // `pid 123` in text and `"pid":123` in JSON (the daemon heartbeat in meta)
+    static PID: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r#"\bpid \d+\b|(\\?"pid\\?":)\d+"#).unwrap());
+    PID.replace_all(s, |c: &regex::Captures| match c.get(1) {
+        Some(key) => format!("{}<PID>", key.as_str()),
+        None => "pid <PID>".to_string(),
+    })
+    .into_owned()
+}
+
+/// A full 40-hex git object id: the build revision in the daemon heartbeat and
+/// any commit of the per-side checkouts, none of which agree across sides.
+fn mask_shas(s: &str) -> String {
+    static SHA: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"\b[0-9a-f]{40}\b").unwrap());
+    SHA.replace_all(s, "<SHA>").into_owned()
+}
+
+/// The home's ed25519 signing key, generated fresh on each side.
+fn mask_pubkeys(s: &str) -> String {
+    static KEY: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"ssh-ed25519 AAAA[0-9A-Za-z+/=]+").unwrap());
+    KEY.replace_all(s, "ssh-ed25519 <KEY>").into_owned()
 }
 
 /// `board.NewID`: `<prefix>-<yyyymmddThhmmssZ>-<6 random hex>` (job, fixture,
 /// measure, fleet, cycle ids). The stamp comes from the fixed clock and stays;
 /// only the random tail is masked.
 fn mask_random_ids(s: &str) -> String {
-    static RANDOM_ID: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r"\b([a-z]+-\d{8}T\d{6}Z)-[0-9a-f]{6}\b").unwrap());
+    static RANDOM_ID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        // thread names carry the id lowercased (`evolution/job-...t...z-...`)
+        Regex::new(r"\b([a-z]+-\d{8}[Tt]\d{6}[Zz])-[0-9a-f]{6}\b").unwrap()
+    });
     RANDOM_ID.replace_all(s, "$1-<rand>").into_owned()
 }
 
@@ -494,13 +536,21 @@ pub fn dump_store(path: &Path) -> Result<String> {
             .collect::<std::result::Result<_, _>>()?
     };
     for t in tables {
-        let mut st = conn.prepare(&format!("SELECT * FROM \"{t}\" ORDER BY rowid"))?;
+        // meta is a key/value table whose rows the daemon writes from several
+        // threads (Go: goroutines), so its rowid order is not meaningful
+        let order = if t == "meta" { "key" } else { "rowid" };
+        let mut st = conn.prepare(&format!("SELECT * FROM \"{t}\" ORDER BY {order}"))?;
         let cols: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
         out.push_str(&format!("== {t} ({}) ==\n", cols.join(", ")));
         let mut rows = st.query([])?;
         while let Some(row) = rows.next()? {
             let mut cells = Vec::with_capacity(cols.len());
             for i in 0..cols.len() {
+                // a run's wall-clock duration is measured, not played
+                if t == "runs" && cols[i] == "seconds" {
+                    cells.push("<SECONDS>".to_string());
+                    continue;
+                }
                 let cell = match row.get_ref(i)? {
                     ValueRef::Null => "NULL".to_string(),
                     ValueRef::Integer(n) => n.to_string(),
@@ -551,24 +601,70 @@ pub fn compare(scenario: &Scenario, go: &Side, rs: &Side) -> Vec<Diff> {
         }
     }
     let scrub = |side: &Side| {
-        mask_random_ids(&mask_versions(
+        mask_pubkeys(&mask_shas(&mask_pid(&mask_random_ids(&mask_versions(
             &side
                 .dump
                 .replace(&*side.project.to_string_lossy(), "<PROJECT>")
                 .replace(&*side.home.to_string_lossy(), "<HOME>"),
-        ))
+        )))))
     };
     let (go_dump, rs_dump) = (scrub(go), scrub(rs));
     if go_dump != rs_dump {
-        let (o, r) = first_difference(&go_dump, &rs_dump);
-        diffs.push(Diff {
-            step: None,
-            what: "store dump".to_string(),
-            oracle: o,
-            rust: r,
-        });
+        for (k, (o, r)) in line_hunks(&go_dump, &rs_dump).into_iter().enumerate() {
+            diffs.push(Diff {
+                step: None,
+                what: format!("store dump (hunk {})", k + 1),
+                oracle: o,
+                rust: r,
+            });
+        }
     }
     diffs
+}
+
+/// Every differing hunk of two texts as (only-in-a, only-in-b) line groups,
+/// computed from a longest-common-subsequence alignment of the lines so one
+/// extra row does not turn the rest of the dump into a difference.
+pub fn line_hunks(a: &str, b: &str) -> Vec<(String, String)> {
+    let la: Vec<&str> = a.lines().collect();
+    let lb: Vec<&str> = b.lines().collect();
+    let (n, m) = (la.len(), lb.len());
+    // lcs[i][j] = length of the LCS of la[i..] and lb[j..]
+    let mut lcs = vec![vec![0u32; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if la[i] == lb[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    let mut hunks = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    let (mut only_a, mut only_b) = (Vec::new(), Vec::new());
+    let mut flush = |only_a: &mut Vec<String>, only_b: &mut Vec<String>| {
+        if !only_a.is_empty() || !only_b.is_empty() {
+            hunks.push((only_a.join("\n"), only_b.join("\n")));
+            only_a.clear();
+            only_b.clear();
+        }
+    };
+    while i < n || j < m {
+        if i < n && j < m && la[i] == lb[j] {
+            flush(&mut only_a, &mut only_b);
+            i += 1;
+            j += 1;
+        } else if j < m && (i == n || lcs[i][j + 1] >= lcs[i + 1][j]) {
+            only_b.push(format!("{:>5}: {}", j + 1, lb[j]));
+            j += 1;
+        } else {
+            only_a.push(format!("{:>5}: {}", i + 1, la[i]));
+            i += 1;
+        }
+    }
+    flush(&mut only_a, &mut only_b);
+    hunks
 }
 
 /// The first differing lines of two texts with a little context.
@@ -603,8 +699,16 @@ pub fn assert_parity(scenario: &Scenario, rust_bin: &Path) {
         );
         return;
     };
-    let diffs = run_both(scenario, &oracle_bin, rust_bin).expect("playing the scenario");
+    let (go, rs) = run_sides(scenario, &oracle_bin, rust_bin).expect("playing the scenario");
+    let diffs = compare(scenario, &go, &rs);
     if !diffs.is_empty() {
+        // PULSE_PARITY_DUMP_DIR=<dir> keeps both store dumps of a differing scenario.
+        if let Ok(dir) = std::env::var("PULSE_PARITY_DUMP_DIR") {
+            for side in [&go, &rs] {
+                let path = Path::new(&dir).join(format!("{}-{}.dump", scenario.name, side.label));
+                let _ = std::fs::write(path, &side.dump);
+            }
+        }
         let mut msg = format!(
             "parity: {} difference(s) in {}\n",
             diffs.len(),
@@ -641,7 +745,9 @@ mod tests {
     #[test]
     fn normalize_masks_build_stamps() {
         assert_eq!(
-            mask_build_stamp("seed:pulse@28f35b8d1694 (pulse@dev) pulse@vm-seven pulse@28f35b8d16941"),
+            mask_build_stamp(
+                "seed:pulse@28f35b8d1694 (pulse@dev) pulse@vm-seven pulse@28f35b8d16941"
+            ),
             "seed:pulse@<REV> (pulse@<REV>) pulse@vm-seven pulse@28f35b8d16941"
         );
     }
@@ -671,6 +777,33 @@ mod tests {
             first_difference("same", "same"),
             (String::new(), String::new())
         );
+    }
+
+    #[test]
+    fn masks_pids_shas_and_json_pids() {
+        assert_eq!(mask_pid("daemon pid 123 up"), "daemon pid <PID> up");
+        assert_eq!(
+            mask_pid(r#"{\"at\":\"x\",\"pid\":29017,\"loops\":1}"#),
+            r#"{\"at\":\"x\",\"pid\":<PID>,\"loops\":1}"#
+        );
+        assert_eq!(mask_pid(r#"{"pid":7}"#), r#"{"pid":<PID>}"#);
+        assert_eq!(
+            mask_shas("rev 28f35b8d16945430794532b2da4aea450f8700a4 short 28f35b8d1694"),
+            "rev <SHA> short 28f35b8d1694"
+        );
+        assert_eq!(
+            mask_pubkeys(r#"| "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvJ+yy/92D=""#),
+            r#"| "ssh-ed25519 <KEY>""#
+        );
+    }
+
+    #[test]
+    fn line_hunks_align_around_an_inserted_line() {
+        let hunks = line_hunks("a\nb\nc\nd\n", "a\nb\nX\nc\nD\n");
+        assert_eq!(hunks.len(), 2, "{hunks:?}");
+        assert_eq!(hunks[0], (String::new(), "    3: X".to_string()));
+        assert_eq!(hunks[1], ("    4: d".to_string(), "    5: D".to_string()));
+        assert!(line_hunks("same\n", "same\n").is_empty());
     }
 
     #[test]

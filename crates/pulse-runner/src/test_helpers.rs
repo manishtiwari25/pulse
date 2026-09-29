@@ -52,11 +52,11 @@ pub(crate) fn test_main_setup() {
         }));
         // The login gate would ask the real provider about this machine's sign-in; tests that exercise it
         // call local_login_gate with a fake provider (login_gate.rs) or swap the gate themselves.
-        crate::login_gate::set_login_gate(Box::new(|_| String::new()));
+        let _ = crate::login_gate::set_login_gate(Box::new(|_| String::new()));
         // ADR-034: no test asks the hub's gh for a token or reaches GitHub; tests that need answers swap
         // GITHUB_HTTP (or point PULSE_GITHUB_API at a pulse_testutil::httptest server).
         *crate::token::GH_AUTH_TOKEN.write().unwrap() = || Ok(String::new());
-        crate::executor::set_github_http(Box::new(no_network_github_http));
+        let _ = crate::executor::set_github_http(Box::new(no_network_github_http));
     });
 }
 
@@ -108,6 +108,7 @@ pub(crate) fn maybe_run_hands_helper() {
 #[derive(Clone)]
 pub(crate) struct TestStore {
     store: pulse_store::Store,
+    _dir: std::sync::Arc<TempDir>,
     _env: std::sync::Arc<Vec<pulse_testutil::SetenvGuard>>,
 }
 
@@ -140,6 +141,7 @@ impl AsRef<pulse_store::Store> for TestStore {
 impl TestStore {
     /// The bare store, leaving the environment as newStore set it (for fixtures that outlive the guard).
     pub(crate) fn leak(self) -> pulse_store::Store {
+        std::mem::forget(self._dir);
         std::mem::forget(self._env);
         self.store
     }
@@ -148,7 +150,8 @@ impl TestStore {
 /// Go: func newStore(t *testing.T) *store.Store
 pub(crate) fn new_store() -> TestStore {
     test_main_setup();
-    let home = tempfile::tempdir().expect("temp home").keep();
+    let dir = tempfile::tempdir().expect("temp home");
+    let home = dir.path().to_path_buf();
     let mut env = vec![pulse_testutil::setenv("PULSE_HOME", &home)];
     for name in ["PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"] {
         env.push(pulse_testutil::setenv(name, ""));
@@ -171,6 +174,7 @@ pub(crate) fn new_store() -> TestStore {
     let _ = s.set_setting(util::HUMAN_AGENT, "evolve.draft_hours", "0");
     TestStore {
         store: s,
+        _dir: std::sync::Arc::new(dir),
         _env: std::sync::Arc::new(env),
     }
 }
@@ -287,7 +291,10 @@ pub(crate) fn template_store() -> &'static TemplateStoreInfo {
 
 /// Go: func newBareRepo(t *testing.T, s *store.Store) (row, string)
 pub(crate) fn new_bare_repo(s: &pulse_store::Store) -> (Row, String) {
-    let dir = tempfile::tempdir().expect("repo temp").keep().join("proj");
+    let dir = Path::new(&s.home)
+        .join("repos")
+        .join(uuid::Uuid::new_v4().to_string())
+        .join("proj");
     copy_dir(Path::new(&template_repo()), &dir).expect("copy template repo");
     let root = std::fs::canonicalize(&dir)
         .unwrap_or(dir)
@@ -389,7 +396,9 @@ pub(crate) fn build_pulse() -> String {
 
 /// Go: func fakeHandsPath(t *testing.T, extra ...string) string
 pub(crate) fn fake_hands_path(extra: &[String]) -> String {
-    let dir = tempfile::tempdir().expect("fake hands").keep();
+    static FAKE_HANDS_DIRS: OnceLock<Mutex<Vec<TempDir>>> = OnceLock::new();
+    let dir_guard = tempfile::tempdir().expect("fake hands");
+    let dir = dir_guard.path().to_path_buf();
     std::fs::write(
         dir.join("copilot"),
         "#!/bin/sh\necho 'GitHub Copilot CLI 0.0.1-test'\n",
@@ -404,6 +413,11 @@ pub(crate) fn fake_hands_path(extra: &[String]) -> String {
     let mut dirs = extra.to_vec();
     dirs.push(dir.display().to_string());
     dirs.push(std::env::var("PATH").unwrap_or_default());
+    FAKE_HANDS_DIRS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .expect("fake hands dirs")
+        .push(dir_guard);
     format!("PATH={}", dirs.join(if cfg!(windows) { ";" } else { ":" }))
 }
 
@@ -419,11 +433,7 @@ pub(crate) fn new_test_hands(
     ];
     let h = Hands {
         workdir: workdir.into(),
-        home: tempfile::tempdir()
-            .expect("home")
-            .keep()
-            .display()
-            .to_string(),
+        home: std::env::var("PULSE_HOME").unwrap_or_else(|_| workdir.to_string()),
         stdin: Box::new(std::io::empty()),
         stdout: stdout.unwrap_or_else(|| Box::new(Vec::<u8>::new())),
         stderr: stderr.unwrap_or_else(|| Box::new(Vec::<u8>::new())),

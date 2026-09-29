@@ -428,7 +428,7 @@ mod tests {
         fixture(&s, "demo", "F01", "printf 'score: 0.2\\n'", 1.0);
         fixture(&s, "demo", "F02", "printf '0.6\\n'", 3.0);
         let (_, forbidden) = private_set(&s);
-        let log = tempfile::tempdir().unwrap().keep().join("invocations");
+        let log = crate::test_helpers::temp_path().join("invocations");
         fake_harness(
             &s,
             &format!(
@@ -659,7 +659,7 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
         let _guard = e3_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
-        let dir = tempfile::tempdir().unwrap().keep();
+        let dir = crate::test_helpers::temp_path();
         crate::private::setup(&s, &dir.display().to_string()).unwrap();
         let pulse = test_pulse();
         use_test_executable(&pulse);

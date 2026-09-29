@@ -355,12 +355,18 @@ pub struct GoSlice<T> {
 impl<T> GoSlice<T> {
     /// `var out []T`.
     pub const fn nil() -> Self {
-        Self { vec: Vec::new(), nil: true }
+        Self {
+            vec: Vec::new(),
+            nil: true,
+        }
     }
 
     /// `[]T{}` / `make([]T, 0)`.
     pub const fn empty() -> Self {
-        Self { vec: Vec::new(), nil: false }
+        Self {
+            vec: Vec::new(),
+            nil: false,
+        }
     }
 
     /// The result of `append`-building onto `var out []T`: nil when nothing
@@ -512,31 +518,49 @@ mod tests {
 
     #[test]
     fn gomap_sorts_keys_but_keeps_struct_field_order() {
+        let _serial = crate::test_helpers::serial();
         #[derive(Serialize)]
         struct Goal {
             text: &'static str,
             source: &'static str,
         }
-        let goal = Goal { text: "t", source: "s" };
+        let goal = Goal {
+            text: "t",
+            source: "s",
+        };
         let items = vec![1, 2];
-        let out = to_string(&crate::gomap! {"project": "demo", "goal": goal, "items": items, "agent": "a"})
-            .unwrap();
+        let out = to_string(
+            &crate::gomap! {"project": "demo", "goal": goal, "items": items, "agent": "a"},
+        )
+        .unwrap();
         assert_eq!(
             out,
             r#"{"agent":"a","goal":{"text":"t","source":"s"},"items":[1,2],"project":"demo"}"#
         );
-        let pretty = to_string_pretty(&crate::gomap! {"b": 1, "a": Goal { text: "x", source: "y" }}).unwrap();
-        assert_eq!(pretty, "{\n  \"a\": {\n    \"text\": \"x\",\n    \"source\": \"y\"\n  },\n  \"b\": 1\n}");
+        let pretty =
+            to_string_pretty(&crate::gomap! {"b": 1, "a": Goal { text: "x", source: "y" }})
+                .unwrap();
+        assert_eq!(
+            pretty,
+            "{\n  \"a\": {\n    \"text\": \"x\",\n    \"source\": \"y\"\n  },\n  \"b\": 1\n}"
+        );
     }
 
     #[test]
     fn go_slice_encodes_nil_and_empty_like_go() {
+        let _serial = crate::test_helpers::serial();
         let mut nil: GoSlice<i32> = GoSlice::nil();
         assert_eq!(to_string(&nil).unwrap(), "null");
         assert_eq!(to_string(&GoSlice::<i32>::empty()).unwrap(), "[]");
         assert_eq!(to_string(&GoSlice::from(vec![1])).unwrap(), "[1]");
-        assert_eq!(to_string(&GoSlice::<i32>::appended(Vec::new())).unwrap(), "null");
-        assert_eq!(to_string(&Vec::<i32>::new().into_iter().collect::<GoSlice<i32>>()).unwrap(), "null");
+        assert_eq!(
+            to_string(&GoSlice::<i32>::appended(Vec::new())).unwrap(),
+            "null"
+        );
+        assert_eq!(
+            to_string(&Vec::<i32>::new().into_iter().collect::<GoSlice<i32>>()).unwrap(),
+            "null"
+        );
         nil.push(2);
         assert_eq!(to_string(&nil).unwrap(), "[2]");
         assert!(nil == vec![2]);
@@ -549,6 +573,7 @@ mod tests {
 
     #[test]
     fn nil_slice_round_trips_null() {
+        let _serial = crate::test_helpers::serial();
         #[derive(Serialize, serde::Deserialize, PartialEq, Debug)]
         struct R {
             #[serde(with = "nil_slice")]
@@ -556,16 +581,32 @@ mod tests {
             #[serde(with = "nil_slice", default)]
             more: Vec<String>,
         }
-        let r = R { items: vec![], more: vec!["a".into()] };
+        let r = R {
+            items: vec![],
+            more: vec!["a".into()],
+        };
         assert_eq!(to_string(&r).unwrap(), r#"{"items":null,"more":["a"]}"#);
         let back: R = serde_json::from_str(r#"{"items":null,"more":null}"#).unwrap();
-        assert_eq!(back, R { items: vec![], more: vec![] });
+        assert_eq!(
+            back,
+            R {
+                items: vec![],
+                more: vec![]
+            }
+        );
         let back: R = serde_json::from_str(r#"{"items":[1],"more":["a"]}"#).unwrap();
-        assert_eq!(back, R { items: vec![1], more: vec!["a".into()] });
+        assert_eq!(
+            back,
+            R {
+                items: vec![1],
+                more: vec!["a".into()]
+            }
+        );
     }
 
     #[test]
     fn floats_format_like_go() {
+        let _serial = crate::test_helpers::serial();
         let cases: &[(f64, &str)] = &[
             (0.0, "0"),
             (-0.0, "-0"),
@@ -593,6 +634,7 @@ mod tests {
 
     #[test]
     fn strings_escape_like_go() {
+        let _serial = crate::test_helpers::serial();
         let v = json!({"s": "<a href=\"x\">&amp;</a>\u{2028}\u{8}\u{c}\n\ttail"});
         assert_eq!(
             to_string(&v).unwrap(),
@@ -614,6 +656,7 @@ mod tests {
 
     #[test]
     fn marshal_and_indent_match_go() {
+        let _serial = crate::test_helpers::serial();
         let v = json!({"hours": 0.0, "ratio": 0.25, "n": 3, "s": "a\"b", "list": [1.0, 2.5]});
         assert_eq!(
             to_string(&v).unwrap(),
@@ -627,6 +670,86 @@ mod tests {
         assert_eq!(to_string_pretty(&json!({})).unwrap(), "{}");
         assert!(
             to_string(&json!(f64::NAN)).is_err() || to_string(&json!(f64::NAN)).unwrap() == "null"
+        );
+    }
+}
+
+/// Go: fmt.Sprint(v) for a value decoded from JSON into `any` (nil, bool,
+/// float64, string, []any, map[string]any): `<nil>`, `true`, `%g`-shortest
+/// floats, the bare string, `[a b]` and `map[k:v]` with sorted keys.
+pub fn sprint(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match value {
+        Value::Null => "<nil>".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => sprint_float(n.as_f64().unwrap_or(0.0)),
+        Value::String(s) => s.clone(),
+        Value::Array(items) => format!(
+            "[{}]",
+            items.iter().map(sprint).collect::<Vec<_>>().join(" ")
+        ),
+        Value::Object(fields) => {
+            let mut keys: Vec<&String> = fields.keys().collect();
+            keys.sort();
+            format!(
+                "map[{}]",
+                keys.iter()
+                    .map(|k| format!("{k}:{}", sprint(&fields[*k])))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        }
+    }
+}
+
+/// Go: fmt.Sprint(f) for a float64 - %v is %g with the shortest digits, in
+/// exponent form when the decimal exponent is below -4 or at least 6
+/// (strconv's eprec for the shortest precision), e.g. 1e+06 but 100000.
+fn sprint_float(f: f64) -> String {
+    if f.is_nan() {
+        return "NaN".to_string();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "+Inf" } else { "-Inf" }.to_string();
+    }
+    let s = format!("{f:e}");
+    let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
+    let exp: i32 = e.parse().unwrap_or(0);
+    if f != 0.0 && !(-4..6).contains(&exp) {
+        let (sign, digits) = match e.strip_prefix('-') {
+            Some(d) => ("-", d),
+            None => ("+", e),
+        };
+        return format!("{m}e{sign}{digits:0>2}");
+    }
+    format!("{f}")
+}
+
+#[cfg(test)]
+mod sprint_tests {
+    use super::sprint;
+    use serde_json::json;
+
+    #[test]
+    fn sprint_matches_go_fmt() {
+        assert_eq!(sprint(&json!(null)), "<nil>");
+        assert_eq!(sprint(&json!(true)), "true");
+        assert_eq!(sprint(&json!(3.0)), "3");
+        assert_eq!(sprint(&json!(1.5)), "1.5");
+        assert_eq!(sprint(&json!(1e21)), "1e+21");
+        assert_eq!(sprint(&json!(1e20)), "1e+20");
+        assert_eq!(sprint(&json!(1000000.0)), "1e+06");
+        assert_eq!(sprint(&json!(100000.0)), "100000");
+        assert_eq!(sprint(&json!(0.00001)), "1e-05");
+        assert_eq!(sprint(&json!(0.0001)), "0.0001");
+        assert_eq!(sprint(&json!(123456789.0)), "1.23456789e+08");
+        assert_eq!(sprint(&json!(-2.5)), "-2.5");
+        assert_eq!(sprint(&json!(0.0)), "0");
+        assert_eq!(sprint(&json!("s")), "s");
+        assert_eq!(sprint(&json!(["a", 1.0, null])), "[a 1 <nil>]");
+        assert_eq!(
+            sprint(&json!({"b": 1, "a": "x", "c": ["a", 2.0, null], "d": {"z": true}})),
+            "map[a:x b:1 c:[a 2 <nil>] d:map[z:true]]"
         );
     }
 }

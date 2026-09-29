@@ -442,7 +442,7 @@ pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result
         if c.json {
             return pulse_cli::write_json(
                 &mut *c.out,
-                &serde_json::json!({"name": pos[0], "project": p.slug, "enabled": sub == "enable"}),
+                &pulse_store::gomap! {"name": pos[0], "project": p.slug, "enabled": sub == "enable"},
             );
         }
         c.println(format!("Fixture {}: {}d", pos[0], sub))?;
@@ -471,7 +471,7 @@ pub(crate) fn seed_command(s: &pulse_store::Store, c: &mut pulse_cli::Context) -
     if c.json {
         return pulse_cli::write_json(
             &mut *c.out,
-            &serde_json::json!({"seeded": results, "added": total, "starter": crate::starter::STARTER_SET.len()}),
+            &pulse_store::gomap! {"seeded": results, "added": total, "starter": crate::starter::STARTER_SET.len()},
         );
     }
     for r in &results {
@@ -534,7 +534,7 @@ pub(crate) fn run_seed(c: &mut pulse_cli::Context, args: &[String]) -> Result<()
         if c.json {
             return pulse_cli::write_json(
                 &mut *c.out,
-                &serde_json::json!({"seeded": results, "added": total, "starter": crate::starter::STARTER_SET.len()}),
+                &pulse_store::gomap! {"seeded": results, "added": total, "starter": crate::starter::STARTER_SET.len()},
             );
         }
         for r in &results {
@@ -722,7 +722,7 @@ pub fn run_fleet(
                 if c.json {
                     return pulse_cli::write_json(
                         &mut *c.out,
-                        &serde_json::json!({"id": pos[0], "cleaned": true}),
+                        &pulse_store::gomap! {"id": pos[0], "cleaned": true},
                     );
                 }
                 c.println(format!("Cleaned fleet: {}", pos[0]))?;
@@ -733,7 +733,7 @@ pub fn run_fleet(
                 if c.json {
                     return pulse_cli::write_json(
                         &mut *c.out,
-                        &serde_json::json!({"fleets": fleets}),
+                        &pulse_store::gomap! {"fleets": fleets},
                     );
                 }
                 if !c.quiet {
@@ -874,7 +874,7 @@ pub fn run_usage(
     if c.json {
         return pulse_cli::write_json(
             &mut *c.out,
-            &serde_json::json!({"runners": reports, "days": fs.get_int("days"), "note": note}),
+            &pulse_store::gomap! {"runners": reports, "days": fs.get_int("days"), "note": note},
         );
     }
     if c.quiet {
@@ -1091,6 +1091,11 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
         "measure" => {
             fs.string_var("tree", "", "local source checkout (committed tree only)");
             fs.string_var("ref", "HEAD", "local commit, branch or tag");
+            fs.string_var(
+                "fixture",
+                "",
+                "enabled public fixture name (repeatable; private set is always included)",
+            );
             fs.bool_var("shadow", false, "post scores as a finding; never archive");
             selected = collect_repeated(args, "fixture");
             filtered = filter_repeated(args, "fixture");
@@ -1120,7 +1125,7 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
             }
             let rows = crate::archive::list_archive(s, &c.project)?;
             if c.json {
-                return pulse_cli::write_json(&mut *c.out, &serde_json::json!({"archive": rows}));
+                return pulse_cli::write_json(&mut *c.out, &pulse_store::gomap! {"archive": rows});
             }
             if !c.quiet {
                 print_archive(&mut *c.out, c.color, &rows);
@@ -1243,7 +1248,7 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
                 if c.json {
                     return pulse_cli::write_json(
                         &mut *c.out,
-                        &serde_json::json!({"scores": scores, "finding": finding}),
+                        &pulse_store::gomap! {"scores": scores, "finding": finding},
                     );
                 }
                 if !c.quiet {
@@ -1388,7 +1393,7 @@ mod tests {
         crate::register::register();
         let s = cycle_ready();
         let p = s.project("demo").unwrap().unwrap();
-        let marker = tempfile::tempdir().unwrap().keep().join("health-was-run");
+        let marker = crate::test_helpers::temp_path().join("health-was-run");
         s.conn()
             .unwrap()
             .execute(
@@ -1438,12 +1443,12 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = e3_test_lock();
         let _env = pulse_testutil::env_lock();
-        let home = tempfile::tempdir().unwrap().keep();
+        let home = crate::test_helpers::temp_path();
         unsafe {
             std::env::set_var("PULSE_HOME", &home);
             std::env::set_var("PULSE_JOB", "");
         }
-        let cwd = tempfile::tempdir().unwrap().keep();
+        let cwd = crate::test_helpers::temp_path();
         std::env::set_current_dir(&cwd).unwrap();
         let out = pulse_cli::Buffer::new();
         let mut ctx = pulse_cli::Context {
@@ -1473,7 +1478,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = e3_test_lock();
         let _env = pulse_testutil::env_lock();
-        let home = tempfile::tempdir().unwrap().keep();
+        let home = crate::test_helpers::temp_path();
         unsafe {
             std::env::set_var("HOME", &home);
             for key in [
@@ -1488,7 +1493,7 @@ mod tests {
         let out = pulse_cli::Buffer::new();
         let mut ctx = pulse_cli::Context {
             store: None,
-            home: tempfile::tempdir().unwrap().keep().display().to_string(),
+            home: crate::test_helpers::temp_path().display().to_string(),
             out: Box::new(out.clone()),
             err: Box::new(out.clone()),
             json: false,
@@ -1522,17 +1527,15 @@ mod tests {
     fn scorer_refuses_escaping_symlink() {
         let _serial = crate::test_helpers::serial();
         let _guard = e3_test_lock();
-        let clone = tempfile::tempdir().unwrap().keep();
-        let outside = tempfile::tempdir().unwrap().keep().join("preserve");
+        let clone = crate::test_helpers::temp_path();
+        let outside = crate::test_helpers::temp_path().join("preserve");
         put_file(&outside, "keep", 0o600);
         std::os::unix::fs::symlink(&outside, clone.join("outside")).unwrap();
         let cancel = pulse_bus::CancellationToken::new();
         let err = crate::measure::score_clone(
             &cancel,
             &clone.display().to_string(),
-            &crate::process::isolated_env(
-                &tempfile::tempdir().unwrap().keep().display().to_string(),
-            ),
+            &crate::process::isolated_env(&crate::test_helpers::temp_path().display().to_string()),
             &["sh".into(), "-c".into(), "printf 1".into()],
         )
         .expect_err("read-only scoring accepted an escaping symlink");

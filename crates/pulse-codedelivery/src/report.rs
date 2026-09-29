@@ -3,11 +3,12 @@ use crate::{
     decode_evidence, decode_work_snapshot, public_reason, safe_code_paths_for_report,
 };
 use anyhow::{Result, anyhow};
+use pulse_store::{CancellationToken, ctx_error};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scope {
@@ -114,8 +115,16 @@ struct SuggestionPost {
     summary: String,
 }
 
-pub fn recent(s: &pulse_store::Store, project: &str, limit: i32, before: i64) -> Result<Report> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+/// Go: Recent(ctx, s, project, limit, before) - bounded to two seconds and
+/// abandoned with ctx.Err() as soon as the caller's context is done.
+pub fn recent(
+    ctx: &CancellationToken,
+    s: &pulse_store::Store,
+    project: &str,
+    limit: i32,
+    before: i64,
+) -> Result<Report> {
+    let ctx = &ctx.with_timeout(Duration::from_secs(2));
     let limit = if limit <= 0 { 100 } else { limit };
     if limit > 200 {
         return Err(anyhow!("code-delivery limit exceeds the supported range"));
@@ -136,7 +145,7 @@ pub fn recent(s: &pulse_store::Store, project: &str, limit: i32, before: i64) ->
         unavailable: Vec::new(),
         ..Report::default()
     };
-    let (events, has_more, next_before) = landing_events(s, project, limit, before, deadline)?;
+    let (events, has_more, next_before) = landing_events(ctx, s, project, limit, before)?;
     report.scope.scanned = events.len() as i32;
     report.scope.has_more = has_more;
     if next_before > 0 {
@@ -145,35 +154,30 @@ pub fn recent(s: &pulse_store::Store, project: &str, limit: i32, before: i64) ->
     let mut seen_commits = BTreeMap::new();
     let mut suggestions = BTreeMap::new();
     for ev in events {
-        check_deadline(deadline)?;
-        add_event(
-            s,
-            &mut report,
-            ev,
-            &mut seen_commits,
-            &mut suggestions,
-            deadline,
-        )?;
+        add_event(ctx, s, &mut report, ev, &mut seen_commits, &mut suggestions)?;
     }
-    check_deadline(deadline)?;
+    if let Some(err) = ctx.err() {
+        return Err(anyhow::Error::new(err));
+    }
     Ok(report)
 }
 
 fn landing_events(
+    ctx: &CancellationToken,
     s: &pulse_store::Store,
     project: &str,
     limit: i32,
     before: i64,
-    deadline: Instant,
 ) -> Result<(Vec<EventRow>, bool, i64)> {
     const MINIMUM_EVENT_SCAN: i64 = 5000;
     let mut scan_limit = i64::from(limit) * 100;
     if scan_limit < MINIMUM_EVENT_SCAN {
         scan_limit = MINIMUM_EVENT_SCAN;
     }
-    let conn = s.conn()?;
-    let max_seq: i64 =
-        conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?;
+    let conn = s.conn_ctx(ctx)?;
+    let max_seq: i64 = conn
+        .query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))
+        .map_err(|e| ctx_error(ctx, e.into()))?;
     let mut high = before - 1;
     if high > max_seq {
         high = max_seq;
@@ -182,13 +186,16 @@ fn landing_events(
         return Ok((Vec::new(), false, 0));
     }
     let low = (high - scan_limit + 1).max(1);
-    let mut stmt = conn.prepare(
-        "SELECT seq, at, action, detail FROM events WHERE seq BETWEEN ? AND ? ORDER BY seq DESC",
-    )?;
-    let mut rows = stmt.query(rusqlite::params![low, high])?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT seq, at, action, detail FROM events WHERE seq BETWEEN ? AND ? ORDER BY seq DESC",
+        )
+        .map_err(|e| ctx_error(ctx, e.into()))?;
+    let mut rows = stmt
+        .query(rusqlite::params![low, high])
+        .map_err(|e| ctx_error(ctx, e.into()))?;
     let mut events = Vec::new();
-    while let Some(row) = rows.next()? {
-        check_deadline(deadline)?;
+    while let Some(row) = rows.next().map_err(|e| ctx_error(ctx, e.into()))? {
         let action: String = row.get(2)?;
         if action != "land.landed" {
             continue;
@@ -221,12 +228,12 @@ fn landing_events(
 }
 
 fn add_event(
+    ctx: &CancellationToken,
     s: &pulse_store::Store,
     report: &mut Report,
     ev: EventRow,
     seen_commits: &mut BTreeMap<String, bool>,
     suggestions: &mut BTreeMap<String, Option<SuggestionRef>>,
-    deadline: Instant,
 ) -> Result<()> {
     let (detail, ok) = decode_detail(&ev.detail);
     let project = string_field(&detail, "project");
@@ -307,13 +314,10 @@ fn add_event(
         source.clone_from(&job.source);
         job_id.clone_from(&job.id);
     }
-    delivery.tasks = delivery_tasks(s, &project, &job_id, &source)?;
+    delivery.tasks = delivery_tasks(ctx, s, &project, &job_id, &source)?;
     let key = format!("{project}\0{source}");
     if !suggestions.contains_key(&key) {
-        suggestions.insert(
-            key.clone(),
-            delivery_suggestion(s, &project, &source, deadline)?,
-        );
+        suggestions.insert(key.clone(), delivery_suggestion(ctx, s, &project, &source)?);
     }
     delivery.suggestion = suggestions.get(&key).cloned().unwrap_or(None);
     report.deliveries.push(delivery);
@@ -333,37 +337,45 @@ fn add_unavailable(report: &mut Report, ev: &EventRow, project: &str, reason: &s
 }
 
 fn delivery_tasks(
+    ctx: &CancellationToken,
     s: &pulse_store::Store,
     project: &str,
     job_id: &str,
     source: &str,
 ) -> Result<Vec<TaskRef>> {
-    let conn = s.conn()?;
+    let conn = s.conn_ctx(ctx)?;
     let mut refs = Vec::new();
     let mut seen = BTreeMap::new();
     if let Some(id) = source.strip_prefix("task:")
         && !id.is_empty()
     {
-        let mut stmt =
-            conn.prepare("SELECT id, title FROM tasks WHERE project = ? AND id = ? ORDER BY id")?;
-        let mut rows = stmt.query(rusqlite::params![project, id])?;
-        add_task_rows(&mut rows, &mut refs, &mut seen)?;
+        let mut stmt = conn
+            .prepare("SELECT id, title FROM tasks WHERE project = ? AND id = ? ORDER BY id")
+            .map_err(|e| ctx_error(ctx, e.into()))?;
+        let mut rows = stmt
+            .query(rusqlite::params![project, id])
+            .map_err(|e| ctx_error(ctx, e.into()))?;
+        add_task_rows(ctx, &mut rows, &mut refs, &mut seen)?;
     }
     if !job_id.is_empty() {
         let mut stmt = conn
-            .prepare("SELECT id, title FROM tasks WHERE project = ? AND job_id = ? ORDER BY id")?;
-        let mut rows = stmt.query(rusqlite::params![project, job_id])?;
-        add_task_rows(&mut rows, &mut refs, &mut seen)?;
+            .prepare("SELECT id, title FROM tasks WHERE project = ? AND job_id = ? ORDER BY id")
+            .map_err(|e| ctx_error(ctx, e.into()))?;
+        let mut rows = stmt
+            .query(rusqlite::params![project, job_id])
+            .map_err(|e| ctx_error(ctx, e.into()))?;
+        add_task_rows(ctx, &mut rows, &mut refs, &mut seen)?;
     }
     Ok(refs)
 }
 
 fn add_task_rows(
+    ctx: &CancellationToken,
     rows: &mut rusqlite::Rows<'_>,
     refs: &mut Vec<TaskRef>,
     seen: &mut BTreeMap<String, bool>,
 ) -> Result<()> {
-    while let Some(row) = rows.next()? {
+    while let Some(row) = rows.next().map_err(|e| ctx_error(ctx, e.into()))? {
         let id: String = row.get(0)?;
         let title: String = row.get(1)?;
         if !seen.get(&id).copied().unwrap_or(false) {
@@ -375,10 +387,10 @@ fn add_task_rows(
 }
 
 fn delivery_suggestion(
+    ctx: &CancellationToken,
     s: &pulse_store::Store,
     project: &str,
     source: &str,
-    deadline: Instant,
 ) -> Result<Option<SuggestionRef>> {
     let Some(id) = source.strip_prefix("suggestion:") else {
         return Ok(None);
@@ -386,10 +398,10 @@ fn delivery_suggestion(
     if id.is_empty() {
         return Ok(None);
     }
-    let Some(post) = load_suggestion(s, project, id)? else {
+    let Some(post) = load_suggestion(ctx, s, project, id)? else {
         return Ok(None);
     };
-    let votes = suggestion_votes(s, &post, deadline)?;
+    let votes = suggestion_votes(ctx, s, &post)?;
     Ok(Some(SuggestionRef {
         id: post.id,
         summary: post.summary,
@@ -400,11 +412,12 @@ fn delivery_suggestion(
 }
 
 fn load_suggestion(
+    ctx: &CancellationToken,
     s: &pulse_store::Store,
     project: &str,
     id: &str,
 ) -> Result<Option<SuggestionPost>> {
-    let conn = s.conn()?;
+    let conn = s.conn_ctx(ctx)?;
     conn.query_row(
         "SELECT id, project, area, thread, summary FROM posts\n\t\tWHERE project = ? AND id = ? AND kind = 'suggestion'",
         rusqlite::params![project, id],
@@ -419,16 +432,19 @@ fn load_suggestion(
         },
     )
     .optional()
-    .map_err(Into::into)
+    .map_err(|e| ctx_error(ctx, e.into()))
 }
 
 fn suggestion_votes(
+    ctx: &CancellationToken,
     s: &pulse_store::Store,
     post: &SuggestionPost,
-    deadline: Instant,
 ) -> Result<Option<Votes>> {
-    check_deadline(deadline)?;
-    let (up, down, found) = pulse_tally::suggestion_vote_counts(s, &post.project, &post.id)?;
+    if let Some(err) = ctx.err() {
+        return Err(anyhow::Error::new(err));
+    }
+    let (up, down, found) =
+        pulse_tally::suggestion_vote_counts_context(ctx, s, &post.project, &post.id)?;
     if !found {
         return Ok(None);
     }
@@ -453,16 +469,6 @@ fn string_field(row: &BTreeMap<String, Value>, key: &str) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => "<nil>".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn check_deadline(deadline: Instant) -> Result<()> {
-    if Instant::now() > deadline {
-        Err(anyhow!("context deadline exceeded"))
-    } else {
-        Ok(())
+        other => pulse_store::gojson::sprint(other),
     }
 }

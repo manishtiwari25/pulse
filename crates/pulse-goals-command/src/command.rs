@@ -241,6 +241,7 @@ mod tests {
 
     #[test]
     fn goal_command_canonical_slug() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let (_home, s) = command_store();
         let slug = "customer-support-ticket-management-syste";
@@ -274,6 +275,7 @@ mod tests {
 
     #[test]
     fn goal_command_read_set_reset_and_reopen() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let (_home, s) = command_store();
         let mut ctx = context(s.home.clone(), "demo", true);
@@ -321,6 +323,7 @@ mod tests {
 
     #[test]
     fn goal_command_rejects_workers_and_invalid_modes() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let (_home, s) = command_store();
         for actor in ["aurora", "demo-lead"] {
@@ -373,6 +376,7 @@ mod tests {
 
     #[test]
     fn goal_command_project_selection_and_read_only_missing_store() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let (_home, s) = command_store();
         set_env("PULSE_PROJECT", "demo");
@@ -398,6 +402,7 @@ mod tests {
 
     #[test]
     fn oracle_goal_command_paths_match() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let oracle = std::env::var("PULSE_GO_ORACLE").unwrap_or_else(|_| {
             "/Users/work/.copilot/session-state/eb2b69f5-ae4f-4495-904e-534f0b2fbf3e/files/oracle/pulse".into()
@@ -419,6 +424,8 @@ mod tests {
             .current_dir(repo.path())
             .env("PULSE_HOME", go_home.path())
             .env("PULSE_NOW", NOW)
+            .env_remove("PULSE_AGENT")
+            .env_remove("PULSE_JOB")
             .args(["init", "--name", "Goal Parity"])
             .output()
             .unwrap();

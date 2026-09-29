@@ -3,15 +3,27 @@ use pulse_cli::{Buffer, Context, FlagSet};
 use rusqlite::params;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use tempfile::TempDir;
 
-fn new_store() -> pulse_store::Store {
+struct TestStore {
+    _home: TempDir,
+    store: pulse_store::Store,
+}
+impl std::ops::Deref for TestStore {
+    type Target = pulse_store::Store;
+    fn deref(&self) -> &Self::Target {
+        &self.store
+    }
+}
+
+fn new_store() -> TestStore {
     let _guard = pulse_testutil::env_lock();
     unsafe {
         std::env::set_var("PULSE_JOB", "");
     }
-    let home = tempfile::tempdir().unwrap().keep();
+    let home = tempfile::tempdir().unwrap();
     let s = pulse_store::Store::open(pulse_store::Options {
-        home: home.display().to_string(),
+        home: home.path().display().to_string(),
         create: true,
         now: "2026-09-06T21:00:00Z".into(),
         ..pulse_store::Options::default()
@@ -21,7 +33,10 @@ fn new_store() -> pulse_store::Store {
         .unwrap()
         .execute(
             "INSERT INTO projects (slug, name, path, added_at) VALUES ('demo', 'Demo', ?, ?)",
-            params![Path::new(&home).join("demo").display().to_string(), s.now()],
+            params![
+                Path::new(home.path()).join("demo").display().to_string(),
+                s.now()
+            ],
         )
         .unwrap();
     s.conn()
@@ -31,7 +46,10 @@ fn new_store() -> pulse_store::Store {
             [s.now()],
         )
         .unwrap();
-    s
+    TestStore {
+        _home: home,
+        store: s,
+    }
 }
 
 fn events(s: &pulse_store::Store, action: &str) -> Vec<pulse_bus::Event> {
@@ -49,6 +67,7 @@ fn events(s: &pulse_store::Store, action: &str) -> Vec<pulse_bus::Event> {
 
 #[test]
 fn new_get_list_and_ids() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     assert!(new(&s, "nope", "x", "", 0, "human").is_err());
     assert!(new(&s, "demo", "   ", "", 0, "human").is_err());
@@ -89,6 +108,7 @@ fn new_get_list_and_ids() {
 
 #[test]
 fn amend_creates_revisions_and_refuses_finished() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     let a = new(&s, "demo", "Title", "v1", 0, "human").unwrap();
     s.conn().unwrap().execute("INSERT INTO jobs (id, project, kind, title, brief, source, created_at) VALUES ('J-1', 'demo', 'task', 'Title', 'old brief', 'task:TASK-001', ?)", [s.now()]).unwrap();
@@ -148,6 +168,7 @@ fn amend_creates_revisions_and_refuses_finished() {
 
 #[test]
 fn state_machine() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     let a = new(&s, "demo", "T", "", 0, "human").unwrap();
     assert!(set_status(&s, &a.id, "bogus", "x").is_err());
@@ -166,6 +187,7 @@ fn state_machine() {
 
 #[test]
 fn cancel_cancels_queued_jobs_only() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     let a = new(&s, "demo", "T", "", 0, "human").unwrap();
     for (id, status) in [("J-q", "queued"), ("J-l", "leased"), ("J-d", "done")] {
@@ -201,6 +223,7 @@ fn cancel_cancels_queued_jobs_only() {
 
 #[test]
 fn work_for_summarizes_task_jobs() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     let mut task = new(&s, "demo", "Owner task", "brief", 0, "human").unwrap();
     let empty = new(&s, "demo", "Empty task", "", 0, "human").unwrap();
@@ -368,6 +391,7 @@ fn work_for_summarizes_task_jobs() {
 
 #[test]
 fn messages_since_unread_and_immutable() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     let a = new(&s, "demo", "T", "", 0, "human").unwrap();
     assert!(send_message(&s, "demo", "", "human", "   ").is_err());
@@ -437,6 +461,7 @@ fn messages_since_unread_and_immutable() {
 
 #[test]
 fn compute_post_summary_limit() {
+    let _serial = crate::test_helpers::serial();
     const PREFIX: &str = "compute request CR-001: Standard_B2ms for 1h - ";
     for length in [
         pulse_board::MAX_SUMMARY_CHARS,
@@ -469,6 +494,7 @@ fn compute_post_summary_limit() {
 
 #[test]
 fn compute_auto_approve_under_caps_else_proposal() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     assert!(request_compute(&s, "demo", "demo-lead", "", 0, "x").is_err());
     let r1 = request_compute(
@@ -639,6 +665,7 @@ fn run_cmd(c: &mut Context, name: &str, args: &[&str]) -> anyhow::Result<()> {
 
 #[test]
 fn commands_end_to_end() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     let brief_dir = tempfile::tempdir().unwrap();
     let brief_file = brief_dir.path().join("brief.md");
@@ -765,6 +792,7 @@ fn commands_end_to_end() {
 
 #[test]
 fn watch_delivers_events_from_another_connection() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     let other = pulse_store::Store::open(pulse_store::Options {
         home: s.home.clone(),
@@ -845,6 +873,7 @@ fn watch_delivers_events_from_another_connection() {
 
 #[test]
 fn compute_auto_approve_held_without_login_source() {
+    let _serial = crate::test_helpers::serial();
     let s = new_store();
     for (k, v) in [
         ("compute.auto_approve", "1"),

@@ -4,11 +4,14 @@ use crate::{Fixture, FixtureInput, add_fixture};
 use anyhow::{Result, anyhow};
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::Receiver;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TEMP_DIRS: OnceLock<Mutex<Vec<tempfile::TempDir>>> = OnceLock::new();
 
 /// Go runs a package's tests one at a time; every test here holds this guard
 /// for its whole body because the process-wide state the tests share (PULSE_*
@@ -18,9 +21,20 @@ pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+pub(crate) fn temp_path() -> PathBuf {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().to_path_buf();
+    TEMP_DIRS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(dir);
+    path
+}
+
 pub(crate) fn test_store() -> pulse_store::Store {
     let _guard = pulse_testutil::env_lock();
-    let home = tempfile::tempdir().expect("temp PULSE_HOME").keep();
+    let home = crate::test_helpers::temp_path();
     for name in [
         "PULSE_JOB",
         "PULSE_AGENT",
@@ -86,7 +100,7 @@ pub(crate) fn test_git(repo: impl AsRef<Path>, args: &[&str]) -> String {
 }
 
 pub(crate) fn test_project(s: &pulse_store::Store, slug: &str) -> String {
-    let repo = tempfile::tempdir().expect("temp repo").keep();
+    let repo = crate::test_helpers::temp_path();
     test_git(&repo, &["init", "--quiet", "--initial-branch=main"]);
     put_file(repo.join("value.txt"), "original\n", 0o644);
     put_file(repo.join(".pulse/answer"), "withheld answer\n", 0o600);
@@ -146,7 +160,7 @@ pub(crate) fn fixture(
 }
 
 pub(crate) fn fake_harness(s: &pulse_store::Store, body: &str) -> String {
-    let dir = tempfile::tempdir().expect("temp harness dir").keep();
+    let dir = crate::test_helpers::temp_path();
     let file = dir.join("fake harness");
     put_file(&file, &format!("#!/bin/sh\nset -eu\n{body}\n"), 0o700);
     s.set_setting("human", "runner_cmd", &format!("'{}'", file.display()))
@@ -155,7 +169,7 @@ pub(crate) fn fake_harness(s: &pulse_store::Store, body: &str) -> String {
 }
 
 pub(crate) fn private_set(s: &pulse_store::Store) -> (String, Vec<String>) {
-    let dir = tempfile::tempdir().expect("temp private set").keep();
+    let dir = crate::test_helpers::temp_path();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

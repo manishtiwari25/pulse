@@ -590,15 +590,26 @@ mod tests {
 
     const FIXTURE_REF: &str = "02691f8";
 
-    fn temp_store() -> pulse_store::Store {
-        let home = tempfile::tempdir().unwrap().keep();
-        pulse_store::Store::open(pulse_store::Options {
-            home: home.display().to_string(),
+    struct TestStore {
+        _home: tempfile::TempDir,
+        store: pulse_store::Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = pulse_store::Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+    fn temp_store() -> TestStore {
+        let home = tempfile::tempdir().unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: home.path().display().to_string(),
             create: true,
             now: "2026-09-06T21:00:00Z".into(),
             ..pulse_store::Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _home: home, store }
     }
 
     fn add_project(s: &pulse_store::Store, slug: &str, path: &std::path::Path, brain: bool) {
@@ -656,6 +667,7 @@ mod tests {
 
     #[test]
     fn classify_paths_match_record_layout() {
+        let _serial = crate::test_helpers::serial();
         assert_eq!(
             classify_path("AGENTS.md"),
             ("instruction".into(), "agents".into(), String::new())
@@ -689,6 +701,7 @@ mod tests {
 
     #[test]
     fn import_repo_paths_restrict_the_committed_tree() {
+        let _serial = crate::test_helpers::serial();
         let s = temp_store();
         let repo = tempfile::tempdir().unwrap();
         pulse_testutil::git(&[
@@ -783,6 +796,7 @@ mod tests {
 
     #[test]
     fn import_real_repo_and_export_round_trip() {
+        let _serial = crate::test_helpers::serial();
         let Some(repo) = source_repo() else {
             return;
         };
@@ -893,6 +907,7 @@ mod tests {
 
     #[test]
     fn import_force_rev_and_project_isolation() {
+        let _serial = crate::test_helpers::serial();
         let Some(repo) = source_repo() else {
             return;
         };

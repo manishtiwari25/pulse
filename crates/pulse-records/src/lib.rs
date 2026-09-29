@@ -21,3 +21,9 @@ pub use lock::*;
 pub use records::*;
 pub use register::register;
 pub use seed::*;
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    pub(crate) fn serial() -> impl Drop {
+        pulse_testutil::env_lock()
+    }
+}

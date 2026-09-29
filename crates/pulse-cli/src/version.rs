@@ -24,10 +24,9 @@ pub fn revision() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn build_version_cases() {
+        let _serial = crate::test_helpers::serial();
         for (main, revision, modified, want) in [
             ("v1.2.3", "", false, "v1.2.3"),
             ("v1.2.3", "abcdef1234567890", true, "v1.2.3"),
@@ -42,7 +41,29 @@ mod tests {
             ("(devel)", "", true, "dev"),
             ("", "", false, "dev"),
         ] {
-            assert_eq!(build_version(main, revision, modified), want);
+            assert_eq!(super::build_version(main, revision, modified), want);
         }
+    }
+
+    #[test]
+    fn build_version() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "(devel)",
+            "abcdef",
+            "abcdef1234567890",
+            "dev-abcdef",
+            "dev-abcdef123456",
+            "dev-abcdef123456-dirty",
+            "module",
+            "module-wins",
+            "no-metadata",
+            "no-revision",
+            "short-revision",
+            "v1.2.3",
+            "vcs.modified",
+            "vcs.revision",
+        ];
+        build_version_cases();
     }
 }

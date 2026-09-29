@@ -384,9 +384,28 @@ pub fn generate(r: &pulse_cred::Resolver, replace: bool, deps: Deps) -> AnyResul
 }
 
 fn keygen(path: &str, comment: &str) -> AnyResult<()> {
-    let out = Command::new("ssh-keygen")
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", path])
-        .output()?;
+    let mut cmd = Command::new("ssh-keygen");
+    cmd.args(["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", path])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let start = Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        if start.elapsed() > Duration::from_secs(60) {
+            let _ = child.kill();
+            let out = child.wait_with_output()?;
+            let text = output_text(&out.stdout, &out.stderr);
+            if text.is_empty() {
+                return Err(anyhow!("signal: killed"));
+            }
+            return Err(anyhow!(text));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let out = child.wait_with_output()?;
     if !out.status.success() {
         let text = format!(
             "{}{}",
@@ -688,14 +707,29 @@ mod tests {
     use pulse_cred::{RunError, Runner, TOKEN_ENV};
     use pulse_store::{Options, Store};
     use std::collections::BTreeMap;
+    use std::ops::Deref;
     use std::sync::{Arc, Mutex};
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
     const TEST_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
     const TEST_TOKEN: &str = "ops_abcdefghijklmnopqrstuvwxyz0123456789";
 
-    fn setup_store() -> Store {
-        let _guard = pulse_testutil::env_lock();
+    struct TestStore {
+        store: Store,
+        _home: TempDir,
+        _guard: pulse_testutil::EnvGuard,
+    }
+
+    impl Deref for TestStore {
+        type Target = Store;
+
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+
+    fn setup_store() -> TestStore {
+        let guard = pulse_testutil::env_lock();
         for key in [
             "PULSE_JOB",
             "PULSE_AGENT",
@@ -705,15 +739,20 @@ mod tests {
         ] {
             unsafe { std::env::set_var(key, "") };
         }
-        let home = tempdir().unwrap().keep();
-        unsafe { std::env::set_var("PULSE_HOME", home.display().to_string()) };
-        Store::open(Options {
-            home: home.display().to_string(),
+        let home = tempdir().unwrap();
+        unsafe { std::env::set_var("PULSE_HOME", home.path().display().to_string()) };
+        let store = Store::open(Options {
+            home: home.path().display().to_string(),
             create: true,
             now: "2026-09-15T06:00:00Z".into(),
             ..Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore {
+            store,
+            _home: home,
+            _guard: guard,
+        }
     }
 
     #[derive(Clone, Default)]
@@ -801,6 +840,7 @@ mod tests {
 
     #[test]
     fn op_reference_uses_names_while_they_survive() {
+        let _serial = crate::test_helpers::serial();
         let v = Vault {
             id: "vid1".into(),
             name: "PULSE".into(),
@@ -848,6 +888,7 @@ mod tests {
 
     #[test]
     fn vaults_and_items_list_through_op() {
+        let _serial = crate::test_helpers::serial();
         let f = FakeOp::with_out(BTreeMap::from([
             (
                 "vault list".into(),
@@ -858,11 +899,8 @@ mod tests {
                 r#"[{"id":"i1","title":"pulse push key","category":"SSH_KEY","updated_at":"2026-09-14T10:00:00Z","vault":{"id":"v1","name":"PULSE"}}]"#.into(),
             ),
         ]));
-        let r = resolver(
-            &tempdir().unwrap().path().display().to_string(),
-            &f,
-            "linux",
-        );
+        let home = tempdir().unwrap();
+        let r = resolver(&home.path().display().to_string(), &f, "linux");
         let got_vaults = vaults(&r).unwrap();
         assert_eq!(got_vaults.len(), 2);
         assert_eq!(got_vaults[0].name, "PULSE");
@@ -899,8 +937,9 @@ mod tests {
         let err = vaults(&r).unwrap_err().to_string();
         assert!(!err.contains(TEST_TOKEN));
         let empty = FakeOp::with_out(BTreeMap::from([("vault list".into(), "[]".into())]));
+        let home = tempdir().unwrap();
         let got = vaults(&resolver(
-            &tempdir().unwrap().path().display().to_string(),
+            &home.path().display().to_string(),
             &empty,
             "linux",
         ))
@@ -910,6 +949,7 @@ mod tests {
 
     #[test]
     fn providers_follow_the_machine() {
+        let _serial = crate::test_helpers::serial();
         let f = FakeOp::default();
         let mac = providers(&resolver("/h", &f, "darwin"));
         assert_eq!(mac.len(), 3);
@@ -929,6 +969,7 @@ mod tests {
 
     #[test]
     fn generate_then_apply_a_file_key() {
+        let _serial = crate::test_helpers::serial();
         if Command::new("ssh-keygen").arg("-h").output().is_err() {
             return;
         }
@@ -1037,6 +1078,7 @@ mod tests {
 
     #[test]
     fn apply_through_op_names_the_item_not_the_key() {
+        let _serial = crate::test_helpers::serial();
         let s = setup_store();
         let f = FakeOp::with_out(BTreeMap::from([("read".into(), TEST_KEY.into())]));
         let r = resolver(&s.home, &f, "linux");
@@ -1071,10 +1113,8 @@ mod tests {
     }
 
     fn push_project(s: &Store, slug: &str) -> String {
-        let root_dir = tempdir().unwrap().keep();
-        let bare_dir = tempdir().unwrap().keep();
-        let root = root_dir.join(slug);
-        let bare = bare_dir.join(format!("{slug}.git"));
+        let root = Path::new(&s.home).join(format!("project-{slug}"));
+        let bare = Path::new(&s.home).join(format!("{slug}.git"));
         let root_s = root.display().to_string();
         let bare_s = bare.display().to_string();
         let root_arg = root_s.as_str();

@@ -1457,7 +1457,11 @@ mod tests {
     }
 
     fn insert_test_project(s: &pulse_store::Store) -> Row {
-        let root = tempfile::tempdir().unwrap().keep().display().to_string();
+        let root = std::path::Path::new(&s.home)
+            .join("exec-test-project")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.display().to_string();
         let now = s.now();
         s.conn()
             .unwrap()
@@ -1471,7 +1475,10 @@ mod tests {
     }
 
     fn insert_git_project(s: &pulse_store::Store) -> Row {
-        let root = tempfile::tempdir().unwrap().keep();
+        let root = std::path::Path::new(&s.home)
+            .join("exec-git-project")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).unwrap();
         let run_git = |args: &[&str]| {
             let out = std::process::Command::new("git")
                 .args(args)

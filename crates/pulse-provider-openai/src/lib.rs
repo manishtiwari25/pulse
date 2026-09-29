@@ -1184,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_429_then_success() {
+    fn retry_after429_then_success() {
         let calls = Arc::new(AtomicI32::new(0));
         let calls_log = calls.clone();
         let srv = Server::new(move |_| {
@@ -1243,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    fn token_login_stores_0600_refuses_bad_key_and_exports_stored_only() {
+    fn token_login_stores0600_refuses_bad_key_and_exports_stored_only() {
         let allow = Arc::new(AtomicBool::new(false));
         let allow_log = allow.clone();
         let srv = Server::new(move |req| {

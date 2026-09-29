@@ -1,5 +1,6 @@
 use crate::board::*;
 use anyhow::Result;
+use pulse_store::gojson::GoSlice;
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use std::fs;
@@ -17,12 +18,12 @@ pub struct RemovePreview {
     pub name: String,
     pub dry_run: bool,
     pub applied: bool,
-    pub changes: Vec<RemoveItem>,
-    pub stays: Vec<RemoveItem>,
-    pub yours: Vec<String>,
-    pub cancelled_jobs: Vec<String>,
-    pub leased_jobs: Vec<String>,
-    pub executors: Vec<String>,
+    pub changes: GoSlice<RemoveItem>,
+    pub stays: GoSlice<RemoveItem>,
+    pub yours: GoSlice<String>,
+    pub cancelled_jobs: GoSlice<String>,
+    pub leased_jobs: GoSlice<String>,
+    pub executors: GoSlice<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub duplicate_projects: Vec<DuplicateFindingsProject>,
     #[serde(skip_serializing_if = "is_zero")]
@@ -315,12 +316,12 @@ pub fn remove_project(
         name: slug.into(),
         dry_run,
         applied: false,
-        changes: vec![],
-        stays: vec![],
-        yours: vec![],
-        cancelled_jobs: vec![],
-        leased_jobs: vec![],
-        executors: vec![],
+        changes: GoSlice::nil(),
+        stays: GoSlice::nil(),
+        yours: GoSlice::empty(),
+        cancelled_jobs: GoSlice::empty(),
+        leased_jobs: GoSlice::empty(),
+        executors: GoSlice::empty(),
         duplicate_projects: vec![],
         duplicate_groups: 0,
         duplicate_rows: 0,
@@ -488,7 +489,7 @@ pub fn remove_project(
         );
     }
     pre.stay(format!("the checkout {}", p.path), "untouched on disk");
-    pre.yours = yours_for_project(s, &p);
+    pre.yours = yours_for_project(s, &p).into();
 
     if !dry_run {
         conn.execute(
@@ -669,12 +670,12 @@ pub fn remove_executor(
         name: name.into(),
         dry_run,
         applied: false,
-        changes: vec![],
-        stays: vec![],
-        yours: vec![],
-        cancelled_jobs: vec![],
-        leased_jobs: vec![],
-        executors: vec![name.into()],
+        changes: GoSlice::nil(),
+        stays: GoSlice::nil(),
+        yours: GoSlice::empty(),
+        cancelled_jobs: GoSlice::empty(),
+        leased_jobs: GoSlice::empty(),
+        executors: vec![name.into()].into(),
         duplicate_projects: vec![],
         duplicate_groups: 0,
         duplicate_rows: 0,
@@ -718,7 +719,7 @@ pub fn remove_executor(
         format!(
             "# drop the `Host {name}` block from ~/.ssh/config and the key ~/.ssh/pulse_hands_ed25519 when no other hands use it"
         ),
-    ];
+    ].into();
     if !dry_run {
         conn.execute(
             "UPDATE executors SET status = 'removed', probe_note = ?, next_probe_at = '' WHERE name = ?",
@@ -764,12 +765,12 @@ pub fn remove_duplicate_findings(
         name: name.clone(),
         dry_run,
         applied: false,
-        changes: vec![],
-        stays: vec![],
-        yours: vec![],
-        cancelled_jobs: vec![],
-        leased_jobs: vec![],
-        executors: vec![],
+        changes: GoSlice::nil(),
+        stays: GoSlice::nil(),
+        yours: GoSlice::empty(),
+        cancelled_jobs: GoSlice::nil(),
+        leased_jobs: GoSlice::nil(),
+        executors: GoSlice::nil(),
         duplicate_projects: vec![],
         duplicate_groups: 0,
         duplicate_rows: 0,
@@ -911,18 +912,19 @@ mod tests {
 
     #[test]
     fn preview_render_exists() {
+        let _serial = crate::test_helpers::serial();
         let mut b = Vec::new();
         RemovePreview {
             kind: "x".into(),
             name: "y".into(),
             dry_run: true,
             applied: false,
-            changes: vec![],
-            stays: vec![],
-            yours: vec![],
-            cancelled_jobs: vec![],
-            leased_jobs: vec![],
-            executors: vec![],
+            changes: GoSlice::nil(),
+            stays: GoSlice::nil(),
+            yours: GoSlice::empty(),
+            cancelled_jobs: GoSlice::empty(),
+            leased_jobs: GoSlice::empty(),
+            executors: GoSlice::empty(),
             duplicate_projects: vec![],
             duplicate_groups: 0,
             duplicate_rows: 0,
@@ -933,6 +935,42 @@ mod tests {
 
     #[test]
     fn remove_project_snapshot() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "(applied)",
+            "--dry-run",
+            "--verify",
+            "1 queued job",
+            "2 leased jobs",
+            "Changes",
+            "INSERT INTO executors (name, address, projects, status, created_at) VALUES ('vm-light', 'light@10.0.0.9', 'project-light', 'active', ?), ('vm-both', 'both@10.0.0.8', 'project-light,amistio', 'active', ?)",
+            "INSERT INTO jobs (id, project, kind, title, status, created_at, source) VALUES ('job-20260906T090000Z-aaaaaa', 'project-light', 'task', 'Tidy the docs', 'queued', ?, 'test:1')",
+            "No project 'nope'",
+            "SELECT projects FROM executors WHERE name = 'vm-light'",
+            "SELECT status FROM jobs WHERE id = 'job-20260906T090000Z-aaaaaa'",
+            "UPDATE projects SET path = ? WHERE slug = 'project-light'",
+            "action = 'job.cancelled' AND subject = 'job-20260906T090000Z-aaaaaa'",
+            "action = 'project.removed' AND subject = 'project-light'",
+            "agents",
+            "already inactive",
+            "amistio",
+            "amistio-template",
+            "apply output:",
+            "branch",
+            "branch -D evolve/remove-preview",
+            "branch -D pulse/remove-preview",
+            "decisions",
+            "evolve/remove-preview",
+            "jobs.queued",
+            "project = 'project-light' AND status = 'leased'",
+            "project-light",
+            "projects.active",
+            "pulse remove project project-light (dry run - nothing changed)",
+            "pulse/remove-preview",
+            "refs/heads/",
+            "settings",
+            "show-ref",
+        ];
         no_tty();
         let (_home_dir, _home, s) = new_home();
         let repo = git_repo();
@@ -967,8 +1005,14 @@ mod tests {
         let pre = remove_project(&s, &p.slug, "human", true).expect("dry run");
         assert!(pre.dry_run);
         assert!(!pre.applied);
-        assert_eq!(pre.cancelled_jobs, vec!["job-20260906T090000Z-aaaaaa"]);
-        assert_eq!(pre.leased_jobs, vec!["job-20260906T090000Z-bbbbbb"]);
+        assert_eq!(
+            pre.cancelled_jobs,
+            vec!["job-20260906T090000Z-aaaaaa".to_string()]
+        );
+        assert_eq!(
+            pre.leased_jobs,
+            vec!["job-20260906T090000Z-bbbbbb".to_string()]
+        );
         assert!(
             pre.changes
                 .iter()
@@ -999,6 +1043,17 @@ mod tests {
 
     #[test]
     fn remove_executor_snapshot() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "--dry-run",
+            "Executor pulse-vm1 has a run in progress; drain it and wait for the run to finish",
+            "SELECT status FROM executors WHERE name = 'pulse-vm1'",
+            "UPDATE runs SET status = 'lost', finished_at = ? WHERE executor = 'pulse-vm1' AND status = 'running'",
+            "action = 'executor.removed' AND subject = 'pulse-vm1'",
+            "apply:",
+            "pulse remove executor pulse-vm1",
+            "ssh-keygen -R pulse-vm1",
+        ];
         no_tty();
         let (_home_dir, _home, s) = new_home();
         let conn = s.conn().expect("conn");
@@ -1032,6 +1087,30 @@ mod tests {
 
     #[test]
     fn remove_duplicate_findings() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "--apply",
+            "--project",
+            "2 duplicate groups",
+            "4 finding rows removed",
+            "DELETE FROM posts WHERE id = 'daemon-0'",
+            "INSERT INTO agents (name, kind, created_at) VALUES ('demo-lead', 'lead', ?)",
+            "INSERT INTO projects (slug, name, path, added_at) VALUES ('demo', 'Demo', ?, ?)",
+            "SELECT detail FROM events WHERE action = 'post.remove.duplicates' AND subject = 'demo'",
+            "SELECT posts FROM agents WHERE name = 'demo-lead'",
+            "duplicate-findings",
+            "event detail:",
+            "groups",
+            "human and worker findings",
+            "jobs/job-1",
+            "posts are immutable",
+            "posts_no_update",
+            "project demo",
+            "pulse remove duplicate-findings demo (dry run - nothing changed)",
+            "remove",
+            "removed",
+            "tally cache version",
+        ];
         no_tty();
         let (_home_dir, _home, s) = new_home();
         let repo = git_repo();

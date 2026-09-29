@@ -115,6 +115,7 @@ mod tests {
 
     #[test]
     fn parse_mentions_cases() {
+        let _serial = crate::test_helpers::serial();
         assert_eq!(
             super::parse_mentions("hi @Owner and (@agent-1), @agent-1"),
             vec!["human", "agent-1"]
@@ -124,6 +125,16 @@ mod tests {
 
     #[test]
     fn parse_mentions() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "(\"@Alice,\" and [@BOB])",
+            "boundary",
+            "case punctuation brackets",
+            "dedupe",
+            "emails",
+            "invalid",
+            "simple",
+        ];
         let cases = [
             ("please ask @alice and @bob", vec!["alice", "bob"]),
             ("(\"@Alice,\" and [@BOB])", vec!["alice", "bob"]),
@@ -140,6 +151,7 @@ mod tests {
 
     #[test]
     fn mentions_for() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         let old = create_post(
             &s,

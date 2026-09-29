@@ -1705,7 +1705,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: jobs::lease_job: expected explicit queued job for proj leased to aurora; got empty Row/no job"]
     fn run_job_recipe_setup_runs_once_before_worker_and_verify() {
         let _serial = crate::test_helpers::serial();
         if which::which("ssh-keygen").is_err() {

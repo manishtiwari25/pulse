@@ -343,8 +343,7 @@ pub(crate) fn assert_lifecycle_presence(
     want: &str,
 ) {
     let presences =
-        pulse_board::agent_presences(s, &now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-            .expect("agent presences");
+        pulse_board::agent_presences(s, &pulse_store::rfc3339_nano(now)).expect("agent presences");
     let got = presences.get("quiet").cloned().unwrap_or_default();
     assert_eq!(got.presence, want, "presence = {got:?}");
 }

@@ -33,12 +33,10 @@ pub fn register() {
         crate::azure::init();
         crate::gcp::init();
         crate::multipass::init();
-        unsafe {
-            pulse_board::UNINSTALL_SERVICE = Some(|out| {
-                crate::service::uninstall_service(out, "", "");
-                String::new()
-            });
-        }
+        pulse_board::set_uninstall_service(Some(|out| {
+            crate::service::uninstall_service(out, "", "");
+            String::new()
+        }));
         *pulse_tasks::COMPUTE_PROVIDERS
             .write()
             .expect("compute providers hook lock") = Some(cmd_compute_providers);
@@ -610,21 +608,19 @@ pub(crate) fn cmd_service(c: &mut Context, fs: &FlagSet, args: &[String]) -> Res
             crate::service::uninstall_service(&mut c.out, "", "");
         }
         "show" => {
-            let (kind, _) = crate::service::service_paths("".into(), "".into());
             for u in crate::service::service_units(
                 int_flag(fs, "interval"),
                 int_flag(fs, "hub-port"),
                 bool_flag(fs, "no-hub"),
             ) {
-                let text = crate::service::unit_file_text(
+                crate::service::install_unit(
+                    &mut c.out,
                     u,
-                    kind.clone(),
-                    "pulse".into(),
                     c.home.clone(),
                     String::new(),
-                    c.home.clone(),
-                );
-                write!(c.out, "{text}")?;
+                    String::new(),
+                    true,
+                )?;
             }
         }
         "status" => {

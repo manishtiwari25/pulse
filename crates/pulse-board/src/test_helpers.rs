@@ -317,12 +317,17 @@ pub(crate) fn no_tty() {
     crate::commands::set_stdin_for_tests(Some(Vec::new()));
 }
 
+pub(crate) fn serial() -> impl Drop {
+    pulse_testutil::env_lock()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn new_home_with_runner_environment() {
+        let _serial = crate::test_helpers::serial();
         // Go runs the package's tests one after another; hold the (reentrant)
         // env lock for the whole test so no parallel test observes
         // PULSE_AGENT=parent between the set_var and new_home's reset.
@@ -343,6 +348,7 @@ mod tests {
 
     #[test]
     fn helpers_go_parity() {
+        let _serial = crate::test_helpers::serial();
         let Some(_bin) = oracle_available() else {
             eprintln!("no Go oracle; skipping helpers_go_parity");
             return;

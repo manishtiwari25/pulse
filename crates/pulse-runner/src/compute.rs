@@ -5,7 +5,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 pub(crate) const COMPUTE_IDLE_MINUTES: i32 = 30;
 pub(crate) const COMPUTE_PROVISION_BUDGET: Duration = Duration::from_secs(45 * 60);
@@ -197,17 +197,21 @@ pub(crate) struct ComputeOpts {
     pub(crate) actor: String,
     pub(crate) hub_home: String,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ComputeWorker {
     pub(crate) s: pulse_store::Store,
     pub(crate) o: ComputeOpts,
-    pub(crate) inflight: Mutex<BTreeMap<String, bool>>,
-    pub(crate) no_source_day: Mutex<String>,
-    pub(crate) lines: Mutex<Vec<String>>,
+    pub(crate) inflight: Arc<Mutex<BTreeMap<String, bool>>>,
+    pub(crate) no_source_day: Arc<Mutex<String>>,
+    wg: Arc<(Mutex<usize>, Condvar)>,
+    wake_tx: crossbeam_channel::Sender<()>,
+    wake_rx: crossbeam_channel::Receiver<()>,
+    lines_tx: crossbeam_channel::Sender<String>,
+    lines_rx: crossbeam_channel::Receiver<String>,
 }
 /// Go: func newComputeWorker(ctx context.Context, s *store.Store, o computeOpts) *computeWorker
 pub(crate) fn new_compute_worker(
-    _cancel: &pulse_bus::CancellationToken,
+    cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
     o: ComputeOpts,
 ) -> ComputeWorker {
@@ -215,24 +219,67 @@ pub(crate) fn new_compute_worker(
     if o.actor.is_empty() {
         o.actor = "daemon".into();
     }
-    ComputeWorker {
+    let (wake_tx, wake_rx) = crossbeam_channel::bounded(1);
+    let (lines_tx, lines_rx) = crossbeam_channel::bounded(64);
+    let w = ComputeWorker {
         s: s.clone(),
         o,
-        inflight: Mutex::new(BTreeMap::new()),
-        no_source_day: Mutex::new(String::new()),
-        lines: Mutex::new(Vec::new()),
-    }
+        inflight: Arc::new(Mutex::new(BTreeMap::new())),
+        no_source_day: Arc::new(Mutex::new(String::new())),
+        wg: Arc::new((Mutex::new(0), Condvar::new())),
+        wake_tx,
+        wake_rx,
+        lines_tx,
+        lines_rx,
+    };
+    let (events, cancel_sub) = pulse_bus::default().subscribe(
+        pulse_bus::Filter {
+            actions: vec!["compute.approved".into()],
+            ..Default::default()
+        },
+        16,
+    );
+    let child = cancel.child();
+    let nudger = w.clone();
+    std::thread::Builder::new()
+        .name("compute-wake".into())
+        .spawn(move || {
+            let done = child.done();
+            loop {
+                crossbeam_channel::select! {
+                    recv(done) -> _ => break,
+                    recv(events) -> msg => {
+                        if msg.is_err() {
+                            break;
+                        }
+                        nudger.nudge();
+                    }
+                }
+            }
+            cancel_sub();
+        })
+        .expect("spawn compute wake");
+    w
 }
 impl ComputeWorker {
-    pub(crate) fn nudge(&self) {}
+    pub(crate) fn wake_rx(&self) -> crossbeam_channel::Receiver<()> {
+        self.wake_rx.clone()
+    }
+    pub(crate) fn nudge(&self) {
+        let _ = self.wake_tx.try_send(());
+    }
     pub(crate) fn say(&self, line: &str) {
         self.say_line(line.to_string());
     }
     pub(crate) fn say_line(&self, line: String) {
-        self.lines.lock().unwrap().push(line);
+        let _ = self.lines_tx.try_send(line);
     }
     pub(crate) fn drain(&self) -> Vec<String> {
-        std::mem::take(&mut *self.lines.lock().unwrap())
+        let mut out = Vec::new();
+        while let Ok(line) = self.lines_rx.try_recv() {
+            out.push(line);
+        }
+        out
     }
     pub(crate) fn claim(&self, id: &str) -> bool {
         let mut m = self.inflight.lock().unwrap();
@@ -253,11 +300,43 @@ impl ComputeWorker {
         if !self.claim(id) {
             return;
         }
-        fn_();
-        self.done(id);
+        {
+            let (mu, _) = &*self.wg;
+            *mu.lock().unwrap() += 1;
+        }
+        let id = id.to_string();
+        let worker = self.clone();
+        std::thread::Builder::new()
+            .name(format!("compute-{id}"))
+            .spawn(move || {
+                let id_for_panic = id.clone();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(fn_));
+                if let Err(panic) = result {
+                    let msg = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| (*s).to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown panic".into());
+                    worker.say_line(format!("compute {id_for_panic}: daemon error: {msg}"));
+                }
+                worker.done(&id);
+                let (mu, cv) = &*worker.wg;
+                let mut n = mu.lock().unwrap();
+                *n = n.saturating_sub(1);
+                cv.notify_all();
+            })
+            .expect("spawn compute worker");
     }
     /// Go: func (w *computeWorker) wait(grace time.Duration)
-    pub(crate) fn wait(&self, _grace: Duration) {}
+    pub(crate) fn wait(&self, grace: Duration) {
+        let (mu, cv) = &*self.wg;
+        let n = mu.lock().unwrap();
+        if grace.is_zero() {
+            drop(cv.wait_while(n, |n| *n > 0).unwrap());
+            return;
+        }
+        let _ = cv.wait_timeout_while(n, grace, |n| *n > 0).unwrap();
+    }
     /// Go: func (w *computeWorker) tick(ctx context.Context, now string) []string
     pub(crate) fn tick(&self, cancel: &pulse_bus::CancellationToken, now: &str) -> Vec<String> {
         if cancel.is_cancelled() {
@@ -267,7 +346,9 @@ impl ComputeWorker {
             Ok(approved) => {
                 for req in approved {
                     let c = cancel.clone();
-                    self.provision(&c, req);
+                    let worker = self.clone();
+                    let id = req.id.clone();
+                    self.start(&id, move || worker.provision(&c, req));
                 }
             }
             Err(e) => self.say_line(format!("compute: {}", crate::run::err_message(&e))),
@@ -283,10 +364,11 @@ impl ComputeWorker {
                     if let Some(p) = provider_named(&m.provider) {
                         let rctx = pulse_bus::CancellationToken::new()
                             .with_timeout(COMPUTE_RELEASE_BUDGET);
-                        if p.release(&rctx, &m).is_ok() {
-                            why.push_str("; the machine was released");
+                        if let Err(err) = p.release(&rctx, &m) {
+                            why.push_str("; releasing it failed: ");
+                            why.push_str(&redact_secrets(&crate::run::err_message(&err)));
                         } else {
-                            why.push_str("; releasing it failed");
+                            why.push_str("; the machine was released");
                         }
                     }
                 } else {
@@ -309,7 +391,10 @@ impl ComputeWorker {
             for req in ready {
                 let why = self.release_due(req.clone(), now);
                 if !why.is_empty() {
-                    self.release(cancel, req, &why);
+                    let c = cancel.clone();
+                    let worker = self.clone();
+                    let id = req.id.clone();
+                    self.start(&id, move || worker.release(&c, req, &why));
                 }
             }
         }

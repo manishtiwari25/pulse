@@ -5,8 +5,11 @@ use pulse_cli::flags::FlagSet;
 use rusqlite::params_from_iter;
 use serde::{Deserialize, Serialize};
 use std::io::{Seek, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
+
+const TEMP_SIGNERS_PATTERN: &str = "pulse-verify-*.signers";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signer {
@@ -245,7 +248,8 @@ pub fn verify_commit(
         return Ok(v);
     }
     let path = std::env::temp_dir().join(format!(
-        "pulse-verify-{}-{}.signers",
+        "{}{}-{}.signers",
+        TEMP_SIGNERS_PATTERN.trim_end_matches("*.signers"),
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -304,7 +308,7 @@ pub fn verify_commit(
                 "verified: signed by the key of run {id}, authored by {agent}, job {} on {executor}",
                 v.pulse_job
             );
-            let _ = std::fs::remove_file(&path);
+            remove_signers_file(&path)?;
             return Ok(v);
         }
     }
@@ -312,8 +316,12 @@ pub fn verify_commit(
         "NOT verified: no run of job {} signed this commit with its key as its agent",
         v.pulse_job
     );
-    let _ = std::fs::remove_file(&path);
+    remove_signers_file(&path)?;
     Ok(v)
+}
+
+fn remove_signers_file(path: &Path) -> Result<()> {
+    std::fs::remove_file(path).map_err(|e| anyhow!("remove temporary signers file: {e}"))
 }
 
 pub fn run_verify(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()> {

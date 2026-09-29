@@ -3,11 +3,11 @@ use anyhow::{Result, anyhow, bail};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const TOKEN_ENV: &str = "OP_SERVICE_ACCOUNT_TOKEN";
 pub const KEYCHAIN_SERVICE: &str = "pulse";
@@ -73,7 +73,20 @@ pub fn new(home: &str) -> Resolver {
 
 impl Resolver {
     fn run(&self) -> Runner {
-        self.run.clone().unwrap_or_else(|| Arc::new(exec))
+        self.run.clone().unwrap_or_else(|| {
+            let timeout = self.deadline();
+            Arc::new(move |name, args, stdin, env| {
+                exec_with_deadline(timeout, name, args, stdin, env)
+            })
+        })
+    }
+
+    fn deadline(&self) -> Duration {
+        if self.timeout.is_zero() {
+            Duration::from_secs(30)
+        } else {
+            self.timeout
+        }
     }
 
     fn getenv(&self, k: &str) -> String {
@@ -340,6 +353,27 @@ pub fn exec(
     stdin: &str,
     env: Option<&[String]>,
 ) -> Result<(String, String), RunError> {
+    exec_inner(None, name, args, stdin, env)
+}
+
+/// ExecWithDeadline is Exec bounded by the resolver's per-command deadline.
+pub fn exec_with_deadline(
+    timeout: Duration,
+    name: &str,
+    args: &[String],
+    stdin: &str,
+    env: Option<&[String]>,
+) -> Result<(String, String), RunError> {
+    exec_inner(Some(timeout), name, args, stdin, env)
+}
+
+fn exec_inner(
+    timeout: Option<Duration>,
+    name: &str,
+    args: &[String],
+    stdin: &str,
+    env: Option<&[String]>,
+) -> Result<(String, String), RunError> {
     let mut cmd = Command::new(name);
     cmd.args(args);
     if let Some(env) = env {
@@ -355,20 +389,52 @@ pub fn exec(
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| RunError::new(e.to_string()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| RunError::new("stdout pipe unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| RunError::new("stderr pipe unavailable"))?;
+    let out_reader = std::thread::spawn(move || {
+        let mut reader = stdout;
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut reader = stderr;
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    });
     if !stdin.is_empty()
         && let Some(mut pipe) = child.stdin.take()
     {
         pipe.write_all(stdin.as_bytes())
             .map_err(|e| RunError::new(e.to_string()))?;
     }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| RunError::new(e.to_string()))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    if !out.status.success() {
+    drop(child.stdin.take());
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| RunError::new(e.to_string()))? {
+            break status;
+        }
+        if timeout.is_some_and(|d| start.elapsed() >= d) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = out_reader.join();
+            let _ = err_reader.join();
+            return Err(RunError::new(format!("{name} timed out")));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = String::from_utf8_lossy(&out_reader.join().unwrap_or_default()).to_string();
+    let stderr = String::from_utf8_lossy(&err_reader.join().unwrap_or_default()).to_string();
+    if !status.success() {
         return Err(RunError::new(if stderr.trim().is_empty() {
-            format!("exit status {}", out.status)
+            format!("exit status {status}")
         } else {
             stderr.trim().to_string()
         }));
@@ -465,9 +531,10 @@ mod tests {
     use super::*;
     use crate::parse;
     use std::collections::BTreeMap;
+    use std::ops::{Deref, DerefMut};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
     const TEST_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
 
@@ -511,15 +578,39 @@ mod tests {
             .find_map(|kv| kv.strip_prefix(&format!("{key}=")).map(ToString::to_string))
     }
 
-    fn resolver(fake: &Fake, goos: &str, getenv: BTreeMap<String, String>) -> Resolver {
-        Resolver {
-            home: tempdir().unwrap().keep().display().to_string(),
+    struct TestResolver {
+        resolver: Resolver,
+        _home: TempDir,
+    }
+
+    impl Deref for TestResolver {
+        type Target = Resolver;
+
+        fn deref(&self) -> &Self::Target {
+            &self.resolver
+        }
+    }
+
+    impl DerefMut for TestResolver {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.resolver
+        }
+    }
+
+    fn resolver(fake: &Fake, goos: &str, getenv: BTreeMap<String, String>) -> TestResolver {
+        let home = tempdir().unwrap();
+        let resolver = Resolver {
+            home: home.path().display().to_string(),
             run: Some(fake.runner()),
             goos: goos.to_string(),
             getenv: Some(Arc::new(move |k| {
                 getenv.get(k).cloned().unwrap_or_default()
             })),
             ..Resolver::default()
+        };
+        TestResolver {
+            resolver,
+            _home: home,
         }
     }
 
@@ -532,6 +623,7 @@ mod tests {
 
     #[test]
     fn resolve_op_uses_service_account_token() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         // Like Go's t.Setenv: the resolver must strip these before running op.
         let saved: Vec<(&str, Option<String>)> = ["OP_CONNECT_HOST", "OP_CONNECT_TOKEN", TOKEN_ENV]
@@ -610,6 +702,7 @@ mod tests {
 
     #[test]
     fn resolve_op_without_token_says_how() {
+        let _serial = crate::test_helpers::serial();
         let fake = Fake::default();
         let r = resolver(&fake, "linux", BTreeMap::new());
         let err = r
@@ -622,6 +715,7 @@ mod tests {
 
     #[test]
     fn resolve_op_token_from_file_and_error_redaction() {
+        let _serial = crate::test_helpers::serial();
         let mut replies: BTreeMap<String, Reply> = BTreeMap::new();
         replies.insert(
             "op".to_string(),
@@ -647,6 +741,7 @@ mod tests {
 
     #[test]
     fn resolve_op_refuses_non_key_with_hint() {
+        let _serial = crate::test_helpers::serial();
         let mut replies: BTreeMap<String, Reply> = BTreeMap::new();
         replies.insert(
             "op".to_string(),
@@ -670,6 +765,7 @@ mod tests {
 
     #[test]
     fn resolve_keychain_decodes_hex() {
+        let _serial = crate::test_helpers::serial();
         let mut replies: BTreeMap<String, Reply> = BTreeMap::new();
         replies.insert(
             "security".to_string(),
@@ -696,6 +792,7 @@ mod tests {
 
     #[test]
     fn resolve_file() {
+        let _serial = crate::test_helpers::serial();
         let r = resolver(&Fake::default(), "linux", BTreeMap::new());
         let dir = tempdir().unwrap();
         let good = dir.path().join("key");
@@ -743,6 +840,7 @@ mod tests {
 
     #[test]
     fn resolve_refused_inside_worker() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempdir().unwrap();
         let good = dir.path().join("key");
         fs::write(&good, TEST_KEY).unwrap();
@@ -759,6 +857,7 @@ mod tests {
 
     #[test]
     fn store_token() {
+        let _serial = crate::test_helpers::serial();
         let mut replies: BTreeMap<String, Reply> = BTreeMap::new();
         replies.insert(
             "security".to_string(),
@@ -805,6 +904,7 @@ mod tests {
 
     #[test]
     fn token_prefers_environment() {
+        let _serial = crate::test_helpers::serial();
         let fake = Fake::default();
         let mut env = BTreeMap::new();
         env.insert(
@@ -820,6 +920,7 @@ mod tests {
 
     #[test]
     fn inspect() {
+        let _serial = crate::test_helpers::serial();
         let mut replies: BTreeMap<String, Reply> = BTreeMap::new();
         replies.insert(
             "ssh-keygen".to_string(),
@@ -847,11 +948,12 @@ mod tests {
     }
 
     #[test]
-    fn redact_cases() {
+    fn redact() {
+        let _serial = crate::test_helpers::serial();
         let input = format!(
             "failed: {TEST_KEY} token ops_abcdefghijklmnopqrstuvwxyz0123456789 and plain-secret end"
         );
-        let out = redact(&input, &["plain-secret"]);
+        let out = super::redact(&input, &["plain-secret"]);
         for leak in ["b3BlbnNzaC", "ops_abc", "plain-secret"] {
             assert!(!out.contains(leak), "{out}");
         }
@@ -859,19 +961,20 @@ mod tests {
         assert!(out.contains("[token]"));
         assert!(out.contains("[redacted]"));
         assert!(out.ends_with("end"));
-        assert_eq!(redact("clean text", &[]), "clean text");
-        assert!(!redact("x -----BEGIN RSA PRIVATE KEY-----\nabc", &[]).contains("abc"));
+        assert_eq!(super::redact("clean text", &[]), "clean text");
+        assert!(!super::redact("x -----BEGIN RSA PRIVATE KEY-----\nabc", &[]).contains("abc"));
     }
 
     #[test]
-    fn is_private_key_cases() {
+    fn is_private_key() {
+        let _serial = crate::test_helpers::serial();
         for ok in [
             TEST_KEY,
             "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----",
             "  -----BEGIN PRIVATE KEY-----\n",
             "-----BEGIN EC PRIVATE KEY-----",
         ] {
-            assert!(is_private_key(ok.as_bytes()), "{ok}");
+            assert!(super::is_private_key(ok.as_bytes()), "{ok}");
         }
         for no in [
             "",
@@ -880,7 +983,27 @@ mod tests {
             "ghp_token",
             "-----BEGIN PUBLIC KEY-----",
         ] {
-            assert!(!is_private_key(no.as_bytes()), "{no}");
+            assert!(!super::is_private_key(no.as_bytes()), "{no}");
         }
+    }
+
+    #[test]
+    fn exec_times_out_with_go_message() {
+        let _serial = crate::test_helpers::serial();
+        let start = Instant::now();
+        let err = exec_with_deadline(
+            Duration::from_millis(100),
+            "sleep",
+            &["5".to_string()],
+            "",
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "sleep timed out");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "timeout returned too late: {:?}",
+            start.elapsed()
+        );
     }
 }

@@ -57,6 +57,7 @@ pub struct Config {
     pub deny: Vec<String>,
     pub provider: String,
     pub cancel_file: String,
+    pub cancel_reason: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +209,8 @@ pub struct Agent {
 }
 
 pub const ERR_OWNER_CANCELLED: &str = "cancelled by the owner";
+pub const ERR_HARNESS_PROVIDER_NIL: &str = "harness provider is nil";
+pub const ERR_HARNESS_ENVIRONMENT_NIL: &str = "harness environment is nil";
 pub use ERR_OWNER_CANCELLED as ErrOwnerCancelled;
 
 struct DenyRule {
@@ -352,7 +355,11 @@ impl Agent {
                         return Ok(self.finish(EXIT_TIME_LIMIT, "", &msg));
                     }
                     if cancel.is_cancelled() {
-                        self.cancel_reason = "interrupted: context canceled".to_string();
+                        self.cancel_reason = if self.cfg.cancel_reason.is_empty() {
+                            "interrupted: context canceled".to_string()
+                        } else {
+                            self.cfg.cancel_reason.clone()
+                        };
                         let msg = self.limit_error(EXIT_CANCELLED);
                         self.emit(Step {
                             kind: StepKind::Error,
@@ -459,7 +466,11 @@ impl Agent {
             return Some(EXIT_CANCELLED.to_string());
         }
         if cancel.is_cancelled() {
-            self.cancel_reason = "interrupted: context canceled".to_string();
+            self.cancel_reason = if self.cfg.cancel_reason.is_empty() {
+                "interrupted: context canceled".to_string()
+            } else {
+                self.cfg.cancel_reason.clone()
+            };
             return Some(EXIT_CANCELLED.to_string());
         }
         if self.result.calls >= self.cfg.max_steps {
@@ -1166,7 +1177,8 @@ pub(crate) fn shared_agent(agent: Agent) -> Arc<std::sync::Mutex<Agent>> {
 mod tests {
     use super::*;
     use pulse_provider::{Login, Model};
-    use std::sync::{Arc, Mutex};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Condvar, Mutex};
 
     struct FakeProvider {
         responses: Mutex<Vec<pulse_provider::Response>>,
@@ -1226,6 +1238,112 @@ mod tests {
         }
         fn status(&self, _cancel: &CancelToken) -> anyhow::Result<Login> {
             Ok(Login::default())
+        }
+    }
+
+    struct BudgetAwareProvider {
+        requests: Mutex<Vec<Request>>,
+    }
+
+    impl BudgetAwareProvider {
+        fn requests(&self) -> Vec<Request> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    struct SharedBudgetProvider(Arc<BudgetAwareProvider>);
+
+    impl Provider for SharedBudgetProvider {
+        fn name(&self) -> &str {
+            "budget-aware"
+        }
+        fn label(&self) -> &str {
+            "Budget Aware"
+        }
+        fn chat(
+            &self,
+            _cancel: &CancelToken,
+            req: Request,
+        ) -> anyhow::Result<pulse_provider::Response> {
+            self.0.requests.lock().unwrap().push(req.clone());
+            if request_has_budget_notice(&req) {
+                return Ok(resp(msg("SUMMARY: done after notice")));
+            }
+            Ok(resp(tool("true")))
+        }
+        fn models(&self, _cancel: &CancelToken) -> anyhow::Result<Vec<Model>> {
+            Ok(Vec::new())
+        }
+        fn status(&self, _cancel: &CancelToken) -> anyhow::Result<Login> {
+            Ok(Login::default())
+        }
+    }
+
+    struct BlockingProvider {
+        started: (Mutex<bool>, Condvar),
+    }
+
+    struct SharedBlockingProvider(Arc<BlockingProvider>);
+
+    impl Provider for SharedBlockingProvider {
+        fn name(&self) -> &str {
+            "blocking"
+        }
+        fn label(&self) -> &str {
+            "Blocking"
+        }
+        fn chat(
+            &self,
+            cancel: &CancelToken,
+            _req: Request,
+        ) -> anyhow::Result<pulse_provider::Response> {
+            let (lock, cv) = &self.0.started;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+            while !cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(anyhow!("context canceled"))
+        }
+        fn models(&self, _cancel: &CancelToken) -> anyhow::Result<Vec<Model>> {
+            Ok(Vec::new())
+        }
+        fn status(&self, _cancel: &CancelToken) -> anyhow::Result<Login> {
+            Ok(Login::default())
+        }
+    }
+
+    struct TestTrajectorySink {
+        path: String,
+        steps: Vec<Step>,
+    }
+
+    impl Sink for TestTrajectorySink {
+        fn step(&mut self, step: Step) {
+            self.steps.push(step);
+            let traj = Trajectory {
+                trajectory_format: "pulse-harness-1".into(),
+                info: TrajectoryInfo {
+                    model_stats: ModelStats {
+                        api_calls: 0,
+                        prompt_tokens: 0,
+                        completion_tokens: 0,
+                        cost: 0.0,
+                    },
+                    exit_status: String::new(),
+                    submission: String::new(),
+                    config: TrajectoryConfig {
+                        model: String::new(),
+                        provider: String::new(),
+                        max_steps: 0,
+                        step_timeout_seconds: 0,
+                        cwd: String::new(),
+                    },
+                },
+                messages: Vec::new(),
+                steps: self.steps.clone(),
+            };
+            super::write_trajectory(&self.path, &traj).unwrap();
         }
     }
 
@@ -1305,6 +1423,25 @@ mod tests {
         }
     }
 
+    fn request_has_budget_notice(req: &Request) -> bool {
+        req.messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content.starts_with("Budget notice:"))
+    }
+
+    fn request_chars_for_test(req: &Request) -> usize {
+        req.messages
+            .iter()
+            .map(|m| {
+                m.content.len()
+                    + m.tool_calls
+                        .iter()
+                        .map(|call| call.arguments.len())
+                        .sum::<usize>()
+            })
+            .sum()
+    }
+
     fn run_agent(
         p: Arc<FakeProvider>,
         env: Arc<Mutex<FakeEnv>>,
@@ -1322,6 +1459,7 @@ mod tests {
 
     #[test]
     fn tool_call_path_submits() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![
             pulse_provider::Response {
                 message: Some(tool("echo hi")),
@@ -1368,6 +1506,7 @@ mod tests {
 
     #[test]
     fn default_prompt_template_renders_like_default_system_prompt() {
+        let _serial = crate::test_helpers::serial();
         let cfg = Config {
             cwd: "/repo".into(),
             model: "m".into(),
@@ -1395,7 +1534,8 @@ mod tests {
     }
 
     #[test]
-    fn text_mode_path_appends_user_observation() {
+    fn text_mode_path_and_two_block_format_error() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![
             resp(msg("```bash\necho hi\n```")),
             resp(msg("SUMMARY: done")),
@@ -1412,10 +1552,7 @@ mod tests {
         assert_eq!(got.exit_status, EXIT_SUBMITTED);
         assert_eq!(h.messages()[3].role, Role::User);
         assert!(h.messages()[3].content.contains("hi"));
-    }
 
-    #[test]
-    fn two_block_format_error_stops_when_limit_reached() {
         let mut cfg = base_config();
         cfg.max_format_errors = 1;
         let p = Arc::new(FakeProvider::new(vec![resp(msg(
@@ -1424,11 +1561,13 @@ mod tests {
         let env = Arc::new(Mutex::new(FakeEnv::default()));
         let (h, got) = run_agent(p, env, cfg).unwrap();
         assert_eq!(got.exit_status, EXIT_FORMAT_ERROR);
-        assert!(h.messages()[3].content.contains("write exactly one"));
+        let last_user = &h.messages()[3];
+        assert!(last_user.content.contains("write exactly one"));
     }
 
     #[test]
     fn format_errors_stop_after_three_plan_only_messages() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![
             resp(msg("I will inspect first.")),
             resp(msg("Plan: run tests.")),
@@ -1448,17 +1587,41 @@ mod tests {
     }
 
     #[test]
-    fn step_limit() {
+    fn limits() {
+        let _serial = crate::test_helpers::serial();
         let mut cfg = base_config();
         cfg.max_steps = 1;
         let p = Arc::new(FakeProvider::new(vec![resp(tool("echo hi"))]));
         let (_, got) = run_agent(p, Arc::new(Mutex::new(FakeEnv::default())), cfg).unwrap();
         assert_eq!(got.exit_status, EXIT_STEP_LIMIT);
         assert_eq!(got.calls, 1);
+
+        let mut cfg = base_config();
+        cfg.wall_time = Duration::from_millis(50);
+        cfg.step_timeout = Duration::from_secs(1);
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = new(
+            Box::new(SharedFakeProvider(Arc::new(FakeProvider::new(vec![resp(
+                msg("```bash\nsleep 5\n```"),
+            )])))),
+            Box::new(crate::localenv::new_local_env(
+                dir.path().display().to_string(),
+                None,
+            )),
+            cfg,
+            Vec::new(),
+        );
+        let got = h.run().unwrap();
+        assert_eq!(
+            got.exit_status, EXIT_TIME_LIMIT,
+            "exit = {}, want {}",
+            got.exit_status, EXIT_TIME_LIMIT
+        );
     }
 
     #[test]
     fn cost_limit_stops_run() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![
             pulse_provider::Response {
                 message: Some(tool("echo one")),
@@ -1502,6 +1665,7 @@ mod tests {
 
     #[test]
     fn budget_notice_not_sent_below_ten_steps() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(
             (0..9).map(|_| resp(tool("true"))).collect(),
         ));
@@ -1525,7 +1689,67 @@ mod tests {
     }
 
     #[test]
+    fn budget_notice_appears_once_and_can_submit() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(BudgetAwareProvider {
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut cfg = base_config();
+        cfg.max_steps = 20;
+        let notes: Arc<Mutex<Vec<Step>>> = Arc::new(Mutex::new(Vec::new()));
+        let notes_sink = notes.clone();
+        let mut h = new(
+            Box::new(SharedBudgetProvider(p.clone())),
+            Box::new(Arc::new(Mutex::new(FakeEnv {
+                default_output: "ok\n".into(),
+                ..FakeEnv::default()
+            }))),
+            cfg.clone(),
+            vec![Box::new(SinkFunc(move |s| {
+                if s.kind == StepKind::Note && s.content.starts_with("Budget notice:") {
+                    notes_sink.lock().unwrap().push(s);
+                }
+            }))],
+        );
+        let got = h.run().unwrap();
+        assert!(
+            got.exit_status == EXIT_SUBMITTED
+                && got.calls == 19
+                && got.submission.contains("SUMMARY: done after notice"),
+            "unexpected result: {got:?}"
+        );
+        assert_eq!(
+            notes.lock().unwrap().len(),
+            1,
+            "budget notes = {}, want 1",
+            notes.lock().unwrap().len()
+        );
+        let reqs = p.requests();
+        let notice_req = cfg.max_steps - 5.min(cfg.max_steps / 10);
+        assert!(
+            reqs.len() == got.calls as usize
+                && request_has_budget_notice(&reqs[notice_req as usize]),
+            "notice missing from request {notice_req} of {}",
+            reqs.len()
+        );
+        for (i, req) in reqs.iter().enumerate() {
+            let count = req
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::User && m.content.starts_with("Budget notice:"))
+                .count();
+            if i < notice_req as usize {
+                assert_eq!(count, 0, "request {i} has early budget notice");
+            }
+            if i >= notice_req as usize {
+                assert_eq!(count, 1, "request {i} budget notices = {count}, want 1");
+            }
+        }
+    }
+
+    #[test]
     fn prune_note_emitted_once_per_level() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![
             resp(tool("long")),
             resp(tool("long")),
@@ -1559,7 +1783,61 @@ mod tests {
     }
 
     #[test]
+    fn long_run_stays_under_window() {
+        let _serial = crate::test_helpers::serial();
+        let mut responses = (0..80)
+            .map(|_| {
+                let mut r = resp(tool("yes | head -c 20000"));
+                r.usage.prompt_tokens = 1;
+                r
+            })
+            .collect::<Vec<_>>();
+        responses.push(resp(msg("SUMMARY: done")));
+        let p = Arc::new(FakeProvider::new(responses));
+        let mut cfg = base_config();
+        cfg.max_steps = 100;
+        cfg.context_window = 128000;
+        cfg.output_limit = 20000;
+        let notes: Arc<Mutex<Vec<Step>>> = Arc::new(Mutex::new(Vec::new()));
+        let notes_sink = notes.clone();
+        let mut h = new(
+            Box::new(SharedFakeProvider(p.clone())),
+            Box::new(Arc::new(Mutex::new(FakeEnv {
+                default_output: "x\n".repeat(10000),
+                ..FakeEnv::default()
+            }))),
+            cfg.clone(),
+            vec![Box::new(SinkFunc(move |s| {
+                if s.kind == StepKind::Note {
+                    notes_sink.lock().unwrap().push(s);
+                }
+            }))],
+        );
+        let got = h.run().unwrap();
+        assert_eq!(
+            got.exit_status, EXIT_SUBMITTED,
+            "exit = {}",
+            got.exit_status
+        );
+        let limit = (0.8 * f64::from(cfg.context_window)) as usize;
+        for (i, req) in p.requests().iter().enumerate() {
+            if i < 6 {
+                continue;
+            }
+            let chars = request_chars_for_test(req);
+            if ((chars as f64) * 0.25) as usize > limit {
+                panic!(
+                    "request {i} has {chars} chars (~{} tokens), over limit {limit}",
+                    ((chars as f64) * 0.25) as usize
+                );
+            }
+        }
+        assert!(!notes.lock().unwrap().is_empty(), "no prune note emitted");
+    }
+
+    #[test]
     fn deny_refuses_without_executing() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![
             resp(tool("git push origin main")),
             resp(msg("SUMMARY: done")),
@@ -1572,7 +1850,26 @@ mod tests {
     }
 
     #[test]
+    fn local_env_timeout_kills_process_group() {
+        let _serial = crate::test_helpers::serial();
+        let start = Instant::now();
+        let dir = tempfile::tempdir().unwrap();
+        let obs = crate::localenv::new_local_env(dir.path().display().to_string(), None).execute(
+            &CancelToken::new(),
+            "sleep 5",
+            Duration::from_millis(200),
+        );
+        assert!(obs.timed_out && obs.exit_code == -1, "obs = {obs:?}");
+        assert!(
+            start.elapsed() <= Duration::from_secs(2),
+            "timeout took too long: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
     fn truncation_keeps_head_tail() {
+        let _serial = crate::test_helpers::serial();
         let out = format_observation(
             &Observation {
                 output: "abcdefghijklmnopqrstuvwxyz".into(),
@@ -1588,6 +1885,7 @@ mod tests {
 
     #[test]
     fn provider_errors() {
+        let _serial = crate::test_helpers::serial();
         for (err, want) in [
             (
                 anyhow!(pulse_provider::err_not_logged_in()),
@@ -1607,7 +1905,8 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_reports_owner_reason_from_file() {
+    fn cancellation_reports_owner_reason() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let cancel_file = dir.path().join("cancel");
         fs::write(&cancel_file, "stop").unwrap();
@@ -1617,10 +1916,67 @@ mod tests {
         let (_, got) = run_agent(p, Arc::new(Mutex::new(FakeEnv::default())), cfg).unwrap();
         assert_eq!(got.exit_status, EXIT_CANCELLED);
         assert_eq!(got.error, ERR_OWNER_CANCELLED);
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let mut cfg = base_config();
+        cfg.cancel_reason = ERR_OWNER_CANCELLED.into();
+        let mut h = new(
+            Box::new(SharedFakeProvider(Arc::new(FakeProvider::new(Vec::new())))),
+            Box::new(Arc::new(Mutex::new(FakeEnv::default()))),
+            cfg,
+            Vec::new(),
+        );
+        let got = h.run_with_cancel(&cancel).unwrap();
+        assert_eq!(got.exit_status, EXIT_CANCELLED);
+        assert_eq!(got.error, ERR_OWNER_CANCELLED);
+    }
+
+    #[test]
+    fn provider_call_cancellation_reports_cancel_reason() {
+        let _serial = crate::test_helpers::serial();
+        for (name, owner, want) in [
+            ("plain", false, "interrupted: context canceled"),
+            ("owner", true, ERR_OWNER_CANCELLED),
+        ] {
+            let p = Arc::new(BlockingProvider {
+                started: (Mutex::new(false), Condvar::new()),
+            });
+            let cancel = CancelToken::new();
+            let mut cfg = base_config();
+            if owner {
+                cfg.cancel_reason = ERR_OWNER_CANCELLED.into();
+            }
+            let token = cancel.clone();
+            let provider = p.clone();
+            let done = std::thread::spawn(move || {
+                let mut h = new(
+                    Box::new(SharedBlockingProvider(provider)),
+                    Box::new(Arc::new(Mutex::new(FakeEnv::default()))),
+                    cfg,
+                    Vec::new(),
+                );
+                h.run_with_cancel(&token)
+            });
+            let (lock, cv) = &p.started;
+            let started = cv
+                .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(1), |started| {
+                    !*started
+                })
+                .unwrap();
+            assert!(*started.0, "provider call did not start");
+            cancel.cancel();
+            let got = done.join().unwrap().unwrap();
+            assert!(
+                got.exit_status == EXIT_CANCELLED && got.error == want,
+                "{name} cancel result = {got:?}, want {want:?}"
+            );
+        }
     }
 
     #[test]
     fn write_trajectory() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![resp(msg("SUMMARY: done"))]));
         let (h, got) =
             run_agent(p, Arc::new(Mutex::new(FakeEnv::default())), base_config()).unwrap();
@@ -1634,7 +1990,82 @@ mod tests {
     }
 
     #[test]
+    fn trajectory_written_every_step() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trajectory.json");
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("echo hi")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            observations: vec![Observation {
+                output: "hi\n".into(),
+                exit_code: 0,
+                ..Observation::default()
+            }],
+            ..FakeEnv::default()
+        }));
+        let trajectory_log = TestTrajectorySink {
+            path: path.display().to_string(),
+            steps: Vec::new(),
+        };
+        let saw_checkpoint = Arc::new(Mutex::new(false));
+        let saw = saw_checkpoint.clone();
+        let check_path = path.clone();
+        let check = SinkFunc(move |s: Step| {
+            if s.n != 1 {
+                return;
+            }
+            let data = fs::read_to_string(&check_path).unwrap();
+            let traj: Trajectory = serde_json::from_str(&data).unwrap();
+            assert!(
+                traj.steps.len() >= 2,
+                "checkpoint has {} steps, want at least 2",
+                traj.steps.len()
+            );
+            *saw.lock().unwrap() = true;
+        });
+        let mut agent = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(env),
+            base_config(),
+            vec![Box::new(trajectory_log), Box::new(check)],
+        );
+        let got = agent.run().unwrap();
+        assert_eq!(
+            got.exit_status, EXIT_SUBMITTED,
+            "exit = {}",
+            got.exit_status
+        );
+        assert!(
+            *saw_checkpoint.lock().unwrap(),
+            "checkpoint was not observed after the second step"
+        );
+        super::write_trajectory(path.to_str().unwrap(), &agent.trajectory()).unwrap();
+        let data = fs::read_to_string(&path).unwrap();
+        let traj: Trajectory = serde_json::from_str(&data).unwrap();
+        assert_eq!(
+            traj.steps.len(),
+            agent.trajectory().steps.len(),
+            "final trajectory steps = {}, want {}",
+            traj.steps.len(),
+            agent.trajectory().steps.len()
+        );
+        assert!(
+            fs::metadata(path.with_extension("json.tmp")).is_err(),
+            "tmp file left behind"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(data.contains("call-1"));
+    }
+
+    #[test]
     fn sink_panic_is_swallowed() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![resp(msg("SUMMARY: done"))]));
         let mut h = new(
             Box::new(SharedFakeProvider(p)),
@@ -1648,6 +2079,7 @@ mod tests {
 
     #[test]
     fn complete_task_marker_from_command_output_submits() {
+        let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![resp(msg(
             "```bash\necho marker\n```",
         ))]));
@@ -1666,6 +2098,7 @@ mod tests {
 
     #[test]
     fn unsuccessful_command_cannot_submit() {
+        let _serial = crate::test_helpers::serial();
         for obs in [
             Observation {
                 output: "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\nSUMMARY: prematurely done".into(),
@@ -1705,6 +2138,7 @@ mod tests {
 
     #[test]
     fn recovery_guidance_preserves_limits_and_policy() {
+        let _serial = crate::test_helpers::serial();
         let prompt = default_system_prompt(
             &Arc::new(Mutex::new(FakeEnv::default())).info(),
             base_config(),
@@ -1750,6 +2184,7 @@ mod tests {
 
     #[test]
     fn prune_history_keep_n_collapses_older_observations() {
+        let _serial = crate::test_helpers::serial();
         let msgs = vec![
             Message {
                 role: Role::System,
@@ -1792,6 +2227,7 @@ mod tests {
 
     #[test]
     fn prune_history_marker_idempotence() {
+        let _serial = crate::test_helpers::serial();
         let msgs = vec![
             msg("system"),
             Message { role: Role::User, content: "task".into(), tool_calls: Vec::new(), tool_call_id: String::new(), name: String::new() },
@@ -1805,6 +2241,7 @@ mod tests {
 
     #[test]
     fn prune_history_leaves_short_outputs_unchanged() {
+        let _serial = crate::test_helpers::serial();
         for output in ["a\nb\nc", "a\nb\nc\nd"] {
             let msgs = vec![
                 msg("system"),
@@ -1840,6 +2277,7 @@ mod tests {
 
     #[test]
     fn prune_history_level2_one_liners() {
+        let _serial = crate::test_helpers::serial();
         let msgs = vec![
             msg("system"),
             Message {
@@ -1876,6 +2314,7 @@ mod tests {
 
     #[test]
     fn prune_history_preserves_tool_call_ids_and_first_two_messages() {
+        let _serial = crate::test_helpers::serial();
         let msgs = vec![
             Message {
                 role: Role::System,
@@ -1924,6 +2363,7 @@ mod tests {
 
     #[test]
     fn prune_history_recognizes_fenced_mode_user_observations() {
+        let _serial = crate::test_helpers::serial();
         let msgs = vec![
             msg("system"),
             Message {

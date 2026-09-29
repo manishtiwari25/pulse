@@ -14,8 +14,8 @@ pub(crate) const HUB_PORT: i32 = 8765;
 pub(crate) const LAUNCHER_NAME: &str = "pulse-daemon.sh";
 pub(crate) static SERVICE_SLEEP: LazyLock<RwLock<fn(std::time::Duration)>> =
     LazyLock::new(|| RwLock::new(std::thread::sleep));
-pub(crate) fn set_service_sleep(f: fn(std::time::Duration)) {
-    *SERVICE_SLEEP.write().expect("service sleep lock") = f;
+pub(crate) fn set_service_sleep(f: fn(std::time::Duration)) -> fn(std::time::Duration) {
+    std::mem::replace(&mut *SERVICE_SLEEP.write().expect("service sleep lock"), f)
 }
 pub(crate) type RunServiceFn = dyn Fn(Vec<String>) -> (i32, String) + Send + Sync;
 pub(crate) static RUN_SERVICE: LazyLock<RwLock<Box<RunServiceFn>>> = LazyLock::new(|| {
@@ -33,8 +33,8 @@ pub(crate) static RUN_SERVICE: LazyLock<RwLock<Box<RunServiceFn>>> = LazyLock::n
         }
     }))
 });
-pub(crate) fn set_run_service(f: Box<RunServiceFn>) {
-    *RUN_SERVICE.write().expect("run service lock") = f;
+pub(crate) fn set_run_service(f: Box<RunServiceFn>) -> Box<RunServiceFn> {
+    std::mem::replace(&mut *RUN_SERVICE.write().expect("run service lock"), f)
 }
 pub(crate) static PROTECTED_FOLDERS: &[&str] = &["Desktop", "Documents", "Downloads"];
 

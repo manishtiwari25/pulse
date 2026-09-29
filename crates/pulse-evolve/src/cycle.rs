@@ -498,19 +498,28 @@ pub fn cycle(
                 }
             }
         }
-        if let Ok(event) = events.recv_timeout(interval)
-            && (event.action == "constitution.violation" || event.action == "evolution.violation")
-            && (event.project() == project || event.subject == owned_job)
-        {
-            ret = stop_cycle(
-                s,
-                project,
-                None,
-                &mut opts,
-                &owned_job,
-                "runner reported a constraint violation",
-            );
-            break;
+        match events.recv_timeout(interval) {
+            Ok(event)
+                if (event.action == "constitution.violation"
+                    || event.action == "evolution.violation")
+                    && (event.project() == project || event.subject == owned_job) =>
+            {
+                ret = stop_cycle(
+                    s,
+                    project,
+                    None,
+                    &mut opts,
+                    &owned_job,
+                    "runner reported a constraint violation",
+                );
+                break;
+            }
+            Ok(_) => {}
+            Err(e) if e.is_timeout() => {}
+            Err(_) => {
+                ret = Err(anyhow!("evolution event subscription closed"));
+                break;
+            }
         }
     }
     unsubscribe();

@@ -1,10 +1,9 @@
-#![allow(unused_variables, dead_code, unused_imports)]
-
 use crate::httpx::{self, HandlerFn};
 use crate::server::UiFs;
 use pulse_bus::CancellationToken;
 use std::collections::BTreeMap;
 use std::net::TcpListener;
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 
 pub(crate) struct TestServer {
@@ -48,7 +47,22 @@ pub(crate) fn client() -> reqwest::blocking::Client {
 }
 
 pub(crate) fn test_main_setup() {
-    todo!("hub::test_helpers::test_main_setup pulse_tasks::LOGIN_SOURCE_CHECK")
+    *pulse_tasks::LOGIN_SOURCE_CHECK
+        .write()
+        .expect("login source check lock poisoned") = Some(|_| true);
+}
+
+pub(crate) fn serial() -> MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub(crate) fn hold_tempdir(dir: tempfile::TempDir) -> std::path::PathBuf {
+    static DIRS: std::sync::LazyLock<Mutex<Vec<tempfile::TempDir>>> =
+        std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+    let path = dir.path().to_path_buf();
+    DIRS.lock().unwrap_or_else(|e| e.into_inner()).push(dir);
+    path
 }
 
 pub(crate) struct MapFs(pub(crate) BTreeMap<String, Vec<u8>>);
@@ -70,44 +84,4 @@ impl UiFs for MapFs {
             .keys()
             .any(|k| k.starts_with(&prefix) && k.len() > prefix.len())
     }
-}
-
-/// Shared Go test helpers skeletoned for fill agents:
-/// server_test.go: confirmedRequest;
-/// golden_test.go: normalizeGolden, readGolden, copySnapshot, jsonDifferences, rosterGolden, documentedDifference, threadEnrichmentGoldenField;
-/// additions_test.go: additionsStore, additionsRequest, additionsProject, additionsRecord, additionsEventSubjects, additionsStreamEvents;
-/// decisions_test.go: decisionsFixture, proposedADR, lastRevision;
-/// folders_test.go: foldersRequest, folderNames;
-/// job_repair_test.go: jobRepairHandler, jobRepairRequest, jobRepairStore, repairRowCount;
-/// harness_test.go: registerHubFakeProvider, registerHubCacheProvider, harnessStore, fakeState;
-/// heldout_test.go: heldoutRequest;
-/// cred_test.go: credRequest, credUpstream, jsonBody;
-/// starter_test.go: assertEvolutionFixtures, starterStore, templateStore;
-/// read_test.go: projectReaderFixture; running_test.go: mustOutput; lifecycle_test.go: jsonString, mustJSON, lifecycleRepo; code_deliveries_test.go: codeDeliveryReport, seedCodeDeliveryEvent, strconvInt64; evolution_test.go: assertEvolutionShape; evolution_summary_status_truth_test.go: assertEvolutionSummaryStatusTruthShape.
-pub(crate) fn confirmed_request() {
-    todo!("hub::test_helpers::confirmed_request")
-}
-pub(crate) fn normalize_golden() {
-    todo!("hub::test_helpers::normalize_golden")
-}
-pub(crate) fn read_golden() {
-    todo!("hub::test_helpers::read_golden")
-}
-pub(crate) fn copy_snapshot() {
-    todo!("hub::test_helpers::copy_snapshot")
-}
-pub(crate) fn json_differences() {
-    todo!("hub::test_helpers::json_differences")
-}
-pub(crate) fn additions_store() {
-    todo!("hub::test_helpers::additions_store")
-}
-pub(crate) fn additions_request() {
-    todo!("hub::test_helpers::additions_request")
-}
-pub(crate) fn additions_project() {
-    todo!("hub::test_helpers::additions_project")
-}
-pub(crate) fn additions_record() {
-    todo!("hub::test_helpers::additions_record")
 }

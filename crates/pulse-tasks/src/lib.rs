@@ -14,3 +14,9 @@ pub use work::*;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    pub(crate) fn serial() -> impl Drop {
+        pulse_testutil::env_lock()
+    }
+}

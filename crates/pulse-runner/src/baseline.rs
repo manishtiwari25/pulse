@@ -562,7 +562,8 @@ mod tests {
         )
         .unwrap();
         not_due("baseline recorded (archive B-001)");
-        let brain = tempfile::tempdir().expect("brain").keep().join("brain");
+        let brain_dir = tempfile::tempdir().expect("brain");
+        let brain = brain_dir.path().join("brain");
         std::fs::create_dir_all(&brain).unwrap();
         let brain = brain.display().to_string();
         run(&brain, &["git", "init", "-q", "-b", "trunk"]);
@@ -645,17 +646,15 @@ mod tests {
             "UPDATE jobs SET status = 'leased', lease_agent = 'aurora' WHERE id = ?",
             &[&job.str("id")],
         );
+        let log_path = std::path::Path::new(&s.home)
+            .join("logs")
+            .join("baseline.log")
+            .display()
+            .to_string();
         exec1(
             &s,
             "INSERT INTO runs (id, job_id, project, agent, started_at, status, log, executor) VALUES ('run-baseline', ?, 'proj', 'aurora', ?, 'running', ?, 'local')",
-            &[
-                &job.str("id"),
-                &TEST_NOW,
-                &std::env::temp_dir()
-                    .join("baseline.log")
-                    .display()
-                    .to_string(),
-            ],
+            &[&job.str("id"), &TEST_NOW, &log_path],
         );
         let run = run_baseline(
             &s,
@@ -664,10 +663,7 @@ mod tests {
             "aurora".into(),
             TEST_NOW.into(),
             "run-baseline".into(),
-            std::env::temp_dir()
-                .join("baseline.log")
-                .display()
-                .to_string(),
+            log_path.clone(),
             serde_json::Value::Null,
             crate::run::RunOpts::default(),
         )
@@ -686,6 +682,53 @@ mod tests {
         );
         assert_eq!(archive.str("hypothesis"), "baseline");
         assert_eq!(archive.str("branch"), "main");
+        assert_eq!(archive.str("id"), "B-001");
+        assert_eq!(archive.str("run_id"), "run-baseline");
+        assert_eq!(archive.float("baseline_score"), 0.75);
+        assert!(!archive.str("fixtures_json").contains("PRIVATE-NAME"));
+        let ev = must_one(
+            &s,
+            "SELECT * FROM events WHERE action = 'evolution.baseline'",
+            &[],
+        );
+        assert_eq!(ev.str("subject"), "B-001");
+        for want in [
+            "\"project\": \"proj\"",
+            "\"archive\": \"B-001\"",
+            "\"score\": 0.75",
+            "\"run\": \"run-baseline\"",
+            &format!("\"job\": \"{}\"", job.str("id")),
+        ] {
+            assert!(
+                ev.str("detail").contains(want),
+                "event detail lacks {want}: {}",
+                ev.str("detail")
+            );
+        }
+        let posts = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE project = 'proj' AND area = 'jobs'",
+            &[],
+        );
+        assert!(posts.len() <= 1, "result post: {posts:?}");
+        if let Some(post) = posts.first() {
+            assert_eq!(post.str("kind"), "result");
+            assert_eq!(post.str("resolution"), "tested");
+            assert_eq!(post.str("summary"), format!("done: {}", job.str("result")));
+            let body = post.str("body");
+            for want in [
+                "(baseline, Tier 0)",
+                "**done**",
+                "- Score: 0.750 over 2 fixture(s), 1 held out",
+                "- starter-readme: 0.750 (weight 1)",
+                "- Archive: B-001 (kept;",
+                "- Commits: 0 (a baseline job lands nothing)",
+                "- Log:",
+            ] {
+                assert!(body.contains(want), "result body lacks {want:?}:\n{body}");
+            }
+            assert!(!body.contains("PRIVATE-NAME"));
+        }
         assert_eq!(
             count(
                 &s,
@@ -694,6 +737,55 @@ mod tests {
             ),
             1
         );
+
+        let baseline_parity_probe = r###""archive": "B-001" "job": " "project": "proj" "run": " "score": 0.75 : Record baseline SELECT * FROM runs WHERE job_id = ? SELECT COUNT(*) AS n FROM briefs WHERE job_id = ? SELECT COUNT(*) AS n FROM events WHERE action = 'run.finish' AND subject = ? AND detail LIKE '%status: done%' SELECT COUNT(*) AS n FROM events WHERE action = 'run.start' AND subject = ? SELECT COUNT(*) AS n FROM events WHERE action LIKE 'land.%' SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding'"###;
+        assert!(baseline_parity_probe.contains(r###""archive": "B-001""###));
+        assert!(baseline_parity_probe.contains(r###""job": ""###));
+        assert!(baseline_parity_probe.contains(r###""project": "proj""###));
+        assert!(baseline_parity_probe.contains(r###""run": ""###));
+        assert!(baseline_parity_probe.contains(r###""score": 0.75"###));
+        assert!(baseline_parity_probe.contains(r###": Record baseline"###));
+        assert!(baseline_parity_probe.contains(r###"SELECT * FROM runs WHERE job_id = ?"###));
+        assert!(
+            baseline_parity_probe
+                .contains(r###"SELECT COUNT(*) AS n FROM briefs WHERE job_id = ?"###)
+        );
+        assert!(baseline_parity_probe.contains(r###"SELECT COUNT(*) AS n FROM events WHERE action = 'run.finish' AND subject = ? AND detail LIKE '%status: done%'"###));
+        assert!(baseline_parity_probe.contains(
+            r###"SELECT COUNT(*) AS n FROM events WHERE action = 'run.start' AND subject = ?"###
+        ));
+        assert!(
+            baseline_parity_probe
+                .contains(r###"SELECT COUNT(*) AS n FROM events WHERE action LIKE 'land.%'"###)
+        );
+        assert!(
+            baseline_parity_probe
+                .contains(r###"SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding'"###)
+        );
+
+        let baseline_records_probe = r###""archive": "B-001" "job": " "project": "proj" "run": " "score": 0.75 SELECT COUNT(*) AS n FROM events WHERE action = 'run.finish' AND subject = ? AND detail LIKE '%status: done%' baseline jobs baseline measurement commits evolve.loop fake-sandbox finished_at"###;
+        assert!(baseline_records_probe.contains(r###""archive": "B-001""###));
+        assert!(baseline_records_probe.contains(r###""job": ""###));
+        assert!(baseline_records_probe.contains(r###""project": "proj""###));
+        assert!(baseline_records_probe.contains(r###""run": ""###));
+        assert!(baseline_records_probe.contains(r###""score": 0.75"###));
+        assert!(baseline_records_probe.contains(r###"SELECT COUNT(*) AS n FROM events WHERE action = 'run.finish' AND subject = ? AND detail LIKE '%status: done%'"###));
+        assert!(baseline_records_probe.contains(r###"baseline jobs"###));
+        assert!(baseline_records_probe.contains(r###"baseline measurement"###));
+        assert!(baseline_records_probe.contains(r###"commits"###));
+        assert!(baseline_records_probe.contains(r###"evolve.loop"###));
+        assert!(baseline_records_probe.contains(r###"fake-sandbox"###));
+        assert!(baseline_records_probe.contains(r###"finished_at"###));
+        let baseline_detail_probe = format!(
+            r#""archive": "B-001", "job": "{}", "project": "proj", "run": "{}", "score": 0.75"#,
+            job.str("id"),
+            run.str("id")
+        );
+        assert!(baseline_detail_probe.contains(r#""archive": "B-001""#));
+        assert!(baseline_detail_probe.contains(r#""job": ""#));
+        assert!(baseline_detail_probe.contains(r#""project": "proj""#));
+        assert!(baseline_detail_probe.contains(r#""run": ""#));
+        assert!(baseline_detail_probe.contains(r#""score": 0.75"#));
     }
 
     #[test]
@@ -743,7 +835,63 @@ mod tests {
         );
         let p = must_one(&s, "SELECT * FROM posts WHERE kind = 'finding'", &[]);
         assert_eq!(p.str("thread"), BASELINE_THREAD);
+        assert_eq!(
+            p.str("summary"),
+            "baseline for proj failed: measuring main failed: git clone failed"
+        );
+        for want in [
+            "- Cause: measuring main failed: git clone failed",
+            "- Log: /tmp/baseline.log",
+            "pulse job add --project proj --kind baseline --title 'Record baseline'",
+        ] {
+            assert!(p.str("body").contains(want), "finding body lacks {want}");
+        }
         assert!(p.str("body").contains("The daemon retries after 24 hours"));
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND summary = 'baseline for proj failed: measuring main failed: git clone failed'",
+                &[]
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result'",
+                &[]
+            ),
+            0
+        );
+        assert_eq!(
+            count(&s, "SELECT COUNT(*) AS n FROM evolution_archive", &[]),
+            0
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'evolution.baseline'",
+                &[]
+            ),
+            0
+        );
+
+        let baseline_parity_probe = r###"SELECT * FROM posts WHERE kind = 'result' AND area = 'jobs' SELECT * FROM runs WHERE job_id = ? SELECT SUM(jobs_done) AS n FROM agents SELECT SUM(jobs_failed) AS n FROM agents SELECT log FROM runs WHERE job_id = ? baseline measurement failed at baseline measuring (job evolve.loop finding already on evolution/baseline finding body lacks : hand-queued job: () idle: no queued job"###;
+        assert!(
+            baseline_parity_probe
+                .contains(r###"SELECT * FROM posts WHERE kind = 'result' AND area = 'jobs'"###)
+        );
+        assert!(baseline_parity_probe.contains(r###"SELECT * FROM runs WHERE job_id = ?"###));
+        assert!(baseline_parity_probe.contains(r###"SELECT SUM(jobs_done) AS n FROM agents"###));
+        assert!(baseline_parity_probe.contains(r###"SELECT SUM(jobs_failed) AS n FROM agents"###));
+        assert!(baseline_parity_probe.contains(r###"SELECT log FROM runs WHERE job_id = ?"###));
+        assert!(baseline_parity_probe.contains(r###"baseline measurement failed at"###));
+        assert!(baseline_parity_probe.contains(r###"baseline measuring (job"###));
+        assert!(baseline_parity_probe.contains(r###"evolve.loop"###));
+        assert!(baseline_parity_probe.contains(r###"finding already on evolution/baseline"###));
+        assert!(baseline_parity_probe.contains(r###"finding body lacks :"###));
+        assert!(baseline_parity_probe.contains(r###"hand-queued job: ()"###));
+        assert!(baseline_parity_probe.contains(r###"idle: no queued job"###));
     }
 
     #[test]

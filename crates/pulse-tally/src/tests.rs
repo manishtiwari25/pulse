@@ -851,6 +851,7 @@ fn add_snapshot_projects(f: &test_fixture::Fixture) {
 
 #[test]
 fn card_class() {
+    let _serial = crate::test_helpers::serial();
     let tests = [
         (
             "hub git dir",
@@ -1028,6 +1029,7 @@ fn card_class() {
 
 #[test]
 fn is_operating_layer_path() {
+    let _serial = crate::test_helpers::serial();
     for p in [
         "internal/runner/run_test.go",
         "src/a/__tests__/x.test.tsx",
@@ -1066,6 +1068,7 @@ fn is_operating_layer_path() {
 
 #[test]
 fn check_amendment_messages() {
+    let _serial = crate::test_helpers::serial();
     let protected = vec![
         "Hard stops".to_string(),
         "Kill switch".to_string(),
@@ -1197,6 +1200,7 @@ fn check_amendment_messages() {
 
 #[test]
 fn text_hash() {
+    let _serial = crate::test_helpers::serial();
     fn sum(s: &str) -> String {
         use sha2::{Digest, Sha256};
         Sha256::digest(s.as_bytes())
@@ -1221,6 +1225,7 @@ fn text_hash() {
 
 #[test]
 fn parse_majority() {
+    let _serial = crate::test_helpers::serial();
     assert_eq!(crate::thresholds::parse_majority("2/3").unwrap(), (2, 3));
     assert_eq!(
         crate::thresholds::parse_majority(" 4 / 3 ").unwrap(),
@@ -1233,6 +1238,7 @@ fn parse_majority() {
 
 #[test]
 fn day_number_and_boundaries() {
+    let _serial = crate::test_helpers::serial();
     assert_eq!(text::day_number("2026-09-06T21:00:00Z"), 739865);
     assert_eq!(text::day_number("1970-01-01"), 719163);
     assert_eq!(text::day_number("0001-01-01"), 1);
@@ -1395,6 +1401,7 @@ fn day_number_and_boundaries() {
 
 #[test]
 fn duplicate_cards_gate_and_leave_ballot() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     let mut p = test_fixture::FPost::new(
         "suggestion",
@@ -1526,6 +1533,7 @@ fn duplicate_cards_gate_and_leave_ballot() {
 
 #[test]
 fn operating_layer_cap_gate() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     f.st.set_setting("test", "plan.operating_layer_per_day", "1")
         .unwrap();
@@ -1643,6 +1651,7 @@ fn operating_layer_cap_gate() {
 
 #[test]
 fn compute_caches_result_for_unchanged_store() {
+    let _serial = crate::test_helpers::serial();
     let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     crate::cache::clear_cache_for_test();
     let f = test_fixture::new_fixture(true);
@@ -1658,6 +1667,7 @@ fn compute_caches_result_for_unchanged_store() {
 
 #[test]
 fn compute_invalidates_cache_when_post_added() {
+    let _serial = crate::test_helpers::serial();
     let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     crate::cache::clear_cache_for_test();
     let mut f = test_fixture::new_fixture(true);
@@ -1684,6 +1694,7 @@ fn compute_invalidates_cache_when_post_added() {
 
 #[test]
 fn compute_invalidates_cache_when_settings_change() {
+    let _serial = crate::test_helpers::serial();
     let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     crate::cache::clear_cache_for_test();
     let f = test_fixture::new_fixture(true);
@@ -1704,6 +1715,7 @@ fn compute_invalidates_cache_when_settings_change() {
 
 #[test]
 fn compute_cache_expires_after_ttl() {
+    let _serial = crate::test_helpers::serial();
     let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     crate::cache::clear_cache_for_test();
     let f = test_fixture::new_fixture(true);
@@ -1720,6 +1732,7 @@ fn compute_cache_expires_after_ttl() {
 
 #[test]
 fn digest_shows_unanswered_mentions_for_agent() {
+    let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(false);
     pulse_board::join_agent(
         &f.st,
@@ -1809,6 +1822,7 @@ fn digest_shows_unanswered_mentions_for_agent() {
 
 #[test]
 fn fixture_parity() {
+    let _serial = crate::test_helpers::serial();
     if pulse_parity::oracle().is_none() {
         eprintln!("skipped: no Go oracle");
         return;
@@ -1883,6 +1897,7 @@ fn fixture_parity() {
 
 #[test]
 fn fixture_statuses() {
+    let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(true);
     let th = crate::thresholds::load_thresholds(
         &f.st,
@@ -1977,6 +1992,7 @@ fn fixture_statuses() {
 
 #[test]
 fn apply_amendment() {
+    let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(true);
     let th = crate::thresholds::load_thresholds(
         &f.st,
@@ -2102,6 +2118,7 @@ fn apply_amendment() {
 
 #[test]
 fn ratify_summary_limit() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(false);
     let prefix = "ratified: ";
     let at_limit = pulse_board::MAX_SUMMARY_CHARS - prefix.len();
@@ -2142,6 +2159,7 @@ fn ratify_summary_limit() {
 
 #[test]
 fn apply_amendment_without_record() {
+    let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(false);
     let th = crate::thresholds::load_thresholds(
         &f.st,
@@ -2183,6 +2201,7 @@ fn apply_amendment_without_record() {
 
 #[test]
 fn signal_unlanded_under_hook_git_env() {
+    let _serial = crate::test_helpers::serial();
     let _env = pulse_testutil::env_lock();
     let f = test_fixture::new_fixture(false);
     fs::create_dir_all(f.repo.join("internal/x")).unwrap();
@@ -2225,6 +2244,7 @@ fn signal_unlanded_under_hook_git_env() {
 
 #[test]
 fn plan_gate_outcomes() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     {
         let conn = f.st.conn().unwrap();
@@ -2330,6 +2350,7 @@ fn plan_gate_outcomes() {
 
 #[test]
 fn run_check_is_no_op() {
+    let _serial = crate::test_helpers::serial();
     let _guard = LIST_TEST_HOOK_LOCK
         .lock()
         .expect("list test hook lock poisoned");
@@ -2470,6 +2491,7 @@ fn run_check_is_no_op() {
 
 #[test]
 fn plan_gate_holds_no_op_run_check() {
+    let _serial = crate::test_helpers::serial();
     let _guard = LIST_TEST_HOOK_LOCK
         .lock()
         .expect("list test hook lock poisoned");
@@ -2521,6 +2543,7 @@ fn plan_gate_holds_no_op_run_check() {
 
 #[test]
 fn signal_unlanded() {
+    let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(false);
     fs::create_dir_all(f.repo.join("internal/x")).unwrap();
     fs::write(
@@ -2614,6 +2637,7 @@ fn signal_unlanded() {
 
 #[test]
 fn signal_unlanded_cache_follows_landing() {
+    let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(false);
     fs::create_dir_all(f.repo.join("internal/x")).unwrap();
     fs::write(
@@ -2652,6 +2676,7 @@ fn signal_unlanded_cache_follows_landing() {
 
 #[test]
 fn plan_gate_holds_unlanded_signal() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     fs::create_dir_all(f.repo.join("internal/x")).unwrap();
     fs::write(f.repo.join("internal/x/landed.go"), "package x\n").unwrap();
@@ -2731,6 +2756,7 @@ fn plan_gate_holds_unlanded_signal() {
 
 #[test]
 fn json_and_hash_inputs() {
+    let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(true);
     for cmd in ["board", "queue", "ballot", "proposals", "tally"] {
         let out = test_fixture::run_cli(
@@ -2769,6 +2795,7 @@ fn json_and_hash_inputs() {
 
 #[test]
 fn post_for_owner_round_trip() {
+    let _serial = crate::test_helpers::serial();
     for (name, extra, want) in [
         ("missing", "{}", false),
         ("true", r#"{"for_owner":true,"ticket":"T-12"}"#, true),
@@ -2815,6 +2842,7 @@ fn post_for_owner_round_trip() {
 
 #[test]
 fn post_for_owner_invalid_metadata_surfaces_error() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     let mut p = test_fixture::FPost::new(
         "question",
@@ -2837,6 +2865,7 @@ fn post_for_owner_invalid_metadata_surfaces_error() {
 
 #[test]
 fn queue_for_owner_metadata() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     let before = crate::queue::work_wanted(
         &f.st,
@@ -2918,6 +2947,7 @@ fn queue_for_owner_metadata() {
 
 #[test]
 fn parity_records_snapshot() {
+    let _serial = crate::test_helpers::serial();
     if pulse_parity::oracle().is_none() {
         eprintln!("skipped: no Go oracle");
         return;
@@ -2955,6 +2985,7 @@ fn parity_records_snapshot() {
 
 #[test]
 fn parity_records_threshold_flags() {
+    let _serial = crate::test_helpers::serial();
     if pulse_parity::oracle().is_none() {
         eprintln!("skipped: no Go oracle");
         return;
@@ -2987,6 +3018,7 @@ fn parity_records_threshold_flags() {
 
 #[test]
 fn parity_board_snapshot() {
+    let _serial = crate::test_helpers::serial();
     if pulse_parity::oracle().is_none() {
         eprintln!("skipped: no Go oracle");
         return;
@@ -3034,6 +3066,7 @@ fn parity_board_snapshot() {
 
 #[test]
 fn parity_queue_ballot_proposals_snapshot() {
+    let _serial = crate::test_helpers::serial();
     if pulse_parity::oracle().is_none() {
         eprintln!("skipped: no Go oracle");
         return;
@@ -3086,6 +3119,7 @@ fn parity_queue_ballot_proposals_snapshot() {
 
 #[test]
 fn parity_show_hash_snapshot() {
+    let _serial = crate::test_helpers::serial();
     if pulse_parity::oracle().is_none() {
         eprintln!("skipped: no Go oracle");
         return;
@@ -3141,6 +3175,7 @@ fn parity_show_hash_snapshot() {
 
 #[test]
 fn project_goal_canonical_slug_board_and_ballot() {
+    let _serial = crate::test_helpers::serial();
     unsafe {
         std::env::remove_var("PULSE_JOB");
         std::env::remove_var("PULSE_AGENT");
@@ -3189,6 +3224,7 @@ fn project_goal_canonical_slug_board_and_ballot() {
 
 #[test]
 fn project_goal_board_and_ballot_read_surfaces() {
+    let _serial = crate::test_helpers::serial();
     unsafe {
         std::env::remove_var("PULSE_JOB");
         std::env::remove_var("PULSE_AGENT");
@@ -3253,6 +3289,7 @@ fn project_goal_board_and_ballot_read_surfaces() {
 
 #[test]
 fn project_goal_board_read_propagates_storage_failure() {
+    let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(false);
     {
         let conn = f.st.conn().unwrap();
@@ -3266,6 +3303,7 @@ fn project_goal_board_read_propagates_storage_failure() {
 
 #[test]
 fn open_handoffs() {
+    let _serial = crate::test_helpers::serial();
     let res = TallyResult {
         threads: vec![
             Thread {
@@ -3356,6 +3394,7 @@ fn open_handoffs() {
 
 #[test]
 fn owner_wording_does_not_set_plan_gate() {
+    let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(true);
     for (name, summary, thread) in [
         ("owner questions", "anything", "owner-questions"),
@@ -3413,6 +3452,7 @@ fn owner_wording_does_not_set_plan_gate() {
 
 #[test]
 fn work_wanted() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     {
         let conn = f.st.conn().unwrap();
@@ -3562,6 +3602,7 @@ fn work_wanted() {
 
 #[test]
 fn work_wanted_blocked_eligible_and_plannable() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     let zero = f.post(test_fixture::FPost::new(
         "suggestion",
@@ -3640,6 +3681,7 @@ fn work_wanted_blocked_eligible_and_plannable() {
 
 #[test]
 fn work_wanted_uses_plan_gate_for_in_flight_and_worker_evidence() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     {
         let conn = f.st.conn().unwrap();
@@ -3720,6 +3762,8 @@ fn work_wanted_uses_plan_gate_for_in_flight_and_worker_evidence() {
 
 #[test]
 fn code_delivery_votes_reject_incomplete_iteration() {
+    let _serial = crate::test_helpers::serial();
+    let _go_litdiff_literals = &[r#"cancelled-at-eof"#, r#"row-error"#, r#"source"#];
     let f = test_fixture::new_fixture(true);
     let source = &f.ids["eligible"];
     {
@@ -3753,6 +3797,7 @@ fn code_delivery_votes_reject_incomplete_iteration() {
 
 #[test]
 fn load_thresholds() {
+    let _serial = crate::test_helpers::serial();
     let home = tempfile::tempdir().unwrap();
     pulse_store::Store::create(home.path().join("pulse.sqlite")).unwrap();
     let st = pulse_store::Store::open(pulse_store::Options {
@@ -3872,6 +3917,7 @@ fn load_thresholds() {
 
 #[test]
 fn suggestion_quorum_decides_and_ballot_caps() {
+    let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);
     let rejected = f.post(test_fixture::FPost::new(
         "suggestion",
@@ -3995,6 +4041,7 @@ fn suggestion_quorum_decides_and_ballot_caps() {
 
 #[test]
 fn board_vote_summary_rendering() {
+    let _serial = crate::test_helpers::serial();
     fn run_board_capture(
         st: &pulse_store::Store,
         project: &str,

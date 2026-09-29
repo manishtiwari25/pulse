@@ -249,8 +249,8 @@ mod tests {
     #[test]
     fn landing_leaves_index_lock_when_holders_unknown() {
         let _serial = crate::test_helpers::serial();
-        let dir = tempfile::tempdir().expect("repo").keep();
-        let dir = dir.display().to_string();
+        let dir_guard = tempfile::tempdir().expect("repo");
+        let dir = dir_guard.path().display().to_string();
         run(&dir, &["git", "init", "-q", "-b", "main", "."]);
         let lock = Path::new(&dir).join(".git").join("index.lock");
         std::fs::write(&lock, "").expect("lock");
@@ -272,14 +272,9 @@ mod tests {
             "note {note:?}"
         );
         assert!(lock.exists(), "lock was touched");
-        let (note, moved) = free_index_lock(
-            tempfile::tempdir()
-                .expect("empty")
-                .keep()
-                .display()
-                .to_string(),
-            chrono::Utc::now(),
-        );
+        let empty_guard = tempfile::tempdir().expect("empty");
+        let (note, moved) =
+            free_index_lock(empty_guard.path().display().to_string(), chrono::Utc::now());
         assert!(
             note.is_empty() && moved.is_none(),
             "no lock: {note:?} {moved:?}"
@@ -295,15 +290,59 @@ mod tests {
     #[test]
     fn landing_sets_abandoned_index_lock_aside() {
         let _serial = crate::test_helpers::serial();
-        let dir = tempfile::tempdir().expect("repo").keep();
-        let dir = dir.display().to_string();
-        run(&dir, &["git", "init", "-q", "-b", "main", "."]);
+        let _guard = pulse_testutil::env_lock();
+        pulse_bus::reset_default();
+        let s = crate::test_helpers::new_store();
+        let (proj, dir) = crate::test_helpers::new_bare_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+        s.set_setting(crate::util::HUMAN_AGENT, "landing", "agents")
+            .unwrap();
+        run(
+            &dir,
+            &["git", "checkout", "-q", "-b", "pulse/aurora/one", "main"],
+        );
+        std::fs::write(Path::new(&dir).join("one.txt"), "one\n").unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "add one"]);
+        run(&dir, &["git", "checkout", "-q", "main"]);
+        let j = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "proj".into(),
+                kind: "task".into(),
+                title: "t one".into(),
+                brief: "b".into(),
+                tier: 1,
+                created_by: "aurora".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .0;
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&crate::test_helpers::TEST_NOW, &"pulse/aurora/one", &j.id],
+        );
         let lock = Path::new(&dir).join(".git").join("index.lock");
+
         std::fs::write(&lock, "").expect("lock");
         std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).expect("chmod");
-        let fresh = free_index_lock(dir.clone(), chrono::Utc::now());
-        assert!(fresh.0.contains("is mid-write") && fresh.1.is_none());
-        assert!(lock.exists(), "fresh lock touched");
+        let fresh = crate::land::land_pending(
+            &s,
+            proj.clone(),
+            "daemon",
+            crate::test_helpers::TEST_NOW,
+            true,
+            0,
+            false,
+        );
+        assert!(
+            fresh.len() == 1 && fresh[0].note.contains("is mid-write (.git/index.lock is"),
+            "fresh lock: {fresh:?}"
+        );
+        assert!(lock.exists(), "fresh lock was touched");
+
         let old = std::time::SystemTime::now()
             - Duration::from_secs(((INDEX_LOCK_MINUTES + 1) as u64) * 60);
         let stamp = chrono::DateTime::<chrono::Local>::from(old)
@@ -314,16 +353,77 @@ mod tests {
             .status()
             .expect("touch");
         let holders = set_lock_holders(Box::new(|_| (vec![4242], true)));
-        let held = free_index_lock(dir.clone(), chrono::Utc::now());
-        assert!(held.0.contains(".git/index.lock open in process 4242"));
-        assert!(held.1.is_none() && lock.exists());
-        let _ = set_lock_holders(Box::new(|_| (Vec::new(), true)));
-        let (note, moved) = free_index_lock(dir, chrono::Utc::now());
+        let held = crate::land::land_pending(
+            &s,
+            proj.clone(),
+            "daemon",
+            crate::test_helpers::TEST_NOW,
+            true,
+            0,
+            false,
+        );
         let _ = set_lock_holders(holders);
-        assert!(note.is_empty(), "note {note:?}");
-        let moved = moved.expect("moved abandoned lock");
+        assert!(
+            held.len() == 1
+                && held[0]
+                    .note
+                    .contains(".git/index.lock open in process 4242"),
+            "held lock: {held:?}"
+        );
+        assert!(lock.exists(), "held lock was touched");
+
+        let holders = set_lock_holders(Box::new(|_| (Vec::new(), true)));
+        let landed = crate::land::land_pending(
+            &s,
+            proj,
+            "daemon",
+            crate::test_helpers::TEST_NOW,
+            true,
+            0,
+            false,
+        );
+        let _ = set_lock_holders(holders);
+        let daemon_line = landed
+            .first()
+            .map(|r| format!("landing landed: {}", r.note))
+            .unwrap_or_default();
+        assert!(
+            landed.len() == 1 && daemon_line.contains("landing landed: pulse/aurora/one"),
+            "abandoned lock: {landed:?}"
+        );
         assert!(!lock.exists(), "abandoned lock still there");
-        assert!(Path::new(&moved.to).exists(), "quarantine missing");
-        assert_eq!(moved.size, 0);
+        let aside = std::fs::read_dir(Path::new(&dir).join(".git"))
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("pulse-quarantine-index.lock-"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(aside.len(), 1, "quarantined lock: {aside:?}");
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.stale-lock' AND subject = 'pulse/aurora/one'",
+                &[]
+            ),
+            1
+        );
+        let ev = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = 'land.stale-lock'",
+            &[],
+        )
+        .str("detail");
+        assert!(
+            ev.contains(aside[0].file_name().unwrap().to_str().unwrap())
+                && ev.replace(' ', "").contains("\"size\":0"),
+            "land.stale-lock detail: {ev}"
+        );
+        let head = run(&dir, &["git", "log", "-1", "--format=%s", "main"])
+            .trim()
+            .to_string();
+        assert_eq!(head, "add one", "main after landing: {head:?}");
     }
 }

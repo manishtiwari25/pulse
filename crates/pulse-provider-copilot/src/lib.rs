@@ -24,6 +24,22 @@ use std::sync::{LazyLock, Mutex, Once, RwLock};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(test)]
+static TEST_TEMP_DIRS: std::sync::OnceLock<std::sync::Mutex<Vec<tempfile::TempDir>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn temp_path() -> PathBuf {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    TEST_TEMP_DIRS
+        .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+        .lock()
+        .unwrap()
+        .push(dir);
+    path
+}
+
 const NAME: &str = "copilot";
 const LABEL: &str = "GitHub Copilot";
 
@@ -33,6 +49,9 @@ const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
 const USER_AGENT: &str = "GitHubCopilotChat/0.26.7";
 const INTEGRATION_ID: &str = "vscode-chat";
 const INTENT_CONVERSATION: &str = "conversation-panel";
+const HEADER_COPILOT_INTEGRATION_ID: &str = "Copilot-Integration-Id";
+const HEADER_OPENAI_INTENT: &str = "Openai-Intent";
+const HEADER_X_REQUEST_ID: &str = "X-Request-Id";
 
 const STATUS_CACHE_TTL: ChronoDuration = ChronoDuration::minutes(10);
 const MODELS_CACHE_TTL: ChronoDuration = ChronoDuration::minutes(10);
@@ -57,6 +76,7 @@ static TOKEN_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         Regex::new(r"gh[opusr]_[A-Za-z0-9]{20,}").expect("valid GitHub token regex"),
         Regex::new(r"github_pat_[A-Za-z0-9_]{20,}").expect("valid GitHub PAT regex"),
+        Regex::new(r"Bearer [A-Za-z0-9._-]{16,}").expect("valid bearer token regex"),
         Regex::new(r"[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}")
             .expect("valid JWT regex"),
         Regex::new(r"tid=[A-Za-z0-9]+(?:;[A-Za-z0-9_=:.+-]+)*").expect("valid tid regex"),
@@ -498,15 +518,17 @@ impl Copilot {
         let mut headers = self.copilot_headers(token);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
-            HeaderName::from_static("copilot-integration-id"),
+            HeaderName::from_bytes(HEADER_COPILOT_INTEGRATION_ID.as_bytes())
+                .expect("copilot integration header name"),
             HeaderValue::from_static(INTEGRATION_ID),
         );
         headers.insert(
-            HeaderName::from_static("openai-intent"),
+            HeaderName::from_bytes(HEADER_OPENAI_INTENT.as_bytes())
+                .expect("openai intent header name"),
             HeaderValue::from_static(INTENT_CONVERSATION),
         );
         headers.insert(
-            HeaderName::from_static("x-request-id"),
+            HeaderName::from_bytes(HEADER_X_REQUEST_ID.as_bytes()).expect("request id header name"),
             HeaderValue::from_str(&request_id()).expect("hex request id is a valid header"),
         );
         headers.insert(
@@ -1694,7 +1716,7 @@ mod tests {
     }
 
     #[test]
-    fn token_exchange_cache_and_chat_refresh_on_401() {
+    fn token_exchange_cache_and_chat_refresh_on401() {
         let _serial = test_serial();
         let exchanges = Arc::new(AtomicI32::new(0));
         let chats = Arc::new(AtomicI32::new(0));
@@ -1728,11 +1750,7 @@ mod tests {
         });
         let cleanup = reset_globals(&srv.url(), &srv.url(), &srv.url());
         let p = new_test_provider(
-            tempfile::tempdir()
-                .unwrap()
-                .path()
-                .to_string_lossy()
-                .as_ref(),
+            temp_path().to_string_lossy().as_ref(),
             Some(BTreeMap::from([(
                 "COPILOT_GITHUB_TOKEN".to_string(),
                 "gho_abcdefghijklmnopqrstuvwxyz".to_string(),
@@ -1860,16 +1878,20 @@ mod tests {
         let saw = Arc::new(Mutex::new(String::new()));
         let saw2 = saw.clone();
         let srv = copilot_test_server(move |req| {
-            *saw2.lock().unwrap() = req.header("x-initiator").unwrap_or_default().to_string();
+            *saw2.lock().unwrap() = req.header("X-Initiator").unwrap_or_default().to_string();
             HttpResponse::json(200, &chat_content("req-2", "gpt-4.1", "plain"))
         });
+        let env = BTreeMap::from([(
+            "COPILOT_GITHUB_TOKEN".to_string(),
+            "gho_abcdefghijklmnopqrstuvwxyz".to_string(),
+        )]);
         let p = new_test_provider(
             tempfile::tempdir()
                 .unwrap()
                 .path()
                 .to_string_lossy()
                 .as_ref(),
-            Some(env_token()),
+            Some(env),
         );
         let resp = p
             .chat(
@@ -2050,7 +2072,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_429_retry_after_and_400_model_error() {
+    fn chat429_retry_after_and400_model_error() {
         let _serial = test_serial();
         let restore = shorten_chat_retry_backoffs(vec![Duration::ZERO]);
         let rate_calls = Arc::new(AtomicI32::new(0));
@@ -2461,20 +2483,10 @@ mod tests {
 
     fn new_test_provider(home: &str, env: Option<BTreeMap<String, String>>) -> Copilot {
         let mut env = env.unwrap_or_default();
-        env.entry("COPILOT_HOME".to_string()).or_insert_with(|| {
-            tempfile::tempdir()
-                .unwrap()
-                .keep()
-                .to_string_lossy()
-                .into_owned()
-        });
-        env.entry("XDG_CONFIG_HOME".to_string()).or_insert_with(|| {
-            tempfile::tempdir()
-                .unwrap()
-                .keep()
-                .to_string_lossy()
-                .into_owned()
-        });
+        env.entry("COPILOT_HOME".to_string())
+            .or_insert_with(|| temp_path().to_string_lossy().into_owned());
+        env.entry("XDG_CONFIG_HOME".to_string())
+            .or_insert_with(|| temp_path().to_string_lossy().into_owned());
         let env = Arc::new(env);
         Copilot::new(Options {
             home: home.to_string(),
@@ -2493,7 +2505,7 @@ mod tests {
     }
 
     fn write_editor_login(file: &str, hosts: Value) -> String {
-        let dir = tempfile::tempdir().unwrap().keep();
+        let dir = temp_path();
         fs::create_dir_all(dir.join("github-copilot")).unwrap();
         fs::write(dir.join("github-copilot").join(file), hosts.to_string()).unwrap();
         dir.to_string_lossy().into_owned()

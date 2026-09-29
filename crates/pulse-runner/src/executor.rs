@@ -640,9 +640,9 @@ pub(crate) fn run_process(
         };
     if out.timeout {
         if cancel.is_cancelled() {
-            return Err(anyhow!("context canceled"));
+            return Err(pulse_bus::ContextError::Canceled.into());
         }
-        return Err(anyhow!("context deadline exceeded"));
+        return Err(pulse_bus::ContextError::DeadlineExceeded.into());
     }
     Ok((out.exit_code, out.stdout, out.stderr))
 }
@@ -824,6 +824,7 @@ pub(crate) static GITHUB_HTTP: LazyLock<RwLock<Box<GithubHttpFn>>> =
     LazyLock::new(|| RwLock::new(Box::new(github_http_real)));
 
 /// Swaps the GitHub transport, returning the previous one so a test can restore it.
+#[cfg(test)]
 pub(crate) fn set_github_http(f: Box<GithubHttpFn>) -> Box<GithubHttpFn> {
     std::mem::replace(&mut *GITHUB_HTTP.write().expect("github http poisoned"), f)
 }
@@ -1370,14 +1371,31 @@ pub(crate) fn executor_login(
         return Ok(res);
     }
 
-    let source = String::new();
     if is_tty {
         return Err(fail(2, "the token must be piped, not typed").into());
     }
     let reader: &mut dyn Read = token;
     let mut raw = String::new();
     reader.read_to_string(&mut raw)?;
-    let tok = raw.trim().to_string();
+    let mut source = String::new();
+    let tok = if raw.trim().is_empty() {
+        let (tok, origin) = crate::token::login_source(s)?;
+        if tok.is_empty() {
+            return Err(fail(
+                2,
+                format!(
+                    "No login source for executor {name} ({}) at {admin_address} workdir {} (no_stored_login). Sign in in Settings -> Harness or run `pulse harness login`, or pass `pulse executor token --with-token` / `pulse executor login {name} --admin {admin_address} --with-token`.",
+                    r.str("address"),
+                    r.str("workdir")
+                ),
+            )
+            .into());
+        }
+        source = origin;
+        String::from_utf8(tok)?
+    } else {
+        raw.trim().to_string()
+    };
     let kind = classify_token(&tok)?;
     res.kind = kind.clone();
     if !source.is_empty() {

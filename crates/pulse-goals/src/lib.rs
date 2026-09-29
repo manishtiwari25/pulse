@@ -91,6 +91,23 @@ pub fn normalize(text: &str) -> Result<String> {
     Ok(text)
 }
 
+pub fn normalize_bytes(text: &[u8]) -> Result<String> {
+    match std::str::from_utf8(text) {
+        Ok(text) => normalize(text),
+        Err(_) => Err(pulse_cli::errorf(
+            2,
+            "Invalid project goal",
+            "The goal must be valid UTF-8.",
+            "Use 1..4000 Unicode code points of public project direction, without credentials or private paths.",
+        )
+        .into()),
+    }
+}
+
+pub fn open_store(s: Option<&pulse_store::Store>) -> Result<&pulse_store::Store> {
+    s.ok_or_else(|| anyhow!("project goals require an open store"))
+}
+
 fn is_unsafe_format_char(r: char) -> bool {
     matches!(
         r as u32,
@@ -480,6 +497,7 @@ mod tests {
 
     #[test]
     fn goal_legacy_fallback_is_meaningful_deterministic_and_read_only() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "pulse", "PULSE", true);
         goal_project(&s, "catalog", "Catalog", false);
@@ -540,6 +558,7 @@ mod tests {
 
     #[test]
     fn goal_persistence_isolation_reset_and_audit() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         goal_project(&s, "two", "Two", false);
@@ -620,6 +639,20 @@ mod tests {
 
     #[test]
     fn goal_validation_unicode_and_public_text() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "Reliable \\U0001f469\\u200d\\U0001f4bb workflows",
+            "\\U0001f680",
+            "\\u754c",
+            "\\vgoal",
+            "\\x00goal",
+            "goal\\u0085",
+            "goal\\u202e",
+            "goal\\u2066",
+            "goal\\x00",
+            "goal\\x1b[2J",
+            "goal\\x7f",
+        ];
         for text in [
             "",
             " \n\t ",
@@ -663,6 +696,7 @@ mod tests {
 
     #[test]
     fn goal_owner_guards_at_helper_and_generic_settings() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         let want = set(&s, "one", "Deliver reliable search.", "human").unwrap();
@@ -712,6 +746,7 @@ mod tests {
 
     #[test]
     fn goal_scope_refusals_and_inactive_reads() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         let want = set(&s, "one", "Keep saved searches correct.", "human").unwrap();
@@ -737,6 +772,7 @@ mod tests {
 
     #[test]
     fn goal_storage_errors_and_atomic_audit() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         let want = set(&s, "one", "Keep successful imports reliable.", "human").unwrap();
@@ -769,6 +805,7 @@ mod tests {
 
     #[test]
     fn goal_rejects_invalid_stored_provenance() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         for (value, actor, at) in [
@@ -825,6 +862,7 @@ mod tests {
 
     #[test]
     fn goal_generation_cannot_race_owner_edit() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         let s = Arc::new(s);
@@ -843,6 +881,7 @@ mod tests {
 
     #[test]
     fn goal_generated_metadata_never_leaks_private_facts() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         for name in [
             "/Users/example/private/work",
@@ -868,6 +907,7 @@ mod tests {
 
     #[test]
     fn goal_explicit_default_is_still_owner_direction() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         let generated_goal = must_goal(&s, "one");
@@ -880,6 +920,7 @@ mod tests {
 
     #[test]
     fn goal_uses_existing_private_path_redaction_policy() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         let private = "/srv/example-fixture-box";
@@ -914,6 +955,7 @@ mod tests {
 
     #[test]
     fn goal_invalid_clock_does_not_write_unreadable_provenance() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         goal_project(&s, "one", "One", false);
         let bad_clock = Store::open(Options {
@@ -938,6 +980,7 @@ mod tests {
 
     #[test]
     fn goal_canonical_registered_slugs() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         let canonical = "customer-support-ticket-management-syste";
         assert_eq!(canonical.len(), 40);
@@ -986,6 +1029,7 @@ mod tests {
 
     #[test]
     fn goal_private_path_references() {
+        let _serial = crate::test_helpers::serial();
         for text in [
             "Use /Users/example/plan.md.",
             "Use file:///Users/example/plan.md.",
@@ -1031,6 +1075,7 @@ mod tests {
 
     #[test]
     fn goal_private_path_mutation_and_stored_read_refusals() {
+        let _serial = crate::test_helpers::serial();
         let (_guard, _home, s) = goal_store();
         for text in [
             "Use file:///Users/example/plan.md.",
@@ -1071,6 +1116,7 @@ mod tests {
 
     #[test]
     fn context_matches_go_text() {
+        let _serial = crate::test_helpers::serial();
         let goal = Goal {
             text: "First\nSecond".into(),
             source: OWNER.into(),
@@ -1084,6 +1130,7 @@ mod tests {
 
     #[test]
     fn oracle_goal_rows_match_rust_for_same_inputs() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let oracle = std::env::var("PULSE_GO_ORACLE").unwrap_or_else(|_| {
             "/Users/work/.copilot/session-state/eb2b69f5-ae4f-4495-904e-534f0b2fbf3e/files/oracle/pulse".into()
@@ -1195,5 +1242,11 @@ mod tests {
         assert_eq!(rust_event, go_event);
         assert!(!rust_event.3.contains("Goal Parity"));
         assert!(rust_event.3.contains("text_hash"));
+    }
+}
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    pub(crate) fn serial() -> impl Drop {
+        pulse_testutil::env_lock()
     }
 }

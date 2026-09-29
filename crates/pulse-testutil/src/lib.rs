@@ -106,8 +106,10 @@ mod tests {
             ("GIT_AUTHOR_NAME", "hook"),
             ("PULSE_TESTUTIL_KEEP", "1"),
         ];
-        let previous: Vec<(&str, Option<String>)> =
-            set.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
+        let previous: Vec<(&str, Option<String>)> = set
+            .iter()
+            .map(|(k, _)| (*k, std::env::var(k).ok()))
+            .collect();
         for (k, v) in set {
             unsafe { std::env::set_var(k, v) };
         }

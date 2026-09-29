@@ -327,7 +327,7 @@ pub(crate) fn ledger_stems(dir: impl AsRef<Path>) -> Vec<String> {
 }
 
 pub(crate) fn score_repo() -> (String, String) {
-    let repo = tempfile::tempdir().unwrap().keep();
+    let repo = crate::test_helpers::temp_path();
     crate::test_helpers::test_git(&repo, &["init", "--quiet", "--initial-branch=main"]);
     crate::test_helpers::put_file(
         repo.join("README.md"),
@@ -348,7 +348,7 @@ pub(crate) fn score_repo() -> (String, String) {
 }
 
 pub(crate) fn test_pulse() -> String {
-    let wrapper = tempfile::tempdir().unwrap().keep().join("measuring pulse");
+    let wrapper = crate::test_helpers::temp_path().join("measuring pulse");
     let body = "#!/bin/sh\nset -eu\nif [ \"$1\" != evolve ] || [ \"$2\" != score ] || [ \"$3\" != starter-hardstop-history ]; then echo 'the test pulse only runs evolve score' >&2; exit 2; fi\nhead=$(git rev-parse --verify --quiet HEAD^{commit}) || exit 2\nif [ \"$head\" != \"$PULSE_MEASURE_COMMIT\" ]; then echo 0; echo 'score 0: HEAD moved away from the measured commit' >&2; exit 0; fi\nchanges=$(git status --porcelain --untracked-files=normal | wc -l | tr -d ' ')\nif [ \"$changes\" != 0 ]; then echo 0; echo \"score 0: $changes changed path(s)\" >&2; exit 0; fi\necho 1\n";
     crate::test_helpers::put_file(&wrapper, body, 0o700);
     wrapper.display().to_string()
@@ -415,7 +415,7 @@ pub(crate) fn run_judge(
     commit: &str,
     pulse: &str,
 ) -> (String, String) {
-    let home = tempfile::tempdir().unwrap().keep();
+    let home = crate::test_helpers::temp_path();
     let mut cmd = Command::new(path.as_ref());
     cmd.current_dir(repo);
     cmd.env_clear();

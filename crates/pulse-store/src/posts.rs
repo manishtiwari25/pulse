@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use serde_json::Value;
 
 pub fn post_for_owner(extra: &str) -> Result<bool> {
-    let v: Value = serde_json::from_str(extra)?;
+    let v: Value = serde_json::from_str(extra).map_err(|e| anyhow!("post extra: {e}"))?;
     let obj = v
         .as_object()
         .ok_or_else(|| anyhow!("post extra must be a JSON object"))?;
@@ -14,9 +14,9 @@ pub fn post_for_owner(extra: &str) -> Result<bool> {
         Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
             "true" => Ok(true),
             "false" => Ok(false),
-            _ => Err(anyhow!("for_owner must be true or false")),
+            _ => Err(anyhow!("post extra: for_owner must be true or false")),
         },
-        _ => Err(anyhow!("for_owner must be true or false")),
+        _ => Err(anyhow!("post extra: for_owner must be true or false")),
     }
 }
 
@@ -24,6 +24,7 @@ pub fn post_for_owner(extra: &str) -> Result<bool> {
 mod tests {
     #[test]
     fn post_for_owner() {
+        let _serial = crate::test_helpers::serial();
         for (name, extra, want, want_error) in [
             ("missing", r#"{}"#, false, false),
             (

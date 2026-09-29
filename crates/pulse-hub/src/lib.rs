@@ -4,6 +4,38 @@
 
 #![allow(unused_imports)]
 
+#[cfg(test)]
+use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(test)]
+struct CountingAllocator;
+
+#[cfg(test)]
+static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+#[cfg(test)]
+pub(crate) fn allocated_bytes() -> usize {
+    ALLOCATED_BYTES.load(Ordering::Relaxed)
+}
+
 pub mod additions;
 pub mod board;
 pub mod code_deliveries;
@@ -49,3 +81,7 @@ pub use store_views::*;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
+#[cfg(test)]
+pub(crate) mod test_helpers_f2;
+#[cfg(test)]
+pub(crate) mod test_helpers_f3;

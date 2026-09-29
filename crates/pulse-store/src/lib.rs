@@ -1,5 +1,6 @@
 //! SQLite store foundation for PULSE.
 
+pub mod ctx;
 pub mod ddl;
 pub mod evolve_ddl;
 pub mod filepath;
@@ -18,6 +19,7 @@ pub mod settings;
 pub mod store;
 pub mod tasks_ddl;
 
+pub use ctx::{CancellationToken, ContextError};
 pub use ddl::DDL;
 pub use evolve_ddl::EVOLVE_DDL;
 pub use harness::*;
@@ -40,3 +42,9 @@ pub const HOOKS: &[&str] = HOOKS_DDL;
 pub const RUNNER: &[&str] = RUNNER_DDL;
 pub const EVOLVE: &[&str] = EVOLVE_DDL;
 pub const HARNESS: &[&str] = HARNESS_DDL;
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    pub(crate) fn serial() -> impl Drop {
+        pulse_testutil::env_lock()
+    }
+}

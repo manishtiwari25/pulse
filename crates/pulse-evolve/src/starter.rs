@@ -279,7 +279,7 @@ mod tests {
         let _guard = e2_guard();
         let s = test_store();
         init();
-        let repo = tempfile::tempdir().unwrap().keep();
+        let repo = crate::test_helpers::temp_path();
         test_git(&repo, &["init", "--quiet", "--initial-branch=main"]);
         put_file(repo.join("README.md"), "# demo\n", 0o644);
         test_git(&repo, &["add", "."]);
@@ -340,7 +340,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = e2_guard();
         let _env = pulse_testutil::env_lock();
-        let home = tempfile::tempdir().unwrap().keep();
+        let home = crate::test_helpers::temp_path();
         set_env("PULSE_HOME", home.to_str().unwrap());
         const TIER0: &str = "starter-tier0-in-place";
         const TIER2: &str = "starter-tier2-proposes-first";
@@ -488,7 +488,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = e2_guard();
         let _env = pulse_testutil::env_lock();
-        let home = tempfile::tempdir().unwrap().keep();
+        let home = crate::test_helpers::temp_path();
         set_env("PULSE_HOME", home.to_str().unwrap());
         let (repo, commit) = score_repo();
         assert_eq!(all_scores(&repo, "")["starter-hardstop-history"], 1);
@@ -557,7 +557,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = e2_guard();
         let _env = pulse_testutil::env_lock();
-        let home = tempfile::tempdir().unwrap().keep();
+        let home = crate::test_helpers::temp_path();
         set_env("PULSE_HOME", home.to_str().unwrap());
         let (repo, commit) = score_repo();
         test_git(&repo, &["checkout", "--quiet", "--detach", &commit]);
@@ -662,7 +662,7 @@ mod tests {
         let s = test_store();
         disable_project_hook();
         let repo = test_project(&s, "demo");
-        let tmp = tempfile::tempdir().unwrap().keep();
+        let tmp = crate::test_helpers::temp_path();
         let log = tmp.join("scorer calls");
         let fake = tmp.join("fake pulse");
         put_file(
@@ -837,7 +837,7 @@ mod tests {
         );
         let commit = test_git(&repo, &["rev-parse", "HEAD"]);
         let keys = crate::clones::project_answer_keys(&s, "demo").unwrap();
-        let clone = tempfile::tempdir().unwrap().keep().join("clone");
+        let clone = crate::test_helpers::temp_path().join("clone");
         let cancel = pulse_bus::CancellationToken::new();
         crate::clones::stripped_clone(&cancel, &repo, &commit, clone.to_str().unwrap(), &keys)
             .unwrap();

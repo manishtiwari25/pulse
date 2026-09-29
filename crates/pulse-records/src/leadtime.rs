@@ -112,20 +112,33 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn temp_store() -> pulse_store::Store {
+    struct TestStore {
+        _home: tempfile::TempDir,
+        store: pulse_store::Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = pulse_store::Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+
+    fn temp_store() -> TestStore {
         let _guard = pulse_testutil::env_lock();
-        let home = tempfile::tempdir().unwrap().keep();
-        pulse_store::Store::open(pulse_store::Options {
-            home: home.display().to_string(),
+        let home = tempfile::tempdir().unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: home.path().display().to_string(),
             create: true,
             now: "2026-09-06T21:00:00Z".into(),
             ..pulse_store::Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _home: home, store }
     }
 
     #[test]
     fn lead_time_legacy_states() {
+        let _serial = crate::test_helpers::serial();
         let s = temp_store();
         let cases = [
             (

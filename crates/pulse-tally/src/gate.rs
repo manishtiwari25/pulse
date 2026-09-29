@@ -246,6 +246,11 @@ fn default_branch_head(project_path: &str, branch: &str) -> Option<String> {
                 at: now,
             },
         );
+    if !ok {
+        crate::log_line(format!(
+            "tally: {project_path}: default branch {branch:?} does not resolve to a commit; unlanded-Signal hold is inert (not falling back to HEAD)"
+        ));
+    }
     ok.then_some(commit)
 }
 

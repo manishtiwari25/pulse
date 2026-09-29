@@ -17,13 +17,17 @@ static ON_PROJECT_CREATED: RwLock<Option<ProjectCreatedHook>> = RwLock::new(None
 
 /// The installed hook, if any.
 pub fn on_project_created() -> Option<ProjectCreatedHook> {
-    *ON_PROJECT_CREATED.read().unwrap_or_else(PoisonError::into_inner)
+    *ON_PROJECT_CREATED
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Installs `hook` (None clears it) and returns the previous one so a caller can restore it.
 pub fn set_on_project_created(hook: Option<ProjectCreatedHook>) -> Option<ProjectCreatedHook> {
     std::mem::replace(
-        &mut *ON_PROJECT_CREATED.write().unwrap_or_else(PoisonError::into_inner),
+        &mut *ON_PROJECT_CREATED
+            .write()
+            .unwrap_or_else(PoisonError::into_inner),
         hook,
     )
 }
@@ -422,6 +426,7 @@ mod tests {
 
     #[test]
     fn frontmatter_and_lists() {
+        let _serial = crate::test_helpers::serial();
         let (fm, body) = split_frontmatter("---\ntitle: \"Hi\"\n---\nBody");
         assert_eq!(fm["title"], "Hi");
         assert_eq!(body, "Body");
@@ -442,6 +447,7 @@ mod tests {
 
     #[test]
     fn register_project_runs_the_creation_hook_once() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
         let _guard = pulse_testutil::env_lock();
@@ -500,6 +506,7 @@ mod tests {
 
     #[test]
     fn register_project_survives_a_failing_hook() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
         let _guard = pulse_testutil::env_lock();
@@ -534,6 +541,7 @@ mod tests {
 
     #[test]
     fn project_goal_canonical_slug_registration() {
+        let _serial = crate::test_helpers::serial();
         // goals::require_owner reads PULSE_AGENT: hold the env lock like Go's serial run.
         let _env = pulse_testutil::env_lock();
         let (_dir, _home, s) = new_home();
@@ -583,6 +591,7 @@ mod tests {
 
     #[test]
     fn project_goal_registration_reinit_and_restore() {
+        let _serial = crate::test_helpers::serial();
         // goals::require_owner reads PULSE_AGENT: hold the env lock like Go's serial run.
         let _env = pulse_testutil::env_lock();
         let (_dir, _home, s) = new_home();
@@ -644,6 +653,7 @@ mod tests {
 
     #[test]
     fn project_goal_legacy_registration_preserves_explicit_value() {
+        let _serial = crate::test_helpers::serial();
         // goals::require_owner reads PULSE_AGENT: hold the env lock like Go's serial run.
         let _env = pulse_testutil::env_lock();
         let (_dir, _home, s) = new_home();
@@ -680,6 +690,33 @@ mod tests {
 
     #[test]
     fn init_registers_project() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "--name",
+            "--path",
+            "--verify",
+            "Not a directory:",
+            "Not a git checkout:",
+            "SELECT brief FROM jobs WHERE source = 'onboard:my-app'",
+            "action IN ('project.add', 'project.refresh', 'job.add', 'record.imported')",
+            "already done onboarding job",
+            "already in the store",
+            "already queued onboarding job job-",
+            "commons",
+            "commons-project",
+            "events",
+            "imported docs/context/environment.md as CTX-environment-my-app",
+            "missing",
+            "my-app-2",
+            "out:repo home",
+            "queued onboarding job job-",
+            "refresh after onboarding:",
+            "refreshed project my-app at",
+            "registered project my-app at",
+            "runner,tooling",
+            "second init:",
+            "store:",
+        ];
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
         let context = repo.path().join("docs").join("context");
@@ -802,6 +839,7 @@ mod tests {
 
     #[test]
     fn import_registry() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
         let reg_dir = tempfile::tempdir().unwrap();

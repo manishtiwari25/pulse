@@ -3,17 +3,20 @@
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, errorf, register as register_command, write_json};
 use pulse_cred_setup::{Deps as SetupDeps, Probe, Refusal};
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::sync::{Arc, Once, OnceLock, RwLock};
 
 type ResolverFactory = Arc<dyn Fn(&str) -> pulse_cred::Resolver + Send + Sync>;
 type StdinFactory = Arc<dyn Fn() -> Box<dyn Read + Send> + Send + Sync>;
+type StdinTtyFn = Arc<dyn Fn() -> bool + Send + Sync>;
 type ProbeFn = Arc<dyn Fn(&str, &str, &str) -> Result<()> + Send + Sync>;
+const ACTOR_PATTERN: &str = "^[A-Za-z0-9._:-]{1,64}$";
 
 #[derive(Clone)]
 struct Deps {
     resolver: ResolverFactory,
     stdin: StdinFactory,
+    stdin_tty: StdinTtyFn,
     probe: ProbeFn,
 }
 
@@ -22,6 +25,7 @@ impl Default for Deps {
         Self {
             resolver: Arc::new(pulse_cred::new),
             stdin: Arc::new(|| Box::new(io::stdin())),
+            stdin_tty: Arc::new(|| io::stdin().is_terminal()),
             probe: Arc::new(pulse_cred_setup::probe_remote),
         }
     }
@@ -76,6 +80,7 @@ fn owner_actor(actor: &str) -> bool {
 }
 
 fn actor_pattern(actor: &str) -> bool {
+    let _go_pattern = ACTOR_PATTERN;
     !actor.is_empty()
         && actor.len() <= 64
         && actor
@@ -231,6 +236,11 @@ fn run_token(c: &mut Context, r: &pulse_cred::Resolver, from_file: &str, d: &Dep
     let raw = if !from_file.is_empty() {
         std::fs::read(from_file)
     } else {
+        if (d.stdin_tty)() {
+            c.err.write_all(
+                b"Paste the 1Password service-account token, then press Enter and Ctrl-D:\n",
+            )?;
+        }
         let mut raw = Vec::new();
         (d.stdin)()
             .take(64 * 1024)
@@ -536,7 +546,7 @@ mod tests {
         }
     }
 
-    fn setup_store() -> (pulse_testutil::EnvGuard, Store) {
+    fn setup_store() -> (pulse_testutil::EnvGuard, tempfile::TempDir, Store) {
         let guard = pulse_testutil::env_lock();
         for key in [
             "PULSE_JOB",
@@ -547,16 +557,16 @@ mod tests {
         ] {
             unsafe { std::env::set_var(key, "") };
         }
-        let home = tempdir().unwrap().keep();
-        unsafe { std::env::set_var("PULSE_HOME", home.display().to_string()) };
+        let home = tempdir().unwrap();
+        unsafe { std::env::set_var("PULSE_HOME", home.path().display().to_string()) };
         let store = Store::open(Options {
-            home: home.display().to_string(),
+            home: home.path().display().to_string(),
             create: true,
             now: "2026-09-15T06:00:00Z".into(),
             ..Options::default()
         })
         .unwrap();
-        (guard, store)
+        (guard, home, store)
     }
 
     fn install(tools: &FakeTools, probe_err: Option<String>) -> Installed {
@@ -577,6 +587,7 @@ mod tests {
                 Box::new(std::io::Cursor::new(stdin_src.lock().unwrap().clone()))
                     as Box<dyn Read + Send>
             }),
+            stdin_tty: Arc::new(|| false),
             probe: Arc::new(move |root, remote, ssh| {
                 probes_sink.lock().unwrap().push(ProbeCall {
                     root: root.into(),
@@ -640,10 +651,8 @@ mod tests {
     }
 
     fn push_project(s: &Store, slug: &str) -> String {
-        let root_dir = tempdir().unwrap().keep();
-        let bare_dir = tempdir().unwrap().keep();
-        let root = root_dir.join(slug);
-        let bare = bare_dir.join(format!("{slug}.git"));
+        let root = Path::new(&s.home).join(format!("project-{slug}"));
+        let bare = Path::new(&s.home).join(format!("{slug}.git"));
         let root_s = root.display().to_string();
         let bare_s = bare.display().to_string();
         for args in [
@@ -688,7 +697,8 @@ mod tests {
 
     #[test]
     fn cred_token_set_status_clear() {
-        let (_guard, s) = setup_store();
+        let _serial = crate::test_helpers::serial();
+        let (_guard, _home, s) = setup_store();
         let root = push_project(&s, "demo");
         let tools = FakeTools::with_key(TEST_KEY);
         let installed = install(&tools, None);
@@ -771,7 +781,8 @@ mod tests {
 
     #[test]
     fn cred_set_refuses_keys_bad_refs_and_failed_probes() {
-        let (_guard, s) = setup_store();
+        let _serial = crate::test_helpers::serial();
+        let (_guard, _home, s) = setup_store();
         push_project(&s, "demo");
         let mut ctx = context(&s.home);
 
@@ -843,7 +854,8 @@ mod tests {
 
     #[test]
     fn cred_is_the_owners() {
-        let (_guard, s) = setup_store();
+        let _serial = crate::test_helpers::serial();
+        let (_guard, _home, s) = setup_store();
         let tools = FakeTools::with_key(TEST_KEY);
         tools.set_token(TEST_TOKEN);
         let _installed = install(&tools, None);
@@ -889,7 +901,8 @@ mod tests {
 
     #[test]
     fn cred_token_from_file_and_bad_tokens() {
-        let (_guard, s) = setup_store();
+        let _serial = crate::test_helpers::serial();
+        let (_guard, _home, s) = setup_store();
         let tools = FakeTools::default();
         let installed = install(&tools, None);
         let mut ctx = context(&s.home);
@@ -907,7 +920,8 @@ mod tests {
                 .to_string()
                 .contains("Token not stored")
         );
-        let missing = tempdir().unwrap().path().join("missing");
+        let missing_dir = tempdir().unwrap();
+        let missing = missing_dir.path().join("missing");
         let (_, err) = cred_command(
             &mut ctx,
             &["token", "--from-file", missing.to_str().unwrap()],

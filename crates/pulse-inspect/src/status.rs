@@ -640,27 +640,42 @@ mod tests {
 
     #[test]
     fn daemon_interval_fallback() {
-        for (raw, want) in [
-            ("", pulse_runner::DEFAULT_DAEMON_INTERVAL_SECONDS as i64),
+        for (name, raw, want) in [
             (
+                "no-heartbeat",
+                "",
+                pulse_runner::DEFAULT_DAEMON_INTERVAL_SECONDS as i64,
+            ),
+            (
+                "unreadable",
                 "not json",
                 pulse_runner::DEFAULT_DAEMON_INTERVAL_SECONDS as i64,
             ),
-            ("{}", pulse_runner::DEFAULT_DAEMON_INTERVAL_SECONDS as i64),
             (
+                "missing-interval",
+                "{}",
+                pulse_runner::DEFAULT_DAEMON_INTERVAL_SECONDS as i64,
+            ),
+            (
+                "null-interval",
+                r#"{"interval":null}"#,
+                pulse_runner::DEFAULT_DAEMON_INTERVAL_SECONDS as i64,
+            ),
+            (
+                "zero-interval",
                 r#"{"interval":0}"#,
                 pulse_runner::DEFAULT_DAEMON_INTERVAL_SECONDS as i64,
             ),
-            (r#"{"interval":7}"#, 7),
+            ("custom-interval", r#"{"interval":7}"#, 7),
         ] {
             let (_dir, s) = temporary_store();
             if !raw.is_empty() {
                 s.conn()
                     .unwrap()
-                    .execute("INSERT INTO meta(key,value) VALUES('daemon',?)", [raw])
+                    .execute("INSERT INTO meta (key, value) VALUES ('daemon', ?)", [raw])
                     .unwrap();
             }
-            assert_eq!(daemon_interval_seconds(&s).unwrap(), want);
+            assert_eq!(daemon_interval_seconds(&s).unwrap(), want, "{name}");
         }
     }
 
@@ -777,8 +792,16 @@ mod tests {
             "INSERT INTO meta(key,value) VALUES ('daemon','{\"pid\":123,\"at\":\"2026-09-06T18:59:00Z\",\"loops\":4,\"interval\":30,\"note\":\"\",\"bus\":{\"subscribers\":2,\"dropped\":7,\"deduped\":3}}')",
         );
         let report = status(&s).unwrap();
+        assert_eq!(report.bus.subscribers, 2);
         assert_eq!(report.bus.dropped, 7);
-        assert!(report.text().contains("events     7 event(s) dropped"));
+        assert_eq!(report.bus.deduped, 3);
+        assert!(
+            report.text().contains(
+                "events     7 event(s) dropped for slow subscribers since the daemon started\n"
+            ),
+            "dropped line missing:\n{}",
+            report.text()
+        );
     }
 
     #[test]
@@ -786,12 +809,23 @@ mod tests {
         let (_dir, s) = temporary_store();
         exec_sql(
             &s,
-            "INSERT INTO meta(key,value) VALUES ('daemon','{\"interval\":30}'),('planner','{\"fresh\":{\"at\":\"2026-09-06T18:59:31Z\",\"note\":\"no suggestions\"},\"old\":{\"at\":\"2026-09-06T18:58:59Z\",\"note\":\"stale note\"}}')",
+            "INSERT INTO meta(key,value) VALUES ('daemon','{\"pid\":123,\"at\":\"2026-09-06T18:59:00Z\",\"loops\":4,\"interval\":30,\"note\":\"\"}'), ('planner','{\"fresh\":{\"at\":\"2026-09-06T18:59:31Z\",\"note\":\"no suggestions; reflect due\"},\"old\":{\"at\":\"2026-09-06T18:58:59Z\",\"note\":\"no eligible suggestion (1 rejected)\"}}')",
         );
         let notes = planner_notes(&s).unwrap();
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].project, "fresh");
+        assert!(!notes[0].stale);
+        assert_eq!(notes[1].project, "old");
         assert!(notes[1].stale);
+        let text = status(&s).unwrap().text();
+        assert!(
+            text.contains("planner    fresh: no suggestions; reflect due\n"),
+            "fresh planner line missing:\n{text}"
+        );
+        assert!(
+            text.contains("planner    old: no eligible suggestion (1 rejected) (stale)\n"),
+            "stale planner line missing:\n{text}"
+        );
     }
 
     #[test]
@@ -802,15 +836,19 @@ mod tests {
         assert!(!report.text().contains("hygiene"));
         exec_sql(
             &s,
-            "INSERT INTO meta(key,value) VALUES ('hygiene','{\"at\":\"2026-09-06T18:59:00Z\",\"removed\":{\"clone\":2,\"scratch\":5},\"held\":{\"branch\":20,\"clone\":8},\"bytes\":1503238553,\"errors\":1}')",
+            r#"INSERT INTO meta(key,value) VALUES ('hygiene','{"at":"2026-09-06T18:59:00Z","removed":{"clone":2,"scratch":5},"held":{"branch":20,"clone":8},"bytes":1503238553,"errors":1}')"#,
         );
         report = status(&s).unwrap();
         let want = "last sweep 2026-09-06T18:59:00Z: removed clone 2, scratch 5 (1.4 GB freed); held branch 20, clone 8; 1 error(s) - pulse sweep --dry-run shows them";
-        assert_eq!(report.hygiene, want);
-        assert!(report.text().contains(&format!("hygiene    {want}\n")));
+        assert_eq!(report.hygiene, want, "hygiene = want");
+        assert!(
+            report.text().contains(&format!("hygiene    {want}\n")),
+            "hygiene line missing:\n{}",
+            report.text()
+        );
         exec_sql(
             &s,
-            "UPDATE meta SET value = '{\"at\":\"2026-09-06T19:09:00Z\",\"removed\":{},\"held\":{},\"bytes\":0,\"errors\":0}' WHERE key = 'hygiene'",
+            r#"UPDATE meta SET value = '{"at":"2026-09-06T19:09:00Z","removed":{},"held":{},"bytes":0,"errors":0}' WHERE key = 'hygiene'"#,
         );
         assert_eq!(
             hygiene_status(&s).unwrap(),
@@ -875,14 +913,17 @@ mod tests {
         let (_dir, s) = temporary_store();
         exec_sql(
             &s,
-            "INSERT INTO meta(key,value) VALUES ('daemon','{\"interval\":30}'),('recovery','{\"zeta\":{\"at\":\"2026-09-06T18:59:31Z\",\"note\":\"retry\"},\"alpha\":{\"at\":\"2026-09-06T18:58:59Z\",\"note\":\"held\"}}')",
+            "INSERT INTO meta(key,value) VALUES ('daemon','{\"pid\":123,\"at\":\"2026-09-06T18:59:00Z\",\"loops\":4,\"interval\":30,\"note\":\"\"}'), ('recovery','{\"zeta\":{\"at\":\"2026-09-06T18:59:31Z\",\"note\":\"next retry at 2026-09-06T19:05:00Z\"},\"alpha\":{\"at\":\"2026-09-06T18:58:59Z\",\"note\":\"held (structural: missing npm)\"}}')",
         );
         let notes = recovery_notes(&s).unwrap();
         assert_eq!(notes[0].project, "alpha");
+        assert_eq!(notes[0].note, "held (structural: missing npm)");
         assert!(notes[0].stale);
+        assert_eq!(notes[1].project, "zeta");
+        assert!(!notes[1].stale);
         s.conn()
             .unwrap()
-            .execute("UPDATE meta SET value='not json' WHERE key='recovery'", [])
+            .execute("INSERT INTO meta(key,value) VALUES ('recovery','not json') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])
             .unwrap();
         assert!(
             recovery_notes(&s)
@@ -897,18 +938,36 @@ mod tests {
         let (_dir, s) = temporary_store();
         exec_sql(
             &s,
-            "INSERT INTO meta(key,value) VALUES ('daemon','{\"at\":\"2026-09-06T18:59:00Z\",\"interval\":30}'),('planner','{\"proj\":{\"at\":\"2026-09-06T18:59:31Z\",\"note\":\"planner note\"}}'),('recovery','{\"proj\":{\"at\":\"2026-09-06T18:59:31Z\",\"note\":\"1 held\"}}')",
+            "INSERT INTO meta(key,value) VALUES ('daemon',''), ('planner','{\"proj\":{\"at\":\"2026-09-06T18:59:31Z\",\"note\":\"planner note\"}}'),('recovery','{\"proj\":{\"at\":\"2026-09-06T18:59:31Z\",\"note\":\"3 failed in 7d: 1 run again, 1 re-planned (job-r), 1 held\"}}')",
         );
         let report = status(&s).unwrap();
+        assert_eq!(report.recovery.len(), 1);
+        let text = report.text();
+        let planner = "planner    proj: planner note\n";
+        let recovery =
+            "recovery   proj: 3 failed in 7d: 1 run again, 1 re-planned (job-r), 1 held\n";
+        let planner_at = text.find(planner);
+        let recovery_at = text.find(recovery);
         assert!(
-            report
-                .text()
-                .contains("planner    proj: planner note\nrecovery   proj: 1 held\n")
+            planner_at.is_some() && recovery_at.is_some(),
+            "planner/recovery lines missing:\n{text}"
+        );
+        assert!(
+            recovery_at > planner_at,
+            "recovery line should follow planner line:\n{text}"
         );
         assert!(
             serde_json::to_string(&report)
                 .unwrap()
                 .contains("\"recovery\":[")
+        );
+        let (_empty_dir, empty) = temporary_store();
+        let empty_report = status(&empty).unwrap();
+        assert!(empty_report.recovery.is_empty());
+        assert!(
+            serde_json::to_string(&empty_report)
+                .unwrap()
+                .contains("\"recovery\":[]")
         );
     }
 
@@ -932,9 +991,9 @@ mod tests {
         let landing_at = text.find(landing);
         assert!(
             recovery_at.is_some() && landing_at.is_some() && landing_at > recovery_at,
-            "{text}"
+            "recovery then landing lines expected:\n{text}"
         );
-        assert!(text.contains("landing    alpha: 1 branch waiting; locked: another landing holds /w/alpha/.git/pulse-land.lock (stale)\n"), "{text}");
+        assert!(text.contains("landing    alpha: 1 branch waiting; locked: another landing holds /w/alpha/.git/pulse-land.lock (stale)\n"), "stale landing line:\n{text}");
         exec_sql(
             &s,
             "INSERT INTO meta(key,value) VALUES ('landing','not json') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -949,6 +1008,11 @@ mod tests {
         let empty_report = status(&empty).unwrap();
         assert!(empty_report.landing.is_empty());
         assert!(!empty_report.text().contains("landing    "));
+        assert!(
+            empty_report.landing.is_empty(),
+            "empty status landing: {:?}",
+            empty_report.landing
+        );
         assert!(
             serde_json::to_string(&empty_report)
                 .unwrap()

@@ -377,7 +377,8 @@ pub fn render_markdown(_rec: &pulse_store::Record, rev: &pulse_store::Revision) 
 }
 
 fn render_value(v: &Value) -> String {
-    pulse_store::gojson::to_string(v).expect("records: frontmatter must contain JSON values")
+    pulse_store::gojson::to_string(v)
+        .unwrap_or_else(|e| panic!("records: frontmatter must contain JSON values: {e}"))
 }
 
 pub use parse_frontmatter as ParseFrontmatter;
@@ -438,6 +439,7 @@ mod tests {
 
     #[test]
     fn parse_frontmatter() {
+        let _serial = crate::test_helpers::serial();
         let text = "---\r\nid: ADR-019\r\ntitle: \"A title: with # and quotes\"\r\ntier: 2\r\nareas: [agents, 'data, storage', \"a#b\"] # comment\r\ntags:\r\n  - one\r\n  - 'it''s two'\r\ndelivered:\r\nenv: {\"MODE\": \"test\"}\r\nactive: true\r\n---\r\n\r\n# Body\r\n---\r\n";
         let (front, body) = super::parse_frontmatter(text).unwrap();
         assert_eq!(front["id"], json!("ADR-019"));
@@ -462,6 +464,7 @@ mod tests {
 
     #[test]
     fn multiline_frontmatter() {
+        let _serial = crate::test_helpers::serial();
         let cases = [
             (
                 "folded",
@@ -498,6 +501,7 @@ mod tests {
 
     #[test]
     fn frontmatter_errors() {
+        let _serial = crate::test_helpers::serial();
         for text in [
             "---\nx: y\n",
             "---\nnot a key\n---\n",
@@ -520,6 +524,7 @@ mod tests {
 
     #[test]
     fn real_frontmatter_samples() {
+        let _serial = crate::test_helpers::serial();
         let Some(repo) = source_repo() else {
             return;
         };

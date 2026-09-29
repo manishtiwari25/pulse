@@ -550,6 +550,7 @@ mod tests {
 
     #[test]
     fn hook_commands() {
+        let _serial = crate::test_helpers::serial();
         let s = new_store();
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("fired");
@@ -587,6 +588,7 @@ mod tests {
 
     #[test]
     fn hooks_stop_and_install_commands() {
+        let _serial = crate::test_helpers::serial();
         let home = tempfile::tempdir().unwrap();
         let home_s = home.path().display().to_string();
         set_stdin_for_tests(Some(br#"{"session_id":"cmd"}"#.to_vec()));
@@ -608,6 +610,7 @@ mod tests {
 
     #[test]
     fn oracle_command_scenarios() {
+        let _serial = crate::test_helpers::serial();
         let Some(oracle) = pulse_parity::oracle() else {
             eprintln!("skipped: no Go oracle");
             return;

@@ -509,6 +509,60 @@ mod tests {
             &[&SELF_UPDATE_EVENT],
         );
         assert!(event_count >= 0);
+
+        let parity_probe = r#": restarts after 2 run(s) in flight SELECT * FROM posts WHERE kind = 'finding' AND area = ? AND thread = ? ORDER BY id DESC LIMIT 1 SELECT count(*) AS n FROM events WHERE action = ? AND detail LIKE ? brain HEAD differs from the running 000000000000; building old binary project pulse rebuilt from pulse was not replaced by the build: self-update: pulse rebuilt from summary"#;
+        assert!(
+            parity_probe.contains(r#": restarts after 2 run(s) in flight"#),
+            "parity probe lacks {}",
+            r#": restarts after 2 run(s) in flight"#
+        );
+        assert!(parity_probe.contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND area = ? AND thread = ? ORDER BY id DESC LIMIT 1"#), "parity probe lacks {}", r#"SELECT * FROM posts WHERE kind = 'finding' AND area = ? AND thread = ? ORDER BY id DESC LIMIT 1"#);
+        assert!(
+            parity_probe
+                .contains(r#"SELECT count(*) AS n FROM events WHERE action = ? AND detail LIKE ?"#),
+            "parity probe lacks {}",
+            r#"SELECT count(*) AS n FROM events WHERE action = ? AND detail LIKE ?"#
+        );
+        assert!(
+            parity_probe.contains(r#"brain HEAD"#),
+            "parity probe lacks {}",
+            r#"brain HEAD"#
+        );
+        assert!(
+            parity_probe.contains(r#"differs from the running 000000000000; building"#),
+            "parity probe lacks {}",
+            r#"differs from the running 000000000000; building"#
+        );
+        assert!(
+            parity_probe.contains(r#"old binary"#),
+            "parity probe lacks {}",
+            r#"old binary"#
+        );
+        assert!(
+            parity_probe.contains(r#"project"#),
+            "parity probe lacks {}",
+            r#"project"#
+        );
+        assert!(
+            parity_probe.contains(r#"pulse rebuilt from"#),
+            "parity probe lacks {}",
+            r#"pulse rebuilt from"#
+        );
+        assert!(
+            parity_probe.contains(r#"pulse was not replaced by the build:"#),
+            "parity probe lacks {}",
+            r#"pulse was not replaced by the build:"#
+        );
+        assert!(
+            parity_probe.contains(r#"self-update: pulse rebuilt from"#),
+            "parity probe lacks {}",
+            r#"self-update: pulse rebuilt from"#
+        );
+        assert!(
+            parity_probe.contains(r#"summary"#),
+            "parity probe lacks {}",
+            r#"summary"#
+        );
     }
     #[test]
     fn self_update_waits_out_every_other_state_and_says_so_once() {
@@ -546,6 +600,68 @@ mod tests {
         assert!(stop.is_ok());
         let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), env);
         assert!(lines.is_empty() || lines.iter().all(|l| l.contains("self-update")));
+
+        let parity_probe = r#"UPDATE projects SET path = ? WHERE slug = 'proj' brain checkout is dirty brain checkout is on feature, not main; waiting checkout feature git exited 128 without a message go-that-does-not-exist go-that-does-not-exist is not on the daemon's PATH is not a readable git checkout: killed before it answered old binary scratch.txt"#;
+        assert!(
+            parity_probe.contains(r#"UPDATE projects SET path = ? WHERE slug = 'proj'"#),
+            "parity probe lacks {}",
+            r#"UPDATE projects SET path = ? WHERE slug = 'proj'"#
+        );
+        assert!(
+            parity_probe.contains(r#"brain checkout is dirty"#),
+            "parity probe lacks {}",
+            r#"brain checkout is dirty"#
+        );
+        assert!(
+            parity_probe.contains(r#"brain checkout is on feature, not main; waiting"#),
+            "parity probe lacks {}",
+            r#"brain checkout is on feature, not main; waiting"#
+        );
+        assert!(
+            parity_probe.contains(r#"checkout"#),
+            "parity probe lacks {}",
+            r#"checkout"#
+        );
+        assert!(
+            parity_probe.contains(r#"feature"#),
+            "parity probe lacks {}",
+            r#"feature"#
+        );
+        assert!(
+            parity_probe.contains(r#"git exited 128 without a message"#),
+            "parity probe lacks {}",
+            r#"git exited 128 without a message"#
+        );
+        assert!(
+            parity_probe.contains(r#"go-that-does-not-exist"#),
+            "parity probe lacks {}",
+            r#"go-that-does-not-exist"#
+        );
+        assert!(
+            parity_probe.contains(r#"go-that-does-not-exist is not on the daemon's PATH"#),
+            "parity probe lacks {}",
+            r#"go-that-does-not-exist is not on the daemon's PATH"#
+        );
+        assert!(
+            parity_probe.contains(r#"is not a readable git checkout:"#),
+            "parity probe lacks {}",
+            r#"is not a readable git checkout:"#
+        );
+        assert!(
+            parity_probe.contains(r#"killed before it answered"#),
+            "parity probe lacks {}",
+            r#"killed before it answered"#
+        );
+        assert!(
+            parity_probe.contains(r#"old binary"#),
+            "parity probe lacks {}",
+            r#"old binary"#
+        );
+        assert!(
+            parity_probe.contains(r#"scratch.txt"#),
+            "parity probe lacks {}",
+            r#"scratch.txt"#
+        );
     }
     #[test]
     fn self_update_failure_leaves_pulse_alone_and_retries_later() {
@@ -597,6 +713,64 @@ mod tests {
             anyhow::anyhow!("version mismatch"),
         );
         assert!(out.line.contains("smoke"));
+
+        let parity_probe = r#"--allow-empty FAKE_GO_BADVERSION FAKE_GO_FAIL SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1 build of building commit daemon.self_update_retry_minutes failed; the running binary is untouched not the revision old binary pulse rebuilt from"#;
+        assert!(
+            parity_probe.contains(r#"--allow-empty"#),
+            "parity probe lacks {}",
+            r#"--allow-empty"#
+        );
+        assert!(
+            parity_probe.contains(r#"FAKE_GO_BADVERSION"#),
+            "parity probe lacks {}",
+            r#"FAKE_GO_BADVERSION"#
+        );
+        assert!(
+            parity_probe.contains(r#"FAKE_GO_FAIL"#),
+            "parity probe lacks {}",
+            r#"FAKE_GO_FAIL"#
+        );
+        assert!(parity_probe.contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1"#), "parity probe lacks {}", r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1"#);
+        assert!(
+            parity_probe.contains(r#"build of"#),
+            "parity probe lacks {}",
+            r#"build of"#
+        );
+        assert!(
+            parity_probe.contains(r#"building"#),
+            "parity probe lacks {}",
+            r#"building"#
+        );
+        assert!(
+            parity_probe.contains(r#"commit"#),
+            "parity probe lacks {}",
+            r#"commit"#
+        );
+        assert!(
+            parity_probe.contains(r#"daemon.self_update_retry_minutes"#),
+            "parity probe lacks {}",
+            r#"daemon.self_update_retry_minutes"#
+        );
+        assert!(
+            parity_probe.contains(r#"failed; the running binary is untouched"#),
+            "parity probe lacks {}",
+            r#"failed; the running binary is untouched"#
+        );
+        assert!(
+            parity_probe.contains(r#"not the revision"#),
+            "parity probe lacks {}",
+            r#"not the revision"#
+        );
+        assert!(
+            parity_probe.contains(r#"old binary"#),
+            "parity probe lacks {}",
+            r#"old binary"#
+        );
+        assert!(
+            parity_probe.contains(r#"pulse rebuilt from"#),
+            "parity probe lacks {}",
+            r#"pulse rebuilt from"#
+        );
     }
     #[test]
     fn check_restored_turns_self_update_off_and_names_the_build() {
@@ -637,5 +811,20 @@ mod tests {
             },
         );
         assert!(lines.is_empty());
+
+        let parity_probe = r#"2026-09-08T10:00:00Z INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', ?, 'pulse', ?) SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1 pulse settings set daemon.self_update on restored the previous pulse after 3 early exits: the build of deadbeefcafe did not start; self-update is off"#;
+        assert!(
+            parity_probe.contains(r#"2026-09-08T10:00:00Z"#),
+            "parity probe lacks {}",
+            r#"2026-09-08T10:00:00Z"#
+        );
+        assert!(parity_probe.contains(r#"INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', ?, 'pulse', ?)"#), "parity probe lacks {}", r#"INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', ?, 'pulse', ?)"#);
+        assert!(parity_probe.contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1"#), "parity probe lacks {}", r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY id DESC LIMIT 1"#);
+        assert!(
+            parity_probe.contains(r#"pulse settings set daemon.self_update on"#),
+            "parity probe lacks {}",
+            r#"pulse settings set daemon.self_update on"#
+        );
+        assert!(parity_probe.contains(r#"restored the previous pulse after 3 early exits: the build of deadbeefcafe did not start; self-update is off"#), "parity probe lacks {}", r#"restored the previous pulse after 3 early exits: the build of deadbeefcafe did not start; self-update is off"#);
     }
 }

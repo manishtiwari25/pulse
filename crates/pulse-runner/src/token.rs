@@ -257,6 +257,35 @@ pub(crate) fn login_source(s: &pulse_store::Store) -> Result<(Vec<u8>, String)> 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
+    if s.harness_native() {
+        let provider_name = s.setting("provider", "");
+        if provider_name.is_empty() {
+            return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
+        }
+        let Ok(provider) =
+            crate::login_gate::local_provider(s.home.clone(), provider_name, s.provider_settings())
+        else {
+            return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
+        };
+        if let Some(exporter) = provider.as_login_exporter() {
+            match exporter.export_login() {
+                Ok((tok, login)) if classify_executor_token(tok.trim()).is_ok() => {
+                    let origin = if login.source.is_empty() {
+                        LOGIN_SOURCE_PROVIDER.to_string()
+                    } else {
+                        login.source
+                    };
+                    return Ok((tok.trim().as_bytes().to_vec(), origin));
+                }
+                Ok(_) => return Ok((Vec::new(), LOGIN_SOURCE_NONE.into())),
+                Err(err) if is_no_stored_login(&err) => {
+                    return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
+                }
+                Err(_) => return Ok((Vec::new(), LOGIN_SOURCE_NONE.into())),
+            }
+        }
+        return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
+    }
     let tok = {
         let mut gh = GH_SOURCE.lock().unwrap();
         gh.fetch()?
@@ -282,7 +311,10 @@ pub(crate) fn login_source(s: &pulse_store::Store) -> Result<(Vec<u8>, String)> 
 }
 /// Go: func isNoStoredLogin(err error) bool
 pub(crate) fn is_no_stored_login(err: &anyhow::Error) -> bool {
-    err.to_string().contains("no stored login")
+    let text = err.to_string();
+    text.contains("no stored login")
+        || text.contains("no stored GitHub Copilot login")
+        || text.contains("no_stored_login")
 }
 /// Go: func hasLoginSource(s *store.Store) bool
 pub(crate) fn has_login_source(s: &pulse_store::Store) -> bool {

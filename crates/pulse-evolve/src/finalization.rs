@@ -45,7 +45,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = e2_guard();
         let s = cycle_ready();
-        let p = voted_suggestion(&s, "candidate", "product", "value.txt", 2);
+        let p = voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
         let (job, _) = pulse_board::add_job(
             &s,
             pulse_board::JobInput {
@@ -74,7 +74,7 @@ mod tests {
             )
             .unwrap();
         s.conn().unwrap().execute(
-            "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES ('current-run', ?, 'tester', 'demo', ?, 'done')",
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES ('newer-unmeasured-run', ?, 'tester', 'demo', ?, 'done')",
             rusqlite::params![job.id, (now + chrono::Duration::seconds(1)).format("%Y-%m-%dT%H:%M:%SZ").to_string()],
         ).unwrap();
         s.conn().unwrap().execute(
@@ -85,12 +85,18 @@ mod tests {
             "tester",
             "land.landed",
             &prior.branch,
-            serde_json::json!({"project": "demo", "job": job.id, "archive": prior.id, "run_id": "current-run"}),
+            serde_json::json!({"project": "demo", "job": job.id, "archive": prior.id, "run_id": "newer-unmeasured-run"}),
         )
         .unwrap();
         assert!(
             !super::archive_finalized(&s, "demo", &job.id, &prior.id).unwrap(),
             "a current run borrowed a prior archive's landing evidence"
         );
+        let archives: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM evolution_archive", [], |r| r.get(0))
+            .unwrap();
+        assert!(archives >= 1, "archive reconciliation invented a row");
     }
 }

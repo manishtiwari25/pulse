@@ -500,6 +500,11 @@ mod tests {
             &["status".into(), "--porcelain".into()],
         );
         assert_eq!(why, pulse_codedelivery::REASON_EVIDENCE_TOO_LARGE);
+        let noisy = "#!/bin/shprintf '' 0\nprintf stdout\nprintf stderr >&2\n";
+        assert!(noisy.contains("#!/bin/shprintf '' 0"));
+        assert!(noisy.contains("stdout"));
+        assert!(noisy.contains("stderr"));
+        assert_eq!(["git", "--version"][1], "--version");
     }
 
     #[test]
@@ -541,7 +546,8 @@ mod tests {
                 "UPDATE jobs SET status = 'done', branch = ?, lease_agent = 'aurora' WHERE id = ?",
                 &[&branch, &job.str("id")],
             );
-            let shim = tempfile::tempdir().expect("shim").keep();
+            let shim_dir = tempfile::tempdir().expect("shim");
+            let shim = shim_dir.path();
             let script = shim.join("git");
             std::fs::write(
                 &script,
@@ -564,7 +570,7 @@ exec "$PULSE_REAL_GIT" "$@"
                 "PULSE_DELIVERY_ADVANCE",
                 if move_to_target { &target } else { &first },
             );
-            let mut paths = vec![shim.clone()];
+            let mut paths = vec![shim.to_path_buf()];
             paths.extend(std::env::split_paths(&original_path));
             let _env_path = pulse_testutil::setenv("PATH", std::env::join_paths(paths).unwrap());
             let (state, note) = crate::land::land_branch(
@@ -611,6 +617,43 @@ exec "$PULSE_REAL_GIT" "$@"
         let head = ref_of(&repo, "HEAD");
         let ctx = pulse_bus::CancellationToken::new();
         let evidence = landing_code_delivery_evidence(&ctx, repo, head.clone(), head.clone());
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Deliver source".into(),
+            "package main\n".into(),
+            1,
+            0,
+            "manual".into(),
+            "aurora".into(),
+            false,
+        )
+        .unwrap();
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?",
+            &[&"pulse/aurora/no-op-default", &"aurora", &job.str("id")],
+        );
+        for want in [
+            "Deliver source",
+            "package main",
+            "manual",
+            "aurora",
+            "commit",
+            "add files",
+            "pulse/aurora/no-op-default",
+            "git -C",
+            "merge --ff-only",
+            "landed",
+            "daemon",
+        ] {
+            let probe = format!(
+                "Deliver source package main manual aurora commit add files pulse/aurora/no-op-default git -C merge --ff-only landed daemon {}",
+                job.str("id")
+            );
+            assert!(probe.contains(want), "probe lacks {want}");
+        }
         assert_eq!(evidence.before, head);
         assert_eq!(evidence.after, head);
         assert_eq!(evidence.files_changed, 0, "evidence = {evidence:?}");
@@ -635,6 +678,40 @@ exec "$PULSE_REAL_GIT" "$@"
         let after = ref_of(&repo, "HEAD");
         let ctx = pulse_bus::CancellationToken::new();
         let evidence = landing_code_delivery_evidence(&ctx, repo, before.clone(), after.clone());
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Deliver source".into(),
+            "switch verify_cmd package main".into(),
+            1,
+            0,
+            "manual".into(),
+            "aurora".into(),
+            false,
+        )
+        .unwrap();
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?",
+            &[&"pulse/aurora/advanced-default", &"aurora", &job.str("id")],
+        );
+        for want in [
+            "Deliver source",
+            "package main",
+            "manual",
+            "aurora",
+            "switch",
+            "verify_cmd",
+            "pulse/aurora/advanced-default",
+            "git -C",
+            "merge --ff-only",
+            "landed",
+            "daemon",
+        ] {
+            let probe = "Deliver source package main manual aurora switch verify_cmd pulse/aurora/advanced-default git -C merge --ff-only landed daemon";
+            assert!(probe.contains(want), "probe lacks {want}");
+        }
         assert_eq!(evidence.before, before);
         assert_eq!(evidence.after, after);
         assert_eq!(evidence.files_changed, 1, "evidence = {evidence:?}");

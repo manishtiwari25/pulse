@@ -126,10 +126,10 @@ pub(crate) fn onboard_project(
     now: String,
     o: OnboardOpts,
 ) -> anyhow::Result<Vec<String>> {
-    let root = Path::new(&crate::board::expand_user(path))
-        .canonicalize()?
-        .display()
-        .to_string();
+    let mut root = pulse_store::filepath::abs(&crate::board::expand_user(path))?;
+    if let Ok(rp) = Path::new(&root).canonicalize() {
+        root = rp.display().to_string();
+    }
     if !Path::new(&root).is_dir() {
         return Err(crate::util::fail(2, format!("Not a directory: {root}")).into());
     }

@@ -4,6 +4,8 @@ pub mod commands;
 pub mod harness;
 pub mod history;
 pub mod localenv;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 
 pub use commands::*;
 pub use harness::*;

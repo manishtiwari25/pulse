@@ -364,6 +364,38 @@ mod tests {
         let s = auto_store();
         let calls = Arc::new(Mutex::new(0));
         let calls2 = calls.clone();
+        let (started_tx, started_rx) = crossbeam_channel::bounded::<()>(1);
+        let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
+        set_sealed_call(Box::new(move |_ctx, _s, _prompt| {
+            *calls2.lock().unwrap() += 1;
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+            Ok(SEALED_REPLY.into())
+        }));
+        tend_heldout(&s, TEST_NOW.into());
+        started_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("held-out generation did not start");
+        let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 5.0));
+        assert!(
+            lines.is_empty() && *calls.lock().unwrap() == 1,
+            "a second generation started beside the first: {lines:?} {}",
+            *calls.lock().unwrap()
+        );
+        let _ = release_tx.send(());
+        wait_heldout_idle();
+        let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 10.0));
+        assert!(
+            lines.len() == 1 && lines[0].starts_with("held-out: generated fixture 1 of 2"),
+            "after release: {lines:?}"
+        );
+        let _ = release_tx.send(());
+        wait_heldout_idle();
+
+        reset_heldout();
+        let s = auto_store();
+        let calls = Arc::new(Mutex::new(0));
+        let calls2 = calls.clone();
         set_sealed_call(Box::new(move |_ctx, _s, _prompt| {
             *calls2.lock().unwrap() += 1;
             Err(anyhow::anyhow!(
@@ -383,6 +415,66 @@ mod tests {
         tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 60.0));
         wait_heldout_idle();
         assert_eq!(*calls.lock().unwrap(), 2);
+        assert_eq!(
+            pulse_evolve::heldout_count(&s),
+            pulse_evolve::HeldoutState {
+                count: 0,
+                pending: 2,
+                generated: 0,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'evolve.heldout'",
+                &[]
+            ),
+            0
+        );
+
+        reset_heldout();
+        let s = auto_store();
+        let owner = tempfile::tempdir().expect("owner");
+        pulse_evolve::setup(&s, &owner.path().display().to_string()).unwrap();
+        for judge in ["starter-tier0-in-place", "starter-injection-note"] {
+            pulse_evolve::write_heldout(
+                &s,
+                pulse_evolve::HeldoutWrite {
+                    request: "The owner's own request.".into(),
+                    judge: judge.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let stub = CountingSealedCall::new(SEALED_REPLY);
+        set_sealed_call(Box::new(stub.clone_call()));
+        let lines = tend_heldout(&s, TEST_NOW.into());
+        assert!(
+            lines.is_empty() && stub.calls() == 0,
+            "complete set: {lines:?} {}",
+            stub.calls()
+        );
+        assert_eq!(
+            pulse_evolve::heldout_count(&s),
+            pulse_evolve::HeldoutState {
+                count: 2,
+                ..Default::default()
+            }
+        );
+
+        reset_heldout();
+        let s = new_store();
+        let stub = CountingSealedCall::new(SEALED_REPLY);
+        set_sealed_call(Box::new(stub.clone_call()));
+        let lines = tend_heldout(&s, TEST_NOW.into());
+        assert!(
+            lines.is_empty() && stub.calls() == 0,
+            "owner mode: {lines:?} {}",
+            stub.calls()
+        );
+        assert_eq!(s.setting("evolve.heldout_dir", ""), "");
 
         reset_heldout();
         let s = auto_store();
@@ -438,7 +530,8 @@ mod tests {
         let _env = pulse_testutil::env_lock();
         reset_heldout();
         let s = auto_store();
-        let scratch = tempfile::tempdir().expect("scratch").keep();
+        let scratch_dir = tempfile::tempdir().expect("scratch");
+        let scratch = scratch_dir.path();
         let args_file = scratch.join("args");
         let env_file = scratch.join("env");
         let cwd_file = scratch.join("cwd");
@@ -550,7 +643,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: daemon::daemon: expected held-out generated fixture 1 of 2 got no held-out tick/call in daemon loop"]
     fn daemon_tick_generates_heldout() {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
@@ -560,6 +652,7 @@ mod tests {
         new_bare_repo(&s);
         let stub = CountingSealedCall::new(SEALED_REPLY);
         set_sealed_call(Box::new(stub.clone_call()));
+        let first_out = crate::test_helpers::OutBuf::new();
         let first = crate::daemon::daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
@@ -567,16 +660,18 @@ mod tests {
                 worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
                 max_loops: 1,
                 no_watchdog: true,
+                out: Some(first_out.writer()),
                 ..Default::default()
             },
         );
         wait_heldout_idle();
         assert_eq!(first, "done");
-        let first_log = String::new();
+        let first_log = first_out.string();
         assert!(
             !first_log.contains("held-out:") && stub.calls() == 1,
             "first tick:\n{first_log}"
         );
+        let out_buf = crate::test_helpers::OutBuf::new();
         let result = crate::daemon::daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
@@ -585,13 +680,14 @@ mod tests {
                 worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
                 max_loops: 1,
                 no_watchdog: true,
+                out: Some(out_buf.writer()),
                 ..Default::default()
             },
         );
         wait_heldout_idle();
         reset_heldout();
         assert_eq!(result, "done");
-        let out = String::new();
+        let out = out_buf.string();
         assert!(
             out.contains("held-out: generated fixture 1 of 2 (judge starter-hardstop-history)")
                 && !out.contains(SEALED_REPLY),

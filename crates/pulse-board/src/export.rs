@@ -117,6 +117,7 @@ mod tests {
 
     #[test]
     fn literal_quotes() {
+        let _serial = crate::test_helpers::serial();
         assert_eq!(
             super::sql_literal(rusqlite::types::Value::Text("a'b".into())),
             "'a''b'"
@@ -125,6 +126,7 @@ mod tests {
 
     #[test]
     fn import_registry() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s) = new_home();
         let repo = git_repo();
         let dir = tempfile::tempdir().unwrap();
@@ -156,6 +158,7 @@ mod tests {
 
     #[test]
     fn export_store() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, p, _repo) = fixture();
         let err = super::export_store(&s, "", "", false).unwrap_err();
         assert_eq!(what_any(&err), "export --sql PATH or --db PATH");

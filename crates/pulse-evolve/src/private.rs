@@ -303,6 +303,8 @@ pub(crate) fn load_private_at(
             ));
         }
     }
+    std::fs::read_dir(&dir)
+        .map_err(|_| private_error("cannot open the owner-private directory"))?;
     let root = Path::new(&dir);
     let entries: Vec<_> = std::fs::read_dir(&dir)
         .map_err(|_| private_error("cannot inspect the private fixture set"))?
@@ -435,6 +437,8 @@ pub fn setup(s: &pulse_store::Store, value: &str) -> Result<SetupResult> {
             ));
         }
     }
+    std::fs::read_dir(&dir)
+        .map_err(|_| private_error("cannot open the owner-private directory"))?;
     let root = Path::new(&dir);
     let mut result = SetupResult::default();
     for i in 1..=2 {
@@ -458,11 +462,24 @@ pub fn setup(s: &pulse_store::Store, value: &str) -> Result<SetupResult> {
                 private_regular(root, &name, suffix == ".score")?;
                 continue;
             }
-            heldout_file(root, &name, &body, mode).map_err(|_| {
-                private_error(
-                    "cannot create a private template; existing files were not overwritten",
-                )
-            })?;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|_| {
+                    private_error(
+                        "cannot create a private template; existing files were not overwritten",
+                    )
+                })?;
+            f.write_all(body.as_bytes())
+                .and_then(|_| f.flush())
+                .map_err(|_| private_error("cannot write a private template"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                    .map_err(|_| private_error("cannot write a private template"))?;
+            }
             result.created += 1;
         }
     }
@@ -589,6 +606,8 @@ pub(crate) fn heldout_file(root: &Path, name: &str, body: &str, mode: u32) -> Re
 /// Go: func WriteHeldout(s *store.Store, w HeldoutWrite) (*SetupResult, error)
 pub fn write_heldout(s: &pulse_store::Store, w: HeldoutWrite) -> Result<SetupResult> {
     let dir = private_dir(s, &s.setting("evolve.heldout_dir", ""))?;
+    std::fs::read_dir(&dir)
+        .map_err(|_| private_error("cannot open the owner-private directory"))?;
     let root = Path::new(&dir);
     let meta = std::fs::metadata(&dir)
         .map_err(|_| private_error("the owner-private directory must exist with mode 0700"))?;

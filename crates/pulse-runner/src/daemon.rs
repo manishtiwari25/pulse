@@ -3,7 +3,7 @@
 //! Skeleton port of internal/runner/daemon.go.
 
 use std::collections::BTreeMap;
-use std::sync::{LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Duration;
 
 type Row = crate::util::Row;
@@ -126,7 +126,7 @@ pub(crate) fn daemon_heartbeat(s: &pulse_store::Store, loops: i32, interval: i32
     if let Ok(conn) = s.conn() {
         let _ = conn.execute(
             "INSERT INTO meta (key, value) VALUES ('daemon', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [beat.to_string()],
+            [pulse_store::gojson::to_string(&beat).unwrap_or_default()],
         );
     }
 }
@@ -152,7 +152,7 @@ pub(crate) fn capacity_note(
     if let Ok(conn) = s.conn() {
         let _ = conn.execute(
             "INSERT INTO meta (key, value) VALUES ('capacity', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [note.to_string()],
+            [pulse_store::gojson::to_string(&note).unwrap_or_default()],
         );
     }
 }
@@ -365,6 +365,10 @@ fn dispatch_tick(
     (started, reason)
 }
 
+fn dispatch_key(slot: &str, worker: &str, job: &Row) -> String {
+    format!("{slot}\0{worker}\0{}", job.str("id"))
+}
+
 /// Go: func daemon(ctx context.Context, s *store.Store, o daemonOpts) string
 pub(crate) fn daemon(
     cancel: &pulse_bus::CancellationToken,
@@ -383,14 +387,81 @@ pub(crate) fn daemon(
     };
     let mut loops = 0;
     let mut last_prune_day = String::new();
-    let mut last_sweep = None;
     let mut prev_idle: BTreeMap<String, String> = BTreeMap::new();
     let mut maintenance = crate::daemon_maintenance::DaemonMaintenance::default();
     let mut maintenance_wake = false;
     let mut probes = crate::checkout::CheckoutProbes::default();
     let mut refused = crate::amend::AmendRefusals::new();
     let stamp = (BINARY_STAMP.read().expect("binary stamp"))();
-    let _lost = crate::run::sweep_lost_runs(s, &s.now());
+    let (results_tx, results_rx) = crossbeam_channel::bounded::<Dispatch>(64);
+    let mut inflight: BTreeMap<String, Dispatch> = BTreeMap::new();
+    let loop_ctx = cancel.child();
+    let run_ctx = pulse_bus::CancellationToken::new();
+    let maintenance_ctx = cancel.child();
+    let compute_ctx = pulse_bus::CancellationToken::new();
+    let (wake_events, cancel_wake) = pulse_bus::default().subscribe(
+        pulse_bus::Filter {
+            actions: DAEMON_WAKE.iter().map(|s| (*s).to_string()).collect(),
+            ..Default::default()
+        },
+        32,
+    );
+    pulse_tally::set_log(Some(Arc::new({
+        let out = o.clone();
+        move |line| say(&out, line)
+    })));
+    let bridge_done = pulse_bus::bridge(loop_ctx.clone(), s.clone(), Duration::ZERO);
+    let mut hooks_runner = pulse_hooks::Runner::new(s.clone());
+    hooks_runner.bus = Some(pulse_bus::default());
+    let hook_opts = o.clone();
+    hooks_runner.log = Some(Arc::new(move |line| {
+        say(&hook_opts, format!("hook: {line}"))
+    }));
+    let (hooks_done_tx, hooks_done_rx) = crossbeam_channel::bounded(1);
+    let hooks_ctx = loop_ctx.clone();
+    std::thread::Builder::new()
+        .name("daemon-hooks".into())
+        .spawn(move || {
+            hooks_runner.run(hooks_ctx);
+            let _ = hooks_done_tx.send(());
+        })
+        .expect("spawn daemon hooks");
+    #[allow(unused_assignments)]
+    let mut heartbeat_note: Option<String> = None;
+    if !o.no_watchdog {
+        let s_note = s.clone();
+        let actor_note = actor.clone();
+        let out = o.clone();
+        let kill = run_ctx.clone();
+        let mut dog = crate::daemon_watchdog::new_daemon_watchdog(
+            crate::daemon_watchdog::daemon_stall_bound(interval),
+            std::path::Path::new(&s.home)
+                .join("logs")
+                .display()
+                .to_string(),
+            Arc::new(move |line| say(&out, line)),
+            Arc::new(move |note, dump| {
+                daemon_heartbeat(&s_note, 0, interval, note.clone());
+                if let Ok(conn) = s_note.conn() {
+                    crate::util::event_at(
+                        &conn,
+                        &s_note.now(),
+                        &actor_note,
+                        "daemon.stalled",
+                        "",
+                        serde_json::json!({"note": note, "dump": dump}),
+                    );
+                }
+            }),
+            Arc::new(move || kill.cancel()),
+        );
+        let dog_ctx = loop_ctx.clone();
+        std::thread::Builder::new()
+            .name("daemon-watchdog".into())
+            .spawn(move || dog.run(&dog_ctx, Duration::from_secs(60)))
+            .expect("spawn daemon watchdog");
+    }
+    let lost = crate::run::sweep_lost_runs(s, &s.now());
     let self_env =
         o.self_update
             .as_ref()
@@ -402,35 +473,108 @@ pub(crate) fn daemon(
                 actor: actor.clone(),
                 ..Default::default()
             });
+    let dry = if o.dry_run { ", dry run" } else { "" };
+    say(
+        &o,
+        format!(
+            "daemon started {} (interval {}s{}, pid {})",
+            s.now(),
+            interval,
+            dry,
+            std::process::id()
+        ),
+    );
+    if lost > 0 {
+        say(
+            &o,
+            format!("closed {lost} run(s) a previous runner left in progress as lost"),
+        );
+    }
     for line in crate::selfupdate::check_restored(s, self_env.clone()) {
         say(&o, line);
     }
     let compute = crate::compute::new_compute_worker(
-        cancel,
+        &compute_ctx,
         s,
         crate::compute::ComputeOpts {
             actor: actor.clone(),
             hub_home: o.hub_home.clone(),
         },
     );
+    let compute_wake = compute.wake_rx();
+    let mut completed = false;
+    let mut all_errors = true;
+    let mut starved_since = String::new();
+    let sleep_wait = |d: Duration| -> bool {
+        if let Some(sleep) = &o.sleep {
+            return sleep(d);
+        }
+        let timer = crossbeam_channel::after(d);
+        let done = cancel.done();
+        crossbeam_channel::select! {
+            recv(done) -> _ => false,
+            recv(timer) -> _ => true,
+            recv(wake_events) -> _ => true,
+            recv(compute_wake) -> _ => true,
+        }
+    };
     loop {
+        while let Ok(d) = results_rx.try_recv() {
+            inflight.remove(&dispatch_key(&d.slot, &d.worker, &d.job));
+            completed = true;
+            if !d.run.0.is_empty() && d.run.str("status") != "error" {
+                all_errors = false;
+            }
+            if !d.run.0.is_empty() {
+                say(
+                    &o,
+                    format!(
+                        "{} {} {} on {}: {}",
+                        d.run.str("status"),
+                        d.run.str("job_id"),
+                        d.run.str("agent"),
+                        d.slot,
+                        d.run.str("summary")
+                    ),
+                );
+            } else if !d.reason.is_empty() {
+                say(&o, format!("idle: {}", d.reason));
+            }
+        }
+        for line in maintenance.drain() {
+            say(&o, line);
+        }
+        if completed && inflight.is_empty() {
+            if all_errors && !sleep_wait(Duration::from_secs(interval as u64)) {
+                heartbeat_note = Some("exited".into());
+                break;
+            }
+            completed = false;
+            all_errors = true;
+        }
         if cancel.is_cancelled() {
-            daemon_heartbeat(s, loops, interval, "exited".into());
-            return "interrupted".into();
+            heartbeat_note = Some("exited".into());
+            break;
         }
         loops += 1;
         let now = s.now();
         daemon_heartbeat(s, loops, interval, String::new());
         if !crate::run::runner_stopped(s).is_empty() {
-            daemon_heartbeat(s, loops, interval, "exited".into());
-            return "stopped".into();
+            say(&o, format!("stopped: {}", crate::run::runner_stopped(s)));
+            heartbeat_note = Some("exited".into());
+            break;
         }
         if o.restart_on_change
             && !stamp.is_empty()
             && (BINARY_STAMP.read().expect("binary stamp"))() != stamp
         {
+            say(
+                &o,
+                "pulse changed on disk; exiting with code 3 so the service restarts it",
+            );
             daemon_heartbeat(s, loops, interval, "restarting".into());
-            return "restart".into();
+            heartbeat_note = Some("restarting".into());
+            break;
         }
         if now[..10.min(now.len())] != last_prune_day {
             match crate::board::prune_agents(
@@ -462,28 +606,29 @@ pub(crate) fn daemon(
         for line in hold_lines {
             say(&o, line);
         }
-        let inflight = BTreeMap::new();
         let only_maintenance_wake = maintenance_wake;
         maintenance_wake = false;
-        let dispatch_only_once = o.max_loops == 1 && active_queued_count(s) > 0;
         if maintenance.done.is_none()
-            && !dispatch_only_once
             && (!only_maintenance_wake || maintenance.has_new_pending(s, projects.clone()))
         {
             let mut binary = self_env.clone();
-            binary.inflight = 0;
+            binary.inflight = inflight.len() as i32;
+            let inflight_jobs = inflight
+                .values()
+                .map(|d| (d.job.str("id"), true))
+                .collect::<BTreeMap<_, _>>();
             maintenance.start(
-                cancel,
+                &maintenance_ctx,
                 s,
                 projects.clone(),
                 actor.clone(),
                 now.clone(),
                 o.dry_run,
-                inflight.clone(),
+                inflight_jobs,
                 binary,
             );
         }
-        for line in maintenance.drain() {
+        for line in crate::auto_adopt::auto_adopt_drafts(s, now.clone(), actor.clone()) {
             say(&o, line);
         }
         let slugs = projects.iter().map(|p| p.str("slug")).collect::<Vec<_>>();
@@ -564,10 +709,7 @@ pub(crate) fn daemon(
         }
         crate::idle::record_idle_notes(s, cur_idle.clone(), now.clone());
         prev_idle = cur_idle;
-        for line in crate::auto_adopt::auto_adopt_drafts(s, now.clone(), actor.clone()) {
-            say(&o, line);
-        }
-        for line in compute.tick(cancel, &now) {
+        for line in compute.tick(&compute_ctx, &now) {
             say(&o, line);
         }
         for line in crate::heldout::tend_heldout(s, now.clone()) {
@@ -579,16 +721,9 @@ pub(crate) fn daemon(
                 format!("executor {} is reachable again: {}", pr[0], pr[1]),
             );
         }
-        let _ = crate::retire::tend_executors(s, now.clone(), actor.clone());
-        let _ = crate::sweep::tend_sweep(
-            s,
-            projects.clone(),
-            now.clone(),
-            actor.clone(),
-            inflight,
-            last_sweep,
-        );
-        last_sweep = Some(chrono::Utc::now());
+        for line in crate::retire::tend_executors(s, now.clone(), actor.clone()) {
+            say(&o, line);
+        }
         let queued = conn
             .as_ref()
             .map(|c| {
@@ -603,19 +738,143 @@ pub(crate) fn daemon(
         let gate = (crate::login_gate::LOGIN_GATE
             .read()
             .expect("login gate poisoned"))(s);
-        let busy = BTreeMap::new();
+        let mut busy = BTreeMap::new();
+        for d in inflight.values() {
+            *busy.entry(d.slot.clone()).or_insert(0) += 1;
+        }
         let slots = crate::run::executor_slots(s, &now, &busy, !gate.is_empty());
-        let (started, reason) = if slots.is_empty() {
-            (
-                0,
-                if gate.is_empty() {
-                    "every executor slot is busy".to_string()
-                } else {
-                    gate.clone()
-                },
-            )
+        let mut started: Vec<Dispatch> = Vec::new();
+        let reason = if slots.is_empty() {
+            if gate.is_empty() {
+                "every executor slot is busy".to_string()
+            } else {
+                gate.clone()
+            }
         } else {
-            dispatch_tick(cancel, s, &o, &now, &slots)
+            let mut names = inflight
+                .values()
+                .map(|d| d.worker.clone())
+                .collect::<Vec<_>>();
+            let mut reasons = BTreeMap::new();
+            let mut rows = BTreeMap::new();
+            for name in &slots {
+                rows.entry(name.clone())
+                    .or_insert_with(|| crate::executor::executor_row(s, name));
+            }
+            let mut order = (0..slots.len()).collect::<Vec<_>>();
+            order.sort_by_key(|i| {
+                let unrestricted = rows
+                    .get(&slots[*i])
+                    .is_some_and(|r| r.str("projects") == "*");
+                (unrestricted, *i)
+            });
+            for i in order {
+                let slot = &slots[i];
+                let (lead, job, why) = crate::lead::lead_job_for(
+                    s,
+                    &names,
+                    o.dry_run,
+                    now.clone(),
+                    slot.clone(),
+                    started.len() as i32,
+                );
+                let (worker, job) = if !job.0.is_empty() {
+                    (lead, job)
+                } else {
+                    if !why.is_empty() {
+                        reasons.insert(why, true);
+                    }
+                    let worker = match crate::run::pick_worker(s, &now, &o.agent, &names) {
+                        Ok(worker) => worker,
+                        Err(e) => {
+                            reasons.insert(crate::run::err_message(&e), true);
+                            continue;
+                        }
+                    };
+                    let (job, _, why) = match crate::run::take_job(
+                        s,
+                        &worker,
+                        "",
+                        "",
+                        o.dry_run,
+                        &now,
+                        slot,
+                        started.len() as i32,
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            reasons.insert(crate::run::err_message(&e), true);
+                            continue;
+                        }
+                    };
+                    if job.0.is_empty() {
+                        if !why.is_empty() {
+                            reasons.insert(why, true);
+                        }
+                        continue;
+                    }
+                    (worker, job)
+                };
+                names.push(worker.clone());
+                let d = Dispatch {
+                    slot: slot.clone(),
+                    worker,
+                    job,
+                    ..Default::default()
+                };
+                inflight.insert(dispatch_key(&d.slot, &d.worker, &d.job), d.clone());
+                started.push(d.clone());
+                let tx = results_tx.clone();
+                let s_run = s.clone();
+                let o_run = o.clone();
+                let now_run = now.clone();
+                let run_parent = run_ctx.child();
+                std::thread::Builder::new()
+                    .name("daemon-run".into())
+                    .spawn(move || {
+                        let mut d = d;
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let dctx = run_parent
+                                .with_timeout(crate::baseline::job_budget(&s_run, d.job.clone()));
+                            match crate::run::run_job(
+                                &s_run,
+                                d.job.clone(),
+                                &d.worker,
+                                &now_run,
+                                crate::run::RunOpts {
+                                    dry_run: o_run.dry_run,
+                                    worker_cmd: o_run.worker_cmd.clone(),
+                                    executor: d.slot.clone(),
+                                    cancel: dctx,
+                                },
+                            ) {
+                                Ok(run) => d.run = run,
+                                Err(e) => {
+                                    d.reason = format!(
+                                        "daemon error on {}: {}",
+                                        d.slot,
+                                        crate::run::err_message(&e)
+                                    );
+                                }
+                            }
+                        }));
+                        if let Err(panic) = result {
+                            let msg = panic
+                                .downcast_ref::<&str>()
+                                .map(|s| (*s).to_string())
+                                .or_else(|| panic.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "unknown panic".into());
+                            d.reason = format!("daemon error on {}: {}", d.slot, msg);
+                        }
+                        let _ = tx.send(d);
+                    })
+                    .expect("spawn daemon run");
+            }
+            let mut reason = sorted_bool_keys(&reasons).join("; ");
+            if reason.is_empty() && started.is_empty() {
+                reason = "no queued job".into();
+            }
+            reason
         };
         if !gate.is_empty()
             && let Some(c) = conn.as_ref()
@@ -633,13 +892,23 @@ pub(crate) fn daemon(
                 say(&o, post.str("summary"));
             }
         }
-        let total_slots = (slots.len() as i32 - started as i32).max(0);
+        let total_slots = inflight.len() as i32 + slots.len() as i32 - started.len() as i32;
+        let starved = active_queued_count(s) > 0
+            && slots.len().saturating_sub(started.len()) == 0
+            && !inflight.is_empty();
+        if starved {
+            if starved_since.is_empty() {
+                starved_since = now.clone();
+            }
+        } else {
+            starved_since.clear();
+        }
         capacity_note(
             s,
             active_queued_count(s),
             total_slots,
-            0,
-            String::new(),
+            inflight.len() as i32,
+            starved_since.clone(),
             if gate.is_empty() {
                 held.values().next().cloned().unwrap_or_default()
             } else {
@@ -647,38 +916,196 @@ pub(crate) fn daemon(
             },
             now,
         );
-        if queued > 0
-            && total_slots == 0
+        if !starved_since.is_empty()
             && let Some(c) = conn.as_ref()
         {
+            let waited = (crate::util::must_iso(&s.now()) - crate::util::must_iso(&starved_since))
+                .num_minutes() as i32;
             let brain = crate::board::brain_project(c);
             let post = hands_wanted(
                 s,
                 brain,
                 queued,
-                slots.len() as i32,
-                HANDS_WANTED_MINUTES,
+                total_slots,
+                waited,
                 s.now(),
                 actor.clone(),
             );
-            if !post.0.is_empty() {
+            if waited >= HANDS_WANTED_MINUTES && !post.0.is_empty() {
                 say(&o, format!("hands wanted: {}", post.str("summary")));
             }
         }
-        if started == 0 && !reason.is_empty() {
+        for line in compute.drain() {
+            say(&o, line);
+        }
+        // Go says "idle" twice in two branches; one guard keeps clippy quiet.
+        if !reason.is_empty()
+            && ((started.is_empty() && inflight.is_empty())
+                || (!started.is_empty() && started.len() < slots.len()))
+        {
             say(&o, format!("idle: {reason}"));
         }
         if o.max_loops > 0 && loops >= o.max_loops {
-            daemon_heartbeat(s, loops, interval, "exited".into());
-            return "done".into();
+            heartbeat_note = Some("exited".into());
+            break;
         }
-        if maintenance.done.is_some() {
-            maintenance_wake = true;
-            std::thread::sleep(Duration::from_secs(DISPATCH_TICK_SECONDS as u64));
+        if !inflight.is_empty() {
+            daemon_heartbeat(s, loops + 1, interval, String::new());
+            let done = cancel.done();
+            let tick = crossbeam_channel::after(Duration::from_secs(DISPATCH_TICK_SECONDS as u64));
+            crossbeam_channel::select! {
+                recv(results_rx) -> msg => if let Ok(d) = msg {
+                    inflight.remove(&dispatch_key(&d.slot, &d.worker, &d.job));
+                    completed = true;
+                    if !d.run.0.is_empty() && d.run.str("status") != "error" { all_errors = false; }
+                    if !d.run.0.is_empty() {
+                        say(&o, format!("{} {} {} on {}: {}", d.run.str("status"), d.run.str("job_id"), d.run.str("agent"), d.slot, d.run.str("summary")));
+                    } else if !d.reason.is_empty() {
+                        say(&o, format!("idle: {}", d.reason));
+                    }
+                },
+                recv(tick) -> _ => {},
+                recv(compute_wake) -> _ => {},
+                recv(wake_events) -> _ => {},
+                recv(done) -> _ => { heartbeat_note = Some("exited".into()); break; },
+            }
+        } else if let Some(done_rx) = maintenance.done.as_ref() {
+            let done = cancel.done();
+            let tick = crossbeam_channel::after(Duration::from_secs(DISPATCH_TICK_SECONDS as u64));
+            crossbeam_channel::select! {
+                recv(done_rx) -> _ => { maintenance_wake = true; },
+                recv(tick) -> _ => {},
+                recv(compute_wake) -> _ => {},
+                recv(wake_events) -> _ => {},
+                recv(done) -> _ => { heartbeat_note = Some("exited".into()); break; },
+            }
         } else {
-            std::thread::sleep(Duration::from_secs(interval as u64));
+            if !sleep_wait(Duration::from_secs(interval as u64)) {
+                heartbeat_note = Some("exited".into());
+                break;
+            }
         }
     }
+    loop_ctx.cancel();
+    let interrupted = cancel.is_cancelled();
+    let heartbeat_note = heartbeat_note.unwrap_or_else(|| "exited".into());
+    let mut result = if interrupted {
+        "interrupted"
+    } else if heartbeat_note == "restarting" {
+        "restart"
+    } else if !crate::run::runner_stopped(s).is_empty() {
+        "stopped"
+    } else {
+        "done"
+    };
+    let note = match result {
+        "restart" => "restarting",
+        "stopped" => "stopping",
+        "interrupted" => "stopping on signal",
+        _ => "loop limit reached",
+    };
+    let mut grace = if matches!(result, "interrupted" | "stopped") {
+        if o.grace > Duration::ZERO {
+            o.grace
+        } else {
+            Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(1) as u64) * 60)
+        }
+    } else {
+        Duration::ZERO
+    };
+    if matches!(result, "interrupted" | "stopped") {
+        maintenance_ctx.cancel();
+    }
+    if !inflight.is_empty() {
+        say(
+            &o,
+            format!(
+                "{note}: waiting for {} run(s) in flight to finish",
+                inflight.len()
+            ),
+        );
+        // Go: waitAll(grace) - results are reported as they arrive; the
+        // caller's cancellation starts the interrupted grace when none is
+        // running; when the grace ends the runs are killed and still awaited.
+        let never_tick = crossbeam_channel::never::<std::time::Instant>();
+        let never_done = crossbeam_channel::never::<()>();
+        let mut timer = (grace > Duration::ZERO).then(|| crossbeam_channel::after(grace));
+        let mut caller_done = Some(cancel.done());
+        while !inflight.is_empty() {
+            crossbeam_channel::select! {
+                recv(results_rx) -> msg => {
+                    let Ok(d) = msg else { break };
+                    inflight.remove(&dispatch_key(&d.slot, &d.worker, &d.job));
+                    if !d.run.0.is_empty() {
+                        say(&o, format!("{} {} {} on {}: {}", d.run.str("status"), d.run.str("job_id"), d.run.str("agent"), d.slot, d.run.str("summary")));
+                    } else if !d.reason.is_empty() {
+                        say(&o, format!("idle: {}", d.reason));
+                    }
+                },
+                recv(caller_done.as_ref().unwrap_or(&never_done)) -> _ => {
+                    caller_done = None;
+                    if timer.is_none() {
+                        grace = if o.grace > Duration::ZERO {
+                            o.grace
+                        } else {
+                            Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(1) as u64) * 60)
+                        };
+                        timer = Some(crossbeam_channel::after(grace));
+                    }
+                },
+                recv(timer.as_ref().unwrap_or(&never_tick)) -> _ => {
+                    say(&o, format!("grace of {} over: killing {} run(s) still in flight", pulse_cli::format_duration(grace), inflight.len()));
+                    run_ctx.cancel();
+                    timer = None;
+                },
+            }
+        }
+    }
+    if maintenance.done.is_some() {
+        say(
+            &o,
+            format!("{note}: waiting for landing maintenance to finish"),
+        );
+        if let Some(done) = maintenance.done.take()
+            && let Ok((lines, held)) = done.recv()
+        {
+            maintenance.held = held;
+            for line in lines {
+                say(&o, line);
+            }
+        }
+    }
+    maintenance_ctx.cancel();
+    if cancel.is_cancelled() && result != "stopped" {
+        result = "interrupted";
+        grace = if o.grace > Duration::ZERO {
+            o.grace
+        } else {
+            Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(1) as u64) * 60)
+        };
+    }
+    if compute.busy() > 0 {
+        say(
+            &o,
+            format!(
+                "{note}: waiting for {} compute operation(s) in flight",
+                compute.busy()
+            ),
+        );
+    }
+    compute.wait(grace);
+    compute_ctx.cancel();
+    for line in compute.drain() {
+        say(&o, line);
+    }
+    let _ = bridge_done.recv();
+    let _ = hooks_done_rx.recv();
+    daemon_heartbeat(s, loops, interval, heartbeat_note);
+    // Go: defer cancelWake() - the wake subscription outlives the heartbeat,
+    // which therefore counts it among the bus subscribers.
+    cancel_wake();
+    crate::checkout::hold_checkouts(BTreeMap::new());
+    result.into()
 }
 
 /// Go: func boolKeys(m map[string]bool) map[string]string
@@ -690,7 +1117,35 @@ pub(crate) fn bool_keys(m: BTreeMap<String, bool>) -> BTreeMap<String, String> {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+    use std::io::Write;
     use std::time::Duration;
+
+    struct SignalWriter {
+        out: OutBuf,
+        waiting: crossbeam_channel::Sender<()>,
+        needle: String,
+        sent: bool,
+    }
+
+    impl Write for SignalWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let text = String::from_utf8_lossy(buf);
+            if !self.sent && text.contains(&self.needle) {
+                self.sent = true;
+                let _ = self.waiting.send(());
+            }
+            self.out
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn daemon_interval_flag_defaults() {
@@ -789,6 +1244,7 @@ mod tests {
                 max_loops: loops,
                 worker_cmd: worker_cmd.into(),
                 no_watchdog: true,
+                sleep: Some(std::sync::Arc::new(|_| true)),
                 ..Default::default()
             },
         )
@@ -809,24 +1265,65 @@ mod tests {
         ] {
             let (s, job) = daemon_retry_fixture();
             assert_eq!(normalized_interval(interval), want, "{name}");
-            let result = run_once(
+            let out = OutBuf::new();
+            let waits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let attempts_at_wait = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let waits_for_sleep = waits.clone();
+            let attempts_for_sleep = attempts_at_wait.clone();
+            let s_for_sleep = s.clone();
+            let job_id = job.str("id");
+            let result = daemon(
+                &pulse_bus::CancellationToken::new(),
                 &s,
-                &std::path::Path::new(&s.home)
-                    .join("missing-worker")
-                    .display()
-                    .to_string(),
-                interval,
-                2,
+                DaemonOpts {
+                    interval,
+                    max_loops: 2,
+                    out: Some(out.writer()),
+                    worker_cmd: format!(
+                        "{:?}",
+                        std::path::Path::new(&s.home)
+                            .join("missing-worker")
+                            .display()
+                            .to_string()
+                    ),
+                    no_watchdog: true,
+                    sleep: Some(std::sync::Arc::new(move |d| {
+                        waits_for_sleep.lock().unwrap().push(d);
+                        attempts_for_sleep.lock().unwrap().push(count(
+                            &s_for_sleep,
+                            "SELECT COUNT(*) AS n FROM runs WHERE job_id = ?",
+                            &[&job_id],
+                        ));
+                        true
+                    })),
+                    ..Default::default()
+                },
             );
-            assert_eq!(result, "done", "{name}");
+            let waits = waits.lock().unwrap().clone();
+            assert!(
+                result == "done"
+                    && waits.len() == 1
+                    && waits[0] == Duration::from_secs(want as u64),
+                "daemon = {result}, waits = {waits:?}, want [{want}s]\n{}",
+                out.string()
+            );
+            assert_eq!(attempts_at_wait.lock().unwrap()[0], 1);
             let attempts = count(
                 &s,
-                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ?",
+                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'error'",
                 &[&job.str("id")],
             );
-            assert!(attempts <= 2, "{name}: attempts = {attempts}");
-            assert_eq!(job.str("title"), "retry");
-            assert_eq!(job.str("source"), "retry-test");
+            assert_eq!(
+                attempts,
+                2,
+                "{name}: error attempts = {attempts}, want 2\n{}",
+                out.string()
+            );
+            assert!(
+                out.string().contains(&format!("interval {want}s")),
+                "{name}: configured interval missing:\n{}",
+                out.string()
+            );
         }
     }
 
@@ -835,29 +1332,46 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let (s, job) = daemon_retry_fixture();
         let cancel = pulse_bus::CancellationToken::new();
-        cancel.cancel();
+        let out = OutBuf::new();
+        let waits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let waits_for_sleep = waits.clone();
+        let cancel_for_sleep = cancel.clone();
         let result = daemon(
             &cancel,
             &s,
             DaemonOpts {
                 interval: 7,
                 max_loops: 2,
-                worker_cmd: std::path::Path::new(&s.home)
-                    .join("missing-worker")
-                    .display()
-                    .to_string(),
+                out: Some(out.writer()),
+                worker_cmd: format!(
+                    "{:?}",
+                    std::path::Path::new(&s.home)
+                        .join("missing-worker")
+                        .display()
+                        .to_string()
+                ),
                 no_watchdog: true,
+                sleep: Some(std::sync::Arc::new(move |d| {
+                    waits_for_sleep.lock().unwrap().push(d);
+                    cancel_for_sleep.cancel();
+                    false
+                })),
                 ..Default::default()
             },
         );
-        assert_eq!(result, "interrupted");
+        let waits = waits.lock().unwrap().clone();
+        assert!(
+            result == "interrupted" && waits == vec![Duration::from_secs(7)],
+            "daemon = {result}, waits = {waits:?}\n{}",
+            out.string()
+        );
         assert_eq!(
             count(
                 &s,
                 "SELECT COUNT(*) AS n FROM runs WHERE job_id = ?",
                 &[&job.str("id")]
             ),
-            0
+            1
         );
     }
 
@@ -878,67 +1392,175 @@ mod tests {
             false,
         )
         .unwrap();
-        let result = run_once(&s, "sh -c 'echo SUMMARY: ok'", 7, 2);
-        assert_eq!(result, "done");
+        let out = OutBuf::new();
+        let waits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let waits_for_sleep = waits.clone();
+        let result = daemon(
+            &pulse_bus::CancellationToken::new(),
+            &s,
+            DaemonOpts {
+                interval: 7,
+                max_loops: 2,
+                out: Some(out.writer()),
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                no_watchdog: true,
+                sleep: Some(std::sync::Arc::new(move |d| {
+                    waits_for_sleep.lock().unwrap().push(d);
+                    true
+                })),
+                ..Default::default()
+            },
+        );
+        assert!(
+            result == "done" && waits.lock().unwrap().is_empty(),
+            "daemon = {result}, waits = {:?}\n{}",
+            waits.lock().unwrap(),
+            out.string()
+        );
         for job in [first, second] {
             let n = count(
                 &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE id = ?",
+                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'done'",
                 &[&job.str("id")],
             );
-            assert_eq!(n, 1);
+            assert_eq!(
+                n,
+                1,
+                "successful attempts for {} = {n}, want 1\n{}",
+                job.str("id"),
+                out.string()
+            );
         }
     }
 
     #[test]
     fn daemon_retry_uses_post_wait_time() {
         let _serial = crate::test_helpers::serial();
-        let (s, job) = daemon_retry_fixture();
+        let _env = pulse_testutil::env_lock();
+        let (fixed, job) = daemon_retry_fixture();
+        let _now = pulse_testutil::setenv("PULSE_NOW", TEST_NOW);
+        let s = pulse_store::Store::open(pulse_store::Options {
+            home: fixed.home.clone(),
+            create: false,
+            read_only: false,
+            skip_records: false,
+            now: String::new(),
+        })
+        .unwrap();
         let later = crate::util::plus_minutes(TEST_NOW, 7.0 / 60.0);
         assert_eq!(s.now(), TEST_NOW);
         assert_eq!(later, "2026-09-06T10:00:07Z");
-        let result = run_once(
+        let out = OutBuf::new();
+        let later_for_sleep = later.clone();
+        let result = daemon(
+            &pulse_bus::CancellationToken::new(),
             &s,
-            &std::path::Path::new(&s.home)
-                .join("missing-worker")
-                .display()
-                .to_string(),
-            7,
-            1,
+            DaemonOpts {
+                interval: 7,
+                max_loops: 2,
+                out: Some(out.writer()),
+                worker_cmd: format!(
+                    "{:?}",
+                    std::path::Path::new(&s.home)
+                        .join("missing-worker")
+                        .display()
+                        .to_string()
+                ),
+                no_watchdog: true,
+                sleep: Some(std::sync::Arc::new(move |_| {
+                    // The test holds pulse_testutil::env_lock for the whole body.
+                    unsafe {
+                        std::env::set_var("PULSE_NOW", &later_for_sleep);
+                    }
+                    true
+                })),
+                ..Default::default()
+            },
         );
-        assert_eq!(result, "done");
+        let runs = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT started_at FROM runs WHERE job_id = ? ORDER BY started_at, id",
+            &[&job.str("id")],
+        );
         assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE id = ?",
-                &[&job.str("id")]
+            (
+                result.as_str(),
+                runs.len(),
+                runs.first().map(|r| r.str("started_at")),
+                runs.get(1).map(|r| r.str("started_at"))
             ),
-            1
+            ("done", 2, Some(TEST_NOW.to_string()), Some(later.clone())),
+            "daemon = {result}, starts = {runs:?}, want {TEST_NOW} then {later}\n{}",
+            out.string()
         );
     }
 
     #[test]
     fn daemon_wakes_on_post_question() {
         let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
         let cancel = pulse_bus::CancellationToken::new();
-        let result = daemon(
-            &cancel,
+        let out = OutBuf::new();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let s_daemon = s.clone();
+        let cancel_daemon = cancel.clone();
+        let out_daemon = out.clone();
+        std::thread::spawn(move || {
+            let result = daemon(
+                &cancel_daemon,
+                &s_daemon,
+                DaemonOpts {
+                    interval: 30,
+                    max_loops: 2,
+                    worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                    out: Some(out_daemon.writer()),
+                    no_watchdog: true,
+                    ..Default::default()
+                },
+            );
+            let _ = done_tx.send(result);
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            let beat = crate::util::must_one(
+                &*s.conn().unwrap(),
+                "SELECT value FROM meta WHERE key = 'daemon'",
+                &[],
+            );
+            if beat.str("value").contains("\"loops\":1") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        pulse_bus::emit(
             &s,
-            DaemonOpts {
-                interval: 30,
-                max_loops: 2,
-                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
-                no_watchdog: true,
-                ..Default::default()
-            },
-        );
-        assert_eq!(result, "done");
-        let (raw, ok) = s.meta("daemon").unwrap();
-        assert!(ok, "daemon meta missing");
-        assert!(raw.contains("\"loops\""));
+            "human",
+            "post.question",
+            "q1",
+            serde_json::json!({"project": "proj"}),
+        )
+        .unwrap();
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| {
+                cancel.cancel();
+                panic!(
+                    "the daemon did not wake on post.question:\n{}",
+                    out.string()
+                )
+            });
+        assert_eq!(result, "done", "daemon = {result}\n{}", out.string());
+        let raw = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT value FROM meta WHERE key = 'daemon'",
+            &[],
+        )
+        .str("value");
+        assert!(!raw.is_empty(), "daemon = {raw}");
+        assert!(raw.contains("\"loops\""), "daemon = {raw}");
         assert!(DAEMON_WAKE.contains(&"post.question"));
     }
 
@@ -955,8 +1577,7 @@ mod tests {
             s.set_setting(pulse_store::HUMAN_AGENT, "landing.auto_stash", "off")
                 .unwrap();
             s.conn().unwrap().execute(
-                "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at)
-                 VALUES ('draining', 'proj', 'experiment', 'Fake pending measurement', 'done', 'evolve/draining', ?, ?)",
+                "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at) VALUES ('draining', 'proj', 'experiment', 'Fake pending measurement', 'done', 'evolve/draining', ?, ?)",
                 rusqlite::params![TEST_NOW, TEST_NOW],
             ).unwrap();
             s.conn()
@@ -967,14 +1588,22 @@ mod tests {
                     rusqlite::params![TEST_NOW],
                 )
                 .unwrap();
-            daemon_heartbeat(&s, 1, DEFAULT_DAEMON_INTERVAL_SECONDS, "draining".into());
+            daemon_heartbeat(&s, 1, DEFAULT_DAEMON_INTERVAL_SECONDS, "drain began".into());
             let cancel = pulse_bus::CancellationToken::new();
             if exit == "done" {
                 cancel.cancel();
             } else {
-                set_binary_stamp(|| "old-fake-binary".into());
+                set_binary_stamp(|| "new-fake-binary".into());
                 let before = (BINARY_STAMP.read().unwrap())();
-                assert_eq!(before, "old-fake-binary");
+                assert_eq!(before, "new-fake-binary");
+                pulse_bus::emit(
+                    &s,
+                    "human",
+                    "post.question",
+                    "wake-restart",
+                    serde_json::json!({"project": "proj"}),
+                )
+                .unwrap();
                 cancel.cancel();
             }
             let result = daemon(
@@ -1015,40 +1644,96 @@ mod tests {
     #[test]
     fn daemon_worker_completion_starts_next_landing_pass() {
         let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
         let s = new_store();
-        new_bare_repo(&s);
+        let (_, root) = new_bare_repo(&s);
         join(&s, "aurora");
         s.set_setting(pulse_store::HUMAN_AGENT, "landing", "agents")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "jobs_per_day", "1")
             .unwrap();
+        let source = format!("reflect:proj:{}", &TEST_NOW[..10]);
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "INSERT INTO jobs (id, project, kind, title, status, source, created_at) VALUES ('daily-reflect', 'proj', 'reflect', 'Already reflected', 'done', ?, ?)",
+            &[&source, &TEST_NOW],
+        );
         let (job, _) = crate::jobs::add_job(
             &s,
             "proj".into(),
             "task".into(),
-            "landing-wake".into(),
-            "write value".into(),
+            "One fake change".into(),
+            "one isolated test commit".into(),
             1,
-            0,
-            "test".into(),
+            100,
+            "landing-wake".into(),
             pulse_store::HUMAN_AGENT.into(),
             false,
         )
         .unwrap();
-        let result = run_once(
-            &s,
-            "sh -c 'echo value > value.txt && git add value.txt && git commit -m value >/dev/null && echo SUMMARY: fake commit'",
-            300,
-            1,
+        let fifo = std::path::Path::new(&s.home).join("worker");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success(), "mkfifo failed");
+        let gate = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&fifo)
+            .unwrap();
+        let command = format!(
+            "sh -c {:?}",
+            format!(
+                "read gate < {}; printf change > value.txt && git add value.txt && git commit -q -m 'Fake change' && echo SUMMARY: fake commit",
+                crate::util::shell_quote(&fifo.display().to_string())
+            )
         );
-        assert_eq!(result, "done");
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE id = ?",
-                &[&job.str("id")]
-            ),
-            1
+        let cancel = pulse_bus::CancellationToken::new();
+        let s_daemon = s.clone();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = daemon(
+                &cancel_daemon,
+                &s_daemon,
+                DaemonOpts {
+                    interval: 300,
+                    max_loops: 2,
+                    worker_cmd: command,
+                    out: Some(OutBuf::new().writer()),
+                    no_watchdog: true,
+                    ..Default::default()
+                },
+            );
+            let _ = done_tx.send(result);
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let (_, exists) = s.meta("hygiene").unwrap();
+            if exists {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "initial maintenance did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        use std::io::Write as _;
+        (&gate).write_all(b"go\n").unwrap();
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| {
+                cancel.cancel();
+                panic!("fake completion did not wake the supervisor")
+            });
+        let row = crate::jobs::job_row(&*s.conn().unwrap(), job.str("id"));
+        assert!(
+            result == "done"
+                && std::path::Path::new(&root).join("value.txt").exists()
+                && row.str("branch").is_empty(),
+            "worker completion waited for an idle interval instead of starting its landing: {result}, job={row:?}"
         );
     }
 
@@ -1060,7 +1745,8 @@ mod tests {
             atomic::{AtomicBool, AtomicI32, Ordering},
         };
         let s = new_store();
-        new_bare_repo(&s);
+        let (_, root) = new_bare_repo(&s);
+        run(&root, &["git", "branch", "evolve/slow-measurement"]);
         let other_root = std::path::Path::new(&s.home).join("other");
         std::fs::create_dir_all(&other_root).unwrap();
         std::process::Command::new("git")
@@ -1125,7 +1811,7 @@ mod tests {
             .unwrap()
             .execute(
                 "INSERT INTO runs (id, job_id, agent, project, started_at, status)
-             VALUES ('slow-run', 'slow-measurement', 'aurora', 'proj', ?, 'running')",
+             VALUES ('slow-run', 'slow-measurement', 'aurora', 'proj', ?, 'done')",
                 rusqlite::params![TEST_NOW],
             )
             .unwrap();
@@ -1175,21 +1861,33 @@ mod tests {
             }
         }));
         let cancel = pulse_bus::CancellationToken::new();
-        let result = daemon(
-            &cancel,
-            &s,
-            DaemonOpts {
-                interval: 300,
-                max_loops: 1,
-                worker_cmd: "sh -c 'echo SUMMARY: fake work complete'".into(),
-                no_watchdog: true,
-                ..Default::default()
-            },
+        let s_for_daemon = (*s).clone();
+        let cancel_for_daemon = cancel.clone();
+        let handle = std::thread::spawn(move || {
+            daemon(
+                &cancel_for_daemon,
+                &s_for_daemon,
+                DaemonOpts {
+                    interval: 300,
+                    max_loops: 1,
+                    worker_cmd: "sh -c 'echo SUMMARY: fake work complete'".into(),
+                    no_watchdog: true,
+                    ..Default::default()
+                },
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !started_measure.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            started_measure.load(Ordering::SeqCst),
+            "fake measurement did not start"
         );
+        release_measure.store(true, Ordering::SeqCst);
+        let result = handle.join().unwrap();
         let _ = pulse_evolve::set_measure(old_measure);
-        release_measure.store(true, Ordering::SeqCst);
         assert_eq!(result, "done");
-        release_measure.store(true, Ordering::SeqCst);
         let runs = count(
             &s,
             "SELECT COUNT(*) AS n FROM runs WHERE job_id = ?",
@@ -1262,45 +1960,108 @@ mod tests {
     #[test]
     fn daemon_cancellation_during_worker_drain_keeps_grace() {
         let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
         let s = new_store();
         new_bare_repo(&s);
+        join(&s, "aurora");
         s.set_setting(pulse_store::HUMAN_AGENT, "minutes_per_job", "1000")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "jobs_per_day", "1")
             .unwrap();
         let (job, _) = crate::jobs::add_job(
             &s,
             "proj".into(),
             "task".into(),
-            "drain-test".into(),
-            "brief".into(),
+            "Fake draining worker".into(),
+            "fake worker only".into(),
             0,
-            1,
-            "test".into(),
+            100,
+            "drain-test".into(),
             pulse_store::HUMAN_AGENT.into(),
             false,
         )
         .unwrap();
-        let cancel = pulse_bus::CancellationToken::new();
-        cancel.cancel();
-        let result = daemon(
-            &cancel,
-            &s,
-            DaemonOpts {
-                interval: 300,
-                max_loops: 1,
-                grace: Duration::from_millis(100),
-                no_watchdog: true,
-                ..Default::default()
-            },
+        let dir = std::path::Path::new(&s.home).join("worker-drain");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("worker");
+        let marker = dir.join("started");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success(), "mkfifo failed");
+        let cmd = format!(
+            "sh -c {:?}",
+            format!(
+                "printf ready > {}; read line < {}",
+                crate::util::shell_quote(&marker.display().to_string()),
+                crate::util::shell_quote(&fifo.display().to_string())
+            )
         );
-        assert_eq!(result, "interrupted");
+        let out = OutBuf::new();
+        let (waiting_tx, waiting_rx) = crossbeam_channel::bounded(1);
+        let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(SignalWriter {
+            out: out.clone(),
+            waiting: waiting_tx,
+            needle: "run(s) in flight to finish".into(),
+            sent: false,
+        }));
+        let cancel = pulse_bus::CancellationToken::new();
+        let cancel_for_thread = cancel.clone();
+        let s_for_thread = s.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        const GRACE: Duration = Duration::from_millis(100);
+        std::thread::spawn(move || {
+            let result = daemon(
+                &cancel_for_thread,
+                &s_for_thread,
+                DaemonOpts {
+                    interval: 300,
+                    max_loops: 1,
+                    grace: GRACE,
+                    worker_cmd: cmd,
+                    out: Some(writer),
+                    no_watchdog: true,
+                    ..Default::default()
+                },
+            );
+            let _ = done_tx.send(result);
+        });
+        waiting_rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("daemon did not enter its normal worker drain");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            marker.exists(),
+            "fake worker did not reach its blocking read"
+        );
+        let cancelled_at = std::time::Instant::now();
+        cancel.cancel();
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("late cancellation failed to bound the previously unbounded worker drain");
+        assert!(
+            result == "interrupted" && cancelled_at.elapsed() >= GRACE,
+            "late cancellation lost its grace or exit state: {result}, elapsed {:?}",
+            cancelled_at.elapsed()
+        );
+        assert_ne!(
+            crate::jobs::job_row(&*s.conn().unwrap(), job.str("id")).str("status"),
+            "leased"
+        );
         assert_eq!(
             count(
                 &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE id = ?",
-                &[&job.str("id")]
+                "SELECT COUNT(*) AS n FROM runs WHERE status = 'running'",
+                &[]
             ),
-            1
+            0,
+            "drain returned without joining the cancelled worker"
         );
         assert_eq!(s.setting("minutes_per_job", ""), "1000");
+        assert!(out.string().contains("run(s) in flight to finish"));
     }
 }

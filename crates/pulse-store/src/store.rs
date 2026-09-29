@@ -1,3 +1,4 @@
+use crate::ctx::CancellationToken;
 use crate::ddl::DDL;
 use crate::evolve_ddl::EVOLVE_DDL;
 use crate::harness_ddl::{HARNESS_COLUMNS, HARNESS_DDL};
@@ -16,7 +17,7 @@ use serde_json::Value;
 use std::fs;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 pub const SCHEMA_VERSION: i64 = 3;
@@ -65,7 +66,18 @@ struct Inner {
     path: String,
     read_only: bool,
     now: String,
-    pool: Mutex<Vec<Connection>>,
+    /// Go: database/sql's pool - idle connections plus the accounting behind
+    /// SetMaxOpenConns (idle + in-use, and the cap requests wait on; 0 = no
+    /// limit). One mutex for both so borrowers and returners never deadlock.
+    pool: Mutex<Pool>,
+    freed: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct Pool {
+    idle: Vec<Connection>,
+    total: usize,
+    max_open: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -96,11 +108,27 @@ impl DerefMut for PooledConn {
 impl Drop for PooledConn {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
+            // A borrower's progress handler must not outlive the borrow.
+            let _ = conn.progress_handler(0, None::<fn() -> bool>);
             let mut pool = self.store.inner.pool.lock().expect("store pool poisoned");
-            if pool.len() < MAX_POOL {
-                pool.push(conn);
+            if pool.idle.len() < MAX_POOL {
+                pool.idle.push(conn);
+            } else {
+                pool.total = pool.total.saturating_sub(1);
             }
+            drop(pool);
+            self.store.inner.freed.notify_one();
         }
+    }
+}
+
+/// Go: what a context-aware query returns once its context is done - the
+/// context's error (database/sql and the sqlite driver both report ctx.Err()
+/// rather than the interrupted statement). Other errors pass through.
+pub fn ctx_error(ctx: &CancellationToken, err: anyhow::Error) -> anyhow::Error {
+    match ctx.err() {
+        Some(cause) => anyhow::Error::new(cause),
+        None => err,
     }
 }
 
@@ -130,7 +158,8 @@ impl Store {
                 path: path.display().to_string(),
                 read_only: o.read_only,
                 now: o.now,
-                pool: Mutex::new(Vec::new()),
+                pool: Mutex::new(Pool::default()),
+                freed: Condvar::new(),
             }),
             home,
             path: path.display().to_string(),
@@ -156,12 +185,73 @@ impl Store {
     }
 
     pub fn conn(&self) -> Result<PooledConn> {
-        if let Some(conn) = self.inner.pool.lock().expect("store pool poisoned").pop() {
-            return Ok(PooledConn {
-                store: self.clone(),
-                conn: Some(conn),
-            });
+        Ok(PooledConn {
+            store: self.clone(),
+            conn: Some(self.acquire(&CancellationToken::new())?),
+        })
+    }
+
+    /// Go: db.Conn(ctx) / QueryContext - a connection for one borrower. With a
+    /// SetMaxOpenConns cap in force the caller waits for a free connection
+    /// until `ctx` is done (then ctx.Err() comes back), and while it holds the
+    /// connection a cancelled `ctx` interrupts the running statement, which
+    /// surfaces as ctx.Err() too (see [`ctx_error`]).
+    pub fn conn_ctx(&self, ctx: &CancellationToken) -> Result<PooledConn> {
+        let conn = self.acquire(ctx)?;
+        let watch = ctx.clone();
+        conn.progress_handler(1000, Some(move || watch.is_cancelled()))?;
+        Ok(PooledConn {
+            store: self.clone(),
+            conn: Some(conn),
+        })
+    }
+
+    /// Go: db.SetMaxOpenConns(n) - at most n connections open at once, 0 for
+    /// no limit; further borrowers wait (or give up when their context ends).
+    pub fn set_max_open_conns(&self, n: usize) {
+        self.inner
+            .pool
+            .lock()
+            .expect("store pool poisoned")
+            .max_open = n;
+        self.inner.freed.notify_all();
+    }
+
+    fn acquire(&self, ctx: &CancellationToken) -> Result<Connection> {
+        let mut pool = self.inner.pool.lock().expect("store pool poisoned");
+        loop {
+            if let Some(err) = ctx.err() {
+                return Err(anyhow::Error::new(err));
+            }
+            if let Some(conn) = pool.idle.pop() {
+                return Ok(conn);
+            }
+            if pool.max_open == 0 || pool.total < pool.max_open {
+                pool.total += 1;
+                drop(pool);
+                return match self.open_conn() {
+                    Ok(conn) => Ok(conn),
+                    Err(e) => {
+                        self.inner.pool.lock().expect("store pool poisoned").total -= 1;
+                        self.inner.freed.notify_one();
+                        Err(e)
+                    }
+                };
+            }
+            let wait = ctx
+                .remaining()
+                .unwrap_or(Duration::from_millis(50))
+                .min(Duration::from_millis(50));
+            pool = self
+                .inner
+                .freed
+                .wait_timeout(pool, wait)
+                .expect("store pool poisoned")
+                .0;
         }
+    }
+
+    fn open_conn(&self) -> Result<Connection> {
         let flags = if self.inner.read_only {
             OpenFlags::SQLITE_OPEN_READ_ONLY
         } else {
@@ -169,10 +259,7 @@ impl Store {
         };
         let conn = Connection::open_with_flags(&self.inner.path, flags)?;
         configure_conn(&conn, self.inner.read_only)?;
-        Ok(PooledConn {
-            store: self.clone(),
-            conn: Some(conn),
-        })
+        Ok(conn)
     }
 
     pub fn db_path(&self) -> &str {
@@ -186,7 +273,12 @@ impl Store {
         }
     }
     pub fn close(&self) -> Result<()> {
-        self.inner.pool.lock().expect("store pool poisoned").clear();
+        let mut pool = self.inner.pool.lock().expect("store pool poisoned");
+        let closed = pool.idle.len();
+        pool.idle.clear();
+        pool.total = pool.total.saturating_sub(closed);
+        drop(pool);
+        self.inner.freed.notify_all();
         Ok(())
     }
 
@@ -223,7 +315,12 @@ impl Store {
                 [],
                 |r| r.get(0),
             )
-            .with_context(|| format!("{} has no schema_version (not a PULSE store?)", self.path))?;
+            .map_err(|e| {
+                anyhow!(
+                    "{} has no schema_version (not a PULSE store?): {e}",
+                    self.path
+                )
+            })?;
         let n: i64 = have.parse().map_err(|_| {
             anyhow!(
                 "{} has a schema_version that is not a number: {:?}",
@@ -549,13 +646,14 @@ pub fn resolve_home(explicit: &str) -> Result<String> {
     };
     if home.is_empty() {
         home = home::home_dir()
-            .ok_or_else(|| anyhow!("cannot find the home directory"))?
+            .ok_or_else(|| anyhow!("cannot find the home directory: home directory not found"))?
             .join(".pulse")
             .display()
             .to_string();
     }
     if home.starts_with('~') {
-        let user = home::home_dir().ok_or_else(|| anyhow!("cannot find the home directory"))?;
+        let user = home::home_dir()
+            .ok_or_else(|| anyhow!("cannot find the home directory: home directory not found"))?;
         let rest = home
             .trim_start_matches('~')
             .trim_start_matches(std::path::MAIN_SEPARATOR);
@@ -609,7 +707,12 @@ pub fn create(path: impl AsRef<Path>) -> Result<()> {
             path: path.display().to_string(),
             read_only: false,
             now: String::new(),
-            pool: Mutex::new(vec![conn]),
+            pool: Mutex::new(Pool {
+                idle: vec![conn],
+                total: 1,
+                max_open: 0,
+            }),
+            freed: Condvar::new(),
         }),
         home: path
             .parent()
@@ -762,6 +865,7 @@ pub(crate) fn wal_size(path: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ctx::ContextError;
     use crate::py_json;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -777,13 +881,28 @@ mod tests {
     fn remove_env(k: &str) {
         unsafe { std::env::remove_var(k) }
     }
-    fn open_temp(o: Options) -> Store {
-        let home = if o.home.is_empty() {
-            tempfile::tempdir().unwrap().keep().display().to_string()
+    struct TestStore {
+        _dir: Option<tempfile::TempDir>,
+        store: Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+    fn open_temp(o: Options) -> TestStore {
+        let dir = if o.home.is_empty() {
+            Some(tempfile::tempdir().unwrap())
         } else {
-            o.home.clone()
+            None
         };
-        Store::open(Options { home, ..o }).unwrap()
+        let home = dir
+            .as_ref()
+            .map(|d| d.path().display().to_string())
+            .unwrap_or_else(|| o.home.clone());
+        let store = Store::open(Options { home, ..o }).unwrap();
+        TestStore { _dir: dir, store }
     }
     fn table_exists(s: &Store, name: &str) -> bool {
         let conn = s.conn().unwrap();
@@ -825,6 +944,7 @@ mod tests {
 
     #[test]
     fn ddl_matches_captured_schema() {
+        let _serial = crate::test_helpers::serial();
         let Ok(want) = fs::read_to_string("/tmp/pulse-parity/schema.sql") else {
             return;
         };
@@ -833,6 +953,7 @@ mod tests {
 
     #[test]
     fn create_and_reopen() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let home = tempfile::tempdir().unwrap();
@@ -872,6 +993,7 @@ mod tests {
 
     #[test]
     fn open_sets_journal_size_limit() {
+        let _serial = crate::test_helpers::serial();
         let s = open_temp(Options {
             create: true,
             ..Options::default()
@@ -886,6 +1008,7 @@ mod tests {
 
     #[test]
     fn open_sets_busy_timeout() {
+        let _serial = crate::test_helpers::serial();
         let s = open_temp(Options {
             create: true,
             ..Options::default()
@@ -899,7 +1022,74 @@ mod tests {
     }
 
     #[test]
+    fn max_open_conns_waits_until_the_context_is_done() {
+        let _serial = crate::test_helpers::serial();
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        s.set_max_open_conns(1);
+        let held = s.conn().unwrap();
+        let ctx = CancellationToken::new();
+        let waiter = {
+            let s = s.store.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                s.conn_ctx(&ctx)
+                    .map(|_| ())
+                    .map_err(|e| ContextError::of(&e))
+            })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !waiter.is_finished(),
+            "a second connection opened past the cap"
+        );
+        ctx.cancel();
+        let started = std::time::Instant::now();
+        let got = waiter.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(got, Err(Some(ContextError::Canceled)));
+        drop(held);
+        let deadline = CancellationToken::new().with_timeout(Duration::from_secs(5));
+        let ok = s.conn_ctx(&deadline).unwrap();
+        let one: i64 = ok.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(one, 1);
+    }
+
+    #[test]
+    fn cancelled_context_interrupts_a_running_statement() {
+        let _serial = crate::test_helpers::serial();
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        let ctx = CancellationToken::new();
+        let conn = s.conn_ctx(&ctx).unwrap();
+        let canceller = {
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                ctx.cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let result: rusqlite::Result<i64> = conn.query_row(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200000000) SELECT COUNT(*) FROM n",
+            [],
+            |r| r.get(0),
+        );
+        canceller.join().unwrap();
+        assert!(result.is_err(), "statement ran to completion");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let err = ctx_error(&ctx, anyhow::Error::new(result.unwrap_err()));
+        assert!(ContextError::is(&err, ContextError::Canceled), "{err}");
+        assert_eq!(err.to_string(), "context canceled");
+    }
+
+    #[test]
     fn checkpoint_truncates_wal() {
+        let _serial = crate::test_helpers::serial();
         let s = open_temp(Options {
             create: true,
             ..Options::default()
@@ -916,6 +1106,7 @@ mod tests {
 
     #[test]
     fn open_missing_store() {
+        let _serial = crate::test_helpers::serial();
         let home = tempfile::tempdir().unwrap();
         let err = Store::open(Options {
             home: home.path().display().to_string(),
@@ -929,6 +1120,7 @@ mod tests {
 
     #[test]
     fn worker_guard_skips_records() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let home = tempfile::tempdir().unwrap();
@@ -970,6 +1162,7 @@ mod tests {
 
     #[test]
     fn worker_guard_executable() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
@@ -991,6 +1184,7 @@ mod tests {
 
     #[test]
     fn schema_version_checks() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         for (version, want) in [
@@ -1029,6 +1223,7 @@ mod tests {
 
     #[test]
     fn create_refuses_git_checkout() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let dir = tempfile::tempdir().unwrap();
@@ -1053,6 +1248,7 @@ mod tests {
 
     #[test]
     fn rfc3339_nano_trims_like_go() {
+        let _serial = crate::test_helpers::serial();
         let base = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -1077,6 +1273,7 @@ mod tests {
 
     #[test]
     fn now() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         remove_env("PULSE_NOW");
@@ -1101,6 +1298,7 @@ mod tests {
 
     #[test]
     fn event_and_py_json() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let s = open_temp(Options {
@@ -1151,6 +1349,7 @@ mod tests {
 
     #[test]
     fn settings() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let s = open_temp(Options {
@@ -1222,6 +1421,7 @@ mod tests {
 
     #[test]
     fn projects_and_agents() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let s = open_temp(Options {
@@ -1271,6 +1471,24 @@ mod tests {
 
     #[test]
     fn schema_parity_with_python() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "--allow-empty",
+            "--home",
+            "--initial-branch=main",
+            "--path",
+            "PULSE_AGENT=human",
+            "PULSE_JOB",
+            "commit",
+            "legacy",
+            "pulse.py",
+            "python init:",
+            "python3",
+            "schema_version",
+            "sqlite_master differs--- python ------ go ---",
+            "user.email=t@example.com",
+            "user.name=t",
+        ];
         let _guard = TEST_LOCK.lock().unwrap();
         let Ok(oracle) = std::env::var("PULSE_GO_ORACLE") else {
             return;
@@ -1338,6 +1556,7 @@ mod tests {
 
     #[test]
     fn read_only_open() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let home = tempfile::tempdir().unwrap();
@@ -1369,6 +1588,7 @@ mod tests {
 
     #[test]
     fn concurrent_open() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let home = tempfile::tempdir().unwrap();
@@ -1406,6 +1626,7 @@ mod tests {
 
     #[test]
     fn ensure_records_upgrades() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let home = tempfile::tempdir().unwrap();
@@ -1457,6 +1678,7 @@ mod tests {
 
     #[test]
     fn on_event_publishes_after_commit() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let s = open_temp(Options {
@@ -1511,6 +1733,7 @@ mod tests {
 
     #[test]
     fn events_indexes_arrive_at_open_and_serve_job_history_queries() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         set_env("PULSE_JOB", "");
         let home = tempfile::tempdir().unwrap();
@@ -1558,6 +1781,7 @@ mod tests {
 
     #[test]
     fn git_top_level_ignores_hook_git_dir() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         let hook = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();

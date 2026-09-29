@@ -54,6 +54,16 @@ pub fn clean(path: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
+/// Go: `filepath.Abs` - joins a relative path onto the working directory and
+/// cleans it; the path need not exist.
+pub fn abs(path: &str) -> std::io::Result<String> {
+    if path.starts_with('/') {
+        return Ok(clean(path));
+    }
+    let cwd = std::env::current_dir()?;
+    Ok(clean(&format!("{}/{}", cwd.display(), path)))
+}
+
 /// Go: `filepath.Rel(basepath, targpath)`; `Err` carries Go's message.
 pub fn rel(basepath: &str, targpath: &str) -> Result<String, String> {
     let base = clean(basepath);
@@ -123,6 +133,7 @@ mod tests {
 
     #[test]
     fn clean_matches_go() {
+        let _serial = crate::test_helpers::serial();
         for (input, want) in [
             ("", "."),
             ("abc", "abc"),
@@ -170,6 +181,7 @@ mod tests {
 
     #[test]
     fn rel_matches_go() {
+        let _serial = crate::test_helpers::serial();
         for (root, path, want) in [
             ("a/b", "a/b", "."),
             ("a/b/.", "a/b", "."),
@@ -223,6 +235,7 @@ mod tests {
 
     #[test]
     fn within_follows_rel() {
+        let _serial = crate::test_helpers::serial();
         assert!(within("/a/b/c", "/a/b"));
         assert!(within("/a/b", "/a/b"));
         assert!(within("/a/b/../b/c", "/a/b"));

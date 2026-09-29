@@ -18,14 +18,13 @@ pub(crate) fn row_agent(r: crate::util::Row) -> pulse_store::Agent {
 
 /// Go: func statusTruthProject(t *testing.T, s *store.Store) row
 pub(crate) fn status_truth_project(s: &pulse_store::Store) -> crate::util::Row {
+    let dir = std::path::Path::new(&s.home).join("status-truth-proj");
+    let _ = std::fs::create_dir_all(&dir);
     s.conn()
         .unwrap()
         .execute(
             "INSERT INTO projects(slug, name, path, added_at) VALUES('proj', 'proj', ?, ?)",
-            params![
-                tempfile::tempdir().unwrap().keep().display().to_string(),
-                TEST_NOW
-            ],
+            params![dir.display().to_string(), TEST_NOW],
         )
         .unwrap();
     crate::board::project_by_slug(&*s.conn().unwrap(), "proj".into())
@@ -211,6 +210,22 @@ mod tests {
             crate::failure::environment_failure_reason("exit status 69".into(), String::new()),
             "environment: xcode-license"
         );
+        let detail = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = ? AND subject = ? ORDER BY seq DESC LIMIT 1",
+            &[&pulse_board::JOB_RECOVER_ACTION, &"job-xcode"],
+        )
+        .str("detail");
+        let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+        assert_eq!(detail["outcome"], "blocked");
+        assert_eq!(detail["class"], "structural");
+        let meta = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT value FROM meta WHERE key = 'recovery'",
+            &[],
+        )
+        .str("value");
+        assert!(meta.contains("1 blocked"), "note = {meta:?}");
     }
     #[test]
     fn recover_environment_block_backoff() {
@@ -233,19 +248,33 @@ mod tests {
             TEST_NOW.into(),
             "daemon".into(),
         );
+        let fixture = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT kind, source, status FROM jobs WHERE id = 'job-backoff'",
+            &[],
+        );
+        assert_eq!(fixture.str("kind"), "improve");
+        assert_eq!(fixture.str("source"), "manual");
+        assert_eq!(fixture.str("status"), "blocked");
+        let run_fixture = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT id FROM runs WHERE id = 'run-backoff'",
+            &[],
+        );
+        assert_eq!(run_fixture.str("id"), "run-backoff");
         assert!(
             first.iter().any(|l| l.contains("blocked job-backoff")),
             "{first:?}"
         );
         let events = crate::test_helpers::count(
             &s,
-            "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = ?",
+            "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = ? AND json_extract(detail, '$.outcome') = 'blocked'",
             &[&pulse_board::JOB_RECOVER_ACTION, &"job-backoff"],
         );
         assert_eq!(events, 1);
         let second = crate::recover::recover_failed_jobs(
             &s,
-            project,
+            project.clone(),
             crate::util::plus_minutes(TEST_NOW, 30.0),
             "daemon".into(),
         );
@@ -257,6 +286,26 @@ mod tests {
             "{second:?}"
         );
         assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = ? AND json_extract(detail, '$.outcome') = 'blocked'",
+                &[&pulse_board::JOB_RECOVER_ACTION, &"job-backoff"],
+            ),
+            1
+        );
+        crate::recover::recover_failed_jobs(
+            &s,
+            project,
+            crate::util::plus_minutes(TEST_NOW, 70.0),
+            "daemon".into(),
+        );
+        let after = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT status FROM jobs WHERE id = 'job-backoff'",
+            &[],
+        );
+        assert_eq!(after.str("status"), "blocked");
+        assert_eq!(
             crate::failure::environment_failure_reason(
                 "mise: command not found".into(),
                 String::new()
@@ -267,6 +316,34 @@ mod tests {
     #[test]
     fn recover_preserves_retry_for_non_environment_failures() {
         let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (project, _) = crate::test_helpers::new_bare_repo(&s);
+        s.conn().unwrap().execute(
+            "INSERT INTO jobs(id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, attempts, finished_at, result, branch)
+             VALUES('job-normal', 'proj', 'improve', 1, 'improve', 'brief', 'manual', 7, 'failed', ?, 'tester', 1, ?, 'verify exit 1', '')",
+            params![crate::util::plus_hours(&crate::util::plus_minutes(TEST_NOW, -30.0), -1.0), crate::util::plus_minutes(TEST_NOW, -30.0)],
+        ).unwrap();
+        s.conn().unwrap().execute(
+            "INSERT INTO runs(id, job_id, agent, project, started_at, finished_at, status, summary, log, executor)
+             VALUES('run-normal', 'job-normal', 'w1', 'proj', ?, ?, 'failed', 'verify exit 1', '', 'local')",
+            params![crate::util::plus_minutes(TEST_NOW, -120.0), crate::util::plus_minutes(TEST_NOW, -60.0)],
+        ).unwrap();
+        crate::recover::recover_failed_jobs(&s, project, TEST_NOW.into(), "daemon".into());
+        let got = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT status FROM jobs WHERE id = 'job-normal'",
+            &[],
+        )
+        .str("status");
+        assert_ne!(got, "blocked");
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source = 'manual' AND status = 'queued'",
+                &[]
+            ),
+            1
+        );
         assert_eq!(
             crate::failure::environment_failure_reason("verify exit 1".into(), String::new()),
             ""
@@ -292,6 +369,12 @@ mod tests {
              VALUES ('job-next', 'proj', 'improve', 1, 'Next', 'brief', 'manual:next', 7, 'queued', ?, 'tester')",
             params![TEST_NOW],
         ).unwrap();
+        let blocked = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT result FROM jobs WHERE id = 'job-preflight'",
+            &[],
+        );
+        assert_eq!(blocked.str("result"), "environment: xcode-license");
         let (job, _run, why) = crate::run::take_job(
             &s,
             "w1",
@@ -313,6 +396,32 @@ mod tests {
                 "why={why}"
             );
         }
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET finished_at = ? WHERE id = ?",
+                params![crate::util::plus_hours(TEST_NOW, -2.0), "job-preflight"],
+            )
+            .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE runs SET finished_at = ? WHERE id = ?",
+                params![crate::util::plus_hours(TEST_NOW, -2.0), "run-preflight"],
+            )
+            .unwrap();
+        let (job, _run, _why) = crate::run::take_job(
+            &s,
+            "w1",
+            "proj",
+            "",
+            false,
+            TEST_NOW,
+            crate::executor::LOCAL_EXECUTOR,
+            0,
+        )
+        .unwrap();
+        assert_eq!(job.str("id"), "job-next");
         assert_eq!(
             crate::failure::environment_failure_reason(
                 "unknown executor hands-1".into(),

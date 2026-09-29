@@ -55,7 +55,8 @@ impl std::ops::Deref for ExecutionHeartbeat {
 impl ExecutionHeartbeat {
     pub fn validate(&self) -> Result<()> {
         self.identity.validate()?;
-        let at = chrono::DateTime::parse_from_rfc3339(&self.at)?;
+        let at = chrono::DateTime::parse_from_rfc3339(&self.at)
+            .map_err(|_| anyhow!("heartbeat has no valid observation time"))?;
         if self.stopped_at.is_empty() {
             return Ok(());
         }
@@ -389,8 +390,7 @@ mod tests {
         at: chrono::DateTime<chrono::Utc>,
         want: &str,
     ) -> AgentPresence {
-        let rows =
-            agent_presences(s, &pulse_store::rfc3339_nano(at)).unwrap();
+        let rows = agent_presences(s, &pulse_store::rfc3339_nano(at)).unwrap();
         let p = rows.get(agent).unwrap_or_else(|| panic!("missing {agent}"));
         assert_eq!(
             p.presence,
@@ -420,6 +420,7 @@ mod tests {
 
     #[test]
     fn identity_validation() {
+        let _serial = crate::test_helpers::serial();
         assert!(
             ExecutionIdentity {
                 agent: "a1".into(),
@@ -436,6 +437,7 @@ mod tests {
 
     #[test]
     fn heartbeat_boundaries_return_and_bounded_metadata() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, _home, s) = new_home();
         let id = presence_exec(&s, "quiet", "worker", "run-quiet", "job-quiet", 7);
         presence_sql(
@@ -515,6 +517,7 @@ mod tests {
 
     #[test]
     fn heartbeat_stop_is_final_and_does_not_extend_last_beat() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, _home, s) = new_home();
         let id = presence_exec(&s, "quiet", "session", "run-quiet", "job-quiet", 1);
         let base = presence_time();
@@ -559,6 +562,7 @@ mod tests {
 
     #[test]
     fn heartbeat_fences_generations_and_historical_sessions() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, _home, s) = new_home();
         let old = presence_exec(&s, "quiet", "worker", "run-old", "job-old", 1);
         let base = presence_time();
@@ -657,6 +661,7 @@ mod tests {
 
     #[test]
     fn heartbeat_restart_idle_legacy_and_pruning_stay_separate() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, home, s) = new_home();
         let id = presence_exec(&s, "quiet", "worker", "run-quiet", "job-quiet", 1);
         let base = presence_time();
@@ -754,6 +759,29 @@ mod tests {
 
     #[test]
     fn heartbeat_missing_malformed_and_ambiguous_evidence() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "SELECT status FROM runs WHERE id=?",
+            "UPDATE agents SET last_useful_at='2026-08-01T00:00:00Z' WHERE name=?",
+            "UPDATE agents SET last_useful_at='2026-08-01T00:00:00Z', last_active_at='2026-08-01T00:00:00Z' WHERE name IN ('proj-lead', 'stale-worker')",
+            "active",
+            "before launch",
+            "daemon",
+            "elsewhere",
+            "future stop",
+            "leased",
+            "legacy",
+            "malformed stop",
+            "no useful output since 2026-08-01",
+            "not a time",
+            "proj-lead",
+            "pruned",
+            "running",
+            "stale-worker",
+            "stop before beat",
+            "wrong agent",
+            "wrong executor",
+        ];
         let (_dir, _home, s) = new_home();
         let id = presence_exec(&s, "quiet", "worker", "run-quiet", "job-quiet", 1);
         let base = presence_time();
@@ -779,8 +807,7 @@ mod tests {
         h.at = "yesterday".into();
         add("malformed time", h);
         let mut h = good.clone();
-        h.at =
-            pulse_store::rfc3339_nano(base + chrono::Duration::hours(1));
+        h.at = pulse_store::rfc3339_nano(base + chrono::Duration::hours(1));
         add("future", h);
         let mut h = good.clone();
         h.identity.session = "old-session".into();
@@ -818,6 +845,7 @@ mod tests {
 
     #[test]
     fn heartbeat_concurrent_stop_fences_late_observations() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, _home, s) = new_home();
         let base = presence_time();
         for n in 0..20 {

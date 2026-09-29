@@ -13,3 +13,9 @@ pub use help::{GLOBAL_USAGE, TITLE, edit_distance, help, help_command, suggest};
 pub use signed::{SIGNING_IDENTIFIER, code_signed, executable};
 pub use table::{Style, table};
 pub use version::{build_version, revision, version};
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    pub(crate) fn serial() -> impl Drop {
+        pulse_testutil::env_lock()
+    }
+}

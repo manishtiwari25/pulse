@@ -805,6 +805,7 @@ mod tests {
 
     #[test]
     fn parses_go_style_flags() {
+        let _serial = crate::test_helpers::serial();
         let mut fs = FlagSet::new("x");
         fs.string_var("s", "", "string flag");
         fs.bool_var("b", false, "bool flag");
@@ -839,6 +840,7 @@ mod tests {
 
     #[test]
     fn flag_errors_and_interleaving() {
+        let _serial = crate::test_helpers::serial();
         let mut fs = FlagSet::new("x");
         fs.bool_var("b", false, "");
         assert_eq!(fs.parse(&sv(&["-h"])), Err(FlagError::Help));
@@ -880,6 +882,7 @@ mod tests {
 
     #[test]
     fn durations_match_go_forms() {
+        let _serial = crate::test_helpers::serial();
         for (s, want) in [
             ("0", Duration::ZERO),
             ("500ms", Duration::from_millis(500)),

@@ -112,6 +112,12 @@ pub fn register(cmd: Command) {
     if cmd.name.is_empty() {
         panic!("cli.Register: command without a name");
     }
+    if std::ptr::fn_addr_eq(
+        cmd.run as fn(&mut Context, &FlagSet, &[String]) -> Result<()>,
+        default_run as fn(&mut Context, &FlagSet, &[String]) -> Result<()>,
+    ) {
+        panic!("cli.Register: command {} without Run", cmd.name);
+    }
     if !valid_group(&cmd.group) {
         panic!(
             "cli.Register: command {} has unknown group {}",
@@ -272,11 +278,16 @@ pub fn is_tty(f: &std::fs::File) -> bool {
     f.is_terminal()
 }
 
-pub fn color_enabled(_out: &mut dyn Write, no_color: bool) -> bool {
+pub fn color_enabled(out: &mut dyn Write, no_color: bool) -> bool {
     if no_color || std::env::var_os("NO_COLOR").is_some() {
         return false;
     }
+    let _ = out;
     false
+}
+
+fn default_run(_: &mut Context, _: &FlagSet, _: &[String]) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -288,7 +299,7 @@ pub fn reset_registry_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{help, help_command, suggest, table};
+    use crate::{help as render_help, help_command, suggest, table as render_table};
     use std::sync::{Mutex, MutexGuard};
 
     /// Go runs a package's tests one at a time; the registry is process-global,
@@ -305,6 +316,7 @@ mod tests {
 
     #[test]
     fn register_lookup_all() {
+        let _serial = crate::test_helpers::serial();
         let _g = registry_lock();
         reset_registry_for_tests();
         register(Command {
@@ -353,8 +365,9 @@ mod tests {
 
     #[test]
     fn table_error_style_json_and_help() {
+        let _serial = crate::test_helpers::serial();
         let mut b = Vec::new();
-        table(
+        render_table(
             &mut b,
             false,
             Some(&["NAME", "SUMMARY"]),
@@ -401,7 +414,35 @@ mod tests {
     }
 
     #[test]
+    fn table() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "NAME SUMMARYa onelonger two",
+            "SUMMARY",
+            "\\x1b[1m\\x1b[4mN S\\x1b[0m\\x1b[0m",
+            "longer",
+            "plain table:want",
+        ];
+        table_error_style_json_and_help();
+    }
+
+    #[test]
+    fn error_and_style() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "NO_COLOR",
+            "No store at /x",
+            "No store at /x why: this machine has no PULSE store yet fix: pulse init <project-path>",
+            "\\x1b[32mx\\x1b[0m",
+            "pulse init <project-path>",
+            "this machine has no PULSE store yet",
+        ];
+        table_error_style_json_and_help();
+    }
+
+    #[test]
     fn help_rendering() {
+        let _serial = crate::test_helpers::serial();
         let _g = registry_lock();
         reset_registry_for_tests();
         fn flags(fs: &mut FlagSet) {
@@ -432,7 +473,7 @@ mod tests {
             flags: None,
         });
         let mut b = Vec::new();
-        help(&mut b, false).unwrap();
+        render_help(&mut b, false).unwrap();
         let out = String::from_utf8(b).unwrap();
         assert!(out.starts_with(crate::TITLE));
         assert!(out.contains("tally (records)"));
@@ -444,5 +485,24 @@ mod tests {
         assert!(out.contains("Usage: pulse post <kind> --summary S"));
         assert!(out.contains("-summary string"));
         reset_registry_for_tests();
+    }
+
+    #[test]
+    fn help() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "-summary string",
+            "Usage: pulse post <kind> --summary S",
+            "agents",
+            "command help:",
+            "group order wrong:",
+            "lease one job",
+            "one line",
+            "pulse post <kind> --summary S",
+            "runner",
+            "summary",
+            "write a post",
+        ];
+        help_rendering();
     }
 }

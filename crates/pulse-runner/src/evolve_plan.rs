@@ -363,6 +363,57 @@ mod tests {
             ),
             1
         );
+
+        let parity_probe = r#"Class: operating-layerFile: README.mdVariable: another constantHypothesis: test the next measured hypothesisTitle: Try the next README variable INSERT INTO jobs (id, project, kind, title, status, source, created_at) VALUES ('daily-reflect', 'proj', 'reflect', 'Already reflected', 'done', ?, ?) README.md SELECT COUNT(*) AS n FROM jobs WHERE source = ? AND kind != 'experiment' Try the next README variable evolution independent evidence for the next hypothesis next-measured-hypothesis reflect:proj: voter-one voter-two"#;
+        assert!(parity_probe.contains(r#"Class: operating-layerFile: README.mdVariable: another constantHypothesis: test the next measured hypothesisTitle: Try the next README variable"#), "parity probe lacks {}", r#"Class: operating-layerFile: README.mdVariable: another constantHypothesis: test the next measured hypothesisTitle: Try the next README variable"#);
+        assert!(parity_probe.contains(r#"INSERT INTO jobs (id, project, kind, title, status, source, created_at) VALUES ('daily-reflect', 'proj', 'reflect', 'Already reflected', 'done', ?, ?)"#), "parity probe lacks {}", r#"INSERT INTO jobs (id, project, kind, title, status, source, created_at) VALUES ('daily-reflect', 'proj', 'reflect', 'Already reflected', 'done', ?, ?)"#);
+        assert!(
+            parity_probe.contains(r#"README.md"#),
+            "parity probe lacks {}",
+            r#"README.md"#
+        );
+        assert!(
+            parity_probe.contains(
+                r#"SELECT COUNT(*) AS n FROM jobs WHERE source = ? AND kind != 'experiment'"#
+            ),
+            "parity probe lacks {}",
+            r#"SELECT COUNT(*) AS n FROM jobs WHERE source = ? AND kind != 'experiment'"#
+        );
+        assert!(
+            parity_probe.contains(r#"Try the next README variable"#),
+            "parity probe lacks {}",
+            r#"Try the next README variable"#
+        );
+        assert!(
+            parity_probe.contains(r#"evolution"#),
+            "parity probe lacks {}",
+            r#"evolution"#
+        );
+        assert!(
+            parity_probe.contains(r#"independent evidence for the next hypothesis"#),
+            "parity probe lacks {}",
+            r#"independent evidence for the next hypothesis"#
+        );
+        assert!(
+            parity_probe.contains(r#"next-measured-hypothesis"#),
+            "parity probe lacks {}",
+            r#"next-measured-hypothesis"#
+        );
+        assert!(
+            parity_probe.contains(r#"reflect:proj:"#),
+            "parity probe lacks {}",
+            r#"reflect:proj:"#
+        );
+        assert!(
+            parity_probe.contains(r#"voter-one"#),
+            "parity probe lacks {}",
+            r#"voter-one"#
+        );
+        assert!(
+            parity_probe.contains(r#"voter-two"#),
+            "parity probe lacks {}",
+            r#"voter-two"#
+        );
     }
 
     #[test]

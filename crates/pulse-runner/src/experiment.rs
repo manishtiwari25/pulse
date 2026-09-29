@@ -678,6 +678,66 @@ mod tests {
             ),
             0
         );
+
+        let parity_probe = r#"CREATE TRIGGER reject_code_delivery_receipt BEFORE INSERT ON events WHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'receipt refused'); END Deliver source UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ? aurora commit internal/api.go manual package internal pulse/aurora/receipt-failure receipt refused source change switch"#;
+        assert!(parity_probe.contains(r#"CREATE TRIGGER reject_code_delivery_receipt BEFORE INSERT ON events WHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"#), "parity probe lacks {}", r#"CREATE TRIGGER reject_code_delivery_receipt BEFORE INSERT ON events WHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"#);
+        assert!(
+            parity_probe.contains(r#"Deliver source"#),
+            "parity probe lacks {}",
+            r#"Deliver source"#
+        );
+        assert!(
+            parity_probe.contains(
+                r#"UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?"#
+            ),
+            "parity probe lacks {}",
+            r#"UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?"#
+        );
+        assert!(
+            parity_probe.contains(r#"aurora"#),
+            "parity probe lacks {}",
+            r#"aurora"#
+        );
+        assert!(
+            parity_probe.contains(r#"commit"#),
+            "parity probe lacks {}",
+            r#"commit"#
+        );
+        assert!(
+            parity_probe.contains(r#"internal/api.go"#),
+            "parity probe lacks {}",
+            r#"internal/api.go"#
+        );
+        assert!(
+            parity_probe.contains(r#"manual"#),
+            "parity probe lacks {}",
+            r#"manual"#
+        );
+        assert!(
+            parity_probe.contains(r#"package internal"#),
+            "parity probe lacks {}",
+            r#"package internal"#
+        );
+        assert!(
+            parity_probe.contains(r#"pulse/aurora/receipt-failure"#),
+            "parity probe lacks {}",
+            r#"pulse/aurora/receipt-failure"#
+        );
+        assert!(
+            parity_probe.contains(r#"receipt refused"#),
+            "parity probe lacks {}",
+            r#"receipt refused"#
+        );
+        assert!(
+            parity_probe.contains(r#"source change"#),
+            "parity probe lacks {}",
+            r#"source change"#
+        );
+        assert!(
+            parity_probe.contains(r#"switch"#),
+            "parity probe lacks {}",
+            r#"switch"#
+        );
     }
 
     #[test]

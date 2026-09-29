@@ -71,7 +71,7 @@ fn walk_names(root: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
-fn escaping_symlink(root: &TreeRoot, name: &str, target: &Path) -> bool {
+fn escaping_symlink(_root: &TreeRoot, name: &str, target: &Path) -> bool {
     if target.is_absolute() || target.to_string_lossy().contains('\\') {
         return true;
     }
@@ -95,7 +95,7 @@ fn escaping_symlink(root: &TreeRoot, name: &str, target: &Path) -> bool {
             _ => return true,
         }
     }
-    fs::metadata(root.join(name)).is_err()
+    false
 }
 
 fn violation(reason: &str) -> anyhow::Error {
@@ -122,9 +122,15 @@ pub(crate) fn freeze_tree(
         let info = fs::symlink_metadata(&path)?;
         let ft = file_type(&info);
         if ft.is_symlink() {
-            let target = fs::read_link(&path)?;
+            let target = fs::read_link(&path)
+                .map_err(|_| violation("scored tree has an escaping symlink"))?;
             if escaping_symlink(root, &name, &target) {
                 return Err(violation("scored tree has an escaping symlink"));
+            }
+            if let Err(e) = fs::metadata(&path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(violation("scored tree has an unresolvable symlink"));
             }
             continue;
         }

@@ -97,6 +97,7 @@ pub fn register_all() {
         pulse_goals_command::register();
         pulse_harness::register();
         pulse_hooks::register();
+        pulse_hub::register();
         pulse_inspect::register();
         pulse_provider_copilot::register();
         pulse_provider_openai::register();
@@ -105,7 +106,6 @@ pub fn register_all() {
         pulse_tally::register();
         pulse_tasks::register();
         pulse_evolve::init();
-        // Still to land: hub (its register() is a skeleton until the hub fill wave completes).
     });
 }
 
@@ -504,7 +504,11 @@ mod tests {
     }
 
     /// What the zz-post command saw: (Agent, Project, JSON, Now, Store.Now(), Home), args, kind.
-    type Seen = Option<((String, String, bool, String, Option<String>, String), Vec<String>, String)>;
+    type Seen = Option<(
+        (String, String, bool, String, Option<String>, String),
+        Vec<String>,
+        String,
+    )>;
     static SEEN: Mutex<Seen> = Mutex::new(None);
 
     fn zz_post_flags(fs: &mut FlagSet) {
@@ -564,8 +568,22 @@ mod tests {
         let (mut out, mut errb) = (Vec::new(), Vec::new());
         let code = run_s(
             &[
-                "--home", home, "--agent", "early", "zz-post", "one", "--kind", "finding", "two",
-                "--project", "pulse", "--json", "--now", "2026-09-06T10:00:00Z", "--", "-three",
+                "--home",
+                home,
+                "--agent",
+                "early",
+                "zz-post",
+                "one",
+                "--kind",
+                "finding",
+                "two",
+                "--project",
+                "pulse",
+                "--json",
+                "--now",
+                "2026-09-06T10:00:00Z",
+                "--",
+                "-three",
             ],
             &mut out,
             &mut errb,
@@ -786,7 +804,11 @@ mod tests {
         let (mut out, mut errb) = (Vec::new(), Vec::new());
         let code = run_s(&["settings", "list", "--json"], &mut out, &mut errb);
         if code != 0 || !errb.is_empty() {
-            panic!("list: code {code}, stdout {:?}, stderr {:?}", s(&out), s(&errb));
+            panic!(
+                "list: code {code}, stdout {:?}, stderr {:?}",
+                s(&out),
+                s(&errb)
+            );
         }
         #[derive(serde::Deserialize, Debug)]
         struct Row {

@@ -486,6 +486,7 @@ mod tests {
 
     #[test]
     fn bare_vote_summary() {
+        let _serial = crate::test_helpers::serial();
         assert!(is_bare_vote_summary("vote", " up "));
         assert!(!is_bare_vote_summary("finding", "up"));
         assert!(!is_bare_vote_summary("vote", "up because"));
@@ -493,6 +494,7 @@ mod tests {
 
     #[test]
     fn create_post_summary_limit() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         let ascii = "x".repeat(MAX_SUMMARY_CHARS);
         let emoji = "🙂".repeat(MAX_SUMMARY_CHARS);
@@ -566,6 +568,7 @@ mod tests {
 
     #[test]
     fn create_post_for_owner_preserves_extra() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         let mut extra = Map::new();
         extra.insert("for_owner".into(), Value::Bool(false));
@@ -597,6 +600,7 @@ mod tests {
 
     #[test]
     fn create_post_rejects_invalid_for_owner() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         let values = [
             Value::String("yes".into()),
@@ -632,6 +636,7 @@ mod tests {
 
     #[test]
     fn post_id_collision_suffix() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         let mut ids = Vec::new();
         for _ in 0..3 {
@@ -674,6 +679,7 @@ mod tests {
 
     #[test]
     fn create_post_mentions_and_events() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         s.conn()
             .unwrap()
@@ -728,6 +734,14 @@ mod tests {
 
     #[test]
     fn claim_expiry() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "--area",
+            "--hours",
+            "--summary",
+            "--thread",
+            "UPDATE posts SET summary = 'x' WHERE id = ?",
+        ];
         let (_home_dir, _, s, _project, _repo) = fixture();
         assert_eq!(
             super::claim_expiry(&s, 0.0).unwrap(),
@@ -842,6 +856,7 @@ mod tests {
 
     #[test]
     fn create_post_rule_matrix() {
+        let _serial = crate::test_helpers::serial();
         if oracle_available().is_none() {
             eprintln!("no Go oracle; running Rust rule matrix only");
         }
@@ -850,11 +865,13 @@ mod tests {
 
     #[test]
     fn create_post_rule_matrix_without_oracle() {
+        let _serial = crate::test_helpers::serial();
         test_create_post_rule_matrix();
     }
 
     #[test]
     fn hash_parity_with_oracle() {
+        let _serial = crate::test_helpers::serial();
         let Some((home_dir, _home, s)) = snapshot_home() else {
             eprintln!("no snapshot at /tmp/pulse-parity/pulse.sqlite; skipping");
             return;

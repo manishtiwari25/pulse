@@ -1529,8 +1529,10 @@ pub(crate) fn watch_run_harness_cancel_every(
             done_t.store(true, Ordering::SeqCst);
             return;
         }
-        while !watch_thread.is_cancelled() {
-            std::thread::sleep(interval);
+        // Go: select { case <-ticker.C: check; case <-watchCtx.Done(): return }
+        let stopped = watch_thread.done();
+        while let Err(crossbeam_channel::RecvTimeoutError::Timeout) = stopped.recv_timeout(interval)
+        {
             if check() {
                 break;
             }
@@ -2047,7 +2049,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: jobs::lease_job: expected explicit queued job for proj leased to aurora; got empty Row/no job"]
     fn run_job_recipe_setup_runs_once_before_worker_and_verify() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2132,7 +2133,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: jobs::lease_job: expected one concurrent explicit lease and one busy-agent refusal; got zero leased rows"]
     fn scheduling_concurrent_leases_keep_one_job_per_agent() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2214,7 +2214,6 @@ mod tests {
         assert!(!next.0.is_empty(), "worker was not reusable");
     }
     #[test]
-    #[ignore = "cross-slice-bug: jobs::lease_job: expected first explicit lease before provisional finish; got empty Row/no job"]
     fn scheduling_provisional_finish_keeps_capacity() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2296,7 +2295,6 @@ mod tests {
         }
     }
     #[test]
-    #[ignore = "cross-slice-bug: jobs::lease_job: expected first explicit lease to count once against project cap; got empty Row/no job"]
     fn scheduling_running_lease_counts_once() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2319,7 +2317,6 @@ mod tests {
         assert!(got.0.is_empty(), "project cap was exceeded: {got:?}");
     }
     #[test]
-    #[ignore = "cross-slice-bug: jobs::lease_job: expected pick_worker to skip worker with live run; prerequisite explicit leases return empty Row"]
     fn scheduling_pick_worker_skips_provisional_completion() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2370,7 +2367,6 @@ mod tests {
         }
     }
     #[test]
-    #[ignore = "cross-slice-bug: jobs::lease_job: expected expired same-agent lease takeover preserving generation; first explicit lease returns empty Row"]
     fn scheduling_expired_lease_preserves_generation_takeover() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2435,7 +2431,6 @@ mod tests {
         assert_eq!(got, "running");
     }
     #[test]
-    #[ignore = "cross-slice-bug: jobs::lease_job: expected fair dispatch of highest-priority queued jobs across projects; got empty Row/no job"]
     fn scheduling_fairness_includes_leases_before_run_start() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2586,7 +2581,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: exec::LocalExec::run_worker: expected heartbeat period 60s; got no heartbeat_ticks observation before timeout"]
+    #[ignore = "cross-slice-bug: heartbeat::LocalExec::observer: heartbeatReporter must log first presence error via RunLog; startup heartbeat error is currently suppressed"]
     fn worker_lifecycle_delayed_suggestion() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2752,7 +2747,7 @@ mod tests {
             fake.ticks.send(beat_at).unwrap();
             crate::test_helpers_f2::heartbeat_eventually(|| {
                 let (h, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
-                h.at == beat_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+                h.at == pulse_store::rfc3339_nano(beat_at)
             });
             let (first, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
             assert_eq!(leased.str("status"), "leased", "initial lifecycle {name}");
@@ -2781,14 +2776,14 @@ mod tests {
                 .store(edge.timestamp_nanos_opt().unwrap(), Ordering::SeqCst);
             crate::test_helpers_f2::assert_lifecycle_presence(&s, edge, "offline");
             assert_eq!(
-                edge.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                pulse_store::rfc3339_nano(edge),
                 leased.str("lease_until"),
                 "fixture missed the lease boundary"
             );
             let other = crate::jobs::lease_job(
                 &s,
                 "rival".into(),
-                edge.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                pulse_store::rfc3339_nano(edge),
                 crate::jobs::LeaseOpts {
                     job_id: job.str("id"),
                     minutes: 1,
@@ -2803,7 +2798,7 @@ mod tests {
             fake.ticks.send(edge).unwrap();
             crate::test_helpers_f2::heartbeat_eventually(|| {
                 let (h, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
-                h.at == edge.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+                h.at == pulse_store::rfc3339_nano(edge)
             });
             crate::test_helpers_f2::assert_lifecycle_presence(&s, edge, "online");
             let current = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
@@ -2836,7 +2831,7 @@ mod tests {
                 at += chrono::Duration::seconds(1);
                 fake.clock
                     .store(at.timestamp_nanos_opt().unwrap(), Ordering::SeqCst);
-                replacement_at = at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                replacement_at = pulse_store::rfc3339_nano(at);
                 replacement = crate::jobs::lease_job(
                     &s,
                     "quiet".into(),
@@ -2921,7 +2916,7 @@ mod tests {
                 fake.ticks.send(at).unwrap();
                 crate::test_helpers_f2::heartbeat_eventually(|| {
                     let (h, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
-                    h.at == at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+                    h.at == pulse_store::rfc3339_nano(at)
                 });
                 crate::test_helpers_f2::assert_lifecycle_presence(&s, at, "online");
             }
@@ -3093,9 +3088,10 @@ mod tests {
                     &s,
                     pulse_board::ExecutionHeartbeat {
                         identity: first.identity.clone(),
-                        at: (now
-                            + chrono::Duration::from_std(pulse_board::HEARTBEAT_INTERVAL).unwrap())
-                        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                        at: pulse_store::rfc3339_nano(
+                            now + chrono::Duration::from_std(pulse_board::HEARTBEAT_INTERVAL)
+                                .unwrap(),
+                        ),
                         ..Default::default()
                     }
                 )
@@ -3107,7 +3103,7 @@ mod tests {
             assert!(
                 !crate::jobs::renew_lease(
                     &s.conn().unwrap(),
-                    now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                    pulse_store::rfc3339_nano(now),
                     job.str("id"),
                     "quiet".into(),
                     finished.int("generation"),
@@ -3118,7 +3114,7 @@ mod tests {
             crate::test_helpers_f2::assert_lifecycle_suggestion(
                 &s,
                 &suggestion.str("id"),
-                &now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                &pulse_store::rfc3339_nano(now),
                 "built",
                 false,
                 false,
@@ -3127,7 +3123,7 @@ mod tests {
                 crate::plan::plan_jobs(
                     &s,
                     "proj".into(),
-                    now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                    pulse_store::rfc3339_nano(now),
                     "daemon".into(),
                 )
                 .unwrap();
@@ -3146,7 +3142,7 @@ mod tests {
                 "quiet",
                 "proj",
                 &job.str("id"),
-                &now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                &pulse_store::rfc3339_nano(now),
                 RunOpts {
                     worker_cmd: crate::util::shell_join(&[
                         "sh".into(),

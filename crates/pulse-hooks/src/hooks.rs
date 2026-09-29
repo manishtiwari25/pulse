@@ -659,9 +659,12 @@ impl Runner {
                 .query_map([now], scan_delivery)?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })();
-        let Ok(due) = due else {
-            self.logf("hook retries");
-            return 0;
+        let due = match due {
+            Ok(due) => due,
+            Err(err) => {
+                self.logf(&format!("hook retries: {err}"));
+                return 0;
+            }
         };
         let n = due.len();
         for d in due {
@@ -721,7 +724,11 @@ impl Runner {
             let idx = ((attempt - 1) as usize).min(RETRY_BACKOFF_SECS.len() - 1);
             let next = add_duration(&self.store.now(), RETRY_BACKOFF_SECS[idx]);
             let _ = update_delivery(&self.store, delivery_id, "error", &status, "");
-            let _ = insert_delivery(&self.store, &h, &e, attempt + 1, "pending", &status, &next);
+            if let Err(err) =
+                insert_delivery(&self.store, &h, &e, attempt + 1, "pending", &status, &next)
+            {
+                self.logf(&format!("hook retry: {err}"));
+            }
             self.logf(&format!(
                 "hook {} ({} {}) on {} #{}: {}",
                 h.id, h.kind, h.target, e.action, e.id, status
@@ -769,27 +776,46 @@ impl Runner {
 pub(crate) mod test_helpers {
     use super::*;
     use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
 
-    pub fn new_store() -> Store {
-        let home = tempfile::tempdir().unwrap().keep();
-        Store::create(Path::new(&home).join(pulse_store::STORE_NAME)).unwrap();
-        Store::open(pulse_store::Options {
-            home: home.display().to_string(),
+    pub struct TestStore {
+        _home: tempfile::TempDir,
+        store: Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+
+    pub fn new_store() -> TestStore {
+        let home = tempfile::tempdir().unwrap();
+        Store::create(Path::new(home.path()).join(pulse_store::STORE_NAME)).unwrap();
+        let store = Store::open(pulse_store::Options {
+            home: home.path().display().to_string(),
             now: "2026-09-06T21:00:00Z".into(),
             ..Default::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _home: home, store }
     }
 
     pub fn script(body: &str) -> String {
-        let dir = tempfile::tempdir().unwrap().keep();
-        let p = dir.join("hook.sh");
+        static SCRIPT_DIRS: OnceLock<Mutex<Vec<tempfile::TempDir>>> = OnceLock::new();
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("hook.sh");
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        SCRIPT_DIRS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap()
+            .push(dir);
         p.display().to_string()
     }
 
@@ -814,6 +840,7 @@ mod tests {
 
     #[test]
     fn add_list_remove_enable() {
+        let _serial = crate::test_helpers::serial();
         let s = new_store();
         let sh = script("exit 0");
         assert!(add(&s, "", "script", &sh, "", "human").is_err());
@@ -863,6 +890,7 @@ mod tests {
 
     #[test]
     fn matches_glob_and_project() {
+        let _serial = crate::test_helpers::serial();
         let mut h = Hook {
             event: "post.*".into(),
             enabled: true,
@@ -902,6 +930,7 @@ mod tests {
 
     #[test]
     fn runner_fires_script_and_webhook_skips_disabled() {
+        let _serial = crate::test_helpers::serial();
         let s = new_store();
         let out_dir = tempfile::tempdir().unwrap();
         let out_file = out_dir.path().join("seen.txt");
@@ -1009,6 +1038,7 @@ mod tests {
 
     #[test]
     fn fire_timeout() {
+        let _serial = crate::test_helpers::serial();
         let s = new_store();
         let h = add(&s, "*", "script", &script("sleep 5"), "", "human").unwrap();
         let ctx = CancellationToken::new().with_timeout(Duration::from_millis(100));
@@ -1029,6 +1059,7 @@ mod tests {
 
     #[test]
     fn runner_cancel_does_not_kill_in_flight_script() {
+        let _serial = crate::test_helpers::serial();
         let s = new_store();
         let marker_dir = tempfile::tempdir().unwrap();
         let marker = marker_dir.path().join("done");
@@ -1066,6 +1097,7 @@ mod tests {
 
     #[test]
     fn runner_retries_failing_script_and_emits_failed() {
+        let _serial = crate::test_helpers::serial();
         let s = new_store();
         let h = add(
             &s,
@@ -1119,6 +1151,13 @@ mod tests {
 
     #[test]
     fn fire_redacts_private_settings() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "\"; cat >> \"",
+            "event leaked the private path to the hook:",
+            "event was not masked:",
+            "printf '' \"$PULSE_EVENT_DETAIL\" > \"",
+        ];
         let s = new_store();
         let private_dir = tempfile::tempdir().unwrap();
         let private = private_dir

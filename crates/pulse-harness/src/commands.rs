@@ -8,9 +8,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Once;
+use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -287,9 +287,11 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         trajectory
     };
     let progress_start = Instant::now();
+    let shared_err = SharedWriter::new(std::mem::replace(&mut c.err, Box::new(io::sink())));
+    c.err = Box::new(shared_err.clone());
     let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
     if !c.quiet {
-        sinks.push(Box::new(ProgressSink::new(c.err.as_mut(), progress_start)));
+        sinks.push(Box::new(ProgressSink::new(shared_err, progress_start)));
     }
     if let Some(log) = &step_log {
         log.lock()
@@ -322,6 +324,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         cwd: abs_cwd.clone(),
         env: env.clone(),
         provider: provider_name.clone(),
+        cancel_reason: ERR_OWNER_CANCELLED.into(),
         max_steps,
         step_timeout: Duration::from_secs(step_timeout as u64),
         max_cost,
@@ -387,9 +390,21 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         log.lock()
             .expect("steps-file sink poisoned")
             .finish(&result);
+        if let Some(warning) = log
+            .lock()
+            .expect("steps-file sink poisoned")
+            .warning
+            .clone()
+        {
+            writeln!(c.err, "pulse harness: steps-file warning: {warning}")?;
+        }
     }
     if result.exit_status == EXIT_NOT_LOGGED_IN {
-        writeln!(c.err, "not logged in: {} - {}", result.error, LOGIN_FIX)?;
+        if result.error.trim() == "not logged in" || result.error.trim().is_empty() {
+            writeln!(c.err, "not logged in: {LOGIN_FIX}")?;
+        } else {
+            writeln!(c.err, "not logged in: {} - {}", result.error, LOGIN_FIX)?;
+        }
     }
     if c.json {
         if !c.quiet {
@@ -459,7 +474,7 @@ fn harness_login(c: &mut Context, args: &[String]) -> Result<()> {
             .into());
         };
         let mut data = String::new();
-        std::io::stdin().read_to_string(&mut data)?;
+        read_stdin_to_string(&mut data)?;
         let token = data.trim();
         if token.is_empty() {
             return Err(errorf(
@@ -989,7 +1004,7 @@ pub fn read_task(text: &str, file: &str) -> Result<String> {
     }
     let data = if file == "-" {
         let mut s = String::new();
-        std::io::stdin().read_to_string(&mut s)?;
+        read_stdin_to_string(&mut s)?;
         s
     } else {
         fs::read_to_string(file)?
@@ -998,6 +1013,23 @@ pub fn read_task(text: &str, file: &str) -> Result<String> {
         return Err(errorf(2, "pulse harness run: task is empty", "", "").into());
     }
     Ok(data)
+}
+
+#[cfg(test)]
+static STDIN_FOR_TESTS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn set_stdin_for_tests(data: Option<&str>) {
+    *STDIN_FOR_TESTS.lock().expect("stdin test hook") = data.map(str::to_string);
+}
+
+fn read_stdin_to_string(dst: &mut String) -> std::io::Result<usize> {
+    #[cfg(test)]
+    if let Some(data) = STDIN_FOR_TESTS.lock().expect("stdin test hook").clone() {
+        dst.push_str(&data);
+        return Ok(data.len());
+    }
+    std::io::stdin().read_to_string(dst)
 }
 
 pub fn existing_dir(path: &str) -> Result<String> {
@@ -1281,6 +1313,7 @@ struct StepsFileSink {
     provider: String,
     model: String,
     warned: bool,
+    warning: Option<String>,
     count: i32,
 }
 
@@ -1292,6 +1325,7 @@ impl StepsFileSink {
             provider: String::new(),
             model: String::new(),
             warned: false,
+            warning: None,
             count: 0,
         }
     }
@@ -1311,15 +1345,17 @@ impl StepsFileSink {
             return;
         }
         if let Some(parent) = Path::new(&self.path).parent()
-            && let Err(_e) = fs::create_dir_all(parent)
+            && let Err(e) = fs::create_dir_all(parent)
         {
             self.warned = true;
+            self.warning = Some(e.to_string());
             return;
         }
         let mut data = match pulse_store::gojson::to_vec(v) {
             Ok(d) => d,
             Err(_) => {
                 self.warned = true;
+                self.warning = Some("JSON encode failed".into());
                 return;
             }
         };
@@ -1330,12 +1366,16 @@ impl StepsFileSink {
             .open(&self.path)
         {
             Ok(f) => f,
-            Err(_) => {
+            Err(e) => {
                 self.warned = true;
+                self.warning = Some(e.to_string());
                 return;
             }
         };
-        let _ = f.write_all(&data);
+        if let Err(e) = f.write_all(&data) {
+            self.warned = true;
+            self.warning = Some(e.to_string());
+        }
     }
 }
 
@@ -1366,7 +1406,7 @@ struct StepEvent {
 
 struct TrajectorySink {
     path: String,
-    agent: Option<std::sync::Arc<std::sync::Mutex<Agent>>>,
+    steps: Vec<Step>,
     warned: bool,
 }
 
@@ -1374,44 +1414,116 @@ impl TrajectorySink {
     fn new(_c: &Context, path: &str) -> Self {
         Self {
             path: path.into(),
-            agent: None,
+            steps: Vec::new(),
             warned: false,
         }
     }
-    fn with_agent(mut self, agent: std::sync::Arc<std::sync::Mutex<Agent>>) -> Self {
-        self.agent = Some(agent);
+    fn with_agent(self, _agent: std::sync::Arc<std::sync::Mutex<Agent>>) -> Self {
         self
     }
 }
 
 impl Sink for TrajectorySink {
-    fn step(&mut self, _step: Step) {
+    fn step(&mut self, step: Step) {
         if self.warned || self.path.is_empty() {
             return;
         }
-        if let Some(agent) = &self.agent {
-            let traj = agent.lock().unwrap().trajectory();
-            if write_trajectory(&self.path, &traj).is_err() {
-                self.warned = true;
-            }
+        self.steps.push(step);
+        let traj = Trajectory {
+            trajectory_format: "pulse-harness-1".into(),
+            info: TrajectoryInfo {
+                model_stats: ModelStats {
+                    api_calls: 0,
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    cost: 0.0,
+                },
+                exit_status: String::new(),
+                submission: String::new(),
+                config: TrajectoryConfig {
+                    model: String::new(),
+                    provider: String::new(),
+                    max_steps: 0,
+                    step_timeout_seconds: 0,
+                    cwd: String::new(),
+                },
+            },
+            messages: Vec::new(),
+            steps: self.steps.clone(),
+        };
+        if write_trajectory(&self.path, &traj).is_err() {
+            self.warned = true;
         }
+    }
+}
+
+#[derive(Clone)]
+struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
+
+impl SharedWriter {
+    fn new(w: Box<dyn Write + Send>) -> Self {
+        Self(Arc::new(Mutex::new(w)))
+    }
+}
+
+impl Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().expect("shared writer poisoned").write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.lock().expect("shared writer poisoned").flush()
     }
 }
 
 struct ProgressSink {
+    w: SharedWriter,
     start: Instant,
-    _marker: (),
 }
 
 impl ProgressSink {
-    fn new(_w: &mut dyn Write, start: Instant) -> Self {
-        Self { start, _marker: () }
+    fn new(w: SharedWriter, start: Instant) -> Self {
+        Self { w, start }
     }
 }
 
 impl Sink for ProgressSink {
-    fn step(&mut self, _step: Step) {
-        let _ = self.start;
+    fn step(&mut self, step: Step) {
+        let elapsed = self.start.elapsed().as_secs();
+        let prefix = format!("{:02}:{:02} [{}] ", elapsed / 60, elapsed % 60, step.n);
+        match step.kind {
+            StepKind::Assistant => {
+                let _ = writeln!(
+                    self.w,
+                    "{}assistant: {}",
+                    prefix,
+                    one_line(&step.content, 160)
+                );
+            }
+            StepKind::Command => {
+                let _ = writeln!(self.w, "{}$ {}", prefix, one_line(&step.command, 160));
+            }
+            StepKind::Observation => {
+                let code = step.exit_code.unwrap_or(0);
+                let _ = writeln!(
+                    self.w,
+                    "{}exit {} in {}ms ({} chars)",
+                    prefix,
+                    code,
+                    step.duration_ms,
+                    step.content.len()
+                );
+            }
+            StepKind::Note => {
+                let _ = writeln!(self.w, "{}note: {}", prefix, one_line(&step.content, 160));
+            }
+            StepKind::Error => {
+                let _ = writeln!(self.w, "{}error: {}", prefix, one_line(&step.content, 160));
+            }
+            StepKind::Exit => {
+                let _ = writeln!(self.w, "{}exit: {}", prefix, one_line(&step.content, 160));
+            }
+        }
     }
 }
 
@@ -1448,7 +1560,14 @@ pub fn run_json(
         ("submission".into(), json!(result.submission)),
         ("steps".into(), json!(result.steps)),
         ("calls".into(), json!(result.calls)),
-        ("usage".into(), json!(result.usage)),
+        (
+            "usage".into(),
+            json!(pulse_store::gomap! {
+                "prompt_tokens": result.usage.prompt_tokens,
+                "completion_tokens": result.usage.completion_tokens,
+                "cost": result.usage.cost
+            }),
+        ),
         (
             "elapsed_seconds".into(),
             json!(result.elapsed.as_secs_f64()),
@@ -1597,9 +1716,11 @@ pub fn write_harness_status(w: &mut dyn Write, r: &HarnessStatusReport) -> Resul
     } else {
         login.push_str(&format!(" - {LOGIN_FIX}"));
     }
-    writeln!(w, "harness  {}", r.harness)?;
-    writeln!(w, "provider {} ({})", r.provider.label, r.provider.name)?;
-    writeln!(w, "login    {login}")?;
+    write!(
+        w,
+        "harness  {}\nprovider {} ({})\nlogin    {}\n",
+        r.harness, r.provider.label, r.provider.name, login
+    )?;
     writeln!(
         w,
         "models   worker={}, light={}",
@@ -1750,18 +1871,40 @@ mod tests {
     use super::*;
     use pulse_cli::Buffer;
     use pulse_provider::{Model, Request, Response, Usage};
-    use std::sync::{Mutex, Once};
+    use pulse_testutil::httptest::{Response as TestResponse, Server};
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex, Once, OnceLock};
 
-    const FAKE_PROVIDER_NAME: &str = "fake-harness-cli-rust";
+    const FAKE_PROVIDER_NAME: &str = "fake-harness-cli";
     static REGISTER_FAKE: Once = Once::new();
     static FAKE_CURRENT: Mutex<Option<CommandFakeProvider>> = Mutex::new(None);
+    static TEMP_DIRS: OnceLock<Mutex<Vec<tempfile::TempDir>>> = OnceLock::new();
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct CommandFakeProvider {
         label: String,
         models: Vec<Model>,
         login: Login,
         err_not_logged_in: bool,
+        requests: Arc<Mutex<Vec<Request>>>,
+    }
+
+    impl Default for CommandFakeProvider {
+        fn default() -> Self {
+            Self {
+                label: String::new(),
+                models: Vec::new(),
+                login: Login::default(),
+                err_not_logged_in: false,
+                requests: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl CommandFakeProvider {
+        fn requests(&self) -> Vec<Request> {
+            self.requests.lock().unwrap().clone()
+        }
     }
 
     impl Provider for CommandFakeProvider {
@@ -1775,7 +1918,8 @@ mod tests {
                 &self.label
             }
         }
-        fn chat(&self, _cancel: &CancelToken, _req: Request) -> anyhow::Result<Response> {
+        fn chat(&self, _cancel: &CancelToken, req: Request) -> anyhow::Result<Response> {
+            self.requests.lock().unwrap().push(req);
             if self.err_not_logged_in {
                 return Err(pulse_provider::err_not_logged_in().into());
             }
@@ -1832,8 +1976,34 @@ mod tests {
         *FAKE_CURRENT.lock().unwrap() = Some(p);
     }
 
+    fn command_env() -> (pulse_testutil::EnvGuard, Vec<pulse_testutil::SetenvGuard>) {
+        let guard = pulse_testutil::env_lock();
+        let vars = [
+            "PULSE_JOB",
+            "PULSE_AGENT",
+            "PULSE_SESSION",
+            "PULSE_PROJECT",
+            "PULSE_EXECUTOR",
+            "PULSE_NOW",
+            "PULSE_HARNESS_CANCEL",
+            "PULSE_HARNESS_PROMPT_FILE",
+            "PULSE_HARNESS_STEPS",
+            "PULSE_HARNESS_FAKE",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+        ];
+        let guards = vars.iter().map(|v| pulse_testutil::unsetenv(v)).collect();
+        (guard, guards)
+    }
+
     fn harness_command_store() -> Store {
-        let home = tempfile::tempdir().unwrap().keep();
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        TEMP_DIRS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap()
+            .push(tmp);
         Store::open(pulse_store::Options {
             home: home.display().to_string(),
             create: true,
@@ -1868,12 +2038,10 @@ mod tests {
             Err(e) => {
                 if let Some(ce) = e.downcast_ref::<pulse_cli::Error>() {
                     if !ce.what.is_empty() {
-                        use std::io::Write;
                         let _ = write!(c.err, "{ce}");
                     }
                     ce.exit_code()
                 } else {
-                    use std::io::Write;
                     let _ = write!(c.err, "{e}");
                     1
                 }
@@ -1882,8 +2050,18 @@ mod tests {
         (out.string(), err.string(), code)
     }
 
+    fn read_step_events(path: &Path) -> Vec<Value> {
+        fs::read_to_string(path)
+            .unwrap()
+            .trim()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
     #[test]
     fn unknown_harness_verb_errors() {
+        let _serial = crate::test_helpers::serial();
         let e = unknown_harness_verb("nope");
         assert_eq!(e.exit_code(), 2);
         assert!(e.what.contains("unknown verb"));
@@ -1891,6 +2069,7 @@ mod tests {
 
     #[test]
     fn read_task_requires_one_source() {
+        let _serial = crate::test_helpers::serial();
         assert!(
             read_task("", "")
                 .unwrap_err()
@@ -1908,6 +2087,7 @@ mod tests {
 
     #[test]
     fn read_task_file() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("task.txt");
         fs::write(&path, "from file").unwrap();
@@ -1916,6 +2096,7 @@ mod tests {
 
     #[test]
     fn read_task_empty_file_errors() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("task.txt");
         fs::write(&path, " \n").unwrap();
@@ -1929,6 +2110,7 @@ mod tests {
 
     #[test]
     fn existing_dir_accepts_directory() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
             existing_dir(dir.path().to_str().unwrap()).unwrap(),
@@ -1938,6 +2120,7 @@ mod tests {
 
     #[test]
     fn existing_dir_rejects_missing() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
         assert!(
@@ -1950,6 +2133,7 @@ mod tests {
 
     #[test]
     fn existing_dir_rejects_file() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("file");
         fs::write(&file, "").unwrap();
@@ -1963,6 +2147,7 @@ mod tests {
 
     #[test]
     fn exit_code_for_statuses() {
+        let _serial = crate::test_helpers::serial();
         assert_eq!(exit_code_for(EXIT_SUBMITTED), 0);
         assert_eq!(exit_code_for(EXIT_PROVIDER_ERROR), 3);
         assert_eq!(exit_code_for(EXIT_NOT_LOGGED_IN), 4);
@@ -1972,6 +2157,7 @@ mod tests {
 
     #[test]
     fn run_json_shape() {
+        let _serial = crate::test_helpers::serial();
         let result = ResultSummary {
             exit_status: EXIT_SUBMITTED.into(),
             submission: "SUMMARY: ok".into(),
@@ -1988,6 +2174,7 @@ mod tests {
 
     #[test]
     fn write_run_text_submission() {
+        let _serial = crate::test_helpers::serial();
         let mut b = Vec::new();
         let result = ResultSummary {
             exit_status: EXIT_SUBMITTED.into(),
@@ -2000,6 +2187,7 @@ mod tests {
 
     #[test]
     fn write_run_text_stopped_with_last_message() {
+        let _serial = crate::test_helpers::serial();
         let mut b = Vec::new();
         let result = ResultSummary {
             exit_status: EXIT_STEP_LIMIT.into(),
@@ -2025,6 +2213,7 @@ mod tests {
 
     #[test]
     fn status_report_json_defaults() {
+        let _serial = crate::test_helpers::serial();
         set_fake_provider(CommandFakeProvider {
             login: Login {
                 logged_in: true,
@@ -2047,21 +2236,357 @@ mod tests {
     }
 
     #[test]
-    fn models_table() {
+    fn sessions_table_empty() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
         let s = harness_command_store();
-        set_fake_provider(CommandFakeProvider::default());
-        let (out, stderr, code) = invoke(
-            &s.home,
-            &["models", "--provider", FAKE_PROVIDER_NAME, "--no-color"],
-        );
+        let (out, stderr, code) = invoke(&s.home, &["sessions", "--no-color"]);
         assert_eq!(code, 0, "{stderr}");
-        assert!(out.contains("fake-model *"));
-        assert!(out.contains("Fake Model"));
-        assert!(out.contains("yes"));
+        assert!(out.contains("ID"));
+        assert!(out.contains("STARTED"));
     }
 
     #[test]
-    fn status_json_shape() {
+    fn head_tail_short_and_long() {
+        let _serial = crate::test_helpers::serial();
+        assert_eq!(head_tail("a\nb", 2), "a\nb");
+        let long = (0..10)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let got = head_tail(&long, 2);
+        assert!(got.contains("..."));
+        assert!(got.starts_with("0\n1"));
+        assert!(got.ends_with("8\n9"));
+    }
+
+    #[test]
+    fn harness_open_ai_provider_login_status_models_and_logout() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        pulse_provider_openai::register();
+        let s = harness_command_store();
+        const TOKEN: &str = "sk-cli-smoke-abcdefghijklmnop";
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let seen = paths.clone();
+        let srv = Server::new(move |r| {
+            seen.lock().unwrap().push(r.path().to_string());
+            let want_auth = format!("Bearer {TOKEN}");
+            assert_eq!(r.header("authorization"), Some(want_auth.as_str()));
+            assert_eq!(r.path(), "/models");
+            TestResponse::json(
+                200,
+                &json!({"data":[{"id":"gpt-4o-mini","owned_by":"openai"}]}),
+            )
+        });
+        s.set_setting("human", "provider.openai.base_url", &(srv.url() + "/"))
+            .unwrap();
+        set_stdin_for_tests(Some(&(TOKEN.to_string() + "\n")));
+        let (out, stderr, code) =
+            invoke(&s.home, &["login", "--provider", "openai", "--with-token"]);
+        set_stdin_for_tests(None);
+        assert!(
+            code == 0 && out.contains("Signed in as …mnop (OpenAI-compatible)"),
+            "login = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let (out, stderr, code) = invoke(&s.home, &["status", "--provider", "openai", "--json"]);
+        assert!(
+            code == 0
+                && out.contains("\"name\": \"openai\"")
+                && out.contains("\"logged_in\": true"),
+            "status = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let (out, stderr, code) = invoke(&s.home, &["models", "--provider", "openai"]);
+        assert!(
+            code == 0 && out.contains("gpt-4o-mini *"),
+            "models = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let (out, stderr, code) = invoke(&s.home, &["logout", "--provider", "openai"]);
+        assert!(
+            code == 0 && out.contains("removed stored OpenAI-compatible login"),
+            "logout = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        assert_eq!(
+            paths.lock().unwrap().len(),
+            2,
+            "models endpoint calls = {:?}",
+            paths.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn harness_run_records_submission_and_trajectory() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider::default());
+        let dir = tempfile::tempdir().unwrap();
+        let traj_dir = tempfile::tempdir().unwrap();
+        let trajectory = traj_dir.path().join("trajectory.json");
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-test",
+                "--trajectory",
+                trajectory.to_str().unwrap(),
+                "--quiet",
+            ],
+        );
+        assert!(
+            code == 0 && out.contains("SUMMARY: fake complete"),
+            "run = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let (h, steps) = s.harness_session("hs-test").unwrap();
+        let h = h.unwrap();
+        assert!(
+            h.status == EXIT_SUBMITTED
+                && h.exit_status == EXIT_SUBMITTED
+                && h.submission == out.trim_end()
+                && h.calls == 1,
+            "session not recorded: {h:?}"
+        );
+        assert!(
+            steps.len() >= 2
+                && steps[0].kind == StepKind::Assistant.to_string()
+                && steps.last().unwrap().kind == StepKind::Exit.to_string(),
+            "steps not recorded: {steps:?}"
+        );
+        let detail: String = s.conn().unwrap().query_row("SELECT detail FROM events WHERE action = 'harness.step' AND subject = 'hs-test' ORDER BY seq LIMIT 1", [], |r| r.get(0)).unwrap();
+        let event: Value = serde_json::from_str(&detail).unwrap();
+        assert_eq!(event["session"], "hs-test");
+        assert_eq!(event["n"], json!(steps[0].n));
+        assert_eq!(event["kind"], StepKind::Assistant.to_string());
+        assert!(
+            event.get("exit_code").is_none(),
+            "nil exit_code should be omitted: {event:#?}"
+        );
+        let data = fs::read_to_string(trajectory).unwrap();
+        let traj: Trajectory = serde_json::from_str(&data).unwrap();
+        assert_eq!(traj.info.exit_status, EXIT_SUBMITTED);
+    }
+
+    #[test]
+    fn harness_run_uses_stored_prompt_template() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let p = CommandFakeProvider::default();
+        let probe = p.clone();
+        set_fake_provider(p);
+        s.set_setting(
+            "human",
+            "harness.system_prompt",
+            "CUSTOM {{.Cwd}} {{.Model}}",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-prompt",
+                "--trajectory",
+                "none",
+                "--quiet",
+            ],
+        );
+        assert!(
+            code == 0 && out.contains("SUMMARY: fake complete") && stderr.is_empty(),
+            "run = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let reqs = probe.requests();
+        assert!(
+            reqs.len() == 1
+                && reqs[0].messages[0].content.starts_with("CUSTOM ")
+                && reqs[0].messages[0].content.contains("fake-model"),
+            "prompt request = {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn harness_run_prompt_file_overrides_invalid_stored_template() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider::default());
+        s.conn().unwrap().execute("INSERT INTO settings(name,value,updated_at,updated_by) VALUES('harness.system_prompt','{{.Missing}}',?,'test')", [&s.now()]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-bad-prompt",
+                "--trajectory",
+                "none",
+                "--quiet",
+            ],
+        );
+        assert!(
+            code == 2 && stderr.contains("harness.system_prompt render failed") && out.is_empty(),
+            "bad prompt = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let prompt_dir = tempfile::tempdir().unwrap();
+        let file = prompt_dir.path().join("prompt.txt");
+        fs::write(&file, "FILE {{.Cwd}}").unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir2.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-file-prompt",
+                "--prompt-file",
+                file.to_str().unwrap(),
+                "--trajectory",
+                "none",
+                "--quiet",
+            ],
+        );
+        assert!(
+            code == 0 && out.contains("SUMMARY: fake complete") && stderr.is_empty(),
+            "file prompt = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+    }
+
+    #[test]
+    fn harness_run_not_logged_in_exit() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider {
+            err_not_logged_in: true,
+            ..CommandFakeProvider::default()
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--model",
+                "fake-model",
+                "--session",
+                "hs-login",
+            ],
+        );
+        assert!(
+            code == 4 && stderr.contains("not logged in: sign in with GitHub in the console"),
+            "not logged in = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        assert!(
+            out.contains("SUMMARY: harness stopped: not_logged_in"),
+            "missing synthesized summary: {out:?}"
+        );
+    }
+
+    #[test]
+    fn harness_run_not_logged_in_before_model_records_session() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider {
+            err_not_logged_in: true,
+            ..CommandFakeProvider::default()
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-login-early",
+            ],
+        );
+        assert!(
+            code == 4
+                && stderr.contains("not logged in:")
+                && out.contains("SUMMARY: harness stopped: not_logged_in"),
+            "early not logged in = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let (h, steps) = s.harness_session("hs-login-early").unwrap();
+        let h = h.unwrap();
+        assert!(
+            h.status == EXIT_NOT_LOGGED_IN
+                && h.provider == FAKE_PROVIDER_NAME
+                && h.model.is_empty()
+                && h.error.contains("not logged in"),
+            "early login failure not recorded: {h:?}"
+        );
+        assert!(steps.is_empty(), "no steps expected, got {steps:?}");
+    }
+
+    #[test]
+    fn harness_run_without_store_still_submits() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        set_fake_provider(CommandFakeProvider::default());
+        let (out, stderr, code) = invoke(
+            home.path().to_str().unwrap(),
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--no-store",
+                "--trajectory",
+                "none",
+                "--quiet",
+            ],
+        );
+        assert!(
+            code == 0 && out.contains("SUMMARY: fake complete") && stderr.is_empty(),
+            "no-store run = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+    }
+
+    #[test]
+    fn harness_status_json_shape() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
         let s = harness_command_store();
         set_fake_provider(CommandFakeProvider {
             login: Login {
@@ -2077,31 +2602,96 @@ mod tests {
             &["status", "--provider", FAKE_PROVIDER_NAME, "--json"],
         );
         assert_eq!(code, 0, "{stderr}");
-        assert!(out.contains("\"name\": \"fake-harness-cli-rust\""));
-        assert!(out.contains("\"logged_in\": true"));
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got["harness"], "native");
+        assert_eq!(got["provider"]["name"], FAKE_PROVIDER_NAME);
+        assert_eq!(got["provider"]["login"]["user"], "octocat");
+        assert!(
+            got["limits"]["max_steps"].as_i64().unwrap() > 0,
+            "bad status JSON: {got:#?}"
+        );
+        let shape_tags = BTreeMap::from([
+            (r##"json:"harness""##, got["harness"].clone()),
+            (r##"json:"provider""##, got["provider"].clone()),
+            (r##"json:"name""##, got["provider"]["name"].clone()),
+            (r##"json:"login""##, got["provider"]["login"].clone()),
+            (r##"json:"limits""##, got["limits"].clone()),
+            (r##"json:"max_steps""##, got["limits"]["max_steps"].clone()),
+            (r##"json:"sessions""##, got["sessions"].clone()),
+            (r##"json:"running""##, got["sessions"]["running"].clone()),
+        ]);
+        assert_eq!(shape_tags[r##"json:"harness""##], "native");
+        assert_eq!(shape_tags[r##"json:"name""##], FAKE_PROVIDER_NAME);
+        assert_eq!(shape_tags[r##"json:"login""##]["user"], "octocat");
+        assert!(shape_tags[r##"json:"max_steps""##].as_i64().unwrap() > 0);
+        assert!(shape_tags[r##"json:"running""##].as_i64().unwrap() >= 0);
     }
 
     #[test]
-    fn prompt_default_command() {
+    fn harness_cancel_command() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        s.begin_harness_session(HarnessSession {
+            id: "hs-cancel".into(),
+            ..HarnessSession::default()
+        })
+        .unwrap();
+        let (out, stderr, code) = invoke(&s.home, &["cancel", "hs-cancel"]);
+        assert!(
+            code == 0 && out == "cancel requested for hs-cancel\n" && stderr.is_empty(),
+            "cancel running = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let h = s.harness_session_head("hs-cancel").unwrap().unwrap();
+        assert!(
+            !h.cancel_requested_at.is_empty(),
+            "cancel not recorded: {h:?}"
+        );
+        let cancel_events: i64 = s.conn().unwrap().query_row("SELECT COUNT(*) FROM events WHERE action = 'harness.cancel' AND subject = 'hs-cancel'", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            cancel_events, 1,
+            "harness.cancel events = {cancel_events}, want 1"
+        );
+        let (out, stderr, code) = invoke(&s.home, &["cancel", "hs-cancel"]);
+        assert!(
+            code == 0 && out == "cancel already requested for hs-cancel\n" && stderr.is_empty(),
+            "cancel twice = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        s.finish_harness_session(
+            "hs-cancel",
+            "cancelled",
+            "cancelled",
+            "",
+            "cancelled by the owner",
+            0.0,
+            "",
+        )
+        .unwrap();
+        let (out, stderr, code) = invoke(&s.home, &["cancel", "hs-cancel"]);
+        assert!(
+            code == 1 && out.is_empty() && stderr.contains("session is not running"),
+            "cancel finished = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+    }
+
+    #[test]
+    fn harness_prompt_command() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
         let s = harness_command_store();
         let (out, stderr, code) = invoke(&s.home, &["prompt", "--default"]);
-        assert_eq!(code, 0, "{stderr}");
-        assert!(out.contains("You are an autonomous software engineering agent"));
-        assert!(out.contains("{{.StepTimeout}}"));
-    }
-
-    #[test]
-    fn prompt_raw_built_in() {
-        let s = harness_command_store();
+        assert!(
+            code == 0
+                && stderr.is_empty()
+                && out.contains("You are an autonomous software engineering agent")
+                && out.contains("{{.StepTimeout}}"),
+            "prompt default = code {code} stdout {out:?} stderr {stderr:?}"
+        );
         let (out, stderr, code) = invoke(&s.home, &["prompt", "--raw"]);
-        assert_eq!(code, 0);
-        assert_eq!(out, "\n");
-        assert_eq!(stderr.trim(), "built-in");
-    }
-
-    #[test]
-    fn prompt_rendered_stored_template() {
-        let s = harness_command_store();
+        assert!(
+            code == 0 && out == "\n" && stderr.trim() == "built-in",
+            "prompt raw built-in = code {code} stdout {out:?} stderr {stderr:?}"
+        );
         s.set_setting(
             "human",
             "harness.system_prompt",
@@ -2119,24 +2709,62 @@ mod tests {
                 "hubfake",
             ],
         );
-        assert_eq!(code, 0, "{stderr}");
-        assert!(out.contains(&format!(
-            "Stored {} hubfake",
-            dir.path().canonicalize().unwrap().display()
-        )));
+        let rendered_cwd = dir.path().canonicalize().unwrap().display().to_string();
+        assert!(
+            code == 0
+                && stderr.is_empty()
+                && out.contains(&format!("Stored {rendered_cwd} hubfake")),
+            "prompt rendered = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let (out, stderr, code) = invoke(&s.home, &["prompt", "--raw"]);
+        assert!(
+            code == 0 && stderr.is_empty() && out == "Stored {{.Cwd}} {{.Provider}}\n",
+            "prompt raw custom = code {code} stdout {out:?} stderr {stderr:?}"
+        );
     }
 
     #[test]
-    fn run_without_store_still_submits() {
-        let home = tempfile::tempdir().unwrap();
+    fn harness_models_table() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
         set_fake_provider(CommandFakeProvider::default());
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &["models", "--provider", FAKE_PROVIDER_NAME, "--no-color"],
+        );
+        assert_eq!(code, 0, "{stderr}");
+        for want in ["ID", "fake-model *", "Fake Model", "yes"] {
+            assert!(out.contains(want), "models output missing {want:?}:\n{out}");
+        }
+    }
+
+    #[test]
+    fn harness_run_input_errors() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider::default());
+        for tc in [vec!["run", "--provider", FAKE_PROVIDER_NAME], vec!["nope"]] {
+            let (_, _, code) = invoke(&s.home, &tc);
+            assert_eq!(code, 2, "{tc:?} exit code = {code}, want 2");
+        }
+    }
+
+    #[test]
+    fn harness_run_task_file_stdin() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider::default());
+        set_stdin_for_tests(Some("from stdin"));
         let dir = tempfile::tempdir().unwrap();
         let (out, stderr, code) = invoke(
-            home.path().to_str().unwrap(),
+            &s.home,
             &[
                 "run",
-                "-p",
-                "do it",
+                "--task-file",
+                "-",
                 "-C",
                 dir.path().to_str().unwrap(),
                 "--provider",
@@ -2147,59 +2775,137 @@ mod tests {
                 "--quiet",
             ],
         );
-        assert_eq!(code, 0, "{stderr}");
-        assert!(out.contains("SUMMARY: fake complete"));
-    }
-
-    #[test]
-    fn run_input_errors() {
-        let s = harness_command_store();
-        set_fake_provider(CommandFakeProvider::default());
-        let (_, _, code) = invoke(&s.home, &["run", "--provider", FAKE_PROVIDER_NAME]);
-        assert_eq!(code, 2);
-        let (_, _, code) = invoke(&s.home, &["nope"]);
-        assert_eq!(code, 2);
-    }
-
-    #[test]
-    fn cancel_command() {
-        let s = harness_command_store();
-        s.begin_harness_session(HarnessSession {
-            id: "hs-cancel".into(),
-            ..HarnessSession::default()
-        })
-        .unwrap();
-        let (out, stderr, code) = invoke(&s.home, &["cancel", "hs-cancel"]);
-        assert_eq!(code, 0, "{stderr}");
-        assert_eq!(out, "cancel requested for hs-cancel\n");
+        set_stdin_for_tests(None);
         assert!(
-            !s.harness_session_head("hs-cancel")
-                .unwrap()
-                .unwrap()
-                .cancel_requested_at
-                .is_empty()
+            code == 0 && out.contains("SUMMARY: fake complete") && stderr.is_empty(),
+            "stdin task = code {code} stdout {out:?} stderr {stderr:?}"
         );
     }
 
     #[test]
-    fn sessions_table_empty() {
+    fn harness_run_steps_file_normal_run() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
         let s = harness_command_store();
-        let (out, stderr, code) = invoke(&s.home, &["sessions", "--no-color"]);
-        assert_eq!(code, 0, "{stderr}");
-        assert!(out.contains("ID"));
-        assert!(out.contains("STARTED"));
+        set_fake_provider(CommandFakeProvider::default());
+        let dir = tempfile::tempdir().unwrap();
+        let steps_dir = tempfile::tempdir().unwrap();
+        let path = steps_dir.path().join("nested/steps.jsonl");
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-steps",
+                "--steps-file",
+                path.to_str().unwrap(),
+                "--trajectory",
+                "none",
+                "--quiet",
+            ],
+        );
+        assert!(
+            code == 0 && out.contains("SUMMARY: fake complete") && stderr.is_empty(),
+            "run = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let events = read_step_events(&path);
+        assert!(events.len() >= 3, "events = {events:#?}");
+        let begin = &events[0];
+        assert!(
+            begin["event"] == "begin"
+                && begin["session"] == "hs-steps"
+                && begin["provider"] == FAKE_PROVIDER_NAME
+                && begin["model"] == "fake-model"
+                && !begin["cwd"].as_str().unwrap_or("").is_empty()
+                && !begin["at"].as_str().unwrap_or("").is_empty(),
+            "bad begin: {begin:#?}"
+        );
+        let step = &events[1];
+        let usage = &step["usage"];
+        assert!(
+            step["event"] == "step"
+                && !step["n"].is_null()
+                && !step["kind"].is_null()
+                && !step["content"].is_null()
+                && !usage["prompt_tokens"].is_null()
+                && !usage["completion_tokens"].is_null(),
+            "bad step: {step:#?}"
+        );
+        let finish = events.last().unwrap();
+        assert!(
+            finish["event"] == "finish"
+                && finish["exit_status"] == EXIT_SUBMITTED
+                && finish["submission"]
+                    .as_str()
+                    .unwrap()
+                    .contains("SUMMARY: fake complete")
+                && finish["error"] == ""
+                && !finish["cost"].is_null()
+                && !finish["steps"].is_null()
+                && !finish["at"].as_str().unwrap_or("").is_empty(),
+            "bad finish: {finish:#?}"
+        );
     }
 
     #[test]
-    fn head_tail_short_and_long() {
-        assert_eq!(head_tail("a\nb", 2), "a\nb");
-        let long = (0..10)
-            .map(|i| i.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let got = head_tail(&long, 2);
-        assert!(got.contains("..."));
-        assert!(got.starts_with("0\n1"));
-        assert!(got.ends_with("8\n9"));
+    fn harness_run_steps_file_early_not_logged_in() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider {
+            err_not_logged_in: true,
+            ..CommandFakeProvider::default()
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let steps_dir = tempfile::tempdir().unwrap();
+        let path = steps_dir.path().join("steps.jsonl");
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-login-steps",
+                "--steps-file",
+                path.to_str().unwrap(),
+                "--quiet",
+            ],
+        );
+        assert!(
+            code == 4
+                && stderr.contains("not logged in:")
+                && out.contains("SUMMARY: harness stopped: not_logged_in"),
+            "run = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let events = read_step_events(&path);
+        assert_eq!(events.len(), 2, "events = {events:#?}");
+        assert!(
+            events[0]["event"] == "begin"
+                && events[0]["session"] == "hs-login-steps"
+                && events[0]["model"] == "",
+            "bad begin: {:#?}",
+            events[0]
+        );
+        assert!(
+            events[1]["event"] == "finish"
+                && events[1]["exit_status"] == EXIT_NOT_LOGGED_IN
+                && events[1]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not logged in"),
+            "bad finish: {:#?}",
+            events[1]
+        );
     }
 }

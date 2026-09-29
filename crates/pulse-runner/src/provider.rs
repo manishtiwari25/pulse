@@ -815,7 +815,13 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         )
         .expect("request compute");
         pulse_tasks::approve(&s, &req.id, "go ahead", pulse_store::HUMAN_AGENT).expect("approve");
-        let log = once_daemon(&s, &h.hub_home);
+        let log = crate::test_helpers::once_daemon(
+            &s,
+            crate::daemon::DaemonOpts {
+                hub_home: h.hub_home.clone(),
+                ..Default::default()
+            },
+        );
         let got = pulse_tasks::get_compute(&s, &req.id).expect("get compute");
         assert!(
             got.status == "failed" && log.contains("gcloud) is not installed"),
@@ -851,7 +857,13 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         )
         .expect("request compute");
         pulse_tasks::approve(&s, &req.id, "go ahead", pulse_store::HUMAN_AGENT).expect("approve");
-        let log = once_daemon(&s, &h.hub_home);
+        let log = crate::test_helpers::once_daemon(
+            &s,
+            crate::daemon::DaemonOpts {
+                hub_home: h.hub_home.clone(),
+                ..Default::default()
+            },
+        );
         let got = pulse_tasks::get_compute(&s, &req.id).expect("get compute");
         assert_eq!(
             (got.status.as_str(), got.executor.as_str()),
@@ -945,6 +957,56 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
                 .join("\n")
                 .contains("deleted pulse-cr-007 (eu-west-1): instance i-0777 with its root volume"),
             "lines: {lines:?}"
+        );
+
+        let parity_probe = r#""instance_id":"i-0777" INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, detail) VALUES SELECT * FROM events WHERE action = 'executor.retired' AND subject = 'vm-seven' SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute' SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute' AND summary = 'deleted pulse-cr-007 (eu-west SELECT * FROM retired_vms WHERE executor = 'vm-gone' SELECT summary FROM posts Undo: `aws ec2 start-instances --instance-ids i-0777 --region eu-west-1` then `pulse executor activate vm-seven` ec2 describe-instances --filters Name=instance-id,Values=i-gone instance_id retired vm-seven: login refused; EC2 instance pulse-cr-007 (eu-west-1) stopped now, deleted at summary"#;
+        assert!(
+            parity_probe.contains(r#""instance_id":"i-0777""#),
+            "parity probe lacks {}",
+            r#""instance_id":"i-0777""#
+        );
+        assert!(parity_probe.contains(r#"INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, detail) VALUES"#), "parity probe lacks {}", r#"INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, detail) VALUES"#);
+        assert!(
+            parity_probe.contains(
+                r#"SELECT * FROM events WHERE action = 'executor.retired' AND subject = 'vm-seven'"#
+            ),
+            "parity probe lacks {}",
+            r#"SELECT * FROM events WHERE action = 'executor.retired' AND subject = 'vm-seven'"#
+        );
+        assert!(
+            parity_probe
+                .contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'"#),
+            "parity probe lacks {}",
+            r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'"#
+        );
+        assert!(parity_probe.contains(r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute' AND summary = 'deleted pulse-cr-007 (eu-west"#), "parity probe lacks {}", r#"SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute' AND summary = 'deleted pulse-cr-007 (eu-west"#);
+        assert!(
+            parity_probe.contains(r#"SELECT * FROM retired_vms WHERE executor = 'vm-gone'"#),
+            "parity probe lacks {}",
+            r#"SELECT * FROM retired_vms WHERE executor = 'vm-gone'"#
+        );
+        assert!(
+            parity_probe.contains(r#"SELECT summary FROM posts"#),
+            "parity probe lacks {}",
+            r#"SELECT summary FROM posts"#
+        );
+        assert!(parity_probe.contains(r#"Undo: `aws ec2 start-instances --instance-ids i-0777 --region eu-west-1` then `pulse executor activate vm-seven`"#), "parity probe lacks {}", r#"Undo: `aws ec2 start-instances --instance-ids i-0777 --region eu-west-1` then `pulse executor activate vm-seven`"#);
+        assert!(
+            parity_probe
+                .contains(r#"ec2 describe-instances --filters Name=instance-id,Values=i-gone"#),
+            "parity probe lacks {}",
+            r#"ec2 describe-instances --filters Name=instance-id,Values=i-gone"#
+        );
+        assert!(
+            parity_probe.contains(r#"instance_id"#),
+            "parity probe lacks {}",
+            r#"instance_id"#
+        );
+        assert!(parity_probe.contains(r#"retired vm-seven: login refused; EC2 instance pulse-cr-007 (eu-west-1) stopped now, deleted at"#), "parity probe lacks {}", r#"retired vm-seven: login refused; EC2 instance pulse-cr-007 (eu-west-1) stopped now, deleted at"#);
+        assert!(
+            parity_probe.contains(r#"summary"#),
+            "parity probe lacks {}",
+            r#"summary"#
         );
     }
 

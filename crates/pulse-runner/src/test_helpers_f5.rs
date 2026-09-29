@@ -346,7 +346,13 @@ pub(crate) fn evolve_suggestion(s: &pulse_store::Store) -> pulse_board::Post {
 
 pub(crate) type MeasureCalls = Arc<Mutex<i32>>;
 
-pub(crate) fn measured_keep_fixture() -> (crate::test_helpers::TestStore, Row, Row, String, MeasureCalls) {
+pub(crate) fn measured_keep_fixture() -> (
+    crate::test_helpers::TestStore,
+    Row,
+    Row,
+    String,
+    MeasureCalls,
+) {
     let s = new_store();
     let (mut project, root) = new_repo(&s);
     evolve_plan_ready(&s);

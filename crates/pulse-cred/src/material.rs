@@ -84,8 +84,10 @@ mod tests {
 
     #[test]
     fn materialize_and_cleanup() {
+        let _serial = crate::test_helpers::serial();
+        let home = tempfile::tempdir().unwrap();
         let r = Resolver {
-            home: tempfile::tempdir().unwrap().path().display().to_string(),
+            home: home.path().display().to_string(),
             ..Resolver::default()
         };
         let m = r
@@ -104,7 +106,9 @@ mod tests {
                 0o700
             );
         }
-        assert!(m.dir.contains("/tmp/push-") || m.dir.contains("\\tmp\\push-"));
+        assert!(
+            m.dir.starts_with(&format!("{}/tmp/push-", r.home)) || m.dir.contains("\\tmp\\push-")
+        );
         assert_eq!(
             m.ssh_command,
             format!(
@@ -121,6 +125,7 @@ mod tests {
 
     #[test]
     fn ssh_command_quotes_path() {
+        let _serial = crate::test_helpers::serial();
         assert_eq!(
             ssh_command("/tmp/it's here/key"),
             r#"ssh -oBatchMode=yes -oIdentitiesOnly=yes -oIdentityAgent=none -i '/tmp/it'\''s here/key'"#

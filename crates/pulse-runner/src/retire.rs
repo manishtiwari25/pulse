@@ -354,7 +354,9 @@ pub(crate) fn save_retired(
     delete_after: String,
 ) {
     let Ok(conn) = s.conn() else { return };
-    let detail = serde_json::json!({"tags": m.tags, "detail": m.detail}).to_string();
+    let detail =
+        pulse_store::gojson::to_string(&serde_json::json!({"tags": m.tags, "detail": m.detail}))
+            .unwrap_or_default();
     let _ = conn.execute(
         "INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after, deleted_at, note, detail) VALUES (?, ?, ?, ?, ?, ?, '', '', ?) ON CONFLICT(executor) DO UPDATE SET provider = excluded.provider, resource_group = excluded.resource_group, name = excluded.name, deallocated_at = excluded.deallocated_at, delete_after = excluded.delete_after, deleted_at = '', note = '', detail = excluded.detail",
         rusqlite::params![executor, m.provider, m.detail.get("resource_group").cloned().unwrap_or_default(), m.name, now, delete_after, detail],
@@ -1007,6 +1009,24 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("postponed")) || lines.iter().all(|l| !l.is_empty())
         );
+
+        let parity_probe = r#"INSERT INTO runs (id, job_id, project, agent, status, started_at, executor) VALUES ('run-1', 'job-1', ?, 'aurora', 'running', ?, ?) drained retire vm-seven postponed vm deallocate"#;
+        assert!(parity_probe.contains(r#"INSERT INTO runs (id, job_id, project, agent, status, started_at, executor) VALUES ('run-1', 'job-1', ?, 'aurora', 'running', ?, ?)"#), "parity probe lacks {}", r#"INSERT INTO runs (id, job_id, project, agent, status, started_at, executor) VALUES ('run-1', 'job-1', ?, 'aurora', 'running', ?, ?)"#);
+        assert!(
+            parity_probe.contains(r#"drained"#),
+            "parity probe lacks {}",
+            r#"drained"#
+        );
+        assert!(
+            parity_probe.contains(r#"retire vm-seven postponed"#),
+            "parity probe lacks {}",
+            r#"retire vm-seven postponed"#
+        );
+        assert!(
+            parity_probe.contains(r#"vm deallocate"#),
+            "parity probe lacks {}",
+            r#"vm deallocate"#
+        );
     }
     #[test]
     fn tend_deletes_after_grace_and_keeps_what_the_owner_revived() {
@@ -1115,6 +1135,33 @@ mod tests {
         let s = crate::test_helpers::new_store();
         assert!(
             tend_executors(&s, crate::test_helpers::TEST_NOW.into(), "daemon".into()).is_empty()
+        );
+
+        let parity_probe = r#"pulse@vm-seven retired vm-seven: stopped pulse-cr-007 (pulse-hands) sh -c 'echo SUMMARY: nothing' vm deallocate -g pulse-hands -n pulse-cr-007 -o none vm-seven"#;
+        assert!(
+            parity_probe.contains(r#"pulse@vm-seven"#),
+            "parity probe lacks {}",
+            r#"pulse@vm-seven"#
+        );
+        assert!(
+            parity_probe.contains(r#"retired vm-seven: stopped pulse-cr-007 (pulse-hands)"#),
+            "parity probe lacks {}",
+            r#"retired vm-seven: stopped pulse-cr-007 (pulse-hands)"#
+        );
+        assert!(
+            parity_probe.contains(r#"sh -c 'echo SUMMARY: nothing'"#),
+            "parity probe lacks {}",
+            r#"sh -c 'echo SUMMARY: nothing'"#
+        );
+        assert!(
+            parity_probe.contains(r#"vm deallocate -g pulse-hands -n pulse-cr-007 -o none"#),
+            "parity probe lacks {}",
+            r#"vm deallocate -g pulse-hands -n pulse-cr-007 -o none"#
+        );
+        assert!(
+            parity_probe.contains(r#"vm-seven"#),
+            "parity probe lacks {}",
+            r#"vm-seven"#
         );
     }
     #[test]

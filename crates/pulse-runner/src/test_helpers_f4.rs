@@ -31,6 +31,7 @@ pub(crate) struct CompletionSnapshot {
     home: String,
     file: PathBuf,
     s: pulse_store::Store,
+    _guard: crate::test_helpers::TestStore,
 }
 
 pub(crate) fn must_write_brief(opts: BriefOpts) -> String {
@@ -76,7 +77,7 @@ pub(crate) fn new_completion_job(kind: &str) -> (crate::test_helpers::TestStore,
 pub(crate) fn new_completion_suite() -> CompletionSuite {
     let s = new_store();
     let (project, agents) = completion_fixture(&s);
-    let snap = snapshot_completion_store((*s).clone());
+    let snap = snapshot_completion_store(s);
     CompletionSuite {
         project,
         agents,
@@ -115,11 +116,11 @@ pub(crate) fn completion_job(s: &pulse_store::Store, kind: &str) -> Row {
     .0
 }
 
-pub(crate) fn snapshot_completion_store(s: pulse_store::Store) -> CompletionSnapshot {
-    let file = tempfile::tempdir()
-        .expect("snapshot temp")
-        .keep()
-        .join("snapshot.sqlite");
+pub(crate) fn snapshot_completion_store(
+    guard: crate::test_helpers::TestStore,
+) -> CompletionSnapshot {
+    let s = (*guard).clone();
+    let file = PathBuf::from(&s.home).join("completion-snapshot.sqlite");
     let conn = s.conn().expect("conn");
     conn.execute("VACUUM INTO ?", [&file.display().to_string()])
         .expect("vacuum snapshot");
@@ -128,6 +129,7 @@ pub(crate) fn snapshot_completion_store(s: pulse_store::Store) -> CompletionSnap
         home: s.home.clone(),
         file,
         s,
+        _guard: guard,
     }
 }
 
@@ -566,7 +568,10 @@ pub(crate) mod tests {
                 _ => {}
             }
             let (command, _env) = if status.is_empty() && result.is_empty() {
-                (lightweight_completion_worker_command(output, exit), Vec::new())
+                (
+                    lightweight_completion_worker_command(output, exit),
+                    Vec::new(),
+                )
             } else {
                 completion_worker_command(status, result, output, exit, "")
             };
@@ -632,7 +637,8 @@ pub(crate) mod tests {
                 &s,
                 job,
                 &agent,
-                &completion_worker_command("", "", "SUMMARY: investigated the parser\n", 0, direct).0,
+                &completion_worker_command("", "", "SUMMARY: investigated the parser\n", 0, direct)
+                    .0,
             );
             let answers = crate::util::must_rows(
                 &s.conn().expect("conn"),
@@ -678,7 +684,8 @@ pub(crate) mod tests {
                 "SUMMARY: The new question has a different answer.\n",
                 0,
                 "",
-            ).0,
+            )
+            .0,
         );
         assert_eq!(
             count(

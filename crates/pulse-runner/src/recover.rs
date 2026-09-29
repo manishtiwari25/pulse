@@ -1429,13 +1429,8 @@ pub(crate) fn row_str(r: Row, key: String) -> String {
 pub(crate) fn detail_string(m: BTreeMap<String, Value>, key: String) -> String {
     match m.get(&key) {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Null) | None => String::new(),
-        Some(v) => match v {
-            Value::Bool(b) => b.to_string(),
-            Value::Number(n) => n.to_string(),
-            Value::Array(_) | Value::Object(_) => v.to_string(),
-            Value::String(_) | Value::Null => unreachable!(),
-        },
+        Some(v) => pulse_store::gojson::sprint(v),
+        None => pulse_store::gojson::sprint(&Value::Null),
     }
 }
 
@@ -1515,6 +1510,7 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_f7::*;
+    use base64::Engine;
     use serde_json::{Value, json};
     use std::path::Path;
     use std::sync::{
@@ -1551,14 +1547,29 @@ mod tests {
         _timeout: Duration,
     ) -> anyhow::Result<(i32, String, String)> {
         let n = FAKE_SSH_CALLS.fetch_add(1, Ordering::SeqCst);
-        let text = argv.join(" ");
+        let text = argv
+            .last()
+            .and_then(|v| v.strip_prefix("b64 "))
+            .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok())
+            .map(|v| {
+                String::from_utf8_lossy(&v)
+                    .trim_end_matches('\0')
+                    .replace('\0', " ")
+            })
+            .unwrap_or_else(|| argv.join(" "));
         if n == 0 || text.contains("probe") {
             Ok((
                 0,
                 "hands=ok pulse=ok heartbeat=1 git=ok harness=yes keys_ok=yes keys=- remotes=0 disk_free_mb=4096".into(),
                 String::new(),
             ))
-        } else if text.contains("verify") {
+        } else if n == 1 || text.contains("prepare") {
+            Ok((
+                0,
+                "prepared aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n".into(),
+                String::new(),
+            ))
+        } else if n < 5 || text.contains("verify") {
             Ok((0, String::new(), String::new()))
         } else if n >= 3 || text.contains("run") {
             Ok((
@@ -4135,7 +4146,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: run::work_once: expected status error summary containing 'the login on hands, not the job' and drained executor got status error summary 'ssh prepare unavailable until executor transport slice is filled'"]
     fn launch_rejection_on_remote_drains_executor() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -4149,13 +4159,13 @@ mod tests {
         join(&s, "aurora");
         s.set_setting(pulse_store::HUMAN_AGENT, "minutes_per_job", "1")
             .expect("set minutes");
-        let workdir = tempfile::tempdir().expect("workdir").keep();
+        let workdir = tempfile::tempdir().expect("workdir");
         crate::executor::add_executor(
             &s,
             TEST_NOW,
             "hands",
             "pulse@hands",
-            &workdir.display().to_string(),
+            &workdir.path().display().to_string(),
             1,
             "*",
             pulse_store::HUMAN_AGENT,

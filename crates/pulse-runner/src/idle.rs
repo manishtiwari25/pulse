@@ -620,6 +620,44 @@ mod tests {
                 "reflect due"
             );
         }
+
+        let parity_probe = r#"INSERT INTO jobs(id, project, kind, title, status, source, created_at) VALUES('J-other', ?, ?, 'Earlier work', 'done', ?, ?) another kind another project daemon no reflect previous daily attempt previous onboarding attempt unrelated source"#;
+        assert!(parity_probe.contains(r#"INSERT INTO jobs(id, project, kind, title, status, source, created_at) VALUES('J-other', ?, ?, 'Earlier work', 'done', ?, ?)"#), "parity probe lacks {}", r#"INSERT INTO jobs(id, project, kind, title, status, source, created_at) VALUES('J-other', ?, ?, 'Earlier work', 'done', ?, ?)"#);
+        assert!(
+            parity_probe.contains(r#"another kind"#),
+            "parity probe lacks {}",
+            r#"another kind"#
+        );
+        assert!(
+            parity_probe.contains(r#"another project"#),
+            "parity probe lacks {}",
+            r#"another project"#
+        );
+        assert!(
+            parity_probe.contains(r#"daemon"#),
+            "parity probe lacks {}",
+            r#"daemon"#
+        );
+        assert!(
+            parity_probe.contains(r#"no reflect"#),
+            "parity probe lacks {}",
+            r#"no reflect"#
+        );
+        assert!(
+            parity_probe.contains(r#"previous daily attempt"#),
+            "parity probe lacks {}",
+            r#"previous daily attempt"#
+        );
+        assert!(
+            parity_probe.contains(r#"previous onboarding attempt"#),
+            "parity probe lacks {}",
+            r#"previous onboarding attempt"#
+        );
+        assert!(
+            parity_probe.contains(r#"unrelated source"#),
+            "parity probe lacks {}",
+            r#"unrelated source"#
+        );
     }
 
     #[test]

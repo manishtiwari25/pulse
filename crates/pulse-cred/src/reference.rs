@@ -125,7 +125,8 @@ mod tests {
     type Case = (&'static str, &'static str, Check);
 
     #[test]
-    fn parse_cases() {
+    fn parse() {
+        let _serial = crate::test_helpers::serial();
         let cases: Vec<Case> = vec![
             (
                 "op://PULSE/pulse push key/private key?ssh-format=openssh",
@@ -188,7 +189,7 @@ mod tests {
             ("op://V/I/F\nfile:///x", "one line", Box::new(|_| false)),
         ];
         for (input, want_err, check) in cases {
-            let got = parse(input);
+            let got = super::parse(input);
             if !want_err.is_empty() {
                 let err = got.expect_err("expected error").to_string();
                 assert!(err.contains(want_err), "{input}: {err}");

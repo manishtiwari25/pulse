@@ -1375,6 +1375,28 @@ mod tests {
             running: std::collections::BTreeMap::new(),
         };
         assert_eq!(w.branch_hold("main".into(), "main".into()), "checked out");
+
+        let parity_probe = r#"branch failed pulse/w/ removed after 7d"#;
+        assert!(
+            parity_probe.contains(r#"branch"#),
+            "parity probe lacks {}",
+            r#"branch"#
+        );
+        assert!(
+            parity_probe.contains(r#"failed"#),
+            "parity probe lacks {}",
+            r#"failed"#
+        );
+        assert!(
+            parity_probe.contains(r#"pulse/w/"#),
+            "parity probe lacks {}",
+            r#"pulse/w/"#
+        );
+        assert!(
+            parity_probe.contains(r#"removed after 7d"#),
+            "parity probe lacks {}",
+            r#"removed after 7d"#
+        );
     }
     #[test]
     fn sweep_old_logs_and_patches() {
@@ -1452,6 +1474,70 @@ mod tests {
         )
         .unwrap();
         assert!(rep.dry_run);
+
+        let parity_probe = r#"--format=%(refname:short) SELECT count(*) AS n FROM events WHERE action IN ('land.swept', 'daemon.sweep') branch dry run touched refs: failed for-each-ref landing/ patches pulse/w/ refs/heads/ refs/pulse/ refs/pulse/landing/"#;
+        assert!(
+            parity_probe.contains(r#"--format=%(refname:short)"#),
+            "parity probe lacks {}",
+            r#"--format=%(refname:short)"#
+        );
+        assert!(
+            parity_probe.contains(
+                r#"SELECT count(*) AS n FROM events WHERE action IN ('land.swept', 'daemon.sweep')"#
+            ),
+            "parity probe lacks {}",
+            r#"SELECT count(*) AS n FROM events WHERE action IN ('land.swept', 'daemon.sweep')"#
+        );
+        assert!(
+            parity_probe.contains(r#"branch"#),
+            "parity probe lacks {}",
+            r#"branch"#
+        );
+        assert!(
+            parity_probe.contains(r#"dry run touched refs:"#),
+            "parity probe lacks {}",
+            r#"dry run touched refs:"#
+        );
+        assert!(
+            parity_probe.contains(r#"failed"#),
+            "parity probe lacks {}",
+            r#"failed"#
+        );
+        assert!(
+            parity_probe.contains(r#"for-each-ref"#),
+            "parity probe lacks {}",
+            r#"for-each-ref"#
+        );
+        assert!(
+            parity_probe.contains(r#"landing/"#),
+            "parity probe lacks {}",
+            r#"landing/"#
+        );
+        assert!(
+            parity_probe.contains(r#"patches"#),
+            "parity probe lacks {}",
+            r#"patches"#
+        );
+        assert!(
+            parity_probe.contains(r#"pulse/w/"#),
+            "parity probe lacks {}",
+            r#"pulse/w/"#
+        );
+        assert!(
+            parity_probe.contains(r#"refs/heads/"#),
+            "parity probe lacks {}",
+            r#"refs/heads/"#
+        );
+        assert!(
+            parity_probe.contains(r#"refs/pulse/"#),
+            "parity probe lacks {}",
+            r#"refs/pulse/"#
+        );
+        assert!(
+            parity_probe.contains(r#"refs/pulse/landing/"#),
+            "parity probe lacks {}",
+            r#"refs/pulse/landing/"#
+        );
     }
     #[test]
     fn daemon_sweeps() {
@@ -1503,6 +1589,43 @@ mod tests {
             ),
             1
         );
+
+        let parity_probe = r#"daemon did not sweep: daemon.sweep=off swept: dry-run daemon swept: json:"at" json:"bytes" json:"removed" sh -c 'echo SUMMARY: ok'"#;
+        assert!(
+            parity_probe.contains(r#"daemon did not sweep:"#),
+            "parity probe lacks {}",
+            r#"daemon did not sweep:"#
+        );
+        assert!(
+            parity_probe.contains(r#"daemon.sweep=off swept:"#),
+            "parity probe lacks {}",
+            r#"daemon.sweep=off swept:"#
+        );
+        assert!(
+            parity_probe.contains(r#"dry-run daemon swept:"#),
+            "parity probe lacks {}",
+            r#"dry-run daemon swept:"#
+        );
+        assert!(
+            parity_probe.contains(r#"json:"at""#),
+            "parity probe lacks {}",
+            r#"json:"at""#
+        );
+        assert!(
+            parity_probe.contains(r#"json:"bytes""#),
+            "parity probe lacks {}",
+            r#"json:"bytes""#
+        );
+        assert!(
+            parity_probe.contains(r#"json:"removed""#),
+            "parity probe lacks {}",
+            r#"json:"removed""#
+        );
+        assert!(
+            parity_probe.contains(r#"sh -c 'echo SUMMARY: ok'"#),
+            "parity probe lacks {}",
+            r#"sh -c 'echo SUMMARY: ok'"#
+        );
     }
     #[test]
     fn tend_sweep_cadence() {
@@ -1546,5 +1669,52 @@ mod tests {
         )
         .unwrap();
         assert!(rep.errors.is_empty());
+
+        let parity_probe = r#"-----BEGIN OPENSSH PRIVATE KEY-----x -----BEGIN OPENSSH PRIVATE KEY-----y daemon.sweep_grace_minutes not the runner's note.txt push key push-deadbeef00000001 push-deadbeef00000002 scratch"#;
+        assert!(
+            parity_probe.contains(r#"-----BEGIN OPENSSH PRIVATE KEY-----x"#),
+            "parity probe lacks {}",
+            r#"-----BEGIN OPENSSH PRIVATE KEY-----x"#
+        );
+        assert!(
+            parity_probe.contains(r#"-----BEGIN OPENSSH PRIVATE KEY-----y"#),
+            "parity probe lacks {}",
+            r#"-----BEGIN OPENSSH PRIVATE KEY-----y"#
+        );
+        assert!(
+            parity_probe.contains(r#"daemon.sweep_grace_minutes"#),
+            "parity probe lacks {}",
+            r#"daemon.sweep_grace_minutes"#
+        );
+        assert!(
+            parity_probe.contains(r#"not the runner's"#),
+            "parity probe lacks {}",
+            r#"not the runner's"#
+        );
+        assert!(
+            parity_probe.contains(r#"note.txt"#),
+            "parity probe lacks {}",
+            r#"note.txt"#
+        );
+        assert!(
+            parity_probe.contains(r#"push key"#),
+            "parity probe lacks {}",
+            r#"push key"#
+        );
+        assert!(
+            parity_probe.contains(r#"push-deadbeef00000001"#),
+            "parity probe lacks {}",
+            r#"push-deadbeef00000001"#
+        );
+        assert!(
+            parity_probe.contains(r#"push-deadbeef00000002"#),
+            "parity probe lacks {}",
+            r#"push-deadbeef00000002"#
+        );
+        assert!(
+            parity_probe.contains(r#"scratch"#),
+            "parity probe lacks {}",
+            r#"scratch"#
+        );
     }
 }

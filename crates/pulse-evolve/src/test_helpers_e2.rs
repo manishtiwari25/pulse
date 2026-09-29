@@ -352,7 +352,7 @@ pub(crate) fn report_job(
 }
 
 pub(crate) fn score_repo() -> (String, String) {
-    let repo = tempfile::tempdir().expect("temp score repo").keep();
+    let repo = crate::test_helpers::temp_path();
     test_git(&repo, &["init", "--quiet", "--initial-branch=main"]);
     put_file(
         repo.join("README.md"),

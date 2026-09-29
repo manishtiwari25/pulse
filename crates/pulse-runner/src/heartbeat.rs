@@ -1,7 +1,7 @@
 //! Port of internal/runner/heartbeat.go.
 
 use anyhow::{Result, anyhow};
-use chrono::{SecondsFormat, Utc};
+use chrono::Utc;
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -87,17 +87,30 @@ fn open_store(home: &str) -> Result<pulse_store::Store> {
 }
 
 #[allow(dead_code)]
-fn report_presence(err: Option<anyhow::Error>, reported: &Arc<AtomicBool>) {
-    if err.is_some() && !reported.swap(true, Ordering::SeqCst) {
-        // The committed skeleton did not retain *runLog on executors. The first
-        // failure is still suppressed after being observed, matching the control flow.
+pub(crate) struct PresenceReporter {
+    reported: AtomicBool,
+    log: Option<crate::exec::RunLog>,
+}
+
+fn report_presence(err: Option<anyhow::Error>, reported: &Arc<PresenceReporter>) {
+    if let Some(err) = err
+        && !reported.reported.swap(true, Ordering::SeqCst)
+        && let Some(log) = &reported.log
+    {
+        log.add(format!(
+            "presence unavailable: {}",
+            crate::run::err_message(&err)
+        ));
     }
 }
 
 /// Go: func heartbeatReporter(log *runLog) func(error)
 #[allow(dead_code)]
-pub(crate) fn heartbeat_reporter(_log: Option<crate::exec::RunLog>) -> Arc<AtomicBool> {
-    Arc::new(AtomicBool::new(false))
+pub(crate) fn heartbeat_reporter(log: Option<crate::exec::RunLog>) -> Arc<PresenceReporter> {
+    Arc::new(PresenceReporter {
+        reported: AtomicBool::new(false),
+        log,
+    })
 }
 
 /// Go: func stepsCapable(fields map[string]string) bool
@@ -191,7 +204,7 @@ impl crate::exec::LocalExec {
         &mut self,
         id: pulse_board::ExecutionIdentity,
     ) -> Option<crate::proc::ProcessObserver> {
-        let reported = heartbeat_reporter(None);
+        let reported = heartbeat_reporter(Some(self.log.clone()));
         if let Err(err) = id.validate() {
             report_presence(Some(err), &reported);
             return None;
@@ -211,7 +224,7 @@ impl crate::exec::LocalExec {
                         &s,
                         pulse_board::ExecutionHeartbeat {
                             identity: beat_id.clone(),
-                            at: now.to_rfc3339_opts(SecondsFormat::Nanos, true),
+                            at: pulse_store::rfc3339_nano(now),
                             stopped_at: String::new(),
                         },
                     )?;
@@ -236,12 +249,12 @@ impl crate::exec::LocalExec {
     pub(crate) fn stop_heartbeat(
         &mut self,
         id: pulse_board::ExecutionIdentity,
-        _report: Arc<AtomicBool>,
+        report: Arc<PresenceReporter>,
     ) {
         if let Ok(s) = open_store(&self.home)
             && let Ok(now) = heartbeat_now(&s)
         {
-            let _ = pulse_board::stop_heartbeat(&s, id, now);
+            report_presence(pulse_board::stop_heartbeat(&s, id, now).err(), &report);
         }
     }
 }
@@ -321,7 +334,7 @@ impl crate::exec::SshExec {
             Duration::from_secs((minutes.max(1) * 60 + 120) as u64),
         );
         if heartbeat {
-            let reported = heartbeat_reporter(None);
+            let reported = heartbeat_reporter(Some(self.local.log.clone()));
             self.local.stop_heartbeat(id, reported);
             watch_cancel.cancel();
         }
@@ -382,16 +395,30 @@ impl crate::exec::SshExec {
             Duration::from_secs(10),
         ) {
             Ok((0, out, _)) => crate::executor::parse_probe(&out),
-            Ok((rc, _, _)) => {
-                let _ = rc;
+            Ok((rc, _, err)) => {
+                self.local.log.add(format!(
+                    "presence unavailable: hands capability probe failed (exit {rc}): {err}"
+                ));
                 BTreeMap::new()
             }
-            Err(_) => BTreeMap::new(),
+            Err(err) => {
+                self.local.log.add(format!(
+                    "presence unavailable: hands capability probe failed (exit -1): {}",
+                    crate::run::err_message(&err)
+                ));
+                BTreeMap::new()
+            }
         }
     }
     /// Go: func (e *sshExec) heartbeatCapableFrom(fields map[string]string) bool
     pub(crate) fn heartbeat_capable_from(&mut self, fields: BTreeMap<String, String>) -> bool {
-        fields.get("heartbeat").is_some_and(|v| v == "1")
+        if fields.get("heartbeat").is_some_and(|v| v == "1") {
+            return true;
+        }
+        self.local
+            .log
+            .add("presence unavailable: these hands do not acknowledge supervised heartbeats");
+        false
     }
     /// Go: func (e *sshExec) watchRemote(ctx context.Context, id board.ExecutionIdentity)
     pub(crate) fn watch_remote(
@@ -399,7 +426,7 @@ impl crate::exec::SshExec {
         cancel: &pulse_bus::CancellationToken,
         id: pulse_board::ExecutionIdentity,
     ) {
-        let reported = heartbeat_reporter(None);
+        let reported = heartbeat_reporter(Some(self.local.log.clone()));
         let mut period = Duration::from_secs(1);
         let (mut ticks, mut stop) = heartbeat_ticks(period);
         loop {
@@ -517,7 +544,7 @@ impl crate::hands::Hands {
         let path_for_beat = path.clone();
         let beat_cb = move || {
             let mut h = beat_for_beat.lock().expect("heartbeat lock");
-            h.at = Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true);
+            h.at = pulse_store::rfc3339_nano(Utc::now());
             if let Err(err) = write_hands_heartbeat(path_for_beat.clone(), h.clone())
                 && !reported_for_beat.swap(true, Ordering::SeqCst)
             {
@@ -529,7 +556,7 @@ impl crate::hands::Hands {
         let stop_cb = move || {
             let mut h = beat_for_stop.lock().expect("heartbeat lock");
             if !h.at.is_empty() {
-                h.stopped_at = Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true);
+                h.stopped_at = pulse_store::rfc3339_nano(Utc::now());
                 if let Err(err) = write_hands_heartbeat(path.clone(), h.clone())
                     && !reported_for_stop.swap(true, Ordering::SeqCst)
                 {
@@ -607,7 +634,7 @@ mod tests {
     use crate::exec::Executor;
     use crate::test_helpers::{TEST_NOW, new_store};
     use crate::test_helpers_f2::*;
-    use chrono::{DateTime, SecondsFormat, TimeZone};
+    use chrono::{DateTime, TimeZone};
     use std::io::{Result as IoResult, Write};
     use std::path::Path;
     use std::sync::atomic::Ordering;
@@ -913,9 +940,9 @@ mod tests {
             .unwrap();
         heartbeat_eventually(|| {
             let (h, _) = runner_heartbeat(&s, &id.agent).unwrap();
-            h.at == Utc
-                .timestamp_nanos(fake.clock.load(Ordering::SeqCst))
-                .to_rfc3339_opts(SecondsFormat::Nanos, true)
+            h.at == pulse_store::rfc3339_nano(
+                Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)),
+            )
         });
         finish_heartbeat_fifo(&fifo);
         heartbeat_receive(&done_rx).unwrap();
@@ -923,8 +950,9 @@ mod tests {
         assert_eq!(h.identity, id);
         assert_eq!(
             h.at,
-            Utc.timestamp_nanos(base + Duration::from_secs(60).as_nanos() as i64)
-                .to_rfc3339_opts(SecondsFormat::Nanos, true)
+            pulse_store::rfc3339_nano(
+                Utc.timestamp_nanos(base + Duration::from_secs(60).as_nanos() as i64)
+            )
         );
         assert!(!h.stopped_at.is_empty());
         assert_eq!(crate::run::sweep_lost_runs(&s, TEST_NOW), 1);
@@ -1033,34 +1061,26 @@ mod tests {
             Box::new({
                 let clock = Arc::clone(&fake.clock);
                 move |h| {
-                    h.at = Utc
-                        .timestamp_nanos(
-                            clock.load(Ordering::SeqCst)
-                                + Duration::from_secs(3600).as_nanos() as i64,
-                        )
-                        .to_rfc3339_opts(SecondsFormat::Nanos, true)
+                    h.at = pulse_store::rfc3339_nano(Utc.timestamp_nanos(
+                        clock.load(Ordering::SeqCst) + Duration::from_secs(3600).as_nanos() as i64,
+                    ))
                 }
             }),
             Box::new({
                 let clock = Arc::clone(&fake.clock);
                 move |h| {
-                    h.at = Utc
-                        .timestamp_nanos(
-                            clock.load(Ordering::SeqCst)
-                                - pulse_board::HEARTBEAT_GRACE.as_nanos() as i64,
-                        )
-                        .to_rfc3339_opts(SecondsFormat::Nanos, true)
+                    h.at = pulse_store::rfc3339_nano(Utc.timestamp_nanos(
+                        clock.load(Ordering::SeqCst)
+                            - pulse_board::HEARTBEAT_GRACE.as_nanos() as i64,
+                    ))
                 }
             }),
             Box::new({
                 let clock = Arc::clone(&fake.clock);
                 move |h| {
-                    h.stopped_at = Utc
-                        .timestamp_nanos(
-                            clock.load(Ordering::SeqCst)
-                                + Duration::from_secs(3600).as_nanos() as i64,
-                        )
-                        .to_rfc3339_opts(SecondsFormat::Nanos, true)
+                    h.stopped_at = pulse_store::rfc3339_nano(Utc.timestamp_nanos(
+                        clock.load(Ordering::SeqCst) + Duration::from_secs(3600).as_nanos() as i64,
+                    ))
                 }
             }),
             Box::new(|h| h.identity.generation -= 1),
@@ -1097,9 +1117,9 @@ mod tests {
         let send_beat = || {
             let h = pulse_board::ExecutionHeartbeat {
                 identity: id.clone(),
-                at: Utc
-                    .timestamp_nanos(fake.clock.load(Ordering::SeqCst))
-                    .to_rfc3339_opts(SecondsFormat::Nanos, true),
+                at: pulse_store::rfc3339_nano(
+                    Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)),
+                ),
                 stopped_at: String::new(),
             };
             replies_tx
@@ -1148,8 +1168,7 @@ mod tests {
         let check = |want: &str| {
             let rows = pulse_board::agent_presences(
                 &s,
-                &Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst))
-                    .to_rfc3339_opts(SecondsFormat::Nanos, true),
+                &pulse_store::rfc3339_nano(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst))),
             )
             .unwrap();
             assert_eq!(rows[&id.agent].presence, want);
@@ -1481,7 +1500,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: executor::run_process: expected cancellation to return context.Canceled promptly; got Rust anyhow text context canceled without typed cancellation equivalence"]
     fn heartbeat_ssh_process_cancellation_is_bounded() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -1518,6 +1536,10 @@ mod tests {
         cancel.cancel();
         let err = heartbeat_receive(&done_rx);
         assert_eq!(err.to_string(), "context canceled");
+        assert!(pulse_bus::ContextError::is(
+            &err,
+            pulse_bus::ContextError::Canceled
+        ));
     }
 
     #[test]

@@ -19,3 +19,9 @@ pub(crate) fn test_global_guard() -> std::sync::MutexGuard<'static, ()> {
         .lock()
         .expect("pulse-bus test lock poisoned")
 }
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    pub(crate) fn serial() -> impl Drop {
+        pulse_testutil::env_lock()
+    }
+}

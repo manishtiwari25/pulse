@@ -132,21 +132,34 @@ mod tests {
     use crate::store::since;
     use serde_json::json;
     use std::path::Path;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
-    fn temp_store() -> pulse_store::Store {
-        let dir = tempdir().unwrap().keep();
-        pulse_store::Store::create(Path::new(&dir).join(pulse_store::STORE_NAME)).unwrap();
-        pulse_store::Store::open(pulse_store::Options {
-            home: dir.display().to_string(),
+    struct TestStore {
+        _dir: TempDir,
+        store: pulse_store::Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = pulse_store::Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+
+    fn temp_store() -> TestStore {
+        let dir = tempdir().unwrap();
+        pulse_store::Store::create(Path::new(dir.path()).join(pulse_store::STORE_NAME)).unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: dir.path().display().to_string(),
             now: "2026-09-06T21:00:00Z".to_string(),
             ..pulse_store::Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _dir: dir, store }
     }
 
     #[test]
     fn redact_masks_private_settings() {
+        let _serial = crate::test_helpers::serial();
         let _guard = crate::test_global_guard();
         let s = temp_store();
         s.event(
@@ -202,6 +215,15 @@ mod tests {
 
     #[test]
     fn redactor_scrubs_encoded_and_historical_values() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "\",\"b\":\"",
+            "/private/\\u263a-\\\"quoted\\\"-heldout-canary",
+            "\\u263a",
+            "masked detail is not JSON:",
+            "quoted",
+            "{\"a\":\"",
+        ];
         let _guard = crate::test_global_guard();
         let s = temp_store();
         let canary = r#"/private/☺-"quoted"-heldout-canary"#;

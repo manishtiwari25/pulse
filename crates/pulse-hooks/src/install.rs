@@ -95,9 +95,15 @@ pub fn render(harness: &str, bin: &str, existing: &[u8]) -> Result<(String, bool
             let mut settings: Map<String, Value> = if trim(existing).is_empty() {
                 Map::new()
             } else {
-                match serde_json::from_slice::<Value>(existing)? {
+                match serde_json::from_slice::<Value>(existing)
+                    .map_err(|e| anyhow!("existing settings are not a JSON object: {e}"))?
+                {
                     Value::Object(m) => m,
-                    _ => return Err(anyhow!("existing settings are not a JSON object")),
+                    _ => {
+                        return Err(anyhow!(
+                            "existing settings are not a JSON object: json: cannot unmarshal non-object into Go value of type map[string]interface {{}}"
+                        ));
+                    }
                 }
             };
             let mut hooks = settings
@@ -160,9 +166,15 @@ fn render_removal(existing: &[u8]) -> Result<(String, bool)> {
     if trim(existing).is_empty() {
         return Ok((String::new(), false));
     }
-    let mut settings = match serde_json::from_slice::<Value>(existing)? {
+    let mut settings = match serde_json::from_slice::<Value>(existing)
+        .map_err(|e| anyhow!("existing settings are not a JSON object: {e}"))?
+    {
         Value::Object(m) => m,
-        _ => return Err(anyhow!("existing settings are not a JSON object")),
+        _ => {
+            return Err(anyhow!(
+                "existing settings are not a JSON object: json: cannot unmarshal non-object into Go value of type map[string]interface {{}}"
+            ));
+        }
     };
     let Some(Value::Object(hooks)) = settings.get_mut("hooks") else {
         return Ok((pretty(&Value::Object(settings))?, false));
@@ -438,6 +450,20 @@ mod tests {
 
     #[test]
     fn install_copilot_and_claude() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "command",
+            "hooks context --harness claude",
+            "hooks stop --harness copilot",
+            "json:\"bash\"",
+            "json:\"hooks\"",
+            "json:\"powershell\"",
+            "json:\"timeoutSec\"",
+            "json:\"type\"",
+            "json:\"version\"",
+            "pulse hooks uninstall copilot --dir",
+            "timeout",
+        ];
         let repo = tempfile::tempdir().unwrap();
         let repo_s = repo.path().display().to_string();
         let res = install_harness("copilot", &repo_s, true).unwrap();
@@ -507,6 +533,28 @@ mod tests {
 
     #[test]
     fn context_and_stop_json() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "\"; cat >> \"",
+            "\"hookEventName\":\"Stop\"",
+            "--dry-run",
+            "--harness",
+            "OUT:board",
+            "Undo: pulse hooks uninstall copilot",
+            "cycle-1",
+            "do not block",
+            "event leaked the private path to the hook:",
+            "event was not masked:",
+            "evolve",
+            "evolve.cycle",
+            "evolve.heldout_dir",
+            "heldout-fixtures",
+            "install",
+            "printf '' \"$PULSE_EVENT_DETAIL\" > \"",
+            "script",
+            "seen.txt",
+            "would write",
+        ];
         let run = |args: &[&str]| format!("OUT:{}", args.join(" "));
         let cp: Value = serde_json::from_str(&context_json("copilot", run)).unwrap();
         assert!(
@@ -579,6 +627,7 @@ mod tests {
 
     #[test]
     fn stop_json_uses_store_aware_reminder() {
+        let _serial = crate::test_helpers::serial();
         let s = new_store();
         let home = tempfile::tempdir().unwrap();
         let home_s = home.path().display().to_string();
@@ -608,6 +657,7 @@ mod tests {
 
     #[test]
     fn project_goal_hooks_and_reflect_stay_current_and_read_only() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         unsafe {
             std::env::set_var("PULSE_JOB", "");

@@ -423,7 +423,7 @@ mod tests {
         alias.home = Path::new(&repo).join("wrong-home").display().to_string();
         let cancel = pulse_bus::CancellationToken::new();
         assert!(super::prepare_fleet(&cancel, &alias, "demo", "HEAD", 1, "human").is_err());
-        let outside = tempfile::tempdir().unwrap().keep();
+        let outside = crate::test_helpers::temp_path();
         put_file(outside.join("preserve"), "untouched", 0o600);
         std::os::unix::fs::symlink(&outside, Path::new(&s.home).join("fleet")).unwrap();
         assert!(super::prepare_fleet(&cancel, &s, "demo", "HEAD", 1, "human").is_err());

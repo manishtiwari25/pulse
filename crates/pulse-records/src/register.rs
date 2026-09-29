@@ -929,19 +929,31 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    fn temp_store() -> pulse_store::Store {
-        let home = tempfile::tempdir().unwrap().keep();
-        pulse_store::Store::open(pulse_store::Options {
-            home: home.display().to_string(),
+    struct TestStore {
+        _home: tempfile::TempDir,
+        store: pulse_store::Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = pulse_store::Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+    fn temp_store() -> TestStore {
+        let home = tempfile::tempdir().unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: home.path().display().to_string(),
             create: true,
             now: "2026-09-06T21:00:00Z".into(),
             ..pulse_store::Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _home: home, store }
     }
 
     fn add_project(s: &pulse_store::Store, slug: &str, brain: bool) {
-        let dir = tempfile::tempdir().unwrap().keep();
+        let dir = std::path::Path::new(&s.home).join(format!("project-{slug}"));
+        std::fs::create_dir_all(&dir).unwrap();
         s.conn()
             .unwrap()
             .execute(
@@ -975,6 +987,32 @@ mod tests {
 
     #[test]
     fn cli_commands_and_guide() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "# agents# claude# copilot-instructions",
+            "--date",
+            "--full",
+            "--note",
+            "--project",
+            "--words",
+            "2026-09-06",
+            "Clarified",
+            "From stdin",
+            "INSTR-",
+            "MISSING",
+            "The owner approves",
+            "accept",
+            "agents",
+            "claude",
+            "copilot-instructions",
+            "deliver",
+            "instruction",
+            "lead-time",
+            "no-kind",
+            "partially delivered",
+            "revisions",
+            "tester",
+        ];
         register();
         register();
         assert!(pulse_cli::lookup("record").is_some());
@@ -1063,6 +1101,7 @@ mod tests {
 
     #[test]
     fn amend_refuses_empty_body() {
+        let _serial = crate::test_helpers::serial();
         let cases = [
             ("empty", "", true),
             ("ascii-whitespace", " \t\r\n\u{000b}\u{000c}", true),

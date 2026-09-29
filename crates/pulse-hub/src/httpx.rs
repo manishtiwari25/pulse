@@ -24,18 +24,23 @@ use url::Url;
 pub struct Request {
     pub method: String,
     pub url: Url,
+    path: String,
     pub header: HeaderMap,
     pub body: Vec<u8>,
     pub remote_addr: SocketAddr,
     pub ctx: CancellationToken,
+    pub force_query: bool,
 }
 
 impl Request {
     pub fn path(&self) -> &str {
-        self.url.path()
+        &self.path
     }
     pub fn raw_query(&self) -> &str {
         self.url.query().unwrap_or("")
+    }
+    pub fn force_query(&self) -> bool {
+        self.force_query
     }
     pub fn query(&self, key: &str) -> String {
         self.query_all(key).into_iter().next().unwrap_or_default()
@@ -461,6 +466,7 @@ async fn handle_request(
         _ => Vec::new(),
     };
     let target = parts.uri.to_string();
+    let force_query = target.ends_with('?');
     let url = Url::parse(&format!(
         "http://hub{}",
         if target.starts_with('/') {
@@ -470,13 +476,16 @@ async fn handle_request(
         }
     ))
     .unwrap_or_else(|_| Url::parse("http://hub/").unwrap());
+    let path = percent_decode_path(url.path());
     let request = Request {
         method: parts.method.as_str().to_string(),
+        path,
         url,
         header: parts.headers,
         body: body_bytes,
         remote_addr,
         ctx: req_ctx.clone(),
+        force_query,
     };
     let (head_tx, head_rx) = oneshot::channel();
     let mut writer = ResponseWriter::new(req_ctx.clone(), head_tx);
@@ -498,6 +507,34 @@ async fn handle_request(
         .status(StatusCode::from_u16(head.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR));
     for (k, v) in head.headers.iter() {
         builder = builder.header(k, v);
+    }
+
+    fn percent_decode_path(path: &str) -> String {
+        let bytes = path.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%'
+                && i + 2 < bytes.len()
+                && let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+            {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).to_string()
+    }
+
+    fn hex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
     }
     Ok(builder.body(boxed_body(head)).unwrap())
 }
@@ -570,6 +607,7 @@ mod tests {
 
     #[test]
     fn json_get_post_head_range_redirect() {
+        let _serial = crate::test_helpers::serial();
         let handler: HandlerFn = Arc::new(|w, r| match r.path() {
             "/json" => {
                 w.header_mut().insert(
@@ -620,6 +658,7 @@ mod tests {
 
     #[test]
     fn sse_flush_and_disconnect_cancels_context() {
+        let _serial = crate::test_helpers::serial();
         let seen_cancel = Arc::new(AtomicBool::new(false));
         let seen = seen_cancel.clone();
         let handler: HandlerFn = Arc::new(move |w, r| {
@@ -655,8 +694,12 @@ mod tests {
 
     #[test]
     fn sse_flush_sends_first_chunk_before_second_write() {
+        let _serial = crate::test_helpers::serial();
         let second_written = Arc::new(AtomicBool::new(false));
+        let (first_seen_tx, first_seen_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let first_seen = Arc::new(Mutex::new(Some(first_seen_rx)));
         let flag = second_written.clone();
+        let wait_for_first = first_seen.clone();
         let handler: HandlerFn = Arc::new(move |w, _r| {
             w.header_mut().insert(
                 header::CONTENT_TYPE,
@@ -664,7 +707,10 @@ mod tests {
             );
             let _ = w.write(b"data: 1\n\n");
             let _ = w.flush();
-            std::thread::sleep(Duration::from_millis(50));
+            let rx = wait_for_first.lock().expect("first seen lock").take();
+            if let Some(rx) = rx {
+                let _ = rx.recv_timeout(Duration::from_secs(30));
+            }
             flag.store(true, Ordering::SeqCst);
             let _ = w.write(b"data: 2\n\n");
             let _ = w.flush();
@@ -682,12 +728,10 @@ mod tests {
             )
             .unwrap();
 
-        let start = Instant::now();
         let mut buf = [0u8; 1024];
         let mut got = Vec::new();
-        while start.elapsed() < Duration::from_millis(20)
-            && !String::from_utf8_lossy(&got).contains("data: 1\n\n")
-        {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && !String::from_utf8_lossy(&got).contains("data: 1\n\n") {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => got.extend_from_slice(&buf[..n]),
@@ -695,11 +739,12 @@ mod tests {
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
-                    break;
+                    continue;
                 }
                 Err(e) => panic!("socket read: {e}"),
             }
         }
+        first_seen_tx.send(()).unwrap();
         let text = String::from_utf8_lossy(&got);
         assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
         assert!(text.contains("data: 1\n\n"), "{text}");
@@ -725,6 +770,7 @@ mod tests {
 
     #[test]
     fn serve_refuses_non_loopback_listener() {
+        let _serial = crate::test_helpers::serial();
         let listener = TcpListener::bind("0.0.0.0:0").unwrap();
         let ctx = CancellationToken::new();
         let handler: HandlerFn = Arc::new(|_, _| {});

@@ -388,6 +388,7 @@ mod tests {
 
     #[test]
     fn session_resolution() {
+        let _serial = crate::test_helpers::serial();
         let a = pulse_store::Agent {
             sessions: vec!["s1".into(), "s2".into()],
             ..Default::default()
@@ -399,6 +400,25 @@ mod tests {
 
     #[test]
     fn agents_join_spawn_prune() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "--days",
+            "--dry-run",
+            "--model",
+            "--name",
+            "--runner",
+            "--session",
+            "; names are never reused",
+            "Agent 'alice' was pruned on",
+            "INSERT INTO jobs (id, project, kind, title, status, created_at, lease_agent) VALUES ('job-1', ?, 'task', 't', 'leased', ?, 'borealis')",
+            "The name 'alice' belongs to an agent pruned on",
+            "UPDATE agents SET name = name WHERE 0",
+            "joined alice (copilot/m1); export PULSE_AGENT=alice",
+            "list differs go: py:",
+            "pruned alice: no useful output since 2026-08-01T00:00:00Z (limit 30 days)",
+            "welcome back alice (copilot/m1); export PULSE_AGENT=alice",
+            "would prune alice: no useful output since 2026-08-01T00:00:00Z (limit 14 days)",
+        ];
         let (_dir, _home, s) = new_home();
         let (a, created) = join_agent(
             &s,
@@ -519,6 +539,7 @@ mod tests {
 
     #[test]
     fn prune_agents_keeps_leads() {
+        let _serial = crate::test_helpers::serial();
         let (_dir, _home, s) = new_home();
         for input in [
             JoinInput {

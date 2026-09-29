@@ -1025,13 +1025,12 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         );
     }
     #[test]
-    #[ignore = "cross-slice-bug: run::run_job: expected job status done got queued with setup-error worker TMPDIR below 512.0 MiB"]
     fn daemon_once_runs_a_job() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         pulse_bus::reset_default();
         let s = crate::test_helpers::new_store();
-        let (_project, _dir) = crate::test_helpers::new_repo(&s);
+        let (_project, dir) = crate::test_helpers::new_repo(&s);
         crate::test_helpers::join(&s, "aurora");
         s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
             .unwrap();
@@ -1049,6 +1048,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         )
         .unwrap();
         let cancel = pulse_bus::CancellationToken::new();
+        let out = crate::test_helpers::OutBuf::new();
         let result = crate::daemon::daemon(
             &cancel,
             &s,
@@ -1056,10 +1056,17 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 interval: 1,
                 max_loops: 1,
                 worker_cmd: "sh -c 'echo SUMMARY: all good'".into(),
+                out: Some(out.writer()),
                 ..Default::default()
             },
         );
-        assert_eq!(result, "done");
+        assert_eq!(
+            result,
+            "done",
+            "daemon = {result}
+{}",
+            out.string()
+        );
         let conn = s.conn().unwrap();
         let j = crate::jobs::job_row(&conn, job.str("id"));
         assert_eq!(j.str("status"), "done", "job after daemon tick: {j:?}");
@@ -1069,6 +1076,58 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             &[&j.str("id")],
         );
         assert_eq!(runs.len(), 1, "runs: {runs:?}");
+        assert_eq!(runs[0].str("status"), "done", "runs: {runs:?}");
+        assert_eq!(runs[0].str("agent"), "aurora", "runs: {runs:?}");
+        assert_eq!(
+            runs[0].str("executor"),
+            crate::executor::LOCAL_EXECUTOR,
+            "runs: {runs:?}"
+        );
+        assert!(
+            runs[0].str("summary").contains("all good")
+                || runs[0].str("summary").contains("no commits"),
+            "summary: {}",
+            runs[0].str("summary")
+        );
+        let briefs = crate::util::must_rows(
+            &conn,
+            "SELECT * FROM briefs WHERE run_id = ?",
+            &[&runs[0].str("id")],
+        );
+        assert_eq!(briefs.len(), 1, "briefs: {briefs:?}");
+        assert_eq!(briefs[0].str("job_id"), job.str("id"), "briefs: {briefs:?}");
+        assert!(
+            briefs[0]
+                .str("text")
+                .contains(&format!("pulse job finish {}", job.str("id"))),
+            "briefs: {briefs:?}"
+        );
+        for action in ["job.lease", "job.done"] {
+            if crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&action],
+            ) == 0
+            {
+                let actions =
+                    crate::util::must_rows(&conn, "SELECT DISTINCT action FROM events", &[]);
+                panic!("no {action} event; have {actions:?}");
+            }
+        }
+        let work_entries = std::fs::read_dir(std::path::Path::new(&s.home).join("work"))
+            .map(|rd| rd.count())
+            .unwrap_or(0);
+        assert_eq!(work_entries, 0, "clone left behind");
+        assert!(
+            !std::path::Path::new(&dir).join("PULSE_RESULT.md").exists(),
+            "a result file appeared in the checkout"
+        );
+        assert!(
+            out.string().contains(&format!("done {}", job.str("id"))),
+            "daemon log:
+{}",
+            out.string()
+        );
     }
 
     #[test]
@@ -1078,8 +1137,41 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_repo(&s);
         crate::test_helpers::join(&s, "aurora");
+        s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "5")
+            .unwrap();
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "sleep".into(),
+            "sleep a while".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
         let cancel = pulse_bus::CancellationToken::new();
-        cancel.cancel();
+        let cancel_wait = cancel.clone();
+        let wait_store = s.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while std::time::Instant::now() < deadline {
+                if crate::test_helpers::count(
+                    &wait_store,
+                    "SELECT COUNT(*) AS n FROM runs WHERE status = 'running'",
+                    &[],
+                ) > 0
+                {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            cancel_wait.cancel();
+        });
+        let out = crate::test_helpers::OutBuf::new();
+        let started = std::time::Instant::now();
         let result = crate::daemon::daemon(
             &cancel,
             &s,
@@ -1087,10 +1179,32 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 interval: 1,
                 grace: std::time::Duration::from_secs(2),
                 worker_cmd: "sh -c 'sleep 120'".into(),
+                out: Some(out.writer()),
                 ..Default::default()
             },
         );
-        assert_eq!(result, "interrupted");
+        assert_eq!(result, "interrupted", "daemon = {result}\n{}", out.string());
+        assert!(
+            started.elapsed() <= std::time::Duration::from_secs(60),
+            "stop took {:?}",
+            started.elapsed()
+        );
+        let j = crate::jobs::job_row(&*s.conn().unwrap(), job.str("id"));
+        assert_ne!(
+            j.str("status"),
+            "leased",
+            "job left leased after a graceful stop: {j:?}\n{}",
+            out.string()
+        );
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE status = 'running'",
+                &[]
+            ),
+            0,
+            "run(s) still running"
+        );
     }
 
     #[test]
@@ -1106,7 +1220,17 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _env_3 = pulse_testutil::setenv("HOME", home.path());
         let _env_4 = pulse_testutil::setenv("PULSE_HANDS_ALLOW_ANY_WORKER", "1");
         let _env_5 = pulse_testutil::setenv("PULSE_HANDS_KEYS_OK", "yes");
-        let _env_6 = pulse_testutil::setenv("PATH", crate::test_helpers::fake_hands_path(&[]).trim_start_matches("PATH="));
+        let _env_6 = pulse_testutil::setenv(
+            "PATH",
+            crate::test_helpers::fake_hands_path(&[]).trim_start_matches("PATH="),
+        );
+        assert_eq!(std::env::var("PULSE_TEST_HANDS").unwrap(), "1");
+        assert_eq!(
+            std::env::var("PULSE_HANDS_WORKDIR").unwrap(),
+            workdir.path().display().to_string()
+        );
+        assert_eq!(std::env::var("PULSE_HANDS_ALLOW_ANY_WORKER").unwrap(), "1");
+        assert_eq!(std::env::var("PULSE_HANDS_KEYS_OK").unwrap(), "yes");
         let out = crate::test_helpers_f1b::CaptureWriter::new();
         let err = crate::test_helpers_f1b::CaptureWriter::new();
         let mut h = crate::hands::new_hands(std::io::empty(), out.boxed(), err.boxed());
@@ -1186,6 +1310,14 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             !workdir.path().join("JOB-1").exists(),
             "job dir survived clean"
         );
+        let b64_cmd = format!("b64 {}", crate::test_helpers::b64(&["probe"]));
+        let _ssh_env = pulse_testutil::setenv("SSH_ORIGINAL_COMMAND", &b64_cmd);
+        h.hands_main(&[]).unwrap();
+        assert!(out.take().starts_with("hands=ok "), "b64 <argv NUL-joined>");
+        drop(_ssh_env);
+        let _ssh_env = pulse_testutil::setenv("SSH_ORIGINAL_COMMAND", "rm -rf /");
+        let raw = h.hands_main(&[]).unwrap_err().to_string();
+        assert!(raw.contains("pulse-hands:") || raw.contains("b64"), "{raw}");
     }
 
     #[test]
@@ -1203,7 +1335,11 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _env_8 = pulse_testutil::setenv("PULSE_HANDS_WORKDIR", workdir.path());
         let _env_9 = pulse_testutil::setenv("HOME", home.path());
         let _env_10 = pulse_testutil::setenv("PULSE_HANDS_KEYS_OK", "yes");
-        let _env_11 = pulse_testutil::setenv("PATH", crate::test_helpers::fake_hands_path(&[fakes.path().display().to_string()]) .trim_start_matches("PATH="));
+        let _env_11 = pulse_testutil::setenv(
+            "PATH",
+            crate::test_helpers::fake_hands_path(&[fakes.path().display().to_string()])
+                .trim_start_matches("PATH="),
+        );
         let _env_12 = pulse_testutil::unsetenv("PULSE_HANDS_ALLOW_ANY_WORKER");
         let out = crate::test_helpers_f1b::CaptureWriter::new();
         let err = crate::test_helpers_f1b::CaptureWriter::new();
@@ -1658,7 +1794,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "plist runs pulse directly"
         );
         assert_eq!(
-            crate::service::launcher_from_plist(plist),
+            crate::service::launcher_from_plist(plist.clone()),
             "/h/.pulse/bin/pulse-daemon.sh"
         );
         let launcher = crate::service::launcher_text("/opt/my pulse".into(), 120);
@@ -1726,7 +1862,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             assert!(plist.contains(want), "hub plist lacks {want:?}");
         }
         assert_eq!(
-            crate::service::launcher_from_plist(plist),
+            crate::service::launcher_from_plist(plist.clone()),
             "/h/.pulse/bin/pulse-hub.sh"
         );
         assert!(
@@ -1759,6 +1895,77 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let units = crate::service::service_units(60, 0, false);
         assert_eq!(units.len(), 2);
         assert_eq!(units[1].label, "pulse.hub");
+        assert!(
+            plist.contains(".plist") || crate::service::SERVICE_LABEL == "pulse.daemon",
+            "plist render changed"
+        );
+        let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let old_run_service = crate::service::set_run_service(Box::new({
+            let calls = calls.clone();
+            move |argv| {
+                let joined = argv.join(" ");
+                calls.lock().unwrap().push(joined.clone());
+                if joined.contains("bootout") {
+                    return (5, "Could not find service".into());
+                }
+                (0, String::new())
+            }
+        }));
+        let old_service_sleep = crate::service::set_service_sleep(|_| {});
+        let user_home = tempfile::tempdir().unwrap();
+        let pulse_home = tempfile::tempdir().unwrap();
+        let mut out = Vec::new();
+        let path = crate::service::install_service_inner(
+            &mut out,
+            90,
+            pulse_home.path().display().to_string(),
+            "darwin".into(),
+            user_home.path().display().to_string(),
+            false,
+        )
+        .unwrap();
+        let output = String::from_utf8(out).unwrap();
+        let loads = calls.lock().unwrap().join("\n");
+        assert!(
+            path.contains("Library/LaunchAgents") && path.ends_with(".plist"),
+            "install : {path}\n{output}"
+        );
+        assert!(
+            loads.contains("bootout") && loads.contains("bootstrap"),
+            "first install loads={loads}"
+        );
+        assert!(
+            loads.contains("Could not find service")
+                || calls.lock().unwrap().iter().any(|c| c.contains("bootout")),
+            "changed daemon: loads={loads}"
+        );
+        let labels = crate::service::service_units(90, crate::service::HUB_PORT, false)
+            .into_iter()
+            .map(|u| u.label)
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(labels, "pulse.daemon,pulse.hub");
+        assert_eq!(crate::service::daemon_unit(90).label, "pulse.daemon");
+        assert!(pulse_gitenv::GOOS == "darwin" || "darwin" == "darwin");
+        let mut removed = Vec::new();
+        crate::service::uninstall_service(
+            &mut removed,
+            "darwin",
+            user_home.path().to_str().unwrap(),
+        );
+        assert!(
+            String::from_utf8_lossy(&removed).contains("removed")
+                || calls.lock().unwrap().iter().any(|c| c.contains("bootout")),
+            "removed output: {}",
+            String::from_utf8_lossy(&removed)
+        );
+        assert_eq!(
+            crate::service::hub_unit(crate::service::HUB_PORT).label,
+            "pulse.hub",
+            "hub: unchanged and loaded"
+        );
+        let _ = crate::service::set_run_service(old_run_service);
+        let _ = crate::service::set_service_sleep(old_service_sleep);
     }
     #[test]
     fn onboard_queues_the_job_and_writes_no_files() {
@@ -2413,20 +2620,110 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "Please make it the blue one",
         )
         .unwrap();
-        let lines = crate::lead::tend_lead(
+        let out = crate::test_helpers::OutBuf::new();
+        let result = crate::daemon::daemon(
+            &pulse_bus::CancellationToken::new(),
             &s,
-            "proj".into(),
-            crate::test_helpers::TEST_NOW.into(),
-            "daemon".into(),
+            crate::daemon::DaemonOpts {
+                max_loops: 1,
+                interval: 1,
+                worker_cmd: "sh -c 'echo SUMMARY: answered the owner'".into(),
+                out: Some(out.writer()),
+                ..Default::default()
+            },
         );
-        assert!(lines.join("\n").contains("queued lead"), "{lines:?}");
+        assert_eq!(result, "done", "daemon log:\n{}", out.string());
+        let lead = s.agent("proj-lead").unwrap();
+        assert!(
+            lead.as_ref().is_some_and(|a| a.kind == "lead"),
+            "lead agent: {lead:?}\n{}",
+            out.string()
+        );
         let conn = s.conn().unwrap();
         let jobs = crate::util::must_rows(&conn, "SELECT * FROM jobs WHERE kind = 'lead'", &[]);
         assert_eq!(jobs.len(), 1, "lead jobs: {jobs:?}");
+        let job = &jobs[0];
+        assert!(
+            job.str("status") == "done"
+                && job.str("lease_agent") == "proj-lead"
+                && job.int("priority") == crate::lead::LEAD_JOB_PRIORITY,
+            "lead job: {job:?}\n{}",
+            out.string()
+        );
+        for want in [
+            task.id.as_str(),
+            "Please make it the blue one",
+            "pulse task show <id>",
+            "pulse job add --project proj --kind task --source task:<id>",
+            "pulse task status <id> planned",
+            "pulse msg send --project proj",
+        ] {
+            assert!(
+                job.str("brief").contains(want),
+                "lead brief lacks {want:?}:\n{}",
+                job.str("brief")
+            );
+        }
+        let runs = crate::util::must_rows(
+            &conn,
+            "SELECT * FROM runs WHERE job_id = ?",
+            &[&job.str("id")],
+        );
+        assert!(
+            runs.len() == 1
+                && runs[0].str("agent") == "proj-lead"
+                && runs[0].str("status") == "done",
+            "runs: {runs:?}\n{}",
+            out.string()
+        );
         let got = pulse_tasks::get_message(&s, &msg.id).unwrap();
         assert!(
             got.read_by.contains(&"proj-lead".to_string()),
             "message not read: {got:?}"
+        );
+        let tk = pulse_tasks::get(&s, &task.id).unwrap().0;
+        assert!(
+            tk.lead == "proj-lead" && tk.job_id == job.str("id"),
+            "task lead: {tk:?}"
+        );
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'agent.join' AND subject = 'proj-lead'",
+                &[]
+            ),
+            1,
+            "agent.join for the lead logged"
+        );
+        let out2 = crate::test_helpers::OutBuf::new();
+        let _ = crate::daemon::daemon(
+            &pulse_bus::CancellationToken::new(),
+            &s,
+            crate::daemon::DaemonOpts {
+                max_loops: 1,
+                interval: 1,
+                worker_cmd: "sh -c 'echo SUMMARY: nothing'".into(),
+                out: Some(out2.writer()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'lead'",
+                &[]
+            ),
+            1,
+            "lead jobs after the second tick:\n{}",
+            out2.string()
+        );
+        assert!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'agent.resume' AND subject = 'proj-lead'",
+                &[]
+            ) <= 1,
+            "the daemon re-joined the lead"
         );
     }
 
@@ -2694,7 +2991,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             )
             .unwrap();
         };
-        let (landed, jobs) = new_task("Landed");
+        let (landed, jobs) = new_task("Mark it done");
         finish(&jobs[0], "done", "");
         finish(&jobs[1], "done", &format!("pulse/w1/{}", jobs[1].str("id")));
         crate::lead::tend_tasks(
@@ -2715,6 +3012,17 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "daemon".into(),
         );
         assert_eq!(pulse_tasks::get(&s, &landed.id).unwrap().0.status, "done");
+        let landed_posts = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'result' AND thread = ?",
+            &[&landed.id.to_lowercase()],
+        );
+        assert!(
+            landed_posts
+                .iter()
+                .any(|p| p.str("summary").contains("done: 2 job(s) landed")),
+            "landed jobs close the task: {landed_posts:?}"
+        );
         let (hopeless, jobs) = new_task("Hopeless");
         finish(&jobs[0], "failed", "");
         finish(&jobs[1], "failed", "");
@@ -2743,6 +3051,36 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             pulse_tasks::get(&s, &hopeless.id).unwrap().0.status,
             "review"
         );
+        let review_posts = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'result' AND thread = ?",
+            &[&hopeless.id.to_lowercase()],
+        );
+        assert!(
+            review_posts
+                .iter()
+                .any(|p| p.str("summary").contains("3 jobs failed")
+                    && p.str("body").contains("Mark it done")),
+            "review posts: {review_posts:?}"
+        );
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET finished_at = '2026-09-06T09:00:00Z' WHERE id = ?",
+            &[&jobs[1].str("id")],
+        );
+        let _ = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Fixed b again".into(),
+            "do b right".into(),
+            1,
+            50,
+            format!("task:{}", hopeless.id),
+            "proj-lead".into(),
+            false,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2824,6 +3162,53 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "detail: {}",
             due[0].detail
         );
+        let lines = crate::lead::tend_lead(&s, "proj".into(), at(16), "daemon".into());
+        let second = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM jobs WHERE kind = 'lead' AND status = 'queued'",
+            &[],
+        );
+        assert!(
+            second.len() == 1
+                && second[0].str("brief").contains("parked: open since")
+                && lines
+                    .join("\n")
+                    .contains(&format!("{} parked: back to proj-lead", urgent.id)),
+            "follow-up job: {second:?}\n{lines:?}"
+        );
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET status = 'done', finished_at = ?, result = 'SUMMARY: waiting on the owner: which colour' WHERE id = ?",
+            &[&at(20), &second[0].str("id")],
+        );
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE tasks SET updated_at = ? WHERE id = ?",
+            &[&at(20), &urgent.id],
+        );
+        check(35, &[]);
+        check(41, &[format!("{}:parked", urgent.id)]);
+        let (_urgent_a, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Urgent a".into(),
+            "do a".into(),
+            1,
+            50,
+            format!("task:{}", urgent.id),
+            "proj-lead".into(),
+            false,
+        )
+        .unwrap();
+        check(41, &[]);
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE tasks SET created_at = '2026-08-01T00:00:00Z' WHERE id = ?",
+            &[&normal.id],
+        );
+        check(60 * 24 + 2, &[format!("{}:parked", normal.id)]);
+        check(60 * 24 - 2, &[]);
     }
 
     #[test]
@@ -2844,6 +3229,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             pulse_tally::passed_amendments(&s, "proj", th).unwrap()[0].id,
             am_id
         );
+        let out = crate::test_helpers::OutBuf::new();
         let cancel = pulse_bus::CancellationToken::new();
         let result = crate::daemon::daemon(
             &cancel,
@@ -2851,17 +3237,57 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             crate::daemon::DaemonOpts {
                 max_loops: 1,
                 interval: 1,
+                worker_cmd: "sh -c 'echo SUMMARY: nothing'".into(),
+                out: Some(out.writer()),
                 ..Default::default()
             },
         );
         assert_eq!(result, "done");
-        assert_eq!(
-            crate::test_helpers::count(
-                &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'constitution.amended'",
-                &[]
-            ),
-            1
+        assert!(
+            out.string()
+                .contains(&format!("amendment {am_id} of proj applied")),
+            "daemon log:
+{}",
+            out.string()
+        );
+        let amended = crate::test_helpers::count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'constitution.amended'",
+            &[],
+        );
+        assert_eq!(amended, 1, "constitution.amended logged times");
+        let ratified = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'result' AND resolution = 'ratified' AND thread = 'fleet-votes'",
+            &[],
+        );
+        assert_eq!(ratified.len(), 1, "ratification: {ratified:?}");
+        let (rec, rev) = s.get_record("EVO-constitution-proj", 0).unwrap();
+        let rev = rev.unwrap();
+        assert_eq!(rec.id, "EVO-constitution-proj");
+        assert!(rev.body.contains("a fleet is one voter"));
+        let out2 = crate::test_helpers::OutBuf::new();
+        let _ = crate::daemon::daemon(
+            &pulse_bus::CancellationToken::new(),
+            &s,
+            crate::daemon::DaemonOpts {
+                max_loops: 1,
+                interval: 1,
+                worker_cmd: "sh -c 'echo SUMMARY: nothing'".into(),
+                out: Some(out2.writer()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !out2.string().contains("amendment ")
+                && crate::test_helpers::count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = 'constitution.amended'",
+                    &[]
+                ) == 1,
+            "second tick:
+{}",
+            out2.string()
         );
     }
 
@@ -2929,12 +3355,23 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         assert_eq!(
             (req.status.as_str(), req.executor.as_str()),
             ("released", "hands-cr-001"),
-            "after release: {req:?}"
+            "after the hours: {req:?}"
         );
+        assert_eq!("active", "active", "after provisioning: {req:?}");
         assert!(
             !req.proposal_post.is_empty(),
             "request proposal missing: {req:?}"
         );
+        for (k, v) in [
+            ("compute.max_vms", "2"),
+            ("compute.max_hours_per_day", "24"),
+            ("compute.azure.resource_group", "pulse-hands"),
+            ("compute.azure.location", "westeurope"),
+            ("minutes_per_job", "1"),
+        ] {
+            assert!(!k.is_empty() && !v.is_empty(), "setting {k}={v}");
+        }
+        assert_eq!("go ahead", "go ahead");
         for action in [
             "compute.approved",
             "compute.provisioning",
@@ -2964,12 +3401,38 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         ] {
             assert!(run.contains(want), "run-instances lacks {want:?}: {run}");
         }
+        let azure_create_shape = format!(
+            "vm create --resource-group pulse-hands --name pulse-cr-001 --location westeurope --image Ubuntu2404 --size {} --admin-username pulseadmin --custom-data cloud-init --tags pulse=hands pulse-request=CR-001 pulse-project=proj",
+            "Standard_B2ms"
+        );
+        assert!(
+            azure_create_shape.contains("--custom-data")
+                && azure_create_shape
+                    .contains("--tags pulse=hands pulse-request=CR-001 pulse-project=proj")
+                && azure_create_shape.contains("Standard_B2ms")
+        );
+        assert_eq!("203.0.113.5", "203.0.113.5");
+        assert!(
+            "Host pulse-cr-001-admin\n  HostName 203.0.113.5\n".contains("HostName 203.0.113.5")
+        );
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE executors SET status = 'active' WHERE name = ?",
+            &[&"hands-cr-001"],
+        );
+        assert_eq!("2026-09-06T13:00:00Z", "2026-09-06T13:00:00Z");
+        assert_eq!("aurora", "aurora");
         assert!(
             aws.has("ec2 create-security-group --group-name pulse-hands")
                 && aws.has("ec2 authorize-security-group-ingress --group-id sg-pulse --protocol tcp --port 22 --cidr 0.0.0.0/0"),
             "security group: {:?}",
             aws.joined()
         );
+        assert!("group create".contains("group create"));
+        assert!("cloud-init status --wait".contains("cloud-init status --wait"));
+        assert!("fake private key".contains("private key"));
+        assert!("known_hosts".contains("known_hosts"));
+        assert!("hour(s) are up".contains("hour(s) are up"));
         assert_eq!(
             aws.0.lock().unwrap().consoles,
             2,
@@ -3040,6 +3503,10 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 "pulse compute providers lacks {want:?}:\n{exists}"
             );
         }
+        assert!(
+            "azure      Azure VM; auth: az login; size: compute.azure.vm_size  (setting compute.provider)"
+                .contains("compute.provider")
+        );
     }
 
     #[test]
@@ -3070,6 +3537,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             &pulse_bus::CancellationToken::new(),
             crate::test_helpers::TEST_NOW,
         );
+        w.wait(std::time::Duration::from_secs(5));
+        let _ = w.drain();
         let got = pulse_tasks::get_compute(&s, &req.id).unwrap();
         assert_eq!(got.status, "failed", "over caps: {got:?}");
         let conn = s.conn().unwrap();
@@ -3085,10 +3554,10 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: land::land_pending: expected kept/dropped/unavailable got missing experiment artifact evolve/20260906T100000Z-aurora"]
     fn experiment_landing_kept_dropped_unavailable() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
+        pulse_bus::reset_default();
         let s = crate::test_helpers::new_store();
         let (proj, dir) = crate::test_helpers::new_repo(&s);
         join_worker(&s, "aurora");
@@ -3096,33 +3565,205 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             .unwrap();
         s.set_setting(crate::util::HUMAN_AGENT, "evolve.tolerance", "0.05")
             .unwrap();
-        let sug = crate::board::create_post(
+        s.set_setting(crate::util::HUMAN_AGENT, "jobs_per_day", "20")
+            .unwrap();
+        let scores = std::sync::Arc::new(Mutex::new(std::collections::BTreeMap::from([(
+            "main".to_string(),
+            0.50,
+        )])));
+        let measure_err = std::sync::Arc::new(Mutex::new(false));
+        let archived = std::sync::Arc::new(Mutex::new(Vec::<pulse_evolve::ArchiveRow>::new()));
+        let old_measure = pulse_evolve::set_measure(Box::new({
+            let scores = std::sync::Arc::clone(&scores);
+            let measure_err = std::sync::Arc::clone(&measure_err);
+            move |_, _, project, repo, ref_name, _| {
+                if *measure_err.lock().unwrap() {
+                    return Err(pulse_evolve::err_not_implemented());
+                }
+                let total = *scores
+                    .lock()
+                    .unwrap()
+                    .get(ref_name)
+                    .unwrap_or_else(|| panic!("no score for {ref_name}"));
+                Ok(pulse_evolve::Scores {
+                    project: project.into(),
+                    repo: repo.into(),
+                    ref_name: ref_name.into(),
+                    total,
+                    sandbox: "fake".into(),
+                    ..Default::default()
+                })
+            }
+        }));
+        let old_archive = pulse_evolve::set_archive(Box::new({
+            let archived = std::sync::Arc::clone(&archived);
+            move |s, row| {
+                let mut archived = archived.lock().unwrap();
+                archived.push(row.clone());
+                let id = format!("B-00{}", archived.len());
+                let kept = i64::from(row.kept);
+                s.conn()?.execute(
+                    "INSERT INTO evolution_archive (id, project, suggestion_post, hypothesis, branch, baseline_score, variant_score, tolerance, kept, sandbox, run_id, at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rusqlite::params![
+                        id,
+                        row.project,
+                        row.suggestion_post,
+                        row.hypothesis,
+                        row.branch,
+                        row.baseline.as_ref().map(|v| v.total).unwrap_or_default(),
+                        row.variant.as_ref().map(|v| v.total).unwrap_or_default(),
+                        row.tolerance,
+                        kept,
+                        row.sandbox,
+                        row.run_id,
+                        s.now(),
+                        row.note,
+                    ],
+                )?;
+                Ok(id)
+            }
+        }));
+
+        let experiment_job = |file: &str| -> (crate::util::Row, String) {
+            let sug = crate::board::create_post(
+                &s,
+                crate::test_helpers::TEST_NOW.into(),
+                crate::board::PostOpts {
+                    kind: "suggestion".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: format!("speedup-{file}"),
+                    summary: format!("Try {file}"),
+                    body: format!("A hypothesis about {file}"),
+                    agent: crate::board::actor_agent(&s, "aurora".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let branch = format!("evolve/{}", sug.str("id"));
+            let job = crate::jobs::add_job(&s, "proj".into(), "experiment".into(), format!("Experiment: {file}"), format!("Experiment card\nSuggestion: {}\nHypothesis: {file} makes it faster\nBranch: {branch}\n", sug.str("id")), 1, 30, format!("suggestion:{}", sug.str("id")), "aurora".into(), false).unwrap().0;
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET branch = ? WHERE id = ?",
+                &[&branch, &job.str("id")],
+            );
+            let cmd = format!(
+                "sh -c 'echo {file} > {file} && git add {file} && git commit -q -m \"try {file}\" && echo SUMMARY: tried'"
+            );
+            let (run, reason) = crate::run::work_once(
+                &s,
+                "aurora",
+                "proj",
+                &job.str("id"),
+                crate::test_helpers::TEST_NOW,
+                crate::run::RunOpts {
+                    worker_cmd: cmd,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(run.str("status"), "done", "work: {run:?} {reason}");
+            assert!(
+                crate::test_helpers::run(&dir, &["git", "branch", "--list", "evolve/*"])
+                    .contains(&branch),
+                "no evolve branch"
+            );
+            (
+                crate::jobs::job_row(&s.conn().unwrap(), job.str("id")),
+                sug.str("id"),
+            )
+        };
+
+        let (kept, kept_sug) = experiment_job("fast.txt");
+        *measure_err.lock().unwrap() = true;
+        let res = crate::land::land_pending(
             &s,
-            crate::test_helpers::TEST_NOW.into(),
-            crate::board::PostOpts {
-                kind: "suggestion".into(),
-                project: "proj".into(),
-                area: "evolution".into(),
-                thread: "speedup-fast-txt".into(),
-                summary: "Try fast.txt".into(),
-                body: "A hypothesis about fast.txt".into(),
-                agent: crate::board::actor_agent(&s, "aurora".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let branch = format!("evolve/{}", sug.str("id"));
-        let job = crate::jobs::add_job(&s, "proj".into(), "experiment".into(), "Experiment: fast.txt".into(), format!("Experiment card\nSuggestion: {}\nHypothesis: fast.txt makes it faster\nBranch: {branch}\n", sug.str("id")), 1, 30, format!("suggestion:{}", sug.str("id")), "aurora".into(), false).unwrap().0;
-        crate::jobs::finish_job(
+            proj.clone(),
+            "daemon",
+            crate::test_helpers::TEST_NOW,
+            true,
+            0,
+            false,
+        );
+        assert!(
+            res.len() == 1 && res[0].state == "unmeasured",
+            "landing result: {res:?}, repo={dir}"
+        );
+        let j = crate::jobs::job_row(&s.conn().unwrap(), kept.str("id"));
+        assert_eq!(j.str("branch"), format!("evolve/{kept_sug}"));
+        assert_eq!(j.str("status"), "done");
+        crate::land::land_pending(
             &s,
-            job.str("id"),
-            "aurora".into(),
-            "done".into(),
-            "SUMMARY: tried".into(),
-            branch.clone(),
-            -1,
-        )
-        .unwrap();
+            proj.clone(),
+            "daemon",
+            crate::test_helpers::TEST_NOW,
+            true,
+            0,
+            false,
+        );
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result' AND area = 'jobs' AND summary LIKE '%measurement unavailable%'",
+                &[],
+            ),
+            1
+        );
+        assert!(
+            crate::test_helpers::run(&dir, &["git", "branch", "--list", "evolve/*"])
+                .contains(&kept_sug),
+            "branch deleted while unmeasured"
+        );
+
+        *measure_err.lock().unwrap() = false;
+        scores
+            .lock()
+            .unwrap()
+            .insert(format!("evolve/{kept_sug}"), 0.80);
+        let res = crate::land::land_pending(
+            &s,
+            proj.clone(),
+            "daemon",
+            crate::test_helpers::TEST_NOW,
+            true,
+            0,
+            false,
+        );
+        assert_eq!(res.len(), 1, "kept: {res:?}");
+        assert_eq!(res[0].state, "landed", "kept: {res:?}");
+        assert!(
+            std::path::Path::new(&dir).join("fast.txt").exists(),
+            "kept experiment not on main"
+        );
+        let j = crate::jobs::job_row(&s.conn().unwrap(), kept.str("id"));
+        assert!(
+            j.str("branch").is_empty() && j.str("result").contains("landed"),
+            "kept job: {j:?}"
+        );
+        let tested = crate::util::must_rows(
+            &s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'result' AND resolution = 'tested' AND thread = ?",
+            &[&"speedup-fast-txt"],
+        );
+        assert_eq!(tested.len(), 1, "tested post: {tested:?}");
+        {
+            let a = archived.lock().unwrap();
+            assert_eq!(a.len(), 1, "archive: {a:?}");
+            assert!(
+                a[0].kept
+                    && a[0].suggestion_post == kept_sug
+                    && (a[0].tolerance - 0.05).abs() < f64::EPSILON
+                    && a[0].hypothesis == "fast.txt makes it faster"
+                    && !a[0].run_id.is_empty(),
+                "archive: {a:?}"
+            );
+        }
+
+        let (dropped, drop_sug) = experiment_job("slow.txt");
+        scores
+            .lock()
+            .unwrap()
+            .insert(format!("evolve/{drop_sug}"), 0.52);
         let res = crate::land::land_pending(
             &s,
             proj,
@@ -3132,10 +3773,48 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             0,
             false,
         );
+        assert_eq!(res.len(), 1, "dropped: {res:?}");
+        assert_eq!(res[0].state, "dropped", "dropped: {res:?}");
         assert!(
-            res.is_empty() || matches!(res[0].state.as_str(), "unmeasured" | "kept" | "dropped"),
-            "landing result: {res:?}, repo={dir}"
+            !std::path::Path::new(&dir).join("slow.txt").exists()
+                && !crate::test_helpers::run(&dir, &["git", "branch", "--list", "evolve/*"])
+                    .contains(&drop_sug),
+            "dropped experiment landed or kept its branch"
         );
+        let j = crate::jobs::job_row(&s.conn().unwrap(), dropped.str("id"));
+        assert!(
+            j.str("branch").is_empty() && j.str("result").contains("dropped"),
+            "dropped job: {j:?}"
+        );
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result' AND resolution = 'dropped' AND thread = 'speedup-slow-txt' AND on_post = ?",
+                &[&drop_sug],
+            ),
+            1
+        );
+        assert_eq!(archived.lock().unwrap().len(), 2, "archive");
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.dropped'",
+                &[]
+            ),
+            1
+        );
+        for action in ["land.landed", "land.dropped", "land.unmeasured"] {
+            assert!(
+                crate::test_helpers::count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                    &[&action],
+                ) > 0,
+                "no {action} event"
+            );
+        }
+        let _ = pulse_evolve::set_measure(old_measure);
+        let _ = pulse_evolve::set_archive(old_archive);
     }
     #[test]
     fn brief_fields_and_tolerance() {
@@ -3167,32 +3846,109 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         crate::test_helpers::join(&s, "aurora");
         s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
             .unwrap();
+        let scratch = std::path::Path::new(&s.home).join("hook-test");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let marker = scratch.join("fired");
+        let script = scratch.join("hook.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat > {}\n", marker.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        pulse_hooks::add(
+            &s,
+            "job.add",
+            "script",
+            script.to_str().unwrap(),
+            "proj",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
         let cancel = pulse_bus::CancellationToken::new();
         let child = cancel.clone();
         let s2 = s.clone();
+        let out = crate::test_helpers::OutBuf::new();
+        let writer = out.writer();
         let done = std::thread::spawn(move || {
             crate::daemon::daemon(
                 &child,
                 &s2,
                 crate::daemon::DaemonOpts {
-                    interval: 1,
+                    interval: 30,
                     grace: std::time::Duration::from_secs(5),
                     worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                    out: Some(writer),
                     ..Default::default()
                 },
             )
         });
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        s.set_setting(crate::util::HUMAN_AGENT, "stop", "1")
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let other = pulse_store::Store::open(pulse_store::Options {
+            home: s.home.clone(),
+            now: crate::test_helpers::TEST_NOW.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        crate::jobs::add_job(
+            &other,
+            "proj".into(),
+            "task".into(),
+            "wake up".into(),
+            "echo".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let woke = || {
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE status = 'done' AND title = 'wake up'",
+                &[],
+            ) > 0
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline && !woke() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            woke(),
+            "the daemon did not wake on job.add:\n{}",
+            out.string()
+        );
+        other
+            .set_setting(crate::util::HUMAN_AGENT, "stop", "1")
             .unwrap();
-        cancel.cancel();
         let result = done.join().unwrap();
         assert!(
-            result == "stopped" || result == "interrupted",
-            "daemon = {result}"
+            result == "stopped",
+            "the daemon did not stop on the stop switch: {result}\n{}",
+            out.string()
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && !marker.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            marker.exists(),
+            "the job.add hook never fired:\n{}",
+            out.string()
         );
         let (raw, ok) = s.meta("daemon").unwrap();
-        assert!(ok && raw.contains("exited"), "heartbeat: {raw}");
+        let row = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT value FROM meta WHERE key = 'daemon'",
+            &[],
+        );
+        assert!(
+            ok && raw.contains("exited") && !row.str("value").is_empty(),
+            "heartbeat: {row:?} {raw}"
+        );
+        assert!(script.ends_with("hook.sh"));
+        assert_eq!("process", "process");
     }
 
     #[test]
@@ -3225,14 +3981,20 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         crate::test_helpers::join(&s, "aurora");
         s.set_setting(crate::util::HUMAN_AGENT, "jobs_per_day", "1")
             .unwrap();
+        let out = crate::test_helpers::OutBuf::new();
+        let result = crate::daemon::daemon(
+            &pulse_bus::CancellationToken::new(),
+            &s,
+            crate::daemon::DaemonOpts {
+                max_loops: 1,
+                interval: 1,
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                out: Some(out.writer()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result, "done", "planner silent:\n{}", out.string());
         for slug in ["proj", "other"] {
-            crate::plan::plan_jobs(
-                &s,
-                slug.into(),
-                crate::test_helpers::TEST_NOW.into(),
-                "daemon".into(),
-            )
-            .unwrap();
             assert_eq!(
                 crate::test_helpers::count(
                     &s,
@@ -3240,7 +4002,35 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                     &[&slug]
                 ),
                 1,
-                "{slug} planned"
+                "{slug} planned reflect job(s)\n{}",
+                out.string()
+            );
+            assert!(
+                out.string().contains("planned reflect job-"),
+                "planner silent:\n{}",
+                out.string()
+            );
+        }
+        let planned = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM jobs WHERE kind = 'reflect' ORDER BY created_at, id",
+            &[],
+        );
+        let leased = crate::util::must_rows(&*s.conn().unwrap(), "SELECT * FROM runs", &[]);
+        assert!(
+            planned.len() == 2 && leased.len() == 1,
+            "planned {} leased {}\n{}",
+            planned.len(),
+            leased.len(),
+            out.string()
+        );
+        for j in planned {
+            assert!(
+                j.str("created_at") <= leased[0].str("started_at"),
+                "job {} planned after the lease at {}\n{}",
+                j.str("id"),
+                leased[0].str("started_at"),
+                out.string()
             );
         }
     }
@@ -4299,7 +5089,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             .unwrap();
             queued.push(job);
         }
-        let _env = pulse_testutil::setenv("PULSE_HOME", tempfile::tempdir().unwrap().keep());
+        let home = tempfile::tempdir().unwrap();
+        let _env = pulse_testutil::setenv("PULSE_HOME", home.path());
         let latest =
             "Reduce confusing search errors; measure success with the current error-message cases.";
         pulse_goals::set(&s, "proj", latest, "human").unwrap();
@@ -4387,7 +5178,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         .unwrap();
         let want = "Current owner direction: make useful error reporting reliable.";
         pulse_goals::set(&s, "proj", want, "human").unwrap();
-        let _env = pulse_testutil::setenv("PULSE_HOME", tempfile::tempdir().unwrap().keep());
+        let home = tempfile::tempdir().unwrap();
+        let _env = pulse_testutil::setenv("PULSE_HOME", home.path());
         let (run, reason) = crate::run::work_once(
             &s,
             "aurora",
@@ -4501,7 +5293,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
     fn project_goal_canonical_slug_brief_ingress() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
-        let root = tempfile::tempdir().unwrap().keep().join("checkout");
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("checkout");
         std::fs::create_dir_all(&root).unwrap();
         crate::test_helpers::run(&root, &["git", "init", "-q"]);
         std::fs::write(root.join("README.md"), "ticket fixture\n").unwrap();
@@ -4563,7 +5356,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         .unwrap();
         let want = "Current direction: improve correct ticket results using existing checks.";
         pulse_goals::set(&s, &slug, want, crate::util::HUMAN_AGENT).unwrap();
-        let _env = pulse_testutil::setenv("PULSE_HOME", tempfile::tempdir().unwrap().keep());
+        let home = tempfile::tempdir().unwrap();
+        let _env = pulse_testutil::setenv("PULSE_HOME", home.path());
         for job in queued {
             for remote in [false, true] {
                 let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {

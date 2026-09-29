@@ -1662,7 +1662,8 @@ mod tests {
                 END",
             &[],
         );
-        let (command, _env) = completion_worker_command("done", "SUMMARY: reviewed the queue", "", 0, "");
+        let (command, _env) =
+            completion_worker_command("done", "SUMMARY: reviewed the queue", "", 0, "");
         run_completion(&s, job, &agent, &command);
         let snapshots = must_rows(&s, "SELECT * FROM completion_snapshot", &[]);
         assert!(
@@ -1821,7 +1822,8 @@ mod tests {
         run(&dir, &["git", "branch", "pulse/delta/x"]);
         let (exists, why) = super::branch_exists(dir.clone(), "pulse/delta/x".into());
         assert!(exists && why.is_empty(), "present branch: {exists} {why}");
-        let not_repo = tempfile::tempdir().expect("not repo").keep();
+        let not_repo_dir = tempfile::tempdir().expect("not repo");
+        let not_repo = not_repo_dir.path();
         let (exists, why) =
             super::branch_exists(not_repo.display().to_string(), "pulse/delta/x".into());
         assert!(
@@ -1901,7 +1903,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: daemon::daemon: expected output contains holding proj this loop: cannot read, got no daemon output because daemon drops probes.ready lines"]
     fn daemon_holds_unreadable_checkout() {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
@@ -1968,6 +1969,7 @@ mod tests {
         );
         crate::checkout::hold_checkouts(std::collections::BTreeMap::new());
 
+        let out = crate::test_helpers::OutBuf::new();
         let result = crate::daemon::daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
@@ -1975,11 +1977,12 @@ mod tests {
                 worker_cmd: "sh -c 'echo SUMMARY: ran'".into(),
                 max_loops: 1,
                 no_watchdog: true,
+                out: Some(out.writer()),
                 ..Default::default()
             },
         );
         assert_eq!(result, "done");
-        let log = String::new();
+        let log = out.string();
         assert!(
             log.contains("holding proj this loop: cannot read")
                 && log.contains("cannot read the checkout for proj")
@@ -2002,6 +2005,7 @@ mod tests {
         assert!(crate::checkout::held_checkouts().is_empty());
 
         std::fs::rename(format!("{dir}.away"), &dir).expect("restore checkout");
+        let out = crate::test_helpers::OutBuf::new();
         let result = crate::daemon::daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
@@ -2009,11 +2013,12 @@ mod tests {
                 worker_cmd: "sh -c 'echo SUMMARY: ran'".into(),
                 max_loops: 1,
                 no_watchdog: true,
+                out: Some(out.writer()),
                 ..Default::default()
             },
         );
         assert_eq!(result, "done");
-        let log = String::new();
+        let log = out.string();
         assert!(
             !log.contains("holding proj") && log.contains(&j.str("id")),
             "daemon log after return:\n{log}"
@@ -2025,7 +2030,8 @@ mod tests {
     fn protected_folders_note() {
         let _serial = crate::test_helpers::serial();
         let s = test_helpers::new_store();
-        let home = tempfile::tempdir().expect("home").keep();
+        let home_dir = tempfile::tempdir().expect("home");
+        let home = home_dir.path();
         for (slug, rel) in [
             ("desk", "Desktop/work/desk"),
             ("docs", "Documents"),

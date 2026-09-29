@@ -333,7 +333,11 @@ impl Hands {
                     .and_then(|l| l.split_whitespace().nth(3).map(ToOwned::to_owned))
             })
             .unwrap_or_else(|| "0".into());
-        let user = std::env::var("USER").unwrap_or_else(|_| "?".into());
+        // Go: user.Current() - the passwd entry of the real uid, not $USER.
+        let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .ok()
+            .flatten()
+            .map_or_else(|| "?".to_string(), |u| u.name);
         let lookup = if pulse_lookup.is_empty() {
             String::new()
         } else {

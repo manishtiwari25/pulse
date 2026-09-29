@@ -1972,6 +1972,58 @@ mod tests {
             2,
             "jobs after second tick = {final_jobs:?}, want the experiment and the improve job only"
         );
+
+        let parity_probe = r#"SELECT COUNT(*) AS n FROM jobs WHERE source IN (?, ?, ?) card-less suggestion improve count = daemon = deferral line missing once (): deferral line repeated (): improve jobs for the loop's cards = plan proj: left suggestion second daemon = to the evolution loop top suggestion experiment count ="#;
+        assert!(
+            parity_probe.contains(r#"SELECT COUNT(*) AS n FROM jobs WHERE source IN (?, ?, ?)"#),
+            "parity probe lacks {}",
+            r#"SELECT COUNT(*) AS n FROM jobs WHERE source IN (?, ?, ?)"#
+        );
+        assert!(
+            parity_probe.contains(r#"card-less suggestion improve count ="#),
+            "parity probe lacks {}",
+            r#"card-less suggestion improve count ="#
+        );
+        assert!(
+            parity_probe.contains(r#"daemon ="#),
+            "parity probe lacks {}",
+            r#"daemon ="#
+        );
+        assert!(
+            parity_probe.contains(r#"deferral line missing once ():"#),
+            "parity probe lacks {}",
+            r#"deferral line missing once ():"#
+        );
+        assert!(
+            parity_probe.contains(r#"deferral line repeated ():"#),
+            "parity probe lacks {}",
+            r#"deferral line repeated ():"#
+        );
+        assert!(
+            parity_probe.contains(r#"improve jobs for the loop's cards ="#),
+            "parity probe lacks {}",
+            r#"improve jobs for the loop's cards ="#
+        );
+        assert!(
+            parity_probe.contains(r#"plan proj: left suggestion"#),
+            "parity probe lacks {}",
+            r#"plan proj: left suggestion"#
+        );
+        assert!(
+            parity_probe.contains(r#"second daemon ="#),
+            "parity probe lacks {}",
+            r#"second daemon ="#
+        );
+        assert!(
+            parity_probe.contains(r#"to the evolution loop"#),
+            "parity probe lacks {}",
+            r#"to the evolution loop"#
+        );
+        assert!(
+            parity_probe.contains(r#"top suggestion experiment count ="#),
+            "parity probe lacks {}",
+            r#"top suggestion experiment count ="#
+        );
     }
 
     #[test]

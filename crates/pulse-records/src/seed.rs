@@ -299,15 +299,26 @@ mod tests {
     const TEMPLATE_EVALUATORS: &str =
         "# <Project> Evaluators\n\nWhat better means for <Project>.\n";
 
-    fn temp_store() -> pulse_store::Store {
-        let home = tempfile::tempdir().unwrap().keep();
-        pulse_store::Store::open(pulse_store::Options {
-            home: home.display().to_string(),
+    struct TestStore {
+        _home: tempfile::TempDir,
+        store: pulse_store::Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = pulse_store::Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+    fn temp_store() -> TestStore {
+        let home = tempfile::tempdir().unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: home.path().display().to_string(),
             create: true,
             now: "2026-09-06T21:00:00Z".into(),
             ..pulse_store::Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _home: home, store }
     }
 
     fn add_project(
@@ -349,7 +360,10 @@ mod tests {
                 TEMPLATE_CONSTITUTION,
                 [
                     ("id".to_string(), json!("CONSTITUTION")),
-                    ("title".to_string(), json!("<Project> Evolution Constitution")),
+                    (
+                        "title".to_string(),
+                        json!("<Project> Evolution Constitution"),
+                    ),
                     ("status".to_string(), json!("Active")),
                     ("date".to_string(), json!("YYYY-MM-DD")),
                     ("controlling_adr".to_string(), json!("ADR-NNN")),
@@ -423,6 +437,7 @@ mod tests {
 
     #[test]
     fn seed_loop_records_copies_the_template_once() {
+        let _serial = crate::test_helpers::serial();
         let s = temp_store();
         let _brain = seed_templates(&s);
         let project_dir = tempfile::tempdir().unwrap();
@@ -483,7 +498,12 @@ mod tests {
                 rev.frontmatter
             );
         }
-        assert_eq!(rev.frontmatter.len(), 9, "frontmatter keys: {:?}", rev.frontmatter);
+        assert_eq!(
+            rev.frontmatter.len(),
+            9,
+            "frontmatter keys: {:?}",
+            rev.frontmatter
+        );
         assert!(
             rev.body == TEMPLATE_CONSTITUTION.replace("<Project>", "Lamplit Labs")
                 && !rev.body.contains("<Project>")
@@ -503,7 +523,8 @@ mod tests {
             "copied evaluators: {evaluators:?}"
         );
         assert!(
-            event_count(&s, "evolution.records.seeded") == 1 && event_count(&s, "record.created") == 4,
+            event_count(&s, "evolution.records.seeded") == 1
+                && event_count(&s, "record.created") == 4,
             "seeding did not record one summary event beside the two created records"
         );
         assert!(
@@ -606,6 +627,7 @@ mod tests {
 
     #[test]
     fn seed_loop_records_falls_back_to_the_brains_first_revision() {
+        let _serial = crate::test_helpers::serial();
         let s = temp_store();
         let brain = tempfile::tempdir().unwrap();
         add_project(&s, "brain", "brain", brain.path(), true);
@@ -676,6 +698,28 @@ mod tests {
 
     #[test]
     fn seed_loop_records_indexes_the_checkouts_committed_file() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "# Amistio ConstitutionThe owner's own rules.",
+            "# Unstaged",
+            "---id: ADR-001title: Firststatus: Accepted---# First",
+            "---title: Amistio Constitutionstatus: Activeloop: on---# Amistio ConstitutionThe owner's own rules.",
+            "---title: Uncommitted---# Not yet committed",
+            "---title: broken",
+            "Broken",
+            "EVO-evaluators-amistio",
+            "TPL-evolution-constitution@r2",
+            "TPL-evolution-evaluators@r1",
+            "What better means for Amistio.",
+            "broken",
+            "docs/decisions/ADR-001-first.md",
+            "docs/evolution/evaluators.md",
+            "evolution.records.seeded",
+            "frontmatter",
+            "import docs/evolution/constitution.md@",
+            "records.migrated",
+            "seeded_from",
+        ];
         let s = temp_store();
         let _brain = seed_templates(&s);
         let repo = tempfile::tempdir().unwrap();

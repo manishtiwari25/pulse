@@ -29,7 +29,7 @@ pub(crate) struct LoginGateGuard(Option<Box<dyn Fn(&pulse_store::Store) -> Strin
 impl Drop for LoginGateGuard {
     fn drop(&mut self) {
         if let Some(prev) = self.0.take() {
-            set_login_gate(prev);
+            let _ = set_login_gate(prev);
         }
     }
 }
@@ -191,8 +191,9 @@ mod tests {
     use anyhow::Result;
     use std::sync::{LazyLock, Mutex, Once};
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct GateFakeState {
+        token: String,
         login: pulse_provider::Login,
         err: String,
         calls: i32,
@@ -236,6 +237,20 @@ mod tests {
             }
             Ok(st.login.clone())
         }
+        fn as_login_exporter(&self) -> Option<&dyn pulse_provider::LoginExporter> {
+            Some(self)
+        }
+    }
+
+    impl pulse_provider::LoginExporter for GateFakeProvider {
+        fn export_login(&self) -> Result<(String, pulse_provider::Login)> {
+            let states = GATE_FAKE_STATES.lock().unwrap();
+            let st = states.get(&self.home).cloned().unwrap_or_default();
+            if !st.err.is_empty() {
+                anyhow::bail!("{}", st.err);
+            }
+            Ok((st.token, st.login))
+        }
     }
 
     fn gate_fake_factory(o: pulse_provider::Options) -> Result<Box<dyn pulse_provider::Provider>> {
@@ -267,6 +282,11 @@ mod tests {
         let st = states.entry(s.home.clone()).or_default();
         st.login = login;
         st.err = err.into();
+    }
+
+    fn set_gate_token(s: &pulse_store::Store, token: &str) {
+        let mut states = GATE_FAKE_STATES.lock().unwrap();
+        states.entry(s.home.clone()).or_default().token = token.into();
     }
 
     fn gate_calls(s: &pulse_store::Store) -> i32 {
@@ -438,7 +458,7 @@ mod tests {
             "capacity heartbeat lacks the gate: {raw}"
         );
         // The gate opens: the same job runs on this machine.
-        set_login_gate(Box::new(|_| String::new()));
+        let _ = set_login_gate(Box::new(|_| String::new()));
         out.reset();
         let result = crate::daemon::daemon(
             &pulse_bus::CancellationToken::new(),
@@ -535,42 +555,129 @@ mod tests {
     fn executor_login_without_token_reuses_login_source() {
         let _serial = crate::test_helpers::serial();
         let s = gate_store();
+        set_gate_token(&s, "gho_provider000000000000000000000000");
         set_gate_state(
             &s,
             pulse_provider::Login {
                 logged_in: true,
                 user: "octocat".into(),
-                source: "provider exporter".into(),
+                source: "stored".into(),
                 ..Default::default()
             },
             "",
         );
-        assert_eq!(local_login_gate(&s), "");
-        let before = gate_calls(&s);
-        assert_eq!(local_login_gate(&s), "");
-        assert_eq!(gate_calls(&s), before + 1);
-        assert_eq!(provider_settings_key(std::collections::BTreeMap::new()), "");
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "pulse@hands",
+            "/srv/pulse",
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let sent = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let calls = std::sync::Arc::new(Mutex::new(0));
+        let _ssh = crate::test_helpers_f1b::install_run_ssh({
+            let sent = sent.clone();
+            let calls = calls.clone();
+            move |_ctx, argv, stdin, _timeout| {
+                let cmd = argv.join(" ");
+                if cmd.contains("pulse harness login --with-token") {
+                    sent.lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(stdin).trim().to_string());
+                    return Ok((0, String::new(), String::new()));
+                }
+                assert!(cmd.contains("b64 "), "unexpected ssh argv {argv:?}");
+                let mut calls = calls.lock().unwrap();
+                *calls += 1;
+                match *calls {
+                    1 => Ok((0, "hands=ok user=pulse workdir=/srv/pulse git=2.40 harness=yes pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=4096 jobs=- keys=- heartbeat=1\n".into(), String::new())),
+                    2 => Ok((0, String::new(), String::new())),
+                    _ => Ok((0, "SUMMARY: ok\n".into(), String::new())),
+                }
+            }
+        });
+        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
+        let res = crate::executor::executor_login(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "admin@hands",
+            &mut empty,
+            false,
+            false,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            ["gho_provider000000000000000000000000"]
+        );
+        let out = res.lines.join("\n");
         assert!(
-            local_provider(
-                s.home.clone(),
-                "gatefake".into(),
-                std::collections::BTreeMap::new()
-            )
-            .is_ok()
+            out.contains("login source: stored") && !out.contains("gho_provider"),
+            "{out}"
+        );
+        let ev = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = 'executor.login' ORDER BY seq DESC LIMIT 1",
+            &[],
+        );
+        let detail = ev.str("detail");
+        assert!(
+            detail.contains("stored") && !detail.contains("gho_provider"),
+            "detail leaked or missed source: {detail}"
         );
     }
     #[test]
     fn executor_login_without_token_explains_missing_source() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers::new_store();
-        let post = login_wanted(
+        let s = gate_store();
+        set_gate_state(
             &s,
-            crate::board::project_by_slug(&*s.conn().unwrap(), "proj".into()),
-            0,
-            "gate".into(),
-            crate::test_helpers::TEST_NOW.into(),
-            "daemon".into(),
+            pulse_provider::Login::default(),
+            "no_stored_login: none",
         );
-        assert!(post.0.is_empty());
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "pulse@hands",
+            "/srv/pulse",
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
+        let err = crate::executor::executor_login(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "admin@hands",
+            &mut empty,
+            false,
+            false,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap_err()
+        .to_string();
+        for want in [
+            "Settings -> Harness",
+            "pulse harness login",
+            "pulse executor token --with-token",
+            "--with-token",
+            "--admin",
+            "/srv/pulse",
+            "pulse@hands",
+            "admin@hands",
+            "executor",
+            "no_stored_login",
+        ] {
+            assert!(err.contains(want), "missing {want:?} in {err:?}");
+        }
     }
 }

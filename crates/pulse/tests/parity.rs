@@ -701,3 +701,185 @@ fn clock_and_flags() {
         .step(alice(["events"]));
     assert_parity(&sc, rust_bin());
 }
+
+#[test]
+fn inspect_group() {
+    let sc = with_project("inspect_group")
+        .step(alice([
+            "post",
+            "finding",
+            "--area",
+            "core",
+            "--thread",
+            "t1",
+            "--summary",
+            "first finding",
+        ]))
+        .step(alice([
+            "post",
+            "suggestion",
+            "--area",
+            "core",
+            "--thread",
+            "t1",
+            "--summary",
+            "do the thing",
+        ]))
+        .step(alice(["vote", "2", "up"]).at(60))
+        .step(owner(["status"]))
+        .step(owner(["status", "--json"]))
+        .step(owner(["projects"]))
+        .step(owner(["projects", "--json"]))
+        .step(owner(["jobs"]))
+        .step(owner(["jobs", "--all"]))
+        .step(owner(["jobs", "--json"]))
+        .step(owner(["jobs", "extra"]))
+        .step(owner(["agents"]))
+        .step(owner(["agents", "--all"]))
+        .step(owner(["agents", "--json"]))
+        .step(owner(["events"]))
+        .step(owner(["events", "--limit", "2"]))
+        .step(owner(["events", "--since", "3"]))
+        .step(owner(["events", "--since", "2026-09-06T21:00:00Z"]))
+        .step(owner(["events", "--since", "garbage"]))
+        .step(owner(["events", "--limit", "-1"]))
+        .step(owner(["events", "--json", "--limit", "3"]))
+        .step(Step::new(["events", "--project", "nosuch"]))
+        .step(owner(["schema"]))
+        .step(owner(["schema", "--json"]))
+        .step(owner(["verify"]))
+        .step(owner(["verify", "HEAD"]))
+        .step(owner(["verify", "HEAD", "--json"]))
+        .step(owner([
+            "verify",
+            "0000000000000000000000000000000000000000",
+        ]))
+        .step(owner(["signers"]))
+        .step(owner(["signers", "--json"]))
+        .step(owner(["usage"]))
+        .step(owner(["usage", "--json"]))
+        .step(owner(["tally"]))
+        .step(owner(["tally", "--json"]))
+        .step(owner(["version"]))
+        .step(alice(["events", "--limit", "1"]));
+    assert_parity(&sc, rust_bin());
+}
+
+#[test]
+fn runner_group() {
+    // the runner's read-only and dry-run surface: nothing here starts a worker,
+    // talks to a machine or installs a service
+    let sc = with_project("runner_group")
+        .step(alice([
+            "post",
+            "suggestion",
+            "--area",
+            "core",
+            "--thread",
+            "t1",
+            "--summary",
+            "queue me",
+        ]))
+        .step(alice(["vote", "1", "up"]).at(60))
+        .step(owner(["plan"]))
+        .step(owner(["plan"]))
+        .step(owner(["plan", "extra"]))
+        .step(owner(["jobs"]))
+        .step(owner(["jobs", "--json"]))
+        .step(owner(["work", "--dry-run"]))
+        .step(owner(["work", "--job", "999", "--dry-run"]))
+        .step(owner(["work", "--executor", "nosuch", "--dry-run"]))
+        .step(owner(["land", "--dry-run"]))
+        .step(owner(["land", "--branch", "nosuch", "--dry-run"]))
+        .step(owner(["land", "--all", "--limit", "0", "--dry-run"]))
+        .step(owner(["sweep", "--dry-run"]))
+        .step(owner(["sweep", "--held", "--dry-run"]))
+        .step(owner(["sweep", "--json", "--dry-run"]))
+        .step(owner(["sweep", "extra"]))
+        .step(owner(["service"]))
+        .step(owner(["service", "nosuch"]))
+        .step(owner(["service", "show"]))
+        .step(owner(["service", "install", "--dry-run"]))
+        .step(owner([
+            "service",
+            "install",
+            "--no-hub",
+            "--interval",
+            "5",
+            "--dry-run",
+        ]))
+        .step(owner(["service", "uninstall", "--dry-run"]))
+        .step(owner(["executor"]))
+        .step(owner(["executor", "list"]))
+        .step(owner(["executor", "add"]))
+        .step(owner(["executor", "add", "box"]))
+        .step(owner([
+            "executor",
+            "add",
+            "box",
+            "--ssh",
+            "me@box",
+            "--workdir",
+            "relative",
+        ]))
+        .step(owner([
+            "executor",
+            "add",
+            "box",
+            "--ssh",
+            "me@box",
+            "--workdir",
+            "/srv/pulse",
+            "--workers",
+            "2",
+        ]))
+        .step(owner(["executor", "list"]))
+        .step(owner(["executor", "drain", "box"]))
+        .step(owner(["executor", "activate", "box"]))
+        .step(owner(["executor", "drain", "nosuch"]))
+        .step(owner(["executor", "remove", "box"]))
+        .step(owner(["executor", "remove", "box"]))
+        .step(owner(["executor", "list"]))
+        .step(owner(["env"]))
+        .step(owner(["env", "show"]))
+        .step(owner(["env", "show", "--json"]))
+        .step(owner(["env", "check"]))
+        .step(owner(["env", "set"]))
+        .step(owner(["env", "import"]))
+        .step(owner(["env", "import", "--file", "{home}/missing.json"]))
+        .step(owner(["env", "nosuch"]))
+        .step(Step::new(["hands"]))
+        .step(Step::new(["hands", "nosuch"]))
+        .step(Step::new(["hands", "probe"]))
+        .step(Step::new(["pair"]))
+        .step(Step::new(["pair", "admin@box", "--dry-run"]))
+        .step(Step::new(["onboard", "{home}/nowhere", "--name", "ghost"]))
+        .step(Step::new(["onboard", "{project}", "--name", "Bad Name!"]))
+        // the held-out generator runs in the background (Go: a goroutine the
+        // `--once` daemon does not wait for), so its store effect is a race
+        // on both sides; the owner mode keeps the daemon steps deterministic
+        .step(owner(["settings", "set", "evolve.heldout", "owner"]))
+        .step(owner(["daemon", "--once", "--dry-run", "--no-restart"]))
+        .step(owner(["daemon", "--interval", "0", "--once", "--dry-run"]))
+        .step(owner(["jobs", "--all"]))
+        .step(owner(["events"]));
+    assert_parity(&sc, rust_bin());
+}
+
+#[test]
+fn hub_group() {
+    // every refusal the hub commands make before they would listen
+    let sc = with_project("hub_group")
+        .step(owner(["hub", "extra"]))
+        .step(owner(["serve", "extra"]))
+        .step(owner(["hub", "--host", "0.0.0.0", "--no-browser"]))
+        .step(owner(["serve", "--host", "192.168.0.1", "--no-browser"]))
+        .step(owner(["hub", "--port", "70000", "--no-browser"]))
+        .step(owner(["hub", "--port", "-1", "--no-browser"]))
+        .step(owner(["hub", "--port", "abc", "--no-browser"]))
+        .step(owner(["serve", "--project", "nosuch", "--no-browser"]))
+        .step(Step::new(["serve", "--project", "nosuch", "--no-browser"]))
+        .step(owner(["hub", "--port", "1", "--no-browser"]))
+        .step(owner(["events"]));
+    assert_parity(&sc, rust_bin());
+}

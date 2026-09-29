@@ -164,7 +164,7 @@ fn arg_after(args: &[String], flag: &str) -> String {
 }
 
 fn contains(values: &[&str], want: &str) -> bool {
-    values.iter().any(|v| *v == want)
+    values.contains(&want)
 }
 
 #[derive(Clone)]
@@ -686,6 +686,7 @@ pub(crate) struct PairedState {
 
 pub(crate) struct ComputeHarness {
     pub hub_home: String,
+    _hub_home_dir: tempfile::TempDir,
     pub paired: Arc<Mutex<PairedState>>,
     old_wait: Duration,
     old_ssh: crate::executor::SshRunner,
@@ -747,7 +748,8 @@ pub(crate) fn new_compute_harness(
     crate::commands::register();
     new_bare_repo(s);
     join(s, "aurora");
-    let hub_home = tempfile::tempdir().expect("hub home").keep();
+    let hub_home_dir = tempfile::tempdir().expect("hub home");
+    let hub_home = hub_home_dir.path().to_path_buf();
     let ssh = hub_home.join(".ssh");
     std::fs::create_dir_all(&ssh).expect("ssh dir");
     std::fs::write(ssh.join("pulse_hands_ed25519"), "fake private key\n").expect("private key");
@@ -805,6 +807,7 @@ pub(crate) fn new_compute_harness(
     }));
     ComputeHarness {
         hub_home: hub_home.display().to_string(),
+        _hub_home_dir: hub_home_dir,
         paired,
         old_wait,
         old_ssh,
@@ -826,7 +829,13 @@ impl ComputeHarness {
         )
         .expect("request compute");
         pulse_tasks::approve(s, &req.id, "go ahead", pulse_store::HUMAN_AGENT).expect("approve");
-        let log = once_daemon(s, &self.hub_home);
+        let log = crate::test_helpers::once_daemon(
+            s,
+            crate::daemon::DaemonOpts {
+                hub_home: self.hub_home.clone(),
+                ..Default::default()
+            },
+        );
         let got = pulse_tasks::get_compute(s, &req.id).expect("get compute");
         assert_eq!(
             (got.status.as_str(), got.executor.as_str()),
@@ -887,7 +896,13 @@ impl ComputeHarness {
             ..Default::default()
         })
         .expect("later store");
-        let log3 = once_daemon(&later, &self.hub_home);
+        let log3 = crate::test_helpers::once_daemon(
+            &later,
+            crate::daemon::DaemonOpts {
+                hub_home: self.hub_home.clone(),
+                ..Default::default()
+            },
+        );
         let got = pulse_tasks::get_compute(&later, &req.id).expect("released compute");
         assert_eq!(got.status, "released", "after the hours: {got:?}\n{log3}");
         assert!(
@@ -902,19 +917,6 @@ impl ComputeHarness {
             "machine not marked released: {mrow:?}"
         );
     }
-}
-
-pub(crate) fn once_daemon(s: &pulse_store::Store, hub_home: &str) -> String {
-    let cancel = pulse_bus::CancellationToken::new();
-    let w = crate::compute::new_compute_worker(
-        &cancel,
-        s,
-        crate::compute::ComputeOpts {
-            actor: "daemon".into(),
-            hub_home: hub_home.into(),
-        },
-    );
-    w.tick(&cancel, &s.now()).join("\n")
 }
 
 #[cfg(test)]

@@ -9,9 +9,16 @@ use crate::threads::*;
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, register as cli_register, write_json};
 use std::io::Write;
-use std::sync::{Mutex, Once};
+use std::sync::{Mutex, Once, OnceLock, RwLock};
 
-pub static mut UNINSTALL_SERVICE: Option<fn(&mut dyn Write) -> String> = None;
+pub type UninstallService = fn(&mut dyn Write) -> String;
+pub static UNINSTALL_SERVICE: OnceLock<RwLock<Option<UninstallService>>> = OnceLock::new();
+pub fn set_uninstall_service(f: Option<UninstallService>) {
+    *UNINSTALL_SERVICE
+        .get_or_init(|| RwLock::new(None))
+        .write()
+        .expect("uninstall service lock") = f;
+}
 static STDIN_BUF: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 pub fn set_stdin_for_tests(data: Option<Vec<u8>>) {
     *STDIN_BUF.lock().expect("stdin lock") = data;
@@ -268,7 +275,7 @@ fn run_agent(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             if c.json {
                 write_json(
                     &mut c.out,
-                    &serde_json::json!({"agent":row,"created":created}),
+                    &pulse_store::gomap! {"agent": row, "created": created},
                 )?
             } else {
                 writeln!(
@@ -526,6 +533,9 @@ fn run_thread(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let s = store(c)?;
     match args.first().map(String::as_str) {
         Some("list") => {
+            if args.len() != 1 {
+                return Err(usage("thread", "list takes no positional arguments"));
+            }
             let p = current_project(s, &c.project)?;
             let mut rows = thread_summaries(s, &p.slug, &c.now)?;
             let status = fs.get_string("status");
@@ -552,7 +562,10 @@ fn run_thread(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             let p = current_project(s, &c.project)?;
             let (sum, posts) = thread_detail(s, &p.slug, &args[1], &c.now)?;
             if c.json {
-                write_json(&mut c.out, &serde_json::json!({"thread":sum,"posts":posts}))?;
+                write_json(
+                    &mut c.out,
+                    &pulse_store::gomap! {"thread": sum, "posts": posts},
+                )?;
             } else {
                 render_thread_detail(&mut c.out, c.color, &sum, &posts, fs.get_bool("bodies"))?;
             }
@@ -648,7 +661,10 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 },
             )?;
             if c.json {
-                write_json(&mut c.out, &serde_json::json!({"job":j,"created":created}))?
+                write_json(
+                    &mut c.out,
+                    &pulse_store::gomap! {"job": j, "created": created},
+                )?
             } else if created {
                 writeln!(c.out, "{}", j.id)?;
             } else {
@@ -885,7 +901,10 @@ fn run_remove(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             writeln!(c.out, "would run: pulse service uninstall")?;
             return Ok(());
         }
-        let uninstall = unsafe { UNINSTALL_SERVICE };
+        let uninstall = *UNINSTALL_SERVICE
+            .get_or_init(|| RwLock::new(None))
+            .read()
+            .expect("uninstall service lock");
         let Some(f) = uninstall else {
             return Err(refuse_fix(
                 2,
@@ -1109,12 +1128,14 @@ mod tests {
 
     #[test]
     fn command_registers() {
+        let _serial = crate::test_helpers::serial();
         register_commands();
         assert!(pulse_cli::lookup("post").is_some());
     }
 
     #[test]
     fn post_summary_flag_help() {
+        let _serial = crate::test_helpers::serial();
         let mut fs = FlagSet::new("post");
         post_flags(&mut fs);
         let help = fs.lookup("summary").expect("summary flag").usage.clone();
@@ -1126,6 +1147,7 @@ mod tests {
 
     #[test]
     fn retry_command_output_and_json() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _home, s, p, _repo) = fixture();
         let job = make_failed_job(&s, &p.slug, "task:cli");
         let (out, err) = run_cmd(
@@ -1187,6 +1209,7 @@ mod tests {
 
     #[test]
     fn vote_summary_warnings() {
+        let _serial = crate::test_helpers::serial();
         no_tty();
         let (_home_dir, _home, s, _p, _repo) = fixture();
         let (suggestion, amendment, _finding) = seed_posts(&s);
@@ -1321,6 +1344,7 @@ mod tests {
 
     #[test]
     fn non_vote_summary_warnings() {
+        let _serial = crate::test_helpers::serial();
         no_tty();
         let (_home_dir, _home, s, _p, _repo) = fixture();
         for summary in ["up", "down"] {
@@ -1352,6 +1376,7 @@ mod tests {
 
     #[test]
     fn rejected_vote_summary_does_not_warn() {
+        let _serial = crate::test_helpers::serial();
         no_tty();
         let (_home_dir, _home, s, _p, _repo) = fixture();
         let (target, _am, _fin) = seed_posts(&s);
@@ -1627,6 +1652,7 @@ mod tests {
 
     #[test]
     fn oracle_command_scenarios() {
+        let _serial = crate::test_helpers::serial();
         no_tty();
         let Some(oracle_bin) = pulse_parity::oracle() else {
             eprintln!("no Go oracle; skipping oracle_command_scenarios");
@@ -1903,6 +1929,7 @@ mod tests {
 
     #[test]
     fn thread_cli_list_json_and_resolve() {
+        let _serial = crate::test_helpers::serial();
         no_tty();
         let (_home_dir, _home, s, _p, _repo) = fixture();
         create_post(
@@ -1965,6 +1992,7 @@ mod tests {
 
     #[test]
     fn post_for_owner_cli() {
+        let _serial = crate::test_helpers::serial();
         let (_home_dir, _home, s, _p, _repo) = fixture();
         for (args, want) in [
             (vec!["--for-owner"], true),
@@ -2017,6 +2045,7 @@ mod tests {
 
     #[test]
     fn vote_command() {
+        let _serial = crate::test_helpers::serial();
         no_tty();
         let (_home_dir, _home, s, _p, _repo) = fixture();
         let (sug, am, _) = seed_posts(&s);
@@ -2139,6 +2168,7 @@ mod tests {
 
     #[test]
     fn print_post_output_errors() {
+        let _serial = crate::test_helpers::serial();
         let err = print_post(
             &mut Context {
                 out: Box::new(ErrorWriter(io::ErrorKind::Other)),

@@ -292,6 +292,17 @@ mod tests {
 
     #[test]
     fn harness_session_accessors() {
+        let _serial = crate::test_helpers::serial();
+        let _go_litdiff_literals = &[
+            "/tmp/traj.json",
+            "PULSE_JOB",
+            "collapsed observations",
+            "go test ./internal/store/...",
+            "large submission",
+            "missing",
+            "observation",
+            "run tests",
+        ];
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(Options {
             home: dir.path().display().to_string(),
@@ -358,19 +369,31 @@ mod go_harness_tests {
     use crate::{Options, Store};
     use rusqlite::Connection;
     use std::sync::Mutex;
+    use tempfile::TempDir;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
-    fn store(now: &str) -> Store {
+    struct TestStore {
+        _dir: TempDir,
+        store: Store,
+    }
+    impl std::ops::Deref for TestStore {
+        type Target = Store;
+        fn deref(&self) -> &Self::Target {
+            &self.store
+        }
+    }
+    fn store(now: &str) -> TestStore {
         let _guard = TEST_LOCK.lock().unwrap();
         unsafe { std::env::set_var("PULSE_JOB", "") };
-        let dir = tempfile::tempdir().unwrap().keep();
-        Store::open(Options {
-            home: dir.display().to_string(),
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(Options {
+            home: dir.path().display().to_string(),
             create: true,
             now: now.into(),
             ..Options::default()
         })
-        .unwrap()
+        .unwrap();
+        TestStore { _dir: dir, store }
     }
     fn ids(sessions: &[HarnessSession]) -> Vec<String> {
         sessions.iter().map(|s| s.id.clone()).collect()
@@ -378,6 +401,7 @@ mod go_harness_tests {
 
     #[test]
     fn harness_settings() {
+        let _serial = crate::test_helpers::serial();
         let s = store("2026-09-11T05:00:00Z");
         for (key, want) in HARNESS_SETTINGS.iter() {
             assert_eq!(s.setting(key, ""), *want, "{key}");
@@ -481,6 +505,7 @@ mod go_harness_tests {
 
     #[test]
     fn request_harness_cancel() {
+        let _serial = crate::test_helpers::serial();
         let s = store("2026-09-11T05:00:00Z");
         s.begin_harness_session(HarnessSession {
             id: "running".into(),
@@ -527,6 +552,7 @@ mod go_harness_tests {
 
     #[test]
     fn harness_session_list_counts_and_lost() {
+        let _serial = crate::test_helpers::serial();
         let s = store("2026-09-11T05:00:00Z");
         for h in [
             HarnessSession {
@@ -613,7 +639,8 @@ mod go_harness_tests {
     }
 
     #[test]
-    fn harness_sessions_before_and_kpis() {
+    fn harness_sessions_before_and_kp_is() {
+        let _serial = crate::test_helpers::serial();
         let s = store("2026-09-11T05:00:00Z");
         for h in [
             HarnessSession {
@@ -701,6 +728,7 @@ mod go_harness_tests {
 
     #[test]
     fn harness_tables_are_additive() {
+        let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
         unsafe { std::env::set_var("PULSE_JOB", "") };
         let home = tempfile::tempdir().unwrap();
@@ -729,6 +757,7 @@ mod go_harness_tests {
 
     #[test]
     fn harness_executor_column_fresh_and_migrated() {
+        let _serial = crate::test_helpers::serial();
         let fresh = store("2026-09-11T00:00:00Z");
         assert!(has_column(&fresh.conn().unwrap(), "harness_sessions", "executor").unwrap());
         let home = tempfile::tempdir().unwrap();

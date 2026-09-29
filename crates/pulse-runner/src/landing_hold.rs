@@ -467,7 +467,8 @@ mod tests {
         let s = new_store();
         let (proj, repo, bare) = push_fixture(&s);
         set_setting(&s, "landing.push", "main");
-        let other = tempfile::tempdir().expect("other").keep().join("other");
+        let other_dir = tempfile::tempdir().expect("other");
+        let other = other_dir.path().join("other");
         run(
             ".",
             &["git", "clone", "-q", &bare, &other.display().to_string()],
@@ -1068,7 +1069,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: daemon::daemon: expected one landing held log line got no landing output because daemon drops probes.ready lines"]
     fn daemon_logs_landing_hold_once() {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
@@ -1110,6 +1110,7 @@ mod tests {
             "# proj\n\nedited\n",
         )
         .unwrap();
+        let out = crate::test_helpers::OutBuf::new();
         let result = crate::daemon::daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
@@ -1117,6 +1118,7 @@ mod tests {
                 worker_cmd: "sh -c 'echo SUMMARY: ran'".into(),
                 max_loops: 1,
                 no_watchdog: true,
+                out: Some(out.writer()),
                 ..Default::default()
             },
         );
@@ -1124,7 +1126,7 @@ mod tests {
         let expected = format!(
             "landing held proj: 1 pending landing job; deferred: the checkout of {dir} has uncommitted changes"
         );
-        let observed_log = String::new();
+        let observed_log = out.string();
         assert_eq!(
             observed_log.matches(&expected).count(),
             1,
