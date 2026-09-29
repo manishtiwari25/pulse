@@ -62,10 +62,26 @@ impl Globals {
 
 static REGISTER: Once = Once::new();
 
+/// Everything Go's `main.go` pulled in with blank imports: every package's
+/// `init()` registered its commands (and the model providers registered
+/// themselves). Order does not matter; the help output sorts by group and name.
 pub fn register_all() {
     REGISTER.call_once(|| {
         register_version();
-        // Coordinator: add every command crate's register() call here as ports land.
+        pulse_board::register();
+        pulse_cred_command::register();
+        pulse_evolve::register();
+        pulse_goals_command::register();
+        pulse_harness::register();
+        pulse_hooks::register();
+        pulse_provider_copilot::register();
+        pulse_provider_openai::register();
+        pulse_records::register();
+        pulse_tally::register();
+        pulse_tasks::register();
+        pulse_evolve::init();
+        // Still to land: hub, inspect, runner (+ runner's init() side effects:
+        // its compute providers and tasks.LoginSourceCheck).
     });
 }
 
@@ -158,10 +174,13 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         bind(&mut fs);
     }
     let args = if cmd.raw {
+        // raw commands parse their own flags (Go: cmd.Raw); no late globals
         rest.to_vec()
     } else {
+        // the global flags are accepted after the command word too, so the
+        // Python spellings (`pulse post --project X ...`) keep working
         late_bind(&mut fs);
-        match parse_interleaved(&mut fs, rest) {
+        let args = match parse_interleaved(&mut fs, rest) {
             Ok(a) => a,
             Err(FlagError::Help) => {
                 let _ = pulse_cli::help_command(out, color, &cmd);
@@ -171,9 +190,10 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
                 let _ = writeln!(err, "pulse {name}: {m}\n  fix: pulse help {name}");
                 return 2;
             }
-        }
+        };
+        apply_late(&fs, &mut ctx);
+        args
     };
-    apply_late(&fs, &mut ctx);
     ctx.args = args.clone();
 
     if !cmd.no_store {
@@ -194,7 +214,18 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             let _ = write!(err, "{}", err_buf.string());
             0
         }
-        Err(e) => report(name, e, err),
+        // Go: errors.Is(err, flag.ErrHelp) -> the command's help, exit 0
+        Err(e) if matches!(e.downcast_ref::<FlagError>(), Some(FlagError::Help)) => {
+            let _ = write!(out, "{}", out_buf.string());
+            let _ = write!(err, "{}", err_buf.string());
+            let _ = pulse_cli::help_command(out, color, &cmd);
+            0
+        }
+        Err(e) => {
+            let _ = write!(out, "{}", out_buf.string());
+            let _ = write!(err, "{}", err_buf.string());
+            report(name, e, err)
+        }
     }
 }
 
