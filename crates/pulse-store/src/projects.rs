@@ -1,10 +1,10 @@
 use crate::store::Store;
 use anyhow::Result;
 use rusqlite::OptionalExtension;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Project {
     pub slug: String,
     pub name: String,
@@ -38,7 +38,7 @@ fn scan_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     })
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Agent {
     pub name: String,
     pub display: String,

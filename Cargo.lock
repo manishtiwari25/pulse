@@ -1405,6 +1405,7 @@ dependencies = [
  "pulse-gitenv",
  "pulse-store",
  "pulse-testutil",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1444,12 +1445,16 @@ name = "pulse-goals"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "pulse-bus",
  "pulse-cli",
  "pulse-store",
  "pulse-testutil",
+ "regex",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
@@ -1601,6 +1606,8 @@ dependencies = [
  "chrono",
  "pulse-provider",
  "pulse-testutil",
+ "rand",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1625,6 +1632,7 @@ name = "pulse-provider-openai"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "pulse-provider",
  "pulse-testutil",
  "reqwest",
@@ -1640,10 +1648,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "fs2",
  "pulse-cli",
  "pulse-store",
  "pulse-testutil",
  "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1753,6 +1763,8 @@ dependencies = [
  "anyhow",
  "pulse-gitenv",
  "pulse-testutil",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

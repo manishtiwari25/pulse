@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct Record {
     pub id: String,
     pub project: String,
@@ -28,7 +28,7 @@ pub struct Record {
     pub current_rev: i64,
     pub origin: String,
 }
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct Revision {
     pub record_id: String,
     pub rev: i64,
@@ -118,7 +118,7 @@ pub struct RecordFilter {
     pub slug: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RecordDraft {
     pub record_id: String,
     pub base_rev: i64,
@@ -171,15 +171,16 @@ impl Store {
             .optional()?
             .ok_or_else(|| anyhow!(ErrNoRecord))?;
         let want = if rev <= 0 { r.current_rev } else { rev };
-        let row:Option<(String,String,String,String)>=conn.query_row("SELECT frontmatter, body, author, at, note FROM record_revisions WHERE record_id = ? AND rev = ?",params![id,want],|rr|Ok((rr.get(0)?,rr.get(1)?,rr.get(2)?,rr.get(3)?))).optional()?;
-        let Some((raw, body, author, at)) = row else {
+        let row: Option<(String, String, String, String, String)> = conn
+            .query_row(
+                "SELECT frontmatter, body, author, at, note FROM record_revisions WHERE record_id = ? AND rev = ?",
+                params![id, want],
+                |rr| Ok((rr.get(0)?, rr.get(1)?, rr.get(2)?, rr.get(3)?, rr.get(4)?)),
+            )
+            .optional()?;
+        let Some((raw, body, author, at, note)) = row else {
             return Ok((r, None));
         };
-        let note: String = conn.query_row(
-            "SELECT note FROM record_revisions WHERE record_id = ? AND rev = ?",
-            params![id, want],
-            |rr| rr.get(0),
-        )?;
         let frontmatter = serde_json::from_str(&raw).unwrap_or_default();
         Ok((
             r,
@@ -396,7 +397,7 @@ mod tests {
     use crate::{Options, Store};
 
     #[test]
-    fn test_put_get_record() {
+    fn put_get_record() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(Options {
             home: dir.path().display().to_string(),
@@ -458,5 +459,134 @@ mod tests {
             1
         );
         s.set_record_status("ADR-001", "Retired", "human").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod go_record_tests {
+    use crate::store::{has_column, init_schema};
+    use crate::{
+        COMPUTE_PROVIDERS, COMPUTE_RULES, RUNNER_COLUMNS, STORE_NAME, compute_size_setting,
+        secret_shaped, validate_setting,
+    };
+    use crate::{Options, Store};
+    use rusqlite::Connection;
+    use std::sync::Mutex;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn compute_settings() {
+        assert!(validate_setting("compute.max_vms", "-1").is_err());
+        assert_eq!(validate_setting("compute.max_vms", "3").unwrap(), "3");
+        assert!(validate_setting("compute.azure.subscription", "ghp_abcdefghijklmnop").is_err());
+        assert_eq!(
+            validate_setting("compute.azure.location", "westeurope").unwrap(),
+            "westeurope"
+        );
+        assert!(validate_setting("compute.provider", "moon").is_err());
+        for p in COMPUTE_PROVIDERS {
+            assert_eq!(validate_setting("compute.provider", p).unwrap(), *p);
+            assert!(!compute_size_setting(p).is_empty());
+            assert!(!COMPUTE_RULES[&compute_size_setting(p)].kind.is_empty());
+        }
+        assert_eq!(compute_size_setting("moon"), "compute.azure.vm_size");
+        assert_eq!(compute_size_setting("gcp"), "compute.gcp.machine_type");
+        assert!(
+            validate_setting(
+                "compute.aws.image",
+                "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+            )
+            .unwrap()
+            .starts_with("/aws/")
+        );
+        assert!(validate_setting("compute.gcp.project", "AKIAIOSFODNN7EXAMPLE1234").is_err());
+        assert!(secret_shaped("-----BEGIN RSA PRIVATE KEY-----"));
+        assert!(!secret_shaped(
+            "/usr/local/bin:/opt/homebrew/bin/some/very/long/path/that/keeps/going/on"
+        ));
+        let _guard = TEST_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let home = tempfile::tempdir().unwrap();
+        crate::create(home.path().join(STORE_NAME)).unwrap();
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert_eq!(s.setting("compute.provider", ""), "azure");
+        assert_eq!(s.setting_int("compute.max_vms"), 0);
+        s.set_setting("human", "compute.auto_approve", "1").unwrap();
+        assert_eq!(s.setting("compute.auto_approve", ""), "1");
+        assert_eq!(s.setting("evolve.limits", ""), "none");
+        assert_eq!(s.setting("evolve.tolerance", ""), "0.02");
+        assert!(validate_setting("evolve.tolerance", "1.5").is_err());
+        assert_eq!(s.setting("compute.self_heal", ""), "1");
+        assert_eq!(s.setting("compute.self_retire", ""), "1");
+        assert_eq!(s.setting_int("compute.retire_grace_hours"), 24);
+        for name in ["compute.self_heal", "compute.self_retire"] {
+            assert_eq!(validate_setting(name, "0").unwrap(), "0");
+            assert!(validate_setting(name, "yes").is_err());
+        }
+        assert!(validate_setting("compute.retire_grace_hours", "0").is_err());
+        assert_eq!(
+            validate_setting("compute.retire_grace_hours", "48").unwrap(),
+            "48"
+        );
+    }
+
+    #[test]
+    fn additive_columns() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let home = tempfile::tempdir().unwrap();
+        let db = Connection::open(home.path().join(STORE_NAME)).unwrap();
+        crate::store::configure_conn(&db, false).unwrap();
+        init_schema(&db, "2026-09-08T00:00:00Z").unwrap();
+        assert!(!has_column(&db, "executors", "admin").unwrap());
+        drop(db);
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        for c in RUNNER_COLUMNS {
+            assert!(
+                has_column(&s.conn().unwrap(), c.table, c.name).unwrap(),
+                "{}.{}",
+                c.table,
+                c.name
+            );
+        }
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO executors (name, created_at) VALUES ('x', '2026-09-08T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        let row: (String, String) = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT admin, healed_at FROM executors WHERE name = 'x'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("".into(), "".into()));
+        s.conn().unwrap().execute("INSERT INTO retired_vms (executor, provider, resource_group, name, deallocated_at, delete_after) VALUES ('x', 'azure', 'rg', 'vm', 'a', 'b')", []).unwrap();
+        assert!(s.additive_complete());
+        s.ensure_records().unwrap();
+        let n: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'schema.records'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }

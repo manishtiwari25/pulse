@@ -13,6 +13,7 @@ pulse-cred.workspace = true
 pulse-gitenv.workspace = true
 pulse-store.workspace = true
 anyhow.workspace = true
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

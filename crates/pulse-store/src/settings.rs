@@ -2,7 +2,7 @@ use crate::store::{HUMAN_AGENT, Store, input_err};
 use anyhow::Result;
 use regex::Regex;
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
@@ -498,7 +498,7 @@ fn trim_float(f: f64) -> String {
     s
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SettingRow {
     pub name: String,
     pub value: String,
@@ -632,5 +632,409 @@ mod tests {
         assert!(!s.owner_away());
         assert_eq!(compute_size_setting("moon"), "compute.azure.vm_size");
         assert!(secret_shaped("ghp_abcdefghijklmnop"));
+    }
+}
+
+#[cfg(test)]
+mod go_settings_tests {
+    use super::*;
+    use crate::{Options, Store};
+    use std::fs;
+    use std::sync::Mutex;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    fn set_job_empty() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        guard
+    }
+    fn store(now: &str) -> Store {
+        let dir = tempfile::tempdir().unwrap().keep();
+        Store::open(Options {
+            home: dir.display().to_string(),
+            create: true,
+            now: now.into(),
+            ..Options::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn decimal_setting() {
+        let _guard = set_job_empty();
+        let s = store("2026-09-06T10:00:00Z");
+        for (input, want) in [
+            ("0.05", "0.05"),
+            (" .5 ", "0.5"),
+            ("0", "0"),
+            ("1e-3", "0.001"),
+            ("1", "1"),
+        ] {
+            s.set_setting("human", "evolve.tolerance", input).unwrap();
+            assert_eq!(s.setting("evolve.tolerance", ""), want);
+        }
+        for (input, want) in [
+            (
+                "abc",
+                "evolve.tolerance takes a decimal number such as 0.02, not 'abc'",
+            ),
+            (
+                "NaN",
+                "evolve.tolerance takes a decimal number such as 0.02, not 'NaN'",
+            ),
+            (
+                "Inf",
+                "evolve.tolerance takes a decimal number such as 0.02, not 'Inf'",
+            ),
+            ("-0.1", "evolve.tolerance cannot be negative, not -0.1"),
+            (
+                "1.5",
+                "evolve.tolerance is a share: it cannot exceed 1, not 1.5",
+            ),
+        ] {
+            assert_eq!(
+                s.set_setting("human", "evolve.tolerance", input)
+                    .unwrap_err()
+                    .to_string(),
+                want
+            );
+        }
+        assert_eq!(
+            s.set_setting("human", "amend_majority", "0.05")
+                .unwrap_err()
+                .to_string(),
+            "A majority must be a fraction such as 2/3, not '0.05'"
+        );
+    }
+
+    #[test]
+    fn heldout_mode_setting() {
+        let _guard = set_job_empty();
+        let s = store("2026-09-08T10:00:00Z");
+        assert_eq!(s.setting("evolve.heldout", ""), "auto");
+        for (input, want) in [("owner", "owner"), (" Owner ", "owner"), ("auto", "auto")] {
+            s.set_setting("human", "evolve.heldout", input).unwrap();
+            assert_eq!(s.setting("evolve.heldout", ""), want);
+        }
+        for input in ["off", "1", ""] {
+            assert!(
+                s.set_setting("human", "evolve.heldout", input)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("evolve.heldout takes one of auto, owner")
+            );
+        }
+        assert!(
+            EVOLVE_RULES["evolve.heldout"]
+                .description
+                .contains("ADR-033")
+        );
+    }
+
+    #[test]
+    fn daemon_self_update_settings() {
+        let _guard = set_job_empty();
+        let s = store("2026-09-08T10:00:00Z");
+        assert_eq!(s.setting("daemon.self_update", ""), "on");
+        assert_eq!(s.setting("daemon.self_update_retry_minutes", ""), "60");
+        s.set_setting("daemon", "daemon.self_update", " OFF ")
+            .unwrap();
+        assert_eq!(s.setting("daemon.self_update", ""), "off");
+        assert!(
+            s.set_setting("human", "daemon.self_update", "1")
+                .unwrap_err()
+                .to_string()
+                .contains("daemon.self_update takes one of on, off")
+        );
+        assert!(
+            s.set_setting("human", "daemon.self_update_retry_minutes", "0")
+                .is_err()
+        );
+        s.set_setting("human", "daemon.self_update_retry_minutes", "15")
+            .unwrap();
+        assert_eq!(s.setting("daemon.self_update_retry_minutes", ""), "15");
+        let names = extra_setting_names();
+        let lead_start = names.len() - LEAD_SETTINGS.len() - OWNER_SETTINGS.len();
+        let segment = names[lead_start - DAEMON_SETTINGS.len()..lead_start].join(" ");
+        for name in [
+            "daemon.self_update",
+            "daemon.self_update_retry_minutes",
+            "landing.push",
+            "push.credential",
+        ] {
+            assert!(segment.contains(name));
+        }
+        assert!(
+            DAEMON_RULES["daemon.self_update"]
+                .description
+                .contains("ADR-035")
+        );
+        assert_eq!(s.setting("landing.push", ""), "off");
+        assert!(
+            s.set_setting("human", "landing.push", "origin")
+                .unwrap_err()
+                .to_string()
+                .contains("landing.push takes one of off, main")
+        );
+        s.set_setting("human", "landing.push", " Main ").unwrap();
+        assert_eq!(s.setting("landing.push", ""), "main");
+        assert!(DAEMON_RULES["landing.push"].description.contains("ADR-037"));
+        assert_eq!(s.setting("push.credential", ""), "");
+        assert!(
+            DAEMON_RULES["push.credential"]
+                .description
+                .contains("ADR-041")
+        );
+        s.set_setting(
+            "human",
+            "push.credential",
+            " op://PULSE/pulse push key/private key?ssh-format=openssh ",
+        )
+        .unwrap();
+        assert_eq!(
+            s.setting("push.credential", ""),
+            "op://PULSE/pulse push key/private key?ssh-format=openssh"
+        );
+        for reference in [
+            "keychain://pulse/push-key",
+            "file:///Users/me/.pulse/secrets/push_key",
+        ] {
+            s.set_setting("human", "push.credential", reference)
+                .unwrap();
+            assert_eq!(s.setting("push.credential", ""), reference);
+        }
+        assert!(
+            s.set_setting(
+                "human",
+                "push.credential",
+                "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----"
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("never the key itself")
+        );
+        assert!(
+            s.set_setting("human", "push.credential", "ghp_abcdefghijklmnop")
+                .unwrap_err()
+                .to_string()
+                .contains("never the key itself")
+        );
+        assert!(
+            s.set_setting("human", "push.credential", "vault://x/y")
+                .unwrap_err()
+                .to_string()
+                .contains("unknown scheme")
+        );
+        assert!(
+            s.set_setting("human", "push.credential", "file://relative")
+                .unwrap_err()
+                .to_string()
+                .contains("absolute path")
+        );
+        s.set_setting("human", "push.credential", "").unwrap();
+        assert_eq!(s.setting("push.credential", ""), "");
+    }
+
+    #[test]
+    fn daemon_sweep_settings() {
+        let _guard = set_job_empty();
+        let s = store("2026-09-08T10:00:00Z");
+        for (key, want) in [
+            ("daemon.sweep", "on"),
+            ("daemon.sweep_grace_minutes", "30"),
+            ("daemon.sweep_branch_days", "7"),
+            ("daemon.sweep_keep_days", "30"),
+        ] {
+            assert_eq!(s.setting(key, ""), want);
+            assert!(extra_setting_names().contains(&key.to_string()));
+        }
+        assert!(
+            s.set_setting("human", "daemon.sweep", "maybe")
+                .unwrap_err()
+                .to_string()
+                .contains("daemon.sweep takes one of on, off")
+        );
+        s.set_setting("human", "daemon.sweep", " OFF ").unwrap();
+        assert_eq!(s.setting("daemon.sweep", ""), "off");
+        for key in ["daemon.sweep_grace_minutes", "daemon.sweep_branch_days"] {
+            s.set_setting("human", key, "0").unwrap();
+            assert!(s.set_setting("human", key, "-1").is_err());
+        }
+        assert!(
+            s.set_setting("human", "daemon.sweep_keep_days", "0")
+                .is_err()
+        );
+        s.set_setting("human", "daemon.sweep_keep_days", "90")
+            .unwrap();
+        assert_eq!(s.setting("daemon.sweep_keep_days", ""), "90");
+    }
+
+    #[test]
+    fn lead_idle_settings() {
+        let _guard = set_job_empty();
+        let s = store("2026-09-08T10:00:00Z");
+        assert_eq!(s.setting("lead.idle_hours", ""), "6");
+        assert_eq!(s.setting("lead.idle_max_jobs", ""), "3");
+        assert!(
+            s.set_setting("human", "lead.idle_hours", "x")
+                .unwrap_err()
+                .to_string()
+                .contains("takes a whole number")
+        );
+        assert!(s.set_setting("human", "lead.idle_hours", "-1").is_err());
+        s.set_setting("human", "lead.idle_hours", "0").unwrap();
+        assert_eq!(s.setting("lead.idle_hours", ""), "0");
+        assert!(s.set_setting("human", "lead.idle_max_jobs", "0").is_err());
+        s.set_setting("human", "lead.idle_max_jobs", "4").unwrap();
+        assert_eq!(s.setting("lead.idle_max_jobs", ""), "4");
+        let names = extra_setting_names();
+        let lead_start = names.len() - OWNER_SETTINGS.len() - LEAD_SETTINGS.len();
+        assert_eq!(
+            &names[lead_start..lead_start + 3],
+            ["lead.ballot_cap", "lead.ballot_hours", "lead.idle_hours"]
+        );
+        assert_eq!(s.setting("lead.research_minutes", ""), "60");
+        assert!(
+            s.set_setting("human", "lead.research_per_day", "0")
+                .is_err()
+        );
+        assert!(s.set_setting("human", "lead.ballot_hours", "0").is_err());
+        s.set_setting("human", "lead.research_minutes", "0")
+            .unwrap();
+    }
+
+    #[test]
+    fn light_model_setting() {
+        let _guard = set_job_empty();
+        let s = store("2026-09-08T10:00:00Z");
+        assert_eq!(s.setting("light_model", ""), "");
+        let n: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE name = 'light_model'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
+        for kind in [
+            "task",
+            "improve",
+            "experiment",
+            "lead",
+            "answer",
+            "ballot",
+            "reflect",
+            "onboard",
+            "clean",
+            "baseline",
+        ] {
+            assert_eq!(s.run_model(kind), "");
+        }
+        s.set_setting("human", "worker_model", " claude-fable-5.1 ")
+            .unwrap();
+        assert_eq!(s.run_model("lead"), "claude-fable-5.1");
+        s.set_setting("human", "light_model", " claude-sonnet-5 ")
+            .unwrap();
+        for kind in IMPLEMENTATION_JOB_KINDS {
+            assert_eq!(s.run_model(kind), "claude-fable-5.1");
+        }
+        for kind in [
+            "lead", "answer", "ballot", "reflect", "onboard", "clean", "baseline", "",
+        ] {
+            assert_eq!(s.run_model(kind), "claude-sonnet-5");
+        }
+        s.set_setting("human", "light_model", "").unwrap();
+        assert_eq!(s.run_model("lead"), "claude-fable-5.1");
+        assert_eq!(extra_setting_names()[0], "light_model");
+        assert!(
+            MODEL_RULES["light_model"]
+                .description
+                .contains("worker_model")
+        );
+        assert!(
+            SETTING_RULES["worker_model"]
+                .description
+                .contains("light_model")
+        );
+    }
+
+    #[test]
+    fn owner_presence_setting() {
+        let _guard = set_job_empty();
+        let s = store("2026-09-08T10:00:00Z");
+        assert_eq!(s.setting("owner.presence", ""), OWNER_PRESENT);
+        assert!(!s.owner_away());
+        s.set_setting("human", "owner.presence", " Away ").unwrap();
+        assert_eq!(s.setting("owner.presence", ""), OWNER_AWAY);
+        assert!(s.owner_away());
+        assert!(
+            s.set_setting("human", "owner.presence", "sometimes")
+                .unwrap_err()
+                .to_string()
+                .contains("owner.presence takes one of present, away")
+        );
+        for actor in ["proj-lead", "aurora", "daemon"] {
+            s.set_setting(actor, "owner.presence", "away").unwrap();
+            assert!(!s.owner_away());
+        }
+        s.set_setting("human:dashboard", "owner.presence", "away")
+            .unwrap();
+        assert!(s.owner_away());
+        for actor in ["human", "human:dashboard", "human:cli"] {
+            assert!(human_actor(actor));
+        }
+        for actor in ["", "humanoid", "proj-lead", "daemon", "pulse"] {
+            assert!(!human_actor(actor));
+        }
+        assert!(
+            validate_setting("owner.mood", "away")
+                .unwrap_err()
+                .to_string()
+                .contains("Owner settings: owner.presence")
+        );
+        let names = extra_setting_names();
+        assert_eq!(names[names.len() - 1], "owner.presence");
+    }
+
+    #[test]
+    fn mock_settings_list_every_store_setting() {
+        let Ok(raw) = fs::read_to_string("web/hub/mock/api/settings.json") else {
+            return;
+        };
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let mut mock = BTreeMap::new();
+        for row in doc["settings"].as_array().unwrap() {
+            let name = row["name"].as_str().unwrap().to_string();
+            assert!(
+                mock.insert(
+                    name,
+                    (
+                        row["kind"].as_str().unwrap().to_string(),
+                        row["default"].as_str().unwrap().to_string()
+                    )
+                )
+                .is_none()
+            );
+        }
+        for (settings, rules) in [
+            (&*DAEMON_SETTINGS, &*DAEMON_RULES),
+            (&*EVOLVE_SETTINGS, &*EVOLVE_RULES),
+            (&*LEAD_SETTINGS, &*LEAD_RULES),
+            (&*OWNER_SETTINGS, &*OWNER_RULES),
+            (&*HARNESS_SETTINGS, &*HARNESS_RULES),
+        ] {
+            for (name, want_default) in settings {
+                let got = mock
+                    .get(name)
+                    .unwrap_or_else(|| panic!("mock lacks {name}"));
+                let want_kind = &rules[name].kind;
+                if !want_kind.is_empty() {
+                    assert_eq!(&got.0, want_kind, "{name}");
+                }
+                assert_eq!(&got.1, want_default, "{name}");
+            }
+        }
     }
 }

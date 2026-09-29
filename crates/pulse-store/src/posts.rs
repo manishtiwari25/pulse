@@ -22,12 +22,11 @@ pub fn post_for_owner(extra: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[test]
-    fn test_post_for_owner() {
-        assert!(!post_for_owner(r#"{}"#).unwrap());
-        assert!(post_for_owner(r#"{"for_owner":" TRUE "}"#).unwrap());
-        assert!(post_for_owner(r#"{"for_owner":1}"#).is_err());
-        assert!(post_for_owner(r#"[]"#).is_err());
+    fn post_for_owner() {
+        assert!(!super::post_for_owner(r#"{}"#).unwrap());
+        assert!(super::post_for_owner(r#"{"for_owner":" TRUE "}"#).unwrap());
+        assert!(super::post_for_owner(r#"{"for_owner":1}"#).is_err());
+        assert!(super::post_for_owner(r#"[]"#).is_err());
     }
 }

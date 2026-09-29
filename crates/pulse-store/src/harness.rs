@@ -1,9 +1,9 @@
 use crate::store::{Store, input_err};
 use anyhow::{Result, anyhow};
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct HarnessSession {
     pub id: String,
     pub run_id: String,
@@ -30,7 +30,7 @@ pub struct HarnessSession {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub cancel_requested_at: String,
 }
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct HarnessStep {
     pub session_id: String,
     pub n: i64,
@@ -59,7 +59,7 @@ pub fn harness_session_cursor(h: &HarnessSession) -> String {
 fn parse_cursor(cursor: &str) -> (&str, &str) {
     cursor.rsplit_once('|').unwrap_or((cursor, ""))
 }
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct HarnessCounts {
     pub running: i64,
     pub today: i64,
@@ -291,7 +291,7 @@ mod tests {
     use crate::{Options, Store};
 
     #[test]
-    fn test_harness_session_accessors() {
+    fn harness_session_accessors() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(Options {
             home: dir.path().display().to_string(),
@@ -344,5 +344,423 @@ mod tests {
             s.harness_session_head("hs-1").unwrap().unwrap().status,
             "submitted"
         );
+    }
+}
+
+#[cfg(test)]
+mod go_harness_tests {
+    use super::*;
+    use crate::store::{has_column, init_schema};
+    use crate::{
+        HARNESS_RULES, HARNESS_SETTINGS, SETTING_RULES, STORE_NAME, harness_setting_names,
+        validate_setting,
+    };
+    use crate::{Options, Store};
+    use rusqlite::Connection;
+    use std::sync::Mutex;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    fn store(now: &str) -> Store {
+        let _guard = TEST_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let dir = tempfile::tempdir().unwrap().keep();
+        Store::open(Options {
+            home: dir.display().to_string(),
+            create: true,
+            now: now.into(),
+            ..Options::default()
+        })
+        .unwrap()
+    }
+    fn ids(sessions: &[HarnessSession]) -> Vec<String> {
+        sessions.iter().map(|s| s.id.clone()).collect()
+    }
+
+    #[test]
+    fn harness_settings() {
+        let s = store("2026-09-11T05:00:00Z");
+        for (key, want) in HARNESS_SETTINGS.iter() {
+            assert_eq!(s.setting(key, ""), *want, "{key}");
+        }
+        let stored: i64 = s.conn().unwrap().query_row("SELECT COUNT(*) FROM settings WHERE name IN ('harness', 'provider', 'harness.max_steps', 'harness.max_cost', 'harness.keep_observations', 'harness.system_prompt', 'harness.step_timeout', 'harness.output_limit')", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, 0);
+        assert!(s.harness_native());
+        s.set_setting("human", "harness", "copilot-cli").unwrap();
+        assert!(!s.harness_native());
+        assert!(
+            s.set_setting("human", "harness", "moon")
+                .unwrap_err()
+                .to_string()
+                .contains("harness takes one of native, copilot-cli")
+        );
+        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, harness.system_prompt, provider, provider.openai.base_url"));
+        assert_eq!(validate_setting("provider", "Copilot").unwrap(), "copilot");
+        assert_eq!(validate_setting("provider", "OpenAI").unwrap(), "openai");
+        assert_eq!(HARNESS_RULES["provider"].choices, vec!["copilot", "openai"]);
+        assert_eq!(
+            s.setting("provider.openai.base_url", ""),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            s.provider_settings()["provider.openai.base_url"],
+            "https://api.openai.com/v1"
+        );
+        s.set_setting(
+            "human",
+            "provider.openai.base_url",
+            "http://127.0.0.1:11434/v1",
+        )
+        .unwrap();
+        assert_eq!(
+            s.provider_settings()["provider.openai.base_url"],
+            "http://127.0.0.1:11434/v1"
+        );
+        for (name, bad, good) in [
+            ("harness.max_steps", "0", "1"),
+            ("harness.keep_observations", "0", "1"),
+            ("harness.step_timeout", "9", "10"),
+            ("harness.output_limit", "999", "1000"),
+        ] {
+            assert!(
+                s.set_setting("human", name, bad)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&format!("{name} must be at least"))
+            );
+            s.set_setting("human", name, good).unwrap();
+            assert_eq!(s.setting(name, ""), good);
+        }
+        assert_eq!(validate_setting("harness.max_cost", "0.5").unwrap(), "0.5");
+        assert!(
+            validate_setting("harness.max_cost", "abc")
+                .unwrap_err()
+                .to_string()
+                .contains("harness.max_cost takes a number")
+        );
+        assert!(
+            validate_setting("harness.max_cost", "-0.1")
+                .unwrap_err()
+                .to_string()
+                .contains("harness.max_cost must be at least")
+        );
+        assert_eq!(
+            validate_setting("harness.system_prompt", "Hello {{.Cwd}}").unwrap(),
+            "Hello {{.Cwd}}"
+        );
+        assert!(
+            validate_setting("harness.system_prompt", "{{if}}")
+                .unwrap_err()
+                .to_string()
+                .contains("harness.system_prompt is not a valid Go text/template")
+        );
+        assert!(
+            SETTING_RULES["runner_cmd"]
+                .description
+                .contains("copilot-cli")
+        );
+        assert!(
+            SETTING_RULES["max_ai_credits"]
+                .description
+                .contains("copilot CLI")
+        );
+        assert_eq!(
+            harness_setting_names(),
+            vec![
+                "harness",
+                "harness.keep_observations",
+                "harness.max_cost",
+                "harness.max_steps",
+                "harness.output_limit",
+                "harness.step_timeout",
+                "harness.system_prompt",
+                "provider",
+                "provider.openai.base_url"
+            ]
+        );
+    }
+
+    #[test]
+    fn request_harness_cancel() {
+        let s = store("2026-09-11T05:00:00Z");
+        s.begin_harness_session(HarnessSession {
+            id: "running".into(),
+            ..HarnessSession::default()
+        })
+        .unwrap();
+        assert!(s.request_harness_cancel("running").unwrap());
+        assert_eq!(
+            s.harness_session_head("running")
+                .unwrap()
+                .unwrap()
+                .cancel_requested_at,
+            "2026-09-11T05:00:00Z"
+        );
+        assert!(
+            s.request_harness_cancel("running")
+                .unwrap_err()
+                .downcast_ref::<ErrHarnessCancelPending>()
+                .is_some()
+        );
+        s.begin_harness_session(HarnessSession {
+            id: "done".into(),
+            ..HarnessSession::default()
+        })
+        .unwrap();
+        s.finish_harness_session(
+            "done",
+            "submitted",
+            "submitted",
+            "SUMMARY: done",
+            "",
+            0.0,
+            "",
+        )
+        .unwrap();
+        assert!(!s.request_harness_cancel("done").unwrap());
+        assert!(
+            s.request_harness_cancel("missing")
+                .unwrap_err()
+                .downcast_ref::<rusqlite::Error>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn harness_session_list_counts_and_lost() {
+        let s = store("2026-09-11T05:00:00Z");
+        for h in [
+            HarnessSession {
+                id: "old-running".into(),
+                job_id: "job-old".into(),
+                agent: "agent-a".into(),
+                project: "proj".into(),
+                started_at: "2026-09-10T23:00:00Z".into(),
+                updated_at: "2026-09-10T23:10:00Z".into(),
+                ..HarnessSession::default()
+            },
+            HarnessSession {
+                id: "today-running".into(),
+                job_id: "job-2".into(),
+                agent: "agent-a".into(),
+                project: "proj".into(),
+                started_at: "2026-09-11T01:00:00Z".into(),
+                updated_at: "2026-09-11T01:10:00Z".into(),
+                ..HarnessSession::default()
+            },
+            HarnessSession {
+                id: "today-failed".into(),
+                job_id: "job-3".into(),
+                agent: "agent-b".into(),
+                project: "proj".into(),
+                started_at: "2026-09-11T02:00:00Z".into(),
+                updated_at: "2026-09-11T02:10:00Z".into(),
+                ..HarnessSession::default()
+            },
+            HarnessSession {
+                id: "other-project".into(),
+                job_id: "job-4".into(),
+                agent: "agent-a".into(),
+                project: "other".into(),
+                started_at: "2026-09-11T03:00:00Z".into(),
+                updated_at: "2026-09-11T03:10:00Z".into(),
+                ..HarnessSession::default()
+            },
+        ] {
+            s.begin_harness_session(h).unwrap();
+        }
+        s.finish_harness_session("today-failed", "provider_error", "1", "", "boom", 0.0, "")
+            .unwrap();
+        assert_eq!(
+            ids(&s
+                .harness_sessions(HarnessSessionFilter {
+                    project: "proj".into(),
+                    limit: 2,
+                    ..HarnessSessionFilter::default()
+                })
+                .unwrap()),
+            vec!["today-failed", "today-running"]
+        );
+        assert_eq!(
+            ids(&s
+                .harness_sessions(HarnessSessionFilter {
+                    agent: "agent-a".into(),
+                    status: "running".into(),
+                    job_id: "job-2".into(),
+                    ..HarnessSessionFilter::default()
+                })
+                .unwrap()),
+            vec!["today-running"]
+        );
+        let counts = s.harness_session_counts().unwrap();
+        assert_eq!(
+            (
+                counts.running,
+                counts.today,
+                counts.failed_today,
+                counts.submitted_today,
+                counts.cost_today
+            ),
+            (3, 3, 1, 0, 0.0)
+        );
+        assert_eq!(
+            s.mark_lost_harness_sessions("2026-09-11T00:00:00Z")
+                .unwrap(),
+            1
+        );
+        let lost = s.harness_session("old-running").unwrap().0.unwrap();
+        assert_eq!(lost.status, "lost");
+        assert_eq!(lost.ended_at, "2026-09-11T05:00:00Z");
+    }
+
+    #[test]
+    fn harness_sessions_before_and_kpis() {
+        let s = store("2026-09-11T05:00:00Z");
+        for h in [
+            HarnessSession {
+                id: "new".into(),
+                started_at: "2026-09-11T04:00:00Z".into(),
+                updated_at: "2026-09-11T04:00:00Z".into(),
+                ..HarnessSession::default()
+            },
+            HarnessSession {
+                id: "submitted".into(),
+                started_at: "2026-09-11T03:00:00Z".into(),
+                updated_at: "2026-09-11T03:00:00Z".into(),
+                ..HarnessSession::default()
+            },
+            HarnessSession {
+                id: "old".into(),
+                started_at: "2026-09-11T02:00:00Z".into(),
+                updated_at: "2026-09-11T02:00:00Z".into(),
+                ..HarnessSession::default()
+            },
+        ] {
+            s.begin_harness_session(h).unwrap();
+        }
+        s.finish_harness_session(
+            "submitted",
+            "submitted",
+            "submitted",
+            "SUMMARY: done",
+            "",
+            3.5,
+            "",
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&s
+                .harness_sessions(HarnessSessionFilter {
+                    before: "2026-09-11T04:00:00Z".into(),
+                    limit: 2,
+                    ..HarnessSessionFilter::default()
+                })
+                .unwrap()),
+            vec!["submitted", "old"]
+        );
+        for id in ["twin-a", "twin-b", "twin-c"] {
+            s.begin_harness_session(HarnessSession {
+                id: id.into(),
+                started_at: "2026-09-11T01:00:00Z".into(),
+                updated_at: "2026-09-11T01:00:00Z".into(),
+                ..HarnessSession::default()
+            })
+            .unwrap();
+        }
+        let page = s
+            .harness_sessions(HarnessSessionFilter {
+                before: harness_session_cursor(&HarnessSession {
+                    id: "old".into(),
+                    started_at: "2026-09-11T02:00:00Z".into(),
+                    ..HarnessSession::default()
+                }),
+                limit: 2,
+                ..HarnessSessionFilter::default()
+            })
+            .unwrap();
+        assert_eq!(ids(&page), vec!["twin-c", "twin-b"]);
+        let page2 = s
+            .harness_sessions(HarnessSessionFilter {
+                before: harness_session_cursor(page.last().unwrap()),
+                limit: 2,
+                ..HarnessSessionFilter::default()
+            })
+            .unwrap();
+        assert_eq!(ids(&page2), vec!["twin-a"]);
+        let counts = s.harness_session_counts().unwrap();
+        assert_eq!(
+            (
+                counts.running,
+                counts.today,
+                counts.failed_today,
+                counts.submitted_today,
+                counts.cost_today
+            ),
+            (5, 6, 0, 1, 3.5)
+        );
+    }
+
+    #[test]
+    fn harness_tables_are_additive() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let home = tempfile::tempdir().unwrap();
+        let db = Connection::open(home.path().join(STORE_NAME)).unwrap();
+        crate::store::configure_conn(&db, false).unwrap();
+        init_schema(&db, "2026-09-11T00:00:00Z").unwrap();
+        drop(db);
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        for table in ["harness_sessions", "harness_steps"] {
+            let n: i64 = s
+                .conn()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{table}");
+        }
+    }
+
+    #[test]
+    fn harness_executor_column_fresh_and_migrated() {
+        let fresh = store("2026-09-11T00:00:00Z");
+        assert!(has_column(&fresh.conn().unwrap(), "harness_sessions", "executor").unwrap());
+        let home = tempfile::tempdir().unwrap();
+        let db = Connection::open(home.path().join(STORE_NAME)).unwrap();
+        crate::store::configure_conn(&db, false).unwrap();
+        init_schema(&db, "2026-09-11T00:00:00Z").unwrap();
+        db.execute_batch("CREATE TABLE harness_sessions (id TEXT PRIMARY KEY, run_id TEXT NOT NULL DEFAULT '', job_id TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', cwd TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'running', exit_status TEXT NOT NULL DEFAULT '', submission TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', steps INTEGER NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, ended_at TEXT NOT NULL DEFAULT '', trajectory TEXT NOT NULL DEFAULT '')").unwrap();
+        assert!(!has_column(&db, "harness_sessions", "executor").unwrap());
+        drop(db);
+        let migrated = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert!(has_column(&migrated.conn().unwrap(), "harness_sessions", "executor").unwrap());
+        migrated
+            .conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO harness_sessions (id, started_at, updated_at) VALUES ('hs', ?, ?)",
+                rusqlite::params![migrated.now(), migrated.now()],
+            )
+            .unwrap();
+        let executor: String = migrated
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT executor FROM harness_sessions WHERE id = 'hs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(executor, "");
     }
 }

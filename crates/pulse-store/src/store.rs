@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{SecondsFormat, Utc};
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::ops::{Deref, DerefMut};
@@ -428,7 +428,7 @@ pub struct CheckpointResult {
     pub wal_bytes_after: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct EventRecord {
     pub seq: i64,
     pub at: String,
@@ -617,7 +617,7 @@ pub fn additive_columns() -> Vec<Column> {
         .collect()
 }
 
-fn init_schema(conn: &Connection, at: &str) -> Result<()> {
+pub(crate) fn init_schema(conn: &Connection, at: &str) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = (|| -> Result<()> {
         conn.execute_batch(DDL)?;
@@ -659,7 +659,7 @@ fn init_schema(conn: &Connection, at: &str) -> Result<()> {
     }
 }
 
-fn configure_conn(conn: &Connection, read_only: bool) -> Result<()> {
+pub(crate) fn configure_conn(conn: &Connection, read_only: bool) -> Result<()> {
     conn.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))?;
     conn.pragma_update(None, "foreign_keys", 1)?;
     if !read_only {
@@ -731,8 +731,822 @@ pub(crate) fn event_insert(
     })
 }
 
-fn wal_size(path: &str) -> i64 {
+pub(crate) fn wal_size(path: &str) -> i64 {
     fs::metadata(format!("{path}-wal"))
         .map(|m| i64::try_from(m.len()).unwrap_or(i64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::py_json;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::Mutex;
+    use std::thread;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn set_env(k: &str, v: &str) {
+        unsafe { std::env::set_var(k, v) }
+    }
+    fn remove_env(k: &str) {
+        unsafe { std::env::remove_var(k) }
+    }
+    fn open_temp(o: Options) -> Store {
+        let home = if o.home.is_empty() {
+            tempfile::tempdir().unwrap().keep().display().to_string()
+        } else {
+            o.home.clone()
+        };
+        Store::open(Options { home, ..o }).unwrap()
+    }
+    fn table_exists(s: &Store, name: &str) -> bool {
+        let conn = s.conn().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        n == 1
+    }
+    fn count_events(s: &Store, action: &str) -> i64 {
+        let conn = s.conn().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE action = ?",
+            [action],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn write_wal(s: &Store) -> i64 {
+        let mut conn = s.conn().unwrap();
+        conn.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        let tx = conn.transaction().unwrap();
+        let payload = "x".repeat(8192);
+        for _ in 0..1200 {
+            tx.execute(
+                "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'test', 'checkpoint.write', 'wal', ?)",
+                rusqlite::params!["2026-09-06T10:00:00Z", payload],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        let size = wal_size(&s.path);
+        assert!(size > 0, "test did not create a WAL");
+        size
+    }
+
+    #[test]
+    fn ddl_matches_captured_schema() {
+        let Ok(want) = fs::read_to_string("/tmp/pulse-parity/schema.sql") else {
+            return;
+        };
+        assert_eq!(want, DDL);
+    }
+
+    #[test]
+    fn create_and_reopen() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let home = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            create: true,
+            now: "2026-09-06T10:00:00Z".into(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert_eq!(s.path, store_path(home.path().to_str().unwrap()).unwrap());
+        assert_eq!(s.meta("schema_version").unwrap(), ("3".into(), true));
+        assert_eq!(s.meta("created_at").unwrap().0, "2026-09-06T10:00:00Z");
+        let settings = s.settings().unwrap();
+        assert_eq!(settings.len(), crate::DEFAULT_SETTINGS.len());
+        assert_eq!(settings["landing"], "agents");
+        assert_eq!(settings["amend_majority"], "2/3");
+        let human = s.agent(HUMAN_AGENT).unwrap().unwrap();
+        assert_eq!(human.kind, "human");
+        assert_eq!(human.display, "the human");
+        assert!(table_exists(&s, "records"));
+        assert!(table_exists(&s, "record_revisions"));
+        assert_eq!(s.meta("records_version").unwrap().0, RECORDS_VERSION);
+        assert_eq!(count_events(&s, "schema.records"), 1);
+        s.close().unwrap();
+        for _ in 0..2 {
+            let again = Store::open(Options {
+                home: home.path().display().to_string(),
+                ..Options::default()
+            })
+            .unwrap();
+            assert_eq!(count_events(&again, "schema.records"), 1);
+            again.ensure_records().unwrap();
+            assert_eq!(count_events(&again, "schema.records"), 1);
+        }
+    }
+
+    #[test]
+    fn open_sets_journal_size_limit() {
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        let got: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("PRAGMA journal_size_limit", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(got, JOURNAL_SIZE_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn open_sets_busy_timeout() {
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        let got: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(got, BUSY_TIMEOUT_MS as i64);
+    }
+
+    #[test]
+    fn checkpoint_truncates_wal() {
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        let before = write_wal(&s);
+        let got = s.checkpoint().unwrap();
+        assert_eq!(got.busy, 0, "checkpoint reported busy: {got:?}");
+        assert!(
+            got.truncated,
+            "checkpoint did not report truncation after {before}: {got:?}"
+        );
+        assert!(wal_size(&s.path) <= 4096);
+    }
+
+    #[test]
+    fn open_missing_store() {
+        let home = tempfile::tempdir().unwrap();
+        let err = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap_err();
+        let nf = err.downcast_ref::<NotFoundError>().unwrap();
+        assert_eq!(nf.path, store_path(home.path().to_str().unwrap()).unwrap());
+        assert!(!Path::new(&nf.path).exists());
+    }
+
+    #[test]
+    fn worker_guard_skips_records() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let home = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            create: true,
+            skip_records: true,
+            ..Options::default()
+        })
+        .unwrap();
+        assert!(!table_exists(&s, "records"));
+        s.close().unwrap();
+        set_env("PULSE_JOB", "job-1");
+        assert!(worker_guard(home.path().to_str().unwrap()));
+        let w = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert!(!table_exists(&w, "records"));
+        assert!(
+            Store::open(Options {
+                home: tempfile::tempdir().unwrap().path().display().to_string(),
+                create: true,
+                ..Options::default()
+            })
+            .unwrap_err()
+            .downcast_ref::<NotFoundError>()
+            .is_some()
+        );
+        set_env("PULSE_JOB", "");
+        let n = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert!(table_exists(&n, "records"));
+    }
+
+    #[test]
+    fn worker_guard_executable() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let dir = exe.parent().unwrap();
+        if dir.file_name().is_some_and(|n| n == "bin") {
+            return;
+        }
+        assert!(worker_guard(dir.to_str().unwrap()));
+        assert!(!worker_guard(
+            tempfile::tempdir().unwrap().path().to_str().unwrap()
+        ));
+        let bin_home = tempfile::tempdir().unwrap();
+        fs::create_dir(bin_home.path().join("bin")).unwrap();
+        assert!(is_inside(
+            &bin_home.path().join("bin/pulse"),
+            bin_home.path()
+        ));
+    }
+
+    #[test]
+    fn schema_version_checks() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        for (version, want) in [
+            (
+                "4",
+                "Store schema 4 is newer than this tool (3); update pulse",
+            ),
+            (
+                "2",
+                "Store schema 2 is older than this tool (3); run `python3 legacy/pulse.py status` once to migrate it",
+            ),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let s = Store::open(Options {
+                home: home.path().display().to_string(),
+                create: true,
+                ..Options::default()
+            })
+            .unwrap();
+            s.conn()
+                .unwrap()
+                .execute(
+                    "UPDATE meta SET value = ? WHERE key = 'schema_version'",
+                    [version],
+                )
+                .unwrap();
+            s.close().unwrap();
+            let err = Store::open(Options {
+                home: home.path().display().to_string(),
+                ..Options::default()
+            })
+            .unwrap_err();
+            assert_eq!(err.to_string(), want);
+        }
+    }
+
+    #[test]
+    fn create_refuses_git_checkout() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let dir = tempfile::tempdir().unwrap();
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["init", "-q"])
+            .output();
+        if out.is_err() || !out.unwrap().status.success() {
+            return;
+        }
+        let home = dir.path().join("nested/.pulse");
+        let err = Store::open(Options {
+            home: home.display().to_string(),
+            create: true,
+            ..Options::default()
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("must live outside the project"));
+        assert!(err.downcast_ref::<InputError>().is_some());
+    }
+
+    #[test]
+    fn now() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        remove_env("PULSE_NOW");
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        let got = s.now();
+        assert_eq!(got.len(), 20);
+        assert_eq!(&got[10..11], "T");
+        assert_eq!(&got[19..20], "Z");
+        set_env("PULSE_NOW", "2030-01-02T03:04:05Z");
+        assert_eq!(s.now(), "2030-01-02T03:04:05Z");
+        let fixed = open_temp(Options {
+            create: true,
+            now: "2001-01-01T00:00:00Z".into(),
+            ..Options::default()
+        });
+        assert_eq!(fixed.now(), "2001-01-01T00:00:00Z");
+        remove_env("PULSE_NOW");
+    }
+
+    #[test]
+    fn event_and_py_json() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let s = open_temp(Options {
+            create: true,
+            now: "2026-09-06T10:00:00Z".into(),
+            ..Options::default()
+        });
+        s.event(
+            "tester",
+            "unit.test",
+            "subject",
+            serde_json::json!({"z":1,"a":["x","y"],"m":{"k":true,"n":null}}),
+        )
+        .unwrap();
+        s.event("tester", "unit.text", "", "plain text").unwrap();
+        s.event("tester", "unit.nil", "", Option::<&str>::None)
+            .unwrap();
+        let conn = s.conn().unwrap();
+        let mut stmt = conn.prepare("SELECT at, actor, action, subject, detail FROM events WHERE actor = 'tester' ORDER BY seq").unwrap();
+        let got: Vec<String> = stmt
+            .query_map([], |r| {
+                Ok(format!(
+                    "{}|{}|{}|{}|{}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                r#"2026-09-06T10:00:00Z|tester|unit.test|subject|{"a": ["x", "y"], "m": {"k": true, "n": null}, "z": 1}"#,
+                "2026-09-06T10:00:00Z|tester|unit.text||plain text",
+                "2026-09-06T10:00:00Z|tester|unit.nil||",
+            ]
+        );
+        assert_eq!(
+            py_json("héllo\n\"q\" <b> \\").unwrap(),
+            r#""h\u00e9llo\n\"q\" <b> \\""#
+        );
+        assert_eq!(py_json("😀").unwrap(), r#""\ud83d\ude00""#);
+    }
+
+    #[test]
+    fn settings() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let s = open_temp(Options {
+            create: true,
+            now: "2026-09-06T10:00:00Z".into(),
+            ..Options::default()
+        });
+        assert_eq!(s.setting("quorum", ""), "2");
+        assert_eq!(s.setting("nope", "fallback"), "fallback");
+        s.set_setting("human", "landing", "Human").unwrap();
+        assert_eq!(s.setting("landing", ""), "human");
+        let row: (String, String) = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT updated_by, updated_at FROM settings WHERE name = 'landing'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("human".into(), "2026-09-06T10:00:00Z".into()));
+        let ev: (String, String) = s.conn().unwrap().query_row("SELECT subject, detail FROM events WHERE action = 'setting' ORDER BY seq DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(ev, ("landing".into(), "human".into()));
+        s.set_setting("human", "jobs_per_day", " OFF ").unwrap();
+        assert_eq!(s.setting("jobs_per_day", ""), "off");
+        s.set_setting("human", "amend_majority", "3 / 4").unwrap();
+        assert_eq!(s.setting("amend_majority", ""), "3/4");
+        for (key, value, want) in [
+            (
+                "bogus",
+                "1",
+                "Unknown setting 'bogus'. Known: amend_majority, amend_quorum, claim_hours, expiry_days, jobs_per_day, landing, max_ai_credits, minutes_per_job, parallel_per_project, prune_after_days, quorum, records.auto_adopt, runner_cmd, stale_days, stop, worker_model, workers",
+            ),
+            ("quorum", "x", "quorum takes a whole number, not 'x'"),
+            (
+                "jobs_per_day",
+                "x",
+                "jobs_per_day takes a whole number, or one of none/off/unlimited, not 'x'",
+            ),
+            ("quorum", "0", "quorum must be at least 1, not 0"),
+            (
+                "max_ai_credits",
+                "10",
+                "max_ai_credits must be at least 30, not 10",
+            ),
+            (
+                "amend_majority",
+                "5/3",
+                "amend_majority is a share of the votes: the numerator cannot exceed the denominator (5/3)",
+            ),
+            (
+                "amend_majority",
+                "abc",
+                "A majority must be a fraction such as 2/3, not 'abc'",
+            ),
+            (
+                "landing",
+                "nobody",
+                "landing takes one of agents, human, not 'nobody'",
+            ),
+            ("stop", "yes", "stop takes one of 0, 1, not 'yes'"),
+            ("runner_cmd", "  ", "runner_cmd cannot be empty"),
+        ] {
+            let err = s.set_setting("human", key, value).unwrap_err();
+            assert_eq!(err.to_string(), want);
+            assert!(err.downcast_ref::<InputError>().is_some());
+        }
+    }
+
+    #[test]
+    fn projects_and_agents() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let s = open_temp(Options {
+            create: true,
+            now: "2026-09-06T10:00:00Z".into(),
+            ..Options::default()
+        });
+        let root = tempfile::tempdir().unwrap();
+        let sub = root.path().join("a/b");
+        fs::create_dir_all(&sub).unwrap();
+        s.conn().unwrap().execute("INSERT INTO projects (slug, name, path, brain, added_at) VALUES ('brain', 'PULSE', ?, 1, ?), ('other', 'Other', ?, 0, ?)", rusqlite::params![root.path().display().to_string(), s.now(), root.path().join("a").display().to_string(), s.now()]).unwrap();
+        let all = s.projects(false).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].slug, "brain");
+        assert!(all[0].brain);
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET status = 'inactive' WHERE slug = 'other'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(s.projects(true).unwrap().len(), 1);
+        assert_eq!(s.brain().unwrap().unwrap().slug, "brain");
+        assert!(s.project("nope").unwrap().is_none());
+        assert_eq!(
+            s.project_for_dir(sub.to_str().unwrap())
+                .unwrap()
+                .unwrap()
+                .slug,
+            "other"
+        );
+        assert!(
+            s.project_for_dir(tempfile::tempdir().unwrap().path().to_str().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        s.conn().unwrap().execute("INSERT INTO agents (name, runner, model, created_at, sessions, posts, status) VALUES ('ember', 'copilot', 'claude', ?, '[\"s1\",\"s2\"]', 3, 'pruned')", [s.now()]).unwrap();
+        let a = s.agent("ember").unwrap().unwrap();
+        assert_eq!(a.sessions, vec!["s1", "s2"]);
+        assert_eq!(a.posts, 3);
+        assert!(s.agent("nobody").unwrap().is_none());
+        let agents = s.agents("").unwrap();
+        assert_eq!(agents.len(), 2);
+        assert_eq!(s.agents("active").unwrap()[0].name, HUMAN_AGENT);
+    }
+
+    #[test]
+    fn schema_parity_with_python() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let Ok(oracle) = std::env::var("PULSE_GO_ORACLE") else {
+            return;
+        };
+        let repo = tempfile::tempdir().unwrap();
+        let git = Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["init", "-q"])
+            .status();
+        if git.is_err() || !git.unwrap().success() {
+            return;
+        }
+        let go_home = tempfile::tempdir().unwrap();
+        let out = Command::new(oracle)
+            .current_dir(repo.path())
+            .env("PULSE_HOME", go_home.path())
+            .env("PULSE_NOW", "2026-09-06T21:00:00Z")
+            .args(["init", "--name", "parity"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let rust_home = tempfile::tempdir().unwrap();
+        let rust = Store::open(Options {
+            home: rust_home.path().display().to_string(),
+            create: true,
+            now: "2026-09-06T21:00:00Z".into(),
+            ..Options::default()
+        })
+        .unwrap();
+        let go = Store::open(Options {
+            home: go_home.path().display().to_string(),
+            read_only: true,
+            skip_records: true,
+            ..Options::default()
+        })
+        .unwrap();
+        let dump = |s: &Store| -> String {
+            let conn = s.conn().unwrap();
+            let mut stmt = conn.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name").unwrap();
+            stmt.query_map([], |r| {
+                Ok(format!(
+                    "{} {}\n{}\n",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?.unwrap_or_default()
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("")
+        };
+        assert_eq!(dump(&go), dump(&rust));
+        let go_settings = go.settings().unwrap();
+        let rust_settings = rust.settings().unwrap();
+        for (k, v) in rust_settings {
+            assert_eq!(go_settings.get(&k), Some(&v), "setting {k}");
+        }
+    }
+
+    #[test]
+    fn read_only_open() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let home = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            create: true,
+            ..Options::default()
+        })
+        .unwrap();
+        s.close().unwrap();
+        let ro = Store::open(Options {
+            home: home.path().display().to_string(),
+            read_only: true,
+            ..Options::default()
+        })
+        .unwrap();
+        assert_eq!(ro.meta("schema_version").unwrap().0, "3");
+        assert!(ro.event("t", "x", "", Option::<&str>::None).is_err());
+        assert!(
+            Store::open(Options {
+                home: tempfile::tempdir().unwrap().path().display().to_string(),
+                read_only: true,
+                create: true,
+                ..Options::default()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn concurrent_open() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let home = tempfile::tempdir().unwrap();
+        Store::open(Options {
+            home: home.path().display().to_string(),
+            create: true,
+            skip_records: true,
+            ..Options::default()
+        })
+        .unwrap()
+        .close()
+        .unwrap();
+        let mut handles = Vec::new();
+        for _ in 0..12 {
+            let home = home.path().display().to_string();
+            handles.push(thread::spawn(move || -> anyhow::Result<()> {
+                let s = Store::open(Options {
+                    home,
+                    ..Options::default()
+                })?;
+                s.event("worker", "unit.concurrent", "", Option::<&str>::None)
+            }));
+        }
+        for h in handles {
+            h.join().unwrap().unwrap();
+        }
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert_eq!(count_events(&s, "schema.records"), 1);
+        assert_eq!(count_events(&s, "unit.concurrent"), 12);
+    }
+
+    #[test]
+    fn ensure_records_upgrades() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let home = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            create: true,
+            ..Options::default()
+        })
+        .unwrap();
+        for table in [
+            "record_revisions",
+            "tasks",
+            "hooks",
+            "briefs",
+            "harness_sessions",
+            "harness_steps",
+        ] {
+            assert!(table_exists(&s, table));
+        }
+        s.conn()
+            .unwrap()
+            .execute("DROP TABLE record_revisions", [])
+            .unwrap();
+        s.close().unwrap();
+        let again = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert!(table_exists(&again, "record_revisions"));
+        assert_eq!(count_events(&again, "schema.records"), 1);
+        again
+            .conn()
+            .unwrap()
+            .execute(
+                "UPDATE meta SET value = '0' WHERE key = 'records_version'",
+                [],
+            )
+            .unwrap();
+        again.close().unwrap();
+        let third = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert_eq!(third.meta("records_version").unwrap().0, RECORDS_VERSION);
+        assert_eq!(count_events(&third, "schema.records"), 2);
+    }
+
+    #[test]
+    fn on_event_publishes_after_commit() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        let got = std::sync::Arc::new(Mutex::new(Vec::<EventRecord>::new()));
+        let sink = got.clone();
+        on_event(move |e| sink.lock().unwrap().push(e));
+        s.event(
+            "tester",
+            "auto.commit",
+            "x",
+            serde_json::json!({"b":1,"a":"z"}),
+        )
+        .unwrap();
+        assert!(
+            got.lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.action == "auto.commit" && e.detail == r#"{"a": "z", "b": 1}"#)
+        );
+        let tx = s.begin().unwrap();
+        tx.event("tester", "rolled.back", "x", Option::<&str>::None)
+            .unwrap();
+        tx.rollback().unwrap();
+        assert!(
+            !got.lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.action == "rolled.back")
+        );
+        let tx = s.begin().unwrap();
+        tx.event("tester", "committed", "x", Option::<&str>::None)
+            .unwrap();
+        tx.commit().unwrap();
+        s.set_setting("human", "landing", "human").unwrap();
+        let events = got.lock().unwrap();
+        assert!(events.iter().any(|e| e.action == "committed"));
+        assert!(events.iter().any(|e| e.action == "setting"));
+        let n: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'rolled.back'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn events_indexes_arrive_at_open_and_serve_job_history_queries() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let home = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            create: true,
+            ..Options::default()
+        })
+        .unwrap();
+        let index_exists = |st: &Store, name: &str| -> bool {
+            st.conn()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    [name],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                == 1
+        };
+        assert!(index_exists(&s, "events_action_subject"));
+        assert!(index_exists(&s, "events_subject_seq"));
+        s.conn()
+            .unwrap()
+            .execute("DROP INDEX events_action_subject", [])
+            .unwrap();
+        s.close().unwrap();
+        let again = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        assert!(index_exists(&again, "events_action_subject"));
+        let conn = again.conn().unwrap();
+        let mut stmt = conn.prepare("EXPLAIN QUERY PLAN SELECT e.detail FROM events e WHERE e.action = 'job.recover' AND e.subject = 'job-1' AND e.at >= '2026' AND NOT EXISTS (SELECT 1 FROM events later WHERE later.subject = e.subject AND later.seq > e.seq AND later.action IN ('job.lease', 'job.failed')) ORDER BY e.seq DESC LIMIT 1").unwrap();
+        let plan = stmt
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        assert!(plan.contains("USING INDEX events_action_subject"), "{plan}");
+        assert!(!plan.contains("SCAN e"), "{plan}");
+    }
+
+    #[test]
+    fn git_top_level_ignores_hook_git_dir() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let hook = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        for dir in [hook.path(), project.path()] {
+            let status = Command::new("git").arg("init").arg("-q").arg(dir).status();
+            if status.is_err() || !status.unwrap().success() {
+                return;
+            }
+        }
+        set_env("GIT_DIR", hook.path().join(".git").to_str().unwrap());
+        set_env("GIT_WORK_TREE", hook.path().to_str().unwrap());
+        set_env(
+            "GIT_INDEX_FILE",
+            hook.path().join(".git/index").to_str().unwrap(),
+        );
+        let sub = project.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&sub)
+            .args(["rev-parse", "--show-toplevel"])
+            .env_clear()
+            .envs(pulse_gitenv::env().into_iter().filter_map(|kv| {
+                kv.split_once('=')
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+            }))
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let got = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .canonicalize()
+            .unwrap();
+        assert_eq!(got, project.path().canonicalize().unwrap());
+        remove_env("GIT_DIR");
+        remove_env("GIT_WORK_TREE");
+        remove_env("GIT_INDEX_FILE");
+    }
 }
