@@ -28,7 +28,8 @@ pub(crate) struct TemplateStoreInfo {
 pub(crate) fn test_main_setup() {
     for (k, _) in std::env::vars().collect::<Vec<_>>() {
         if k.starts_with("GIT_") && k != "GIT_SSH_COMMAND" {
-            std::env::remove_var(k);
+            // Callers hold pulse_testutil::env_lock() while mutating the environment.
+            unsafe { std::env::remove_var(k) };
         }
     }
 }

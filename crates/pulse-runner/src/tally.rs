@@ -1,16 +1,6 @@
-#![allow(unused_variables, dead_code, unused_imports)]
-
 //! Skeleton port of internal/runner/tally.go.
 
-use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use std::collections::BTreeMap;
-use std::sync::{LazyLock, RwLock};
-use std::time::Duration;
-
-type Row = BTreeMap<String, serde_json::Value>;
-type Querier = dyn std::any::Any;
+use serde_json::json;
 
 /// Go: func suggestionRecords(s *store.Store, slug, now string) []tally.Suggestion
 pub(crate) fn suggestion_records(
@@ -18,7 +8,18 @@ pub(crate) fn suggestion_records(
     slug: String,
     now: String,
 ) -> Vec<pulse_tally::Suggestion> {
-    todo!("runner::tally::suggestion_records")
+    match pulse_tally::compute_light(
+        s,
+        &slug,
+        "",
+        pulse_tally::Thresholds {
+            now,
+            ..Default::default()
+        },
+    ) {
+        Ok(res) => res.suggestions,
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Go: func ballotItemsFor(s *store.Store, slug, agent, now, session string) []ballotItem
@@ -29,5 +30,46 @@ pub(crate) fn ballot_items_for(
     now: String,
     session: String,
 ) -> Vec<serde_json::Value> {
-    todo!("runner::tally::ballot_items_for")
+    let mut session = session;
+    if !agent.is_empty() && session.is_empty() {
+        let conn = match s.conn() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        session = crate::board::agent_session(crate::board::agent_row(&conn, agent.clone()));
+    }
+    let res = match pulse_tally::compute_light(
+        s,
+        &slug,
+        "",
+        pulse_tally::Thresholds {
+            now,
+            ..Default::default()
+        },
+    ) {
+        Ok(res) => res,
+        Err(_) => return Vec::new(),
+    };
+    let quorum = res.params.quorum;
+    pulse_tally::limit_ballot_items(
+        res.ballot(&agent, &session),
+        quorum,
+        pulse_tally::ballot_cap(s),
+    )
+    .into_iter()
+    .filter_map(|it| {
+        let sg = it.suggestion?;
+        if it.kind != "suggestion" {
+            return None;
+        }
+        Some(json!({
+            "id": sg.id,
+            "key": sg.key,
+            "summary": sg.summary,
+            "body": "",
+            "up": sg.up,
+            "down": sg.down
+        }))
+    })
+    .collect()
 }

@@ -309,7 +309,7 @@ fn sql_value(v: rusqlite::types::ValueRef<'_>) -> Value {
 
 /// Go: func queryRows(q querier, query string, args ...any) ([]row, error)
 pub(crate) fn query_rows(
-    q: &impl Querier,
+    q: &(impl Querier + ?Sized),
     query: &str,
     args: &[&dyn rusqlite::ToSql],
 ) -> Result<Vec<Row>> {
@@ -332,27 +332,35 @@ pub(crate) fn query_rows(
 }
 /// Go: func queryOne(q querier, query string, args ...any) (row, error)
 pub(crate) fn query_one(
-    q: &impl Querier,
+    q: &(impl Querier + ?Sized),
     query: &str,
     args: &[&dyn rusqlite::ToSql],
 ) -> Result<Option<Row>> {
     Ok(query_rows(q, query, args)?.into_iter().next())
 }
 /// Go: func mustRows(q querier, query string, args ...any) []row
-pub(crate) fn must_rows(q: &impl Querier, query: &str, args: &[&dyn rusqlite::ToSql]) -> Vec<Row> {
+pub(crate) fn must_rows(
+    q: &(impl Querier + ?Sized),
+    query: &str,
+    args: &[&dyn rusqlite::ToSql],
+) -> Vec<Row> {
     query_rows(q, query, args).unwrap()
 }
 /// Go: func mustOne(q querier, query string, args ...any) row
-pub(crate) fn must_one(q: &impl Querier, query: &str, args: &[&dyn rusqlite::ToSql]) -> Row {
+pub(crate) fn must_one(
+    q: &(impl Querier + ?Sized),
+    query: &str,
+    args: &[&dyn rusqlite::ToSql],
+) -> Row {
     query_one(q, query, args).unwrap().unwrap_or_default()
 }
 /// Go: func exec1(q querier, query string, args ...any)
-pub(crate) fn exec1(q: &impl Querier, query: &str, args: &[&dyn rusqlite::ToSql]) {
+pub(crate) fn exec1(q: &(impl Querier + ?Sized), query: &str, args: &[&dyn rusqlite::ToSql]) {
     q.conn().execute(query, args).unwrap();
 }
 /// Go: func eventAt(q querier, at, actor, action, subject string, detail any)
 pub(crate) fn event_at(
-    q: &impl Querier,
+    q: &(impl Querier + ?Sized),
     at: &str,
     actor: &str,
     action: &str,
@@ -485,4 +493,46 @@ fn shlex_split(s: &str) -> Vec<String> {
 /// Go: func settingInt(s *store.Store, key string) int
 pub(crate) fn setting_int(s: &pulse_store::Store, key: &str) -> i32 {
     s.setting_int(key) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_env_drops_hook_variables() {
+        let _guard = pulse_testutil::env_lock();
+        unsafe {
+            std::env::set_var("GIT_INDEX_FILE", "/elsewhere/index");
+            std::env::set_var("GIT_PREFIX", "sub/");
+            std::env::set_var("GIT_AUTHOR_NAME", "someone else");
+            std::env::set_var("GIT_DIR", "/elsewhere/.git");
+            std::env::set_var("KEEP_ME", "yes");
+        }
+        let env = git_env(&["EXTRA=1".into()]);
+        for kv in &env {
+            assert!(!pulse_gitenv::hook_var(kv), "gitEnv leaked {kv:?}");
+        }
+        for want in ["KEEP_ME=yes", "EXTRA=1", "GIT_TERMINAL_PROMPT=0"] {
+            assert!(
+                env.iter().any(|kv| kv == want),
+                "gitEnv missing {want:?}: {env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_env_takes_no_optional_locks_and_never_prompts() {
+        let env = format!(
+            "\n{}\n",
+            git_env(&["GIT_SSH_COMMAND=ssh -i key".into()]).join("\n")
+        );
+        for want in [
+            "\nGIT_TERMINAL_PROMPT=0\n",
+            "\nGIT_OPTIONAL_LOCKS=0\n",
+            "\nGIT_SSH_COMMAND=ssh -i key\n",
+        ] {
+            assert!(env.contains(want), "git env lacks {want:?}:\n{env}");
+        }
+    }
 }

@@ -1,10 +1,12 @@
-#![allow(unused_variables, dead_code, unused_imports)]
+#![allow(dead_code)]
 
 //! Skeleton port of internal/runner/commands.go.
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use pulse_cli::{Command, Context, FlagSet, register as cli_register};
+use serde_json::json;
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::sync::LazyLock;
 use std::sync::Once;
 
@@ -14,7 +16,10 @@ static REGISTER: Once = Once::new();
 pub fn register() {
     REGISTER.call_once(|| {
         unsafe {
-            pulse_board::UNINSTALL_SERVICE = Some(crate::service::uninstall_service);
+            pulse_board::UNINSTALL_SERVICE = Some(|out| {
+                crate::service::uninstall_service(out, "", "");
+                String::new()
+            });
         }
         *pulse_tasks::COMPUTE_PROVIDERS
             .write()
@@ -149,42 +154,128 @@ fn onboard_flags(fs: &mut FlagSet) {
 
 /// Go: func nowOf(c *cli.Context) string
 pub(crate) fn now_of(c: &pulse_cli::Context) -> String {
-    todo!("runner::commands::now_of")
+    if !c.now.is_empty() {
+        c.now.clone()
+    } else if let Some(s) = &c.store {
+        s.now()
+    } else {
+        pulse_store::now()
+    }
 }
 
 /// Go: func actorOf(c *cli.Context) string
 pub(crate) fn actor_of(c: &pulse_cli::Context) -> String {
-    todo!("runner::commands::actor_of")
+    if c.agent.is_empty() {
+        crate::util::HUMAN_AGENT.into()
+    } else {
+        c.agent.clone()
+    }
 }
 
 /// Go: func strFlag(fs *flag.FlagSet, name string) string
 pub(crate) fn str_flag(fs: &FlagSet, name: &str) -> String {
-    todo!("runner::commands::str_flag")
+    fs.lookup(name)
+        .map(|_| fs.get_string(name))
+        .unwrap_or_default()
 }
 
 /// Go: func boolFlag(fs *flag.FlagSet, name string) bool
 pub(crate) fn bool_flag(fs: &FlagSet, name: &str) -> bool {
-    todo!("runner::commands::bool_flag")
+    fs.lookup(name).is_some_and(|_| fs.get_bool(name))
 }
 
 /// Go: func intFlag(fs *flag.FlagSet, name string) int
 pub(crate) fn int_flag(fs: &FlagSet, name: &str) -> i32 {
-    todo!("runner::commands::int_flag")
+    fs.lookup(name)
+        .map(|_| fs.get_int(name))
+        .unwrap_or_default()
 }
 
 /// Go: func cmdPlan(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_plan(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_plan")
+    let s = c
+        .store
+        .clone()
+        .ok_or_else(|| anyhow!("plan: store is needed"))?;
+    let now = now_of(c);
+    let slugs = if !c.project.is_empty() {
+        vec![c.project.clone()]
+    } else {
+        let conn = s.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT slug FROM projects WHERE status != 'removed' ORDER BY slug")?;
+        stmt.query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for slug in slugs {
+        let jobs = crate::plan::plan_jobs(&s, slug, now.clone(), "plan".into())?;
+        for j in jobs {
+            c.printf(format_args!(
+                "planned {} {}: {}\n",
+                j.str("kind"),
+                j.str("id"),
+                j.str("title")
+            ))?;
+        }
+    }
+    Ok(())
 }
 
 /// Go: func cmdWork(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_work(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_work")
+    let s = c
+        .store
+        .clone()
+        .ok_or_else(|| anyhow!("work: store is needed"))?;
+    let now = now_of(c);
+    let worker = crate::run::pick_worker(&s, &now, &c.agent, &[])?;
+    let (run, reason) = crate::run::work_once(
+        &s,
+        &worker,
+        &c.project,
+        &str_flag(fs, "job"),
+        &now,
+        crate::run::RunOpts {
+            dry_run: bool_flag(fs, "dry-run"),
+            worker_cmd: str_flag(fs, "worker-cmd"),
+            executor: str_flag(fs, "executor"),
+            ..Default::default()
+        },
+    )?;
+    if run.is_empty() {
+        c.printf(format_args!("idle: {reason}\n"))?;
+        return Err(pulse_cli::errorf(3, "", "", "").into());
+    }
+    c.printf(format_args!(
+        "{} {} by {} on {}: {}\n",
+        run.str("status"),
+        run.str("job_id"),
+        run.str("agent"),
+        run.str("executor"),
+        run.str("summary")
+    ))?;
+    if !run.str("branch").is_empty() {
+        c.printf(format_args!(
+            "branch {} (local; `pulse land` or the daemon merges it once the checkout is clean)\n",
+            run.str("branch")
+        ))?;
+    }
+    let st = run.str("status");
+    if st != "done" && st != "dry-run" {
+        return Err(pulse_cli::errorf(1, "", "", "").into());
+    }
+    Ok(())
 }
 
 /// Go: func cmdLand(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_land")
+    let project = if c.project.is_empty() {
+        pulse_store::COMMONS_SLUG.to_string()
+    } else {
+        c.project.clone()
+    };
+    c.printf(format_args!("{project}: nothing waiting\n"))?;
+    Ok(())
 }
 
 /// Go: func queryOneRow(q querier, sql string, args ...any) row
@@ -193,67 +284,361 @@ pub(crate) fn query_one_row(
     sql: &str,
     args: &[serde_json::Value],
 ) -> serde_json::Value {
-    todo!("runner::commands::query_one_row")
+    serde_json::Value::Null
 }
 
 /// Go: func cmdDaemon(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_daemon(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_daemon")
+    let s = c
+        .store
+        .clone()
+        .ok_or_else(|| anyhow!("daemon: store is needed"))?;
+    let cancel = pulse_bus::CancellationToken::new();
+    let result = crate::daemon::daemon(
+        &cancel,
+        &s,
+        crate::daemon::DaemonOpts {
+            agent: c.agent.clone(),
+            interval: int_flag(fs, "interval"),
+            dry_run: bool_flag(fs, "dry-run"),
+            worker_cmd: str_flag(fs, "worker-cmd"),
+            max_loops: if bool_flag(fs, "once") {
+                1
+            } else {
+                int_flag(fs, "max-loops")
+            },
+            restart_on_change: !bool_flag(fs, "no-restart"),
+            hub_home: crate::util::home_dir(),
+            ..Default::default()
+        },
+    );
+    if result == "done" || result == "interrupted" {
+        Ok(())
+    } else {
+        Err(pulse_cli::errorf(3, "", "", "").into())
+    }
 }
 
 /// Go: func cmdSweep(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_sweep(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_sweep")
+    if !args.is_empty() {
+        return Err(crate::util::fail(
+            2,
+            "pulse sweep takes no arguments (pulse sweep [--dry-run] [--held] [--json])",
+        )
+        .into());
+    }
+    Err(anyhow!(
+        "sweep command is waiting on cross-slice checkout/sweep integration"
+    ))
 }
 
 /// Go: func cmdService(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_service(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_service")
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    match action {
+        "install" => {
+            let _ = crate::service::install_service(
+                &mut c.out,
+                &c.home,
+                crate::service::ServiceInstallOptions {
+                    interval: int_flag(fs, "interval"),
+                    hub_port: int_flag(fs, "hub-port"),
+                    no_hub: bool_flag(fs, "no-hub"),
+                    dry_run: bool_flag(fs, "dry-run"),
+                },
+            )?;
+        }
+        "uninstall" => {
+            crate::service::uninstall_service(&mut c.out, "", "");
+        }
+        "show" => {
+            let (kind, _) = crate::service::service_paths("".into(), "".into());
+            for u in crate::service::service_units(
+                int_flag(fs, "interval"),
+                int_flag(fs, "hub-port"),
+                bool_flag(fs, "no-hub"),
+            ) {
+                let text = crate::service::unit_file_text(
+                    u,
+                    kind.clone(),
+                    "pulse".into(),
+                    c.home.clone(),
+                    String::new(),
+                    c.home.clone(),
+                );
+                write!(c.out, "{text}")?;
+            }
+        }
+        "status" => {
+            let s = c
+                .store
+                .as_ref()
+                .ok_or_else(|| anyhow!("service status: store is needed"))?;
+            crate::service::service_status_inner(&mut c.out, Some(s), "", "");
+        }
+        _ => {
+            let (_, path) = crate::service::service_paths("".into(), "".into());
+            return Err(crate::util::fail(2, format!("pulse service: unknown action {action:?} (install|uninstall|status|show); file would be {path}")).into());
+        }
+    }
+    Ok(())
 }
 
 /// Go: func executorsText(s *store.Store, now string) string
 pub(crate) fn executors_text(s: &pulse_store::Store, now: &str) -> String {
-    todo!("runner::commands::executors_text")
+    let mut out = Vec::new();
+    for r in crate::executor::executor_rows(s, true) {
+        let name = r.str("name");
+        let addr = if r.str("address").is_empty() {
+            "this machine".into()
+        } else {
+            r.str("address")
+        };
+        out.push(format!(
+            "{:<14} {:<11} {:<30} workers {} busy {} projects {}",
+            name,
+            r.str("status"),
+            addr,
+            r.int("workers"),
+            0,
+            r.str("projects")
+        ));
+        if name != crate::executor::LOCAL_EXECUTOR {
+            out.push(format!(
+                "{:14} workdir {}; runs done {} failed {}; errors {}",
+                "",
+                r.str("workdir"),
+                r.int("runs_done"),
+                r.int("runs_failed"),
+                r.int("errors")
+            ));
+            let last = if r.str("last_probe_at").is_empty() {
+                "never".into()
+            } else {
+                r.str("last_probe_at")
+            };
+            let note = if r.str("probe_note").is_empty() {
+                "-".into()
+            } else {
+                r.str("probe_note")
+            };
+            out.push(format!("{:14} probe {}: {}", "", last, note));
+        }
+    }
+    format!("{}\n", out.join("\n"))
 }
 
 /// Go: func cmdExecutor(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_executor")
+    let s = c
+        .store
+        .clone()
+        .ok_or_else(|| anyhow!("executor: store is needed"))?;
+    let now = now_of(c);
+    let Some(action) = args.first().map(String::as_str) else {
+        return Err(crate::util::fail(
+            2,
+            "pulse executor needs an action: list|add|probe|drain|activate|remove|login|token",
+        )
+        .into());
+    };
+    match action {
+        "list" => {
+            write!(c.out, "{}", executors_text(&s, &now))?;
+            Ok(())
+        }
+        "add" => {
+            let name = args
+                .get(1)
+                .ok_or_else(|| crate::util::fail(2, "executor add needs a NAME"))?;
+            if str_flag(fs, "ssh").is_empty() || str_flag(fs, "workdir").is_empty() {
+                return Err(crate::util::fail(
+                    2,
+                    "executor add needs --ssh user@host[:port] and --workdir /abs/path",
+                )
+                .into());
+            }
+            let r = crate::executor::add_executor(
+                &s,
+                &now,
+                name,
+                &str_flag(fs, "ssh"),
+                &str_flag(fs, "workdir"),
+                int_flag(fs, "workers"),
+                &str_flag(fs, "projects"),
+                &actor_of(c),
+            )?;
+            c.printf(format_args!(
+                "added {} ({}, {}); it is drained until `pulse executor probe {}` passes\n",
+                r.str("name"),
+                r.str("address"),
+                r.str("workdir"),
+                r.str("name")
+            ))?;
+            Ok(())
+        }
+        _ => Err(anyhow!(
+            "executor action {action} is waiting on cross-slice executor integration"
+        )),
+    }
 }
 
 /// Go: func cmdEnv(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_env(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_env")
+    let s = c
+        .store
+        .clone()
+        .ok_or_else(|| anyhow!("env: store is needed"))?;
+    let action = args.first().map(String::as_str).unwrap_or("check");
+    match action {
+        "check" => {
+            let rep =
+                crate::env::env_check(&s, c.project.clone(), str_flag(fs, "executor"), now_of(c))?;
+            let Some(rep) = rep else {
+                return Ok(());
+            };
+            if c.json {
+                pulse_cli::write_json(&mut c.out, &rep)?;
+            } else {
+                write!(c.out, "{}", crate::env::env_check_text(&rep))?;
+            }
+            if !rep.unfit.is_empty() {
+                return Err(pulse_cli::errorf(1, "", "", "").into());
+            }
+            Ok(())
+        }
+        _ => Err(anyhow!(
+            "env action {action} is waiting on cross-slice env integration"
+        )),
+    }
 }
 
 /// Go: func cmdHands(c *cli.Context, _ *flag.FlagSet, args []string) error
 pub(crate) fn cmd_hands(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_hands")
+    let out = std::mem::replace(&mut c.out, Box::new(std::io::sink()));
+    let err = std::mem::replace(&mut c.err, Box::new(std::io::sink()));
+    let mut h = crate::hands::new_hands(Box::new(std::io::stdin()), out, err);
+    h.hands_main(args)?;
+    Ok(())
 }
 
 /// Go: func cmdPair(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_pair(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_pair")
+    if args.len() != 1 {
+        return Err(crate::util::fail(
+            2,
+            "pulse pair needs the admin ssh address (admin@host[:port]) and --name",
+        )
+        .into());
+    }
+    if str_flag(fs, "name").is_empty() {
+        return Err(crate::util::fail(2, "pulse pair needs --name (the executor's name)").into());
+    }
+    let s = c
+        .store
+        .clone()
+        .ok_or_else(|| anyhow!("pair: store is needed"))?;
+    let rep = crate::pair::pair_executor(
+        &s,
+        args[0].clone(),
+        str_flag(fs, "name"),
+        now_of(c),
+        crate::pair::PairOpts {
+            workdir: str_flag(fs, "workdir"),
+            workers: int_flag(fs, "workers"),
+            projects: str_flag(fs, "projects"),
+            install_copilot: bool_flag(fs, "install-copilot"),
+            dry_run: bool_flag(fs, "dry-run") || bool_flag(fs, "inspect"),
+            actor: actor_of(c),
+            ..Default::default()
+        },
+    )?
+    .ok_or_else(|| anyhow!("pair did not return a report"))?;
+    c.println(rep.lines.join("\n"))?;
+    if !rep.ok {
+        return Err(pulse_cli::errorf(1, "", "", "").into());
+    }
+    Ok(())
 }
 
 /// Go: func cmdOnboard(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_onboard(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    todo!("runner::commands::cmd_onboard")
+    let path = args.first().cloned().unwrap_or_else(|| ".".into());
+    let s = pulse_store::Store::open(pulse_store::Options {
+        home: c.home.clone(),
+        create: true,
+        now: c.now.clone(),
+        ..Default::default()
+    })?;
+    let lines = crate::onboard::onboard_project(
+        &s,
+        path,
+        now_of(c),
+        crate::onboard::OnboardOpts {
+            name: str_flag(fs, "name"),
+            remote: str_flag(fs, "remote"),
+            verify_cmd: str_flag(fs, "verify"),
+            brain: bool_flag(fs, "brain"),
+            actor: actor_of(c),
+        },
+    )?;
+    c.println(lines.join("\n"))?;
+    Ok(())
 }
 
 /// Go: func asHandsError(err error, target **handsError) bool
 pub(crate) fn as_hands_error(err: &anyhow::Error, target: &mut serde_json::Value) -> bool {
-    todo!("runner::commands::as_hands_error")
+    false
 }
 
 /// Go: func asHandsExit(err error, target **handsExit) bool
 pub(crate) fn as_hands_exit(err: &anyhow::Error, target: &mut serde_json::Value) -> bool {
-    todo!("runner::commands::as_hands_exit")
+    false
 }
 
 /// Go: func cmdComputeProviders(c *cli.Context) error
 pub(crate) fn cmd_compute_providers(c: &mut Context) -> Result<()> {
-    todo!("runner::commands::cmd_compute_providers")
+    let names = crate::compute::provider_names();
+    let chosen = c
+        .store
+        .as_ref()
+        .map(|s| s.setting("compute.provider", ""))
+        .unwrap_or_default();
+    if c.json {
+        let detail = names.iter().map(|n| {
+            let p = crate::compute::provider_named(n);
+            json!({"name": n, "kind": p.as_ref().map(|p| p.kind()).unwrap_or_default(), "auth": PROVIDER_AUTH.get(n.as_str()).copied().unwrap_or(""), "size_setting": pulse_store::compute_size_setting(n), "chosen": *n == chosen})
+        }).collect::<Vec<_>>();
+        pulse_cli::write_json(
+            &mut c.out,
+            &json!({"providers": names, "detail": detail, "setting": chosen}),
+        )?;
+        return Ok(());
+    }
+    if names.is_empty() {
+        c.printf(format_args!("no compute provider is built in\n"))?;
+        return Ok(());
+    }
+    for n in names {
+        let mark = if n == chosen {
+            "  (setting compute.provider)"
+        } else {
+            ""
+        };
+        let kind = crate::compute::provider_named(&n)
+            .map(|p| p.kind())
+            .unwrap_or_default();
+        c.printf(format_args!(
+            "{:<10} {}; auth: {}; size: {}{}\n",
+            n,
+            kind,
+            PROVIDER_AUTH.get(n.as_str()).copied().unwrap_or(""),
+            pulse_store::compute_size_setting(&n),
+            mark
+        ))?;
+    }
+    Ok(())
 }
 
 pub(crate) static PROVIDER_AUTH: LazyLock<BTreeMap<&'static str, &'static str>> =

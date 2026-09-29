@@ -1,5 +1,3 @@
-#![allow(unused_variables, dead_code, unused_imports)]
-
 use anyhow::Result;
 use std::time::{Duration, Instant};
 

@@ -1,12 +1,4 @@
-#![allow(unused_variables, dead_code, unused_imports)]
-
-use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::BTreeMap;
-use std::io::{Read, Write};
-use std::sync::{LazyLock, RwLock};
-use std::time::Duration;
+use std::path::Path;
 
 /// Go: func landingStop(ctx context.Context, s *store.Store, root string) string
 pub(crate) fn landing_stop(
@@ -14,7 +6,24 @@ pub(crate) fn landing_stop(
     s: &pulse_store::Store,
     root: String,
 ) -> String {
-    todo!("runner::landing_context::landing_stop")
+    let why = crate::run::runner_stopped(s);
+    if !why.is_empty() {
+        return why;
+    }
+    if crate::util::file_exists(
+        &Path::new(&root)
+            .join("docs")
+            .join("evolution")
+            .join("STOP")
+            .display()
+            .to_string(),
+    ) {
+        return format!("docs/evolution/STOP is present in {root}");
+    }
+    if ctx.is_cancelled() {
+        return "cancelled".to_string();
+    }
+    String::new()
 }
 
 /// Go: func shWithContext(ctx context.Context, dir, cmd string, budget time.Duration) (rc *int, stdout, stderr string)
@@ -24,5 +33,10 @@ pub(crate) fn sh_with_context(
     cmd: String,
     budget: std::time::Duration,
 ) -> (Option<Box<i32>>, String, String) {
-    todo!("runner::landing_context::sh_with_context")
+    let argv = vec!["/bin/sh".to_string(), "-c".to_string(), cmd];
+    match crate::proc::run_group(ctx, &argv, &dir, &crate::proc::environ(), &[], budget) {
+        Err(e) => (Some(Box::new(127)), String::new(), e.to_string()),
+        Ok(out) if out.timeout => (None, out.stdout, out.stderr),
+        Ok(out) => (Some(Box::new(out.exit_code)), out.stdout, out.stderr),
+    }
 }

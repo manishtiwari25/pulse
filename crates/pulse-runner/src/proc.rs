@@ -3,10 +3,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::process::Command;
+use std::process::Stdio;
 use std::sync::{Arc, LazyLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Outcome {
@@ -51,7 +53,97 @@ pub(crate) fn run_group_observed(
     budget: Duration,
     observer: Option<&ProcessObserver>,
 ) -> Result<Outcome> {
-    todo!("runner::proc::run_group_observed")
+    if argv.is_empty() {
+        return Err(anyhow::anyhow!("empty command"));
+    }
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    if !dir.is_empty() {
+        cmd.current_dir(dir);
+    }
+    cmd.env_clear();
+    for kv in env {
+        if let Some((k, v)) = kv.split_once('=') {
+            cmd.env(k, v);
+        }
+    }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let input = stdin.to_vec();
+    let mut child = match unsafe {
+        cmd.pre_exec(|| {
+            // Put the child in its own process group before exec, matching Go Setpgid.
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+        cmd.spawn()
+    } {
+        Ok(c) => c,
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(mut sin) = child.stdin.take() {
+        let _ = std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = sin.write_all(&input);
+        });
+    }
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
+    let out_thread = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stdout.read_to_string(&mut s);
+        s
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+
+    let started = Instant::now();
+    let mut observed = false;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let stdout = out_thread.join().unwrap_or_default();
+            let stderr = err_thread.join().unwrap_or_default();
+            let code = status.code().or_else(|| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    status.signal().map(|s| 128 + s)
+                }
+                #[cfg(not(unix))]
+                {
+                    None
+                }
+            });
+            return Ok(finish(code, &stdout, &stderr, false));
+        }
+        if cancel.is_cancelled() || (budget > Duration::ZERO && started.elapsed() >= budget) {
+            if let Some(o) = observer {
+                if let Some(stop) = &o.stop {
+                    stop();
+                }
+            }
+            kill_group_after(child.id() as i32, *KILL_AFTER.read().unwrap());
+            let _ = child.wait();
+            let stdout = out_thread.join().unwrap_or_default();
+            let stderr = err_thread.join().unwrap_or_default();
+            return Ok(finish(None, &stdout, &stderr, true));
+        }
+        if !observed {
+            if let Some(o) = observer {
+                if let Some(beat) = &o.beat {
+                    beat();
+                }
+            }
+            observed = true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Go: func waitCommand(ctx context.Context, cmd *exec.Cmd, budget, grace time.Duration, observer *processObserver) (error, bool, bool)
@@ -62,7 +154,50 @@ pub(crate) fn wait_command(
     grace: Duration,
     observer: Option<&ProcessObserver>,
 ) -> (Option<anyhow::Error>, bool, bool) {
-    todo!("runner::proc::wait_command")
+    if cancel.is_cancelled() {
+        return (Some(anyhow::anyhow!("cancelled")), true, false);
+    }
+    let start = Instant::now();
+    let spawn = unsafe {
+        cmd.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+        cmd.spawn()
+    };
+    let mut child = match spawn {
+        Ok(c) => c,
+        Err(e) => return (Some(e.into()), false, false),
+    };
+    let mut observed = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return (None, false, true),
+            Ok(None) => {}
+            Err(e) => return (Some(e.into()), false, true),
+        }
+        if cancel.is_cancelled() || (budget > Duration::ZERO && start.elapsed() >= budget) {
+            if let Some(o) = observer {
+                if let Some(stop) = &o.stop {
+                    stop();
+                }
+            }
+            kill_group_after(child.id() as i32, grace);
+            let _ = child.wait();
+            return (None, true, true);
+        }
+        if !observed {
+            if let Some(o) = observer {
+                if let Some(beat) = &o.beat {
+                    beat();
+                }
+            }
+            observed = true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 /// Go: func killGroup(pid int, done <-chan error)
 pub(crate) fn kill_group(pid: i32) {

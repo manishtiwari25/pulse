@@ -1,7 +1,7 @@
-#![allow(unused_variables, dead_code, unused_imports)]
 use crate::util::Row;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
@@ -74,7 +74,8 @@ pub(crate) static PROVIDER_SET: LazyLock<RwLock<BTreeMap<String, Arc<dyn Provide
     LazyLock::new(|| RwLock::new(BTreeMap::new()));
 /// Go: func init() { tasks.LoginSourceCheck = hasLoginSource }
 pub(crate) fn init() {
-    *pulse_tasks::LOGIN_SOURCE_CHECK.write().unwrap() = Some(crate::token::has_login_source)
+    *pulse_tasks::LOGIN_SOURCE_CHECK.write().unwrap() = Some(crate::token::has_login_source);
+    *pulse_tasks::COMPUTE_PROVIDERS.write().unwrap() = Some(crate::commands::cmd_compute_providers);
 }
 /// Go: func RegisterProvider(p Provider)
 pub fn register_provider<P: Provider + 'static>(p: P) {
@@ -94,27 +95,95 @@ pub fn provider_names() -> Vec<String> {
 }
 /// Go: func computeExecutorName(requestID string) string
 pub(crate) fn compute_executor_name(request_id: &str) -> String {
-    format!("compute-{}", request_id.to_lowercase())
+    crate::util::slugify(&format!("hands-{}", request_id.to_lowercase()), 40)
 }
 /// Go: func redactSecrets(text string) string
 pub(crate) fn redact_secrets(text: &str) -> String {
-    crate::executor::redact_tokens(text)
+    static WORD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\S+").unwrap());
+    let text = crate::executor::redact_tokens(text);
+    WORD_RE
+        .replace_all(&text, |caps: &regex::Captures<'_>| {
+            let word = caps.get(0).unwrap().as_str();
+            let bare = word.trim_matches(&['"', '\'', '(', ')', ',', ';', ':', '`'][..]);
+            if !bare.is_empty() && pulse_store::secret_shaped(bare) {
+                "[redacted]".to_string()
+            } else {
+                word.to_string()
+            }
+        })
+        .to_string()
 }
 /// Go: func saveMachine(s *store.Store, requestID string, m *Machine, now string)
 pub(crate) fn save_machine(s: &pulse_store::Store, request_id: &str, m: &Machine, now: &str) {
-    todo!("runner::compute::save_machine")
+    let detail = serde_json::to_string(&json!({"tags": m.tags, "detail": m.detail})).unwrap();
+    let conn = s.conn().unwrap();
+    crate::util::exec1(
+        &conn,
+        "INSERT INTO compute_machines (request_id, provider, name, executor, address, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET provider = excluded.provider, name = excluded.name, executor = excluded.executor, address = excluded.address, detail = excluded.detail, created_at = excluded.created_at, released_at = '', attempts = 0, note = ''",
+        &[
+            &request_id,
+            &m.provider,
+            &m.name,
+            &m.executor,
+            &m.address,
+            &detail,
+            &now,
+        ],
+    );
 }
 /// Go: func loadMachine(s *store.Store, requestID string) (*Machine, row)
 pub(crate) fn load_machine(s: &pulse_store::Store, request_id: &str) -> (Option<Machine>, Row) {
-    todo!("runner::compute::load_machine")
+    let conn = s.conn().unwrap();
+    let r = crate::util::must_one(
+        &conn,
+        "SELECT * FROM compute_machines WHERE request_id = ?",
+        &[&request_id],
+    );
+    if r.0.is_empty() {
+        return (None, Row::new());
+    }
+    #[derive(Default, Deserialize)]
+    struct Detail {
+        tags: BTreeMap<String, String>,
+        detail: BTreeMap<String, String>,
+    }
+    let d: Detail = serde_json::from_str(&r.str("detail")).unwrap_or_default();
+    (
+        Some(Machine {
+            provider: r.str("provider"),
+            name: r.str("name"),
+            executor: r.str("executor"),
+            address: r.str("address"),
+            tags: d.tags,
+            detail: d.detail,
+        }),
+        r,
+    )
 }
 /// Go: func machineReleased(s *store.Store, requestID, now string)
 pub(crate) fn machine_released(s: &pulse_store::Store, request_id: &str, now: &str) {
-    todo!("runner::compute::machine_released")
+    let conn = s.conn().unwrap();
+    crate::util::exec1(
+        &conn,
+        "UPDATE compute_machines SET released_at = ? WHERE request_id = ?",
+        &[&now, &request_id],
+    );
 }
 /// Go: func machineReleaseFailed(s *store.Store, requestID, note string) int
 pub(crate) fn machine_release_failed(s: &pulse_store::Store, request_id: &str, note: &str) -> i32 {
-    todo!("runner::compute::machine_release_failed")
+    let conn = s.conn().unwrap();
+    let note = crate::util::trunc(note, 500);
+    crate::util::exec1(
+        &conn,
+        "UPDATE compute_machines SET attempts = attempts + 1, note = ? WHERE request_id = ?",
+        &[&note, &request_id],
+    );
+    crate::util::must_one(
+        &conn,
+        "SELECT attempts FROM compute_machines WHERE request_id = ?",
+        &[&request_id],
+    )
+    .int("attempts")
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct ComputeOpts {
@@ -127,64 +196,339 @@ pub(crate) struct ComputeWorker {
     pub(crate) o: ComputeOpts,
     pub(crate) inflight: Mutex<BTreeMap<String, bool>>,
     pub(crate) no_source_day: Mutex<String>,
+    pub(crate) lines: Mutex<Vec<String>>,
 }
 /// Go: func newComputeWorker(ctx context.Context, s *store.Store, o computeOpts) *computeWorker
 pub(crate) fn new_compute_worker(
-    cancel: &pulse_bus::CancellationToken,
+    _cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
     o: ComputeOpts,
 ) -> ComputeWorker {
-    todo!("runner::compute::new_compute_worker")
+    let mut o = o;
+    if o.actor.is_empty() {
+        o.actor = "daemon".into();
+    }
+    ComputeWorker {
+        s: s.clone(),
+        o,
+        inflight: Mutex::new(BTreeMap::new()),
+        no_source_day: Mutex::new(String::new()),
+        lines: Mutex::new(Vec::new()),
+    }
 }
 impl ComputeWorker {
     pub(crate) fn nudge(&self) {}
-    pub(crate) fn say(&self, format: &str) {}
+    pub(crate) fn say(&self, line: &str) {
+        self.say_line(line.to_string());
+    }
+    pub(crate) fn say_line(&self, line: String) {
+        self.lines.lock().unwrap().push(line);
+    }
     pub(crate) fn drain(&self) -> Vec<String> {
-        todo!("runner::compute::drain")
+        std::mem::take(&mut *self.lines.lock().unwrap())
     }
     pub(crate) fn claim(&self, id: &str) -> bool {
-        todo!("runner::compute::claim")
+        let mut m = self.inflight.lock().unwrap();
+        if m.contains_key(id) {
+            return false;
+        }
+        m.insert(id.to_string(), true);
+        true
     }
-    pub(crate) fn done(&self, id: &str) {}
+    pub(crate) fn done(&self, id: &str) {
+        self.inflight.lock().unwrap().remove(id);
+    }
     pub(crate) fn busy(&self) -> i32 {
         self.inflight.lock().unwrap().len() as i32
     }
     /// Go: func (w *computeWorker) start(id string, fn func())
     pub(crate) fn start<F: FnOnce() + Send + 'static>(&self, id: &str, fn_: F) {
-        std::thread::spawn(fn_);
+        if !self.claim(id) {
+            return;
+        }
+        fn_();
+        self.done(id);
     }
     /// Go: func (w *computeWorker) wait(grace time.Duration)
-    pub(crate) fn wait(&self, grace: Duration) {}
+    pub(crate) fn wait(&self, _grace: Duration) {}
     /// Go: func (w *computeWorker) tick(ctx context.Context, now string) []string
     pub(crate) fn tick(&self, cancel: &pulse_bus::CancellationToken, now: &str) -> Vec<String> {
-        todo!("runner::compute::tick")
+        if cancel.is_cancelled() {
+            return self.drain();
+        }
+        match pulse_tasks::list_compute(&self.s, "", "approved") {
+            Ok(approved) => {
+                for req in approved {
+                    let c = cancel.clone();
+                    self.provision(&c, req);
+                }
+            }
+            Err(e) => self.say_line(format!("compute: {}", crate::run::err_message(&e))),
+        }
+        if let Ok(stale) = pulse_tasks::list_compute(&self.s, "", "provisioning") {
+            for req in stale {
+                if self.inflight.lock().unwrap().contains_key(&req.id) {
+                    continue;
+                }
+                let mut why =
+                    "the daemon stopped while this machine was being provisioned".to_string();
+                if let (Some(m), _) = load_machine(&self.s, &req.id) {
+                    if let Some(p) = provider_named(&m.provider) {
+                        let rctx = pulse_bus::CancellationToken::new()
+                            .with_timeout(COMPUTE_RELEASE_BUDGET);
+                        if p.release(&rctx, &m).is_ok() {
+                            why.push_str("; the machine was released");
+                        } else {
+                            why.push_str("; releasing it failed");
+                        }
+                    }
+                } else {
+                    why.push_str(&format!(
+                        "; look for a machine tagged pulse-request={} at the provider",
+                        req.id
+                    ));
+                }
+                self.fail(req, &why);
+            }
+        }
+        if self.s.setting("compute.auto_approve", "0") == "1" {
+            if let Ok(pending) = pulse_tasks::list_compute(&self.s, "", "pending")
+                && let Some(req) = pending.into_iter().next()
+                && !crate::token::has_login_source(&self.s)
+            {
+                self.no_source_finding(req, now);
+            }
+        }
+        if let Ok(ready) = pulse_tasks::list_compute(&self.s, "", "ready") {
+            for req in ready {
+                let why = self.release_due(req.clone(), now);
+                if !why.is_empty() {
+                    self.release(cancel, req, &why);
+                }
+            }
+        }
+        self.drain()
     }
     pub(crate) fn finding(&self, req: pulse_tasks::ComputeRequest, summary: &str, body: &str) {
-        todo!("runner::compute::finding")
+        if let Err(e) = compute_finding(&self.s, &self.o.actor, req.clone(), summary, body) {
+            self.say_line(format!(
+                "compute {}: finding not posted: {}",
+                req.id,
+                crate::run::err_message(&e)
+            ));
+        }
     }
     pub(crate) fn fail(&self, req: pulse_tasks::ComputeRequest, why: &str) {
-        todo!("runner::compute::fail")
+        let why = redact_secrets(why);
+        if let Err(e) =
+            pulse_tasks::set_compute_status(&self.s, &req.id, "failed", "", &self.o.actor)
+        {
+            self.say_line(format!(
+                "compute {}: {}",
+                req.id,
+                crate::run::err_message(&e)
+            ));
+        }
+        self.finding(
+            req.clone(),
+            &format!("compute {} failed: {}", req.id, why),
+            &format!(
+                "The request by {} for one {} machine for {} hour(s) ({}) could not be served.\n\nReason: {}\n\nNothing was registered. A new request needs `pulse compute request`; the owner may adjust the caps with `pulse settings set compute.max_vms N` / `compute.max_hours_per_day N`.\n",
+                req.requested_by, req.size, req.hours, req.reason, why
+            ),
+        );
+        self.say_line(format!("compute {} failed: {}", req.id, why));
     }
     pub(crate) fn no_source_finding(&self, req: pulse_tasks::ComputeRequest, now: &str) {
-        todo!("runner::compute::no_source_finding")
+        let day = now.get(..10).unwrap_or(now);
+        if *self.no_source_day.lock().unwrap() == day {
+            return;
+        }
+        let conn = self.s.conn().unwrap();
+        let last = crate::util::must_one(
+            &conn,
+            "SELECT at FROM events WHERE action = 'compute.no-login-source' ORDER BY seq DESC LIMIT 1",
+            &[],
+        );
+        if !last.0.is_empty() && last.str("at").starts_with(day) {
+            *self.no_source_day.lock().unwrap() = day.into();
+            return;
+        }
+        *self.no_source_day.lock().unwrap() = day.into();
+        crate::util::event_at(
+            &conn,
+            now,
+            &self.o.actor,
+            "compute.no-login-source",
+            &req.id,
+            json!({"project": req.project}),
+        );
+        self.finding(
+            req.clone(),
+            &format!("{}: compute {} waits; place a Copilot-only token with `pulse executor token --with-token`", pulse_tasks::NO_LOGIN_SOURCE, req.id),
+            &format!(
+                "Compute request {} ({}, by {}) is held: a machine PULSE provisions would have no Copilot login and drain at its first launch, so none is bought (ADR-034). The hub's own `gh` login is not used because it reaches repositories. Place a fine-grained token with only the Copilot Requests permission with `pulse executor token --with-token` (stdin); the daemon then logs every new machine in before it works. This note is posted once a day while the hold lasts.\n",
+                req.id, req.size, req.requested_by
+            ),
+        );
     }
     pub(crate) fn provision(
         &self,
         cancel: &pulse_bus::CancellationToken,
         req: pulse_tasks::ComputeRequest,
     ) {
-        todo!("runner::compute::provision")
+        let Ok(cur) = pulse_tasks::get_compute(&self.s, &req.id) else {
+            return;
+        };
+        if cur.status != "approved" {
+            return;
+        }
+        let caps = match pulse_tasks::get_caps(&self.s) {
+            Ok(c) => c,
+            Err(e) => {
+                self.fail(req, &crate::run::err_message(&e));
+                return;
+            }
+        };
+        let why = caps_allow(caps.clone(), req.clone(), &self.s.now());
+        if !why.is_empty() {
+            if why == pulse_tasks::NO_LOGIN_SOURCE {
+                self.no_source_finding(req.clone(), &self.s.now());
+                self.say_line(format!("compute {} held: {}", req.id, why));
+            } else {
+                self.fail(req, &why);
+            }
+            return;
+        }
+        let Some(p) = provider_named(&caps.provider) else {
+            self.fail(
+                req.clone(),
+                &format!(
+                    "no compute provider {} is built in (have: {})",
+                    crate::board::py_repr(caps.provider),
+                    provider_names().join(", ")
+                ),
+            );
+            return;
+        };
+        if let Err(e) =
+            pulse_tasks::set_compute_status(&self.s, &req.id, "provisioning", "", &self.o.actor)
+        {
+            self.say_line(format!(
+                "compute {}: {}",
+                req.id,
+                crate::run::err_message(&e)
+            ));
+            return;
+        }
+        self.say_line(format!(
+            "compute {}: provisioning one {} machine through {}",
+            req.id,
+            req.size,
+            p.name()
+        ));
+        let pctx = cancel.with_timeout(COMPUTE_PROVISION_BUDGET);
+        let req_for_provider = ProvisionRequest {
+            id: req.id.clone(),
+            project: req.project.clone(),
+            size: req.size.clone(),
+            hours: req.hours,
+            reason: req.reason.clone(),
+            executor: compute_executor_name(&req.id),
+            store: Some(self.s.clone()),
+            actor: self.o.actor.clone(),
+            hub_home: self.o.hub_home.clone(),
+            log: None,
+        };
+        let mut m = match p.provision(&pctx, req_for_provider) {
+            Ok(m) => m,
+            Err(e) => {
+                let mut why = crate::run::err_message(&e);
+                if pctx.deadline_exceeded() {
+                    why = format!("gave up after {:?}: {why}", COMPUTE_PROVISION_BUDGET);
+                }
+                self.fail(req, &why);
+                return;
+            }
+        };
+        if m.provider.is_empty() {
+            m.provider = p.name();
+        }
+        let now = self.s.now();
+        save_machine(&self.s, &req.id, &m, &now);
+        if let Err(e) =
+            pulse_tasks::set_compute_status(&self.s, &req.id, "ready", &m.executor, &self.o.actor)
+        {
+            self.say_line(format!(
+                "compute {}: {}",
+                req.id,
+                crate::run::err_message(&e)
+            ));
+            return;
+        }
+        self.finding(
+            req.clone(),
+            &format!(
+                "compute {} ready: executor {} ({} {}) for {} hour(s)",
+                req.id, m.executor, m.provider, m.name, req.hours
+            ),
+            &format!(
+                "The machine {} asked for is up: `{}` on {}, registered as executor `{}` for project `{}` (approved by {}). The daemon releases it when its {} hour(s) are over or after {} idle minutes, whichever comes first; `pulse executor list` shows it meanwhile.\n\nReason given: {}\n",
+                req.requested_by, m.name, m.provider, m.executor, req.project, req.decided_by, req.hours, COMPUTE_IDLE_MINUTES, req.reason
+            ),
+        );
+        self.say_line(format!("compute {} ready: executor {}", req.id, m.executor));
     }
     pub(crate) fn release_due(&self, req: pulse_tasks::ComputeRequest, now: &str) -> String {
-        todo!("runner::compute::release_due")
+        let (m, mrow) = load_machine(&self.s, &req.id);
+        let mut ready_at = req.updated_at.clone();
+        if !mrow.0.is_empty() && !mrow.str("created_at").is_empty() {
+            ready_at = mrow.str("created_at");
+        }
+        let mut executor = req.executor.clone();
+        if let Some(m) = &m
+            && !m.executor.is_empty()
+        {
+            executor = m.executor.clone();
+        }
+        if !executor.is_empty() && crate::executor::executor_running(&self.s, &executor, now) > 0 {
+            return String::new();
+        }
+        if ready_at.is_empty() {
+            return String::new();
+        }
+        let age = crate::util::must_iso(now) - crate::util::must_iso(&ready_at);
+        if req.hours > 0 && age >= chrono::Duration::hours(req.hours as i64) {
+            return format!("its {} hour(s) are up", req.hours);
+        }
+        let mut last = ready_at;
+        if !executor.is_empty() {
+            let conn = self.s.conn().unwrap();
+            let r = crate::util::must_one(
+                &conn,
+                "SELECT MAX(finished_at) AS at FROM runs WHERE executor = ? AND finished_at IS NOT NULL AND finished_at != ''",
+                &[&executor],
+            );
+            if !r.0.is_empty() && r.str("at") > last {
+                last = r.str("at");
+            }
+        }
+        if crate::util::must_iso(now) - crate::util::must_iso(&last)
+            >= chrono::Duration::minutes(COMPUTE_IDLE_MINUTES as i64)
+        {
+            return format!("the executor sat idle for {} minutes", COMPUTE_IDLE_MINUTES);
+        }
+        String::new()
     }
     pub(crate) fn release(
         &self,
-        cancel: &pulse_bus::CancellationToken,
+        _cancel: &pulse_bus::CancellationToken,
         req: pulse_tasks::ComputeRequest,
         why: &str,
     ) {
-        todo!("runner::compute::release")
+        release_compute(&self.s, &self.o.actor, req, why, |line| {
+            self.say_line(line.to_string())
+        });
     }
 }
 /// Go: func computeFinding(s *store.Store, actor string, req tasks.ComputeRequest, summary, body string) error
@@ -195,7 +539,22 @@ pub(crate) fn compute_finding(
     summary: &str,
     body: &str,
 ) -> Result<()> {
-    todo!("runner::compute::compute_finding")
+    crate::board::create_post(
+        s,
+        s.now(),
+        crate::board::PostOpts {
+            kind: "finding".into(),
+            project: req.project,
+            area: COMPUTE_AREA.into(),
+            thread: COMPUTE_THREAD.into(),
+            summary: crate::util::trunc(summary, 230),
+            body: body.into(),
+            agent: crate::board::actor_agent(s, actor.into()),
+            on: req.proposal_post,
+            ..Default::default()
+        },
+    )?;
+    Ok(())
 }
 /// Go: func capsAllow(caps tasks.Caps, req tasks.ComputeRequest, now string) string
 pub(crate) fn caps_allow(
@@ -203,7 +562,26 @@ pub(crate) fn caps_allow(
     req: pulse_tasks::ComputeRequest,
     now: &str,
 ) -> String {
-    todo!("runner::compute::caps_allow")
+    if caps.max_vms <= 0 || caps.vms_now > caps.max_vms {
+        return format!(
+            "cap: {} machine(s) approved, provisioning or ready against compute.max_vms={}",
+            caps.vms_now, caps.max_vms
+        );
+    }
+    let mut used = caps.hours_today;
+    if req.at.len() >= 10 && now.len() >= 10 && req.at[..10] != now[..10] {
+        used += req.hours;
+    }
+    if caps.max_hours_per_day <= 0 || used > caps.max_hours_per_day {
+        return format!(
+            "cap: {} machine-hour(s) today against compute.max_hours_per_day={}",
+            used, caps.max_hours_per_day
+        );
+    }
+    if !caps.login_source {
+        return pulse_tasks::NO_LOGIN_SOURCE.into();
+    }
+    String::new()
 }
 /// Go: func releaseCompute(s *store.Store, actor string, req tasks.ComputeRequest, why string, say func(format string, a ...any)) bool
 pub(crate) fn release_compute(
@@ -213,5 +591,84 @@ pub(crate) fn release_compute(
     why: &str,
     say: impl Fn(&str),
 ) -> bool {
-    todo!("runner::compute::release_compute")
+    let (loaded, _) = load_machine(s, &req.id);
+    let m = loaded.unwrap_or_else(|| Machine {
+        provider: s.setting("compute.provider", ""),
+        executor: req.executor.clone(),
+        ..Default::default()
+    });
+    if !m.name.is_empty()
+        && let Some(p) = provider_named(&m.provider)
+    {
+        let rctx = pulse_bus::CancellationToken::new().with_timeout(COMPUTE_RELEASE_BUDGET);
+        if let Err(e) = p.release(&rctx, &m) {
+            let msg = crate::run::err_message(&e);
+            let attempts = machine_release_failed(s, &req.id, &msg);
+            say(&format!(
+                "compute {}: release attempt {} failed: {}",
+                req.id,
+                attempts,
+                redact_secrets(&msg)
+            ));
+            if attempts == 1 {
+                let _ = compute_finding(
+                    s,
+                    actor,
+                    req.clone(),
+                    &format!(
+                        "compute {}: releasing {} failed ({}); the daemon retries",
+                        req.id, m.name, why
+                    ),
+                    &format!(
+                        "`{}` on {} should be released because {}, but the provider refused: {}\n\nThe daemon retries every loop; a human may delete it by hand (its tag is pulse-request={}).\n",
+                        m.name,
+                        m.provider,
+                        why,
+                        redact_secrets(&msg),
+                        req.id
+                    ),
+                );
+            }
+            return false;
+        }
+    }
+    if !m.executor.is_empty()
+        && !crate::executor::executor_row(s, &m.executor).0.is_empty()
+        && let Err(e) = pulse_board::remove_executor(s, &m.executor, actor, false)
+    {
+        say(&format!(
+            "compute {}: executor {} not removed: {}",
+            req.id,
+            m.executor,
+            crate::run::err_message(&e)
+        ));
+    }
+    let now = s.now();
+    machine_released(s, &req.id, &now);
+    if let Err(e) = pulse_tasks::set_compute_status(s, &req.id, "released", "", actor) {
+        say(&format!(
+            "compute {}: {}",
+            req.id,
+            crate::run::err_message(&e)
+        ));
+        return false;
+    }
+    if let Err(e) = compute_finding(
+        s,
+        actor,
+        req.clone(),
+        &format!("compute {} released: {}", req.id, why),
+        &format!(
+            "The machine `{}` ({}) that served {}'s request is gone because {}; executor `{}` is removed. Runs it made stay in the log.\n",
+            m.name, m.provider, req.requested_by, why, m.executor
+        ),
+    ) {
+        say(&format!(
+            "compute {}: finding not posted: {}",
+            req.id,
+            crate::run::err_message(&e)
+        ));
+    }
+    say(&format!("compute {} released: {}", req.id, why));
+    true
 }
