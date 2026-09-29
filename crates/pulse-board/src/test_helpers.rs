@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn helpers() {
+    fn helpers_go_parity() {
         let Some(_bin) = oracle_available() else {
             eprintln!("no Go oracle; skipping helpers_go_parity");
             return;

@@ -374,7 +374,9 @@ pub(crate) fn create_post_conn(
         touch_agent_conn(conn, &arow.name, contains(USEFUL_KINDS, &input.kind), &date)?;
     }
     let thread_key = format!("{area}/{thread}");
-    s.event(
+    event_conn(
+        conn,
+        s,
         &arow.name,
         &format!("post.{}", input.kind),
         &pid,
@@ -383,7 +385,9 @@ pub(crate) fn create_post_conn(
         )?,
     )?;
     for name in mentions {
-        s.event(
+        event_conn(
+            conn,
+            s,
             &arow.name,
             "mention",
             &name,
@@ -675,8 +679,8 @@ mod tests {
             .unwrap()
             .execute("UPDATE agents SET status = 'pruned' WHERE name = 'bob'", [])
             .unwrap();
-        pulse_bus::reset_default();
-        let (ch, cancel) = pulse_bus::default().subscribe(pulse_bus::Filter::default(), 16);
+        let (bus, _exclusive) = pulse_bus::exclusive_default();
+        let (ch, cancel) = bus.subscribe(pulse_bus::Filter::default(), 16);
         let p = create_post(
             &s,
             PostInput {

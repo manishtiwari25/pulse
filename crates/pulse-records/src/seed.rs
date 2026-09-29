@@ -292,8 +292,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const CONSTITUTION: &str = "# <Project> Evolution Constitution\n\nRules the loop can never change. <Project> ships the product.\n";
-    const EVALUATORS: &str = "# <Project> Evaluators\n\nWhat better means for <Project>.\n";
+    const TEMPLATE_CONSTITUTION: &str = concat!(
+        "# <Project> Evolution Constitution\n\nRules the loop can never change. <Project> ships the product.\n\n",
+        "## Immutable paths\n\n| Path | Why |\n| --- | --- |\n| <product hard-stop surfaces only> | Tier 2 surfaces (ADR-NNN) |\n"
+    );
+    const TEMPLATE_EVALUATORS: &str =
+        "# <Project> Evaluators\n\nWhat better means for <Project>.\n";
 
     fn temp_store() -> pulse_store::Store {
         let home = tempfile::tempdir().unwrap().keep();
@@ -322,40 +326,63 @@ mod tests {
             .unwrap();
     }
 
-    fn seed_templates(s: &pulse_store::Store) {
+    /// Go: namedProject
+    fn named_project(s: &pulse_store::Store, slug: &str, name: &str, dir: &std::path::Path) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug,name,path,brain,added_at) VALUES (?,?,?,0,?)",
+                rusqlite::params![slug, name, dir.display().to_string(), s.now()],
+            )
+            .unwrap();
+    }
+
+    /// seedTemplates gives the store a brain and the two template-owned records
+    /// the way pulse migrate imports them; the constitution has two revisions so
+    /// tests see that the current one is copied.
+    fn seed_templates(s: &pulse_store::Store) -> tempfile::TempDir {
         let brain = tempfile::tempdir().unwrap();
         add_project(s, "brain", "brain", brain.path(), true);
-        for (slug, body, extra) in [
-            ("constitution", CONSTITUTION, ("loop", "off")),
-            ("evaluators", EVALUATORS, ("baseline", "pending")),
-        ] {
-            let front: crate::records::Frontmatter = [
-                ("id".into(), json!(slug.to_ascii_uppercase())),
-                (
-                    "title".into(),
-                    json!(format!(
-                        "<Project> {}",
-                        if slug == "constitution" {
-                            "Evolution Constitution"
-                        } else {
-                            "Evaluators"
-                        }
-                    )),
-                ),
-                ("status".into(), json!("Active")),
-                ("date".into(), json!("YYYY-MM-DD")),
-                (extra.0.into(), json!(extra.1)),
-            ]
-            .into();
+        let templates: [(&str, &str, crate::records::Frontmatter); 2] = [
+            (
+                "constitution",
+                TEMPLATE_CONSTITUTION,
+                [
+                    ("id".to_string(), json!("CONSTITUTION")),
+                    ("title".to_string(), json!("<Project> Evolution Constitution")),
+                    ("status".to_string(), json!("Active")),
+                    ("date".to_string(), json!("YYYY-MM-DD")),
+                    ("controlling_adr".to_string(), json!("ADR-NNN")),
+                    ("loop".to_string(), json!("off")),
+                    ("limits".to_string(), json!("none")),
+                ]
+                .into(),
+            ),
+            (
+                "evaluators",
+                TEMPLATE_EVALUATORS,
+                [
+                    ("id".to_string(), json!("EVALUATORS")),
+                    ("title".to_string(), json!("<Project> Evaluators")),
+                    ("status".to_string(), json!("Active")),
+                    ("date".to_string(), json!("YYYY-MM-DD")),
+                    ("controlling_adr".to_string(), json!("ADR-NNN")),
+                    ("baseline".to_string(), json!("pending")),
+                ]
+                .into(),
+            ),
+        ];
+        for (slug, body, front) in templates {
+            let path = format!("docs/evolution/_template-{slug}.md");
             let rec = pulse_store::Record {
                 id: format!("TPL-evolution-{slug}"),
                 project: "brain".into(),
                 kind: "template".into(),
                 slug: format!("evolution-{slug}"),
-                title: format!("<Project> {slug}"),
+                title: crate::records::text_value(front.get("title")),
                 status: "Active".into(),
-                path: format!("docs/evolution/_template-{slug}.md"),
-                origin: "markdown:x@0000000".into(),
+                path: path.clone(),
+                origin: format!("markdown:{path}@0000000"),
                 ..pulse_store::Record::default()
             };
             if slug == "constitution" {
@@ -370,31 +397,211 @@ mod tests {
             }
             s.put_record(rec, front, body, "tester", "import").unwrap();
         }
+        brain
+    }
+
+    /// Go: eventCount (import_test.go)
+    fn event_count(s: &pulse_store::Store, action: &str) -> i64 {
+        s.conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = ?",
+                [action],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Go: revisionCount
+    fn revision_count(s: &pulse_store::Store, id: &str) -> usize {
+        s.revisions(id).unwrap().len()
+    }
+
+    fn cli_code(err: &anyhow::Error) -> Option<i32> {
+        err.downcast_ref::<pulse_cli::Error>().map(|e| e.code)
     }
 
     #[test]
     fn seed_loop_records_copies_the_template_once() {
         let s = temp_store();
-        seed_templates(&s);
+        let _brain = seed_templates(&s);
         let project_dir = tempfile::tempdir().unwrap();
-        add_project(&s, "lamplitlabs", "Lamplit Labs", project_dir.path(), false);
+        named_project(&s, "lamplitlabs", "Lamplit Labs", project_dir.path());
         let summary = seed_loop_records(&s, "lamplitlabs", "alice").unwrap();
-        assert_eq!(summary.constitution.action, "copied");
-        assert_eq!(summary.constitution.source, "TPL-evolution-constitution@r2");
-        assert_eq!(summary.evaluators.source, "TPL-evolution-evaluators@r1");
-        let (rec, rev) = crate::records::get(&s, "EVO-constitution-lamplitlabs", 0).unwrap();
-        assert_eq!(rec.project, "lamplitlabs");
-        assert_eq!(rec.title, "Lamplit Labs Evolution Constitution");
-        assert!(rev.body.contains("Lamplit Labs ships the product"));
-        assert_eq!(
-            rev.frontmatter["seeded_from"],
-            json!("brain/TPL-evolution-constitution@r2")
+        let want = SeedSummary {
+            project: "lamplitlabs".into(),
+            constitution: SeedResult {
+                id: "EVO-constitution-lamplitlabs".into(),
+                action: "copied".into(),
+                source: "TPL-evolution-constitution@r2".into(),
+                rev: 1,
+            },
+            evaluators: SeedResult {
+                id: "EVO-evaluators-lamplitlabs".into(),
+                action: "copied".into(),
+                source: "TPL-evolution-evaluators@r1".into(),
+                rev: 1,
+            },
+        };
+        assert_eq!(summary, want, "summary {summary:?}, want {want:?}");
+        let (rec, rev) = s.get_record("EVO-constitution-lamplitlabs", 0).unwrap();
+        let rev = rev.unwrap();
+        assert!(
+            rec.kind == "evolution"
+                && rec.slug == "constitution"
+                && rec.project == "lamplitlabs"
+                && rec.origin == "store"
+                && rec.title == "Lamplit Labs Evolution Constitution"
+                && rec.status == "Active"
+                && rec.date == "2026-09-06"
+                && rec.created_by == "alice",
+            "copied head row: {rec:?}"
         );
+        assert!(
+            rev.author == "alice"
+                && rev.note == "seeded from TPL-evolution-constitution@r2 (ADR-030)",
+            "copied revision: author {:?} note {:?}",
+            rev.author,
+            rev.note
+        );
+        for (key, value) in [
+            ("id", "EVO-constitution-lamplitlabs"),
+            ("title", "Lamplit Labs Evolution Constitution"),
+            ("status", "Active"),
+            ("date", "2026-09-06"),
+            ("seeded_from", "brain/TPL-evolution-constitution@r2"),
+            ("seeded_by", "alice"),
+            ("loop", "off"),
+            ("limits", "none"),
+            ("controlling_adr", "ADR-NNN"),
+        ] {
+            assert_eq!(
+                rev.frontmatter.get(key),
+                Some(&json!(value)),
+                "frontmatter {key} = {:?}, want {value:?} ({:?})",
+                rev.frontmatter.get(key),
+                rev.frontmatter
+            );
+        }
+        assert_eq!(rev.frontmatter.len(), 9, "frontmatter keys: {:?}", rev.frontmatter);
+        assert!(
+            rev.body == TEMPLATE_CONSTITUTION.replace("<Project>", "Lamplit Labs")
+                && !rev.body.contains("<Project>")
+                && rev.body.contains("<product hard-stop surfaces only>")
+                && rev.body.contains("ADR-NNN"),
+            "copied body:\n{}",
+            rev.body
+        );
+        let (_, evaluators) = s.get_record("EVO-evaluators-lamplitlabs", 0).unwrap();
+        let evaluators = evaluators.unwrap();
+        assert!(
+            evaluators.frontmatter.get("baseline") == Some(&json!("pending"))
+                && evaluators.frontmatter.get("seeded_from")
+                    == Some(&json!("brain/TPL-evolution-evaluators@r1"))
+                && evaluators.frontmatter.get("title") == Some(&json!("Lamplit Labs Evaluators"))
+                && evaluators.body == TEMPLATE_EVALUATORS.replace("<Project>", "Lamplit Labs"),
+            "copied evaluators: {evaluators:?}"
+        );
+        assert!(
+            event_count(&s, "evolution.records.seeded") == 1 && event_count(&s, "record.created") == 4,
+            "seeding did not record one summary event beside the two created records"
+        );
+        assert!(
+            revision_count(&s, "TPL-evolution-constitution") == 2
+                && revision_count(&s, "TPL-evolution-evaluators") == 1,
+            "seeding wrote to the templates"
+        );
+
+        // Repeating keeps both; nothing is revised and no event is added.
         let again = seed_loop_records(&s, "lamplitlabs", "bob").unwrap();
-        assert_eq!(again.constitution.action, "kept");
-        assert_eq!(again.evaluators.action, "kept");
-        assert!(seed_loop_records(&s, pulse_store::COMMONS_SLUG, "human").is_err());
-        assert!(seed_loop_records(&s, "absent", "human").is_err());
+        let kept = SeedSummary {
+            project: "lamplitlabs".into(),
+            constitution: SeedResult {
+                id: "EVO-constitution-lamplitlabs".into(),
+                action: "kept".into(),
+                source: String::new(),
+                rev: 1,
+            },
+            evaluators: SeedResult {
+                id: "EVO-evaluators-lamplitlabs".into(),
+                action: "kept".into(),
+                source: String::new(),
+                rev: 1,
+            },
+        };
+        assert!(
+            again == kept
+                && revision_count(&s, "EVO-constitution-lamplitlabs") == 1
+                && event_count(&s, "evolution.records.seeded") == 1,
+            "second seeding: {again:?}"
+        );
+
+        // An existing record is never touched, whatever its text; the missing one is copied.
+        let other_dir = tempfile::tempdir().unwrap();
+        named_project(&s, "other", "", other_dir.path());
+        let own = pulse_store::Record {
+            id: "EVO-constitution-other".into(),
+            project: "other".into(),
+            kind: "evolution".into(),
+            slug: "constitution".into(),
+            title: "Own rules".into(),
+            ..pulse_store::Record::default()
+        };
+        for body in ["first\n", "second\n"] {
+            s.put_record(
+                own.clone(),
+                [("title".to_string(), json!("Own rules"))].into(),
+                body,
+                "human",
+                "",
+            )
+            .unwrap();
+        }
+        let summary = seed_loop_records(&s, "other", "").unwrap();
+        assert!(
+            summary.constitution
+                == SeedResult {
+                    id: "EVO-constitution-other".into(),
+                    action: "kept".into(),
+                    source: String::new(),
+                    rev: 2,
+                }
+                && summary.evaluators
+                    == SeedResult {
+                        id: "EVO-evaluators-other".into(),
+                        action: "copied".into(),
+                        source: "TPL-evolution-evaluators@r1".into(),
+                        rev: 1,
+                    },
+            "mixed seeding: {summary:?}"
+        );
+        let (_, rev) = s.get_record("EVO-constitution-other", 0).unwrap();
+        let rev = rev.unwrap();
+        assert!(
+            rev.rev == 2 && rev.body == "second\n" && !rev.frontmatter.contains_key("seeded_from"),
+            "the owner's constitution changed: {rev:?}"
+        );
+        let (_, rev) = s.get_record("EVO-evaluators-other", 0).unwrap();
+        let rev = rev.unwrap();
+        assert!(
+            rev.frontmatter.get("seeded_by") == Some(&json!(pulse_store::HUMAN_AGENT))
+                && rev.frontmatter.get("title") == Some(&json!("other Evaluators"))
+                && rev.author == pulse_store::HUMAN_AGENT,
+            "an empty actor is the human and an empty name is the slug: {rev:?}"
+        );
+
+        // The commons and unknown projects get nothing.
+        let err = seed_loop_records(&s, pulse_store::COMMONS_SLUG, "human").unwrap_err();
+        assert_eq!(cli_code(&err), Some(2), "commons: {err}");
+        let err = seed_loop_records(&s, "absent", "human").unwrap_err();
+        assert_eq!(cli_code(&err), Some(2), "unknown project: {err}");
+        let rows = s
+            .list_records(pulse_store::RecordFilter {
+                kind: "evolution".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 4, "evolution records: {}", rows.len());
     }
 
     #[test]
@@ -470,7 +677,7 @@ mod tests {
     #[test]
     fn seed_loop_records_indexes_the_checkouts_committed_file() {
         let s = temp_store();
-        seed_templates(&s);
+        let _brain = seed_templates(&s);
         let repo = tempfile::tempdir().unwrap();
         pulse_testutil::git(&[
             "-C",

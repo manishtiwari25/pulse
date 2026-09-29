@@ -91,6 +91,7 @@ pub fn unknown_harness_verb(verb: &str) -> pulse_cli::Error {
 
 fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness run");
+    fs.set_output(pulse_cli::flags::Output::Discard);
     fs.string_var("p", "", "task text");
     fs.string_var("task", "", "task text");
     fs.string_var("task-file", "", "read task from file, or - for stdin");
@@ -412,6 +413,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
 
 fn harness_login(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness login");
+    fs.set_output(pulse_cli::flags::Output::Discard);
     fs.string_var("provider", pulse_provider::DEFAULT, "provider name");
     fs.bool_var("with-token", false, "read token from stdin");
     bind_raw_globals(&mut fs);
@@ -545,6 +547,7 @@ fn device_login_flow(c: &mut Context, p: &dyn Provider, cancel: &CancelToken) ->
 
 fn harness_status(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness status");
+    fs.set_output(pulse_cli::flags::Output::Discard);
     fs.string_var("provider", "", "provider name");
     bind_raw_globals(&mut fs);
     fs.parse(args)?;
@@ -600,6 +603,7 @@ fn harness_status(c: &mut Context, args: &[String]) -> Result<()> {
 
 fn harness_models(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness models");
+    fs.set_output(pulse_cli::flags::Output::Discard);
     fs.string_var("provider", pulse_provider::DEFAULT, "provider name");
     bind_raw_globals(&mut fs);
     fs.parse(args)?;
@@ -675,6 +679,7 @@ fn harness_models(c: &mut Context, args: &[String]) -> Result<()> {
 
 fn harness_logout(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness logout");
+    fs.set_output(pulse_cli::flags::Output::Discard);
     fs.string_var("provider", pulse_provider::DEFAULT, "provider name");
     bind_raw_globals(&mut fs);
     fs.parse(args)?;
@@ -732,6 +737,7 @@ fn harness_logout(c: &mut Context, args: &[String]) -> Result<()> {
 
 fn harness_sessions(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness sessions");
+    fs.set_output(pulse_cli::flags::Output::Discard);
     fs.string_var("project", "", "project slug");
     fs.string_var("status", "", "session status");
     fs.int_var("limit", 50, "maximum sessions");
@@ -766,6 +772,7 @@ fn harness_sessions(c: &mut Context, args: &[String]) -> Result<()> {
 
 fn harness_show(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness show");
+    fs.set_output(pulse_cli::flags::Output::Discard);
     bind_raw_globals(&mut fs);
     fs.parse(args)?;
     apply_raw_globals(c, &fs);
@@ -798,6 +805,7 @@ fn harness_show(c: &mut Context, args: &[String]) -> Result<()> {
 
 fn harness_cancel(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness cancel");
+    fs.set_output(pulse_cli::flags::Output::Discard);
     bind_raw_globals(&mut fs);
     fs.parse(args)?;
     apply_raw_globals(c, &fs);
@@ -851,6 +859,7 @@ fn harness_cancel(c: &mut Context, args: &[String]) -> Result<()> {
 
 fn harness_prompt(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness prompt");
+    fs.set_output(pulse_cli::flags::Output::Discard);
     fs.string_var("C", ".", "working directory");
     fs.string_var("provider", "", "provider name");
     fs.string_var("model", "", "model id");

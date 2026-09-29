@@ -363,7 +363,8 @@ fn same_bundle_record(a: &BundleRecord, b: &BundleRecord) -> bool {
     a.kind == b.kind
         && a.slug == b.slug
         && a.body == b.body
-        && pulse_store::gojson::to_vec(&a.frontmatter).ok() == pulse_store::gojson::to_vec(&b.frontmatter).ok()
+        && pulse_store::gojson::to_vec(&a.frontmatter).ok()
+            == pulse_store::gojson::to_vec(&b.frontmatter).ok()
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -449,12 +450,77 @@ mod tests {
     #[test]
     fn framework_bundle_carries_the_framework() {
         let b = framework_bundle().unwrap();
-        assert_eq!(b.version, BUNDLE_VERSION);
-        assert!(b.records.len() >= 60);
-        assert!(b.records.iter().any(|r| r.id == "INSTR-agents"));
-        assert!(b.records.iter().all(|r| framework_kind(&r.kind)));
+        assert!(
+            b.version == BUNDLE_VERSION && b.records.len() >= 60,
+            "bundle version {} with {} records",
+            b.version,
+            b.records.len()
+        );
+        let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+        let mut ids: BTreeMap<String, BundleRecord> = BTreeMap::new();
+        for (i, r) in b.records.iter().enumerate() {
+            *kinds.entry(r.kind.clone()).or_default() += 1;
+            assert!(!ids.contains_key(&r.id), "{} occurs twice", r.id);
+            ids.insert(r.id.clone(), r.clone());
+            assert!(
+                framework_kind(&r.kind) && !r.slug.is_empty() && !r.body.trim().is_empty(),
+                "record {i} is not a framework record: {}",
+                r.id
+            );
+            for key in ["seeded_from", "seeded_by"] {
+                assert!(
+                    !r.frontmatter.contains_key(key),
+                    "{} carries {key}; the bundle is the source, not a copy",
+                    r.id
+                );
+            }
+            let shape = secret_shaped(&r.body);
+            assert!(shape.is_empty(), "{} carries a {shape}", r.id);
+            assert!(
+                !retired_status(&crate::records::text_value(r.frontmatter.get("status"))),
+                "{} is {:?} and still bundled",
+                r.id,
+                r.frontmatter.get("status")
+            );
+            assert!(
+                !r.body.contains("/Users/") && !r.body.contains("/home/"),
+                "{} names a home directory",
+                r.id
+            );
+        }
+        for kind in FRAMEWORK_KINDS {
+            assert!(
+                kinds.get(*kind).copied().unwrap_or(0) > 0,
+                "no {kind} record in the bundle"
+            );
+        }
+        for id in [
+            "INSTR-agents",
+            "GUIDE-new-repo",
+            "TPL-evolution-constitution",
+            "TPL-evolution-evaluators",
+            "TPL-adr",
+            "TPL-plan",
+            "WF-pulse",
+            "ARCH-overview",
+        ] {
+            assert!(ids.contains_key(id), "bundle lacks {id}");
+        }
+        let mut sorted = b.clone();
+        sort_bundle(&mut sorted);
+        for i in 0..b.records.len() {
+            assert_eq!(
+                b.records[i].id, sorted.records[i].id,
+                "bundle is not in export order at {i}: {} vs {}",
+                b.records[i].id, sorted.records[i].id
+            );
+        }
+        // The file on disk is the bundle re-encoded: an export that changes nothing rewrites nothing.
         let encoded = encode_bundle(&b).unwrap();
-        assert_eq!(encoded, BUNDLE_JSON.as_bytes());
+        assert!(
+            encoded == BUNDLE_JSON.as_bytes(),
+            "seed/bundle.json is not in encodeBundle's form; run pulse seed export"
+        );
     }
 
     #[test]

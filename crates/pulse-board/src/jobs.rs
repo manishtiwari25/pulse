@@ -2326,7 +2326,7 @@ mod tests {
     fn board_writes_reach_bus_subscribers() {
         let (_dir, s, p) = fixture();
         join_alice(&s);
-        let bus = pulse_bus::default();
+        let (bus, _exclusive) = pulse_bus::exclusive_default();
         let (rx, cancel) = bus.subscribe(
             pulse_bus::Filter {
                 actions: vec!["post.finding".into()],

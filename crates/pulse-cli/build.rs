@@ -80,8 +80,14 @@ fn main() {
         version = match exact {
             Some(tag) => format!("{tag}{suffix}"),
             None => {
-                let base = git(&["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*.[0-9]*.[0-9]*"])
-                    .and_then(|t| semver(&t));
+                let base = git(&[
+                    "describe",
+                    "--tags",
+                    "--abbrev=0",
+                    "--match",
+                    "v[0-9]*.[0-9]*.[0-9]*",
+                ])
+                .and_then(|t| semver(&t));
                 match base {
                     Some((ma, mi, pa)) => {
                         format!("v{ma}.{mi}.{}-0.{}-{short}{suffix}", pa + 1, stamp(secs))

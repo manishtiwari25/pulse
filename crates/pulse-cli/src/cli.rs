@@ -296,9 +296,7 @@ mod tests {
     static REGISTRY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn registry_lock() -> MutexGuard<'static, ()> {
-        REGISTRY_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        REGISTRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn noop(_c: &mut Context, _fs: &FlagSet, _args: &[String]) -> Result<()> {

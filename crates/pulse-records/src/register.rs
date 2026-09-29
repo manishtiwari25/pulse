@@ -5,6 +5,7 @@ use crate::import::{ImportOptions, import_repo};
 use crate::leadtime::{lead_days, lead_time};
 use crate::records::{Filter, NewOptions, input_error};
 use anyhow::Result;
+use pulse_cli::flags::Output;
 use pulse_cli::{Command, Context, FlagSet, table, write_json};
 use serde::Serialize;
 use std::io::{Read, Write};
@@ -98,7 +99,7 @@ pub fn run_seed(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()> {
             "pulse help seed",
         ));
     }
-    parse_flags(&mut fs, &args[1..])?;
+    parse_flags(c, &mut fs, &args[1..])?;
     if fs.narg() != 0 {
         return Err(input_error(
             "Unexpected seed arguments",
@@ -259,7 +260,7 @@ pub fn run_record(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()>
             ));
         }
     }
-    parse_flags(&mut fs, &args[1..])?;
+    parse_flags(c, &mut fs, &args[1..])?;
     let rest = fs.args().to_vec();
     let json_out = fs.get_bool("json");
     if sub == "list" {
@@ -597,7 +598,7 @@ pub fn run_migrate(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()
         "revise already imported paths whose body changed",
     );
     fs.bool_var("json", c.json, "print JSON");
-    parse_flags(&mut fs, args)?;
+    parse_flags(c, &mut fs, args)?;
     if fs.narg() != 0 {
         return Err(input_error(
             "Unexpected migrate arguments",
@@ -670,7 +671,7 @@ pub fn run_guide(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()> 
     fs.bool_var("full", false, "include Claude and Copilot instructions");
     fs.string_var("project", &c.project, "project slug");
     fs.bool_var("json", c.json, "print JSON");
-    parse_flags(&mut fs, args)?;
+    parse_flags(c, &mut fs, args)?;
     if fs.narg() != 0 {
         return Err(input_error(
             "Unexpected guide arguments",
@@ -739,7 +740,19 @@ pub fn run_guide(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()> 
     Ok(())
 }
 
-pub fn parse_flags(fs: &mut FlagSet, args: &[String]) -> Result<()> {
+/// Go: `fs.SetOutput(c.Err)` — what Parse prints (usage on `-h`, bad flag
+/// messages) goes to the command's error writer.
+pub fn parse_flags(c: &mut Context, fs: &mut FlagSet, args: &[String]) -> Result<()> {
+    fs.set_output(Output::Capture);
+    let parsed = parse_flag_args(fs, args);
+    let printed = fs.take_output();
+    if !printed.is_empty() {
+        let _ = c.err.write_all(&printed);
+    }
+    parsed
+}
+
+fn parse_flag_args(fs: &mut FlagSet, args: &[String]) -> Result<()> {
     let mut flags = Vec::new();
     let mut positional = Vec::new();
     let mut i = 0;

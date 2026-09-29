@@ -53,10 +53,12 @@ pub fn register() {
             summary: "the daemon's own push key, by reference: token, set, status, clear (ADR-041)"
                 .into(),
             usage: format!(
-                "pulse cred token [--from-file PATH]      (1Password service-account token from stdin, kept in the keychain or a 0600 file)\n\
-                       pulse cred set REF [--no-probe]         (REF: {})\n\
-                       pulse cred status [--json]\n\
-                       pulse cred clear [--token]",
+                concat!(
+                    "pulse cred token [--from-file PATH]      (1Password service-account token from stdin, kept in the keychain or a 0600 file)\n",
+                    "       pulse cred set REF [--no-probe]         (REF: {})\n",
+                    "       pulse cred status [--json]\n",
+                    "       pulse cred clear [--token]"
+                ),
                 pulse_cred::SHAPES
             ),
             aliases: Vec::new(),
@@ -106,6 +108,7 @@ fn run(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()> {
     };
 
     let mut fs = FlagSet::new(format!("cred {sub}"));
+    fs.set_output(pulse_cli::flags::Output::Discard);
     match sub {
         "token" => fs.string_var(
             "from-file",

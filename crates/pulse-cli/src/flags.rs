@@ -3,8 +3,12 @@ use std::fmt;
 use std::io::{self, Write};
 use std::time::Duration;
 
+/// Port of Go's `flag` package as PULSE uses it: a `FlagSet` with
+/// `ContinueOnError`, the same error texts, `PrintDefaults` layout and the
+/// default `Usage of NAME:` message on stderr unless the output is discarded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlagError {
+    /// Go's `flag.ErrHelp`: `-h`/`-help` seen and no such flag defined.
     Help,
     Message(String),
 }
@@ -20,6 +24,33 @@ impl fmt::Display for FlagError {
 
 impl std::error::Error for FlagError {}
 
+/// Where a `FlagSet` prints parse errors and its usage (Go: `SetOutput`;
+/// the default is stderr, `io.Discard` silences it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Output {
+    #[default]
+    Stderr,
+    Discard,
+    /// Go `fs.SetOutput(c.Err)`: collect what Parse prints and let the
+    /// caller forward it with [`FlagSet::take_output`].
+    Capture,
+}
+
+struct CaptureWriter<'a>(&'a std::cell::RefCell<Vec<u8>>);
+
+impl Write for CaptureWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+const ERR_PARSE: &str = "parse error";
+const ERR_RANGE: &str = "value out of range";
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlagValue {
     String(String),
@@ -31,26 +62,44 @@ pub enum FlagValue {
 }
 
 impl FlagValue {
-    fn type_name(&self) -> Option<&'static str> {
+    /// Go `UnquoteUsage`'s fallback type name (`""` for booleans).
+    fn type_name(&self) -> &'static str {
         match self {
-            Self::String(_) => Some("string"),
-            Self::Int(_) => Some("int"),
-            Self::I64(_) => Some("int"),
-            Self::F64(_) => Some("float"),
-            Self::Duration(_) => Some("duration"),
-            Self::Bool(_) => None,
+            Self::String(_) => "string",
+            Self::Int(_) => "int",
+            Self::I64(_) => "int",
+            Self::F64(_) => "float",
+            Self::Duration(_) => "duration",
+            Self::Bool(_) => "",
         }
     }
 
+    /// Go `Value.String()`: what `DefValue` holds.
     fn default_text(&self) -> String {
         match self {
             Self::String(v) => v.clone(),
             Self::Bool(v) => v.to_string(),
             Self::Int(v) => v.to_string(),
             Self::I64(v) => v.to_string(),
-            Self::F64(v) => v.to_string(),
+            Self::F64(v) => format_float_g(*v),
             Self::Duration(v) => format_duration(*v),
         }
+    }
+
+    /// Go `Value.Set(s)` for this value's type; the error is Go's `parse
+    /// error` / `value out of range`.
+    fn set_from(&self, value: &str) -> Result<FlagValue, &'static str> {
+        Ok(match self {
+            Self::String(_) => Self::String(value.to_string()),
+            Self::Bool(_) => Self::Bool(parse_bool(value).map_err(|()| ERR_PARSE)?),
+            Self::Int(_) => {
+                let v = parse_go_int(value, 64)?;
+                Self::Int(i32::try_from(v).map_err(|_| ERR_RANGE)?)
+            }
+            Self::I64(_) => Self::I64(parse_go_int(value, 64)?),
+            Self::F64(_) => Self::F64(parse_go_float(value)?),
+            Self::Duration(_) => Self::Duration(parse_duration(value).map_err(|_| ERR_PARSE)?),
+        })
     }
 }
 
@@ -69,6 +118,8 @@ pub struct FlagSet {
     formal: BTreeMap<String, Flag>,
     actual: BTreeMap<String, ()>,
     args: Vec<String>,
+    output: Output,
+    captured: std::cell::RefCell<Vec<u8>>,
 }
 
 impl FlagSet {
@@ -77,6 +128,11 @@ impl FlagSet {
             name: name.into(),
             ..Self::default()
         }
+    }
+
+    /// Go `SetOutput`: `Output::Discard` is `io.Discard`.
+    pub fn set_output(&mut self, output: Output) {
+        self.output = output;
     }
 
     pub fn string_var(&mut self, name: &str, default: &str, usage: &str) {
@@ -103,6 +159,15 @@ impl FlagSet {
             !name.starts_with('-') && !name.contains('='),
             "flag \"{name}\" begins with - or contains ="
         );
+        assert!(
+            !self.formal.contains_key(name),
+            "{} flag redefined: {name}",
+            if self.name.is_empty() {
+                "flag".to_string()
+            } else {
+                self.name.clone()
+            }
+        );
         self.formal.insert(
             name.to_string(),
             Flag {
@@ -115,74 +180,144 @@ impl FlagSet {
         );
     }
 
-    pub fn parse(&mut self, args: &[String]) -> Result<(), FlagError> {
-        self.args.clear();
-        let mut i = 0;
-        while i < args.len() {
-            let s = &args[i];
-            if s == "--" {
-                self.args.extend_from_slice(&args[i + 1..]);
-                return Ok(());
-            }
-            if !s.starts_with('-') || s == "-" {
-                self.args.extend_from_slice(&args[i..]);
-                return Ok(());
-            }
-            let trimmed = s.trim_start_matches('-');
-            if trimmed == "h" || trimmed == "help" {
-                return Err(FlagError::Help);
-            }
-            let (name, value_inline) = match trimmed.split_once('=') {
-                Some((name, value)) => (name, Some(value)),
-                None => (trimmed, None),
-            };
-            let Some(flag) = self.formal.get(name) else {
-                return Err(FlagError::Message(format!(
-                    "flag provided but not defined: -{name}"
-                )));
-            };
-            let value = if matches!(flag.value, FlagValue::Bool(_)) {
-                value_inline.unwrap_or("true").to_string()
-            } else if let Some(value) = value_inline {
-                value.to_string()
-            } else {
-                i += 1;
-                if i >= args.len() {
-                    return Err(FlagError::Message(format!(
-                        "flag needs an argument: -{name}"
-                    )));
-                }
-                args[i].clone()
-            };
-            self.set(name, &value)?;
-            i += 1;
+    fn out(&self) -> Option<Box<dyn Write + '_>> {
+        match self.output {
+            Output::Stderr => Some(Box::new(io::stderr())),
+            Output::Discard => None,
+            Output::Capture => Some(Box::new(CaptureWriter(&self.captured))),
         }
-        Ok(())
     }
 
+    /// Everything Parse wrote under [`Output::Capture`] so far (and clears it).
+    pub fn take_output(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.captured.borrow_mut())
+    }
+
+    /// Go `failf`: the message on the output, then the usage.
+    fn failf(&self, msg: String) -> FlagError {
+        if let Some(mut w) = self.out() {
+            let _ = writeln!(w, "{msg}");
+        }
+        self.usage();
+        FlagError::Message(msg)
+    }
+
+    /// Go `defaultUsage`: `Usage of NAME:` (or `Usage:`) and the defaults.
+    fn usage(&self) {
+        let Some(mut w) = self.out() else {
+            return;
+        };
+        if self.name.is_empty() {
+            let _ = writeln!(w, "Usage:");
+        } else {
+            let _ = writeln!(w, "Usage of {}:", self.name);
+        }
+        let _ = self.print_defaults(&mut w);
+    }
+
+    /// Go `Parse` with `ContinueOnError`: stops at the first non-flag
+    /// argument or `--`; `-h`/`-help` (when not defined) is [`FlagError::Help`].
+    pub fn parse(&mut self, args: &[String]) -> Result<(), FlagError> {
+        self.args = args.to_vec();
+        loop {
+            let seen = self.parse_one()?;
+            if !seen {
+                return Ok(());
+            }
+        }
+    }
+
+    fn parse_one(&mut self) -> Result<bool, FlagError> {
+        let Some(s) = self.args.first().cloned() else {
+            return Ok(false);
+        };
+        let b = s.as_bytes();
+        if b.len() < 2 || b[0] != b'-' {
+            return Ok(false);
+        }
+        let mut num_minuses = 1;
+        if b[1] == b'-' {
+            num_minuses += 1;
+            if b.len() == 2 {
+                // "--" terminates the flags
+                self.args.remove(0);
+                return Ok(false);
+            }
+        }
+        let mut name = &s[num_minuses..];
+        if name.is_empty() || name.starts_with('-') || name.starts_with('=') {
+            return Err(self.failf(format!("bad flag syntax: {s}")));
+        }
+        // it's a flag. does it have an argument?
+        self.args.remove(0);
+        let mut has_value = false;
+        let mut value = String::new();
+        if let Some(i) = name[1..].find('=') {
+            // equals cannot be first
+            value = name[i + 2..].to_string();
+            has_value = true;
+            name = &name[..i + 1];
+        }
+        let name = name.to_string();
+        let Some(flag) = self.formal.get(&name) else {
+            if name == "help" || name == "h" {
+                // special case for nice help message.
+                self.usage();
+                return Err(FlagError::Help);
+            }
+            return Err(self.failf(format!("flag provided but not defined: -{name}")));
+        };
+        let new_value = if matches!(flag.value, FlagValue::Bool(_)) {
+            // special case: doesn't need an arg
+            if has_value {
+                match flag.value.set_from(&value) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err(self.failf(format!(
+                            "invalid boolean value {} for -{name}: {e}",
+                            go_quote(&value)
+                        )));
+                    }
+                }
+            } else {
+                FlagValue::Bool(true)
+            }
+        } else {
+            // It must have a value, which might be the next argument.
+            if !has_value && !self.args.is_empty() {
+                has_value = true;
+                value = self.args.remove(0);
+            }
+            if !has_value {
+                return Err(self.failf(format!("flag needs an argument: -{name}")));
+            }
+            match flag.value.set_from(&value) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Err(self.failf(format!(
+                        "invalid value {} for flag -{name}: {e}",
+                        go_quote(&value)
+                    )));
+                }
+            }
+        };
+        let flag = self.formal.get_mut(&name).expect("looked up above");
+        flag.value = new_value;
+        flag.set = true;
+        self.actual.insert(name, ());
+        Ok(true)
+    }
+
+    /// Go `FlagSet.Set`: sets a defined flag from text; the error is the
+    /// value's own (`parse error`, `value out of range`).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), FlagError> {
         let Some(flag) = self.formal.get_mut(name) else {
             return Err(FlagError::Message(format!("no such flag -{name}")));
         };
-        let parsed = match &flag.default {
-            FlagValue::String(_) => FlagValue::String(value.to_string()),
-            FlagValue::Bool(_) => FlagValue::Bool(parse_bool(value).map_err(|_| {
-                FlagError::Message(format!("invalid boolean value \"{value}\" for -{name}"))
-            })?),
-            FlagValue::Int(_) => FlagValue::Int(value.parse::<i32>().map_err(|e| {
-                FlagError::Message(format!("invalid value \"{value}\" for flag -{name}: {e}"))
-            })?),
-            FlagValue::I64(_) => FlagValue::I64(value.parse::<i64>().map_err(|e| {
-                FlagError::Message(format!("invalid value \"{value}\" for flag -{name}: {e}"))
-            })?),
-            FlagValue::F64(_) => FlagValue::F64(value.parse::<f64>().map_err(|e| {
-                FlagError::Message(format!("invalid value \"{value}\" for flag -{name}: {e}"))
-            })?),
-            FlagValue::Duration(_) => FlagValue::Duration(parse_duration(value).map_err(|e| {
-                FlagError::Message(format!("invalid value \"{value}\" for flag -{name}: {e}"))
-            })?),
-        };
-        flag.value = parsed;
+        flag.value = flag
+            .value
+            .set_from(value)
+            .map_err(|e| FlagError::Message(e.to_string()))?;
         flag.set = true;
         self.actual.insert(name.to_string(), ());
         Ok(())
@@ -255,35 +390,238 @@ impl FlagSet {
         &self.name
     }
 
+    /// Go `PrintDefaults`: flags in name order, back-quoted usage names,
+    /// one-letter booleans on one line, non-zero defaults appended.
     pub fn print_defaults(&self, w: &mut dyn Write) -> io::Result<()> {
         for flag in self.formal.values() {
-            write!(w, "  -{}", flag.name)?;
-            if let Some(t) = flag.default.type_name() {
-                write!(w, " {t}")?;
+            let mut b = format!("  -{}", flag.name);
+            let (name, usage) = unquote_usage(flag);
+            if !name.is_empty() {
+                b.push(' ');
+                b.push_str(&name);
             }
+            // Boolean flags of one ASCII letter are so common we
+            // treat them specially, putting their usage on the same line.
+            if b.len() <= 4 {
+                // space, space, '-', 'x'.
+                b.push('\t');
+            } else {
+                // Four spaces before the tab triggers good alignment
+                // for both 4- and 8-space tab stops.
+                b.push_str("\n    \t");
+            }
+            b.push_str(&usage.replace('\n', "\n    \t"));
             let default = flag.default.default_text();
-            let show_default = match &flag.default {
-                FlagValue::String(v) => !v.is_empty(),
-                FlagValue::Bool(v) => *v,
-                FlagValue::Int(v) => *v != 0,
-                FlagValue::I64(v) => *v != 0,
-                FlagValue::F64(v) => *v != 0.0,
-                FlagValue::Duration(v) => !v.is_zero(),
+            let is_zero = match &flag.default {
+                FlagValue::String(v) => v.is_empty(),
+                FlagValue::Bool(v) => !*v,
+                FlagValue::Int(v) => *v == 0,
+                FlagValue::I64(v) => *v == 0,
+                FlagValue::F64(_) => default == "0",
+                FlagValue::Duration(v) => v.is_zero(),
             };
-            writeln!(w)?;
-            write!(w, "    \t{}", flag.usage)?;
-            if show_default {
+            if !is_zero {
                 match flag.default {
-                    FlagValue::String(_) => write!(w, " (default {default:?})")?,
-                    _ => write!(w, " (default {default})")?,
+                    FlagValue::String(_) => {
+                        b.push_str(&format!(" (default {})", go_quote(&default)))
+                    }
+                    _ => b.push_str(&format!(" (default {default})")),
                 }
             }
-            writeln!(w)?;
+            writeln!(w, "{b}")?;
         }
         Ok(())
     }
 }
 
+/// Go `flag.UnquoteUsage`: a back-quoted word in the usage names the value
+/// and loses its quotes; otherwise the type names it.
+pub fn unquote_usage(flag: &Flag) -> (String, String) {
+    let usage = &flag.usage;
+    if let Some(i) = usage.find('`')
+        && let Some(j) = usage[i + 1..].find('`')
+    {
+        let name = usage[i + 1..i + 1 + j].to_string();
+        let unquoted = format!("{}{}{}", &usage[..i], name, &usage[i + 2 + j..]);
+        return (name, unquoted);
+    }
+    (flag.default.type_name().to_string(), usage.clone())
+}
+
+/// Go `strconv.Quote` for the plain strings flags carry.
+fn go_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{7}' => out.push_str("\\a"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\u{b}' => out.push_str("\\v"),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                out.push_str(&format!("\\x{:02x}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Go `strconv.FormatFloat(v, 'g', -1, 64)`.
+fn format_float_g(v: f64) -> String {
+    if v.is_nan() {
+        return "NaN".into();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 {
+            "+Inf".into()
+        } else {
+            "-Inf".into()
+        };
+    }
+    if v == 0.0 {
+        return if v.is_sign_negative() {
+            "-0".into()
+        } else {
+            "0".into()
+        };
+    }
+    let exp = v.abs().log10().floor() as i32;
+    if !(-4..21).contains(&exp) {
+        let s = format!("{v:e}");
+        let (mant, e) = s.split_once('e').unwrap_or((&s, "0"));
+        let e: i32 = e.parse().unwrap_or(0);
+        let sign = if e < 0 { '-' } else { '+' };
+        return format!("{mant}e{sign}{:02}", e.abs());
+    }
+    v.to_string()
+}
+
+/// Go `strconv.ParseInt(s, 0, bitSize)`: optional sign, base by prefix
+/// (`0x`, `0o`, `0b`, leading `0` = octal), underscores between digits.
+fn parse_go_int(s: &str, bit_size: u32) -> Result<i64, &'static str> {
+    if s.is_empty() {
+        return Err(ERR_PARSE);
+    }
+    let (neg, body) = match s.as_bytes()[0] {
+        b'+' => (false, &s[1..]),
+        b'-' => (true, &s[1..]),
+        _ => (false, s),
+    };
+    let un = parse_go_uint(body)?;
+    let cutoff: u64 = 1u64 << (bit_size - 1);
+    if !neg && un >= cutoff {
+        return Err(ERR_RANGE);
+    }
+    if neg && un > cutoff {
+        return Err(ERR_RANGE);
+    }
+    Ok(if neg {
+        (un as i64).wrapping_neg()
+    } else {
+        un as i64
+    })
+}
+
+fn parse_go_uint(s0: &str) -> Result<u64, &'static str> {
+    if s0.is_empty() {
+        return Err(ERR_PARSE);
+    }
+    let b = s0.as_bytes();
+    let (base, s): (u64, &str) = if b[0] == b'0' {
+        match b.get(1).map(u8::to_ascii_lowercase) {
+            Some(b'b') if b.len() >= 3 => (2, &s0[2..]),
+            Some(b'o') if b.len() >= 3 => (8, &s0[2..]),
+            Some(b'x') if b.len() >= 3 => (16, &s0[2..]),
+            _ => (8, &s0[1..]),
+        }
+    } else {
+        (10, s0)
+    };
+    let mut underscores = false;
+    let mut n: u64 = 0;
+    for &c in s.as_bytes() {
+        let d: u64 = match c {
+            b'_' => {
+                underscores = true;
+                continue;
+            }
+            b'0'..=b'9' => u64::from(c - b'0'),
+            b'a'..=b'z' => u64::from(c - b'a') + 10,
+            b'A'..=b'Z' => u64::from(c - b'A') + 10,
+            _ => return Err(ERR_PARSE),
+        };
+        if d >= base {
+            return Err(ERR_PARSE);
+        }
+        n = n.checked_mul(base).ok_or(ERR_RANGE)?;
+        n = n.checked_add(d).ok_or(ERR_RANGE)?;
+    }
+    if underscores && !underscore_ok(s0) {
+        return Err(ERR_PARSE);
+    }
+    Ok(n)
+}
+
+/// Go `strconv.underscoreOK`: underscores only between digits (or after
+/// a base prefix).
+fn underscore_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut saw = b'^';
+    let mut i = 0;
+    let mut hex = false;
+    if b.len() >= 2 && b[0] == b'0' && matches!(b[1].to_ascii_lowercase(), b'b' | b'o' | b'x') {
+        i = 2;
+        saw = b'0';
+        hex = b[1].eq_ignore_ascii_case(&b'x');
+    }
+    while i < b.len() {
+        let c = b[i];
+        if c.is_ascii_digit() || (hex && matches!(c.to_ascii_lowercase(), b'a'..=b'f')) {
+            saw = b'0';
+            i += 1;
+            continue;
+        }
+        if c == b'_' {
+            if saw != b'0' {
+                return false;
+            }
+            saw = b'_';
+            i += 1;
+            continue;
+        }
+        if saw == b'_' {
+            return false;
+        }
+        saw = b'!';
+        i += 1;
+    }
+    saw != b'_'
+}
+
+/// Go `strconv.ParseFloat(s, 64)` as far as flags need it.
+fn parse_go_float(s: &str) -> Result<f64, &'static str> {
+    let cleaned = if s.contains('_') && underscore_ok(s.trim_start_matches(['+', '-'])) {
+        s.replace('_', "")
+    } else {
+        s.to_string()
+    };
+    let v: f64 = cleaned.parse().map_err(|_| ERR_PARSE)?;
+    let lower = cleaned.trim_start_matches(['+', '-']).to_ascii_lowercase();
+    if v.is_infinite() && lower != "inf" && lower != "infinity" {
+        return Err(ERR_RANGE);
+    }
+    Ok(v)
+}
+
+/// Port of main.go's `parseInterleaved`: flags and positional arguments may
+/// mix; `--` ends flag parsing.
 pub fn parse_interleaved(fs: &mut FlagSet, mut args: &[String]) -> Result<Vec<String>, FlagError> {
     let mut positional = Vec::new();
     while !args.is_empty() {
@@ -516,9 +854,17 @@ mod tests {
         );
         assert_eq!(
             fs.set("b", "maybe"),
+            Err(FlagError::Message("parse error".into()))
+        );
+        assert_eq!(
+            fs.parse(&sv(&["-b=maybe"])),
             Err(FlagError::Message(
-                "invalid boolean value \"maybe\" for -b".into()
+                "invalid boolean value \"maybe\" for -b: parse error".into()
             ))
+        );
+        assert_eq!(
+            fs.parse(&sv(&["---b"])),
+            Err(FlagError::Message("bad flag syntax: ---b".into()))
         );
 
         let mut fs = FlagSet::new("x");

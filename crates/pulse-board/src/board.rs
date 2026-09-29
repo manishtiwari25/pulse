@@ -304,11 +304,7 @@ pub(crate) fn event_conn<D: Into<pulse_store::Detail>>(
     subject: &str,
     detail: D,
 ) -> Result<()> {
-    let text = detail.into().text()?;
-    conn.execute(
-        "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, ?, ?, ?, ?)",
-        rusqlite::params![s.now(), actor, action, subject, text],
-    )?;
+    let _ = pulse_bus::emit_conn(conn, &s.now(), actor, action, subject, detail)?;
     Ok(())
 }
 
@@ -324,14 +320,56 @@ mod tests {
 
     #[test]
     fn helpers() {
-        assert_eq!(slugify("Hello, World!"), "hello-world");
-        assert_eq!(py_repr("a'b"), "\"a'b\"");
-        assert!(valid_name("agent-1"));
-        assert!(!valid_name("A"));
-        assert!(has_read_line("x\nRead: thing\n"));
+        let a50 = "a".repeat(50);
+        let a40 = "a".repeat(40);
+        let a39_bcd = format!("{}-bcd", "a".repeat(39));
+        let a39 = "a".repeat(39);
+        for (input, want) in [
+            ("Runner Speed", "runner-speed"),
+            ("!!!", "x"),
+            ("", "x"),
+            ("A--B", "a-b"),
+            (a50.as_str(), a40.as_str()),
+            (a39_bcd.as_str(), a39.as_str()),
+        ] {
+            assert_eq!(slugify(input), want, "slugify({input:?})");
+        }
+        let a41 = "a".repeat(41);
+        for (input, ok) in [
+            ("alice", true),
+            ("a", false),
+            ("1abc", false),
+            ("Alice", false),
+            ("a-1", true),
+            (a41.as_str(), false),
+        ] {
+            assert_eq!(valid_name(input), ok, "valid_name({input:?}) != {ok}");
+        }
+        assert!(
+            py_repr("it's") == r#""it's""# && py_repr("plain") == "'plain'" && py_repr(r#"a"b'c"#) == r#"'a"b\'c'"#,
+            "pyRepr: {} {} {}",
+            py_repr("it's"),
+            py_repr("plain"),
+            py_repr(r#"a"b'c"#)
+        );
+        assert!(trunc("abcdef", 4) == "abc~" && trunc("abc", 4) == "abc", "trunc");
         assert_eq!(
-            plus_hours("2026-09-05T08:00:00Z", 1.5).unwrap(),
-            "2026-09-05T09:30:00Z"
+            plus_hours("2026-09-06T10:00:00Z", -0.5).unwrap(),
+            "2026-09-06T09:30:00Z",
+            "plus_hours"
+        );
+        assert_eq!(
+            fenced_block("## Proposed text\n```\n\n  x  \n\n```\n", "Proposed text").unwrap()[0],
+            "  x",
+            "fenced block normalization"
+        );
+        assert!(
+            fenced_block("## Proposed text\n## Other\n```\nx\n```\n", "Proposed text").is_none(),
+            "heading before fence must end the search"
+        );
+        assert!(
+            has_read_line("a\nRead: yes\n") && !has_read_line("Read:\n"),
+            "read line"
         );
     }
 }
