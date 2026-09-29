@@ -44,7 +44,6 @@ pub struct Post {
 pub fn is_bare_vote_summary(kind: &str, summary: &str) -> bool {
     kind == "vote" && matches!(summary.trim().to_ascii_lowercase().as_str(), "up" | "down")
 }
-pub use is_bare_vote_summary as IsBareVoteSummary;
 
 pub(crate) fn scan_post(row: &Row<'_>) -> rusqlite::Result<Post> {
     let read: i64 = row.get(15)?;
@@ -87,7 +86,6 @@ pub fn post_by_id(s: &pulse_store::Store, id: &str) -> Result<Option<Post>> {
     let conn = s.conn()?;
     post_by_id_conn(&conn, id)
 }
-pub use post_by_id as PostByID;
 
 pub(crate) fn post_by_id_conn(conn: &Connection, id: &str) -> Result<Option<Post>> {
     Ok(conn
@@ -148,17 +146,14 @@ pub struct PostInput {
 pub fn normalize_area(area: &str) -> String {
     slugify(area)
 }
-pub use normalize_area as NormalizeArea;
 pub fn normalize_thread(thread: &str) -> String {
     slugify(thread)
 }
-pub use normalize_thread as NormalizeThread;
 
 pub fn create_post(s: &pulse_store::Store, input: PostInput) -> Result<Post> {
     let conn = s.conn()?;
     create_post_conn(s, &conn, input)
 }
-pub use create_post as CreatePost;
 
 pub(crate) fn create_post_conn(
     s: &pulse_store::Store,
@@ -372,7 +367,8 @@ pub(crate) fn create_post_conn(
         touch_agent_conn(conn, &arow.name, contains(USEFUL_KINDS, &input.kind), &date)?;
     }
     let thread_key = format!("{area}/{thread}");
-    event(
+    event_conn(
+        conn,
         s,
         &arow.name,
         &format!("post.{}", input.kind),
@@ -382,7 +378,8 @@ pub(crate) fn create_post_conn(
         )?,
     )?;
     for name in mentions {
-        event(
+        event_conn(
+            conn,
             s,
             &arow.name,
             "mention",
@@ -404,7 +401,6 @@ pub fn claim_expiry(s: &pulse_store::Store, mut hours: f64) -> Result<String> {
     }
     plus_hours(&s.now(), hours)
 }
-pub use claim_expiry as ClaimExpiry;
 
 pub(crate) fn touch_agent_conn(
     conn: &Connection,

@@ -14,7 +14,6 @@ where
     f(&WriteTransaction { s, tx: &tx })?;
     tx.commit()
 }
-pub use with_write_transaction as WithWriteTransaction;
 impl WriteTransaction<'_> {
     pub fn add_job(&self, input: JobInput) -> Result<(Job, bool)> {
         add_job_conn(self.s, self.tx, input)

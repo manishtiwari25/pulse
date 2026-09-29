@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 type ProjectCreatedHook = fn(&pulse_store::Store, &pulse_store::Project, &str) -> Result<()>;
 pub static mut ON_PROJECT_CREATED: Option<ProjectCreatedHook> = None;
+#[allow(non_upper_case_globals)]
+pub static mut OnProjectCreated: Option<ProjectCreatedHook> = None;
 
 pub fn unique_slug(
     s: &pulse_store::Store,
@@ -33,7 +35,6 @@ pub fn unique_slug(
         n += 1;
     }
 }
-pub use unique_slug as UniqueSlug;
 
 pub(crate) fn is_inside(path: &Path, root: &Path) -> bool {
     path.strip_prefix(root).is_ok()
@@ -175,8 +176,9 @@ pub fn register_project(
     let _ = pulse_goals::ensure_default(s, &slug);
     // SAFETY: task wiring sets the hook during single-threaded registration in the binary.
     unsafe {
+        let hook = OnProjectCreated.or(ON_PROJECT_CREATED);
         if created
-            && let Some(hook) = ON_PROJECT_CREATED
+            && let Some(hook) = hook
             && let Err(e) = hook(s, &p, actor)
         {
             event(
@@ -190,7 +192,6 @@ pub fn register_project(
     }
     Ok((p, created))
 }
-pub use register_project as RegisterProject;
 
 #[allow(clippy::too_many_arguments)]
 pub fn add_project(
@@ -205,7 +206,6 @@ pub fn add_project(
 ) -> Result<pulse_store::Project> {
     Ok(register_project(s, path, name, remote, brain, verify_cmd, actor, slug)?.0)
 }
-pub use add_project as AddProject;
 
 pub fn environment_record_id(p: &pulse_store::Project) -> String {
     if p.brain {
@@ -214,7 +214,6 @@ pub fn environment_record_id(p: &pulse_store::Project) -> String {
         format!("CTX-environment-{}", p.slug)
     }
 }
-pub use environment_record_id as EnvironmentRecordID;
 
 pub fn import_environment(
     s: &pulse_store::Store,
@@ -270,7 +269,6 @@ pub fn import_environment(
     )?;
     Ok(id)
 }
-pub use import_environment as ImportEnvironment;
 
 pub fn split_frontmatter(text: &str) -> (std::collections::BTreeMap<String, String>, String) {
     let lines: Vec<&str> = text.split('\n').collect();
@@ -294,7 +292,6 @@ pub fn split_frontmatter(text: &str) -> (std::collections::BTreeMap<String, Stri
     }
     (fm, String::new())
 }
-pub use split_frontmatter as SplitFrontmatter;
 
 pub fn split_list(v: &str) -> Vec<String> {
     let v = v
@@ -356,7 +353,6 @@ pub fn import_registry(s: &pulse_store::Store, path: &str, actor: &str) -> Resul
     }
     Ok(out)
 }
-pub use import_registry as ImportRegistry;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InitResult {
@@ -400,7 +396,6 @@ pub fn init(
         store: s.path.clone(),
     })
 }
-pub use init as Init;
 
 #[cfg(test)]
 mod tests {

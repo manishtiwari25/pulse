@@ -31,7 +31,6 @@ pub fn parse_mentions(text: &str) -> Vec<String> {
     }
     out
 }
-pub use parse_mentions as ParseMentions;
 
 fn mention_boundary(chars: &[char], at: usize) -> bool {
     at == 0 || chars[at - 1].is_whitespace() || "([{\"\n'".contains(chars[at - 1])
@@ -103,12 +102,10 @@ ORDER BY p.date DESC, p.rowid DESC"#;
     let rows = stmt.query_map(params_from_iter(args), scan_post)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
-pub use mentions_for as MentionsFor;
 
 pub fn mention_count(s: &pulse_store::Store, project: &str, agent: &str) -> Result<usize> {
     Ok(mentions_for(s, project, agent, 0)?.len())
 }
-pub use mention_count as MentionCount;
 
 #[cfg(test)]
 mod tests {

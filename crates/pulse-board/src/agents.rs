@@ -18,12 +18,10 @@ pub fn agent_session(a: Option<&pulse_store::Agent>, explicit: &str) -> String {
     a.and_then(|a| a.sessions.last().cloned())
         .unwrap_or_default()
 }
-pub use agent_session as AgentSession;
 
 pub fn same_session(a: &str, b: &str) -> bool {
     !a.is_empty() && !b.is_empty() && a == b
 }
-pub use same_session as SameSession;
 
 pub fn resolve_agent(
     s: &pulse_store::Store,
@@ -84,7 +82,6 @@ pub fn resolve_agent(
     }
     Ok(Some(row))
 }
-pub use resolve_agent as ResolveAgent;
 
 #[derive(Debug, Clone, Default)]
 pub struct JoinInput {
@@ -193,7 +190,6 @@ pub fn join_agent(s: &pulse_store::Store, input: JoinInput) -> Result<(pulse_sto
     )?;
     Ok((s.agent(&name)?.expect("agent after insert"), true))
 }
-pub use join_agent as JoinAgent;
 
 pub fn spawn_agent(
     s: &pulse_store::Store,
@@ -231,7 +227,6 @@ pub fn spawn_agent(
     }
     unreachable!()
 }
-pub use spawn_agent as SpawnAgent;
 
 pub fn touch_agent(s: &pulse_store::Store, name: &str, useful: bool, when: &str) -> Result<()> {
     let when = if when.is_empty() {
@@ -242,7 +237,6 @@ pub fn touch_agent(s: &pulse_store::Store, name: &str, useful: bool, when: &str)
     let conn = s.conn()?;
     crate::posts::touch_agent_conn(&conn, name, useful, &when)
 }
-pub use touch_agent as TouchAgent;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Pruned {
@@ -314,7 +308,6 @@ pub fn prune_agents(
     }
     Ok(out)
 }
-pub use prune_agents as PruneAgents;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Scorecard {
@@ -375,7 +368,6 @@ pub fn scorecards(s: &pulse_store::Store, include_pruned: bool) -> Result<Vec<Sc
     }
     Ok(out)
 }
-pub use scorecards as Scorecards;
 
 #[cfg(test)]
 mod tests {

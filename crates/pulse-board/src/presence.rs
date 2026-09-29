@@ -75,7 +75,6 @@ pub fn record_heartbeat(s: &pulse_store::Store, h: ExecutionHeartbeat) -> Result
     }
     Ok(changed)
 }
-pub use record_heartbeat as RecordHeartbeat;
 
 fn record_heartbeat_tx(tx: &pulse_store::Tx, h: &ExecutionHeartbeat) -> Result<bool> {
     let current: Option<i64> = tx.query_row(r#"SELECT 1 FROM runs r JOIN jobs j ON j.id=r.job_id JOIN agents a ON a.name=r.agent
@@ -138,7 +137,6 @@ pub fn stop_heartbeat(
     }
     Ok(changed)
 }
-pub use stop_heartbeat as StopHeartbeat;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct AgentPresence {
@@ -150,6 +148,22 @@ pub struct AgentPresence {
     pub presence_expires_at: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct PresenceEvidence {
+    kind: String,
+    status: String,
+    run_id: String,
+    job_id: String,
+    executor: String,
+    started: String,
+    run_status: String,
+    job_status: String,
+    lease_agent: String,
+    raw: String,
+    generation: i64,
+    leased: bool,
+}
+
 pub fn agent_presences(
     s: &pulse_store::Store,
     now: &str,
@@ -159,38 +173,153 @@ pub fn agent_presences(
     } else {
         now.to_string()
     };
-    let checked = chrono::DateTime::parse_from_rfc3339(&now)?.with_timezone(&chrono::Utc);
+    let checked = chrono::DateTime::parse_from_rfc3339(&now)
+        .map_err(|e| anyhow!("presence clock: {e}"))?
+        .with_timezone(&chrono::Utc);
     let conn = s.conn()?;
-    let mut stmt = conn.prepare("SELECT name, kind, status FROM agents")?;
+    let mut stmt = conn.prepare(
+        r#"WITH latest_run AS (
+		SELECT id, job_id, executor, started_at, status, agent,
+			ROW_NUMBER() OVER (PARTITION BY agent ORDER BY started_at DESC, rowid DESC) AS rn
+		FROM runs
+		WHERE mode != 'dry-run'
+	)
+	SELECT a.name,a.kind,a.status,
+		COALESCE(r.id,''),COALESCE(r.job_id,''),COALESCE(r.executor,''),COALESCE(r.started_at,''),COALESCE(r.status,''),
+		COALESCE(j.status,''),COALESCE(j.lease_agent,''),COALESCE(j.generation,0),COALESCE(m.value,''),
+		EXISTS(SELECT 1 FROM jobs busy WHERE busy.lease_agent=a.name AND busy.status='leased')
+		FROM agents a
+		LEFT JOIN latest_run r ON r.agent=a.name AND r.rn=1
+		LEFT JOIN jobs j ON j.id=r.job_id
+		LEFT JOIN meta m ON m.key=? || a.name"#,
+    )?;
     let mut out = BTreeMap::new();
-    for row in stmt.query_map([], |r| {
+    for row in stmt.query_map([HEARTBEAT_PREFIX], |r| {
         Ok((
             r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
+            PresenceEvidence {
+                kind: r.get(1)?,
+                status: r.get(2)?,
+                run_id: r.get(3)?,
+                job_id: r.get(4)?,
+                executor: r.get(5)?,
+                started: r.get(6)?,
+                run_status: r.get(7)?,
+                job_status: r.get(8)?,
+                lease_agent: r.get(9)?,
+                generation: r.get(10)?,
+                raw: r.get(11)?,
+                leased: r.get(12)?,
+            },
         ))
     })? {
-        let (name, kind, status) = row?;
-        let (presence, reason) = match (kind.as_str(), status.as_str()) {
-            (_, "pruned") => ("pruned", "identity permanently pruned; history retained"),
-            ("legacy", _) => ("legacy", "historical identity; no supervised execution"),
-            ("human", _) => ("unknown", "owner presence is not monitored"),
-            ("worker" | "lead", "active" | "idle") => ("idle", "reusable; no active run"),
-            _ => ("unknown", "no supervised heartbeat"),
-        };
-        out.insert(
-            name,
-            AgentPresence {
-                presence: presence.into(),
-                presence_reason: reason.into(),
-                presence_checked_at: checked.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-                ..Default::default()
-            },
-        );
+        let (name, evidence) = row?;
+        out.insert(name.clone(), calculate_presence(&name, evidence, checked));
     }
     Ok(out)
 }
-pub use agent_presences as AgentPresences;
+
+fn calculate_presence(
+    name: &str,
+    e: PresenceEvidence,
+    now: chrono::DateTime<chrono::Utc>,
+) -> AgentPresence {
+    let mut p = AgentPresence {
+        presence: "unknown".into(),
+        presence_reason: "no supervised heartbeat".into(),
+        presence_checked_at: now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        ..Default::default()
+    };
+    let start = chrono::DateTime::parse_from_rfc3339(&e.started).ok();
+    let h = serde_json::from_str::<ExecutionHeartbeat>(&e.raw).ok();
+    let mut valid = false;
+    if let Some(ref h) = h {
+        valid = h.validate().is_ok()
+            && h.agent == name
+            && h.run_id == e.run_id
+            && h.job_id == e.job_id
+            && h.executor == e.executor;
+        if valid && let (Some(start), Ok(at)) = (start, chrono::DateTime::parse_from_rfc3339(&h.at))
+        {
+            valid = at >= start && at <= now;
+            if !h.stopped_at.is_empty()
+                && let Ok(stop) = chrono::DateTime::parse_from_rfc3339(&h.stopped_at)
+            {
+                valid = valid && stop <= now;
+            }
+            if valid {
+                p.last_heartbeat_at = h.at.clone();
+                p.presence_session = h.session.clone();
+            }
+        } else {
+            valid = false;
+        }
+    }
+    match () {
+        _ if e.status == "pruned" => {
+            p.presence = "pruned".into();
+            p.presence_reason = "identity permanently pruned; history retained".into();
+        }
+        _ if e.kind == "legacy" => {
+            p.presence = "legacy".into();
+            p.presence_reason = "historical identity; no supervised execution".into();
+        }
+        _ if e.kind == "human" => {
+            p.presence_reason = "owner presence is not monitored".into();
+        }
+        _ if (e.kind == "worker" || e.kind == "lead")
+            && (e.status == "active" || e.status == "idle")
+            && !e.leased
+            && e.run_status != "running" =>
+        {
+            p.presence = "idle".into();
+            p.presence_reason = "reusable; no active run".into();
+        }
+        _ if !valid => {
+            if !e.raw.is_empty() {
+                p.presence_reason = "missing, malformed or historical heartbeat evidence".into();
+            }
+            if e.run_status == "running"
+                && let Some(start) = start
+                && now - start.with_timezone(&chrono::Utc)
+                    >= chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap()
+            {
+                p.presence = "offline".into();
+                p.presence_reason = "no valid heartbeat for five minutes".into();
+            }
+        }
+        _ if e.run_status != "running" || h.as_ref().is_some_and(|h| !h.stopped_at.is_empty()) => {
+            p.presence = "offline".into();
+            p.presence_reason = "execution is no longer supervised".into();
+        }
+        _ if e.lease_agent != name
+            || h.as_ref().is_none_or(|h| e.generation != h.generation)
+            || (e.job_status != "leased" && e.job_status != "done" && e.job_status != "failed") =>
+        {
+            p.presence = "offline".into();
+            p.presence_reason = "execution no longer owns the current job generation".into();
+        }
+        _ => {
+            if let Some(h) = h
+                && let Ok(at) = chrono::DateTime::parse_from_rfc3339(&h.at)
+            {
+                if now - at.with_timezone(&chrono::Utc)
+                    >= chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap()
+                {
+                    p.presence = "offline".into();
+                    p.presence_reason = "no valid heartbeat for five minutes".into();
+                } else {
+                    p.presence = "online".into();
+                    p.presence_reason = "supervised execution".into();
+                    p.presence_expires_at = (at
+                        + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap())
+                    .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                }
+            }
+        }
+    }
+    p
+}
 
 #[cfg(test)]
 mod tests {

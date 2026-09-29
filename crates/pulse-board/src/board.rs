@@ -119,7 +119,6 @@ pub fn py_repr(s: &str) -> String {
 pub fn slugify(name: &str) -> String {
     slugify_n(name, 40)
 }
-pub use slugify as Slugify;
 
 pub(crate) fn slugify_n(name: &str, limit: usize) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -146,7 +145,6 @@ pub fn valid_name(name: &str) -> bool {
     RE.get_or_init(|| Regex::new(r"^[a-z][a-z0-9-]{1,39}$").unwrap())
         .is_match(name)
 }
-pub use valid_name as ValidName;
 
 pub fn parse_iso(value: &str) -> Result<DateTime<Utc>> {
     let t = DateTime::parse_from_rfc3339(value).map_err(|_| {
@@ -160,7 +158,6 @@ pub fn parse_iso(value: &str) -> Result<DateTime<Utc>> {
     })?;
     Ok(t.with_timezone(&Utc))
 }
-pub use parse_iso as ParseISO;
 
 pub fn plus_hours(iso: &str, hours: f64) -> Result<String> {
     let t = parse_iso(iso)?;
@@ -169,7 +166,6 @@ pub fn plus_hours(iso: &str, hours: f64) -> Result<String> {
         .format(TIME_LAYOUT)
         .to_string())
 }
-pub use plus_hours as PlusHours;
 
 pub(crate) fn stamp_of(iso: &str) -> String {
     iso.replace(['-', ':'], "")
@@ -205,7 +201,6 @@ pub fn has_read_line(body: &str) -> bool {
     RE.get_or_init(|| Regex::new(r"(?m)^Read:[ \t]*\S").unwrap())
         .is_match(body)
 }
-pub use has_read_line as HasReadLine;
 
 pub fn fenced_block(body: &str, heading: &str) -> Option<Vec<String>> {
     let head_re = Regex::new(&format!(r"^## {}[ \t]*$", regex::escape(heading))).ok()?;
@@ -247,12 +242,10 @@ pub fn fenced_block(body: &str, heading: &str) -> Option<Vec<String>> {
     }
     if lines.is_empty() { None } else { Some(lines) }
 }
-pub use fenced_block as FencedBlock;
 
 pub fn block_hash(lines: &[String]) -> String {
     sha256_text(&(lines.join("\n") + "\n"))
 }
-pub use block_hash as BlockHash;
 
 pub(crate) fn git(repo: &str, args: &[&str]) -> (String, bool) {
     let mut cmd = ProcessCommand::new("git");
@@ -300,6 +293,22 @@ pub(crate) fn event<D: Into<pulse_store::Detail>>(
     detail: D,
 ) -> Result<()> {
     let _ = pulse_bus::emit(s, actor, action, subject, detail)?;
+    Ok(())
+}
+
+pub(crate) fn event_conn<D: Into<pulse_store::Detail>>(
+    conn: &rusqlite::Connection,
+    s: &pulse_store::Store,
+    actor: &str,
+    action: &str,
+    subject: &str,
+    detail: D,
+) -> Result<()> {
+    let text = detail.into().text()?;
+    conn.execute(
+        "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, ?, ?, ?, ?)",
+        rusqlite::params![s.now(), actor, action, subject, text],
+    )?;
     Ok(())
 }
 

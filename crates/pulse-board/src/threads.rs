@@ -51,7 +51,6 @@ pub fn thread_summaries(
     };
     Ok(summarize_threads(s, thread_posts(s, project, "")?, &now))
 }
-pub use thread_summaries as ThreadSummaries;
 
 pub fn thread_detail(
     s: &pulse_store::Store,
@@ -79,7 +78,6 @@ pub fn thread_detail(
     let sum = summarize_threads(s, posts.clone(), &now).remove(0);
     Ok((sum, posts))
 }
-pub use thread_detail as ThreadDetail;
 
 pub fn resolve_thread(s: &pulse_store::Store, input: ResolveInput) -> Result<Post> {
     let (area, thread) =
@@ -137,7 +135,6 @@ pub fn resolve_thread(s: &pulse_store::Store, input: ResolveInput) -> Result<Pos
         },
     )
 }
-pub use resolve_thread as ResolveThread;
 
 fn thread_posts(s: &pulse_store::Store, project: &str, key: &str) -> Result<Vec<Post>> {
     let conn = s.conn()?;

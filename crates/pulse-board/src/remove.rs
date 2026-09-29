@@ -153,7 +153,6 @@ pub fn remove_project(
     }
     Ok(pre)
 }
-pub use remove_project as RemoveProject;
 pub fn remove_executor(
     _s: &pulse_store::Store,
     name: &str,
@@ -184,7 +183,6 @@ pub fn remove_executor(
         duplicate_rows: 0,
     })
 }
-pub use remove_executor as RemoveExecutor;
 pub fn remove_duplicate_findings(
     _s: &pulse_store::Store,
     project: &str,
@@ -212,7 +210,6 @@ pub fn remove_duplicate_findings(
         duplicate_rows: 0,
     })
 }
-pub use remove_duplicate_findings as RemoveDuplicateFindings;
 #[cfg(test)]
 mod tests {
     #[test]

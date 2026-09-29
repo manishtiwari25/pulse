@@ -57,7 +57,6 @@ pub fn export_store(
     }
     Ok(target.display().to_string())
 }
-pub use export_store as ExportStore;
 
 fn dump_sql(s: &pulse_store::Store, target: &Path) -> Result<()> {
     let conn = s.conn()?;

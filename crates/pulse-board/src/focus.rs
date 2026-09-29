@@ -99,7 +99,6 @@ pub fn agent_focuses(s: &pulse_store::Store, now: &str) -> Result<BTreeMap<Strin
     }
     Ok(out)
 }
-pub use agent_focuses as AgentFocuses;
 
 pub fn project_focus(s: &pulse_store::Store, project: &str, now: &str) -> Result<Vec<Focus>> {
     let mut out = Vec::new();
@@ -130,7 +129,6 @@ pub fn project_focus(s: &pulse_store::Store, project: &str, now: &str) -> Result
     out.sort_by(|a, b| a.agent.cmp(&b.agent));
     Ok(out)
 }
-pub use project_focus as ProjectFocus;
 
 fn source_task(s: &pulse_store::Store, source: &str) -> (String, String) {
     let Some(id) = source.strip_prefix("task:").filter(|x| !x.is_empty()) else {

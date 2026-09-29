@@ -18,7 +18,6 @@ pub fn set_stdin_for_tests(data: Option<Vec<u8>>) {
 pub fn stdin_is_tty() -> bool {
     STDIN_BUF.lock().expect("stdin lock").is_none()
 }
-pub use stdin_is_tty as StdinIsTTY;
 
 static REGISTER: Once = Once::new();
 pub fn register_commands() {
@@ -36,7 +35,6 @@ pub fn register_commands() {
         cli_register(Command { name:"remove".into(), group:"human".into(), summary:"deactivate a project, retire an executor, or remove duplicate system findings".into(), usage:"pulse remove project SLUG [--dry-run] [--yes] [--json]\n       pulse remove executor NAME [--dry-run] [--yes] [--json]   (the old spelling was: pulse executor remove NAME)\n       pulse remove duplicate-findings [--project SLUG] [--apply] [--yes] [--json]\n       pulse remove service                                     (the daemon's user service; today: pulse service uninstall)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_remove, flags:Some(remove_flags) });
     });
 }
-pub use register_commands as register;
 
 fn agent_flags(fs: &mut FlagSet) {
     fs.string_var("name", "", "the agent's unique name (join)");
@@ -238,7 +236,6 @@ pub fn current_project(s: &pulse_store::Store, explicit: &str) -> Result<pulse_s
     }
     s.project_for_dir(&pulse_store::cwd())?.ok_or_else(|| refuse(2, "The current directory is not inside a registered project; pass --project SLUG, set PULSE_PROJECT, or run `pulse init` here"))
 }
-pub use current_project as CurrentProject;
 
 fn run_agent(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let s = store(c)?;
@@ -328,7 +325,6 @@ pub fn read_body(fs: &FlagSet) -> Result<String> {
     }
     Ok(String::new())
 }
-pub use read_body as ReadBody;
 fn print_post(c: &mut Context, row: &Post) -> Result<()> {
     if c.json {
         write_json(&mut c.out, row)?
