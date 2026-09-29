@@ -5,11 +5,28 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{PoisonError, RwLock};
 
-type ProjectCreatedHook = fn(&pulse_store::Store, &pulse_store::Project, &str) -> Result<()>;
-pub static mut ON_PROJECT_CREATED: Option<ProjectCreatedHook> = None;
-#[allow(non_upper_case_globals)]
-pub static mut OnProjectCreated: Option<ProjectCreatedHook> = None;
+/// Go: var OnProjectCreated func(s *store.Store, p *store.Project, actor string) error
+///
+/// Runs after [`register_project`] has inserted a new project row. The evolve
+/// crate installs its seeding hook at binary start (Go: an `init()`); tests
+/// swap it with [`set_on_project_created`].
+pub type ProjectCreatedHook = fn(&pulse_store::Store, &pulse_store::Project, &str) -> Result<()>;
+static ON_PROJECT_CREATED: RwLock<Option<ProjectCreatedHook>> = RwLock::new(None);
+
+/// The installed hook, if any.
+pub fn on_project_created() -> Option<ProjectCreatedHook> {
+    *ON_PROJECT_CREATED.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Installs `hook` (None clears it) and returns the previous one so a caller can restore it.
+pub fn set_on_project_created(hook: Option<ProjectCreatedHook>) -> Option<ProjectCreatedHook> {
+    std::mem::replace(
+        &mut *ON_PROJECT_CREATED.write().unwrap_or_else(PoisonError::into_inner),
+        hook,
+    )
+}
 
 pub fn unique_slug(
     s: &pulse_store::Store,
@@ -174,21 +191,17 @@ pub fn register_project(
     )?;
     let p = s.project(&slug)?.expect("project after registration");
     let _ = pulse_goals::ensure_default(s, &slug);
-    // SAFETY: task wiring sets the hook during single-threaded registration in the binary.
-    unsafe {
-        let hook = OnProjectCreated.or(ON_PROJECT_CREATED);
-        if created
-            && let Some(hook) = hook
-            && let Err(e) = hook(s, &p, actor)
-        {
-            event(
-                s,
-                actor,
-                "project.hook_failed",
-                &slug,
-                pulse_store::Detail::json(serde_json::json!({"error": e.to_string()}))?,
-            )?;
-        }
+    if created
+        && let Some(hook) = on_project_created()
+        && let Err(e) = hook(s, &p, actor)
+    {
+        event(
+            s,
+            actor,
+            "project.hook_failed",
+            &slug,
+            pulse_store::Detail::json(serde_json::json!({"error": e.to_string()}))?,
+        )?;
     }
     Ok((p, created))
 }
@@ -432,9 +445,8 @@ mod tests {
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
         let _guard = pulse_testutil::env_lock();
-        unsafe {
-            let previous = OnProjectCreated;
-            OnProjectCreated = Some(hook_ok);
+        {
+            let previous = set_on_project_created(Some(hook_ok));
             let (p, created) = register_project(
                 &s,
                 &repo.path().display().to_string(),
@@ -468,7 +480,7 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(calls, "demo/alice");
-            OnProjectCreated = None;
+            set_on_project_created(None);
             let second = git_repo();
             let (_, created) = register_project(
                 &s,
@@ -482,7 +494,7 @@ mod tests {
             )
             .unwrap();
             assert!(created);
-            OnProjectCreated = previous;
+            set_on_project_created(previous);
         }
     }
 
@@ -491,9 +503,8 @@ mod tests {
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
         let _guard = pulse_testutil::env_lock();
-        unsafe {
-            let previous = OnProjectCreated;
-            OnProjectCreated = Some(hook_err);
+        {
+            let previous = set_on_project_created(Some(hook_err));
             let (p, created) = register_project(
                 &s,
                 &repo.path().display().to_string(),
@@ -517,7 +528,7 @@ mod tests {
                 ),
                 1
             );
-            OnProjectCreated = previous;
+            set_on_project_created(previous);
         }
     }
 

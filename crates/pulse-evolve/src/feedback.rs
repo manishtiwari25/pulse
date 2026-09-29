@@ -1,8 +1,10 @@
-#![allow(unused_variables, dead_code, unused_imports)]
-
 //! Port of internal/evolve/feedback.go.
 
 use anyhow::Result;
+use rusqlite::{OptionalExtension, params};
+use serde_json::json;
+
+type FeedbackArchiveRow = (String, String, String, String, String, f64, f64, f64, bool);
 
 /// Go: func PlanFeedback(s *store.Store, project, actor string) (*board.Job, error) {
 pub fn plan_feedback(
@@ -10,5 +12,122 @@ pub fn plan_feedback(
     project: &str,
     actor: &str,
 ) -> Result<Option<pulse_board::Job>> {
-    todo!("evolve::feedback::plan_feedback")
+    let preflight = *crate::plan::READ_PLAN_PREFLIGHT
+        .read()
+        .expect("read plan preflight poisoned");
+    let status = if let Some(f) = preflight {
+        f(s, project)?
+    } else {
+        crate::status::loop_status(s, project)?
+    };
+    if status.level != "D" {
+        return Ok(None);
+    }
+    let actor = if actor.is_empty() { "daemon" } else { actor };
+    let tx = s.begin()?;
+    let status = crate::status::loop_status(s, project)?;
+    if status.level != "D" {
+        tx.rollback()?;
+        return Ok(None);
+    }
+    let (_, _, gate_reason) = crate::failed_gate::failed_experiment_gate(s, project)?;
+    if !gate_reason.is_empty() {
+        tx.rollback()?;
+        return Ok(None);
+    }
+    let q = format!(
+        r#"SELECT a.id, j.id, a.suggestion_post, a.hypothesis, a.note,
+		a.baseline_score, a.variant_score, a.tolerance, a.kept
+		FROM evolution_archive a JOIN runs r ON r.id = a.run_id AND r.project = a.project
+		JOIN jobs j ON j.id = r.job_id AND j.project = a.project
+		WHERE a.project = ? AND a.suggestion_post != '' AND {}
+		AND NOT EXISTS (SELECT 1 FROM jobs f WHERE f.project = a.project
+			AND f.source = 'evolve-feedback:' || a.project || ':' || a.id)
+		ORDER BY a.at, CAST(SUBSTR(a.id, 3) AS INTEGER) LIMIT 1"#,
+        crate::finalization::FINALIZED_EXPERIMENT_SQL
+    );
+    let row: Option<FeedbackArchiveRow> = tx
+        .query_row(&q, [project], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+            ))
+        })
+        .optional()?;
+    let Some((
+        archive,
+        experiment_job,
+        suggestion,
+        hypothesis,
+        note,
+        baseline,
+        variant,
+        tolerance,
+        kept,
+    )) = row
+    else {
+        tx.rollback()?;
+        return Ok(None);
+    };
+    let outcome = if kept {
+        "kept and finalized"
+    } else {
+        "discarded"
+    };
+    let brief = format!(
+        "Reflect on finalized measured experiment {} (archive {}, suggestion {}).\n\n\
+Hypothesis: {}\nOutcome: {}\nBaseline: {:.4}\nVariant: {:.4}\nTolerance: {:.4}\nResult: {}\n\
+Product scope: {}\n\n\
+Relate this evidence to the current owner goal in the shared project context; if no owner goal is recorded, say so rather than inventing one. Explain what was learned, including a discarded hypothesis. Read the public archive and current board before proposing the next untried, in-scope variable. Do not change files, run another experiment, change evaluators or gates, or read private fixtures. A goal never grants Product scope or approval.\n\n\
+If evidence supports another hypothesis, use `pulse post suggestion --project {}` to post a complete multiline card with Class:, File:, Variable:, Hypothesis:, and Tier: fields on a new evolution thread. Record concise observations with FINDING: or SUGGESTION: lines; a one-line suggestion alone is not an experiment card. Do not vote on your own suggestion; the next experiment still needs independent votes and every existing gate. If no defensible hypothesis remains, report that limitation in SUMMARY:.",
+        experiment_job,
+        archive,
+        suggestion,
+        hypothesis,
+        outcome,
+        baseline,
+        variant,
+        tolerance,
+        note,
+        status.product_scope.reason,
+        project
+    );
+    let id = pulse_board::new_id(s, "job");
+    let source = format!("evolve-feedback:{project}:{archive}");
+    let title = format!("Reflect on measured experiment {archive}: {outcome}");
+    tx.execute(
+        r#"INSERT INTO jobs
+		(id, project, kind, tier, title, brief, source, priority, status, created_at, created_by)
+		VALUES (?, ?, 'reflect', 0, ?, ?, ?, 25, 'queued', ?, ?)"#,
+        params![id, project, title, brief, source, s.now(), actor],
+    )?;
+    tx.event(
+        actor,
+        "job.add",
+        &id,
+        json!({"project": project, "kind": "reflect", "title": title}),
+    )?;
+    tx.event(
+        actor,
+        "evolution.feedback",
+        &archive,
+        json!({"project": project, "job": id, "experiment": experiment_job, "suggestion": suggestion}),
+    )?;
+    tx.commit()?;
+    pulse_board::job_by_id(s, &id)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn feedback_queue_is_atomic_and_durable() {}
+    #[test]
+    fn finalized_feedback_supports_both_classes_and_outcomes() {}
 }

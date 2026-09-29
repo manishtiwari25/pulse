@@ -1,16 +1,16 @@
 #![allow(dead_code)]
 
 use crate::{Fixture, FixtureInput, add_fixture};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 pub(crate) fn test_store() -> pulse_store::Store {
     let _guard = pulse_testutil::env_lock();
-    let home = tempfile::tempdir().expect("temp PULSE_HOME").into_path();
+    let home = tempfile::tempdir().expect("temp PULSE_HOME").keep();
     for name in [
         "PULSE_JOB",
         "PULSE_AGENT",
@@ -76,7 +76,7 @@ pub(crate) fn test_git(repo: impl AsRef<Path>, args: &[&str]) -> String {
 }
 
 pub(crate) fn test_project(s: &pulse_store::Store, slug: &str) -> String {
-    let repo = tempfile::tempdir().expect("temp repo").into_path();
+    let repo = tempfile::tempdir().expect("temp repo").keep();
     test_git(&repo, &["init", "--quiet", "--initial-branch=main"]);
     put_file(repo.join("value.txt"), "original\n", 0o644);
     put_file(repo.join(".pulse/answer"), "withheld answer\n", 0o600);
@@ -136,7 +136,7 @@ pub(crate) fn fixture(
 }
 
 pub(crate) fn fake_harness(s: &pulse_store::Store, body: &str) -> String {
-    let dir = tempfile::tempdir().expect("temp harness dir").into_path();
+    let dir = tempfile::tempdir().expect("temp harness dir").keep();
     let file = dir.join("fake harness");
     put_file(&file, &format!("#!/bin/sh\nset -eu\n{body}\n"), 0o700);
     s.set_setting("human", "runner_cmd", &format!("'{}'", file.display()))
@@ -145,7 +145,7 @@ pub(crate) fn fake_harness(s: &pulse_store::Store, body: &str) -> String {
 }
 
 pub(crate) fn private_set(s: &pulse_store::Store) -> (String, Vec<String>) {
-    let dir = tempfile::tempdir().expect("temp private set").into_path();
+    let dir = tempfile::tempdir().expect("temp private set").keep();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -10,25 +10,25 @@ pub mod card_job;
 pub mod clones;
 pub mod commands;
 pub mod cycle;
-pub mod doc;
+pub mod doc; // crate-private items only; not re-exported
 pub mod draft;
 pub mod failed_gate;
 pub mod feedback;
-pub mod finalization;
+pub mod finalization; // crate-private items only; not re-exported
 pub mod fixtures;
 pub mod fleet;
-pub mod format;
+pub mod format; // crate-private items only; not re-exported
 pub mod heldout_auto;
-pub mod measure;
+pub mod measure; // crate-private items only; not re-exported
 pub mod plan;
 pub mod private;
-pub mod process;
+pub mod process; // crate-private items only; not re-exported
 pub mod readiness;
-pub mod readonly;
+pub mod readonly; // crate-private items only; not re-exported
 pub mod reflect;
 pub mod register;
 pub mod report;
-pub mod score;
+pub mod score; // crate-private items only; not re-exported
 pub mod starter;
 pub mod status;
 pub mod usage;
@@ -40,28 +40,30 @@ pub use card_job::*;
 pub use clones::*;
 pub use commands::*;
 pub use cycle::*;
-pub use doc::*;
 pub use draft::*;
 pub use failed_gate::*;
 pub use feedback::*;
-pub use finalization::*;
 pub use fixtures::*;
 pub use fleet::*;
-pub use format::*;
 pub use heldout_auto::*;
-pub use measure::*;
 pub use plan::*;
 pub use private::*;
-pub use process::*;
 pub use readiness::*;
-pub use readonly::*;
 pub use reflect::*;
 pub use register::*;
 pub use report::*;
-pub use score::*;
 pub use starter::*;
 pub use status::*;
 pub use usage::*;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
+
+/// The Go package's `init()` side effects that are not command registration:
+/// evolve seeds a project's starter records when the board registers one
+/// (`starter.go: board.OnProjectCreated = seedOnCreate`). The binary calls this
+/// once at start-up, after [`register`]. `Measure`/`Archive` need no wiring: the
+/// statics in [`api`] default to the real implementations.
+pub fn init() {
+    starter::init();
+}

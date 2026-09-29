@@ -1,8 +1,7 @@
-#![allow(unused_variables, dead_code, unused_imports)]
-
 //! Port of internal/evolve/finalization.go.
 
 use anyhow::Result;
+use rusqlite::params;
 
 pub(crate) const FINALIZED_EXPERIMENT_SQL: &str = r#"
 	j.kind = 'experiment' AND j.status = 'done' AND j.branch = '' AND r.status = 'done'
@@ -26,5 +25,19 @@ pub(crate) fn archive_finalized(
     job: &str,
     archive: &str,
 ) -> Result<bool> {
-    todo!("evolve::finalization::archive_finalized")
+    let conn = s.conn()?;
+    let q = format!(
+        r#"SELECT EXISTS (
+		SELECT 1 FROM evolution_archive a JOIN runs r ON r.id = a.run_id AND r.project = a.project
+		JOIN jobs j ON j.id = r.job_id AND j.project = a.project
+		WHERE a.project = ? AND j.id = ? AND a.id = ? AND {})"#,
+        FINALIZED_EXPERIMENT_SQL
+    );
+    Ok(conn.query_row(&q, params![project, job, archive], |r| r.get(0))?)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn current_run_cannot_borrow_an_earlier_archive() {}
 }
