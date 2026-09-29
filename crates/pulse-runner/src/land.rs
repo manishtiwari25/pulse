@@ -1976,7 +1976,6 @@ mod tests {
             crate::daemon::DaemonOpts {
                 worker_cmd: "sh -c 'echo SUMMARY: ran'".into(),
                 max_loops: 1,
-                no_watchdog: true,
                 out: Some(out.writer()),
                 ..Default::default()
             },
@@ -2012,7 +2011,6 @@ mod tests {
             crate::daemon::DaemonOpts {
                 worker_cmd: "sh -c 'echo SUMMARY: ran'".into(),
                 max_loops: 1,
-                no_watchdog: true,
                 out: Some(out.writer()),
                 ..Default::default()
             },

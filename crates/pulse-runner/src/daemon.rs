@@ -1,6 +1,4 @@
-#![allow(dead_code, private_interfaces)]
-
-//! Skeleton port of internal/runner/daemon.go.
+//! Port of internal/runner/daemon.go.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, RwLock};
@@ -14,9 +12,12 @@ pub(crate) const DISPATCH_TICK_SECONDS: i32 = 15;
 pub(crate) const HANDS_WANTED_MINUTES: i32 = 30;
 pub(crate) static BINARY_STAMP: LazyLock<RwLock<fn() -> String>> =
     LazyLock::new(|| RwLock::new(pulse_cli::binary_stamp));
+#[cfg(test)]
 pub(crate) fn set_binary_stamp(f: fn() -> String) {
     *BINARY_STAMP.write().expect("binary stamp lock") = f;
 }
+/// daemonWake is what wakes the loop before its interval is over: the owner wrote (message.sent, task.*), a
+/// compute request was approved, a setting changed (the stop switch), a job was queued by a lead or a CLI.
 pub(crate) static DAEMON_WAKE: &[&str] = &[
     "message.sent",
     "post.question",
@@ -28,37 +29,6 @@ pub(crate) static DAEMON_WAKE: &[&str] = &[
     "setting",
     "job.add",
 ];
-
-#[derive(Debug, Clone, Default)]
-pub struct Daemon {
-    pub bus: serde_json::Value,
-    pub store: serde_json::Value,
-    pub log: serde_json::Value,
-}
-
-impl Daemon {
-    /// Go: func daemon(ctx context.Context, s *store.Store, o daemonOpts) string
-    pub fn run(
-        &mut self,
-        cancel: &pulse_bus::CancellationToken,
-        s: &pulse_store::Store,
-        o: DaemonOpts,
-    ) -> String {
-        daemon(cancel, s, o)
-    }
-
-    /// Go: func daemon(ctx context.Context, s *store.Store, o daemonOpts) string
-    pub fn once(&mut self, cancel: &pulse_bus::CancellationToken, s: &pulse_store::Store) -> bool {
-        daemon(
-            cancel,
-            s,
-            DaemonOpts {
-                max_loops: 1,
-                ..Default::default()
-            },
-        ) == "done"
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Dispatch {
@@ -246,12 +216,6 @@ pub(crate) fn say(o: &DaemonOpts, line: impl AsRef<str>) {
     }
 }
 
-fn sorted_bool_keys(m: &BTreeMap<String, bool>) -> Vec<String> {
-    let mut out = m.keys().cloned().collect::<Vec<_>>();
-    out.sort();
-    out
-}
-
 fn active_queued_count(s: &pulse_store::Store) -> i32 {
     s.conn()
         .ok()
@@ -264,105 +228,6 @@ fn active_queued_count(s: &pulse_store::Store) -> i32 {
             .int("n")
         })
         .unwrap_or(0)
-}
-
-fn dispatch_tick(
-    cancel: &pulse_bus::CancellationToken,
-    s: &pulse_store::Store,
-    o: &DaemonOpts,
-    now: &str,
-    slots: &[String],
-) -> (usize, String) {
-    let mut started = 0usize;
-    let mut names = Vec::new();
-    let mut reasons = BTreeMap::new();
-    for slot in slots {
-        let (lead, job, why) = crate::lead::lead_job_for(
-            s,
-            &names,
-            o.dry_run,
-            now.to_string(),
-            slot.clone(),
-            started as i32,
-        );
-        let (worker, job) = if !job.0.is_empty() {
-            (lead, job)
-        } else {
-            if !why.is_empty() {
-                reasons.insert(why, true);
-            }
-            match crate::run::pick_worker(s, now, &o.agent, &names) {
-                Ok(worker) => {
-                    let (job, _exrow, why) = match crate::run::take_job(
-                        s,
-                        &worker,
-                        "",
-                        "",
-                        o.dry_run,
-                        now,
-                        slot,
-                        started as i32,
-                    ) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            reasons.insert(crate::run::err_message(&e), true);
-                            continue;
-                        }
-                    };
-                    if job.0.is_empty() {
-                        if !why.is_empty() {
-                            reasons.insert(why, true);
-                        }
-                        continue;
-                    }
-                    (worker, job)
-                }
-                Err(e) => {
-                    reasons.insert(crate::run::err_message(&e), true);
-                    continue;
-                }
-            }
-        };
-        names.push(worker.clone());
-        match crate::run::run_job(
-            s,
-            job,
-            &worker,
-            now,
-            crate::run::RunOpts {
-                dry_run: o.dry_run,
-                worker_cmd: o.worker_cmd.clone(),
-                executor: slot.clone(),
-                cancel: cancel.child(),
-            },
-        ) {
-            Ok(run) => {
-                started += 1;
-                say(
-                    o,
-                    format!(
-                        "{} {} {} on {}: {}",
-                        run.str("status"),
-                        run.str("job_id"),
-                        run.str("agent"),
-                        slot,
-                        run.str("summary")
-                    ),
-                );
-            }
-            Err(e) => {
-                reasons.insert(
-                    format!("daemon error on {slot}: {}", crate::run::err_message(&e)),
-                    true,
-                );
-            }
-        }
-    }
-    let mut reason = sorted_bool_keys(&reasons).join("; ");
-    if reason.is_empty() && started == 0 {
-        reason = "no queued job".into();
-    }
-    (started, reason)
 }
 
 fn dispatch_key(slot: &str, worker: &str, job: &Row) -> String {
@@ -426,22 +291,25 @@ pub(crate) fn daemon(
             let _ = hooks_done_tx.send(());
         })
         .expect("spawn daemon hooks");
-    #[allow(unused_assignments)]
-    let mut heartbeat_note: Option<String> = None;
-    if !o.no_watchdog {
+    // The watchdog outlives nothing: a loop that stops beating for daemonStallBound is dumped and restarted.
+    // Go's `loops` is read by the stalled note from the watchdog thread, so it is shared.
+    let loops_shared = Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let dog = (!o.no_watchdog).then(|| {
         let s_note = s.clone();
         let actor_note = actor.clone();
+        let loops_note = Arc::clone(&loops_shared);
         let out = o.clone();
         let kill = run_ctx.clone();
-        let mut dog = crate::daemon_watchdog::new_daemon_watchdog(
+        let dog = Arc::new(crate::daemon_watchdog::new_daemon_watchdog(
             crate::daemon_watchdog::daemon_stall_bound(interval),
             std::path::Path::new(&s.home)
                 .join("logs")
                 .display()
                 .to_string(),
             Arc::new(move |line| say(&out, line)),
-            Arc::new(move |note, dump| {
-                daemon_heartbeat(&s_note, 0, interval, note.clone());
+            Some(Arc::new(move |note: String, dump: String| {
+                let loops = loops_note.load(std::sync::atomic::Ordering::SeqCst);
+                daemon_heartbeat(&s_note, loops, interval, note.clone());
                 if let Ok(conn) = s_note.conn() {
                     crate::util::event_at(
                         &conn,
@@ -449,18 +317,27 @@ pub(crate) fn daemon(
                         &actor_note,
                         "daemon.stalled",
                         "",
-                        serde_json::json!({"note": note, "dump": dump}),
+                        serde_json::json!({"note": note, "dump": dump, "loops": loops}),
                     );
                 }
-            }),
-            Arc::new(move || kill.cancel()),
-        );
+            })),
+            Some(Arc::new(move || kill.cancel())),
+        ));
+        let dog_run = Arc::clone(&dog);
         let dog_ctx = loop_ctx.clone();
         std::thread::Builder::new()
             .name("daemon-watchdog".into())
-            .spawn(move || dog.run(&dog_ctx, Duration::from_secs(60)))
+            .spawn(move || dog_run.run(&dog_ctx, Duration::from_secs(60)))
             .expect("spawn daemon watchdog");
-    }
+        dog
+    });
+    // Go: heartbeat(note) - the heartbeat row plus the watchdog's beat.
+    let heartbeat = |loops: i32, note: &str| {
+        daemon_heartbeat(s, loops, interval, note.to_string());
+        if let Some(dog) = &dog {
+            dog.beat();
+        }
+    };
     let lost = crate::run::sweep_lost_runs(s, &s.now());
     let self_env =
         o.self_update
@@ -490,6 +367,19 @@ pub(crate) fn daemon(
             format!("closed {lost} run(s) a previous runner left in progress as lost"),
         );
     }
+    // ADR-038: the framework's records travel in the binary; a store that lacks them gets them here.
+    match pulse_records::ensure_framework(s, &actor) {
+        Err(err) => say(&o, format!("framework records: {err:#}")),
+        Ok(seeded) if !seeded.written.is_empty() => say(
+            &o,
+            format!(
+                "seeded {} framework record(s) from {}",
+                seeded.written.len(),
+                seeded.from
+            ),
+        ),
+        Ok(_) => {}
+    }
     for line in crate::selfupdate::check_restored(s, self_env.clone()) {
         say(&o, line);
     }
@@ -502,66 +392,96 @@ pub(crate) fn daemon(
         },
     );
     let compute_wake = compute.wake_rx();
+    // Go: wakeEvents = nil once the subscription closes, so a closed channel never wakes the loop again.
+    let mut wake_events = Some(wake_events);
+    let never_wake = crossbeam_channel::never::<pulse_bus::Event>();
+    // Keep the batch outcome until every slot drains, even across dispatch ticks.
     let mut completed = false;
     let mut all_errors = true;
     let mut starved_since = String::new();
-    let sleep_wait = |d: Duration| -> bool {
+    // Go: report(d)
+    fn report(
+        o: &DaemonOpts,
+        inflight: &mut BTreeMap<String, Dispatch>,
+        completed: &mut bool,
+        all_errors: &mut bool,
+        d: Dispatch,
+    ) {
+        inflight.remove(&dispatch_key(&d.slot, &d.worker, &d.job));
+        *completed = true;
+        if !d.run.0.is_empty() && d.run.str("status") != "error" {
+            *all_errors = false;
+        }
+        if !d.run.0.is_empty() {
+            say(
+                o,
+                format!(
+                    "{} {} {} on {}: {}",
+                    d.run.str("status"),
+                    d.run.str("job_id"),
+                    d.run.str("agent"),
+                    d.slot,
+                    d.run.str("summary")
+                ),
+            );
+        } else if !d.reason.is_empty() {
+            say(o, format!("idle: {}", d.reason));
+        }
+    }
+    // Go: sleep waits d, or less when the store wakes the loop; false when ctx ended.
+    let sleep_wait = |wake_events: &mut Option<crossbeam_channel::Receiver<pulse_bus::Event>>,
+                      d: Duration|
+     -> bool {
         if let Some(sleep) = &o.sleep {
             return sleep(d);
         }
         let timer = crossbeam_channel::after(d);
         let done = cancel.done();
-        crossbeam_channel::select! {
-            recv(done) -> _ => false,
-            recv(timer) -> _ => true,
-            recv(wake_events) -> _ => true,
-            recv(compute_wake) -> _ => true,
+        loop {
+            crossbeam_channel::select! {
+                recv(done) -> _ => return false,
+                recv(timer) -> _ => return true,
+                recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
+                    if msg.is_err() {
+                        *wake_events = None;
+                        continue;
+                    }
+                    return true;
+                },
+                recv(compute_wake) -> _ => return true,
+            }
         }
     };
+    // Go: leave(result, note) - the loop's exits name their result and the note the say lines carry.
+    let leave: (&str, &str);
     loop {
+        loops += 1;
+        loops_shared.store(loops, std::sync::atomic::Ordering::SeqCst);
+        // Go: reap() - collects the runs whose goroutines ended without waiting.
         while let Ok(d) = results_rx.try_recv() {
-            inflight.remove(&dispatch_key(&d.slot, &d.worker, &d.job));
-            completed = true;
-            if !d.run.0.is_empty() && d.run.str("status") != "error" {
-                all_errors = false;
-            }
-            if !d.run.0.is_empty() {
-                say(
-                    &o,
-                    format!(
-                        "{} {} {} on {}: {}",
-                        d.run.str("status"),
-                        d.run.str("job_id"),
-                        d.run.str("agent"),
-                        d.slot,
-                        d.run.str("summary")
-                    ),
-                );
-            } else if !d.reason.is_empty() {
-                say(&o, format!("idle: {}", d.reason));
-            }
+            report(&o, &mut inflight, &mut completed, &mut all_errors, d);
         }
+        let only_maintenance_wake = maintenance_wake;
+        maintenance_wake = false;
         for line in maintenance.drain() {
             say(&o, line);
         }
         if completed && inflight.is_empty() {
-            if all_errors && !sleep_wait(Duration::from_secs(interval as u64)) {
-                heartbeat_note = Some("exited".into());
+            if all_errors && !sleep_wait(&mut wake_events, Duration::from_secs(interval as u64)) {
+                leave = ("interrupted", "stopping on signal");
                 break;
             }
             completed = false;
             all_errors = true;
         }
         if cancel.is_cancelled() {
-            heartbeat_note = Some("exited".into());
+            leave = ("interrupted", "stopping on signal");
             break;
         }
-        loops += 1;
-        let now = s.now();
-        daemon_heartbeat(s, loops, interval, String::new());
-        if !crate::run::runner_stopped(s).is_empty() {
-            say(&o, format!("stopped: {}", crate::run::runner_stopped(s)));
-            heartbeat_note = Some("exited".into());
+        let why = crate::run::runner_stopped(s);
+        if !why.is_empty() {
+            say(&o, format!("stopped: {why}"));
+            leave = ("stopped", "stopping");
             break;
         }
         if o.restart_on_change
@@ -572,368 +492,366 @@ pub(crate) fn daemon(
                 &o,
                 "pulse changed on disk; exiting with code 3 so the service restarts it",
             );
-            daemon_heartbeat(s, loops, interval, "restarting".into());
-            heartbeat_note = Some("restarting".into());
+            leave = ("restart", "restarting");
             break;
         }
-        if now[..10.min(now.len())] != last_prune_day {
-            match crate::board::prune_agents(
-                s,
-                now.clone(),
-                crate::util::setting_int(s, "prune_after_days"),
-                actor.clone(),
-                false,
-            ) {
-                Ok(pruned) => {
-                    for pr in pruned {
-                        say(&o, format!("pruned {}: {}", pr.name, pr.reason));
-                    }
-                }
-                Err(e) => say(
-                    &o,
-                    format!("prune skipped: {}", crate::run::err_message(&e)),
-                ),
-            }
-            last_prune_day = now[..10.min(now.len())].to_string();
-        }
-        let conn = s.conn().ok();
-        let all_projects = conn
-            .as_ref()
-            .map(|c| crate::board::project_rows(c, false))
-            .unwrap_or_default();
-        let (projects, held, hold_lines) =
-            probes.ready(all_projects, crate::checkout::CHECKOUT_PROBE_TIMEOUT);
-        for line in hold_lines {
-            say(&o, line);
-        }
-        let only_maintenance_wake = maintenance_wake;
-        maintenance_wake = false;
-        if maintenance.done.is_none()
-            && (!only_maintenance_wake || maintenance.has_new_pending(s, projects.clone()))
-        {
-            let mut binary = self_env.clone();
-            binary.inflight = inflight.len() as i32;
-            let inflight_jobs = inflight
-                .values()
-                .map(|d| (d.job.str("id"), true))
-                .collect::<BTreeMap<_, _>>();
-            maintenance.start(
-                &maintenance_ctx,
-                s,
-                projects.clone(),
-                actor.clone(),
-                now.clone(),
-                o.dry_run,
-                inflight_jobs,
-                binary,
-            );
-        }
-        for line in crate::auto_adopt::auto_adopt_drafts(s, now.clone(), actor.clone()) {
-            say(&o, line);
-        }
-        let slugs = projects.iter().map(|p| p.str("slug")).collect::<Vec<_>>();
-        for project in &projects {
-            let slug = project.str("slug");
-            for line in
-                crate::amend::auto_apply_amendments(s, slug.clone(), now.clone(), &mut refused)
-            {
-                say(&o, line);
-            }
-            for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone()) {
-                say(&o, line);
-            }
-            for line in crate::lead::tend_tasks(s, slug.clone(), now.clone(), actor.clone()) {
-                say(&o, line);
-            }
-            for line in
-                crate::recover::recover_failed_jobs(s, project.clone(), now.clone(), actor.clone())
-            {
-                say(&o, line);
-            }
-            for line in crate::lessons::tend_lessons(s, slug, now.clone(), actor.clone()) {
-                say(&o, line);
-            }
-        }
-        if !o.dry_run {
-            for line in
-                crate::evolve_plan::tend_evolve(s, now.clone(), actor.clone(), slugs.clone())
-            {
-                say(&o, line);
-            }
-        }
-        let mut planned = BTreeMap::new();
-        for slug in &slugs {
-            match crate::plan::plan_jobs(s, slug.clone(), now.clone(), actor.clone()) {
-                Ok(jobs) => {
-                    planned.insert(slug.clone(), jobs.len() as i32);
-                    for job in jobs {
-                        say(
-                            &o,
-                            format!(
-                                "planned {} {}: {}",
-                                job.str("kind"),
-                                job.str("id"),
-                                job.str("title")
-                            ),
-                        );
-                    }
-                }
-                Err(e) => say(
-                    &o,
-                    format!("planning {slug}: {}", crate::run::err_message(&e)),
-                ),
-            }
-        }
-        let mut cur_idle = BTreeMap::new();
-        if let Some(c) = conn.as_ref() {
-            for slug in &slugs {
-                if *planned.get(slug).unwrap_or(&0) != 0 {
-                    continue;
-                }
-                let busy = crate::util::must_one(
-                    c,
-                    "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased') LIMIT 1",
-                    &[slug],
-                );
-                if !busy.0.is_empty() {
-                    continue;
-                }
-                cur_idle.insert(
-                    slug.clone(),
-                    crate::idle::idle_note(s, slug.clone(), now.clone()),
-                );
-            }
-        }
-        for line in crate::idle::idle_notes_changed(prev_idle.clone(), cur_idle.clone()) {
-            say(&o, line);
-        }
-        crate::idle::record_idle_notes(s, cur_idle.clone(), now.clone());
-        prev_idle = cur_idle;
-        for line in compute.tick(&compute_ctx, &now) {
-            say(&o, line);
-        }
-        for line in crate::heldout::tend_heldout(s, now.clone()) {
-            say(&o, line);
-        }
-        for pr in crate::keys::reprobe_due(s, interval, &now) {
-            say(
-                &o,
-                format!("executor {} is reachable again: {}", pr[0], pr[1]),
-            );
-        }
-        for line in crate::retire::tend_executors(s, now.clone(), actor.clone()) {
-            say(&o, line);
-        }
-        let queued = conn
-            .as_ref()
-            .map(|c| {
-                crate::util::must_one(
-                    c,
-                    "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'",
-                    &[],
-                )
-                .int("n")
-            })
-            .unwrap_or(0);
-        let gate = (crate::login_gate::LOGIN_GATE
-            .read()
-            .expect("login gate poisoned"))(s);
-        let mut busy = BTreeMap::new();
-        for d in inflight.values() {
-            *busy.entry(d.slot.clone()).or_insert(0) += 1;
-        }
-        let slots = crate::run::executor_slots(s, &now, &busy, !gate.is_empty());
+        let now = s.now();
+        heartbeat(loops, "");
         let mut started: Vec<Dispatch> = Vec::new();
-        let reason = if slots.is_empty() {
-            if gate.is_empty() {
-                "every executor slot is busy".to_string()
-            } else {
-                gate.clone()
-            }
-        } else {
-            let mut names = inflight
-                .values()
-                .map(|d| d.worker.clone())
-                .collect::<Vec<_>>();
-            let mut reasons = BTreeMap::new();
-            let mut rows = BTreeMap::new();
-            for name in &slots {
-                rows.entry(name.clone())
-                    .or_insert_with(|| crate::executor::executor_row(s, name));
-            }
-            let mut order = (0..slots.len()).collect::<Vec<_>>();
-            order.sort_by_key(|i| {
-                let unrestricted = rows
-                    .get(&slots[*i])
-                    .is_some_and(|r| r.str("projects") == "*");
-                (unrestricted, *i)
-            });
-            for i in order {
-                let slot = &slots[i];
-                let (lead, job, why) = crate::lead::lead_job_for(
+        let mut reason = String::new();
+        let mut slots: Vec<String> = Vec::new();
+        // Go: the tick body runs under recover(); a panic becomes the idle reason, not the daemon's end.
+        let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if now[..10.min(now.len())] != last_prune_day {
+                match crate::board::prune_agents(
                     s,
-                    &names,
-                    o.dry_run,
                     now.clone(),
-                    slot.clone(),
-                    started.len() as i32,
-                );
-                let (worker, job) = if !job.0.is_empty() {
-                    (lead, job)
-                } else {
-                    if !why.is_empty() {
-                        reasons.insert(why, true);
+                    crate::util::setting_int(s, "prune_after_days"),
+                    actor.clone(),
+                    false,
+                ) {
+                    Ok(pruned) => {
+                        for pr in pruned {
+                            say(&o, format!("pruned {}: {}", pr.name, pr.reason));
+                        }
                     }
-                    let worker = match crate::run::pick_worker(s, &now, &o.agent, &names) {
-                        Ok(worker) => worker,
-                        Err(e) => {
-                            reasons.insert(crate::run::err_message(&e), true);
-                            continue;
+                    Err(e) => say(
+                        &o,
+                        format!("prune skipped: {}", crate::run::err_message(&e)),
+                    ),
+                }
+                last_prune_day = now[..10.min(now.len())].to_string();
+            }
+            let conn = s.conn().ok();
+            let all_projects = conn
+                .as_ref()
+                .map(|c| crate::board::project_rows(c, false))
+                .unwrap_or_default();
+            let (projects, _, hold_lines) =
+                probes.ready(all_projects, crate::checkout::CHECKOUT_PROBE_TIMEOUT);
+            for line in hold_lines {
+                say(&o, line);
+            }
+            if maintenance.done.is_none()
+                && (!only_maintenance_wake || maintenance.has_new_pending(s, projects.clone()))
+            {
+                let mut binary = self_env.clone();
+                binary.inflight = inflight.len() as i32;
+                let inflight_jobs = inflight
+                    .values()
+                    .map(|d| (d.job.str("id"), true))
+                    .collect::<BTreeMap<_, _>>();
+                maintenance.start(
+                    &maintenance_ctx,
+                    s,
+                    projects.clone(),
+                    actor.clone(),
+                    now.clone(),
+                    o.dry_run,
+                    inflight_jobs,
+                    binary,
+                );
+            }
+            for line in crate::auto_adopt::auto_adopt_drafts(s, now.clone(), actor.clone()) {
+                say(&o, line);
+            }
+            let slugs = projects.iter().map(|p| p.str("slug")).collect::<Vec<_>>();
+            for project in &projects {
+                let slug = project.str("slug");
+                for line in
+                    crate::amend::auto_apply_amendments(s, slug.clone(), now.clone(), &mut refused)
+                {
+                    say(&o, line);
+                }
+                for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone()) {
+                    say(&o, line);
+                }
+                for line in crate::lead::tend_tasks(s, slug.clone(), now.clone(), actor.clone()) {
+                    say(&o, line);
+                }
+                for line in crate::recover::recover_failed_jobs(
+                    s,
+                    project.clone(),
+                    now.clone(),
+                    actor.clone(),
+                ) {
+                    say(&o, line);
+                }
+                for line in crate::lessons::tend_lessons(s, slug, now.clone(), actor.clone()) {
+                    say(&o, line);
+                }
+            }
+            if !o.dry_run {
+                for line in
+                    crate::evolve_plan::tend_evolve(s, now.clone(), actor.clone(), slugs.clone())
+                {
+                    say(&o, line);
+                }
+            }
+            let mut planned = BTreeMap::new();
+            for slug in &slugs {
+                match crate::plan::plan_jobs(s, slug.clone(), now.clone(), actor.clone()) {
+                    Ok(jobs) => {
+                        planned.insert(slug.clone(), jobs.len() as i32);
+                        for job in jobs {
+                            say(
+                                &o,
+                                format!(
+                                    "planned {} {}: {}",
+                                    job.str("kind"),
+                                    job.str("id"),
+                                    job.str("title")
+                                ),
+                            );
                         }
-                    };
-                    let (job, _, why) = match crate::run::take_job(
+                    }
+                    Err(e) => say(
+                        &o,
+                        format!("planning {slug}: {}", crate::run::err_message(&e)),
+                    ),
+                }
+            }
+            let mut cur_idle = BTreeMap::new();
+            if let Some(c) = conn.as_ref() {
+                for slug in &slugs {
+                    if *planned.get(slug).unwrap_or(&0) != 0 {
+                        continue;
+                    }
+                    let busy = crate::util::must_one(
+                        c,
+                        "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased') LIMIT 1",
+                        &[slug],
+                    );
+                    if !busy.0.is_empty() {
+                        continue;
+                    }
+                    cur_idle.insert(
+                        slug.clone(),
+                        crate::idle::idle_note(s, slug.clone(), now.clone()),
+                    );
+                }
+            }
+            for line in crate::idle::idle_notes_changed(prev_idle.clone(), cur_idle.clone()) {
+                say(&o, line);
+            }
+            crate::idle::record_idle_notes(s, cur_idle.clone(), now.clone());
+            prev_idle = cur_idle;
+            for line in compute.tick(&compute_ctx, &now) {
+                say(&o, line);
+            }
+            for line in crate::heldout::tend_heldout(s, now.clone()) {
+                say(&o, line);
+            }
+            for pr in crate::keys::reprobe_due(s, interval, &now) {
+                say(
+                    &o,
+                    format!("executor {} is reachable again: {}", pr[0], pr[1]),
+                );
+            }
+            for line in crate::retire::tend_executors(s, now.clone(), actor.clone()) {
+                say(&o, line);
+            }
+            let mut busy = BTreeMap::new();
+            for d in inflight.values() {
+                *busy.entry(d.slot.clone()).or_insert(0) += 1;
+            }
+            // The login gate: with the native harness and no sign-in here, this machine's slots stay
+            // closed rather than launching workers that die at once (login_gate.go).
+            let gate = (crate::login_gate::LOGIN_GATE
+                .read()
+                .expect("login gate poisoned"))(s);
+            slots = crate::run::executor_slots(s, &now, &busy, !gate.is_empty());
+            reason = if slots.is_empty() {
+                if gate.is_empty() {
+                    "every executor slot is busy".to_string()
+                } else {
+                    gate.clone()
+                }
+            } else {
+                let mut names = inflight
+                    .values()
+                    .map(|d| d.worker.clone())
+                    .collect::<Vec<_>>();
+                let mut reasons = BTreeMap::new();
+                let mut rows = BTreeMap::new();
+                for name in &slots {
+                    rows.entry(name.clone())
+                        .or_insert_with(|| crate::executor::executor_row(s, name));
+                }
+                let mut order = (0..slots.len()).collect::<Vec<_>>();
+                order.sort_by_key(|i| {
+                    let unrestricted = rows
+                        .get(&slots[*i])
+                        .is_some_and(|r| r.str("projects") == "*");
+                    (unrestricted, *i)
+                });
+                for i in order {
+                    let slot = &slots[i];
+                    let (lead, job, why) = crate::lead::lead_job_for(
                         s,
-                        &worker,
-                        "",
-                        "",
+                        &names,
                         o.dry_run,
-                        &now,
-                        slot,
+                        now.clone(),
+                        slot.clone(),
                         started.len() as i32,
-                    ) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            reasons.insert(crate::run::err_message(&e), true);
-                            continue;
-                        }
-                    };
-                    if job.0.is_empty() {
+                    );
+                    let (worker, job) = if !job.0.is_empty() {
+                        (lead, job)
+                    } else {
                         if !why.is_empty() {
                             reasons.insert(why, true);
                         }
-                        continue;
-                    }
-                    (worker, job)
-                };
-                names.push(worker.clone());
-                let d = Dispatch {
-                    slot: slot.clone(),
-                    worker,
-                    job,
-                    ..Default::default()
-                };
-                inflight.insert(dispatch_key(&d.slot, &d.worker, &d.job), d.clone());
-                started.push(d.clone());
-                let tx = results_tx.clone();
-                let s_run = s.clone();
-                let o_run = o.clone();
-                let now_run = now.clone();
-                let run_parent = run_ctx.child();
-                std::thread::Builder::new()
-                    .name("daemon-run".into())
-                    .spawn(move || {
-                        let mut d = d;
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let dctx = run_parent
-                                .with_timeout(crate::baseline::job_budget(&s_run, d.job.clone()));
-                            match crate::run::run_job(
-                                &s_run,
-                                d.job.clone(),
-                                &d.worker,
-                                &now_run,
-                                crate::run::RunOpts {
-                                    dry_run: o_run.dry_run,
-                                    worker_cmd: o_run.worker_cmd.clone(),
-                                    executor: d.slot.clone(),
-                                    cancel: dctx,
-                                },
-                            ) {
-                                Ok(run) => d.run = run,
-                                Err(e) => {
-                                    d.reason = format!(
-                                        "daemon error on {}: {}",
-                                        d.slot,
-                                        crate::run::err_message(&e)
-                                    );
-                                }
+                        let worker = match crate::run::pick_worker(s, &now, &o.agent, &names) {
+                            Ok(worker) => worker,
+                            Err(e) => {
+                                reasons.insert(crate::run::err_message(&e), true);
+                                continue;
                             }
-                        }));
-                        if let Err(panic) = result {
-                            let msg = panic
-                                .downcast_ref::<&str>()
-                                .map(|s| (*s).to_string())
-                                .or_else(|| panic.downcast_ref::<String>().cloned())
-                                .unwrap_or_else(|| "unknown panic".into());
-                            d.reason = format!("daemon error on {}: {}", d.slot, msg);
+                        };
+                        let (job, _, why) = match crate::run::take_job(
+                            s,
+                            &worker,
+                            "",
+                            "",
+                            o.dry_run,
+                            &now,
+                            slot,
+                            started.len() as i32,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                reasons.insert(crate::run::err_message(&e), true);
+                                continue;
+                            }
+                        };
+                        if job.0.is_empty() {
+                            if !why.is_empty() {
+                                reasons.insert(why, true);
+                            }
+                            continue;
                         }
-                        let _ = tx.send(d);
-                    })
-                    .expect("spawn daemon run");
-            }
-            let mut reason = sorted_bool_keys(&reasons).join("; ");
-            if reason.is_empty() && started.is_empty() {
-                reason = "no queued job".into();
-            }
-            reason
-        };
-        if !gate.is_empty()
-            && let Some(c) = conn.as_ref()
-        {
-            let brain = crate::board::brain_project(c);
-            let post = crate::login_gate::login_wanted(
-                s,
-                brain,
-                queued,
-                gate.clone(),
-                s.now(),
-                actor.clone(),
-            );
-            if !post.0.is_empty() {
-                say(&o, post.str("summary"));
-            }
-        }
-        let total_slots = inflight.len() as i32 + slots.len() as i32 - started.len() as i32;
-        let starved = active_queued_count(s) > 0
-            && slots.len().saturating_sub(started.len()) == 0
-            && !inflight.is_empty();
-        if starved {
-            if starved_since.is_empty() {
-                starved_since = now.clone();
-            }
-        } else {
-            starved_since.clear();
-        }
-        capacity_note(
-            s,
-            active_queued_count(s),
-            total_slots,
-            inflight.len() as i32,
-            starved_since.clone(),
-            if gate.is_empty() {
-                held.values().next().cloned().unwrap_or_default()
+                        (worker, job)
+                    };
+                    names.push(worker.clone());
+                    let d = Dispatch {
+                        slot: slot.clone(),
+                        worker,
+                        job,
+                        ..Default::default()
+                    };
+                    inflight.insert(dispatch_key(&d.slot, &d.worker, &d.job), d.clone());
+                    started.push(d.clone());
+                    let tx = results_tx.clone();
+                    let s_run = s.clone();
+                    let o_run = o.clone();
+                    let now_run = now.clone();
+                    let run_parent = run_ctx.child();
+                    std::thread::Builder::new()
+                        .name("daemon-run".into())
+                        .spawn(move || {
+                            let mut d = d;
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    let dctx = run_parent.with_timeout(
+                                        crate::baseline::job_budget(&s_run, d.job.clone()),
+                                    );
+                                    match crate::run::run_job(
+                                        &s_run,
+                                        d.job.clone(),
+                                        &d.worker,
+                                        &now_run,
+                                        crate::run::RunOpts {
+                                            dry_run: o_run.dry_run,
+                                            worker_cmd: o_run.worker_cmd.clone(),
+                                            executor: d.slot.clone(),
+                                            cancel: dctx,
+                                        },
+                                    ) {
+                                        Ok(run) => d.run = run,
+                                        Err(e) => {
+                                            d.reason = format!(
+                                                "daemon error on {}: {}",
+                                                d.slot,
+                                                crate::run::err_message(&e)
+                                            );
+                                        }
+                                    }
+                                }));
+                            if let Err(panic) = result {
+                                let msg = panic
+                                    .downcast_ref::<&str>()
+                                    .map(|s| (*s).to_string())
+                                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                                    .unwrap_or_else(|| "unknown panic".into());
+                                d.reason = format!("daemon error on {}: {}", d.slot, msg);
+                            }
+                            let _ = tx.send(d);
+                        })
+                        .expect("spawn daemon run");
+                }
+                let mut reason = crate::proc::sorted_keys(&bool_keys(reasons)).join("; ");
+                if reason.is_empty() && started.is_empty() {
+                    reason = "no queued job".into();
+                }
+                reason
+            };
+            let queued = active_queued_count(s);
+            let total_slots = inflight.len() as i32 + slots.len() as i32 - started.len() as i32;
+            let starved = queued > 0 && slots.len() - started.len() == 0 && !inflight.is_empty();
+            if starved {
+                if starved_since.is_empty() {
+                    starved_since = now.clone();
+                }
             } else {
-                gate.clone()
-            },
-            now,
-        );
-        if !starved_since.is_empty()
-            && let Some(c) = conn.as_ref()
-        {
-            let waited = (crate::util::must_iso(&s.now()) - crate::util::must_iso(&starved_since))
-                .num_minutes() as i32;
-            let brain = crate::board::brain_project(c);
-            let post = hands_wanted(
+                starved_since.clear();
+            }
+            capacity_note(
                 s,
-                brain,
                 queued,
                 total_slots,
-                waited,
-                s.now(),
-                actor.clone(),
+                inflight.len() as i32,
+                starved_since.clone(),
+                gate.clone(),
+                now.clone(),
             );
-            if waited >= HANDS_WANTED_MINUTES && !post.0.is_empty() {
-                say(&o, format!("hands wanted: {}", post.str("summary")));
+            if !gate.is_empty()
+                && let Some(c) = conn.as_ref()
+            {
+                let post = crate::login_gate::login_wanted(
+                    s,
+                    crate::board::brain_project(c),
+                    queued,
+                    gate.clone(),
+                    now.clone(),
+                    actor.clone(),
+                );
+                if !post.0.is_empty() {
+                    say(&o, post.str("summary"));
+                }
             }
+            if !starved_since.is_empty()
+                && let Some(c) = conn.as_ref()
+            {
+                let waited = (crate::util::must_iso(&now) - crate::util::must_iso(&starved_since))
+                    .num_minutes() as i32;
+                if waited >= HANDS_WANTED_MINUTES {
+                    let post = hands_wanted(
+                        s,
+                        crate::board::brain_project(c),
+                        queued,
+                        total_slots,
+                        waited,
+                        now.clone(),
+                        actor.clone(),
+                    );
+                    if !post.0.is_empty() {
+                        say(&o, format!("hands wanted: {}", post.str("summary")));
+                    }
+                }
+            }
+        }));
+        if let Err(panic) = tick {
+            reason = format!("daemon error: {}", panic_message(&panic));
         }
         for line in compute.drain() {
             say(&o, line);
@@ -946,73 +864,62 @@ pub(crate) fn daemon(
             say(&o, format!("idle: {reason}"));
         }
         if o.max_loops > 0 && loops >= o.max_loops {
-            heartbeat_note = Some("exited".into());
+            leave = ("done", "loop limit reached");
             break;
         }
+        let tick = crossbeam_channel::after(Duration::from_secs(DISPATCH_TICK_SECONDS as u64));
+        let done = cancel.done();
         if !inflight.is_empty() {
-            daemon_heartbeat(s, loops + 1, interval, String::new());
-            let done = cancel.done();
-            let tick = crossbeam_channel::after(Duration::from_secs(DISPATCH_TICK_SECONDS as u64));
             crossbeam_channel::select! {
                 recv(results_rx) -> msg => if let Ok(d) = msg {
-                    inflight.remove(&dispatch_key(&d.slot, &d.worker, &d.job));
-                    completed = true;
-                    if !d.run.0.is_empty() && d.run.str("status") != "error" { all_errors = false; }
-                    if !d.run.0.is_empty() {
-                        say(&o, format!("{} {} {} on {}: {}", d.run.str("status"), d.run.str("job_id"), d.run.str("agent"), d.slot, d.run.str("summary")));
-                    } else if !d.reason.is_empty() {
-                        say(&o, format!("idle: {}", d.reason));
-                    }
+                    report(&o, &mut inflight, &mut completed, &mut all_errors, d);
                 },
                 recv(tick) -> _ => {},
                 recv(compute_wake) -> _ => {},
-                recv(wake_events) -> _ => {},
-                recv(done) -> _ => { heartbeat_note = Some("exited".into()); break; },
+                recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
+                    if msg.is_err() {
+                        wake_events = None;
+                    }
+                },
+                recv(done) -> _ => {
+                    leave = ("interrupted", "stopping on signal");
+                    break;
+                },
             }
         } else if let Some(done_rx) = maintenance.done.as_ref() {
-            let done = cancel.done();
-            let tick = crossbeam_channel::after(Duration::from_secs(DISPATCH_TICK_SECONDS as u64));
             crossbeam_channel::select! {
                 recv(done_rx) -> _ => { maintenance_wake = true; },
                 recv(tick) -> _ => {},
                 recv(compute_wake) -> _ => {},
-                recv(wake_events) -> _ => {},
-                recv(done) -> _ => { heartbeat_note = Some("exited".into()); break; },
+                recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
+                    if msg.is_err() {
+                        wake_events = None;
+                    }
+                },
+                recv(done) -> _ => {
+                    leave = ("interrupted", "stopping on signal");
+                    break;
+                },
             }
-        } else {
-            if !sleep_wait(Duration::from_secs(interval as u64)) {
-                heartbeat_note = Some("exited".into());
-                break;
-            }
+        } else if !sleep_wait(&mut wake_events, Duration::from_secs(interval as u64)) {
+            leave = ("interrupted", "stopping on signal");
+            break;
         }
     }
+    let (mut result, note) = leave;
+    // Go: leave(result, note)
     loop_ctx.cancel();
-    let interrupted = cancel.is_cancelled();
-    let heartbeat_note = heartbeat_note.unwrap_or_else(|| "exited".into());
-    let mut result = if interrupted {
-        "interrupted"
-    } else if heartbeat_note == "restarting" {
-        "restart"
-    } else if !crate::run::runner_stopped(s).is_empty() {
-        "stopped"
-    } else {
-        "done"
-    };
-    let note = match result {
-        "restart" => "restarting",
-        "stopped" => "stopping",
-        "interrupted" => "stopping on signal",
-        _ => "loop limit reached",
-    };
-    let mut grace = if matches!(result, "interrupted" | "stopped") {
-        if o.grace > Duration::ZERO {
-            o.grace
-        } else {
-            Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(1) as u64) * 60)
+    // Go: graceFor(result)
+    let grace_for = |result: &str| -> Duration {
+        if result != "interrupted" && result != "stopped" {
+            return Duration::ZERO;
         }
-    } else {
-        Duration::ZERO
+        if o.grace > Duration::ZERO {
+            return o.grace;
+        }
+        Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(0) as u64) * 60)
     };
+    let mut grace = grace_for(result);
     if matches!(result, "interrupted" | "stopped") {
         maintenance_ctx.cancel();
     }
@@ -1045,11 +952,7 @@ pub(crate) fn daemon(
                 recv(caller_done.as_ref().unwrap_or(&never_done)) -> _ => {
                     caller_done = None;
                     if timer.is_none() {
-                        grace = if o.grace > Duration::ZERO {
-                            o.grace
-                        } else {
-                            Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(1) as u64) * 60)
-                        };
+                        grace = grace_for("interrupted");
                         timer = Some(crossbeam_channel::after(grace));
                     }
                 },
@@ -1078,11 +981,7 @@ pub(crate) fn daemon(
     maintenance_ctx.cancel();
     if cancel.is_cancelled() && result != "stopped" {
         result = "interrupted";
-        grace = if o.grace > Duration::ZERO {
-            o.grace
-        } else {
-            Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(1) as u64) * 60)
-        };
+        grace = grace_for(result);
     }
     if compute.busy() > 0 {
         say(
@@ -1100,12 +999,26 @@ pub(crate) fn daemon(
     }
     let _ = bridge_done.recv();
     let _ = hooks_done_rx.recv();
-    daemon_heartbeat(s, loops, interval, heartbeat_note);
+    let beat = if result == "restart" {
+        "restarting"
+    } else {
+        "exited"
+    };
+    daemon_heartbeat(s, loops, interval, beat.to_string());
     // Go: defer cancelWake() - the wake subscription outlives the heartbeat,
     // which therefore counts it among the bus subscribers.
     cancel_wake();
     crate::checkout::hold_checkouts(BTreeMap::new());
     result.into()
+}
+
+/// Go: fmt.Sprintf("%v", recover()) - the panic payload as text.
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".into())
 }
 
 /// Go: func boolKeys(m map[string]bool) map[string]string
@@ -1234,22 +1147,6 @@ mod tests {
         }
     }
 
-    fn run_once(s: &pulse_store::Store, worker_cmd: &str, interval: i32, loops: i32) -> String {
-        let cancel = pulse_bus::CancellationToken::new();
-        daemon(
-            &cancel,
-            s,
-            DaemonOpts {
-                interval,
-                max_loops: loops,
-                worker_cmd: worker_cmd.into(),
-                no_watchdog: true,
-                sleep: Some(std::sync::Arc::new(|_| true)),
-                ..Default::default()
-            },
-        )
-    }
-
     #[test]
     fn daemon_runner_error_wait() {
         let _serial = crate::test_helpers::serial();
@@ -1286,7 +1183,6 @@ mod tests {
                             .display()
                             .to_string()
                     ),
-                    no_watchdog: true,
                     sleep: Some(std::sync::Arc::new(move |d| {
                         waits_for_sleep.lock().unwrap().push(d);
                         attempts_for_sleep.lock().unwrap().push(count(
@@ -1350,7 +1246,6 @@ mod tests {
                         .display()
                         .to_string()
                 ),
-                no_watchdog: true,
                 sleep: Some(std::sync::Arc::new(move |d| {
                     waits_for_sleep.lock().unwrap().push(d);
                     cancel_for_sleep.cancel();
@@ -1403,7 +1298,6 @@ mod tests {
                 max_loops: 2,
                 out: Some(out.writer()),
                 worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
-                no_watchdog: true,
                 sleep: Some(std::sync::Arc::new(move |d| {
                     waits_for_sleep.lock().unwrap().push(d);
                     true
@@ -1466,7 +1360,6 @@ mod tests {
                         .display()
                         .to_string()
                 ),
-                no_watchdog: true,
                 sleep: Some(std::sync::Arc::new(move |_| {
                     // The test holds pulse_testutil::env_lock for the whole body.
                     unsafe {
@@ -1517,7 +1410,6 @@ mod tests {
                     max_loops: 2,
                     worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
                     out: Some(out_daemon.writer()),
-                    no_watchdog: true,
                     ..Default::default()
                 },
             );
@@ -1613,7 +1505,6 @@ mod tests {
                     interval: 300,
                     max_loops: if exit == "done" { 1 } else { 0 },
                     restart_on_change: exit == "restart",
-                    no_watchdog: true,
                     ..Default::default()
                 },
             );
@@ -1702,7 +1593,6 @@ mod tests {
                     max_loops: 2,
                     worker_cmd: command,
                     out: Some(OutBuf::new().writer()),
-                    no_watchdog: true,
                     ..Default::default()
                 },
             );
@@ -1871,7 +1761,6 @@ mod tests {
                     interval: 300,
                     max_loops: 1,
                     worker_cmd: "sh -c 'echo SUMMARY: fake work complete'".into(),
-                    no_watchdog: true,
                     ..Default::default()
                 },
             )
@@ -1916,7 +1805,6 @@ mod tests {
             &s,
             DaemonOpts {
                 max_loops: 1,
-                no_watchdog: true,
                 ..Default::default()
             },
         );
@@ -1949,7 +1837,6 @@ mod tests {
             DaemonOpts {
                 max_loops: 1,
                 self_update: Some(Box::new(env)),
-                no_watchdog: true,
                 ..Default::default()
             },
         );
@@ -2021,7 +1908,6 @@ mod tests {
                     grace: GRACE,
                     worker_cmd: cmd,
                     out: Some(writer),
-                    no_watchdog: true,
                     ..Default::default()
                 },
             );

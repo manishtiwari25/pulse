@@ -2012,8 +2012,8 @@ pub(crate) static STAGED_PULSE_PATH: LazyLock<RwLock<StagedPulsePathFn>> =
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     #[test]
@@ -2479,7 +2479,6 @@ mod tests {
         assert_eq!(got.str("title"), "first-low");
     }
     #[test]
-    #[ignore = "cross-slice-bug: daemon::dispatch_tick: expected daemon heartbeat loops >= 2 while gated error worker is running; got loops stayed below 2/no heartbeat evidence"]
     fn scheduling_mixed_batch_does_not_pause_on_last_error() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2520,13 +2519,17 @@ mod tests {
             crate::util::shell_quote(&failure_gate.ready),
             failure_gate.command
         );
-        let cancel = pulse_bus::CancellationToken::new();
+        let cancel = pulse_bus::CancellationToken::new()
+            .with_timeout(crate::test_helpers_f2::LIFECYCLE_WAIT_TIMEOUT);
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+        let out = crate::test_helpers::OutBuf::new();
+        let waits = Arc::new(Mutex::new(Vec::<Duration>::new()));
         let daemon_store = s.clone();
         let daemon_cancel = cancel.clone();
+        let daemon_out = out.writer();
+        let waits_for_sleep = Arc::clone(&waits);
         std::thread::spawn(move || {
-            let waits: Vec<Duration> = Vec::new();
             let result = crate::daemon::daemon(
                 &daemon_cancel,
                 &daemon_store,
@@ -2534,12 +2537,16 @@ mod tests {
                     interval: 7,
                     max_loops: 3,
                     grace: Duration::from_secs(1),
+                    out: Some(daemon_out),
                     worker_cmd: crate::util::shell_join(&["sh".into(), "-c".into(), script]),
-                    no_watchdog: true,
+                    sleep: Some(Arc::new(move |d| {
+                        waits_for_sleep.lock().unwrap().push(d);
+                        true
+                    })),
                     ..Default::default()
                 },
             );
-            let _ = result_tx.send((result, waits));
+            let _ = result_tx.send(result);
             let _ = done_tx.send(());
         });
         failure_gate.wait(&done_rx);
@@ -2553,35 +2560,35 @@ mod tests {
         });
         failure_gate.release();
         crate::test_helpers_f2::wait_lifecycle_run(&done_rx);
-        cancel.cancel();
-        let (result, waits) = result_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert_eq!(
-            (result.as_str(), waits.len()),
-            ("done", 0),
-            "mixed batch paused after its last run errored"
+        let result = result_rx.recv().unwrap();
+        let waits = waits.lock().unwrap().clone();
+        assert!(
+            result == "done" && waits.is_empty(),
+            "mixed batch paused after its last run errored: result={result} waits={waits:?}\n{}",
+            out.string()
+        );
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'done'",
+            &[&first.str("id")],
+        );
+        assert_eq!(n, 1, "successful runs = {n}, want 1\n{}", out.string());
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'error'",
+            &[&second.str("id")],
         );
         assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'done'",
-                &[&first.str("id")]
-            ),
-            1,
-            "successful runs"
-        );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'error'",
-                &[&second.str("id")]
-            ),
+            n,
             2,
-            "prompt retries after mixed batch"
+            "prompt retries after mixed batch = {n}, want 2\n{}",
+            out.string()
         );
+        // Go: t.Cleanup - cancel(); waitLifecycleRun(t, done)
+        cancel.cancel();
     }
 
     #[test]
-    #[ignore = "cross-slice-bug: heartbeat::LocalExec::observer: heartbeatReporter must log first presence error via RunLog; startup heartbeat error is currently suppressed"]
     fn worker_lifecycle_delayed_suggestion() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();

@@ -659,7 +659,6 @@ mod tests {
             crate::daemon::DaemonOpts {
                 worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
                 max_loops: 1,
-                no_watchdog: true,
                 out: Some(first_out.writer()),
                 ..Default::default()
             },
@@ -679,7 +678,6 @@ mod tests {
                 interval: 1,
                 worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
                 max_loops: 1,
-                no_watchdog: true,
                 out: Some(out_buf.writer()),
                 ..Default::default()
             },
