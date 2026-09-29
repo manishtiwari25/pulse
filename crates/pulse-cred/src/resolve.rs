@@ -532,6 +532,31 @@ mod tests {
 
     #[test]
     fn resolve_op_uses_service_account_token() {
+        let _guard = pulse_testutil::env_lock();
+        // Like Go's t.Setenv: the resolver must strip these before running op.
+        let saved: Vec<(&str, Option<String>)> = ["OP_CONNECT_HOST", "OP_CONNECT_TOKEN", TOKEN_ENV]
+            .into_iter()
+            .map(|k| (k, std::env::var(k).ok()))
+            .collect();
+        unsafe {
+            std::env::set_var("OP_CONNECT_HOST", "https://connect.example");
+            std::env::set_var("OP_CONNECT_TOKEN", "connect-secret");
+            std::env::set_var(TOKEN_ENV, "from-process-env-should-be-replaced");
+        }
+        struct Restore(Vec<(&'static str, Option<String>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (k, v) in self.0.drain(..) {
+                    unsafe {
+                        match v {
+                            Some(v) => std::env::set_var(k, v),
+                            None => std::env::remove_var(k),
+                        }
+                    }
+                }
+            }
+        }
+        let _restore = Restore(saved);
         let mut replies: BTreeMap<String, Reply> = BTreeMap::new();
         replies.insert(
             "security".to_string(),
@@ -564,7 +589,7 @@ mod tests {
                 if env_value(env, "OP_CONNECT_HOST").is_some()
                     || env_value(env, "OP_CONNECT_TOKEN").is_some()
                 {
-                    return Err(RunError::new("connect leaked"));
+                    return Err(RunError::new("connect host/token leaked"));
                 }
                 Ok((TEST_KEY.to_string(), String::new()))
             }),
