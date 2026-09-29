@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -153,7 +153,7 @@ pub(crate) fn gcp_label(v: String) -> String {
 }
 
 /// Go: func gcpMachine(cfg gcpConfig, i gcpInstance) *Machine
-pub(crate) fn gcp_machine(cfg: GcpConfig, i: GcpInstance) -> Option<Box<crate::provider::Machine>> {
+pub(crate) fn gcp_machine(cfg: GcpConfig, i: GcpInstance) -> Option<crate::provider::Machine> {
     let mt = i
         .machine_type
         .rsplit('/')
@@ -166,7 +166,7 @@ pub(crate) fn gcp_machine(cfg: GcpConfig, i: GcpInstance) -> Option<Box<crate::p
             tags.insert(k.into(), v.clone());
         }
     }
-    Some(Box::new(crate::provider::Machine {
+    Some(crate::provider::Machine {
         provider: "gcp".into(),
         name: i.name.clone(),
         tags,
@@ -177,7 +177,7 @@ pub(crate) fn gcp_machine(cfg: GcpConfig, i: GcpInstance) -> Option<Box<crate::p
             ("public_ip".into(), i.public_ip()),
         ]),
         ..Default::default()
-    }))
+    })
 }
 
 /// Go: func gcpDescribe(ctx context.Context, cfg gcpConfig, name string) (*gcpInstance, error)
@@ -206,7 +206,7 @@ pub(crate) fn gcp_describe(
             err_text,
             anyhow!(""),
         )
-        .map(|_| None);
+        .map(|_| unreachable!());
     }
     let i: GcpInstance = serde_json::from_str(out.trim()).map_err(|_| {
         anyhow!(
@@ -299,7 +299,7 @@ impl GcpProvider {
         &self,
         ctx: &pulse_bus::CancellationToken,
         req: crate::provider::ProvisionRequest,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<crate::provider::Machine> {
         let (s, hub_home, log) = crate::provider::provision_start("gcp".into(), req.clone())?;
         let mut cfg = gcp_settings(&s, req.size.clone());
         let (rc, out, mut err_text) = (RUN_GCLOUD.read().unwrap())(
@@ -316,17 +316,17 @@ impl GcpProvider {
             if rc == 0 {
                 err_text = "no active account".into();
             }
-            return gcp_err("not logged in to Google Cloud (run `gcloud auth login` on this machine as the daemon's user)".into(), rc, out, err_text, anyhow!("")).map(|_| None);
+            return gcp_err("not logged in to Google Cloud (run `gcloud auth login` on this machine as the daemon's user)".into(), rc, out, err_text, anyhow!("")).map(|_| unreachable!());
         }
         let account = out.trim().to_string();
-        if cfg.project.is_empty() {
-            if let Ok((0, out, _)) = (RUN_GCLOUD.read().unwrap())(
+        if cfg.project.is_empty()
+            && let Ok((0, out, _)) = (RUN_GCLOUD.read().unwrap())(
                 ctx,
                 vec!["config".into(), "get-value".into(), "project".into()],
                 GCP_SHORT,
-            ) {
-                cfg.project = out.trim().into();
-            }
+            )
+        {
+            cfg.project = out.trim().into();
         }
         let missing = [
             ("compute.gcp.project", cfg.project.as_str()),
@@ -421,7 +421,7 @@ impl GcpProvider {
                     err_text,
                     anyhow!(""),
                 )
-                .map(|_| Some(Box::new(m)));
+                .map(|_| m);
             }
             let created: Vec<GcpInstance> = serde_json::from_str(out.trim()).unwrap_or_default();
             if created.is_empty() {
@@ -482,8 +482,8 @@ impl GcpProvider {
                 Ok(!hostkeys.is_empty())
             },
         )?;
-        crate::provider::provision_finish(ctx, req, &m, hub_home, ip, hostkeys, log)?;
-        Ok(Some(Box::new(m)))
+        crate::provider::provision_finish(ctx, req, &mut m, hub_home, ip, hostkeys, log)?;
+        Ok(m)
     }
     /// Go: func (p gcpProvider) config(m *Machine) gcpConfig
     pub(crate) fn config(&self, m: &crate::provider::Machine) -> GcpConfig {
@@ -562,7 +562,7 @@ impl GcpProvider {
         s: &pulse_store::Store,
         executor: String,
         host: String,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<Option<crate::provider::Machine>> {
         let cfg = gcp_settings(s, String::new());
         let (rc, out, err_text) = (RUN_GCLOUD.read().unwrap())(
             ctx,
@@ -755,7 +755,7 @@ impl crate::provider::Provider for GcpProvider {
         &self,
         cancel: &pulse_bus::CancellationToken,
         req: crate::provider::ProvisionRequest,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<crate::provider::Machine> {
         self.provision(cancel, req)
     }
     fn release(
@@ -778,7 +778,7 @@ impl crate::provider::Provider for GcpProvider {
         s: &pulse_store::Store,
         executor: &str,
         host: &str,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<Option<crate::provider::Machine>> {
         self.find(cancel, s, executor.to_string(), host.to_string())
     }
     fn stop(
@@ -800,5 +800,16 @@ impl crate::provider::Provider for GcpProvider {
     }
     fn start_hint(&self, m: &crate::provider::Machine) -> String {
         self.start_hint(m)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn gcp_label() {
+        let _serial = crate::test_helpers::serial();
+        assert_eq!(super::gcp_label("CR-001".to_string()), "cr-001");
+        assert_eq!(super::gcp_label("Proj.Name/x".to_string()), "proj-name-x");
+        assert_eq!(super::gcp_label("a".repeat(70)).len(), 63);
     }
 }

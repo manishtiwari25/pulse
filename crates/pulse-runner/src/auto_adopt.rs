@@ -49,6 +49,7 @@ mod tests {
 
     #[test]
     fn auto_adopt_drafts_only_when_away_and_enabled() {
+        let _serial = crate::test_helpers::serial();
         let s = auto_adopt_store();
         let rec = seed_record(&s);
         pulse_records::draft(

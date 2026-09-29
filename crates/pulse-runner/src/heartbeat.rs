@@ -248,6 +248,122 @@ impl crate::exec::LocalExec {
 
 #[allow(dead_code)]
 impl crate::exec::SshExec {
+    pub(crate) fn run_worker(
+        &mut self,
+        cancel: &pulse_bus::CancellationToken,
+        cmd: &[String],
+        env: &BTreeMap<String, String>,
+        minutes: i32,
+    ) -> Result<crate::proc::Outcome> {
+        crate::exec::preflight_run_key(&self.local.key)?;
+        self.preflight_remote_run_key("before the worker starts")?;
+        let mut fields = BTreeMap::new();
+        match self.call(&["probe".into()], &[], Duration::from_secs(120)) {
+            Ok((0, out, _)) => {
+                fields = crate::executor::parse_probe(&out);
+                if fields.get("pulse").map(String::as_str) == Some("missing") {
+                    let looked = match fields.get("pulse_lookup").map(String::as_str) {
+                        Some("") | None | Some("-") => "the executor user's login PATH".to_string(),
+                        Some(v) => format!("PATH={}", v.replace("%20", " ")),
+                    };
+                    return Err(crate::executor::ExecutorFault {
+                        msg: format!(
+                            "pulse is not on PATH on {} (hands probe reported pulse=missing, looked in {looked}) - install the pulse CLI for the executor user or fix its login PATH; probe it with `pulse executor probe {}`",
+                            self.name(),
+                            self.name()
+                        ),
+                    }
+                    .into());
+                }
+            }
+            Ok((rc, _, _)) => self
+                .local
+                .log
+                .add(format!("presence unavailable: probe exited {rc}")),
+            Err(err) => self.local.log.add(format!("presence unavailable: {err}")),
+        }
+        if let Some(cli) = env.get("PULSE_CLI").filter(|s| !s.is_empty()) {
+            self.preflight_remote_cli(cli)?;
+        }
+        let heartbeat = self.heartbeat_capable_from(fields);
+        if !heartbeat {
+            self.local.log.add("presence unavailable");
+        }
+        let mut worker_env = env.clone();
+        if heartbeat {
+            worker_env.insert("PULSE_HEARTBEAT".into(), "1".into());
+        }
+        let id = self.local.execution(worker_env.clone());
+        let watch_cancel = cancel.child();
+        if heartbeat {
+            let mut watcher = self.clone();
+            let watch_cancel_for_thread = watch_cancel.clone();
+            let watch_id = id.clone();
+            std::thread::spawn(move || watcher.watch_remote(&watch_cancel_for_thread, watch_id));
+        }
+        let budget = if minutes <= 0 {
+            "1s".to_string()
+        } else {
+            minutes.to_string()
+        };
+        let mut args = vec!["run".to_string(), self.local.job.str("id"), budget];
+        for (k, v) in &worker_env {
+            args.push(format!("{k}={v}"));
+        }
+        args.push("--".into());
+        args.extend(cmd.iter().cloned());
+        self.local.begun = true;
+        let runner = crate::executor::run_ssh_hook();
+        let run = runner(
+            cancel,
+            &args,
+            &[],
+            Duration::from_secs((minutes.max(1) * 60 + 120) as u64),
+        );
+        if heartbeat {
+            let reported = heartbeat_reporter(None);
+            self.local.stop_heartbeat(id, reported);
+            watch_cancel.cancel();
+        }
+        let (rc, out, err_text) = match run {
+            Ok(v) => v,
+            Err(e) if cancel.is_cancelled() => {
+                return Ok(crate::proc::Outcome {
+                    timeout: true,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: e.to_string(),
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        self.local.last_out = Some(out.clone());
+        if rc == crate::executor::SSH_EXIT_UNREACH {
+            return Err(crate::executor::ExecutorUnreachable {
+                msg: if err_text.trim().is_empty() {
+                    "ssh exit 255".into()
+                } else {
+                    err_text.clone()
+                },
+            }
+            .into());
+        }
+        if rc == crate::executor::REMOTE_EXIT_TIMEOUT {
+            return Ok(crate::proc::Outcome {
+                timeout: true,
+                exit_code: -1,
+                stdout: out,
+                stderr: err_text,
+            });
+        }
+        Ok(crate::proc::Outcome {
+            timeout: false,
+            exit_code: rc,
+            stdout: out,
+            stderr: err_text,
+        })
+    }
+
     /// Go: func (e *sshExec) heartbeatCapable(ctx context.Context) bool
     pub(crate) fn heartbeat_capable(&mut self, cancel: &pulse_bus::CancellationToken) -> bool {
         let fields = self.probe_capabilities(cancel);
@@ -488,8 +604,15 @@ impl crate::hands::Hands {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::Executor;
+    use crate::test_helpers::{TEST_NOW, new_store};
+    use crate::test_helpers_f2::*;
+    use chrono::{DateTime, SecondsFormat, TimeZone};
     use std::io::{Result as IoResult, Write};
+    use std::path::Path;
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     #[derive(Clone, Default)]
     struct SharedBuf(Arc<Mutex<Vec<u8>>>);
@@ -508,8 +631,33 @@ mod tests {
         }
     }
 
+    struct RunSshRestore(crate::executor::SshRunner);
+    impl Drop for RunSshRestore {
+        fn drop(&mut self) {
+            crate::executor::restore_run_ssh(self.0.clone());
+        }
+    }
+
+    fn install_run_ssh<F>(f: F) -> RunSshRestore
+    where
+        F: Fn(
+                &pulse_bus::CancellationToken,
+                &[String],
+                &[u8],
+                Duration,
+            ) -> Result<(i32, String, String)>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let old = crate::executor::run_ssh_hook();
+        crate::executor::set_run_ssh(f);
+        RunSshRestore(old)
+    }
+
     #[test]
     fn hands_steps_verb_streams_whole_lines_by_offset() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let workdir = tempfile::tempdir().unwrap();
         let dir = workdir.path().join("job-steps");
@@ -556,6 +704,7 @@ mod tests {
 
     #[test]
     fn hands_heartbeat_path_write_and_read_is_session_scoped() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let workdir = tempfile::tempdir().unwrap();
         let dir = workdir.path().join("job-quiet");
@@ -600,33 +749,820 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice: proc::run_group_observed"]
-    fn heartbeat_process_timing_quiet_work_and_exit() {}
+    fn heartbeat_process_timing_quiet_work_and_exit() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let fake = fake_heartbeat_clock();
+        let (fifo, argv) = heartbeat_fifo();
+        let cancel = pulse_bus::CancellationToken::new();
+        let (beats_tx, beats_rx) = crossbeam_channel::bounded::<i64>(8);
+        let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(1);
+        let clock = Arc::clone(&fake.clock);
+        let observer = crate::proc::ProcessObserver {
+            beat: Some(Arc::new(move || {
+                let _ = beats_tx.send(clock.load(Ordering::SeqCst));
+            })),
+            stop: Some(Arc::new(move || {
+                let _ = stop_tx.send(());
+            })),
+        };
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let cancel_for_thread = cancel.clone();
+        std::thread::spawn(move || {
+            let out = crate::proc::run_group_observed(
+                &cancel_for_thread,
+                &argv,
+                "",
+                &crate::proc::environ(),
+                &[],
+                Duration::from_secs(60),
+                Some(&observer),
+            );
+            let _ = done_tx.send(out);
+        });
+        let base = fake.clock.load(Ordering::SeqCst);
+        assert_eq!(
+            heartbeat_receive(&fake.periods),
+            pulse_board::HEARTBEAT_INTERVAL
+        );
+        assert_eq!(heartbeat_receive(&beats_rx), base);
+        for seconds in [60_i64, 120] {
+            fake.clock.store(
+                base + (Duration::from_secs(seconds as u64).as_nanos() as i64),
+                Ordering::SeqCst,
+            );
+            fake.ticks
+                .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)))
+                .unwrap();
+            assert_eq!(
+                heartbeat_receive(&beats_rx),
+                fake.clock.load(Ordering::SeqCst)
+            );
+        }
+        finish_heartbeat_fifo(&fifo);
+        let out = heartbeat_receive(&done_rx).unwrap();
+        assert!(!out.timeout);
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.contains("quiet worker finished"));
+        heartbeat_receive(&stop_rx);
+        fake.ticks
+            .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)))
+            .unwrap();
+        assert_eq!(beats_rx.len(), 0);
+        assert_eq!(stop_rx.len(), 0);
+    }
+
     #[test]
-    #[ignore = "cross-slice: proc::run_group_observed"]
-    fn heartbeat_process_launch_failure_cancellation_and_timeout() {}
+    fn heartbeat_process_launch_failure_cancellation_and_timeout() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for mode in ["failed launch", "cancel before launch", "cancel", "timeout"] {
+            let _fake = fake_heartbeat_clock();
+            let cancel = pulse_bus::CancellationToken::new();
+            let (beats_tx, beats_rx) = crossbeam_channel::bounded::<()>(4);
+            let (stops_tx, stops_rx) = crossbeam_channel::bounded::<()>(4);
+            let observer = crate::proc::ProcessObserver {
+                beat: Some(Arc::new(move || {
+                    let _ = beats_tx.send(());
+                })),
+                stop: Some(Arc::new(move || {
+                    let _ = stops_tx.send(());
+                })),
+            };
+            let (_, mut argv) = heartbeat_fifo();
+            if mode == "failed launch" {
+                argv = vec![
+                    Path::new(&heartbeat_fifo().0)
+                        .with_file_name("missing-worker")
+                        .display()
+                        .to_string(),
+                ];
+            }
+            if mode == "cancel before launch" {
+                cancel.cancel();
+            }
+            let budget = if mode == "timeout" {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(60)
+            };
+            let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+            let cancel_for_thread = cancel.clone();
+            std::thread::spawn(move || {
+                let result = crate::proc::run_group_observed(
+                    &cancel_for_thread,
+                    &argv,
+                    "",
+                    &crate::proc::environ(),
+                    &[],
+                    budget,
+                    Some(&observer),
+                );
+                let _ = done_tx.send(result);
+            });
+            if mode == "cancel" {
+                heartbeat_receive(&beats_rx);
+                cancel.cancel();
+            }
+            let got = heartbeat_receive(&done_rx);
+            if mode == "failed launch" {
+                assert!(got.is_err(), "{mode}: {got:?}");
+                assert_eq!(beats_rx.len(), 0);
+                assert_eq!(stops_rx.len(), 0);
+            } else if mode == "cancel before launch" {
+                let out = got.unwrap();
+                assert!(out.timeout, "{mode}: {out:?}");
+                assert_eq!(beats_rx.len(), 0);
+                assert_eq!(stops_rx.len(), 0);
+            } else {
+                let out = got.unwrap();
+                assert!(out.timeout, "{mode}: {out:?}");
+                assert_eq!(stops_rx.len(), 1);
+            }
+        }
+    }
+
     #[test]
-    #[ignore = "cross-slice: exec::run_worker"]
-    fn heartbeat_local_executor_and_restart_fencing() {}
+    fn heartbeat_local_executor_and_restart_fencing() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let fake = fake_heartbeat_clock();
+        let (mut e, id, env) = runner_heartbeat_fixture(&s, "local");
+        let (fifo, argv) = heartbeat_fifo();
+        let cancel = pulse_bus::CancellationToken::new();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let cancel_for_thread = cancel.clone();
+        // Go keeps `e` (a pointer) for the old-observer check after runWorker; the worker thread
+        // needs `&mut`, so the same executor is shared with it through a clone.
+        let mut old = Clone::clone(&e);
+        std::thread::spawn(move || {
+            let out = e.run_worker(&cancel_for_thread, &argv, &env, 1);
+            let _ = done_tx.send(out.inspect(|o| {
+                if o.exit_code != 0 {
+                    panic!("quiet worker failed");
+                }
+            }));
+        });
+        heartbeat_eventually(|| runner_heartbeat(&s, &id.agent).unwrap().1);
+        let base = fake.clock.load(Ordering::SeqCst);
+        fake.clock
+            .fetch_add(Duration::from_secs(60).as_nanos() as i64, Ordering::SeqCst);
+        fake.ticks
+            .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)))
+            .unwrap();
+        heartbeat_eventually(|| {
+            let (h, _) = runner_heartbeat(&s, &id.agent).unwrap();
+            h.at == Utc
+                .timestamp_nanos(fake.clock.load(Ordering::SeqCst))
+                .to_rfc3339_opts(SecondsFormat::Nanos, true)
+        });
+        finish_heartbeat_fifo(&fifo);
+        heartbeat_receive(&done_rx).unwrap();
+        let (h, _) = runner_heartbeat(&s, &id.agent).unwrap();
+        assert_eq!(h.identity, id);
+        assert_eq!(
+            h.at,
+            Utc.timestamp_nanos(base + Duration::from_secs(60).as_nanos() as i64)
+                .to_rfc3339_opts(SecondsFormat::Nanos, true)
+        );
+        assert!(!h.stopped_at.is_empty());
+        assert_eq!(crate::run::sweep_lost_runs(&s, TEST_NOW), 1);
+        let j = crate::jobs::job_row(&s.conn().unwrap(), id.job_id.clone());
+        assert_eq!(j.str("status"), "queued");
+        assert_eq!(j.str("lease_agent"), "");
+        fake.clock
+            .fetch_add(Duration::from_secs(60).as_nanos() as i64, Ordering::SeqCst);
+        old.observer(id.clone()).unwrap().beat.unwrap()();
+        let (after, _) = runner_heartbeat(&s, &id.agent).unwrap();
+        assert_eq!(after, h, "old supervisor changed evidence after restart");
+    }
+
     #[test]
-    #[ignore = "cross-slice: exec::run_worker"]
-    fn heartbeat_remote_requires_evidence_and_recovers_without_lease_changes() {}
+    fn heartbeat_remote_requires_evidence_and_recovers_without_lease_changes() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let fake = fake_heartbeat_clock();
+        let (local, id, env) = runner_heartbeat_fixture(&s, "hands");
+        let mut e = crate::exec::SshExec {
+            local,
+            ..Default::default()
+        };
+        struct Reply {
+            code: i32,
+            raw: String,
+            err: Option<String>,
+        }
+        let (requests_tx, requests_rx) = crossbeam_channel::bounded::<()>(1);
+        let (replies_tx, replies_rx) = crossbeam_channel::bounded::<Reply>(8);
+        let (responses_tx, responses_rx) = crossbeam_channel::bounded::<()>(8);
+        let (worker_started_tx, worker_started_rx) = crossbeam_channel::bounded::<()>(1);
+        let _ssh = install_run_ssh(move |cancel, argv, _stdin, _timeout| {
+            let args = heartbeat_ssh_args(argv);
+            match args.first().map(String::as_str) {
+                Some("verify") => Ok((0, String::new(), String::new())),
+                Some("probe") => Ok((0, "hands=ok heartbeat=1".into(), String::new())),
+                Some("run") => {
+                    if !args.iter().any(|a| a == "PULSE_HEARTBEAT=1") {
+                        return Err(anyhow!("no heartbeat request"));
+                    }
+                    let _ = worker_started_tx.send(());
+                    while !cancel.is_cancelled() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(anyhow!("context canceled"))
+                }
+                Some("heartbeat") => {
+                    let _ = requests_tx.send(());
+                    loop {
+                        if cancel.is_cancelled() {
+                            return Err(anyhow!("context canceled"));
+                        }
+                        if let Ok(r) = replies_rx.recv_timeout(Duration::from_millis(1)) {
+                            let _ = responses_tx.send(());
+                            if let Some(err) = r.err {
+                                return Err(anyhow!(err));
+                            }
+                            return Ok((r.code, r.raw, String::new()));
+                        }
+                    }
+                }
+                _ => Err(anyhow!("unexpected SSH verb")),
+            }
+        });
+        let cancel = pulse_bus::CancellationToken::new();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let cancel_for_thread = cancel.clone();
+        std::thread::spawn(move || {
+            let out = e.run_worker(&cancel_for_thread, &["copilot".into()], &env, 1);
+            let _ = done_tx.send(out);
+        });
+        heartbeat_receive(&worker_started_rx);
+        assert_eq!(heartbeat_receive(&fake.periods), Duration::from_secs(1));
+        heartbeat_receive(&requests_rx);
+        replies_tx
+            .send(Reply {
+                code: 3,
+                raw: String::new(),
+                err: None,
+            })
+            .unwrap();
+        heartbeat_receive(&responses_rx);
+        fake.ticks
+            .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)))
+            .unwrap();
+        heartbeat_receive(&requests_rx);
+        assert!(!runner_heartbeat(&s, &id.agent).unwrap().1);
+        replies_tx
+            .send(Reply {
+                code: 0,
+                raw: r#"{"at":"malformed"}"#.into(),
+                err: None,
+            })
+            .unwrap();
+        heartbeat_receive(&responses_rx);
+        fake.ticks
+            .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)))
+            .unwrap();
+        heartbeat_receive(&requests_rx);
+        assert!(!runner_heartbeat(&s, &id.agent).unwrap().1);
+        type HeartbeatCorruption = Box<dyn Fn(&mut pulse_board::ExecutionHeartbeat)>;
+        let corruptions: Vec<HeartbeatCorruption> = vec![
+            Box::new(|h| h.at = String::new()),
+            Box::new({
+                let clock = Arc::clone(&fake.clock);
+                move |h| {
+                    h.at = Utc
+                        .timestamp_nanos(
+                            clock.load(Ordering::SeqCst)
+                                + Duration::from_secs(3600).as_nanos() as i64,
+                        )
+                        .to_rfc3339_opts(SecondsFormat::Nanos, true)
+                }
+            }),
+            Box::new({
+                let clock = Arc::clone(&fake.clock);
+                move |h| {
+                    h.at = Utc
+                        .timestamp_nanos(
+                            clock.load(Ordering::SeqCst)
+                                - pulse_board::HEARTBEAT_GRACE.as_nanos() as i64,
+                        )
+                        .to_rfc3339_opts(SecondsFormat::Nanos, true)
+                }
+            }),
+            Box::new({
+                let clock = Arc::clone(&fake.clock);
+                move |h| {
+                    h.stopped_at = Utc
+                        .timestamp_nanos(
+                            clock.load(Ordering::SeqCst)
+                                + Duration::from_secs(3600).as_nanos() as i64,
+                        )
+                        .to_rfc3339_opts(SecondsFormat::Nanos, true)
+                }
+            }),
+            Box::new(|h| h.identity.generation -= 1),
+            Box::new(|h| {
+                h.identity.session = "run-old".into();
+                h.identity.run_id = "run-old".into();
+            }),
+            Box::new(|h| h.identity.executor = "other-hands".into()),
+        ];
+        for corrupt in corruptions {
+            let mut bad = pulse_board::ExecutionHeartbeat {
+                identity: id.clone(),
+                at: TEST_NOW.into(),
+                stopped_at: String::new(),
+            };
+            corrupt(&mut bad);
+            replies_tx
+                .send(Reply {
+                    code: 0,
+                    raw: serde_json::to_string(&bad).unwrap(),
+                    err: None,
+                })
+                .unwrap();
+            heartbeat_receive(&responses_rx);
+            assert!(
+                !runner_heartbeat(&s, &id.agent).unwrap().1,
+                "invalid remote evidence was accepted: {bad:?}"
+            );
+            fake.ticks
+                .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)))
+                .unwrap();
+            heartbeat_receive(&requests_rx);
+        }
+        let send_beat = || {
+            let h = pulse_board::ExecutionHeartbeat {
+                identity: id.clone(),
+                at: Utc
+                    .timestamp_nanos(fake.clock.load(Ordering::SeqCst))
+                    .to_rfc3339_opts(SecondsFormat::Nanos, true),
+                stopped_at: String::new(),
+            };
+            replies_tx
+                .send(Reply {
+                    code: 0,
+                    raw: serde_json::to_string(&h).unwrap(),
+                    err: None,
+                })
+                .unwrap();
+            heartbeat_receive(&responses_rx);
+            heartbeat_eventually(|| {
+                let (got, exists) = runner_heartbeat(&s, &id.agent).unwrap();
+                exists && got.at == h.at
+            });
+        };
+        send_beat();
+        assert_eq!(
+            heartbeat_receive(&fake.periods),
+            pulse_board::HEARTBEAT_INTERVAL
+        );
+        fake.clock
+            .fetch_add(Duration::from_secs(60).as_nanos() as i64, Ordering::SeqCst);
+        fake.ticks
+            .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)))
+            .unwrap();
+        heartbeat_receive(&requests_rx);
+        send_beat();
+        let job_before = crate::jobs::job_row(&s.conn().unwrap(), id.job_id.clone());
+        let agent_before = s.agent(&id.agent).unwrap().unwrap();
+        fake.ticks
+            .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)))
+            .unwrap();
+        heartbeat_receive(&requests_rx);
+        replies_tx
+            .send(Reply {
+                code: -1,
+                raw: String::new(),
+                err: Some("synthetic evidence connection lost".into()),
+            })
+            .unwrap();
+        heartbeat_receive(&responses_rx);
+        fake.clock.fetch_add(
+            pulse_board::HEARTBEAT_GRACE.as_nanos() as i64 - 1,
+            Ordering::SeqCst,
+        );
+        let check = |want: &str| {
+            let rows = pulse_board::agent_presences(
+                &s,
+                &Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst))
+                    .to_rfc3339_opts(SecondsFormat::Nanos, true),
+            )
+            .unwrap();
+            assert_eq!(rows[&id.agent].presence, want);
+        };
+        check("online");
+        fake.clock.fetch_add(1, Ordering::SeqCst);
+        check("offline");
+        let j = crate::jobs::job_row(&s.conn().unwrap(), id.job_id.clone());
+        assert_eq!(j.str("status"), job_before.str("status"));
+        assert_eq!(j.int("generation"), job_before.int("generation"));
+        assert_eq!(j.str("lease_until"), job_before.str("lease_until"));
+        fake.ticks
+            .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)))
+            .unwrap();
+        heartbeat_receive(&requests_rx);
+        send_beat();
+        check("online");
+        let agent_after = s.agent(&id.agent).unwrap().unwrap();
+        assert_eq!(agent_after.last_active_at, agent_before.last_active_at);
+        assert_eq!(agent_after.last_useful_at, agent_before.last_useful_at);
+        assert_eq!(agent_after.posts, agent_before.posts);
+        cancel.cancel();
+        let out = heartbeat_receive(&done_rx).unwrap();
+        assert!(out.timeout, "remote cancellation: {out:?}");
+        let _ = fake
+            .ticks
+            .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)));
+        check("offline");
+        let (h, _) = runner_heartbeat(&s, &id.agent).unwrap();
+        assert!(!h.stopped_at.is_empty());
+    }
+
     #[test]
-    #[ignore = "cross-slice: exec::run_worker"]
-    fn heartbeat_legacy_hands_and_probe_failures_do_not_fail_work() {}
+    fn heartbeat_legacy_hands_and_probe_failures_do_not_fail_work() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for mode in ["legacy", "probe error", "probe exit"] {
+            let s = new_store();
+            let (local, id, env) = runner_heartbeat_fixture(&s, "hands");
+            let mut e = crate::exec::SshExec {
+                local,
+                ..Default::default()
+            };
+            let mode = mode.to_string();
+            let mode_for_ssh = mode.clone();
+            let _ssh = install_run_ssh(move |_cancel, argv, _stdin, _timeout| {
+                let args = heartbeat_ssh_args(argv);
+                if args.first().map(String::as_str) == Some("verify") {
+                    return Ok((0, String::new(), String::new()));
+                }
+                if args.first().map(String::as_str) == Some("probe") {
+                    return match mode_for_ssh.as_str() {
+                        "probe error" => Err(anyhow!("synthetic probe failure")),
+                        "probe exit" => Ok((2, String::new(), String::new())),
+                        _ => Ok((0, "hands=ok".into(), String::new())),
+                    };
+                }
+                if args.first().map(String::as_str) != Some("run")
+                    || args.iter().any(|a| a == "PULSE_HEARTBEAT=1")
+                {
+                    return Err(anyhow!("legacy hands received a heartbeat request"));
+                }
+                Ok((0, "SUMMARY: completed".into(), String::new()))
+            });
+            let out = e
+                .run_worker(
+                    &pulse_bus::CancellationToken::new(),
+                    &["copilot".into()],
+                    &env,
+                    1,
+                )
+                .unwrap();
+            assert_eq!(out.exit_code, 0);
+            assert!(out.stdout.contains("completed"));
+            assert!(
+                e.local
+                    .last_out
+                    .as_ref()
+                    .is_some_and(|last| last == &out.stdout),
+                "{mode}: {out:?}"
+            );
+            let (_h, exists) = runner_heartbeat(&s, &id.agent).unwrap();
+            assert!(!exists);
+            assert!(e.local.log.text().contains("presence unavailable"));
+        }
+    }
+
     #[test]
-    #[ignore = "cross-slice: exec::run_worker"]
-    fn heartbeat_remote_stops_on_exit_timeout_and_transport_loss() {}
+    fn heartbeat_remote_stops_on_exit_timeout_and_transport_loss() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for (name, code, failure, timeout) in [
+            ("exit", 0, false, false),
+            ("timeout", crate::executor::REMOTE_EXIT_TIMEOUT, false, true),
+            (
+                "remote loss",
+                crate::executor::SSH_EXIT_UNREACH,
+                true,
+                false,
+            ),
+        ] {
+            let s = new_store();
+            let fake = fake_heartbeat_clock();
+            let (local, id, env) = runner_heartbeat_fixture(&s, "hands");
+            let mut e = crate::exec::SshExec {
+                local,
+                ..Default::default()
+            };
+            let (end_tx, end_rx) = crossbeam_channel::bounded::<()>(1);
+            let id_for_ssh = id.clone();
+            let _ssh = install_run_ssh(move |cancel, argv, _stdin, _timeout| {
+                let args = heartbeat_ssh_args(argv);
+                match args.first().map(String::as_str) {
+                    Some("verify") => Ok((0, String::new(), String::new())),
+                    Some("probe") => Ok((0, "hands=ok heartbeat=1".into(), String::new())),
+                    Some("heartbeat") => Ok((
+                        0,
+                        serde_json::to_string(&pulse_board::ExecutionHeartbeat {
+                            identity: id_for_ssh.clone(),
+                            at: TEST_NOW.into(),
+                            stopped_at: String::new(),
+                        })
+                        .unwrap(),
+                        String::new(),
+                    )),
+                    Some("run") => loop {
+                        if end_rx.recv_timeout(Duration::from_millis(1)).is_ok() {
+                            return Ok((
+                                code,
+                                "SUMMARY: finished".into(),
+                                "synthetic transport".into(),
+                            ));
+                        }
+                        if cancel.is_cancelled() {
+                            return Err(anyhow!("context canceled"));
+                        }
+                    },
+                    _ => Err(anyhow!("unexpected SSH verb")),
+                }
+            });
+            let cancel = pulse_bus::CancellationToken::new();
+            let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+            let cancel_for_thread = cancel.clone();
+            std::thread::spawn(move || {
+                let out = e.run_worker(&cancel_for_thread, &["copilot".into()], &env, 1);
+                let _ = done_tx.send(out);
+            });
+            heartbeat_eventually(|| runner_heartbeat(&s, &id.agent).unwrap().1);
+            end_tx.send(()).unwrap();
+            let got = heartbeat_receive(&done_rx);
+            assert_eq!(got.is_err(), failure, "{name}: {got:?}");
+            let out = got.unwrap_or_else(|_| crate::proc::Outcome::default());
+            assert_eq!(out.timeout, timeout, "{name}: {out:?}");
+            let _ = fake
+                .ticks
+                .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)));
+            let (beat, _) = runner_heartbeat(&s, &id.agent).unwrap();
+            assert_eq!(beat.at, TEST_NOW);
+            assert!(!beat.stopped_at.is_empty(), "{name}: {beat:?}");
+            let j = crate::jobs::job_row(&s.conn().unwrap(), id.job_id.clone());
+            assert_eq!(j.str("status"), "leased");
+            assert_eq!(j.int("generation") as i64, id.generation);
+            assert_eq!(j.str("lease_agent"), id.agent);
+        }
+    }
+
     #[test]
-    #[ignore = "cross-slice: hands::with_timeout_observed"]
-    fn heartbeat_hands_failed_launch_and_timeout_snapshots() {}
+    fn heartbeat_hands_failed_launch_and_timeout_snapshots() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for timeout in [false, true] {
+            let _fake = fake_heartbeat_clock();
+            let workdir = std::env::current_dir()
+                .unwrap()
+                .join("target")
+                .join("pulse-runner-f2")
+                .join(uuid::Uuid::new_v4().to_string());
+            let dir = workdir.join("job-quiet");
+            std::fs::create_dir_all(&dir).unwrap();
+            let out = SharedBuf::default();
+            let err = SharedBuf::default();
+            let (mut h, _env) = crate::test_helpers::new_test_hands(
+                &workdir.display().to_string(),
+                Some(Box::new(out)),
+                Some(Box::new(err)),
+            );
+            let env = BTreeMap::from([
+                ("PULSE_AGENT".into(), "quiet".into()),
+                ("PULSE_SESSION".into(), "run-quiet".into()),
+                ("PULSE_GENERATION".into(), "1".into()),
+                ("PULSE_EXECUTOR".into(), "hands".into()),
+            ]);
+            let observer = h
+                .heartbeat_observer("job-quiet".into(), env.clone())
+                .unwrap();
+            let mut argv = vec![dir.join("missing-command").display().to_string()];
+            let mut want = 127;
+            if timeout {
+                argv = heartbeat_fifo().1;
+                want = crate::executor::REMOTE_EXIT_TIMEOUT;
+            }
+            assert_eq!(
+                h.with_timeout_observed(
+                    Duration::from_millis(100),
+                    &dir.display().to_string(),
+                    &argv,
+                    &env,
+                    observer.as_ref()
+                ),
+                want
+            );
+            let path = hands_heartbeat_path(dir.display().to_string(), "run-quiet".into()).unwrap();
+            let data = std::fs::read(&path);
+            if !timeout {
+                assert!(data.unwrap_err().kind() == std::io::ErrorKind::NotFound);
+                continue;
+            }
+            let beat: pulse_board::ExecutionHeartbeat =
+                serde_json::from_slice(&data.unwrap()).unwrap();
+            assert!(!beat.at.is_empty());
+            assert!(!beat.stopped_at.is_empty());
+        }
+    }
+
     #[test]
-    #[ignore = "cross-slice: hands::with_timeout_observed"]
-    fn heartbeat_hands_supervisor_snapshots_and_session_isolation() {}
+    fn heartbeat_hands_supervisor_snapshots_and_session_isolation() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let fake = fake_heartbeat_clock();
+        let workdir = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("pulse-runner-f2")
+            .join(uuid::Uuid::new_v4().to_string());
+        let dir = workdir.join("job-quiet");
+        let clone = dir.join("clone");
+        std::fs::create_dir_all(clone.join(".git")).unwrap();
+        let _env_1 = pulse_testutil::setenv("PULSE_HANDS_ALLOW_ANY_WORKER", "1");
+        let out = SharedBuf::default();
+        let err = SharedBuf::default();
+        let (mut h, _env) = crate::test_helpers::new_test_hands(
+            &workdir.display().to_string(),
+            Some(Box::new(out)),
+            Some(Box::new(err.clone())),
+        );
+        let id = pulse_board::ExecutionIdentity {
+            agent: "quiet".into(),
+            session: "run-quiet".into(),
+            run_id: "run-quiet".into(),
+            job_id: "job-quiet".into(),
+            generation: 4,
+            executor: "hands".into(),
+        };
+        let env = BTreeMap::from([
+            ("PULSE_AGENT".into(), id.agent.clone()),
+            ("PULSE_SESSION".into(), id.session.clone()),
+            ("PULSE_GENERATION".into(), "4".into()),
+            ("PULSE_EXECUTOR".into(), id.executor.clone()),
+        ]);
+        let mut observer = h
+            .heartbeat_observer(id.job_id.clone(), env.clone())
+            .unwrap()
+            .unwrap();
+        let (observed_tx, observed_rx) = crossbeam_channel::bounded::<()>(8);
+        let original = observer.beat.clone().unwrap();
+        observer.beat = Some(Arc::new(move || {
+            original();
+            let _ = observed_tx.send(());
+        }));
+        let (fifo, argv) = heartbeat_fifo();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let code = h.with_timeout_observed(
+                Duration::from_secs(60),
+                &clone.display().to_string(),
+                &argv,
+                &env,
+                Some(&observer),
+            );
+            let _ = done_tx.send(code);
+        });
+        assert_eq!(heartbeat_receive(&fake.periods), Duration::from_secs(60));
+        heartbeat_receive(&observed_rx);
+        let read = |session: &str| -> (pulse_board::ExecutionHeartbeat, Option<anyhow::Error>) {
+            let out = SharedBuf::default();
+            let (mut reader, _env) = crate::test_helpers::new_test_hands(
+                &workdir.display().to_string(),
+                Some(Box::new(out.clone())),
+                None,
+            );
+            match reader.heartbeat(id.job_id.clone(), session.to_string()) {
+                Ok(()) => (serde_json::from_str(&out.string()).unwrap(), None),
+                Err(e) => (pulse_board::ExecutionHeartbeat::default(), Some(e)),
+            }
+        };
+        let (first, err1) = read(&id.session);
+        assert!(err1.is_none(), "{err1:?}");
+        assert_eq!(first.identity, id);
+        assert!(!first.at.is_empty());
+        assert!(first.stopped_at.is_empty());
+        fake.ticks.send(Utc::now()).unwrap();
+        heartbeat_receive(&observed_rx);
+        let (second, err2) = read(&id.session);
+        assert!(err2.is_none(), "{err2:?}");
+        assert!(
+            DateTime::parse_from_rfc3339(&second.at).unwrap()
+                >= DateTime::parse_from_rfc3339(&first.at).unwrap()
+        );
+        assert!(read("old-session").1.is_some());
+        finish_heartbeat_fifo(&fifo);
+        assert_eq!(heartbeat_receive(&done_rx), 0);
+        let (last, err3) = read(&id.session);
+        assert!(err3.is_none(), "{err3:?}");
+        assert_eq!(last.at, second.at);
+        assert!(!last.stopped_at.is_empty());
+        assert!(
+            crate::test_helpers::new_test_hands(&workdir.display().to_string(), None, None)
+                .0
+                .heartbeat(id.job_id.clone(), "../outside".into())
+                .is_err()
+        );
+        let path = hands_heartbeat_path(dir.display().to_string(), "malformed".into()).unwrap();
+        std::fs::write(&path, br#"{"at":"bad"}"#).unwrap();
+        assert!(read("malformed").1.is_some());
+        let (mut cleaner, _env) =
+            crate::test_helpers::new_test_hands(&workdir.display().to_string(), None, None);
+        cleaner.clean(&id.job_id).unwrap();
+        assert!(!Path::new(&path).exists());
+    }
+
     #[test]
-    #[ignore = "cross-slice: executor::run_process"]
-    fn heartbeat_ssh_process_cancellation_is_bounded() {}
+    #[ignore = "cross-slice-bug: executor::run_process: expected cancellation to return context.Canceled promptly; got Rust anyhow text context canceled without typed cancellation equivalence"]
+    fn heartbeat_ssh_process_cancellation_is_bounded() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let cancel = pulse_bus::CancellationToken::new();
+        let (fifo, _) = heartbeat_fifo();
+        let ready = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("pulse-runner-f2")
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("ready");
+        std::fs::create_dir_all(ready.parent().unwrap()).unwrap();
+        let argv = vec![
+            "sh".into(),
+            "-c".into(),
+            "printf ready > \"$1\"; read value < \"$2\"".into(),
+            "client".into(),
+            ready.display().to_string(),
+            fifo,
+        ];
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let cancel_for_thread = cancel.clone();
+        std::thread::spawn(move || {
+            let err = crate::executor::run_process(
+                &cancel_for_thread,
+                &argv,
+                &[],
+                Duration::from_secs(60),
+            )
+            .unwrap_err();
+            let _ = done_tx.send(err);
+        });
+        heartbeat_eventually(|| ready.exists());
+        cancel.cancel();
+        let err = heartbeat_receive(&done_rx);
+        assert_eq!(err.to_string(), "context canceled");
+    }
+
     #[test]
-    #[ignore = "cross-slice: exec::run_worker"]
-    fn ssh_run_worker_fails_at_setup_when_remote_key_missing() {}
+    fn ssh_run_worker_fails_at_setup_when_remote_key_missing() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (local, _id, env) = runner_heartbeat_fixture(&s, "hands");
+        let mut e = crate::exec::SshExec {
+            local,
+            ..Default::default()
+        };
+        let ran = Arc::new(AtomicBool::new(false));
+        let _restore = install_run_ssh({
+            let ran = ran.clone();
+            move |_cancel, argv, _stdin, _timeout| {
+                let args = heartbeat_ssh_args(argv);
+                match args[0].as_str() {
+                    "verify" => {
+                        return Ok((1, String::new(), "test: run.key: No such file".into()));
+                    }
+                    "run" => ran.store(true, Ordering::SeqCst),
+                    _ => {}
+                }
+                Ok((0, String::new(), String::new()))
+            }
+        });
+        let err = e
+            .run_worker(
+                &pulse_bus::CancellationToken::new(),
+                &["copilot".into()],
+                &env,
+                1,
+            )
+            .err();
+        let text = err.as_ref().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            err.is_some()
+                && text.contains("setup-error")
+                && text.contains("before the worker starts"),
+            "expected setup-error from the remote key pre-check, got {err:?}"
+        );
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "worker was started although the remote signing key was missing"
+        );
+    }
 }

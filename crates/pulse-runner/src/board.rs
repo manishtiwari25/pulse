@@ -1,3 +1,10 @@
+#![allow(
+    dead_code,
+    clippy::box_collection,
+    clippy::too_many_arguments,
+    clippy::unused_unit
+)]
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -62,6 +69,7 @@ pub(crate) struct PostOpts {
     pub session: String,
     pub on: String,
     pub vote: String,
+    pub text_hash: String,
     pub expires: String,
     pub resolution: String,
     pub links: String,
@@ -323,6 +331,7 @@ pub(crate) fn create_post(
             branch: o.branch.map(|b| *b),
             on: o.on,
             vote: o.vote,
+            text_hash: o.text_hash,
             expires: o.expires,
             resolution: o.resolution,
             links: o.links,

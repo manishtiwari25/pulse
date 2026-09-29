@@ -1,5 +1,14 @@
 //! Skeleton port of internal/runner/lead.go.
 
+#![cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "ported Go runner APIs are consumed incrementally across slices"
+    )
+)]
+#![cfg_attr(test, allow(dead_code))]
+
 use crate::util::{
     Row, contains, event_at, must_one, must_rows, plural, plus_hours, stamp_of, trunc,
 };
@@ -13,6 +22,10 @@ pub(crate) const LEAD_JOB_PRIORITY: i32 = 50;
 pub(crate) const LEAD_KIND: &str = "lead";
 pub(crate) static LEAD_HUMAN_ONLY_MARKER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?m)^[ \t]*(pair|onboard):[ \t]*\S").expect("lead marker regex")
+});
+static OWNER_BLOCKED_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\b(owner|human)[- ](only|authori[sz]ation|decision|blocked|prepared|landing|approval)\b|\bpending (an? |the )?(owner|human)\b|\brequires? (an? |the )?(owner|human)\b|\bblocked (by|pending|on) (the |an? )?(owner|human)\b")
+        .expect("owner blocked regex")
 });
 
 #[derive(Debug, Clone, Default)]
@@ -471,8 +484,10 @@ pub(crate) fn lead_due(
     });
     let mut away = None;
     if s.owner_away() {
-        let mut a = AwayBrief::default();
-        a.proposals = awaiting_lead_proposals(s, slug.clone(), now.clone(), true)?;
+        let mut a = AwayBrief {
+            proposals: awaiting_lead_proposals(s, slug.clone(), now.clone(), true)?,
+            ..Default::default()
+        };
         let q = pulse_tally::work_wanted(
             s,
             Some(vec![slug.clone()]),
@@ -601,6 +616,7 @@ pub(crate) fn lead_peer_mentions(
         r.insert("for_owner", json!(p.for_owner));
         if !crate::plan::answerable(r, actor.clone())
             || crate::evolve_plan::hard_stop_text(format!("{}\n{}", p.summary, p.body))
+            || OWNER_BLOCKED_RE.is_match(&format!("{}\n{}", p.summary, p.body))
             || !pulse_board::tier2_proposal(&p.summary, &p.body).is_empty()
         {
             continue;
@@ -1216,3 +1232,718 @@ impl AwayBrief {
 
 pub(crate) const FOLLOW_UP_ACTION: &str = "task.followup";
 pub(crate) const FAILED_JOBS_TO_REVIEW: i32 = 3;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::*;
+
+    fn idle_lead_job_rows(s: &impl crate::util::Querier) -> Vec<Row> {
+        crate::util::must_rows(
+            s,
+            "SELECT * FROM jobs WHERE kind = ? AND source LIKE 'lead-idle:%' ORDER BY created_at",
+            &[&LEAD_KIND],
+        )
+    }
+
+    fn set_setting(s: &pulse_store::Store, key: &str, value: &str) {
+        s.set_setting(crate::util::HUMAN_AGENT, key, value)
+            .expect("set setting");
+    }
+
+    fn set_owner_away(s: &pulse_store::Store) {
+        s.set_setting(
+            crate::util::HUMAN_AGENT,
+            "owner.presence",
+            pulse_store::OWNER_AWAY,
+        )
+        .expect("set owner away");
+    }
+
+    fn lead_jobs(s: &pulse_store::Store) -> Vec<Row> {
+        crate::util::must_rows(
+            &s.conn().expect("conn"),
+            "SELECT * FROM jobs WHERE kind = ? ORDER BY rowid",
+            &[&LEAD_KIND],
+        )
+    }
+
+    #[test]
+    fn idle_lead_queues_standing_brief() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "lead.idle_hours", "6");
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let got = lines.join("\n");
+        assert!(
+            got.contains("queued lead ")
+                && got.contains(
+                    " for proj-lead: Lead: find the next work for proj (owner idle) (owner idle 6h)"
+                ),
+            "idle line:\n{lines:?}"
+        );
+        let jobs = idle_lead_job_rows(&s.conn().expect("conn"));
+        assert_eq!(jobs.len(), 1, "idle lead jobs: {jobs:?}");
+        let job = &jobs[0];
+        assert_eq!(job.str("status"), "queued");
+        assert!(
+            job.str("source").starts_with("lead-idle:proj:"),
+            "idle job: {job:?}"
+        );
+        for want in [
+            "standing brief",
+            "## The board's queue for proj (top 15)",
+            "## Failed jobs in the last 7 days (0)",
+        ] {
+            assert!(
+                job.str("brief").contains(want),
+                "brief lacks {want:?}:\n{}",
+                job.str("brief")
+            );
+        }
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'lead.idle' AND subject = 'proj'",
+                &[]
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn idle_lead_can_be_disabled() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        set_setting(&s, "lead.idle_hours", "0");
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            idle_lead_job_rows(&s.conn().expect("conn")).is_empty()
+                && !lines.join("\n").contains("owner idle"),
+            "disabled idle queued: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn idle_lead_stays_quiet_when_project_has_queued_job() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        set_setting(&s, "lead.idle_hours", "6");
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "already queued".into(),
+            "do it".into(),
+            1,
+            5,
+            "test:queued".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            idle_lead_job_rows(&s.conn().expect("conn")).is_empty()
+                && !lines.join("\n").contains("owner idle"),
+            "queued job did not suppress idle: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn idle_lead_uses_recent_created_job_as_quiet_window() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        let (j, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "recently done".into(),
+            "done".into(),
+            1,
+            5,
+            "test:recent".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        set_setting(&s, "lead.idle_hours", "6");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', created_at = ?, finished_at = ? WHERE id = ?",
+            &[
+                &crate::util::plus_hours(TEST_NOW, -1.0),
+                &crate::util::plus_hours(TEST_NOW, -1.0),
+                &j.str("id"),
+            ],
+        );
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            idle_lead_job_rows(&s.conn().expect("conn")).is_empty()
+                && !lines.join("\n").contains("owner idle"),
+            "recent done job did not suppress idle: {lines:?}"
+        );
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET created_at = ?, finished_at = ? WHERE id = ?",
+            &[
+                &crate::util::plus_hours(TEST_NOW, -7.0),
+                &crate::util::plus_hours(TEST_NOW, -7.0),
+                &j.str("id"),
+            ],
+        );
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            idle_lead_job_rows(&s.conn().expect("conn")).len() == 1
+                && lines.join("\n").contains("owner idle 6h"),
+            "old done job did not allow idle: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn owner_message_beats_idle_lead() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        set_setting(&s, "lead.idle_hours", "6");
+        pulse_tasks::send_message(
+            &s,
+            "proj",
+            "",
+            crate::util::HUMAN_AGENT,
+            "Please look at the roadmap",
+        )
+        .expect("send message");
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let jobs = crate::util::must_rows(
+            &s.conn().expect("conn"),
+            "SELECT * FROM jobs WHERE kind = ? ORDER BY created_at",
+            &[&LEAD_KIND],
+        );
+        assert!(
+            jobs.len() == 1
+                && !jobs[0].str("source").starts_with("lead-idle:")
+                && jobs[0]
+                    .str("title")
+                    .contains("Lead: answer 1 message(s), plan 0 task(s) for proj"),
+            "owner message job: {jobs:?}\n{lines:?}"
+        );
+        assert!(
+            !lines.join("\n").contains("owner idle"),
+            "idle line with owner message: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn idle_lead_does_not_queue_twice_immediately() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        set_setting(&s, "lead.idle_hours", "6");
+        tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            idle_lead_job_rows(&s.conn().expect("conn")).len() == 1
+                && !lines.join("\n").contains("owner idle"),
+            "second idle queued: jobs={:?} lines={lines:?}",
+            idle_lead_job_rows(&s.conn().expect("conn"))
+        );
+    }
+
+    #[test]
+    fn idle_lead_brief_lists_board_and_failures() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "lead.idle_hours", "6");
+        let handoff = crate::board::create_post(
+            &s,
+            crate::util::plus_hours(TEST_NOW, -48.0),
+            crate::board::PostOpts {
+                kind: "handoff".into(),
+                project: "proj".into(),
+                area: "docs".into(),
+                thread: "install".into(),
+                summary: "Continue the install guide cleanup".into(),
+                body: "The next agent should finish the install guide.".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        )
+        .expect("handoff");
+        let question = crate::board::create_post(
+            &s,
+            crate::util::plus_hours(TEST_NOW, -24.0),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "docs".into(),
+                thread: "faq".into(),
+                summary: "Can the CLI answer this from the clone?".into(),
+                body: "Find the answer in the repository.".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        )
+        .expect("question");
+        let (failed, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Broken fixture".into(),
+            "fix it".into(),
+            1,
+            5,
+            "test:failed".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("failed job");
+        let result = "SUMMARY: failed because the sample fixture is missing from testdata";
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'failed', created_at = ?, finished_at = ?, result = ? WHERE id = ?",
+            &[
+                &crate::util::plus_hours(TEST_NOW, -8.0),
+                &crate::util::plus_hours(TEST_NOW, -2.0),
+                &result,
+                &failed.str("id"),
+            ],
+        );
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let jobs = idle_lead_job_rows(&s.conn().expect("conn"));
+        assert_eq!(jobs.len(), 1, "idle jobs: {jobs:?}\n{lines:?}");
+        let brief = jobs[0].str("brief");
+        for want in [
+            format!("handoff `{}`", handoff.str("id")),
+            format!("question `{}`", question.str("id")),
+            "Broken fixture".into(),
+            "sample fixture is missing".into(),
+        ] {
+            assert!(brief.contains(&want), "brief lacks {want:?}:\n{brief}");
+        }
+    }
+
+    #[test]
+    fn idle_lead_ignores_standing_research_and_ballot_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        set_setting(&s, "lead.idle_hours", "6");
+        for (kind, source) in [
+            ("reflect", "research:proj:20260906T090000Z"),
+            ("ballot", "ballot:proj:20260906T093000Z"),
+            ("reflect", "reflect:proj:2026-09-06"),
+        ] {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                kind.into(),
+                format!("standing {kind}"),
+                "look around".into(),
+                0,
+                1,
+                source.into(),
+                "daemon".into(),
+                false,
+            )
+            .expect("add standing");
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE jobs SET status = 'done', created_at = ?, finished_at = ? WHERE id = ?",
+                &[
+                    &crate::util::plus_hours(TEST_NOW, -1.0),
+                    &crate::util::plus_hours(TEST_NOW, -1.0),
+                    &job.str("id"),
+                ],
+            );
+        }
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            idle_lead_job_rows(&s.conn().expect("conn")).len() == 1
+                && lines.join("\n").contains("owner idle 6h"),
+            "standing jobs an hour ago held the idle lead: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn away_owner_stop_questions_do_not_wake_lead() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for state in [
+            "new",
+            "unanswered after completion",
+            "answered then reposted",
+        ] {
+            let s = new_store();
+            new_repo(&s);
+            join(&s, "borealis");
+            set_owner_away(&s);
+            let mut q = crate::board::create_post(
+                &s,
+                TEST_NOW.into(),
+                crate::board::PostOpts {
+                    kind: "question".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: "loop-gate".into(),
+                    agent: crate::board::actor_agent(&s, "borealis".into()),
+                    summary: pulse_evolve::STOP_SUMMARY.into(),
+                    for_owner: true,
+                    extra: std::collections::BTreeMap::from([(
+                        "post_id".into(),
+                        serde_json::json!("q-stop"),
+                    )]),
+                    ..Default::default()
+                },
+            )
+            .expect("stop question");
+            let mut want_jobs = 0;
+            if state != "new" {
+                pulse_tasks::send_message(
+                    &s,
+                    "proj",
+                    "",
+                    crate::util::HUMAN_AGENT,
+                    "Explain the current blocker",
+                )
+                .expect("send message");
+                tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+                let jobs = lead_jobs(&s);
+                assert!(
+                    jobs.len() == 1 && jobs[0].str("brief").contains(&q.str("id")),
+                    "owner message did not queue a lead with stop context: {jobs:?}"
+                );
+                crate::util::exec1(
+                    &s.conn().expect("conn"),
+                    "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+                    &[
+                        &crate::util::plus_minutes(TEST_NOW, 1.0 / 60.0),
+                        &jobs[0].str("id"),
+                    ],
+                );
+                want_jobs = 1;
+            }
+            if state == "answered then reposted" {
+                crate::board::create_post(
+                    &s,
+                    crate::util::plus_minutes(TEST_NOW, 2.0 / 60.0),
+                    crate::board::PostOpts {
+                        kind: "answer".into(),
+                        project: "proj".into(),
+                        area: q.str("area"),
+                        thread: q.str("thread"),
+                        on: q.str("id"),
+                        agent: crate::board::actor_agent(&s, lead_name("proj".into())),
+                        summary: "Still requires owner review".into(),
+                        extra: std::collections::BTreeMap::from([(
+                            "post_id".into(),
+                            serde_json::json!("a-stop"),
+                        )]),
+                        ..Default::default()
+                    },
+                )
+                .expect("answer stop");
+                q = crate::board::create_post(
+                    &s,
+                    crate::util::plus_minutes(TEST_NOW, 3.0 / 60.0),
+                    crate::board::PostOpts {
+                        kind: "question".into(),
+                        project: "proj".into(),
+                        area: q.str("area"),
+                        thread: q.str("thread"),
+                        agent: crate::board::actor_agent(&s, "borealis".into()),
+                        summary: pulse_evolve::STOP_SUMMARY.into(),
+                        for_owner: true,
+                        extra: std::collections::BTreeMap::from([(
+                            "post_id".into(),
+                            serde_json::json!("q-stop-fresh"),
+                        )]),
+                        ..Default::default()
+                    },
+                )
+                .expect("fresh stop question");
+            }
+            for now in [
+                crate::util::plus_minutes(TEST_NOW, 11.0 / 60.0),
+                crate::util::plus_hours(TEST_NOW, 1.0),
+                crate::util::plus_hours(TEST_NOW, 7.0),
+            ] {
+                let lines = tend_lead(&s, "proj".into(), now.clone(), "daemon".into());
+                assert_eq!(
+                    count(
+                        &s,
+                        "SELECT COUNT(*) AS n FROM jobs WHERE kind = ?",
+                        &[&LEAD_KIND]
+                    ),
+                    want_jobs,
+                    "stop question woke the lead at {now}: lines={lines:?}"
+                );
+                let open = owner_addressed_questions(&s, "proj".into(), now);
+                assert!(
+                    open.len() == 1 && open[0].id == q.str("id"),
+                    "stop question no longer visible to the owner: {open:?}"
+                );
+            }
+            let post = crate::board::post_row(&s.conn().expect("conn"), q.str("id"));
+            assert!(
+                !post.0.is_empty()
+                    && crate::plan::is_owner_addressed_post(post.clone())
+                    && post.str("resolution").is_empty(),
+                "automatic lead scheduling changed the owner gate"
+            );
+        }
+    }
+
+    #[test]
+    fn away_owner_question_uses_existing_six_hour_pacing() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "borealis");
+        set_owner_away(&s);
+        let q = crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "api".into(),
+                thread: "helper".into(),
+                agent: crate::board::actor_agent(&s, "borealis".into()),
+                summary: "Which existing helper should this task reuse?".into(),
+                for_owner: true,
+                extra: std::collections::BTreeMap::from([(
+                    "post_id".into(),
+                    serde_json::json!("q-owner"),
+                )]),
+                ..Default::default()
+            },
+        )
+        .expect("owner question");
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let mut jobs = lead_jobs(&s);
+        assert!(
+            jobs.len() == 1
+                && jobs[0].str("brief").contains(&q.str("id"))
+                && jobs[0].str("title").contains("answer 1 owner question(s)"),
+            "new owner question did not wake the lead: jobs={jobs:?} lines={lines:?}"
+        );
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            &[
+                &crate::util::plus_minutes(TEST_NOW, 1.0 / 60.0),
+                &jobs[0].str("id"),
+            ],
+        );
+        for now in [
+            crate::util::plus_minutes(TEST_NOW, 11.0 / 60.0),
+            crate::util::plus_hours(TEST_NOW, 1.0),
+            crate::util::plus_hours(TEST_NOW, 6.0),
+        ] {
+            let lines = tend_lead(&s, "proj".into(), now.clone(), "daemon".into());
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE kind = ?",
+                    &[&LEAD_KIND]
+                ),
+                1,
+                "question re-presented within six hours at {now}: lines={lines:?}"
+            );
+        }
+        let lines = tend_lead(
+            &s,
+            "proj".into(),
+            crate::util::plus_minutes(&crate::util::plus_hours(TEST_NOW, 6.0), 1.0 / 60.0),
+            "daemon".into(),
+        );
+        jobs = lead_jobs(&s);
+        assert!(
+            jobs.len() == 2
+                && jobs[1].str("status") == "queued"
+                && jobs[1].str("brief").contains(&q.str("id")),
+            "unanswered question did not return after six hours: jobs={jobs:?} lines={lines:?}"
+        );
+    }
+
+    #[test]
+    fn fresh_owner_work_wakes_lead_with_stop_context() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for (name, work, away) in [
+            ("away message", "message", true),
+            ("away task", "task", true),
+            ("away question", "question", true),
+            ("present message", "message", false),
+            ("present task", "task", false),
+        ] {
+            let s = new_store();
+            new_repo(&s);
+            join(&s, "borealis");
+            if away {
+                set_owner_away(&s);
+            }
+            let mut earlier_question_ids = Vec::new();
+            for (id, thread, summary) in [
+                ("q-stop", "loop-gate", pulse_evolve::STOP_SUMMARY),
+                (
+                    "q-previous",
+                    "helper",
+                    "Which existing helper should this task reuse?",
+                ),
+            ] {
+                let q = crate::board::create_post(
+                    &s,
+                    TEST_NOW.into(),
+                    crate::board::PostOpts {
+                        kind: "question".into(),
+                        project: "proj".into(),
+                        area: "evolution".into(),
+                        thread: thread.into(),
+                        agent: crate::board::actor_agent(&s, "borealis".into()),
+                        summary: summary.into(),
+                        for_owner: true,
+                        extra: std::collections::BTreeMap::from([(
+                            "post_id".into(),
+                            serde_json::json!(id),
+                        )]),
+                        ..Default::default()
+                    },
+                )
+                .expect("owner question");
+                earlier_question_ids.push(q.str("id"));
+            }
+            pulse_tasks::send_message(
+                &s,
+                "proj",
+                "",
+                crate::util::HUMAN_AGENT,
+                "Explain the current work",
+            )
+            .expect("send initial message");
+            tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+            let mut jobs = lead_jobs(&s);
+            assert_eq!(jobs.len(), 1, "{name}: initial lead jobs {jobs:?}");
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+                &[
+                    &crate::util::plus_minutes(TEST_NOW, 1.0 / 60.0),
+                    &jobs[0].str("id"),
+                ],
+            );
+            let (want_brief, want_title) = match work {
+                "message" => {
+                    let msg = pulse_tasks::send_message(
+                        &s,
+                        "proj",
+                        "",
+                        crate::util::HUMAN_AGENT,
+                        "Please explain the parser next",
+                    )
+                    .expect("send message");
+                    (msg.id, "answer 1 message(s)")
+                }
+                "task" => {
+                    let task = pulse_tasks::new(
+                        &s,
+                        "proj",
+                        "Repair the parser",
+                        "Reuse the existing parser helper",
+                        3,
+                        crate::util::HUMAN_AGENT,
+                    )
+                    .expect("task");
+                    (task.id, "plan 1 task(s)")
+                }
+                "question" => {
+                    let q = crate::board::create_post(
+                        &s,
+                        crate::util::plus_minutes(TEST_NOW, 2.0 / 60.0),
+                        crate::board::PostOpts {
+                            kind: "question".into(),
+                            project: "proj".into(),
+                            area: "api".into(),
+                            thread: "parser".into(),
+                            agent: crate::board::actor_agent(&s, "borealis".into()),
+                            summary: "Which parser test covers this case?".into(),
+                            for_owner: true,
+                            extra: std::collections::BTreeMap::from([(
+                                "post_id".into(),
+                                serde_json::json!("q-fresh"),
+                            )]),
+                            ..Default::default()
+                        },
+                    )
+                    .expect("fresh question");
+                    (q.str("id"), "answer 1 owner question(s)")
+                }
+                _ => unreachable!(),
+            };
+            let now = crate::util::plus_minutes(TEST_NOW, 11.0 / 60.0);
+            let lines = tend_lead(&s, "proj".into(), now.clone(), "daemon".into());
+            jobs = lead_jobs(&s);
+            assert!(
+                jobs.len() == 2 && jobs[1].str("title").contains(want_title),
+                "{name}: fresh owner work was delayed or miscounted: jobs={jobs:?} lines={lines:?}"
+            );
+            let brief = jobs[1].str("brief");
+            for want in earlier_question_ids
+                .iter()
+                .map(String::as_str)
+                .chain([want_brief.as_str(), pulse_evolve::STOP_SUMMARY])
+            {
+                assert!(
+                    brief.contains(want),
+                    "{name}: fresh owner brief lacks {want:?}:\n{brief}"
+                );
+            }
+            let guidance = if away {
+                "leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered"
+            } else {
+                "These wait for the owner; do not answer them"
+            };
+            assert!(
+                brief.contains(guidance),
+                "{name}: owner-only guidance changed:\n{brief}"
+            );
+            assert!(
+                work == "question" || !jobs[1].str("title").contains("owner question(s)"),
+                "{name}: paced questions were counted as new work: {}",
+                jobs[1].str("title")
+            );
+            tend_lead(
+                &s,
+                "proj".into(),
+                crate::util::plus_minutes(&now, 1.0 / 60.0),
+                "daemon".into(),
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE kind = ?",
+                    &[&LEAD_KIND]
+                ),
+                2,
+                "{name}: queued lead was duplicated"
+            );
+        }
+    }
+}

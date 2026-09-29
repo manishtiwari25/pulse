@@ -1,3 +1,12 @@
+#![allow(
+    dead_code,
+    reason = "ported Go runner APIs are consumed incrementally across slices"
+)]
+#![allow(
+    clippy::too_many_arguments,
+    reason = "Go-port signatures intentionally mirror internal/runner"
+)]
+
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -448,7 +457,296 @@ impl CappedBuffer {
                 return Ok(p.len() as i32);
             }
         }
+
         self.exceeded = true;
         Err(anyhow!(ERR_LANDING_EVIDENCE_TOO_LARGE))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::*;
+    use crate::test_helpers_f5::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn landing_evidence_copy_cannot_bypass_output_cap() {
+        let _serial = crate::test_helpers::serial();
+        let mut b = CappedBuffer {
+            limit: 5,
+            ..Default::default()
+        };
+        assert_eq!(b.write(b"abc".to_vec()).unwrap(), 3);
+        let err = b.write(b"def".to_vec()).unwrap_err();
+        assert_eq!(err.to_string(), ERR_LANDING_EVIDENCE_TOO_LARGE);
+        assert_eq!(b.buffer, b"abcde");
+        assert!(b.exceeded);
+    }
+
+    #[test]
+    fn landing_evidence_limits_actual_process_output() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (_proj, repo) = new_repo(&s);
+        std::fs::write(std::path::Path::new(&repo).join("changed.txt"), "changed\n").unwrap();
+        let ctx = pulse_bus::CancellationToken::new();
+        let (_out, why) = limited_git_output(
+            &ctx,
+            repo,
+            std::time::Duration::from_secs(10),
+            1,
+            &["status".into(), "--porcelain".into()],
+        );
+        assert_eq!(why, pulse_codedelivery::REASON_EVIDENCE_TOO_LARGE);
+    }
+
+    #[test]
+    fn landing_evidence_proves_final_command_transition() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let real_git = which::which("git").expect("git");
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        for move_to_target in [false, true] {
+            let s = new_store();
+            let (project, root) = new_repo(&s);
+            join(&s, "aurora");
+            let branch = "pulse/aurora/final-command";
+            run(&root, &["git", "switch", "-q", "-c", branch]);
+            std::fs::write(std::path::Path::new(&root).join("a.go"), "package main\n").unwrap();
+            run(&root, &["git", "add", "-A"]);
+            run(&root, &["git", "commit", "-q", "-m", "add a"]);
+            let first = ref_of(&root, "HEAD");
+            std::fs::write(std::path::Path::new(&root).join("b.go"), "package main\n").unwrap();
+            run(&root, &["git", "add", "-A"]);
+            run(&root, &["git", "commit", "-q", "-m", "add b"]);
+            let target = ref_of(&root, "HEAD");
+            run(&root, &["git", "switch", "-q", "main"]);
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                "Deliver source".into(),
+                "do it".into(),
+                1,
+                0,
+                "manual".into(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+            exec1(
+                &s,
+                "UPDATE jobs SET status = 'done', branch = ?, lease_agent = 'aurora' WHERE id = ?",
+                &[&branch, &job.str("id")],
+            );
+            let shim = tempfile::tempdir().expect("shim").keep();
+            let script = shim.join("git");
+            std::fs::write(
+                &script,
+                r#"#!/bin/sh
+if [ "$1" = "-C" ] && [ "$2" = "$PULSE_DELIVERY_ROOT" ] && [ "$3" = "merge" ] && [ "$4" = "--ff-only" ]; then
+  GIT_REFLOG_ACTION=external-writer "$PULSE_REAL_GIT" -C "$PULSE_DELIVERY_ROOT" merge --ff-only "$PULSE_DELIVERY_ADVANCE" >/dev/null || exit 1
+fi
+exec "$PULSE_REAL_GIT" "$@"
+"#,
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let _env_git = pulse_testutil::setenv("PULSE_REAL_GIT", &real_git);
+            let _env_root = pulse_testutil::setenv("PULSE_DELIVERY_ROOT", &root);
+            let _env_advance = pulse_testutil::setenv(
+                "PULSE_DELIVERY_ADVANCE",
+                if move_to_target { &target } else { &first },
+            );
+            let mut paths = vec![shim.clone()];
+            paths.extend(std::env::split_paths(&original_path));
+            let _env_path = pulse_testutil::setenv("PATH", std::env::join_paths(paths).unwrap());
+            let (state, note) = crate::land::land_branch(
+                &s,
+                project,
+                branch.into(),
+                "daemon".into(),
+                TEST_NOW.into(),
+                crate::land::LandOpts {
+                    job: job_row(&s, &job.str("id")),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(state, "landed", "{note}");
+            let detail = must_rows(
+                &s,
+                "SELECT detail FROM events WHERE action = 'land.landed'",
+                &[],
+            )[0]
+            .str("detail");
+            let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+            let (evidence, ok) = pulse_codedelivery::decode_evidence(detail.get("code_delivery"));
+            assert!(ok, "detail={detail}");
+            if move_to_target {
+                assert_eq!(evidence.evidence, pulse_codedelivery::EVIDENCE_UNAVAILABLE);
+                assert_eq!(evidence.code_files, 0, "evidence={evidence:?}");
+            } else {
+                assert_eq!(evidence.evidence, pulse_codedelivery::EVIDENCE_RECORDED);
+                assert_eq!(evidence.before, first);
+                assert_eq!(evidence.after, target);
+                assert_eq!(evidence.code_files, 1, "evidence={evidence:?}");
+                assert_eq!(evidence.code_paths.join(","), "b.go");
+            }
+        }
+    }
+
+    #[test]
+    fn landing_evidence_records_no_code_when_default_already_at_target() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (_proj, repo) = new_repo(&s);
+        let head = ref_of(&repo, "HEAD");
+        let ctx = pulse_bus::CancellationToken::new();
+        let evidence = landing_code_delivery_evidence(&ctx, repo, head.clone(), head.clone());
+        assert_eq!(evidence.before, head);
+        assert_eq!(evidence.after, head);
+        assert_eq!(evidence.files_changed, 0, "evidence = {evidence:?}");
+        assert!(evidence.code_paths.is_empty(), "evidence = {evidence:?}");
+        assert!(evidence.reason.is_empty(), "evidence = {evidence:?}");
+    }
+
+    #[test]
+    fn landing_evidence_uses_actual_advanced_default_transition() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (_proj, repo) = new_repo(&s);
+        let before = ref_of(&repo, "HEAD");
+        std::fs::write(
+            std::path::Path::new(&repo).join("feature.rs"),
+            "fn feature() {}\n",
+        )
+        .unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "feature"]);
+        let after = ref_of(&repo, "HEAD");
+        let ctx = pulse_bus::CancellationToken::new();
+        let evidence = landing_code_delivery_evidence(&ctx, repo, before.clone(), after.clone());
+        assert_eq!(evidence.before, before);
+        assert_eq!(evidence.after, after);
+        assert_eq!(evidence.files_changed, 1, "evidence = {evidence:?}");
+        assert_eq!(
+            evidence.code_paths,
+            vec!["feature.rs"],
+            "evidence = {evidence:?}"
+        );
+        assert!(evidence.reason.is_empty(), "evidence = {evidence:?}");
+    }
+
+    #[test]
+    fn landing_evidence_transaction_fences_current_carrier() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        for fault in ["receipt-write", "newer-run", "newer-generation"] {
+            let s = new_store();
+            let (project, _repo) = new_repo(&s);
+            join(&s, "proposer");
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "experiment".into(),
+                "Experiment: x".into(),
+                "Suggestion: S-001\nHypothesis: h\n".into(),
+                1,
+                30,
+                "suggestion:S-001".into(),
+                "proposer".into(),
+                true,
+            )
+            .unwrap();
+            exec1(
+                &s,
+                "UPDATE jobs SET status = 'done', branch = 'evolve/S-001', result = 'measured; finalization pending' WHERE id = ?",
+                &[&job.str("id")],
+            );
+            exec1(
+                &s,
+                "INSERT INTO runs (id, job_id, project, agent, started_at, status) VALUES ('run-x', ?, 'proj', 'proposer', ?, 'done')",
+                &[&job.str("id"), &TEST_NOW],
+            );
+            pulse_evolve::archive_row(
+                &s,
+                pulse_evolve::ArchiveRow {
+                    project: "proj".into(),
+                    suggestion_post: "S-001".into(),
+                    hypothesis: "h".into(),
+                    branch: "evolve/S-001".into(),
+                    baseline: Some(pulse_evolve::Scores {
+                        total: 0.8,
+                        ..Default::default()
+                    }),
+                    variant: Some(pulse_evolve::Scores {
+                        total: 0.9,
+                        ..Default::default()
+                    }),
+                    tolerance: 0.02,
+                    kept: true,
+                    run_id: "run-x".into(),
+                    note: "fake measured outcome".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let current = job_row(&s, &job.str("id"));
+            match fault {
+                "receipt-write" => exec1(
+                    &s,
+                    "CREATE TRIGGER reject_receipt BEFORE INSERT ON events WHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'fake receipt refused'); END",
+                    &[],
+                ),
+                "newer-run" => exec1(
+                    &s,
+                    "INSERT INTO runs (id, job_id, project, agent, started_at, status) VALUES ('newer-run', ?, 'proj', 'proposer', '2026-09-06T10:00:01Z', 'done')",
+                    &[&job.str("id")],
+                ),
+                "newer-generation" => exec1(
+                    &s,
+                    "UPDATE jobs SET generation = generation + 1 WHERE id = ?",
+                    &[&job.str("id")],
+                ),
+                _ => {}
+            }
+            let err = record_landing(
+                &s,
+                project,
+                "evolve/S-001".into(),
+                "daemon".into(),
+                "land.landed".into(),
+                " | fake finalization".into(),
+                crate::land::LandOpts {
+                    job: current.clone(),
+                    archive_id: "B-001".into(),
+                    run_id: "run-x".into(),
+                    ..Default::default()
+                },
+                BTreeMap::from([("fake".into(), serde_json::json!(true))]),
+            )
+            .unwrap_err();
+            assert!(!err.to_string().is_empty());
+            let after = job_row(&s, &job.str("id"));
+            assert_eq!(after.str("branch"), current.str("branch"));
+            assert_eq!(after.str("result"), current.str("result"));
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = 'land.landed'",
+                    &[]
+                ),
+                0
+            );
+        }
     }
 }

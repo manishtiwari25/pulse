@@ -1089,15 +1089,15 @@ pub(crate) fn recipe_at_head(
     read_recipe(s, "", &root, &format!("refs/heads/{def}"))
 }
 /// Go: func RecipeBlocks(s *store.Store, executor string, projects []string) map[string]string
-pub fn recipe_blocks_public(
+pub fn recipe_blocks(
     s: &pulse_store::Store,
     executor: &str,
     projects: &[String],
 ) -> BTreeMap<String, String> {
-    recipe_blocks(s, executor, projects)
+    recipe_blocks_inner(s, executor, projects)
 }
 /// Go: func recipeBlocks(s *store.Store, executor string, projects []string) map[string]string
-pub(crate) fn recipe_blocks(
+pub(crate) fn recipe_blocks_inner(
     s: &pulse_store::Store,
     executor: &str,
     projects: &[String],
@@ -1473,6 +1473,7 @@ mod tests {
 
     #[test]
     fn missing_tool_classifies_broken_bundle_shim() {
+        let _serial = crate::test_helpers::serial();
         let blog_error = "/lib/ruby/4.0.0/rubygems.rb:305:in 'Kernel#load': cannot load such file -- /opt/homebrew/lib/ruby/gems/4.0.0/gems/bundler-2.4.10/exe/bundle (LoadError)\nfrom /opt/homebrew/Cellar/ruby/4.0.6/lib/ruby/4.0.0/rubygems.rb:305:in 'Gem.activate_and_load_bin_path'\nfrom /opt/homebrew/bin/bundle:25:in '<main>'";
         let cmd = "export CI=1; bundle install";
         assert_eq!(missing_tool(cmd, 1, blog_error), "bundle");
@@ -1486,12 +1487,14 @@ mod tests {
 
     #[test]
     fn missing_tool_does_not_classify_bundle_project_build_failures() {
+        let _serial = crate::test_helpers::serial();
         let output = "Installing nokogiri 1.16.0 with native extensions\nGem::Ext::BuildError: ERROR: Failed to build gem native extension.\ncurrent directory: /repo/vendor/bundle/ruby/3.3.0/gems/nokogiri/ext/nokogiri\nmake: *** [compile] Error 2";
         assert_eq!(missing_tool("export CI=1; bundle install", 1, output), "");
     }
 
     #[test]
     fn setup_repeat_guard_matches_project_executor_and_signature() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let s = pulse_store::Store::open(pulse_store::Options {
             home: dir.path().display().to_string(),
@@ -1545,6 +1548,7 @@ mod tests {
 
     #[test]
     fn setup_repeat_guard_ignores_old_failures() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let s = pulse_store::Store::open(pulse_store::Options {
             home: dir.path().display().to_string(),
@@ -1570,6 +1574,7 @@ mod tests {
 
     #[test]
     fn setup_repeat_guard_needs_consecutive_failures_and_skips_network() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let s = pulse_store::Store::open(pulse_store::Options {
             home: dir.path().display().to_string(),
@@ -1624,6 +1629,7 @@ mod tests {
 
     #[test]
     fn pre_commit_recipe_env_export_shape() {
+        let _serial = crate::test_helpers::serial();
         let recipe = Recipe {
             env: BTreeMap::from([
                 ("CI".to_string(), "1".to_string()),
@@ -1636,6 +1642,7 @@ mod tests {
 
     #[test]
     fn pre_commit_mise_wrap_shape() {
+        let _serial = crate::test_helpers::serial();
         let pins = vec!["go@1.22".to_string(), "node@20".to_string()];
         let got = mise_wrap_shell(&pins, "go test ./...", "/tmp/clone");
         assert!(got.contains("export MISE_IGNORED_CONFIG_PATHS=/tmp/clone MISE_YES=1;"));
@@ -1643,26 +1650,355 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice: run::run_job"]
-    fn run_job_recipe_setup_runs_once_before_worker_and_verify() {}
+    fn pulse_on_path() {
+        let _serial = crate::test_helpers::serial();
+        assert_eq!(recipe_pulse_cli(&Recipe::default()), "");
+        let (recipe, problems) = parse_recipe(&crate::test_helpers::recipe_with(
+            None,
+            None,
+            None,
+            Some(&[("PULSE_CLI", "/opt/pulse/bin/pulse ")]),
+            "",
+        ));
+        assert!(problems.is_empty(), "unexpected problems: {problems:?}");
+        let recipe = recipe.unwrap();
+        assert_eq!(recipe_pulse_cli(&recipe), "/opt/pulse/bin/pulse");
+        assert!(
+            regex::Regex::new(r"^(PULSE_[A-Z_]+|GIT_TERMINAL_PROMPT)=.*$")
+                .unwrap()
+                .is_match(&format!("PULSE_CLI={}", recipe_pulse_cli(&recipe))),
+            "hands env filter rejects PULSE_CLI; the recipe value would never reach the host"
+        );
+        let (plain, _) = parse_recipe(&crate::test_helpers::recipe_with(
+            None,
+            None,
+            None,
+            Some(&[("OTHER", "x")]),
+            "",
+        ));
+        assert_eq!(recipe_pulse_cli(&plain.unwrap()), "");
+    }
 
     #[test]
-    #[ignore = "cross-slice: run::take_job"]
-    fn setup_unfit_mark_makes_only_local_executor_wait_until_probe_clears() {}
+    fn remote_pulse_cli() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let prev = *crate::run::STAGED_PULSE_PATH.read().unwrap();
+        *crate::run::STAGED_PULSE_PATH.write().unwrap() = None;
+        assert_eq!(
+            crate::run::remote_pulse_cli(None),
+            crate::pair::PAIR_PULSE_PATH
+        );
+        let (recipe, problems) = parse_recipe(&crate::test_helpers::recipe_with(
+            None,
+            None,
+            None,
+            Some(&[("PULSE_CLI", "/opt/pulse/bin/pulse")]),
+            "",
+        ));
+        assert!(problems.is_empty(), "recipe problems: {problems:?}");
+        assert_eq!(
+            crate::run::remote_pulse_cli(recipe.as_ref()),
+            "/opt/pulse/bin/pulse"
+        );
+        *crate::run::STAGED_PULSE_PATH.write().unwrap() = prev;
+    }
 
     #[test]
-    #[ignore = "cross-slice: board::create_post"]
-    fn tools_wanted_for_bundle_and_repeated_setup_include_hints_and_error_tail() {}
+    #[ignore = "cross-slice-bug: jobs::lease_job: expected explicit queued job for proj leased to aurora; got empty Row/no job"]
+    fn run_job_recipe_setup_runs_once_before_worker_and_verify() {
+        let _serial = crate::test_helpers::serial();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let _guard = pulse_testutil::env_lock();
+        let s = crate::test_helpers::new_store();
+        let (proj, _) = crate::test_helpers::new_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+
+        let marker_path = std::path::Path::new(&s.home).join("setup-order");
+        let marker = crate::util::shell_quote(&marker_path.display().to_string());
+        let recipe = crate::test_helpers::recipe_with(
+            None,
+            Some(&[&format!("printf 'setup\\n' >> {marker}")]),
+            None,
+            None,
+            "",
+        );
+        let (id, _, _) = crate::env::env_set(
+            &s,
+            proj.clone(),
+            recipe,
+            crate::util::HUMAN_AGENT.into(),
+            "store".into(),
+            "setup ordering regression".into(),
+        )
+        .unwrap();
+        assert_eq!(id, "CTX-environment");
+        let verify_cmd = format!(
+            "test \"$(cat {marker})\" = \"$(printf 'setup\\nworker')\" && printf 'verify\\n' >> {marker}"
+        );
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE projects SET verify_cmd = ? WHERE slug = ?",
+            &[&verify_cmd, &proj.str("slug")],
+        );
+
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "setup ordering".into(),
+            "add a worker marker".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!job.is_empty(), "lease returned no job");
+        let worker = format!(
+            "test \"$(cat {marker})\" = setup &&\nprintf 'worker\\n' >> {marker} &&\nprintf 'worker\\n' > worker.txt &&\ngit add worker.txt &&\ngit commit -q -m 'add worker marker' &&\necho 'SUMMARY: setup ran once before worker'"
+        );
+        let r = crate::run::run_job(
+            &s,
+            job,
+            "aurora",
+            crate::test_helpers::TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done");
+        assert_eq!(r.int("commits"), 1);
+        assert_eq!(r.str("verify"), "verify exit 0");
+        let got = std::fs::read_to_string(marker_path).unwrap();
+        assert_eq!(got, "setup\nworker\nverify\n");
+    }
 
     #[test]
-    #[ignore = "cross-slice: keys::pre_commit_hook_script"]
-    fn pre_commit_hook_script_runs_verify_with_recipe_env() {}
+    fn setup_unfit_mark_makes_only_local_executor_wait_until_probe_clears() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (proj, _) = crate::test_helpers::new_bare_repo(&s);
+        mark_unfit(
+            &s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            crate::executor::LOCAL_EXECUTOR,
+            &proj.str("slug"),
+            "setup:Gemfile.lock",
+        );
+        let (job, exrow, why) = crate::run::take_job(
+            &s,
+            "aurora",
+            &proj.str("slug"),
+            "",
+            false,
+            &crate::util::plus_hours(crate::test_helpers::TEST_NOW, 1.0),
+            crate::executor::LOCAL_EXECUTOR,
+            0,
+        )
+        .unwrap();
+        assert!(job.0.is_empty(), "job = {job:?}");
+        assert!(!exrow.0.is_empty(), "executor = {exrow:?}");
+        for want in [
+            "cannot set up Gemfile.lock",
+            "setup command `bundle install` fails the same way",
+            "pulse executor probe <executor>",
+        ] {
+            assert!(why.contains(want), "wait reason lacks {want:?}: {why}");
+        }
+        clear_unfit(
+            &s.conn().unwrap(),
+            &crate::util::plus_hours(crate::test_helpers::TEST_NOW, 2.0),
+            crate::executor::LOCAL_EXECUTOR,
+        );
+        let got = unfit_projects(
+            &s.conn().unwrap(),
+            crate::executor::LOCAL_EXECUTOR,
+            &crate::util::plus_hours(crate::test_helpers::TEST_NOW, 2.0),
+        );
+        assert!(got.is_empty(), "probe clear left unfit marks: {got:?}");
+    }
 
     #[test]
-    #[ignore = "cross-slice: keys::pre_commit_hook_script"]
-    fn pre_commit_hook_script_wraps_mise_pins() {}
+    fn tools_wanted_for_bundle_and_repeated_setup_include_hints_and_error_tail() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (brain, _) = crate::test_helpers::new_bare_repo(&s);
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE projects SET brain = 1 WHERE slug = ?",
+            &[&brain.str("slug")],
+        );
+        let brain = crate::board::brain_project(&s.conn().unwrap());
+        let bundle_tail = "cannot load such file -- /opt/homebrew/lib/ruby/gems/4.0.0/gems/bundler-2.4.10/exe/bundle (LoadError)";
+        let post = tools_wanted(
+            &s,
+            brain.clone(),
+            "local",
+            "bundle",
+            "blog",
+            bundle_tail,
+            crate::test_helpers::TEST_NOW,
+            "runner",
+        );
+        assert!(!post.0.is_empty(), "bundle tools_wanted did not post");
+        assert!(post.str("summary").contains("local lacks bundle for blog"));
+        let body = post.str("body");
+        for want in [
+            "brew reinstall ruby",
+            "gem install bundler",
+            "pulse executor probe local",
+            "Last setup error tail",
+            bundle_tail,
+        ] {
+            assert!(body.contains(want), "bundle body lacks {want:?}:\n{body}");
+        }
+        let again = tools_wanted(
+            &s,
+            brain.clone(),
+            "local",
+            "bundle",
+            "blog",
+            bundle_tail,
+            crate::test_helpers::TEST_NOW,
+            "runner",
+        );
+        assert!(
+            again.0.is_empty(),
+            "bundle tools_wanted dedupe posted twice in one day"
+        );
+
+        let setup_tail = "bundle install crashed before dependency resolution";
+        let post = tools_wanted(
+            &s,
+            brain,
+            "local",
+            "setup:Gemfile.lock",
+            "blog",
+            setup_tail,
+            &crate::util::plus_hours(crate::test_helpers::TEST_NOW, 1.0),
+            "runner",
+        );
+        assert!(!post.0.is_empty(), "setup tools_wanted did not post");
+        assert!(
+            post.str("summary")
+                .contains("local cannot set up Gemfile.lock for blog")
+        );
+        let body = post.str("body");
+        for want in [
+            "setup command `bundle install` fails the same way",
+            "fix the machine",
+            "pulse executor probe local",
+            "Last setup error tail",
+            setup_tail,
+        ] {
+            assert!(body.contains(want), "setup body lacks {want:?}:\n{body}");
+        }
+    }
 
     #[test]
-    #[ignore = "cross-slice: keys::write_pre_commit_hook"]
-    fn write_pre_commit_hook_creates_executable_hook() {}
+    fn pre_commit_hook_script_runs_verify_with_recipe_env() {
+        let _serial = crate::test_helpers::serial();
+        let recipe = Recipe {
+            env: BTreeMap::from([
+                ("CI".to_string(), "1".to_string()),
+                ("FOO".to_string(), "bar baz".to_string()),
+            ]),
+            ..Default::default()
+        };
+        let script =
+            crate::keys::pre_commit_hook_script("make test", Some(&recipe), &[], "/tmp/clone");
+        assert!(
+            script.contains("export CI=1 FOO='bar baz'"),
+            "recipe env not exported correctly:\n{script}"
+        );
+        assert!(
+            script.contains("make test"),
+            "verify command missing:\n{script}"
+        );
+        assert!(
+            script.starts_with("#!/bin/sh\n"),
+            "not a shell script:\n{script}"
+        );
+        let unset_at = script.find(crate::keys::PRE_COMMIT_HOOK_UNSET);
+        let verify_at = script.find("make test");
+        assert!(
+            unset_at.is_some() && verify_at.is_some() && unset_at.unwrap() < verify_at.unwrap(),
+            "hook env unset missing or after verify:\n{script}"
+        );
+        for v in [
+            "GIT_INDEX_FILE",
+            "GIT_PREFIX",
+            "GIT_AUTHOR_NAME",
+            "GIT_COMMITTER_DATE",
+        ] {
+            assert!(
+                crate::keys::PRE_COMMIT_HOOK_UNSET.contains(v),
+                "hook unset does not drop {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_commit_hook_script_wraps_mise_pins() {
+        let _serial = crate::test_helpers::serial();
+        let recipe = Recipe {
+            env: BTreeMap::from([("CI".to_string(), "1".to_string())]),
+            ..Default::default()
+        };
+        let pins = vec!["go@1.22".to_string(), "node@20".to_string()];
+        let script = crate::keys::pre_commit_hook_script(
+            "go test ./...",
+            Some(&recipe),
+            &pins,
+            "/tmp/clone",
+        );
+        assert!(
+            script.contains("export CI=1"),
+            "recipe env missing:\n{script}"
+        );
+        assert!(
+            script.contains("mise exec go@1.22 node@20 -- sh -c 'go test ./...'"),
+            "mise wrap missing or wrong:\n{script}"
+        );
+    }
+
+    #[test]
+    fn write_pre_commit_hook_creates_executable_hook() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let clone = dir.path().join("clone");
+        std::fs::create_dir_all(clone.join(".git/hooks")).unwrap();
+        crate::keys::write_pre_commit_hook(&clone.display().to_string(), "#!/bin/sh\nexit 0\n")
+            .unwrap();
+        let hook = clone.join(".git/hooks/pre-commit");
+        let st = std::fs::metadata(&hook).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(
+                st.permissions().mode() & 0o111,
+                0,
+                "hook is not executable: {:o}",
+                st.permissions().mode()
+            );
+        }
+        let body = std::fs::read_to_string(hook).unwrap();
+        assert_eq!(body, "#!/bin/sh\nexit 0\n");
+    }
 }

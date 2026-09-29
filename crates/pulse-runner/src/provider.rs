@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use anyhow::anyhow;
+use serde::Deserialize;
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
@@ -34,118 +34,27 @@ pub(crate) type CliRunner = dyn Fn(
     ) -> anyhow::Result<(i32, String, String)>
     + Send
     + Sync;
+pub(crate) type PairHandsFn = dyn Fn(
+        &pulse_store::Store,
+        &str,
+        &str,
+        &str,
+        crate::pair::PairOpts,
+    ) -> anyhow::Result<Option<Box<crate::pair::PairReport>>>
+    + Send
+    + Sync;
+pub(crate) type ProviderLogFn = dyn Fn(&str, &[serde_json::Value]) + Send + Sync;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProvisionRequest {
-    pub id: String,
-    pub project: String,
-    pub size: String,
-    pub hours: i32,
-    pub reason: String,
-    pub executor: String,
-    #[serde(skip)]
-    pub store: Option<pulse_store::Store>,
-    pub actor: String,
-    pub hub_home: String,
-    #[serde(skip)]
-    pub log: Option<serde_json::Value>,
-}
+pub(crate) use crate::compute::provider_named;
+pub use crate::compute::{Machine, Provider, ProvisionRequest, provider_names, register_provider};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Machine {
-    #[serde(rename = "provider")]
-    pub provider: String,
-    #[serde(rename = "name")]
-    pub name: String,
-    #[serde(rename = "executor")]
-    pub executor: String,
-    #[serde(rename = "address")]
-    pub address: String,
-    #[serde(rename = "tags", default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tags: BTreeMap<String, String>,
-    #[serde(rename = "detail", default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub detail: BTreeMap<String, String>,
-}
-
-pub trait Provider: Send + Sync {
-    fn name(&self) -> String;
-    fn kind(&self) -> String;
-    fn provision(
-        &self,
-        cancel: &pulse_bus::CancellationToken,
-        req: ProvisionRequest,
-    ) -> anyhow::Result<Option<Box<Machine>>>;
-    fn release(&self, cancel: &pulse_bus::CancellationToken, m: &Machine) -> anyhow::Result<()>;
-    fn probe(&self, cancel: &pulse_bus::CancellationToken, m: &Machine) -> anyhow::Result<()>;
-    fn find(
-        &self,
-        cancel: &pulse_bus::CancellationToken,
-        s: &pulse_store::Store,
-        executor: &str,
-        host: &str,
-    ) -> anyhow::Result<Option<Box<Machine>>>;
-    fn stop(&self, cancel: &pulse_bus::CancellationToken, m: &Machine) -> anyhow::Result<()>;
-    fn delete(
-        &self,
-        cancel: &pulse_bus::CancellationToken,
-        m: &Machine,
-    ) -> anyhow::Result<(bool, Vec<String>)>;
-    fn place(&self, m: &Machine) -> String;
-    fn start_hint(&self, m: &Machine) -> String;
-}
-
-pub static PROVIDERS: LazyLock<RwLock<Vec<Box<dyn Provider + Send + Sync>>>> =
-    LazyLock::new(|| RwLock::new(Vec::new()));
-pub fn register_provider<P: Provider + Send + Sync + 'static>(p: P) {
-    PROVIDERS
-        .write()
-        .expect("providers poisoned")
-        .push(Box::new(p));
-}
-
-pub(crate) static PAIR_HANDS: LazyLock<
-    RwLock<
-        Box<
-            dyn Fn(
-                    &pulse_store::Store,
-                    &str,
-                    &str,
-                    &str,
-                    crate::pair::PairOpts,
-                ) -> anyhow::Result<Option<Box<crate::pair::PairReport>>>
-                + Send
-                + Sync,
-        >,
-    >,
-> = LazyLock::new(|| {
+pub(crate) static PAIR_HANDS: LazyLock<RwLock<Box<PairHandsFn>>> = LazyLock::new(|| {
     RwLock::new(Box::new(|s, admin, name, now, o| {
         crate::pair::pair_executor(s, admin.to_string(), name.to_string(), now.to_string(), o)
     }))
 });
 
-pub(crate) fn set_pair_hands(
-    f: Box<
-        dyn Fn(
-                &pulse_store::Store,
-                &str,
-                &str,
-                &str,
-                crate::pair::PairOpts,
-            ) -> anyhow::Result<Option<Box<crate::pair::PairReport>>>
-            + Send
-            + Sync,
-    >,
-) -> Box<
-    dyn Fn(
-            &pulse_store::Store,
-            &str,
-            &str,
-            &str,
-            crate::pair::PairOpts,
-        ) -> anyhow::Result<Option<Box<crate::pair::PairReport>>>
-        + Send
-        + Sync,
-> {
+pub(crate) fn set_pair_hands(f: Box<PairHandsFn>) -> Box<PairHandsFn> {
     std::mem::replace(&mut *PAIR_HANDS.write().expect("pair_hands poisoned"), f)
 }
 
@@ -295,11 +204,7 @@ pub(crate) fn host_key_lines(text: String) -> Vec<String> {
 pub(crate) fn provision_start(
     provider: String,
     req: crate::provider::ProvisionRequest,
-) -> anyhow::Result<(
-    pulse_store::Store,
-    String,
-    Box<dyn Fn(&str, &[serde_json::Value]) + Send + Sync>,
-)> {
+) -> anyhow::Result<(pulse_store::Store, String, Box<ProviderLogFn>)> {
     let Some(s) = req.store.clone() else {
         return Err(anyhow!("{provider}: a store is needed"));
     };
@@ -413,11 +318,11 @@ pub(crate) fn wait_cloud_init(
 pub(crate) fn provision_finish(
     ctx: &pulse_bus::CancellationToken,
     req: crate::provider::ProvisionRequest,
-    m: &crate::provider::Machine,
+    m: &mut crate::provider::Machine,
     hub_home: String,
     ip: String,
     hostkeys: Vec<String>,
-    log: Box<dyn Fn(&str, &[serde_json::Value]) + Send + Sync>,
+    log: Box<ProviderLogFn>,
 ) -> anyhow::Result<()> {
     let Some(s) = req.store.clone() else {
         return Err(anyhow!("{}: a store is needed", m.provider));
@@ -428,7 +333,6 @@ pub(crate) fn provision_finish(
     if hostkeys.is_empty() {
         return Err(anyhow!("{} gave no ssh host key", m.name));
     }
-    let mut m = m.clone();
     m.address = format!("{ADMIN_USER}@{ip}");
     m.detail.insert("public_ip".into(), ip.clone());
     crate::pair::pair_write_known_hosts(hub_home.clone(), ip.clone(), 22, hostkeys[..1].to_vec());
@@ -553,7 +457,7 @@ pub(crate) fn machine_from_detail(
     name: String,
     detail_json: String,
     resource_group: String,
-) -> Option<Box<crate::provider::Machine>> {
+) -> Option<crate::provider::Machine> {
     #[derive(Deserialize)]
     struct Detail {
         #[serde(default)]
@@ -575,5 +479,621 @@ pub(crate) fn machine_from_detail(
     if m.detail.get("resource_group").is_none_or(String::is_empty) && !resource_group.is_empty() {
         m.detail.insert("resource_group".into(), resource_group);
     }
-    Some(Box::new(m))
+    Some(m)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{TEST_NOW, new_bare_repo, new_store};
+    use crate::test_helpers_f3::drained_by_login;
+    use crate::test_helpers_f5::must_one;
+    use crate::test_helpers_f6::*;
+
+    const TEST_HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKB root@pulse";
+
+    #[test]
+    fn providers_registered() {
+        let _serial = crate::test_helpers::serial();
+        crate::azure::init();
+        crate::aws::init();
+        crate::gcp::init();
+        crate::multipass::init();
+        let names = provider_names();
+        let mut want = pulse_store::COMPUTE_PROVIDERS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        want.sort();
+        assert_eq!(names, want);
+        let mut kinds = std::collections::BTreeSet::new();
+        for n in names {
+            let p = provider_named(&n).unwrap_or_else(|| panic!("provider {n} missing"));
+            assert_eq!(p.name(), n);
+            assert!(!p.kind().is_empty(), "provider {n}: empty kind");
+            assert!(kinds.insert(p.kind()), "provider {n}: duplicate kind");
+            assert!(
+                crate::commands::PROVIDER_AUTH
+                    .get(n.as_str())
+                    .is_some_and(|v| !v.is_empty()),
+                "provider {n}: no auth line"
+            );
+            let size = pulse_store::compute_size_setting(&n);
+            assert!(!size.is_empty(), "provider {n}: no size setting");
+            assert!(
+                pulse_store::COMPUTE_RULES.contains_key(size.as_str()),
+                "provider {n}: no size setting default"
+            );
+        }
+    }
+
+    #[test]
+    fn host_key_lines() {
+        let _serial = crate::test_helpers::serial();
+        let console = "[   12.345] cloud-init[812]: -----BEGIN SSH HOST KEY KEYS-----\n\
+ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBFAKE root@pulse\n\
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKB root@pulse\n\
+-----END SSH HOST KEY KEYS-----\n\
+some other noise\n\
+pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKB root@pulse\n";
+        let keys = super::host_key_lines(console.to_string());
+        assert_eq!(keys.len(), 1, "keys: {keys:?}");
+        assert!(
+            keys[0].starts_with("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCK"),
+            "keys: {keys:?}"
+        );
+        let keys = super::host_key_lines(format!(
+            "Enable succeeded: \n[stdout]\n{TEST_HOST_KEY}\n[stderr]\n"
+        ));
+        assert_eq!(
+            keys,
+            vec![
+                TEST_HOST_KEY
+                    .split_whitespace()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ],
+            "run-command shape"
+        );
+        assert!(super::host_key_lines("nothing yet\n".to_string()).is_empty());
+    }
+
+    #[test]
+    fn cloud_init_config_admin_key() {
+        let _serial = crate::test_helpers::serial();
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUB pulse-hub";
+        let with = cloud_init_config(key.to_string(), true);
+        for want in [
+            "#cloud-config",
+            &format!("name: {ADMIN_USER}"),
+            &format!("- {key}"),
+            "ALL=(ALL) NOPASSWD:ALL",
+            HOSTKEY_MARKER,
+            "/dev/console",
+            &format!("mkdir -p {HANDS_WORKDIR}"),
+            "@github/copilot",
+        ] {
+            assert!(with.contains(want), "cloud-init lacks {want:?}:\n{with}");
+        }
+        let without = cloud_init_config(String::new(), true);
+        assert!(
+            !without.contains(&format!("name: {ADMIN_USER}"))
+                && !without.contains("ssh_authorized_keys"),
+            "cloud-init without a key still adds a user:\n{without}"
+        );
+        assert!(
+            without.contains(HOSTKEY_MARKER),
+            "host key line missing without a key"
+        );
+        let native = cloud_init_config(key.to_string(), false);
+        for absent in [
+            "deb.nodesource.com",
+            "apt-get install -y nodejs",
+            "npm install -g @github/copilot",
+        ] {
+            assert!(
+                !native.contains(absent),
+                "native cloud-init has legacy install line {absent:?}:\n{native}"
+            );
+        }
+        assert!(
+            native.contains(&format!("mkdir -p {HANDS_WORKDIR}"))
+                && native.contains(HOSTKEY_MARKER),
+            "native cloud-init lacks base setup:\n{native}"
+        );
+        let path = write_cloud_init(key.to_string(), true).expect("write cloud-init");
+        let data = std::fs::read_to_string(&path).expect("read cloud-init");
+        let _ = std::fs::remove_file(path);
+        assert_eq!(data, with);
+    }
+
+    #[test]
+    fn daemon_once_compute_aws() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = new_compute_harness(
+            &s,
+            &[
+                ("compute.provider", "aws"),
+                ("compute.aws.region", "eu-west-1"),
+                ("compute.aws.profile", "pulse"),
+            ],
+        );
+        let aws = new_fake_aws();
+        let _fake = install_fake(crate::aws::set_run_aws, {
+            let aws = aws.clone();
+            Box::new(move |ctx, args, timeout| aws.run(ctx, args, timeout))
+        });
+        h.provision_and_release(&s, "aws", "203.0.113.9");
+
+        let run = aws.first("ec2 run-instances");
+        for want in [
+            &format!("--image-id resolve:ssm:{}", crate::aws::AWS_IMAGE),
+            "--instance-type t3.medium",
+            "--subnet-id subnet-1",
+            "--security-group-ids sg-pulse",
+            "--associate-public-ip-address",
+            "--user-data file://",
+            &format!("VolumeSize={}", HANDS_DISK_GB),
+            "HttpTokens=required",
+            "Tags=[{Key=Name,Value=pulse-cr-001},{Key=pulse,Value=hands},{Key=pulse-request,Value=CR-001},{Key=pulse-project,Value=proj}]",
+            "--profile pulse --region eu-west-1 --output json",
+        ] {
+            assert!(run.contains(want), "run-instances lacks {want:?}: {run}");
+        }
+        assert!(
+            aws.has("ec2 create-security-group --group-name pulse-hands")
+                && aws.has("ec2 authorize-security-group-ingress --group-id sg-pulse --protocol tcp --port 22 --cidr 0.0.0.0/0"),
+            "security group: {:?}",
+            aws.joined()
+        );
+        assert_eq!(
+            aws.0.lock().unwrap().consoles,
+            2,
+            "console reads: {:?}",
+            aws.joined()
+        );
+        assert!(
+            aws.has("ec2 get-console-output --instance-id i-0abc --latest --query Output --profile pulse --region eu-west-1 --output text"),
+            "console reads: {:?}",
+            aws.joined()
+        );
+        assert_eq!(aws.0.lock().unwrap().terminate, vec!["i-0abc"]);
+        let (m, _) = crate::compute::load_machine(&s, "CR-001");
+        let m = m.expect("machine");
+        assert_eq!(
+            m.detail.get("instance_id").map(String::as_str),
+            Some("i-0abc")
+        );
+        assert_eq!(
+            m.detail.get("region").map(String::as_str),
+            Some("eu-west-1")
+        );
+        assert_eq!(
+            m.detail.get("security_group").map(String::as_str),
+            Some("sg-pulse")
+        );
+        assert_eq!(m.detail.get("subnet").map(String::as_str), Some("subnet-1"));
+    }
+
+    #[test]
+    fn daemon_once_compute_gcp() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = new_compute_harness(
+            &s,
+            &[
+                ("compute.provider", "gcp"),
+                ("compute.gcp.zone", "europe-west1-b"),
+            ],
+        );
+        let gcp = new_fake_gcloud();
+        let _fake = install_fake(crate::gcp::set_run_gcloud, {
+            let gcp = gcp.clone();
+            Box::new(move |ctx, args, timeout| gcp.run(ctx, args, timeout))
+        });
+        h.provision_and_release(&s, "gcp", "203.0.113.11");
+
+        let create = gcp.first("compute instances create");
+        for want in [
+            "compute instances create pulse-cr-001 --zone europe-west1-b --machine-type e2-medium --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud",
+            &format!("--boot-disk-size {}GB", HANDS_DISK_GB),
+            "--boot-disk-auto-delete",
+            "--network default",
+            "--labels pulse=hands,pulse-request=cr-001,pulse-project=proj",
+            "--tags pulse-hands",
+            "--metadata-from-file user-data=",
+            "--project pulse-proj --format json",
+        ] {
+            assert!(create.contains(want), "create lacks {want:?}: {create}");
+        }
+        assert!(
+            gcp.has("compute firewall-rules create pulse-hands-ssh --network default --direction INGRESS --allow tcp:22 --source-ranges 0.0.0.0/0 --target-tags pulse-hands"),
+            "firewall: {:?}",
+            gcp.joined()
+        );
+        assert_eq!(
+            gcp.0.lock().unwrap().serials,
+            2,
+            "serial reads: {:?}",
+            gcp.joined()
+        );
+        assert!(
+            gcp.has("compute instances get-serial-port-output pulse-cr-001 --zone europe-west1-b --project pulse-proj"),
+            "serial reads: {:?}",
+            gcp.joined()
+        );
+        assert_eq!(gcp.0.lock().unwrap().deleted, vec!["pulse-cr-001"]);
+        assert!(
+            gcp.has("compute instances delete pulse-cr-001 --zone europe-west1-b --quiet --project pulse-proj"),
+            "deleted: {:?} {:?}",
+            gcp.0.lock().unwrap().deleted,
+            gcp.joined()
+        );
+        let (m, _) = crate::compute::load_machine(&s, "CR-001");
+        let m = m.expect("machine");
+        assert_eq!(
+            m.detail.get("project").map(String::as_str),
+            Some("pulse-proj")
+        );
+        assert_eq!(
+            m.detail.get("zone").map(String::as_str),
+            Some("europe-west1-b")
+        );
+        assert_eq!(m.detail.get("type").map(String::as_str), Some("e2-medium"));
+    }
+
+    #[test]
+    fn daemon_once_compute_multipass() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = new_compute_harness(&s, &[("compute.provider", "multipass")]);
+        let mp = new_fake_multipass();
+        let _fake = install_fake(crate::multipass::set_run_multipass, {
+            let mp = mp.clone();
+            Box::new(move |ctx, args, timeout| mp.run(ctx, args, timeout))
+        });
+        h.provision_and_release(&s, "multipass", "192.168.64.7");
+
+        let launch = mp.first("launch ");
+        assert!(
+            launch.starts_with("launch 24.04 --name pulse-cr-001 --cloud-init ")
+                && launch.ends_with("--timeout 1200 --cpus 2 --memory 4G --disk 32G"),
+            "launch: {launch}"
+        );
+        assert_eq!(
+            mp.0.lock().unwrap().execs,
+            2,
+            "exec reads: {:?}",
+            mp.joined()
+        );
+        assert!(
+            mp.has("exec pulse-cr-001 -- cat /etc/ssh/ssh_host_ed25519_key.pub"),
+            "exec reads: {:?}",
+            mp.joined()
+        );
+        assert_eq!(mp.0.lock().unwrap().deleted, vec!["pulse-cr-001"]);
+        let (m, _) = crate::compute::load_machine(&s, "CR-001");
+        let m = m.expect("machine");
+        assert_eq!(m.detail.get("image").map(String::as_str), Some("24.04"));
+        assert_eq!(m.detail.get("cpus").map(String::as_str), Some("2"));
+        assert_eq!(m.detail.get("memory").map(String::as_str), Some("4G"));
+        assert_eq!(m.detail.get("disk").map(String::as_str), Some("32G"));
+    }
+
+    #[test]
+    fn compute_fails_when_the_provider_cli_is_missing() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = new_compute_harness(
+            &s,
+            &[
+                ("compute.provider", "gcp"),
+                ("compute.gcp.zone", "europe-west1-b"),
+            ],
+        );
+        let _fake = install_fake(
+            crate::gcp::set_run_gcloud,
+            Box::new(|_, _, _| {
+                Err(anyhow::anyhow!(
+                    "the Google Cloud CLI (gcloud) is not installed on this machine"
+                ))
+            }),
+        );
+        let req = pulse_tasks::request_compute(
+            &s,
+            "proj",
+            "aurora",
+            "",
+            2,
+            "the fixtures take an hour here",
+        )
+        .expect("request compute");
+        pulse_tasks::approve(&s, &req.id, "go ahead", pulse_store::HUMAN_AGENT).expect("approve");
+        let log = once_daemon(&s, &h.hub_home);
+        let got = pulse_tasks::get_compute(&s, &req.id).expect("get compute");
+        assert!(
+            got.status == "failed" && log.contains("gcloud) is not installed"),
+            "request: {got:?}\n{log}"
+        );
+        assert!(
+            crate::executor::executor_row(&s, "hands-cr-001")
+                .0
+                .is_empty(),
+            "an executor was registered without a machine"
+        );
+    }
+
+    #[test]
+    fn daemon_once_compute_slow_provision() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = new_compute_harness(&s, &[("compute.provider", "multipass")]);
+        let _old_wait = set_provision_wait(std::time::Duration::from_millis(1500));
+        let mp = new_fake_multipass();
+        let _fake = install_fake(crate::multipass::set_run_multipass, {
+            let mp = mp.clone();
+            Box::new(move |ctx, args, timeout| mp.run(ctx, args, timeout))
+        });
+        let req = pulse_tasks::request_compute(
+            &s,
+            "proj",
+            "aurora",
+            "",
+            2,
+            "the fixtures take an hour here",
+        )
+        .expect("request compute");
+        pulse_tasks::approve(&s, &req.id, "go ahead", pulse_store::HUMAN_AGENT).expect("approve");
+        let log = once_daemon(&s, &h.hub_home);
+        let got = pulse_tasks::get_compute(&s, &req.id).expect("get compute");
+        assert_eq!(
+            (got.status.as_str(), got.executor.as_str()),
+            ("ready", "hands-cr-001"),
+            "slow provision after once-daemon: {got:?}\n{log}"
+        );
+    }
+
+    #[test]
+    fn tend_retires_and_deletes_our_ec2_instance() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        crate::commands::register();
+        let s = new_store();
+        new_bare_repo(&s);
+        s.set_setting(crate::util::HUMAN_AGENT, "compute.provider", "aws")
+            .unwrap();
+        s.set_setting(crate::util::HUMAN_AGENT, "compute.aws.region", "eu-west-1")
+            .unwrap();
+        drained_by_login(&s, "vm-seven", "pulse@vm-seven");
+        let aws = new_fake_aws();
+        aws.0.lock().unwrap().instances.insert(
+            "i-0777".into(),
+            AwsFake {
+                id: "i-0777".into(),
+                name: "pulse-cr-007".into(),
+                request: "CR-007".into(),
+                project: "proj".into(),
+                state: "running".into(),
+                ip: "203.0.113.7".into(),
+            },
+        );
+        aws.0.lock().unwrap().describes = 5;
+        let _fake = install_fake(crate::aws::set_run_aws, {
+            let aws = aws.clone();
+            Box::new(move |ctx, args, timeout| aws.run(ctx, args, timeout))
+        });
+        let old_host = crate::retire::set_ssh_hostname(Box::new(|_| "203.0.113.7".into()));
+        let lines = crate::retire::tend_executors(&s, TEST_NOW.into(), "daemon".into());
+        let _ = crate::retire::set_ssh_hostname(old_host);
+        let calls = aws.joined();
+        assert_eq!(
+            calls,
+            vec![
+                "ec2 describe-instances --filters Name=tag:pulse,Values=hands Name=instance-state-name,Values=pending,running,stopping,stopped --region eu-west-1 --output json",
+                "ec2 stop-instances --instance-ids i-0777 --region eu-west-1 --output json",
+            ],
+            "aws calls"
+        );
+        let r = must_one(
+            &s,
+            "SELECT * FROM retired_vms WHERE executor = 'vm-seven'",
+            &[],
+        );
+        assert!(
+            r.str("provider") == "aws"
+                && r.str("name") == "pulse-cr-007"
+                && r.str("delete_after") == crate::util::plus_hours(TEST_NOW, 24.0)
+                && r.str("detail").contains(r#""instance_id":"i-0777""#),
+            "retired_vms: {r:?}"
+        );
+        assert!(
+            lines
+                .join("\n")
+                .contains("retired vm-seven: stopped pulse-cr-007 (eu-west-1)"),
+            "lines: {lines:?}"
+        );
+        s.set_setting(crate::util::HUMAN_AGENT, "compute.provider", "azure")
+            .unwrap();
+        aws.reset();
+        let later = crate::util::plus_hours(TEST_NOW, 24.0);
+        let lines = crate::retire::tend_executors(&s, later.clone(), "daemon".into());
+        let calls = aws.joined();
+        assert!(
+            calls.len() == 2
+                && calls[0].starts_with("ec2 describe-instances --filters Name=instance-id,Values=i-0777 --region eu-west-1")
+                && calls[1] == "ec2 terminate-instances --instance-ids i-0777 --region eu-west-1 --output json",
+            "delete calls: {calls:?}"
+        );
+        let r = must_one(
+            &s,
+            "SELECT * FROM retired_vms WHERE executor = 'vm-seven'",
+            &[],
+        );
+        assert!(
+            r.str("deleted_at") == later && r.str("note").is_empty(),
+            "row: {r:?}"
+        );
+        assert!(
+            lines
+                .join("\n")
+                .contains("deleted pulse-cr-007 (eu-west-1): instance i-0777 with its root volume"),
+            "lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn tend_retires_and_deletes_our_gce_instance() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        crate::commands::register();
+        let s = new_store();
+        new_bare_repo(&s);
+        s.set_setting(crate::util::HUMAN_AGENT, "compute.provider", "gcp")
+            .unwrap();
+        s.set_setting(
+            crate::util::HUMAN_AGENT,
+            "compute.gcp.project",
+            "pulse-proj",
+        )
+        .unwrap();
+        drained_by_login(&s, "vm-seven", "pulse@vm-seven");
+        let gcp = new_fake_gcloud();
+        gcp.0.lock().unwrap().instances.insert(
+            "pulse-cr-007".into(),
+            GcpFake {
+                name: "pulse-cr-007".into(),
+                status: "RUNNING".into(),
+                ip: "203.0.113.7".into(),
+                request: "cr-007".into(),
+                project: "proj".into(),
+            },
+        );
+        let _fake = install_fake(crate::gcp::set_run_gcloud, {
+            let gcp = gcp.clone();
+            Box::new(move |ctx, args, timeout| gcp.run(ctx, args, timeout))
+        });
+        let old_host = crate::retire::set_ssh_hostname(Box::new(|_| "203.0.113.7".into()));
+        let lines = crate::retire::tend_executors(&s, TEST_NOW.into(), "daemon".into());
+        let _ = crate::retire::set_ssh_hostname(old_host);
+        let calls = gcp.joined();
+        assert_eq!(
+            calls,
+            vec![
+                "compute instances list --filter=labels.pulse=hands --project pulse-proj --format json",
+                "compute instances stop pulse-cr-007 --zone europe-west1-b --quiet --project pulse-proj",
+            ],
+            "gcloud calls"
+        );
+        assert!(
+            lines
+                .join("\n")
+                .contains("retired vm-seven: stopped pulse-cr-007 (europe-west1-b)"),
+            "lines: {lines:?}"
+        );
+        gcp.reset();
+        let later = crate::util::plus_hours(TEST_NOW, 24.0);
+        let lines = crate::retire::tend_executors(&s, later, "daemon".into());
+        let calls = gcp.joined();
+        assert_eq!(
+            calls,
+            vec![
+                "compute instances describe pulse-cr-007 --zone europe-west1-b --project pulse-proj --format json",
+                "compute instances delete pulse-cr-007 --zone europe-west1-b --quiet --project pulse-proj",
+            ],
+            "delete calls"
+        );
+        assert!(
+            lines.join("\n").contains(
+                "deleted pulse-cr-007 (europe-west1-b): instance pulse-cr-007 with its boot disk"
+            ),
+            "lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn tend_retires_and_deletes_our_multipass_instance() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        crate::commands::register();
+        let s = new_store();
+        new_bare_repo(&s);
+        s.set_setting(crate::util::HUMAN_AGENT, "compute.provider", "multipass")
+            .unwrap();
+        drained_by_login(&s, "vm-seven", "pulse@vm-seven");
+        drained_by_login(&s, "vm-mine", "pulse@192.168.64.3");
+        let mp = new_fake_multipass();
+        mp.0.lock().unwrap().instances.insert(
+            "pulse-cr-007".into(),
+            MpFake {
+                name: "pulse-cr-007".into(),
+                state: "Running".into(),
+                ip: "192.168.64.7".into(),
+            },
+        );
+        mp.0.lock().unwrap().instances.insert(
+            "primary".into(),
+            MpFake {
+                name: "primary".into(),
+                state: "Running".into(),
+                ip: "192.168.64.3".into(),
+            },
+        );
+        let _fake = install_fake(crate::multipass::set_run_multipass, {
+            let mp = mp.clone();
+            Box::new(move |ctx, args, timeout| mp.run(ctx, args, timeout))
+        });
+        let old_host = crate::retire::set_ssh_hostname(Box::new(|host| {
+            if host == "vm-seven" {
+                "192.168.64.7".into()
+            } else {
+                host.into()
+            }
+        }));
+        let lines = crate::retire::tend_executors(&s, TEST_NOW.into(), "daemon".into());
+        let _ = crate::retire::set_ssh_hostname(old_host);
+        let calls = mp.joined();
+        assert_eq!(
+            calls,
+            vec![
+                "list --format json",
+                "list --format json",
+                "stop pulse-cr-007"
+            ],
+            "multipass calls"
+        );
+        let text = lines.join("\n");
+        assert!(
+            text.contains("retired vm-seven: stopped pulse-cr-007 (this machine)")
+                && text.contains("left running because PULSE did not create it (no Multipass instance tagged pulse=hands is named vm-mine or answers at 192.168.64.3)"),
+            "lines: {lines:?}"
+        );
+        mp.reset();
+        let later = crate::util::plus_hours(TEST_NOW, 24.0);
+        let lines = crate::retire::tend_executors(&s, later, "daemon".into());
+        assert_eq!(
+            mp.joined(),
+            vec![
+                "info pulse-cr-007 --format json",
+                "delete --purge pulse-cr-007"
+            ],
+            "delete calls"
+        );
+        assert!(
+            lines.join("\n").contains(
+                "deleted pulse-cr-007 (this machine): instance pulse-cr-007 with its disk"
+            ),
+            "lines: {lines:?}"
+        );
+        assert!(
+            mp.0.lock().unwrap().instances.contains_key("primary"),
+            "the owner's own VM was deleted"
+        );
+    }
 }

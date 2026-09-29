@@ -59,6 +59,7 @@ mod tests {
 
     #[test]
     fn preflight_tmp_space_full_disk_is_setup_error() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let orig = *FREE_SPACE.read().unwrap();
         *FREE_SPACE.write().unwrap() = free_10m;
@@ -80,6 +81,7 @@ mod tests {
 
     #[test]
     fn preflight_tmp_space_uses_worker_tmpdir() {
+        let _serial = crate::test_helpers::serial();
         assert_eq!(
             worker_tmp_dir(&["PATH=/bin".into(), "TMPDIR=/w/tmp".into()]),
             "/w/tmp"

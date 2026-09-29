@@ -1,5 +1,14 @@
 //! Skeleton port of internal/runner/lessons.go.
 
+#![cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "ported Go runner APIs are consumed incrementally across slices"
+    )
+)]
+#![cfg_attr(test, allow(dead_code))]
+
 use crate::util::{
     Row, event_at, json_map, must_one, must_rows, plural, plus_hours, sha256_text, trunc,
 };
@@ -468,13 +477,12 @@ pub(crate) fn record_slug(s: String) -> String {
 /// Go: func humanFailureHead(signature string) string
 pub(crate) fn human_failure_head(signature: String) -> String {
     trunc(
-        &log_failure_head(signature)
+        log_failure_head(signature)
             .replace('#', "N")
             .replace("<id>", "an id")
             .replace("<path>", "a path")
             .replace("<branch>", "a branch")
-            .trim()
-            .to_string(),
+            .trim(),
         80,
     )
 }
@@ -552,9 +560,403 @@ static SUMMARY_BLOCKED_RE: LazyLock<Regex> =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::{FAILURE_DETERMINISTIC, FailureClass, failure_signature};
+    use crate::test_helpers::*;
+
+    fn failed_lesson_job(s: &pulse_store::Store, title: &str, result: &str, finished: &str) -> Row {
+        let (j, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "task".into(),
+            title.into(),
+            "do it".into(),
+            1,
+            5,
+            format!("test:{title}"),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add failed lesson job");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'failed', finished_at = ?, result = ? WHERE id = ?",
+            &[&finished, &result, &j.str("id")],
+        );
+        crate::jobs::job_row(&s.conn().expect("conn"), j.str("id"))
+    }
+
+    #[test]
+    fn tend_lessons_records_and_amends_verify_pattern() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE projects SET verify_cmd = 'go test ./...' WHERE slug = 'proj'",
+            &[],
+        );
+        let result = "3 commit(s) but verify exit 1; nothing landed";
+        let j1 = failed_lesson_job(
+            &s,
+            "First verify failure",
+            result,
+            &crate::util::plus_hours(TEST_NOW, -3.0),
+        );
+        let j2 = failed_lesson_job(
+            &s,
+            "Second verify failure",
+            "1 commit(s) but Verify exit 2; nothing landed",
+            &crate::util::plus_hours(TEST_NOW, -2.0),
+        );
+        let sig = failure_signature(FailureClass(FAILURE_DETERMINISTIC.into()), result.into());
+        let hash = &crate::util::sha256_text(&sig)[..8];
+        let title = format!(
+            "Failure pattern {hash}: {}",
+            human_failure_head(sig.clone())
+        );
+        let want_id = lesson_record_id(&s, "proj".into(), title);
+
+        let lines = tend_lessons(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            lines.len() == 1 && lines[0].contains(&want_id) && lines[0].contains("(created)"),
+            "created lines: {lines:?}"
+        );
+        let (rec, rev) = s.get_record(&want_id, 0).expect("get record");
+        for tag in [
+            "failure",
+            "recovery",
+            "deterministic",
+            &format!("sig:{hash}"),
+        ] {
+            assert!(
+                record_has_tag(rec.clone(), tag.into()),
+                "record tags lack {tag}: {:?}",
+                rec.tags
+            );
+        }
+        let body = rev.expect("rev").body;
+        for want in [
+            "## What failed",
+            "## Class",
+            "## Lesson",
+            "## Recovery",
+            &j1.str("id"),
+            &j2.str("id"),
+            "Run the project's own check (`go test ./...`) before `pulse job finish`",
+            "2 jobs landed nothing",
+            "none yet",
+        ] {
+            assert!(body.contains(want), "body lacks {want:?}:\n{body}");
+        }
+        assert_eq!(rec.current_rev, 1);
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM record_revisions WHERE record_id = ?",
+                &[&want_id]
+            ),
+            1
+        );
+
+        let lines = tend_lessons(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(lines.is_empty(), "unchanged tick wrote: {lines:?}");
+        let (rec, _) = s.get_record(&want_id, 0).expect("get unchanged");
+        assert_eq!(rec.current_rev, 1);
+
+        let j3 = failed_lesson_job(
+            &s,
+            "Third verify failure",
+            "9 commit(s) but verify exit 7; nothing landed",
+            &crate::util::plus_hours(TEST_NOW, -1.0),
+        );
+        let lines = tend_lessons(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            lines.len() == 1 && lines[0].contains(&want_id) && lines[0].contains("(amended)"),
+            "amended lines: {lines:?}"
+        );
+        let (rec, rev) = s.get_record(&want_id, 0).expect("get amended");
+        assert_eq!(rec.id, want_id);
+        assert_eq!(rec.current_rev, 2);
+        assert!(rev.expect("rev").body.contains(&j3.str("id")));
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'lesson.recorded' AND subject = ?",
+                &[&want_id]
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn tend_lessons_threshold_and_multiple_signatures() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        failed_lesson_job(
+            &s,
+            "lone",
+            "worker exited 1",
+            &crate::util::plus_hours(TEST_NOW, -4.0),
+        );
+        let lines = tend_lessons(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(lines.is_empty(), "lone failure wrote: {lines:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM records WHERE kind = 'memory'",
+                &[]
+            ),
+            0
+        );
+
+        failed_lesson_job(
+            &s,
+            "verify a",
+            "3 commit(s) but verify exit 1; nothing landed",
+            &crate::util::plus_hours(TEST_NOW, -3.0),
+        );
+        failed_lesson_job(
+            &s,
+            "verify b",
+            "1 commit(s) but verify exit 2; nothing landed",
+            &crate::util::plus_hours(TEST_NOW, -2.0),
+        );
+        failed_lesson_job(
+            &s,
+            "exit b",
+            "worker exited 2",
+            &crate::util::plus_hours(TEST_NOW, -1.0),
+        );
+        let lines = tend_lessons(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(lines.len(), 2, "two signatures lines: {lines:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM records WHERE kind = 'memory' AND project = 'proj'",
+                &[]
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn recent_failure_lessons_formats_newest_within_window() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        for i in 0..6 {
+            let rec = pulse_records::new_record(
+                &s,
+                "memory",
+                "proj",
+                &format!("Failure pattern recent {i}"),
+                pulse_records::NewOptions {
+                    areas: vec!["jobs".into()],
+                    tags: vec!["failure".into(), "recovery".into(), format!("sig:{i:08}")],
+                    status: "Active".into(),
+                    body: format!(
+                        "## Lesson\n\nDo thing {i}. More detail.\n\n## Recovery\n\nnone yet\n"
+                    ),
+                    body_set: true,
+                    author: "daemon".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("new record");
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE records SET updated_at = ? WHERE id = ?",
+                &[&crate::util::plus_hours(TEST_NOW, -(i as f64)), &rec.id],
+            );
+        }
+        let old = pulse_records::new_record(
+            &s,
+            "memory",
+            "proj",
+            "Failure pattern old",
+            pulse_records::NewOptions {
+                areas: vec!["jobs".into()],
+                tags: vec!["failure".into(), "recovery".into(), "sig:old".into()],
+                status: "Active".into(),
+                body: "## Lesson\n\nOld thing. More detail.\n".into(),
+                body_set: true,
+                author: "daemon".into(),
+                ..Default::default()
+            },
+        )
+        .expect("old record");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE records SET updated_at = ? WHERE id = ?",
+            &[&crate::util::plus_hours(TEST_NOW, -24.0 * 8.0), &old.id],
+        );
+        let lines = recent_failure_lessons(&s, "proj".into(), TEST_NOW.into());
+        assert_eq!(lines.len(), 5, "recent lines: {lines:?}");
+        for (i, line) in lines.iter().enumerate() {
+            let want = format!("Failure pattern recent {i}: Do thing {i}.");
+            assert!(
+                line.contains(&want),
+                "line {i} = {line:?}, want {want:?} in order"
+            );
+        }
+        let joined = lines.join("\n");
+        assert!(!joined.contains("old"));
+        assert!(!joined.contains("recent 5"));
+    }
+
+    #[test]
+    fn recovery_outcome_phrases_and_lead_brief() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        for (id, detail, want) in [
+            (
+                "job-requeued",
+                serde_json::json!({"outcome": "requeued"}),
+                "the daemon ran it again",
+            ),
+            (
+                "job-replanned",
+                serde_json::json!({"outcome": "replanned", "job": "job-copy"}),
+                "the daemon re-planned it as job-copy",
+            ),
+            (
+                "job-held",
+                serde_json::json!({"outcome": "held", "why": "owner must decide"}),
+                "held by the daemon: owner must decide",
+            ),
+            (
+                "job-retried",
+                serde_json::json!({"outcome": "retried"}),
+                "retried by hand",
+            ),
+        ] {
+            crate::util::event_at(
+                &s.conn().expect("conn"),
+                TEST_NOW,
+                "daemon",
+                pulse_board::JOB_RECOVER_ACTION,
+                id,
+                detail,
+            );
+            assert_eq!(recovery_outcome(&s, id.into()), want, "{id}");
+        }
+        assert_eq!(recovery_outcome(&s, "job-none".into()), "");
+        let mut failed = Row::new();
+        failed.insert("id", serde_json::json!("job-held"));
+        failed.insert("title", serde_json::json!("Broken"));
+        failed.insert("result", serde_json::json!("SUMMARY: failed"));
+        let brief = crate::lead::lead_idle_brief(&s, "proj".into(), vec![], vec![failed], 1);
+        assert!(
+            brief.contains(
+                "`job-held` Broken: SUMMARY: failed — held by the daemon: owner must decide"
+            ),
+            "lead idle brief lacks outcome:\n{brief}"
+        );
+    }
+
+    #[test]
+    fn tend_lessons_recover_off() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        s.set_setting(crate::util::HUMAN_AGENT, "daemon.recover", "off")
+            .expect("set recover off");
+        failed_lesson_job(
+            &s,
+            "verify a",
+            "3 commit(s) but verify exit 1; nothing landed",
+            &crate::util::plus_hours(TEST_NOW, -3.0),
+        );
+        failed_lesson_job(
+            &s,
+            "verify b",
+            "1 commit(s) but verify exit 2; nothing landed",
+            &crate::util::plus_hours(TEST_NOW, -2.0),
+        );
+        let lines = tend_lessons(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(lines.is_empty(), "recover off wrote: {lines:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM records WHERE kind = 'memory'",
+                &[]
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn lead_due_annotates_failed_task_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        let task = pulse_tasks::new(
+            &s,
+            "proj",
+            "Fix task",
+            "brief",
+            10,
+            crate::util::HUMAN_AGENT,
+        )
+        .expect("new task");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE tasks SET status = 'in_progress' WHERE id = ?",
+            &[&task.id],
+        );
+        let (j, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Broken task job".into(),
+            "brief".into(),
+            1,
+            10,
+            format!("task:{}", task.id),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add task job");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'failed', finished_at = ?, result = ? WHERE id = ?",
+            &[
+                &crate::util::plus_hours(TEST_NOW, -1.0),
+                &"SUMMARY: failed",
+                &j.str("id"),
+            ],
+        );
+        crate::util::event_at(
+            &s.conn().expect("conn"),
+            TEST_NOW,
+            "daemon",
+            pulse_board::JOB_RECOVER_ACTION,
+            &j.str("id"),
+            serde_json::json!({"outcome": "requeued"}),
+        );
+        let (_, due, _) = crate::lead::lead_due(
+            &s,
+            "proj".into(),
+            crate::lead::lead_name("proj".into()),
+            TEST_NOW.into(),
+        )
+        .expect("lead due");
+        assert!(
+            due.len() == 1 && due[0].detail.contains("the daemon ran it again"),
+            "lead due lacks recovery outcome: {due:?}"
+        );
+    }
 
     #[test]
     fn lesson_text_helpers_match_go_shapes() {
+        let _serial = crate::test_helpers::serial();
         assert_eq!(
             record_slug("Failure pattern 123: Verify exit #1!".into()),
             "failure-pattern-123-verify-exit-1"
@@ -580,6 +982,7 @@ mod tests {
 
     #[test]
     fn first_lesson_sentence_reads_lesson_section() {
+        let _serial = crate::test_helpers::serial();
         let body = "## What failed\n\nx\n\n## Lesson\n\nRun the check. More detail.\n\n## Recovery\n\nnone";
         assert_eq!(first_lesson_sentence(body.into()), "Run the check.");
         assert_eq!(

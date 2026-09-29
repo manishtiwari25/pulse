@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
@@ -42,13 +42,11 @@ pub(crate) struct PairReport {
     pub changed: Vec<String>,
 }
 
-pub(crate) static HANDS_BINARY: LazyLock<
-    RwLock<Box<dyn Fn(&str) -> anyhow::Result<(Vec<u8>, String)> + Send + Sync>>,
-> = LazyLock::new(|| RwLock::new(Box::new(default_hands_binary)));
+pub(crate) type HandsBinaryFn = dyn Fn(&str) -> anyhow::Result<(Vec<u8>, String)> + Send + Sync;
+pub(crate) static HANDS_BINARY: LazyLock<RwLock<Box<HandsBinaryFn>>> =
+    LazyLock::new(|| RwLock::new(Box::new(default_hands_binary)));
 
-pub(crate) fn set_hands_binary(
-    f: Box<dyn Fn(&str) -> anyhow::Result<(Vec<u8>, String)> + Send + Sync>,
-) -> Box<dyn Fn(&str) -> anyhow::Result<(Vec<u8>, String)> + Send + Sync> {
+pub(crate) fn set_hands_binary(f: Box<HandsBinaryFn>) -> Box<HandsBinaryFn> {
     std::mem::replace(
         &mut *HANDS_BINARY.write().expect("hands_binary poisoned"),
         f,
@@ -170,10 +168,11 @@ pub(crate) fn pair_ssh_config_blocks(text: String) -> Vec<SshBlock> {
                 names: words[1..].iter().map(|s| s.to_string()).collect(),
                 hostname: String::new(),
             });
-        } else if let Some(c) = cur.as_mut() {
-            if words.len() >= 2 && words[0].eq_ignore_ascii_case("hostname") {
-                c.hostname = words[1].into();
-            }
+        } else if let Some(c) = cur.as_mut()
+            && words.len() >= 2
+            && words[0].eq_ignore_ascii_case("hostname")
+        {
+            c.hostname = words[1].into();
         }
     }
     if let Some(b) = cur {
@@ -608,20 +607,18 @@ pub(crate) fn pair_check_alias(
     let config = Path::new(&hub_home).join(".ssh").join("config");
     let text = std::fs::read_to_string(&config).unwrap_or_default();
     let block = pair_alias_state(text.clone(), name.clone());
-    if let Some(b) = &block {
-        if host != name {
-            let target = if b.hostname.is_empty() {
-                name.clone()
-            } else {
-                b.hostname.clone()
-            };
-            if target != host {
-                return Err(crate::util::fail(
-                    2,
-                    format!("alias {} already points elsewhere", name),
-                )
-                .into());
-            }
+    if let Some(b) = &block
+        && host != name
+    {
+        let target = if b.hostname.is_empty() {
+            name.clone()
+        } else {
+            b.hostname.clone()
+        };
+        if target != host {
+            return Err(
+                crate::util::fail(2, format!("alias {} already points elsewhere", name)).into(),
+            );
         }
     }
     Ok((config.to_string_lossy().to_string(), text, block))
@@ -747,7 +744,7 @@ pub(crate) fn pair_open_control_master(
 }
 
 /// Go: func pairCloseControlMaster(admin, controlPath string)
-pub(crate) fn pair_close_control_master(admin: String, control_path: String) -> () {
+pub(crate) fn pair_close_control_master(admin: String, control_path: String) {
     if let Ok((user, host, port)) = parse_pair_ssh_address(&admin) {
         let _ = Command::new("ssh")
             .args([
@@ -862,10 +859,10 @@ pub(crate) fn module_root() -> String {
     if let Ok(wd) = std::env::current_dir() {
         starts.push(wd);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(p) = exe.parent() {
-            starts.push(p.to_path_buf());
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(p) = exe.parent()
+    {
+        starts.push(p.to_path_buf());
     }
     for start in starts {
         for dir in start.ancestors() {
@@ -901,6 +898,12 @@ pub(crate) fn pair_executor(
     } else {
         o.actor.clone()
     };
+    let decision = crate::onboard::agent_gate(
+        &s.conn()?,
+        format!("pair: {name}"),
+        actor.clone(),
+        now.clone(),
+    )?;
     let hub_home = if o.hub_home.is_empty() {
         crate::util::home_dir()
     } else {
@@ -1047,6 +1050,7 @@ pub(crate) fn pair_executor(
         rep.ok = true;
         return Ok(Some(Box::new(rep)));
     }
+
     if !key_ready {
         let (_, pubkey) = pair_ensure_hub_key(hub_home, &mut rep.lines)?;
         rep.scripts.insert(
@@ -1056,10 +1060,276 @@ pub(crate) fn pair_executor(
     } else {
         rep.scripts.insert("apply".into(), apply_script);
     }
-    let _ = (now, actor, config, config_text, alias_block);
+    let _ = (decision, actor, config, config_text, alias_block);
     Err(anyhow!(
         "pair live apply is waiting on cross-slice executor/store implementations"
     ))
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{TEST_NOW, count, new_store};
+    use crate::test_helpers_f6::invoke;
+    use std::sync::{LazyLock, Mutex};
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct FakeSsh {
+        calls: usize,
+        out: String,
+        require_metadata: bool,
+    }
+
+    static PAIR_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    static FAKE_SSH: LazyLock<Mutex<FakeSsh>> = LazyLock::new(|| Mutex::new(FakeSsh::default()));
+
+    fn fake_run_ssh(
+        _cancel: &pulse_bus::CancellationToken,
+        _argv: &[String],
+        stdin: &[u8],
+        _timeout: Duration,
+    ) -> anyhow::Result<(i32, String, String)> {
+        let mut fake = FAKE_SSH.lock().expect("fake ssh");
+        fake.calls += 1;
+        let script = String::from_utf8_lossy(stdin);
+        if !script.contains("printf 'uname=%s\\n'") {
+            panic!("dry run sent a non-inspection script");
+        }
+        if fake.require_metadata && !script.contains("hands_buildinfo=") {
+            panic!("missing metadata in the read-only inspection script");
+        }
+        Ok((0, fake.out.clone(), String::new()))
+    }
+
+    #[test]
+    fn pair_dry_run_hands_diagnostics() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = PAIR_TEST_LOCK.lock().expect("pair test lock");
+        let template = b"#!/bin/sh\n# pulse-hands v2.0.0\nexit 0\n".to_vec();
+        let template_hash = sha256_bytes(template.clone());
+        let modified_hash = sha256_bytes(b"#!/bin/sh\n# pulse-hands v2.0.0\nexit 1\n".to_vec());
+        for (name, version, hash, want) in [
+            (
+                "same",
+                "v2.0.0".to_string(),
+                template_hash.clone(),
+                "present".to_string(),
+            ),
+            (
+                "same-version-edited",
+                "v2.0.0".to_string(),
+                modified_hash.clone(),
+                format!(
+                    "differs (installed v2.0.0 {}, template v2.0.0 {})",
+                    &modified_hash[..7],
+                    &template_hash[..7]
+                ),
+            ),
+            (
+                "unrecognized-old-version",
+                "v1.0.0".to_string(),
+                modified_hash.clone(),
+                format!(
+                    "differs (installed v1.0.0 {}, template v2.0.0 {})",
+                    &modified_hash[..7],
+                    &template_hash[..7]
+                ),
+            ),
+            (
+                "shipped-legacy",
+                String::new(),
+                "c75aba6a43bc7db6f640fc145358e5f41304ca2975946e86f0ada9bb79da5118".to_string(),
+                format!(
+                    "older (installed legacy-ccb0790 c75aba6, template v2.0.0 {})",
+                    &template_hash[..7]
+                ),
+            ),
+            (
+                "edited-legacy",
+                "legacy-ccb0790".to_string(),
+                "c75aba6a43bc7db6f640fc145358e5f41304ca2975946e86f0ada9bb79da5119".to_string(),
+                format!(
+                    "differs (installed legacy-ccb0790 c75aba6, template v2.0.0 {})",
+                    &template_hash[..7]
+                ),
+            ),
+            (
+                "unversioned",
+                String::new(),
+                modified_hash.clone(),
+                format!(
+                    "differs (installed unknown {}, template v2.0.0 {})",
+                    &modified_hash[..7],
+                    &template_hash[..7]
+                ),
+            ),
+            (
+                "missing-hash",
+                "v1.0.0".to_string(),
+                String::new(),
+                format!(
+                    "differs (installed v1.0.0 unknown, template v2.0.0 {})",
+                    &template_hash[..7]
+                ),
+            ),
+            (
+                "short-hash",
+                "v1.0.0".to_string(),
+                "c75aba6".to_string(),
+                format!(
+                    "differs (installed v1.0.0 unknown, template v2.0.0 {})",
+                    &template_hash[..7]
+                ),
+            ),
+        ] {
+            let s = new_store();
+            let hub = tempfile::tempdir().expect("hub");
+            let events = count(&s, "SELECT COUNT(*) AS n FROM events", &[]);
+            let old_ssh = crate::executor::run_ssh_hook();
+            let old_binary = set_hands_binary(Box::new({
+                let template = template.clone();
+                move |arch| {
+                    assert_eq!(arch, "amd64", "{name}");
+                    Ok((template.clone(), "fixture".to_string()))
+                }
+            }));
+            crate::executor::set_run_ssh(fake_run_ssh);
+            {
+                let mut fake = FAKE_SSH.lock().expect("fake ssh");
+                *fake = FakeSsh {
+                    calls: 0,
+                    out: format!(
+                        "uname=Linux\narch=x86_64\nsudo=yes\nhands=differs\ndropin_dir=yes\nremotes=0\nhands_version={version}\nhands_sha256={hash}\n"
+                    ),
+                    require_metadata: false,
+                };
+            }
+            let rep = pair_executor(
+                &s,
+                "admin@example.invalid".into(),
+                "hands-two".into(),
+                TEST_NOW.into(),
+                PairOpts {
+                    workdir: "/srv/pulse".into(),
+                    workers: 1,
+                    projects: "*".into(),
+                    dry_run: true,
+                    hub_home: hub.path().display().to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+            .expect("report");
+            crate::executor::restore_run_ssh(old_ssh);
+            let _ = set_hands_binary(old_binary);
+            let hands_line = rep
+                .lines
+                .iter()
+                .find(|l| l.starts_with("  hands="))
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(hands_line, format!("  hands={want}"), "{name}");
+            assert!(rep.ok, "{name}: report not ok");
+            assert_eq!(FAKE_SSH.lock().expect("fake ssh").calls, 1, "{name}");
+            assert!(
+                crate::executor::executor_row(&s, "hands-two").is_empty()
+                    && count(&s, "SELECT COUNT(*) AS n FROM events", &[]) == events,
+                "inspection changed the store"
+            );
+            assert!(
+                std::fs::read_dir(hub.path())
+                    .expect("hub read")
+                    .next()
+                    .is_none(),
+                "inspection changed the hub home"
+            );
+        }
+    }
+
+    #[test]
+    fn pair_inspect_alias() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = PAIR_TEST_LOCK.lock().expect("pair test lock");
+        let s = new_store();
+        let home = tempfile::tempdir().expect("home");
+        let old_home = std::env::var("HOME").ok();
+        let _env = pulse_testutil::setenv("HOME", home.path());
+        let old_ssh = crate::executor::run_ssh_hook();
+        let old_binary = set_hands_binary(Box::new(|_| {
+            Ok((b"#!/bin/sh\n# pulse-hands v2\n".to_vec(), "fixture".into()))
+        }));
+        crate::executor::set_run_ssh(fake_run_ssh);
+        {
+            let mut fake = FAKE_SSH.lock().expect("fake ssh");
+            *fake = FakeSsh {
+                    calls: 0,
+                    out: "uname=Linux\narch=x86_64\nsudo=yes\nhands=differs\ndropin_dir=yes\nremotes=0\nhands_version=v1\n".into(),
+                    require_metadata: true,
+                };
+        }
+        let events = count(&s, "SELECT COUNT(*) AS n FROM events", &[]);
+        let (out, err_text, code) = invoke(
+            &s,
+            "pair",
+            "",
+            &["admin@example.invalid", "--name", "hands-two", "--inspect"],
+        );
+        assert!(
+            code == 0
+                && out.contains("hands=differs (installed v1 unknown, template v2 ")
+                && FAKE_SSH.lock().expect("fake ssh").calls == 1,
+            "inspect alias: code={code}, stderr={err_text:?}\n{out}"
+        );
+        assert!(
+            count(&s, "SELECT COUNT(*) AS n FROM events", &[]) == events
+                && crate::executor::executor_row(&s, "hands-two").is_empty(),
+            "inspect alias changed the store"
+        );
+        let _ = set_hands_binary(Box::new(|_| anyhow::bail!("template unavailable")));
+        let err = pair_executor(
+            &s,
+            "admin@example.invalid".into(),
+            "hands-two".into(),
+            TEST_NOW.into(),
+            PairOpts {
+                workdir: "/srv/pulse".into(),
+                workers: 1,
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .expect_err("template failure");
+        assert!(
+            err.to_string().contains("template unavailable")
+                && FAKE_SSH.lock().expect("fake ssh").calls == 2,
+            "template failure: {err}"
+        );
+        let err = pair_executor(
+            &s,
+            "admin@example.invalid".into(),
+            "hands-two".into(),
+            TEST_NOW.into(),
+            PairOpts {
+                workdir: "/srv/pulse".into(),
+                workers: 1,
+                dry_run: true,
+                actor: "worker".into(),
+                ..Default::default()
+            },
+        )
+        .expect_err("agent gate");
+        assert!(
+            !err.to_string().is_empty() && FAKE_SSH.lock().expect("fake ssh").calls == 2,
+            "inspection bypassed the agent gate: {err}"
+        );
+        crate::executor::restore_run_ssh(old_ssh);
+        let _ = set_hands_binary(old_binary);
+        if let Some(home) = old_home {
+            let _env = pulse_testutil::setenv("HOME", home);
+        }
+    }
 }
 
 fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {

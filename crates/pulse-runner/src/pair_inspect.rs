@@ -1,9 +1,8 @@
 #![allow(dead_code)]
 
 use base64::Engine;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::{LazyLock, RwLock};
+use std::sync::LazyLock;
 
 pub(crate) const PAIR_HANDS_MODULE: &str = "github.com/manishtiwari25/pulse";
 pub(crate) static PAIR_HANDS_VERSION_RE: LazyLock<regex::Regex> =
@@ -205,10 +204,10 @@ pub(crate) fn pair_hands_version(data: Vec<u8>) -> String {
 
 /// Go: func pairInstalledHandsVersion(insp map[string]string) string
 pub(crate) fn pair_installed_hands_version(insp: BTreeMap<String, String>) -> String {
-    if let Some(version) = insp.get("hands_version") {
-        if PAIR_HANDS_VERSION_RE.is_match(version) {
-            return version.clone();
-        }
+    if let Some(version) = insp.get("hands_version")
+        && PAIR_HANDS_VERSION_RE.is_match(version)
+    {
+        return version.clone();
     }
     let encoded = insp.get("hands_buildinfo").cloned().unwrap_or_default();
     if encoded.len() > 12_000 {
@@ -275,6 +274,9 @@ fn parse_buildinfo_text(text: &str) -> Option<String> {
             version = parts.get(1).copied().unwrap_or("(devel)").to_string();
         } else if let Some(rest) = line.strip_prefix("build\t") {
             if let Some(v) = rest.strip_prefix("-ldflags=") {
+                if v.starts_with('"') && !v.ends_with('"') {
+                    return Some("unknown".into());
+                }
                 ldflags = v.trim_matches('"').to_string();
             } else if let Some(v) = rest.strip_prefix("vcs.revision=") {
                 revision = v.to_string();
@@ -301,10 +303,9 @@ fn parse_buildinfo_text(text: &str) -> Option<String> {
                 continue;
             }
             if let Some(v) = arg.strip_prefix(&format!("{PAIR_HANDS_MODULE}/internal/cli.version="))
+                && !v.is_empty()
             {
-                if !v.is_empty() {
-                    version = v.to_string();
-                }
+                version = v.to_string();
             }
             i += 1;
         }
@@ -324,5 +325,460 @@ fn parse_buildinfo_text(text: &str) -> Option<String> {
         Some(version)
     } else {
         Some("unknown".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use std::collections::BTreeMap;
+    use std::io::Write;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn b64(text: &str) -> String {
+        base64::engine::general_purpose::STANDARD.encode(text)
+    }
+
+    fn build_info(module_version: &str, flags: &str, revision: &str) -> serde_json::Value {
+        serde_json::json!({
+            "Main": {"Path": PAIR_HANDS_MODULE, "Version": module_version},
+            "Settings": [
+                {"Key": "vcs.revision", "Value": revision},
+                {"Key": "vcs.modified", "Value": "true"},
+                {"Key": "-ldflags", "Value": flags}
+            ]
+        })
+    }
+
+    fn write_exe(path: &Path, text: &str) {
+        std::fs::write(path, text).expect("write executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod executable");
+        }
+    }
+
+    #[test]
+    fn pair_hands_build_version() {
+        let _serial = crate::test_helpers::serial();
+        let revision = "abcdef01".repeat(5);
+        for (name, module_version, flags, want) in [
+            ("release", "v2.3.4", "", "v2.3.4"),
+            ("development", "(devel)", "", "dev-abcdef01abcd-dirty"),
+            (
+                "linked",
+                "(devel)",
+                "-s -w -X github.com/manishtiwari25/pulse/internal/cli.version=v2.4.0",
+                "v2.4.0",
+            ),
+            (
+                "linked-equals",
+                "(devel)",
+                "-X=github.com/manishtiwari25/pulse/internal/cli.version=v2.4.1",
+                "v2.4.1",
+            ),
+            (
+                "linked-quoted",
+                "(devel)",
+                "-X 'github.com/manishtiwari25/pulse/internal/cli.version=v2.4.2'",
+                "v2.4.2",
+            ),
+            (
+                "linked-precedence",
+                "v2.3.4",
+                "-X github.com/manishtiwari25/pulse/internal/cli.version=v2.4.3",
+                "v2.4.3",
+            ),
+            (
+                "linked-empty",
+                "v2.3.4",
+                "-X github.com/manishtiwari25/pulse/internal/cli.version=",
+                "v2.3.4",
+            ),
+            (
+                "unrelated-override",
+                "v2.3.4",
+                "-X another/package.version=v9.0.0",
+                "v2.3.4",
+            ),
+            (
+                "unsafe-version",
+                "(devel)",
+                "-X 'github.com/manishtiwari25/pulse/internal/cli.version=v2.4.3\nhands=present'",
+                "unknown",
+            ),
+        ] {
+            let info = build_info(module_version, flags, &revision);
+            assert_eq!(super::pair_hands_build_version(&info), want, "{name}");
+            let text = format!(
+                "mod\t{PAIR_HANDS_MODULE}\t{module_version}\t\nbuild\t-ldflags=\"{flags}\"\nbuild\tvcs.revision={revision}\nbuild\tvcs.modified=true\n"
+            );
+            assert_eq!(
+                super::pair_installed_hands_version(BTreeMap::from([(
+                    "hands_buildinfo".into(),
+                    b64(&text)
+                )])),
+                want,
+                "{name} installed"
+            );
+        }
+        for encoded in [
+            "not base64".to_string(),
+            b64("mod\tnot-pulse\tv9.0.0\n"),
+            b64("build\tbroken\n"),
+            "A".repeat(12000),
+        ] {
+            assert_eq!(
+                super::pair_installed_hands_version(BTreeMap::from([(
+                    "hands_buildinfo".into(),
+                    encoded
+                )])),
+                "unknown"
+            );
+        }
+        for (text, want) in [
+            ("# pulse-hands bad/version\n".to_string(), "unknown"),
+            ("#!/bin/sh\n# pulse-hands v1\n".to_string(), "v1"),
+            ("#!/bin/sh\r\n# pulse-hands v1\r\n".to_string(), "v1"),
+            (format!("# pulse-hands {}\n", "v".repeat(81)), "unknown"),
+        ] {
+            assert_eq!(super::pair_hands_version(text.into_bytes()), want);
+        }
+    }
+
+    #[test]
+    fn pair_inspect_hands_script() {
+        let _serial = crate::test_helpers::serial();
+        let shared_bin = tempfile::tempdir().expect("shared bin");
+        for name in ["head", "sed", "grep", "base64", "tr"] {
+            let tool = which::which(name).unwrap_or_else(|_| panic!("{name} missing"));
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(tool, shared_bin.path().join(name)).expect("symlink tool");
+        }
+        let hasher_bin = shared_bin.path().join("hasher");
+        let fail_bin = shared_bin.path().join("fail");
+        std::fs::create_dir(&hasher_bin).expect("hasher dir");
+        std::fs::create_dir(&fail_bin).expect("fail dir");
+        write_exe(
+            &hasher_bin.join("sha256sum"),
+            "#!/bin/sh\n[ \"$1\" = \"$PAIR_TEST_PATH\" ] || exit 2\nprintf '%s  %s\\n' \"$PAIR_TEST_HASH\" \"$1\"\n",
+        );
+        write_exe(
+            &fail_bin.join("sha256sum"),
+            "#!/bin/sh\necho 'hash read failed' >&2\nexit 1\n",
+        );
+        let build_info = format!(
+            "mod\t{PAIR_HANDS_MODULE}\t(devel)\t\nbuild\t-ldflags=\"-X {PAIR_HANDS_MODULE}/internal/cli.version=v3.2.1\"\nbuild\tvcs.revision={}\nbuild\tvcs.modified=false\n",
+            "ab".repeat(20)
+        );
+        for tc in [
+            (
+                "script",
+                "#!/bin/sh\n# pulse-hands v1.2.3\n",
+                "v1.2.3",
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                "crlf",
+                "#!/bin/sh\r\n# pulse-hands v1.2.3\r\n",
+                "v1.2.3",
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                "legacy-path",
+                "#!/bin/sh\n# pulse-hands v1.2.3\n",
+                "v1.2.3",
+                true,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                "matching",
+                "#!/bin/sh\n# pulse-hands v1.2.3\n",
+                "v1.2.3",
+                false,
+                true,
+                false,
+                false,
+                false,
+            ),
+            (
+                "go-build-info",
+                &format!("\u{7f}ELF\u{0}\n{build_info}\u{0}"),
+                "v3.2.1",
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                "unversioned",
+                "#!/bin/sh\n",
+                "unknown",
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                "missing-sha256sum",
+                "#!/bin/sh\n# pulse-hands v1.2.3\n",
+                "v1.2.3",
+                false,
+                false,
+                true,
+                false,
+                false,
+            ),
+            (
+                "hash-error",
+                "#!/bin/sh\n",
+                "unknown",
+                false,
+                false,
+                false,
+                true,
+                false,
+            ),
+            ("absent", "", "unknown", false, false, false, false, true),
+        ] {
+            let (name, content, want_version, legacy, same, no_hash, hash_fails, absent) = tc;
+            let dir = tempfile::tempdir().expect("case dir");
+            let path = dir.path().join("hands ' file");
+            let installed_path = if legacy {
+                path.with_file_name("hands ' file.sh")
+            } else {
+                path.clone()
+            };
+            let marker = dir.path().join("executed");
+            let content = format!(
+                "{content}: > {}\n",
+                crate::util::shell_quote(&marker.display().to_string())
+            );
+            if !absent {
+                write_exe(&installed_path, &content);
+                if !legacy {
+                    write_exe(
+                        &path.with_file_name("hands ' file.sh"),
+                        "# pulse-hands wrong\n",
+                    );
+                }
+            }
+            let mut hash = crate::pair::sha256_bytes(content.clone().into_bytes());
+            let path_sep = if cfg!(windows) { ";" } else { ":" };
+            let search_path = if no_hash {
+                shared_bin.path().display().to_string()
+            } else if hash_fails {
+                format!(
+                    "{}{}{}",
+                    fail_bin.display(),
+                    path_sep,
+                    shared_bin.path().display()
+                )
+            } else {
+                format!(
+                    "{}{}{}",
+                    hasher_bin.display(),
+                    path_sep,
+                    shared_bin.path().display()
+                )
+            };
+            let (want_state, expected_hash) = if same {
+                ("present", hash.clone())
+            } else {
+                ("differs", String::new())
+            };
+            let mut cmd = Command::new("/bin/sh");
+            cmd.arg("-s")
+                .env("PATH", search_path)
+                .env("PAIR_TEST_PATH", installed_path.display().to_string())
+                .env("PAIR_TEST_HASH", &hash)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = cmd.spawn().expect("spawn shell");
+            child
+                .stdin
+                .as_mut()
+                .expect("stdin")
+                .write_all(
+                    format!(
+                        "set -u\n{}",
+                        super::pair_inspect_hands_script(path.display().to_string(), expected_hash)
+                    )
+                    .as_bytes(),
+                )
+                .expect("write stdin");
+            let out = child.wait_with_output().expect("wait shell");
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            if hash_fails {
+                assert!(
+                    !out.status.success() && combined.contains("hash read failed"),
+                    "hash error not surfaced: {combined}"
+                );
+                continue;
+            }
+            assert!(out.status.success(), "inspect {name}: {combined}");
+            let (insp, _) = crate::pair::pair_parse_inspection(
+                String::from_utf8_lossy(&out.stdout).to_string(),
+            );
+            if absent {
+                assert_eq!(insp, BTreeMap::from([("hands".into(), "absent".into())]));
+                continue;
+            }
+            if no_hash {
+                hash = "unknown".into();
+            }
+            assert_eq!(
+                insp.get("hands").map(String::as_str),
+                Some(want_state),
+                "{name}: {insp:?}"
+            );
+            assert_eq!(
+                insp.get("hands_sha256").map(String::as_str),
+                Some(hash.as_str()),
+                "{name}: {insp:?}"
+            );
+            assert_eq!(
+                super::pair_installed_hands_version(insp),
+                want_version,
+                "{name}"
+            );
+            assert!(
+                std::fs::metadata(&marker).is_err(),
+                "installed artifact was executed"
+            );
+        }
+    }
+
+    #[test]
+    fn pair_hands_legacy_order() {
+        let _serial = crate::test_helpers::serial();
+        let newer = b"# pulse-hands new\n".to_vec();
+        let older = b"# pulse-hands old\n".to_vec();
+        for (installed, template, want) in [
+            (
+                b"#!/bin/sh\n# pulse-hands v2.0.0\nexit 0\n".to_vec(),
+                b"#!/bin/sh\n# pulse-hands v2.0.0\nexit 0\n".to_vec(),
+                "present",
+            ),
+            (older.clone(), newer.clone(), "differs (installed unknown "),
+            (newer.clone(), older.clone(), "differs (installed unknown "),
+            (older, Vec::new(), "differs (installed unknown "),
+        ] {
+            let insp = BTreeMap::from([
+                ("hands".into(), "differs".into()),
+                ("hands_sha256".into(), crate::pair::sha256_bytes(installed)),
+            ]);
+            assert!(
+                super::pair_hands_summary(insp, template).starts_with(want),
+                "want prefix {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn pair_hands_go_binary_metadata() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().expect("go fixture dir");
+        std::fs::create_dir_all(dir.path().join("internal/cli")).expect("cli dir");
+        let version_source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("internal/cli/version.go"),
+        )
+        .expect("read version.go");
+        std::fs::write(
+            dir.path().join("go.mod"),
+            format!("module {PAIR_HANDS_MODULE}\n\ngo 1.26\n"),
+        )
+        .expect("write go.mod");
+        std::fs::write(dir.path().join("internal/cli/version.go"), version_source)
+            .expect("write version.go");
+        std::fs::write(
+            dir.path().join("main.go"),
+            format!(
+                "package main\nimport (\n\"fmt\"\n\"{PAIR_HANDS_MODULE}/internal/cli\"\n)\nfunc main() {{ fmt.Println(cli.Version()) }}\n"
+            ),
+        )
+        .expect("write main.go");
+        let path = dir.path().join("pulse-hands");
+        let out = Command::new("go")
+            .args([
+                "build",
+                "-o",
+                &path.display().to_string(),
+                "-ldflags",
+                &format!("-X {PAIR_HANDS_MODULE}/internal/cli.version=v8.7.6"),
+                ".",
+            ])
+            .current_dir(dir.path())
+            .env("GOOS", "linux")
+            .env("GOARCH", "amd64")
+            .env("CGO_ENABLED", "0")
+            .env("GOWORK", "off")
+            .env("GOPROXY", "off")
+            .env("GOSUMDB", "off")
+            .env("GOTOOLCHAIN", "local")
+            .env("GOFLAGS", "")
+            .output()
+            .expect("spawn go build");
+        assert!(
+            out.status.success(),
+            "build fixture: {}\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let data = std::fs::read(&path).expect("read binary");
+        assert_eq!(super::pair_hands_version(data), "v8.7.6");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-s")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn shell");
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(
+                format!(
+                    "set -u\n{}",
+                    super::pair_inspect_hands_script(path.display().to_string(), String::new())
+                )
+                .as_bytes(),
+            )
+            .expect("write stdin");
+        let out = child.wait_with_output().expect("wait shell");
+        assert!(
+            out.status.success(),
+            "inspect Go binary: {}\n{}{}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let (insp, _) =
+            crate::pair::pair_parse_inspection(String::from_utf8_lossy(&out.stdout).to_string());
+        assert_eq!(super::pair_installed_hands_version(insp), "v8.7.6");
     }
 }

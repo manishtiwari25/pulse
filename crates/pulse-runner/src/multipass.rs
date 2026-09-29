@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -140,7 +140,7 @@ pub(crate) fn multipass_describe(
             err_text,
             anyhow!(""),
         )
-        .map(|_| None);
+        .map(|_| unreachable!());
     }
     #[derive(Deserialize, Default)]
     struct Res {
@@ -171,7 +171,7 @@ impl MultipassProvider {
         &self,
         ctx: &pulse_bus::CancellationToken,
         req: crate::provider::ProvisionRequest,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<crate::provider::Machine> {
         let (s, hub_home, log) = crate::provider::provision_start("multipass".into(), req.clone())?;
         let cfg = multipass_settings(&s, req.size.clone())?;
         let (rc, out, err_text) =
@@ -184,7 +184,7 @@ impl MultipassProvider {
                 err_text,
                 anyhow!(""),
             )
-            .map(|_| None);
+            .map(|_| unreachable!());
         }
         log(
             "multipass: %s",
@@ -226,7 +226,7 @@ impl MultipassProvider {
                         err_text,
                         anyhow!(""),
                     )
-                    .map(|_| Some(Box::new(m)));
+                    .map(|_| m);
                 }
             }
         } else {
@@ -270,7 +270,7 @@ impl MultipassProvider {
                     err_text,
                     anyhow!(""),
                 )
-                .map(|_| Some(Box::new(m)));
+                .map(|_| m);
             }
         }
         let mut ip = String::new();
@@ -310,8 +310,8 @@ impl MultipassProvider {
             hostkeys = crate::provider::host_key_lines(out);
             Ok(!hostkeys.is_empty())
         })?;
-        crate::provider::provision_finish(ctx, req, &m, hub_home, ip, hostkeys, log)?;
-        Ok(Some(Box::new(m)))
+        crate::provider::provision_finish(ctx, req, &mut m, hub_home, ip, hostkeys, log)?;
+        Ok(m)
     }
     /// Go: func (p multipassProvider) Release(ctx context.Context, m *Machine) error
     pub(crate) fn release(
@@ -370,7 +370,7 @@ impl MultipassProvider {
         _unused: &pulse_store::Store,
         executor: String,
         host: String,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<Option<crate::provider::Machine>> {
         let (rc, out, err_text) = (RUN_MULTIPASS.read().unwrap())(
             ctx,
             vec!["list".into(), "--format".into(), "json".into()],
@@ -408,13 +408,13 @@ impl MultipassProvider {
             }
             let ip = i.ipv4.first().cloned().unwrap_or_default();
             if i.name == executor || (!host.is_empty() && ip == host) {
-                return Ok(Some(Box::new(crate::provider::Machine {
+                return Ok(Some(crate::provider::Machine {
                     provider: "multipass".into(),
                     name: i.name,
                     tags: BTreeMap::from([(crate::provider::TAG_HANDS.into(), "hands".into())]),
                     detail: BTreeMap::from([("public_ip".into(), ip)]),
                     ..Default::default()
-                })));
+                }));
             }
         }
         Ok(None)
@@ -559,7 +559,7 @@ impl crate::provider::Provider for MultipassProvider {
         &self,
         cancel: &pulse_bus::CancellationToken,
         req: crate::provider::ProvisionRequest,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<crate::provider::Machine> {
         self.provision(cancel, req)
     }
     fn release(
@@ -582,7 +582,7 @@ impl crate::provider::Provider for MultipassProvider {
         s: &pulse_store::Store,
         executor: &str,
         host: &str,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<Option<crate::provider::Machine>> {
         self.find(cancel, s, executor.to_string(), host.to_string())
     }
     fn stop(
@@ -604,5 +604,44 @@ impl crate::provider::Provider for MultipassProvider {
     }
     fn start_hint(&self, m: &crate::provider::Machine) -> String {
         self.start_hint(m)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::new_store;
+
+    #[test]
+    fn multipass_size_parsing() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let cfg = multipass_settings(&s, String::new()).expect("defaults");
+        assert_eq!(cfg.cpus, "2");
+        assert_eq!(cfg.memory, "4G");
+        assert_eq!(cfg.disk, "32G");
+        assert_eq!(cfg.image, "24.04");
+        let cfg = multipass_settings(&s, "cpus=4, memory=8GiB".to_string()).expect("subset");
+        assert_eq!(cfg.cpus, "4");
+        assert_eq!(cfg.memory, "8GiB");
+        assert_eq!(cfg.disk, "");
+        for bad in [
+            "cpus=0",
+            "mem=lots",
+            "disk=32X",
+            "size=big",
+            "cpus",
+            "cpus=2,,mem=",
+        ] {
+            assert!(
+                multipass_settings(&s, bad.to_string()).is_err(),
+                "{bad:?} accepted"
+            );
+        }
+        assert!(multipass_bytes("512M".to_string()));
+        assert!(multipass_bytes("1.5G".to_string()));
+        assert!(multipass_bytes("20GB".to_string()));
+        assert!(!multipass_bytes("G".to_string()));
+        assert!(!multipass_bytes("4TB".to_string()));
     }
 }

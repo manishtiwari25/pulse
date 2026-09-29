@@ -1,3 +1,8 @@
+#![allow(
+    dead_code,
+    reason = "ported Go runner APIs are consumed incrementally across slices"
+)]
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -14,11 +19,9 @@ pub(crate) fn brief_fields(body: String) -> BTreeMap<String, String> {
         };
         let key = key.trim_matches(['*', ' ', '\t']).to_lowercase();
         let value = value.trim().trim_matches('`').to_string();
-        if out.contains_key(&key) {
-            out.insert(key, String::new());
-        } else {
-            out.insert(key, value);
-        }
+        out.entry(key)
+            .and_modify(|v| *v = String::new())
+            .or_insert(value);
     }
     out
 }
@@ -151,6 +154,7 @@ pub(crate) fn land_experiment_context(
     {
         return ("stopped".into(), why);
     }
+
     let run_id = last_run_id(s, job.str("id"));
     let prior = match crate::landing_evidence::experiment_archive(
         s,
@@ -478,5 +482,268 @@ pub(crate) fn land_experiment_context(
             )
         }
         Err(e) => ("error".into(), crate::run::err_message(&e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::*;
+    use crate::test_helpers_f5::*;
+
+    #[test]
+    fn missing_measured_keep_is_not_delivered() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, calls) = measured_keep_fixture();
+        defer_measured_keep(&s, project.clone(), job.clone(), &root);
+        run(&root, &["git", "branch", "-D", &job.str("branch")]);
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "missing", "missing kept artifact: {state}: {note}");
+        let current = job_row(&s, &job.str("id"));
+        assert_eq!(
+            current.str("status"),
+            "failed",
+            "missing kept artifact was not terminal non-success: {current:?}"
+        );
+        assert_eq!(current.str("branch"), "");
+        assert!(
+            pulse_evolve::plan_feedback(&s, "proj", "daemon")
+                .unwrap()
+                .is_none()
+        );
+        let archives = pulse_evolve::list_archive(&s, "proj").unwrap();
+        assert_eq!(archives.len(), 2, "archives: {archives:?}");
+        assert!(archives[0].kept);
+        assert_eq!(archives[0].variant_score, 0.9);
+        assert_eq!(*calls.lock().unwrap(), 2);
+        assert_eq!(pulse_evolve::status(&s, "proj").unwrap().cycles, 1);
+    }
+
+    #[test]
+    fn measured_landing_records_current_archive() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        for path in ["landed", "resumed", "merged"] {
+            let (s, project, job, root, calls) = measured_keep_fixture();
+            if path != "landed" {
+                defer_measured_keep(&s, project.clone(), job.clone(), &root);
+                std::fs::write(std::path::Path::new(&root).join("README.md"), "# proj\n").unwrap();
+                if path == "merged" {
+                    run(&root, &["git", "merge", "--ff-only", &job.str("branch")]);
+                }
+            }
+            let (state, note) = land_experiment(
+                &s,
+                project,
+                job.clone(),
+                "daemon".into(),
+                TEST_NOW.into(),
+                true,
+            );
+            let want_state = if path == "merged" { "merged" } else { "landed" };
+            assert_eq!(
+                state, want_state,
+                "successful fake landing: {state}: {note}"
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = ?
+                    AND json_extract(detail, '$.project') = 'proj' AND json_extract(detail, '$.job') = ?
+                    AND json_extract(detail, '$.archive') = 'B-002' AND json_extract(detail, '$.run_id') = ?",
+                    &[&format!("land.{want_state}"), &job.str("branch"), &job.str("id"), &last_run_id(&s, job.str("id"))],
+                ),
+                1,
+                "{path} left no durable current-run/current-archive landing proof"
+            );
+            assert!(
+                pulse_evolve::plan_feedback(&s, "proj", "daemon")
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                pulse_evolve::plan_feedback(&s, "proj", "daemon")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(*calls.lock().unwrap(), 2);
+            assert_eq!(
+                count(&s, "SELECT COUNT(*) AS n FROM evolution_archive", &[]),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn landing_receipt_failure_retries_finalization() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, _root, calls) = measured_keep_fixture();
+        exec1(
+            &s,
+            "CREATE TRIGGER reject_finalization BEFORE INSERT ON events WHEN NEW.action IN ('land.landed', 'land.merged', 'land.dropped') BEGIN SELECT RAISE(ABORT, 'fake finalization refused'); END",
+            &[],
+        );
+        let (state, note) = land_experiment(
+            &s,
+            project.clone(),
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(
+            state, "error",
+            "receipt failure was hidden: {state}: {note}"
+        );
+        assert!(
+            note.contains("fake finalization refused"),
+            "receipt failure was hidden: {state}: {note}"
+        );
+        let current = job_row(&s, &job.str("id"));
+        assert_eq!(current.str("status"), "done");
+        assert_eq!(current.str("branch"), job.str("branch"));
+        assert!(
+            pulse_evolve::plan_feedback(&s, "proj", "daemon")
+                .unwrap()
+                .is_none()
+        );
+        exec1(&s, "DROP TRIGGER reject_finalization", &[]);
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job_row(&s, &job.str("id")),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(
+            state, "merged",
+            "receipt retry did not finalize: {state}: {note}"
+        );
+        assert_eq!(*calls.lock().unwrap(), 2);
+        assert_eq!(
+            count(&s, "SELECT COUNT(*) AS n FROM evolution_archive", &[]),
+            2
+        );
+        assert!(
+            pulse_evolve::plan_feedback(&s, "proj", "daemon")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn landing_receipt_failure_after_evidence_keeps_carrier() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, _root, _calls) = measured_keep_fixture();
+        exec1(
+            &s,
+            "CREATE TRIGGER reject_finalization BEFORE INSERT ON events WHEN NEW.action = 'land.landed' BEGIN SELECT RAISE(ABORT, 'fake finalization refused'); END",
+            &[],
+        );
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(
+            state, "error",
+            "receipt failure was hidden: {state}: {note}"
+        );
+        assert!(
+            note.contains("fake finalization refused"),
+            "receipt failure was hidden: {state}: {note}"
+        );
+        let current = job_row(&s, &job.str("id"));
+        assert_eq!(current.str("status"), "done");
+        assert_eq!(current.str("branch"), job.str("branch"));
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.landed'",
+                &[]
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn discard_finalization_retries_without_another_measurement() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, calls) = measured_keep_fixture();
+        let before = ref_of(&root, "HEAD");
+        let _old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, _opts| {
+                *calls.lock().unwrap() += 1;
+                let score = if r#ref == "main" { 0.8 } else { 0.7 };
+                Ok(pulse_evolve::Scores {
+                    project: slug.into(),
+                    total: score,
+                    ..Default::default()
+                })
+            }));
+        let lock = std::path::Path::new(&root)
+            .join(".git")
+            .join("refs")
+            .join("heads")
+            .join(format!("{}.lock", job.str("branch")));
+        std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        std::fs::write(&lock, "").unwrap();
+        let (state, note) = land_experiment(
+            &s,
+            project.clone(),
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(
+            state, "deferred",
+            "failed discard cleanup did not stay pending: {state}: {note}"
+        );
+        assert!(note.contains("archive B-002"));
+        assert_eq!(job_row(&s, &job.str("id")).str("branch"), job.str("branch"));
+        assert!(
+            pulse_evolve::plan_feedback(&s, "proj", "daemon")
+                .unwrap()
+                .is_none()
+        );
+        std::fs::remove_file(lock).unwrap();
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(
+            state, "dropped",
+            "discard did not finish after its cleanup gate opened: {state}: {note}"
+        );
+        assert_eq!(
+            count(&s, "SELECT COUNT(*) AS n FROM evolution_archive", &[]),
+            2
+        );
+        assert_eq!(ref_of(&root, "HEAD"), before);
+        let (exists, why) = crate::land::branch_exists(root, job.str("branch"));
+        assert!(
+            !exists && why.is_empty(),
+            "finalized discard retained the branch: {exists}, {why}"
+        );
     }
 }

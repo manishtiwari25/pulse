@@ -342,6 +342,32 @@ mod tests {
     use crate::test_helpers::new_store;
     use crate::util::Row;
     use serde_json::json;
+    use std::io::{Result as IoResult, Write};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedBuf {
+        fn string(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> IoResult<()> {
+            Ok(())
+        }
+    }
+
+    fn fake_probe_version() -> anyhow::Result<String> {
+        Ok("0.0.1-test".into())
+    }
 
     fn row(pairs: &[(&str, serde_json::Value)]) -> Row {
         let mut r = Row::new();
@@ -373,6 +399,7 @@ mod tests {
 
     #[test]
     fn remote_steps_mirror_applies_split_lines_and_missing_finish() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         let mut m = mirror(&s);
@@ -405,6 +432,7 @@ mod tests {
 
     #[test]
     fn remote_steps_mirror_finish_line() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         let mut m = mirror(&s);
@@ -424,6 +452,7 @@ mod tests {
 
     #[test]
     fn remote_steps_mirror_invalid_json_stops() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         let mut m = mirror(&s);
@@ -431,10 +460,42 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice: hands::probe"]
-    fn probe_advertises_steps() {}
+    fn probe_advertises_steps() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let workdir = tempfile::tempdir().unwrap();
+        let out = SharedBuf::default();
+        let (mut h, _env) = crate::test_helpers::new_test_hands(
+            &workdir.path().display().to_string(),
+            Some(Box::new(out.clone())),
+            None,
+        );
+        h.probe().unwrap();
+        let fields = crate::executor::parse_probe(&out.string());
+        assert_eq!(fields.get("heartbeat").map(String::as_str), Some("1"));
+        assert_eq!(fields.get("steps").map(String::as_str), Some("1"));
+    }
 
     #[test]
-    #[ignore = "cross-slice: hands::probe"]
-    fn probe_version_hook_without_path() {}
+    fn probe_version_hook_without_path() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let prev = *crate::hands::PROBE_VERSION.read().unwrap();
+        *crate::hands::PROBE_VERSION.write().unwrap() = fake_probe_version;
+        let workdir = tempfile::tempdir().unwrap();
+        let out = SharedBuf::default();
+        let (mut h, _env) = crate::test_helpers::new_test_hands(
+            &workdir.path().display().to_string(),
+            Some(Box::new(out.clone())),
+            None,
+        );
+        let _env = pulse_testutil::setenv("PATH", "");
+        h.probe().unwrap();
+        *crate::hands::PROBE_VERSION.write().unwrap() = prev;
+        let fields = crate::executor::parse_probe(&out.string());
+        assert_eq!(
+            fields.get("copilot").map(String::as_str),
+            Some("0.0.1-test")
+        );
+    }
 }

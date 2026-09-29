@@ -1,5 +1,10 @@
 //! Skeleton port of internal/runner/evolve_plan.go.
 
+#![allow(
+    dead_code,
+    reason = "ported Go runner APIs are consumed incrementally across slices"
+)]
+
 use std::collections::BTreeMap;
 use std::sync::{LazyLock, RwLock};
 
@@ -37,7 +42,7 @@ pub(crate) fn tend_evolve(
     s: &pulse_store::Store,
     _now: String,
     actor: String,
-    slugs: &[String],
+    slugs: impl AsRef<[String]>,
 ) -> Vec<String> {
     if s.setting("evolve.loop", "") != "1" {
         return Vec::new();
@@ -48,7 +53,7 @@ pub(crate) fn tend_evolve(
         actor
     };
     let mut lines = Vec::new();
-    for slug in slugs {
+    for slug in slugs.as_ref() {
         match pulse_evolve::plan_feedback(s, slug, &actor) {
             Err(e) => {
                 lines.push(format!(
@@ -125,4 +130,348 @@ pub(crate) fn tend_evolve(
 pub(crate) fn hard_stop_text(text: String) -> bool {
     let low = text.to_lowercase();
     low.contains("violation") || low.contains("hard stop") || low.contains("applyerror")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::*;
+    use crate::test_helpers_f5::*;
+
+    #[test]
+    fn tend_evolve_loop_off_does_nothing() {
+        let _serial = crate::test_helpers::serial();
+        reset_evolve_plan_reasons();
+        let s = new_store();
+        new_repo(&s);
+        let lines = tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+        assert!(lines.is_empty(), "loop off lines: {lines:?}");
+    }
+
+    #[test]
+    fn tend_evolve_plans_one_experiment() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        reset_evolve_plan_reasons();
+        let s = new_store();
+        new_repo(&s);
+        evolve_plan_ready(&s);
+        let suggestion = evolve_suggestion(&s);
+        let lines = tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+        let jobs = must_rows(&s, "SELECT * FROM jobs WHERE kind = 'experiment'", &[]);
+        assert_eq!(lines.len(), 1, "planned lines={lines:?} jobs={jobs:?}");
+        assert_eq!(jobs.len(), 1, "planned lines={lines:?} jobs={jobs:?}");
+        assert!(
+            lines[0].contains(&format!(
+                "planned experiment {} for proj: Experiment: Tune README",
+                jobs[0].str("id")
+            )),
+            "planned lines={lines:?} jobs={jobs:?}"
+        );
+        let job = &jobs[0];
+        assert_eq!(job.str("status"), "queued");
+        assert_eq!(job.str("source"), format!("suggestion:{}", suggestion.id));
+        assert_eq!(job.str("branch"), format!("evolve/{}", suggestion.id));
+        assert_eq!(job.int("priority"), 30);
+        assert_eq!(job.str("created_by"), "daemon");
+        let second = tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+        assert!(second.is_empty(), "second tick repeated a line: {second:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'experiment'",
+                &[]
+            ),
+            1
+        );
+        assert!(
+            s.agent("daemon").unwrap().is_none(),
+            "tend_evolve created a daemon agent row"
+        );
+    }
+
+    #[test]
+    fn tend_evolve_failed_violation_posts_gate_once() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        reset_evolve_plan_reasons();
+        let s = new_store();
+        new_repo(&s);
+        evolve_plan_ready(&s);
+        evolve_suggestion(&s);
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "experiment".into(),
+            "failed experiment".into(),
+            "brief".into(),
+            1,
+            30,
+            "suggestion:old".into(),
+            "daemon".into(),
+            true,
+        )
+        .unwrap();
+        crate::jobs::finish_job(
+            &s,
+            job.str("id"),
+            "daemon".into(),
+            "failed".into(),
+            "constraint violation: hard stop".into(),
+            String::new(),
+            job.int("generation"),
+        )
+        .unwrap();
+        let lines = tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+        assert_eq!(lines.len(), 1, "gate line: {lines:?}");
+        assert!(
+            lines[0].contains("owner question") && lines[0].contains(&job.str("id")),
+            "gate line: {lines:?}"
+        );
+        let second = tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+        assert!(
+            second.is_empty(),
+            "second gate tick repeated a line: {second:?}"
+        );
+        let questions = must_rows(
+            &s,
+            "SELECT * FROM posts WHERE kind = 'question' AND area = 'evolution' AND thread = 'loop-gate'",
+            &[],
+        );
+        assert_eq!(questions.len(), 1, "questions: {questions:?}");
+        assert_eq!(
+            questions[0].str("summary"),
+            "Evolution stopped; owner review needed"
+        );
+        assert!(
+            questions[0].str("body").contains(&job.str("id")),
+            "questions: {questions:?}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'experiment'",
+                &[]
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn tend_evolve_queues_measured_feedback_once() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        reset_evolve_plan_reasons();
+        let s = new_store();
+        new_repo(&s);
+        evolve_plan_ready(&s);
+        evolve_suggestion(&s);
+        tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+        let job = must_one(
+            &s,
+            "SELECT * FROM jobs WHERE kind = 'experiment' AND status = 'queued'",
+            &[],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES (?, ?, 'proposer', 'proj', ?, 'done')",
+            &[&format!("run-{}", job.str("id")), &job.str("id"), &TEST_NOW],
+        );
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            &[&TEST_NOW, &job.str("id")],
+        );
+        let job = job_row(&s, &job.str("id"));
+        let archive = pulse_evolve::archive_row(
+            &s,
+            pulse_evolve::ArchiveRow {
+                project: "proj".into(),
+                suggestion_post: job.str("source").trim_start_matches("suggestion:").into(),
+                hypothesis: "README gets clearer".into(),
+                branch: job.str("branch"),
+                baseline: Some(pulse_evolve::Scores {
+                    total: 0.8,
+                    ..Default::default()
+                }),
+                variant: Some(pulse_evolve::Scores {
+                    total: 0.9,
+                    ..Default::default()
+                }),
+                tolerance: 0.02,
+                kept: true,
+                run_id: format!("run-{}", job.str("id")),
+                note: "fake measured outcome".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::landing_evidence::record_landing(
+            &s,
+            must_one(&s, "SELECT * FROM projects WHERE slug = 'proj'", &[]),
+            job.str("branch"),
+            "daemon".into(),
+            "land.landed".into(),
+            " | fake finalization".into(),
+            crate::land::LandOpts {
+                job: job.clone(),
+                archive_id: archive.clone(),
+                run_id: format!("run-{}", job.str("id")),
+                ..Default::default()
+            },
+            std::collections::BTreeMap::from([("fake".into(), serde_json::json!(true))]),
+        )
+        .unwrap();
+        tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+        let source = format!("evolve-feedback:proj:{archive}");
+        let feedback = must_rows(&s, "SELECT * FROM jobs WHERE source = ?", &[&source]);
+        assert_eq!(
+            feedback.len(),
+            1,
+            "archive {archive}: got {} per-cycle reflection jobs",
+            feedback.len()
+        );
+        let brief = feedback[0].str("brief");
+        for want in [
+            &archive,
+            &job.str("id"),
+            "fake measured outcome",
+            "SUGGESTION:",
+            "Hypothesis:",
+            "owner goal",
+            "Product scope",
+        ] {
+            assert!(
+                brief.contains(want),
+                "feedback brief lacks {want:?}:\n{brief}"
+            );
+        }
+        assert_eq!(feedback[0].str("kind"), "reflect");
+        assert_eq!(feedback[0].int("tier"), 0);
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            &[&TEST_NOW, &feedback[0].str("id")],
+        );
+        reset_evolve_plan_reasons();
+        tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source = ?",
+                &[&source]
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn tend_evolve_feedback_requires_finalized_measurement() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        for state in [
+            "failed",
+            "missing-archive",
+            "landing",
+            "controller-running",
+            "stop",
+            "cap",
+        ] {
+            reset_evolve_plan_reasons();
+            let s = new_store();
+            new_repo(&s);
+            evolve_plan_ready(&s);
+            evolve_suggestion(&s);
+            tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+            let job = must_one(&s, "SELECT * FROM jobs WHERE kind = 'experiment'", &[]);
+            if state == "missing-archive" {
+                exec1(
+                    &s,
+                    "UPDATE jobs SET status = 'done', branch = '' WHERE id = ?",
+                    &[&job.str("id")],
+                );
+            } else {
+                exec1(
+                    &s,
+                    "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES (?, ?, 'proposer', 'proj', ?, 'done')",
+                    &[&format!("run-{}", job.str("id")), &job.str("id"), &TEST_NOW],
+                );
+                exec1(
+                    &s,
+                    "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+                    &[&TEST_NOW, &job.str("id")],
+                );
+                let job = job_row(&s, &job.str("id"));
+                let id = pulse_evolve::archive_row(
+                    &s,
+                    pulse_evolve::ArchiveRow {
+                        project: "proj".into(),
+                        suggestion_post: job.str("source").trim_start_matches("suggestion:").into(),
+                        hypothesis: "README gets clearer".into(),
+                        branch: job.str("branch"),
+                        baseline: Some(pulse_evolve::Scores {
+                            total: 0.8,
+                            ..Default::default()
+                        }),
+                        variant: Some(pulse_evolve::Scores {
+                            total: 0.7,
+                            ..Default::default()
+                        }),
+                        tolerance: 0.02,
+                        kept: false,
+                        run_id: format!("run-{}", job.str("id")),
+                        note: "fake measured outcome".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                crate::landing_evidence::record_landing(
+                    &s,
+                    must_one(&s, "SELECT * FROM projects WHERE slug = 'proj'", &[]),
+                    job.str("branch"),
+                    "daemon".into(),
+                    "land.dropped".into(),
+                    " | fake finalization".into(),
+                    crate::land::LandOpts {
+                        job: job.clone(),
+                        archive_id: id,
+                        run_id: format!("run-{}", job.str("id")),
+                        ..Default::default()
+                    },
+                    std::collections::BTreeMap::from([("fake".into(), serde_json::json!(true))]),
+                )
+                .unwrap();
+                match state {
+                    "failed" => exec1(
+                        &s,
+                        "UPDATE jobs SET status = 'failed' WHERE id = ?",
+                        &[&job.str("id")],
+                    ),
+                    "landing" => exec1(
+                        &s,
+                        "UPDATE jobs SET branch = ? WHERE id = ?",
+                        &[&job.str("branch"), &job.str("id")],
+                    ),
+                    "controller-running" => exec1(
+                        &s,
+                        "UPDATE runs SET status = 'running' WHERE job_id = ?",
+                        &[&job.str("id")],
+                    ),
+                    "stop" => set_setting(&s, "stop", "1"),
+                    "cap" => set_setting(&s, "evolve.limits", "cycles=1"),
+                    _ => {}
+                }
+            }
+            tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE source LIKE 'evolve-feedback:%'",
+                    &[]
+                ),
+                0,
+                "{state} queued success-shaped feedback"
+            );
+        }
+    }
 }

@@ -132,6 +132,8 @@ pub(crate) mod test_helpers_f2;
 #[cfg(test)]
 pub(crate) mod test_helpers_f3;
 #[cfg(test)]
+pub(crate) mod test_helpers_f3b;
+#[cfg(test)]
 pub(crate) mod test_helpers_f4;
 #[cfg(test)]
 pub(crate) mod test_helpers_f5;

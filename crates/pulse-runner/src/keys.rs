@@ -148,9 +148,9 @@ pub(crate) fn configure_clone_identity(
         ("core.hooksPath", hooks.display().to_string()),
     ] {
         let leaf = key.rsplit_once('.').map(|(_, x)| x).unwrap_or(key);
-        let _ = write!(
+        let _ = writeln!(
             identity,
-            "{}\t{} = {}\n",
+            "{}\t{} = {}",
             git_config_section(key),
             leaf,
             git_config_quote(&value)
@@ -325,6 +325,7 @@ mod tests {
 
     #[test]
     fn signing_key_must_exist_before_identity() {
+        let _serial = crate::test_helpers::serial();
         let clone = tempfile::tempdir().unwrap();
         crate::test_helpers::run(clone.path(), &["git", "init", "-q"]);
         let missing = tempfile::tempdir()
@@ -357,6 +358,7 @@ mod tests {
 
     #[test]
     fn signing_key_creates_work_dir() {
+        let _serial = crate::test_helpers::serial();
         if which::which("ssh-keygen").is_err() {
             return;
         }
@@ -372,8 +374,10 @@ mod tests {
 
     #[test]
     fn configure_clone_identity_include_file() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap().path().join("with space \"q\"");
-        crate::test_helpers::run("", &["git", "init", "-q", &dir.display().to_string()]);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::test_helpers::run(&dir, &["git", "init", "-q"]);
         let key = dir.join("key \"x\" y").display().to_string();
         std::fs::write(&key, b"k").unwrap();
         configure_clone_identity(&dir.display().to_string(), "aurora", &key, "#!/bin/sh\n")

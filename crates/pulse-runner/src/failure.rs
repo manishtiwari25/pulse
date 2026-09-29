@@ -238,7 +238,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn environment_failure_reason() {
+        let _serial = crate::test_helpers::serial();
+        let cases = vec![
+            (
+                "xcode license exit 69",
+                "exit status 69",
+                "",
+                "environment: xcode-license",
+            ),
+            (
+                "xcode license text",
+                "Xcode license not accepted",
+                "",
+                "environment: xcode-license",
+            ),
+            (
+                "xcode in summary",
+                "worker exited 1",
+                "xcode license must be accepted",
+                "environment: xcode-license",
+            ),
+            (
+                "1password signing",
+                "1Password failed to sign commit",
+                "",
+                "environment: ssh-signing",
+            ),
+            (
+                "failed to write commit object",
+                "failed to write commit object",
+                "",
+                "environment: ssh-signing",
+            ),
+            (
+                "gpg signing",
+                "gpg signing failed",
+                "",
+                "environment: ssh-signing",
+            ),
+            (
+                "missing bundle",
+                "bundle: command not found",
+                "",
+                "environment: missing-bundle",
+            ),
+            (
+                "missing bundler gem",
+                "cannot load such file -- bundler",
+                "",
+                "environment: missing-bundle",
+            ),
+            (
+                "missing mise",
+                "mise: command not found",
+                "",
+                "environment: missing-mise",
+            ),
+            (
+                "missing mise file",
+                "mise: No such file or directory",
+                "",
+                "environment: missing-mise",
+            ),
+            (
+                "missing executor",
+                "unknown executor hands-1",
+                "",
+                "environment: missing-executor",
+            ),
+            ("ordinary failure", "verify exit 1", "", ""),
+            (
+                "transient failure",
+                "runner error: connection reset",
+                "",
+                "",
+            ),
+        ];
+        for (name, result, summary, want) in cases {
+            assert_eq!(
+                super::environment_failure_reason(result.into(), summary.into()),
+                want,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn classify_failure() {
+        let _serial = crate::test_helpers::serial();
         let cases = vec![
             (
                 "lost run",
@@ -579,6 +667,7 @@ mod tests {
 
     #[test]
     fn failure_signature() {
+        let _serial = crate::test_helpers::serial();
         let a = super::failure_signature(
             FailureClass(FAILURE_DETERMINISTIC.into()),
             "3 commit(s) but verify exit 1; nothing landed".into(),
@@ -623,6 +712,7 @@ mod tests {
 
     #[test]
     fn recover_backoff() {
+        let _serial = crate::test_helpers::serial();
         let want = [
             Duration::from_secs(5 * 60),
             Duration::from_secs(15 * 60),

@@ -157,7 +157,7 @@ pub(crate) fn service_paths(system: String, home: String) -> (String, String) {
 /// Go: func unitPaths(u serviceUnit, system, home string) (string, string)
 pub(crate) fn unit_paths(u: ServiceUnit, system: String, home: String) -> (String, String) {
     let system = if system.is_empty() {
-        std::env::consts::OS.to_string()
+        pulse_gitenv::GOOS.to_string()
     } else {
         system
     };
@@ -685,7 +685,7 @@ pub fn service_status(pulse_home: String) -> ServiceState {
     let (kind, _) = service_paths(String::new(), String::new());
     let mut state = ServiceState {
         kind: kind.clone(),
-        supported: matches!(std::env::consts::OS, "macos" | "linux"),
+        supported: matches!(pulse_gitenv::GOOS, "darwin" | "macos" | "linux"),
         binary: pulse_binary(),
         logs: Path::new(&pulse_home).join("logs").display().to_string(),
         ..Default::default()
@@ -819,7 +819,7 @@ pub(crate) fn protected_folders_note(
     user_home: String,
 ) -> String {
     let system = if system.is_empty() {
-        std::env::consts::OS.to_string()
+        pulse_gitenv::GOOS.to_string()
     } else {
         system
     };
@@ -863,4 +863,158 @@ pub(crate) fn protected_folders_note(
         hits.join(", "),
         PROTECTED_FOLDERS.join("/")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static SERVICE_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    #[test]
+    fn install_service_and_service_status() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = SERVICE_TEST_LOCK.lock().unwrap();
+        let user_home = tempfile::tempdir().unwrap().keep();
+        let _env_1 = pulse_testutil::setenv("HOME", &user_home);
+        let pulse_home = tempfile::tempdir().unwrap().keep();
+        let old = std::mem::replace(
+            &mut *RUN_SERVICE.write().expect("run service"),
+            Box::new(|_| (0, String::new())),
+        );
+        let calls = std::sync::Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let loaded =
+            std::sync::Arc::new(Mutex::new(std::collections::BTreeMap::<String, bool>::new()));
+        let calls_for_fn = std::sync::Arc::clone(&calls);
+        let loaded_for_fn = std::sync::Arc::clone(&loaded);
+        *RUN_SERVICE.write().expect("run service") = Box::new(move |argv| {
+            calls_for_fn.lock().unwrap().push(argv.clone());
+            let which = if argv.join(" ").contains("hub") {
+                "hub"
+            } else {
+                "daemon"
+            }
+            .to_string();
+            if argv.len() >= 2 {
+                match argv[1].as_str() {
+                    "print" | "status" => {
+                        if loaded_for_fn
+                            .lock()
+                            .unwrap()
+                            .get(&which)
+                            .copied()
+                            .unwrap_or(false)
+                        {
+                            return (0, String::new());
+                        }
+                        return (113, "not loaded".into());
+                    }
+                    "bootstrap" | "enable" => {
+                        loaded_for_fn.lock().unwrap().insert(which, true);
+                    }
+                    _ => {}
+                }
+            }
+            (0, String::new())
+        });
+        let (kind, daemon_path) = service_paths(String::new(), String::new());
+        let (_, hub_path) = unit_paths(hub_unit(0), String::new(), String::new());
+        let before = service_status(pulse_home.display().to_string());
+        assert_eq!(before.kind, kind);
+        assert!(before.supported);
+        assert!(!before.installed);
+        assert_eq!(before.units.len(), 2);
+        assert_eq!(before.units[0].name, "daemon");
+        assert_eq!(before.units[0].path, daemon_path);
+        assert!(!before.units[0].present);
+        assert_eq!(before.units[1].name, "hub");
+        assert_eq!(before.units[1].path, hub_path);
+        assert_eq!(before.logs, pulse_home.join("logs").display().to_string());
+        assert!(calls.lock().unwrap().is_empty());
+
+        let mut out = Vec::new();
+        let dry = install_service(
+            &mut out,
+            pulse_home.to_str().unwrap(),
+            ServiceInstallOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(dry.kind, kind);
+        assert_eq!(dry.daemon_path, daemon_path);
+        assert_eq!(dry.hub_path, hub_path);
+        assert!(dry.load_hub.is_none());
+        assert!(!crate::util::file_exists(&daemon_path));
+        assert!(!crate::util::file_exists(&hub_path));
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(dry.output, String::from_utf8(out).unwrap());
+        assert!(dry.output.contains("--port 8765"));
+        assert!(dry.output.contains(&format!(
+            "--interval {} &",
+            crate::daemon::DEFAULT_DAEMON_INTERVAL_SECONDS
+        )));
+
+        let mut sink = Vec::new();
+        let installed = install_service(
+            &mut sink,
+            pulse_home.to_str().unwrap(),
+            ServiceInstallOptions {
+                interval: 45,
+                hub_port: 8765,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(installed.load_hub.is_none());
+        assert!(crate::util::file_exists(&daemon_path));
+        assert!(crate::util::file_exists(&hub_path));
+        assert!(
+            loaded
+                .lock()
+                .unwrap()
+                .get("daemon")
+                .copied()
+                .unwrap_or(false)
+        );
+        assert!(loaded.lock().unwrap().get("hub").copied().unwrap_or(false));
+        let launcher =
+            std::fs::read_to_string(launcher_path(pulse_home.display().to_string())).unwrap();
+        assert!(launcher.contains("--interval 45 &"), "{launcher}");
+        let after = service_status(pulse_home.display().to_string());
+        assert!(after.installed);
+        assert!(after.units[1].loaded);
+
+        calls.lock().unwrap().clear();
+        let again = install_service(
+            &mut Vec::new(),
+            pulse_home.to_str().unwrap(),
+            ServiceInstallOptions {
+                interval: 45,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(again.load_hub.is_none());
+        assert!(again.output.contains("unchanged and loaded"));
+        for argv in calls.lock().unwrap().iter() {
+            assert!(
+                !(argv.len() > 1
+                    && matches!(
+                        argv[1].as_str(),
+                        "bootstrap" | "bootout" | "enable" | "restart"
+                    )),
+                "an unchanged install reloaded a unit: {:?}",
+                calls.lock().unwrap()
+            );
+        }
+        let hub = std::fs::read_to_string(hub_path).unwrap();
+        assert!(hub.contains("pulse-hub.sh"));
+        *RUN_SERVICE.write().expect("run service") = old;
+    }
 }

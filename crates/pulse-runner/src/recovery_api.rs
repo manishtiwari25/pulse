@@ -821,72 +821,1457 @@ pub fn repair_failed_jobs(
 
 #[cfg(test)]
 mod tests {
-    macro_rules! ignored {
-        ($name:ident, $reason:literal) => {
-            #[test]
-            #[ignore = $reason]
-            fn $name() {}
-        };
+    use super::*;
+    use crate::test_helpers::*;
+    use crate::test_helpers_f7::*;
+    use crate::util::Row;
+    use std::path::PathBuf;
+
+    fn conn(s: &pulse_store::Store) -> pulse_store::PooledConn {
+        s.conn().expect("conn")
     }
 
-    ignored!(
-        job_repair_classification_and_gates,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_evidence_history_and_actor,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_carrier_source_and_lineage,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_current_failure_and_concurrency,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_queue_bound_and_selection,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_concurrent_queue_bound,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_project_scope_and_partial_errors,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_all_history_count_and_pagination,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_rechecks_displayed_failure,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_source_scope_and_task_carrier,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_invalid_gates_fail_closed,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_cancelled_ancestor_intent,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_authorized_chain_still_dedupes_carriers,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        job_repair_cancellation_override_does_not_authorize_sibling,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_cancelled_ancestor_after_human_retry,
-        "cross-slice: failure::classify_failure"
-    );
+    fn count(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) -> i32 {
+        let r = crate::util::query_one(&conn(s), sql, args)
+            .expect("count")
+            .unwrap_or_default();
+        r.int("n")
+    }
+
+    fn exec1_test(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) {
+        conn(s).execute(sql, args).expect(sql);
+    }
+
+    fn repair_fixture() -> (crate::test_helpers::TestStore, PathBuf) {
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        (s, root.into())
+    }
+
+    fn repair_failure(s: &pulse_store::Store, id: &str, result: &str) -> Row {
+        insert_recover_failed_job(
+            s,
+            id,
+            "improve",
+            "",
+            result,
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        exec1_test(
+            s,
+            "UPDATE jobs SET branch = '', lease_agent = '' WHERE id = ?",
+            &[&id],
+        );
+        crate::jobs::job_row(&conn(s), id.to_string())
+    }
+
+    fn repair_one(s: &pulse_store::Store, id: &str) -> RepairJobResult {
+        let out = super::repair_failed_jobs(
+            s,
+            RepairJobsInput {
+                project: "proj".into(),
+                job_i_ds: vec![id.into()],
+            },
+        )
+        .expect("repair")
+        .expect("repair output");
+        assert_eq!(out.results.len(), 1, "repair output = {out:?}");
+        out.results.into_iter().next().unwrap()
+    }
+
+    fn repair_store_at(s: &pulse_store::Store, hours: f64) -> pulse_store::Store {
+        pulse_store::Store::open(pulse_store::Options {
+            home: s.home.clone(),
+            now: crate::util::plus_hours(TEST_NOW, hours),
+            skip_records: true,
+            ..Default::default()
+        })
+        .expect("open shifted store")
+    }
+
+    fn finish_at(s: &pulse_store::Store, hours: f64, id: &str, status: &str, result: &str) {
+        let later = repair_store_at(s, hours);
+        crate::jobs::finish_job(
+            &later,
+            id.into(),
+            pulse_store::HUMAN_AGENT.into(),
+            status.into(),
+            result.into(),
+            String::new(),
+            -1,
+        )
+        .expect("finish job");
+    }
+
+    #[test]
+    fn job_repair_classification_and_gates() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for (name, result_text, category, class, outcome) in [
+            (
+                "deterministic",
+                "verify exit 1",
+                "eligible",
+                "deterministic",
+                "replanned",
+            ),
+            (
+                "transient",
+                "runner error: connection reset",
+                "eligible",
+                "transient",
+                "requeued",
+            ),
+            (
+                "missing tool",
+                "verify exit 127",
+                "structural",
+                "structural",
+                "skipped",
+            ),
+            (
+                "hard stop",
+                "needs a real decision",
+                "structural",
+                "structural",
+                "skipped",
+            ),
+            (
+                "cancelled result",
+                "cancelled by the owner: stop",
+                "cancelled",
+                "",
+                "skipped",
+            ),
+            (
+                "cancelled summary",
+                "runner error",
+                "cancelled",
+                "",
+                "skipped",
+            ),
+            (
+                "cancelled status",
+                "verify exit 1",
+                "cancelled",
+                "",
+                "skipped",
+            ),
+            ("active run", "verify exit 1", "active_run", "", "skipped"),
+            (
+                "inactive",
+                "verify exit 1",
+                "inactive_project",
+                "",
+                "skipped",
+            ),
+            ("stop", "verify exit 1", "stopped", "", "skipped"),
+            ("project stop", "verify exit 1", "stopped", "", "skipped"),
+            (
+                "project dangling stop",
+                "verify exit 1",
+                "stopped",
+                "",
+                "skipped",
+            ),
+            ("brain stop", "verify exit 1", "stopped", "", "skipped"),
+            (
+                "recovery off",
+                "verify exit 1",
+                "recovery_off",
+                "",
+                "skipped",
+            ),
+            ("cap", "verify exit 1", "recovery_cap", "", "skipped"),
+            ("backoff", "verify exit 1", "backoff", "", "skipped"),
+            ("history", "verify exit 1", "outside_window", "", "skipped"),
+            (
+                "bad timestamp",
+                "verify exit 1",
+                "structural",
+                "",
+                "skipped",
+            ),
+            (
+                "tier 2",
+                "verify exit 1",
+                "structural",
+                "structural",
+                "skipped",
+            ),
+            ("lead", "verify exit 1", "manual_controller", "", "skipped"),
+            (
+                "baseline",
+                "verify exit 1",
+                "manual_controller",
+                "",
+                "skipped",
+            ),
+            (
+                "experiment",
+                "verify exit 1",
+                "manual_controller",
+                "",
+                "skipped",
+            ),
+            (
+                "answer",
+                "verify exit 1",
+                "manual_controller",
+                "",
+                "skipped",
+            ),
+            (
+                "question",
+                "verify exit 1",
+                "structural",
+                "structural",
+                "skipped",
+            ),
+            ("held", "verify exit 1", "held", "", "skipped"),
+            (
+                "task deterministic",
+                "verify exit 1",
+                "manual_controller",
+                "",
+                "skipped",
+            ),
+            (
+                "task transient",
+                "connection reset",
+                "eligible",
+                "transient",
+                "requeued",
+            ),
+            (
+                "task followed up",
+                "connection reset",
+                "manual_controller",
+                "",
+                "skipped",
+            ),
+            (
+                "task missing",
+                "connection reset",
+                "manual_controller",
+                "",
+                "skipped",
+            ),
+            (
+                "task cancelled",
+                "connection reset",
+                "cancelled",
+                "",
+                "skipped",
+            ),
+            ("task done", "connection reset", "superseded", "", "skipped"),
+        ] {
+            let (s, mut root) = repair_fixture();
+            let id = "job-repair";
+            repair_failure(&s, id, result_text);
+            match name {
+                "cancelled summary" => {
+                    insert_recover_run(
+                        &s,
+                        id,
+                        "run-repair",
+                        "failed",
+                        "cancelled by the owner",
+                        "",
+                        "",
+                    );
+                }
+                "cancelled status" => exec1_test(
+                    &s,
+                    "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
+                    &[&id],
+                ),
+                "active run" => {
+                    insert_recover_run(&s, id, "run-repair", "running", "", "", "");
+                }
+                "inactive" => exec1_test(
+                    &s,
+                    "UPDATE projects SET status = 'inactive' WHERE slug = 'proj'",
+                    &[],
+                ),
+                "stop" => set_recover_setting(&s, "stop", "1"),
+                "project stop" | "project dangling stop" | "brain stop" => {
+                    if name == "brain stop" {
+                        root = tempfile::tempdir().expect("tempdir").keep();
+                        exec1_test(
+                            &s,
+                            "INSERT INTO projects(slug,name,path,brain,added_at) VALUES ('brain','Brain',?,1,?)",
+                            &[&root.to_string_lossy().to_string(), &TEST_NOW],
+                        );
+                    }
+                    let dir = root.join("docs").join("evolution");
+                    std::fs::create_dir_all(&dir).expect("mkdir stop dir");
+                    if name == "project dangling stop" {
+                        std::os::unix::fs::symlink("missing-stop-note", dir.join("STOP"))
+                            .expect("symlink STOP");
+                    } else {
+                        std::fs::write(dir.join("STOP"), b"owner stop").expect("write STOP");
+                    }
+                }
+                "recovery off" => set_recover_setting(&s, "daemon.recover", "off"),
+                "cap" => set_recover_setting(&s, "daemon.recover_limit", "0"),
+                "backoff" => exec1_test(
+                    &s,
+                    "UPDATE jobs SET finished_at = ? WHERE id = ?",
+                    &[&crate::util::plus_minutes(TEST_NOW, -2.0), &id],
+                ),
+                "history" => exec1_test(
+                    &s,
+                    "UPDATE jobs SET finished_at = ? WHERE id = ?",
+                    &[&crate::util::plus_hours(TEST_NOW, -24.0 * 30.0), &id],
+                ),
+                "bad timestamp" => {
+                    exec1_test(&s, "UPDATE jobs SET finished_at = '' WHERE id = ?", &[&id])
+                }
+                "tier 2" => exec1_test(&s, "UPDATE jobs SET tier = 2 WHERE id = ?", &[&id]),
+                "lead" | "baseline" | "experiment" | "answer" => {
+                    exec1_test(&s, "UPDATE jobs SET kind = ? WHERE id = ?", &[&name, &id]);
+                }
+                "question" => {
+                    crate::board::create_post(
+                        &s,
+                        TEST_NOW.into(),
+                        crate::board::PostOpts {
+                            kind: "question".into(),
+                            project: "proj".into(),
+                            area: "jobs".into(),
+                            thread: id.into(),
+                            summary: "Owner approval required".into(),
+                            agent: crate::board::actor_agent(&s, "daemon".into()),
+                            for_owner: true,
+                            ..Default::default()
+                        },
+                    )
+                    .expect("create question");
+                }
+                "held" => crate::recover::recovery_event(
+                    &conn(&s),
+                    TEST_NOW.into(),
+                    "daemon".into(),
+                    id.into(),
+                    "held".into(),
+                    crate::failure::Failure {
+                        class: crate::failure::FailureClass(
+                            crate::failure::FAILURE_DETERMINISTIC.into(),
+                        ),
+                        reason: "owner review".into(),
+                        ..Default::default()
+                    },
+                    id.into(),
+                    0,
+                    String::new(),
+                )
+                .expect("recovery event"),
+                _ => {}
+            }
+            if name.starts_with("task ") {
+                exec1_test(
+                    &s,
+                    "UPDATE jobs SET source = 'task:TASK-1' WHERE id = ?",
+                    &[&id],
+                );
+                if name != "task missing" {
+                    let status = if name == "task cancelled" || name == "task done" {
+                        name.trim_start_matches("task ")
+                    } else {
+                        "in_progress"
+                    };
+                    exec1_test(
+                        &s,
+                        "INSERT INTO tasks(id,project,title,status,job_id,created_by,created_at,updated_at) VALUES ('TASK-1','proj','Task',?,?,'human',?,?)",
+                        &[&status, &id, &TEST_NOW, &TEST_NOW],
+                    );
+                }
+                if name == "task followed up" {
+                    exec1_test(
+                        &s,
+                        "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'proj-lead', ?, 'TASK-1', 'followed up')",
+                        &[&TEST_NOW, &crate::recover::FOLLOW_UP_ACTION],
+                    );
+                }
+            }
+            let before = crate::jobs::job_row(&conn(&s), id.to_string());
+            let events = count(&s, "SELECT COUNT(*) AS n FROM events", &[]);
+            let page = super::read_failed_jobs(
+                &s,
+                FailedJobsQuery {
+                    project: "proj".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("read failed jobs")
+            .expect("page");
+            if name != "cancelled status" {
+                assert_eq!(page.jobs.len(), 1, "{name}: page = {page:?}");
+                assert_eq!(page.jobs[0].category, category, "{name}: page = {page:?}");
+                assert_eq!(
+                    page.jobs[0].eligible,
+                    category == "eligible",
+                    "{name}: page = {page:?}"
+                );
+                if !class.is_empty() {
+                    assert_eq!(page.jobs[0].class, class, "{name}: page = {page:?}");
+                }
+                assert!(
+                    !page.jobs[0].reason.is_empty() && !page.jobs[0].fix.is_empty(),
+                    "{name}: no explanation"
+                );
+            }
+            assert_eq!(
+                count(&s, "SELECT COUNT(*) AS n FROM events", &[]),
+                events,
+                "{name}: GET wrote an event"
+            );
+            let result = repair_one(&s, id);
+            assert_eq!(
+                result.outcome, outcome,
+                "{name}: repair result = {result:?}"
+            );
+            assert_eq!(
+                result.category, category,
+                "{name}: repair result = {result:?}"
+            );
+            if outcome == "skipped" {
+                let after = crate::jobs::job_row(&conn(&s), id.to_string());
+                for key in [
+                    "status",
+                    "result",
+                    "branch",
+                    "finished_at",
+                    "lease_agent",
+                    "attempts",
+                ] {
+                    assert_eq!(
+                        before.str(key),
+                        after.str(key),
+                        "{name}: skipped repair mutated {key}"
+                    );
+                }
+                assert_eq!(
+                    count(&s, "SELECT COUNT(*) AS n FROM events", &[]),
+                    events,
+                    "{name}: skipped repair wrote audit"
+                );
+            }
+        }
+    }
+    #[test]
+    fn job_repair_evidence_history_and_actor() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let (s, root) = repair_fixture();
+        let original = repair_failure(&s, "job-evidence", "verify exit 1");
+        let log = root.join("evidence.log");
+        std::fs::write(
+            &log,
+            b"exact failing assertion\ngithub_pat_abcdefghijklmnopqrstuvwxyz",
+        )
+        .expect("write log");
+        let run = insert_recover_run(
+            &s,
+            &original.str("id"),
+            "run-evidence",
+            "failed",
+            "verify exit 1",
+            &log.to_string_lossy(),
+            "",
+        );
+        let repaired = repair_one(&s, &original.str("id"));
+        assert_eq!(repaired.outcome, "replanned", "repair = {repaired:?}");
+        assert_ne!(
+            repaired.carrier_id,
+            original.str("id"),
+            "repair = {repaired:?}"
+        );
+        let copy = crate::jobs::job_row(&conn(&s), repaired.carrier_id.clone());
+        for want in [
+            original.str("brief"),
+            "verify exit 1".into(),
+            "run-evidence".into(),
+            "exact failing assertion".into(),
+            "[redacted]".into(),
+            "Never weaken a check".into(),
+        ] {
+            assert!(
+                copy.str("brief").contains(&want),
+                "corrected brief lacks {want:?}: {}",
+                copy.str("brief")
+            );
+        }
+        assert!(
+            !copy
+                .str("brief")
+                .contains("github_pat_abcdefghijklmnopqrstuvwxyz")
+        );
+        let historic = crate::jobs::job_row(&conn(&s), original.str("id"));
+        for key in ["status", "result", "finished_at", "brief"] {
+            assert_eq!(
+                historic.str(key),
+                original.str(key),
+                "repair rewrote historical failure {key}"
+            );
+        }
+        let last = crate::recover::last_recovery_run(&conn(&s), original.str("id"));
+        assert_eq!(
+            last.str("id"),
+            run.str("id"),
+            "repair rewrote historical run evidence"
+        );
+        for e in crate::util::query_rows(
+            &conn(&s),
+            "SELECT * FROM events WHERE action = ? OR subject = ?",
+            &[&pulse_board::JOB_RECOVER_ACTION, &copy.str("id")],
+        )
+        .expect("events")
+        {
+            assert_eq!(e.str("actor"), pulse_store::HUMAN_AGENT);
+        }
+        assert_eq!(copy.str("created_by"), pulse_store::HUMAN_AGENT);
+        for status in ["queued", "done"] {
+            exec1_test(
+                &s,
+                "UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?",
+                &[&status, &TEST_NOW, &copy.str("id")],
+            );
+            let again = repair_one(&s, &original.str("id"));
+            assert_eq!(
+                again.outcome, "skipped",
+                "repeated repair with {status} carrier = {again:?}"
+            );
+            assert_eq!(
+                again.category, "superseded",
+                "repeated repair with {status} carrier = {again:?}"
+            );
+            assert_eq!(
+                again.carrier_id,
+                copy.str("id"),
+                "repeated repair with {status} carrier = {again:?}"
+            );
+        }
+        assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM jobs", &[]), 2);
+    }
+    #[test]
+    fn job_repair_carrier_source_and_lineage() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for source in ["", "suggestion:shared"] {
+            for status in [
+                "queued",
+                "leased",
+                "blocked",
+                "done",
+                "cancelled",
+                "active provisional",
+            ] {
+                let (s, _) = repair_fixture();
+                let job = repair_failure(&s, "job-old", "connection reset");
+                let carrier = repair_failure(&s, "job-carrier", "verify exit 1");
+                exec1_test(&s, "UPDATE jobs SET source = ?", &[&source]);
+                let actual = if status == "active provisional" {
+                    insert_recover_run(&s, &carrier.str("id"), "run-active", "running", "", "", "");
+                    "failed"
+                } else {
+                    status
+                };
+                exec1_test(
+                    &s,
+                    "UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?",
+                    &[&actual, &TEST_NOW, &carrier.str("id")],
+                );
+                if source.is_empty() {
+                    crate::recover::recovery_event(
+                        &conn(&s),
+                        crate::util::plus_hours(TEST_NOW, -2.0),
+                        "human".into(),
+                        job.str("id"),
+                        "replanned".into(),
+                        crate::failure::Failure {
+                            class: crate::failure::FailureClass(
+                                crate::failure::FAILURE_DETERMINISTIC.into(),
+                            ),
+                            ..Default::default()
+                        },
+                        job.str("id"),
+                        1,
+                        carrier.str("id"),
+                    )
+                    .expect("recovery event");
+                }
+                let got = repair_one(&s, &job.str("id"));
+                assert_eq!(got.outcome, "skipped", "{source}/{status}: {got:?}");
+                assert_eq!(got.category, "superseded", "{source}/{status}: {got:?}");
+                assert_eq!(
+                    got.carrier_id,
+                    carrier.str("id"),
+                    "{source}/{status}: {got:?}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn job_repair_current_failure_and_concurrency() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for mode in ["same failure", "new failure", "completed", "queued"] {
+            let (s, _) = repair_fixture();
+            let id = "job-race";
+            repair_failure(&s, id, "verify exit 1");
+            if mode == "new failure" {
+                crate::recover::recovery_event(
+                    &conn(&s),
+                    crate::util::plus_hours(TEST_NOW, -2.0),
+                    "daemon".into(),
+                    id.into(),
+                    "requeued".into(),
+                    crate::failure::Failure {
+                        class: crate::failure::FailureClass(
+                            crate::failure::FAILURE_TRANSIENT.into(),
+                        ),
+                        ..Default::default()
+                    },
+                    id.into(),
+                    1,
+                    String::new(),
+                )
+                .expect("recovery event");
+                exec1_test(
+                    &s,
+                    "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'worker', 'job.failed', ?, 'fresh failure')",
+                    &[&crate::util::plus_minutes(TEST_NOW, -30.0), &id],
+                );
+            }
+            if mode == "completed" || mode == "queued" {
+                let status = if mode == "queued" { "queued" } else { "done" };
+                exec1_test(
+                    &s,
+                    "UPDATE jobs SET status = ? WHERE id = ?",
+                    &[&status, &id],
+                );
+            }
+            let _ = super::repair_failed_jobs(
+                &s,
+                RepairJobsInput {
+                    job_i_ds: vec![id.into()],
+                    ..Default::default()
+                },
+            )
+            .expect("repair")
+            .expect("repair output");
+            let want = if mode == "completed" { 0 } else { 1 };
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'",
+                    &[]
+                ),
+                want,
+                "{mode}"
+            );
+        }
+    }
+    #[test]
+    fn job_repair_queue_bound_and_selection() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let (s, _) = repair_fixture();
+        for i in 0..6 {
+            repair_failure(&s, &format!("job-{i}"), "verify exit 1");
+        }
+        let events = count(&s, "SELECT COUNT(*) AS n FROM events", &[]);
+        for ids in [
+            vec![],
+            vec!["job-0", "job-1", "job-2", "job-3", "job-4", "job-5"],
+            vec!["job-0", "job-0"],
+            vec![""],
+            vec![" job-0"],
+        ] {
+            let got = super::repair_failed_jobs(
+                &s,
+                RepairJobsInput {
+                    job_i_ds: ids.iter().map(|s| s.to_string()).collect(),
+                    ..Default::default()
+                },
+            );
+            assert!(got.is_err(), "invalid selection accepted: {ids:?} {got:?}");
+        }
+        assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM events", &[]), events);
+        let out = super::repair_failed_jobs(
+            &s,
+            RepairJobsInput {
+                job_i_ds: ["job-0", "job-1", "job-2", "job-3", "job-4"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                ..Default::default()
+            },
+        )
+        .expect("bounded selection")
+        .expect("out");
+        assert_eq!(out.queued, 5, "bounded selection: {out:?}");
+        assert_eq!(out.errors, 0, "bounded selection: {out:?}");
+        let got = repair_one(&s, "job-5");
+        assert_eq!(got.outcome, "skipped", "queue overflow: {got:?}");
+        assert_eq!(got.category, "queue_full", "queue overflow: {got:?}");
+    }
+    #[test]
+    fn job_repair_concurrent_queue_bound() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let (s, _) = repair_fixture();
+        for i in 0..6 {
+            let id = format!("job-{i}");
+            repair_failure(&s, &id, "verify exit 1");
+            if i < 4 {
+                exec1_test(&s, "UPDATE jobs SET status = 'queued' WHERE id = ?", &[&id]);
+            }
+        }
+        for id in ["job-4", "job-5"] {
+            let _ = super::repair_failed_jobs(
+                &s,
+                RepairJobsInput {
+                    job_i_ds: vec![id.into()],
+                    ..Default::default()
+                },
+            )
+            .expect("repair");
+        }
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'",
+                &[]
+            ),
+            crate::recover::RECOVER_QUEUE_ROOM
+        );
+    }
+    #[test]
+    fn job_repair_project_scope_and_partial_errors() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let (s, _) = repair_fixture();
+        let other = tempfile::tempdir().expect("tempdir").keep();
+        exec1_test(
+            &s,
+            "INSERT INTO projects(slug,name,path,added_at) VALUES ('other','Other',?,?)",
+            &[&other.to_string_lossy().to_string(), &TEST_NOW],
+        );
+        for id in ["job-good", "job-error", "job-other"] {
+            repair_failure(&s, id, "verify exit 1");
+        }
+        exec1_test(
+            &s,
+            "UPDATE jobs SET project = 'other' WHERE id = 'job-other'",
+            &[],
+        );
+        assert!(
+            super::repair_failed_jobs(
+                &s,
+                RepairJobsInput {
+                    project: "unknown".into(),
+                    job_i_ds: vec!["job-good".into()]
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            super::read_failed_jobs(
+                &s,
+                FailedJobsQuery {
+                    project: "unknown".into(),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        exec1_test(
+            &s,
+            "CREATE TRIGGER reject_one_repair BEFORE INSERT ON events
+\t\tWHEN NEW.action = 'job.recover' AND NEW.subject = 'job-error'
+\t\tBEGIN SELECT RAISE(ABORT, 'injected ledger failure'); END",
+            &[],
+        );
+        let out = super::repair_failed_jobs(
+            &s,
+            RepairJobsInput {
+                project: "proj".into(),
+                job_i_ds: ["job-good", "missing", "job-other", "job-error"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            },
+        )
+        .expect("partial")
+        .expect("out");
+        assert_eq!(out.queued, 1, "partial result: {out:?}");
+        assert_eq!(out.skipped, 2, "partial result: {out:?}");
+        assert_eq!(out.errors, 1, "partial result: {out:?}");
+        for i in [1_usize, 2] {
+            assert_eq!(
+                out.results[i].category, "not_found",
+                "scope leak: {:?}",
+                out.results[i]
+            );
+            assert!(
+                out.results[i].carrier_id.is_empty(),
+                "scope leak: {:?}",
+                out.results[i]
+            );
+        }
+        assert!(
+            out.results[3].reason.contains("injected ledger failure"),
+            "failed write claimed success: {:?}",
+            out.results[3]
+        );
+        assert!(
+            out.results[3].carrier_id.is_empty(),
+            "failed write claimed success: {:?}",
+            out.results[3]
+        );
+        assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM jobs", &[]), 4);
+        exec1_test(&s, "DROP TRIGGER reject_one_repair", &[]);
+        assert_eq!(repair_one(&s, "job-error").outcome, "replanned");
+    }
+    #[test]
+    fn job_repair_all_history_count_and_pagination() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let (s, _) = repair_fixture();
+        for i in 0..1644 {
+            exec1_test(
+                &s,
+                "INSERT INTO jobs(id,project,kind,tier,title,status,created_at,finished_at,result)
+\t\t\t\tVALUES (?,'proj','improve',1,'Historical failure','failed',?,?,'verify exit 1')",
+                &[
+                    &format!("job-{i:04}"),
+                    &crate::util::plus_hours(TEST_NOW, -24.0 * 31.0),
+                    &crate::util::plus_hours(TEST_NOW, -24.0 * 30.0),
+                ],
+            );
+        }
+        let events = count(&s, "SELECT COUNT(*) AS n FROM events", &[]);
+        let first = super::read_failed_jobs(
+            &s,
+            FailedJobsQuery {
+                project: "proj".into(),
+                limit: 7,
+                ..Default::default()
+            },
+        )
+        .expect("first")
+        .expect("page");
+        assert_eq!(first.historical_total, 1644, "first page: {first:?}");
+        assert_eq!(first.jobs.len(), 7, "first page: {first:?}");
+        assert!(!first.next_before.is_empty(), "first page: {first:?}");
+        assert_eq!(
+            first.page_counts.get("outside_window").copied(),
+            Some(7),
+            "first page: {first:?}"
+        );
+        let next = super::read_failed_jobs(
+            &s,
+            FailedJobsQuery {
+                project: "proj".into(),
+                limit: 7,
+                before: first.next_before.clone(),
+            },
+        )
+        .expect("next")
+        .expect("page");
+        assert_eq!(next.historical_total, 1644, "next page: {next:?}");
+        assert_eq!(next.jobs.len(), 7, "next page: {next:?}");
+        assert_ne!(next.jobs[0].id, first.jobs[0].id, "next page: {next:?}");
+        assert!(
+            first.jobs[6].id > next.jobs[0].id,
+            "tied timestamps were not paginated by ID"
+        );
+        for query in [
+            FailedJobsQuery {
+                limit: -1,
+                ..Default::default()
+            },
+            FailedJobsQuery {
+                limit: FAILED_JOBS_MAX_LIMIT + 1,
+                ..Default::default()
+            },
+            FailedJobsQuery {
+                before: "not-a-cursor".into(),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                super::read_failed_jobs(&s, query).is_err(),
+                "unbounded or invalid page accepted"
+            );
+        }
+        assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM events", &[]), events);
+    }
+    #[test]
+    fn job_repair_rechecks_displayed_failure() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for change in [
+            "owner cancellation",
+            "structural result",
+            "active run",
+            "STOP",
+            "inactive project",
+        ] {
+            let (s, _) = repair_fixture();
+            repair_failure(&s, "job-changed", "verify exit 1");
+            let page = super::read_failed_jobs(
+                &s,
+                FailedJobsQuery {
+                    project: "proj".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("initial")
+            .expect("page");
+            assert_eq!(page.jobs.len(), 1, "{change}: {page:?}");
+            assert!(page.jobs[0].eligible, "{change}: {page:?}");
+            match change {
+                "owner cancellation" => exec1_test(
+                    &s,
+                    "UPDATE jobs SET result = 'cancelled by the owner' WHERE id = 'job-changed'",
+                    &[],
+                ),
+                "structural result" => exec1_test(
+                    &s,
+                    "UPDATE jobs SET result = 'verify exit 127' WHERE id = 'job-changed'",
+                    &[],
+                ),
+                "active run" => {
+                    insert_recover_run(&s, "job-changed", "run-changed", "running", "", "", "");
+                }
+                "STOP" => set_recover_setting(&s, "stop", "1"),
+                "inactive project" => exec1_test(
+                    &s,
+                    "UPDATE projects SET status = 'inactive' WHERE slug = 'proj'",
+                    &[],
+                ),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                repair_one(&s, "job-changed").outcome,
+                "skipped",
+                "{change}: stale eligibility used"
+            );
+            assert_eq!(
+                count(&s, "SELECT COUNT(*) AS n FROM jobs", &[]),
+                1,
+                "{change}: changed failure was copied"
+            );
+        }
+    }
+    #[test]
+    fn job_repair_source_scope_and_task_carrier() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let (s, _) = repair_fixture();
+        let other = tempfile::tempdir().expect("tempdir").keep();
+        exec1_test(
+            &s,
+            "INSERT INTO projects(slug,name,path,added_at) VALUES ('other','Other',?,?)",
+            &[&other.to_string_lossy().to_string(), &TEST_NOW],
+        );
+        repair_failure(&s, "job-source", "verify exit 1");
+        repair_failure(&s, "job-other", "verify exit 1");
+        exec1_test(&s, "UPDATE jobs SET source = 'shared-source'", &[]);
+        exec1_test(
+            &s,
+            "UPDATE jobs SET project = 'other', status = 'queued' WHERE id = 'job-other'",
+            &[],
+        );
+        let repaired = repair_one(&s, "job-source");
+        assert_eq!(
+            repaired.outcome, "replanned",
+            "cross-project source collision: {repaired:?}"
+        );
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), repaired.carrier_id).str("project"),
+            "proj"
+        );
+        repair_failure(&s, "job-task-old", "connection reset");
+        repair_failure(&s, "job-task-current", "verify exit 1");
+        exec1_test(
+            &s,
+            "UPDATE jobs SET source = 'task:TASK-1' WHERE id = 'job-task-old'",
+            &[],
+        );
+        exec1_test(
+            &s,
+            "INSERT INTO tasks(id,project,title,status,job_id,created_by,created_at,updated_at)
+\t\tVALUES ('TASK-1','proj','Task','in_progress','job-task-current','human',?,?)",
+            &[&TEST_NOW, &TEST_NOW],
+        );
+        let got = repair_one(&s, "job-task-old");
+        assert_eq!(
+            got.outcome, "skipped",
+            "current task carrier missing: {got:?}"
+        );
+        assert_eq!(
+            got.carrier_id, "job-task-current",
+            "current task carrier missing: {got:?}"
+        );
+        assert_eq!(
+            got.carrier_status, "failed",
+            "current task carrier missing: {got:?}"
+        );
+    }
+    #[test]
+    fn job_repair_invalid_gates_fail_closed() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for gate in [
+            "stop",
+            "daemon.recover",
+            "daemon.recover_days",
+            "daemon.recover_limit",
+            "checkout path",
+        ] {
+            let (s, _) = repair_fixture();
+            repair_failure(&s, "job-invalid-gate", "verify exit 1");
+            if gate == "checkout path" {
+                exec1_test(&s, "UPDATE projects SET path = '' WHERE slug = 'proj'", &[]);
+            } else {
+                exec1_test(
+                    &s,
+                    "INSERT OR REPLACE INTO settings(name,value,updated_at,updated_by) VALUES (?,'invalid',?,'human')",
+                    &[&gate, &TEST_NOW],
+                );
+            }
+            assert!(
+                super::read_failed_jobs(
+                    &s,
+                    FailedJobsQuery {
+                        project: "proj".into(),
+                        ..Default::default()
+                    }
+                )
+                .is_err(),
+                "{gate}: invalid gate ignored"
+            );
+            let got = repair_one(&s, "job-invalid-gate");
+            assert_eq!(
+                got.outcome, "error",
+                "{gate}: invalid gate queued work: {got:?}"
+            );
+            assert!(
+                !got.reason.is_empty(),
+                "{gate}: invalid gate error lacked reason"
+            );
+            assert_eq!(
+                count(&s, "SELECT COUNT(*) AS n FROM jobs", &[]),
+                1,
+                "{gate}: invalid gate mutated jobs"
+            );
+        }
+    }
+    #[test]
+    fn job_repair_cancelled_ancestor_intent() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for source in ["", "manual:cancelled-chain"] {
+            for mode in [
+                "earlier cancellation",
+                "earlier same second",
+                "newer same second",
+                "newer before failure",
+                "newer after failure",
+                "API is not an override",
+                "agent is not an override",
+            ] {
+                let (s, _) = repair_fixture();
+                let root = repair_failure(&s, "job-cancelled-root", "verify exit 1");
+                exec1_test(
+                    &s,
+                    "UPDATE jobs SET source = ? WHERE id = ?",
+                    &[&source, &root.str("id")],
+                );
+                crate::jobs::finish_job(
+                    &s,
+                    root.str("id"),
+                    pulse_store::HUMAN_AGENT.into(),
+                    "cancelled".into(),
+                    "cancelled by the owner".into(),
+                    String::new(),
+                    -1,
+                )
+                .expect("finish root cancelled");
+                let (intent_hour, failure_hour) = if mode == "earlier same second" {
+                    (0.0, 0.0)
+                } else {
+                    (1.0, 2.0)
+                };
+                let child_id = if mode == "API is not an override" {
+                    let later = repair_store_at(&s, intent_hour);
+                    let (copy, _) = crate::jobs::add_job(
+                        &later,
+                        "proj".into(),
+                        "improve".into(),
+                        "Corrected attempt".into(),
+                        root.str("brief"),
+                        1,
+                        0,
+                        source.into(),
+                        pulse_store::HUMAN_AGENT.into(),
+                        false,
+                    )
+                    .expect("add copy");
+                    crate::recover::recovery_event(
+                        &conn(&s),
+                        later.now(),
+                        pulse_store::HUMAN_AGENT.into(),
+                        root.str("id"),
+                        "replanned".into(),
+                        crate::failure::Failure {
+                            class: crate::failure::FailureClass(
+                                crate::failure::FAILURE_DETERMINISTIC.into(),
+                            ),
+                            reason: "verify exit 1".into(),
+                            ..Default::default()
+                        },
+                        root.str("id"),
+                        1,
+                        copy.str("id"),
+                    )
+                    .expect("recovery event");
+                    copy.str("id")
+                } else {
+                    let later = repair_store_at(&s, intent_hour);
+                    let actor = if mode == "agent is not an override" {
+                        "worker"
+                    } else {
+                        pulse_store::HUMAN_AGENT
+                    };
+                    pulse_board::retry_job(
+                        &later,
+                        pulse_board::RetryInput {
+                            job_id: root.str("id"),
+                            as_new: true,
+                            actor: actor.into(),
+                            ..Default::default()
+                        },
+                    )
+                    .expect("retry root")
+                    .job
+                    .id
+                };
+                match mode {
+                    "newer same second" | "newer before failure" | "newer after failure" => {
+                        let at = if mode == "newer same second" {
+                            intent_hour
+                        } else if mode == "newer after failure" {
+                            2.5
+                        } else {
+                            1.5
+                        };
+                        finish_at(
+                            &s,
+                            at,
+                            &root.str("id"),
+                            "cancelled",
+                            "cancelled by the owner again",
+                        );
+                    }
+                    _ => {}
+                }
+                finish_at(&s, failure_hour, &child_id, "failed", "verify exit 1");
+                let before = crate::jobs::job_row(&conn(&s), root.str("id"));
+                let later = repair_store_at(&s, 3.0);
+                let page = super::read_failed_jobs(
+                    &later,
+                    FailedJobsQuery {
+                        project: "proj".into(),
+                        ..Default::default()
+                    },
+                )
+                .expect("child view")
+                .expect("page");
+                assert_eq!(page.jobs.len(), 1, "{source}/{mode}: child view = {page:?}");
+                let authorized = mode.starts_with("earlier");
+                assert_eq!(
+                    page.jobs[0].eligible, authorized,
+                    "{source}/{mode}: cancellation chronology was lost: {:?}",
+                    page.jobs[0]
+                );
+                let root_repair = repair_one(&later, &root.str("id"));
+                assert_eq!(
+                    root_repair.outcome, "skipped",
+                    "{source}/{mode}: API undid root cancellation: {root_repair:?}"
+                );
+                assert_eq!(
+                    root_repair.category, "cancelled",
+                    "{source}/{mode}: API undid root cancellation: {root_repair:?}"
+                );
+                let got = repair_one(&later, &child_id);
+                if authorized {
+                    assert_eq!(
+                        got.outcome, "replanned",
+                        "{source}/{mode}: authorized child remained blocked: {got:?}"
+                    );
+                } else {
+                    assert_eq!(
+                        got.outcome, "skipped",
+                        "{source}/{mode}: cancellation was overridden: {got:?}"
+                    );
+                    assert_eq!(
+                        got.category, "superseded",
+                        "{source}/{mode}: cancellation was overridden: {got:?}"
+                    );
+                    assert_eq!(
+                        got.carrier_id,
+                        root.str("id"),
+                        "{source}/{mode}: cancellation was overridden: {got:?}"
+                    );
+                }
+                let root_after = crate::jobs::job_row(&conn(&s), root.str("id"));
+                for key in ["status", "result", "finished_at", "source"] {
+                    assert_eq!(
+                        before.str(key),
+                        root_after.str(key),
+                        "{source}/{mode}: cancelled ancestor history changed {key}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn job_repair_authorized_chain_still_dedupes_carriers() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for source in ["", "manual:cancelled-chain"] {
+            for status in [
+                "queued",
+                "leased",
+                "blocked",
+                "done",
+                "cancelled",
+                "active provisional",
+            ] {
+                let (s, _) = repair_fixture();
+                let root = repair_failure(&s, "job-cancelled-root", "verify exit 1");
+                exec1_test(
+                    &s,
+                    "UPDATE jobs SET source = ? WHERE id = ?",
+                    &[&source, &root.str("id")],
+                );
+                crate::jobs::finish_job(
+                    &s,
+                    root.str("id"),
+                    pulse_store::HUMAN_AGENT.into(),
+                    "cancelled".into(),
+                    "cancelled by the owner".into(),
+                    String::new(),
+                    -1,
+                )
+                .expect("cancel root");
+                let child = pulse_board::retry_job(
+                    &repair_store_at(&s, 1.0),
+                    pulse_board::RetryInput {
+                        job_id: root.str("id"),
+                        as_new: true,
+                        actor: pulse_store::HUMAN_AGENT.into(),
+                        ..Default::default()
+                    },
+                )
+                .expect("retry")
+                .job
+                .id;
+                finish_at(&s, 2.0, &child, "failed", "verify exit 1");
+                let repaired = repair_one(&repair_store_at(&s, 3.0), &child);
+                assert_eq!(
+                    repaired.outcome, "replanned",
+                    "{source}/{status}: initial recovery = {repaired:?}"
+                );
+                let actual = if status == "active provisional" {
+                    insert_recover_run(
+                        &s,
+                        &repaired.carrier_id,
+                        "run-current",
+                        "running",
+                        "",
+                        "",
+                        "",
+                    );
+                    "failed"
+                } else {
+                    status
+                };
+                exec1_test(
+                    &s,
+                    "UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?",
+                    &[
+                        &actual,
+                        &crate::util::plus_hours(TEST_NOW, 4.0),
+                        &repaired.carrier_id,
+                    ],
+                );
+                let events = count(&s, "SELECT COUNT(*) AS n FROM events", &[]);
+                let got = repair_one(&repair_store_at(&s, 5.0), &child);
+                assert_eq!(
+                    got.outcome, "skipped",
+                    "{source}/{status}: current carrier ignored: {got:?}"
+                );
+                assert_eq!(
+                    got.category, "superseded",
+                    "{source}/{status}: current carrier ignored: {got:?}"
+                );
+                assert_eq!(
+                    got.carrier_id, repaired.carrier_id,
+                    "{source}/{status}: current carrier ignored: {got:?}"
+                );
+                assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM jobs", &[]), 3);
+                assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM events", &[]), events);
+            }
+        }
+    }
+    #[test]
+    fn job_repair_cancellation_override_does_not_authorize_sibling() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for source in ["", "manual:cancelled-branches"] {
+            let (s, _) = repair_fixture();
+            let root = repair_failure(&s, "job-root", "verify exit 1");
+            exec1_test(
+                &s,
+                "UPDATE jobs SET source = ? WHERE id = ?",
+                &[&source, &root.str("id")],
+            );
+            let old_child = pulse_board::retry_job(
+                &s,
+                pulse_board::RetryInput {
+                    job_id: root.str("id"),
+                    as_new: true,
+                    actor: pulse_store::HUMAN_AGENT.into(),
+                    ..Default::default()
+                },
+            )
+            .expect("old retry")
+            .job
+            .id;
+            finish_at(&s, 0.5, &old_child, "failed", "verify exit 1");
+            finish_at(
+                &s,
+                1.0,
+                &root.str("id"),
+                "cancelled",
+                "cancelled by the owner",
+            );
+            let new_child = pulse_board::retry_job(
+                &repair_store_at(&s, 2.0),
+                pulse_board::RetryInput {
+                    job_id: root.str("id"),
+                    as_new: true,
+                    actor: pulse_store::HUMAN_AGENT.into(),
+                    ..Default::default()
+                },
+            )
+            .expect("new retry")
+            .job
+            .id;
+            finish_at(&s, 3.0, &new_child, "failed", "verify exit 1");
+            let later = repair_store_at(&s, 4.0);
+            let old = repair_one(&later, &old_child);
+            assert_eq!(
+                old.outcome, "skipped",
+                "{source}: new retry authorized cancelled sibling: {old:?}"
+            );
+            assert_eq!(
+                old.carrier_id,
+                root.str("id"),
+                "{source}: new retry authorized cancelled sibling: {old:?}"
+            );
+            let new = repair_one(&later, &new_child);
+            assert_eq!(
+                new.outcome, "replanned",
+                "{source}: explicitly authorized branch stayed held: {new:?}"
+            );
+        }
+    }
+    #[test]
+    fn recover_cancelled_ancestor_after_human_retry() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for source in ["", "manual:cancelled-chain"] {
+            let (s, _) = repair_fixture();
+            let root = repair_failure(&s, "job-root", "verify exit 1");
+            exec1_test(
+                &s,
+                "UPDATE jobs SET source = ? WHERE id = ?",
+                &[&source, &root.str("id")],
+            );
+            crate::jobs::finish_job(
+                &s,
+                root.str("id"),
+                pulse_store::HUMAN_AGENT.into(),
+                "cancelled".into(),
+                "cancelled by the owner".into(),
+                String::new(),
+                -1,
+            )
+            .expect("cancel root");
+            let child = pulse_board::retry_job(
+                &repair_store_at(&s, 1.0),
+                pulse_board::RetryInput {
+                    job_id: root.str("id"),
+                    as_new: true,
+                    actor: pulse_store::HUMAN_AGENT.into(),
+                    ..Default::default()
+                },
+            )
+            .expect("retry")
+            .job
+            .id;
+            finish_at(&s, 2.0, &child, "failed", "verify exit 1");
+            let later = repair_store_at(&s, 3.0);
+            let project = crate::board::project_by_slug(&conn(&s), "proj".into());
+            let lines =
+                crate::recover::recover_failed_jobs(&later, project, later.now(), "daemon".into());
+            assert!(
+                lines.len() == 1 && lines[0].contains(&format!("re-planned {child}")),
+                "{source}: daemon rejected authorized child: {lines:?}"
+            );
+            let carrier = recover_detail(&s, &child)
+                .get("job")
+                .and_then(|v| v.as_str())
+                .expect("carrier job")
+                .to_string();
+            finish_at(
+                &s,
+                4.0,
+                &root.str("id"),
+                "cancelled",
+                "cancelled by the owner again",
+            );
+            finish_at(&s, 5.0, &carrier, "failed", "verify exit 1");
+            let later = repair_store_at(&s, 6.0);
+            let project = crate::board::project_by_slug(&conn(&s), "proj".into());
+            crate::recover::recover_failed_jobs(&later, project, later.now(), "daemon".into());
+            let detail = recover_detail(&s, &carrier);
+            assert_eq!(
+                detail.get("outcome").and_then(|v| v.as_str()),
+                Some("held"),
+                "{source}: {detail:?}"
+            );
+            assert_eq!(
+                detail.get("job").and_then(|v| v.as_str()),
+                Some(root.str("id").as_str()),
+                "{source}: {detail:?}"
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'",
+                    &[]
+                ),
+                0
+            );
+        }
+    }
 }

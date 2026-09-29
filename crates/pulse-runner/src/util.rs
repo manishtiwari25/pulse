@@ -46,7 +46,7 @@ pub(crate) fn parse_iso(value: &str) -> Result<DateTime<Utc>> {
 
 /// Go: func mustISO(value string) time.Time
 pub(crate) fn must_iso(value: &str) -> DateTime<Utc> {
-    parse_iso(value).unwrap_or_else(|_| DateTime::<Utc>::UNIX_EPOCH)
+    parse_iso(value).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
 }
 
 /// Go: func formatISO(t time.Time) string
@@ -60,7 +60,8 @@ pub(crate) fn plus_hours(iso: &str, hours: f64) -> String {
 }
 
 /// Go: func plusMinutes(iso string, minutes float64) string
-pub(crate) fn plus_minutes(iso: &str, minutes: f64) -> String {
+pub(crate) fn plus_minutes(iso: &str, minutes: impl Into<f64>) -> String {
+    let minutes = minutes.into();
     format_iso(must_iso(iso) + chrono::Duration::milliseconds((minutes * 60_000.0) as i64))
 }
 
@@ -354,6 +355,18 @@ pub(crate) fn must_one(
 ) -> Row {
     query_one(q, query, args).unwrap().unwrap_or_default()
 }
+
+/// Go: func isNil(r row) bool
+pub(crate) fn is_nil(r: &Row) -> bool {
+    r.0.is_empty()
+}
+
+/// Go: func projectRow(s *store.Store, slug string) row
+pub(crate) fn project_row(s: &pulse_store::Store, slug: &str) -> Row {
+    let conn = s.conn().unwrap();
+    must_one(&conn, "SELECT * FROM projects WHERE slug = ?", &[&slug])
+}
+
 /// Go: func exec1(q querier, query string, args ...any)
 pub(crate) fn exec1(q: &(impl Querier + ?Sized), query: &str, args: &[&dyn rusqlite::ToSql]) {
     q.conn().execute(query, args).unwrap();
@@ -501,14 +514,13 @@ mod tests {
 
     #[test]
     fn git_env_drops_hook_variables() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
-        unsafe {
-            std::env::set_var("GIT_INDEX_FILE", "/elsewhere/index");
-            std::env::set_var("GIT_PREFIX", "sub/");
-            std::env::set_var("GIT_AUTHOR_NAME", "someone else");
-            std::env::set_var("GIT_DIR", "/elsewhere/.git");
-            std::env::set_var("KEEP_ME", "yes");
-        }
+        let _env_1 = pulse_testutil::setenv("GIT_INDEX_FILE", "/elsewhere/index");
+        let _env_2 = pulse_testutil::setenv("GIT_PREFIX", "sub/");
+        let _env_3 = pulse_testutil::setenv("GIT_AUTHOR_NAME", "someone else");
+        let _env_4 = pulse_testutil::setenv("GIT_DIR", "/elsewhere/.git");
+        let _env_5 = pulse_testutil::setenv("KEEP_ME", "yes");
         let env = git_env(&["EXTRA=1".into()]);
         for kv in &env {
             assert!(!pulse_gitenv::hook_var(kv), "gitEnv leaked {kv:?}");
@@ -523,6 +535,7 @@ mod tests {
 
     #[test]
     fn git_env_takes_no_optional_locks_and_never_prompts() {
+        let _serial = crate::test_helpers::serial();
         let env = format!(
             "\n{}\n",
             git_env(&["GIT_SSH_COMMAND=ssh -i key".into()]).join("\n")

@@ -12,7 +12,7 @@ pub(crate) const HANDS_DEFAULT_WORKDIR: &str = "/srv/pulse";
 static HANDS_JOB_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._-]+$").unwrap());
 static HANDS_BRANCH_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._/-]+$").unwrap());
-static HANDS_ENV_RE: LazyLock<Regex> =
+pub(crate) static HANDS_ENV_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(PULSE_[A-Z_]+|GIT_TERMINAL_PROMPT)=.*$").unwrap());
 static HANDS_B64_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^b64 ([A-Za-z0-9+/=]+)$").unwrap());
@@ -209,11 +209,10 @@ impl Hands {
         let mut copv = (PROBE_VERSION.read().unwrap())().unwrap_or_else(|_| "missing".into());
         let mut logged_in = "no".to_string();
         if copv != "missing" {
-            if std::env::var("COPILOT_GITHUB_TOKEN").unwrap_or_default()
+            let token_env = std::env::var("COPILOT_GITHUB_TOKEN").unwrap_or_default()
                 + &std::env::var("GH_TOKEN").unwrap_or_default()
-                + &std::env::var("GITHUB_TOKEN").unwrap_or_default()
-                != ""
-            {
+                + &std::env::var("GITHUB_TOKEN").unwrap_or_default();
+            if !token_env.is_empty() {
                 logged_in = "yes".into();
             } else if let Ok(data) =
                 std::fs::read_to_string(Path::new(&self.home).join(".copilot/config.json"))
@@ -224,10 +223,10 @@ impl Hands {
                 }
             }
         }
-        let mut harness = if std::env::var("COPILOT_GITHUB_TOKEN").unwrap_or_default()
+        let token_env = std::env::var("COPILOT_GITHUB_TOKEN").unwrap_or_default()
             + &std::env::var("GH_TOKEN").unwrap_or_default()
-            + &std::env::var("GITHUB_TOKEN").unwrap_or_default()
-            != ""
+            + &std::env::var("GITHUB_TOKEN").unwrap_or_default();
+        let mut harness = if !token_env.is_empty()
             || Path::new(&self.home)
                 .join(".pulse/private/providers/copilot.json")
                 .is_file()
@@ -316,10 +315,11 @@ impl Hands {
                 keys_ok = "yes".into();
             }
         }
-        if let Ok(v) = std::env::var("PULSE_HANDS_KEYS_OK") {
-            if !v.is_empty() {
+        match std::env::var("PULSE_HANDS_KEYS_OK") {
+            Ok(v) if !v.is_empty() => {
                 keys_ok = v;
             }
+            _ => {}
         }
         let _ = std::fs::create_dir_all(&self.workdir);
         let free = Command::new("df")
@@ -827,6 +827,7 @@ mod tests {
 
     #[test]
     fn hands_key_refuses_signing_key_without_key_file() {
+        let _serial = crate::test_helpers::serial();
         if unsafe { libc::getuid() } == 0 {
             return;
         }

@@ -80,6 +80,10 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn zero_space(_: &str) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+
     #[cfg(unix)]
     fn write_exe(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
@@ -91,6 +95,7 @@ mod tests {
 
     #[test]
     fn pulse_on_path_finds_executable_on_worker_path() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("pulse");
         write_exe(&bin);
@@ -114,6 +119,7 @@ mod tests {
 
     #[test]
     fn pulse_on_path_missing_is_setup_error() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("pulse");
         write_exe(&exe);
@@ -136,6 +142,69 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice: exec::preflight_run_key"]
-    fn setup_errors_share_prefix() {}
+    fn setup_errors_share_prefix() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let missing = tempfile::tempdir().unwrap().path().join("absent");
+        let empty_dir = tempfile::tempdir().unwrap();
+        let empty = empty_dir.path().join("empty");
+        fs::write(&empty, []).unwrap();
+        let prev = *crate::tmpspace::FREE_SPACE.read().unwrap();
+        *crate::tmpspace::FREE_SPACE.write().unwrap() = zero_space;
+        let cases = vec![
+            (
+                "preflightPulseCLI no cli",
+                preflight_pulse_cli("".into(), "".into()),
+            ),
+            (
+                "preflightPulseCLI bad cli",
+                preflight_pulse_cli("".into(), missing.to_string_lossy().into_owned()),
+            ),
+            (
+                "preflightRunKey missing",
+                crate::exec::preflight_run_key(&missing.to_string_lossy()),
+            ),
+            (
+                "preflightRunKey empty",
+                crate::exec::preflight_run_key(&empty.to_string_lossy()),
+            ),
+            (
+                "preflightTmpSpace unusable",
+                crate::tmpspace::preflight_tmp_space(
+                    &format!("{}/x", missing.to_string_lossy()),
+                    1,
+                ),
+            ),
+            (
+                "preflightTmpSpace low",
+                crate::tmpspace::preflight_tmp_space(
+                    &tempfile::tempdir().unwrap().path().display().to_string(),
+                    1,
+                ),
+            ),
+            (
+                "remoteKeyCheckResult",
+                crate::exec::remote_key_check_result(
+                    "/j/run.key",
+                    "host",
+                    "after upload",
+                    1,
+                    "",
+                    "no such file",
+                ),
+            ),
+            (
+                "remoteCLICheckResult",
+                crate::exec::remote_cli_check_result("/opt/pulse", "host", 1, "", ""),
+            ),
+        ];
+        *crate::tmpspace::FREE_SPACE.write().unwrap() = prev;
+        for (name, err) in cases {
+            let err = err.unwrap_err().to_string();
+            assert!(
+                err.starts_with("setup-error:"),
+                "{name}: {err:?} does not start with \"setup-error:\""
+            );
+        }
+    }
 }

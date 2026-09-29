@@ -320,18 +320,186 @@ pub(crate) fn idle_notes_changed(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+    use crate::test_helpers_f3::{row_agent, status_truth_project};
 
     #[test]
-    #[ignore = "cross-slice: plan::open_questions"]
     fn idle_note_empty_project() {
+        let _serial = crate::test_helpers::serial();
         let s = new_store();
         new_bare_repo(&s);
         let got = idle_note(&s, "proj".into(), TEST_NOW.into());
-        assert!(got.contains("no suggestions") && got.contains("reflect due"));
+        assert!(got.contains("no suggestions"));
+        assert!(got.contains("reflect due"));
+    }
+
+    #[test]
+    fn idle_note_rejected_suggestion() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        let author = join(&s, "author");
+        let voter1 = join(&s, "voter-one");
+        let voter2 = join(&s, "voter-two");
+        let card = crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "code".into(),
+                thread: "plan".into(),
+                summary: "try a measured change".into(),
+                body: "one variable\n".into(),
+                agent: Some(Box::new(row_agent(author))),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for voter in [voter1, voter2] {
+            crate::board::create_post(
+                &s,
+                TEST_NOW.into(),
+                crate::board::PostOpts {
+                    kind: "vote".into(),
+                    project: "proj".into(),
+                    area: "code".into(),
+                    thread: "plan".into(),
+                    summary: "down".into(),
+                    body: "not ready\n".into(),
+                    agent: Some(Box::new(row_agent(voter))),
+                    on: card.str("id"),
+                    vote: "down".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let got = idle_note(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            got.contains("no eligible suggestion (1 rejected)"),
+            "downvoted idle note: {got:?}"
+        );
+    }
+
+    #[test]
+    fn ballot_due_skips_when_only_author_could_vote() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        let author = join(&s, "author");
+        let card = crate::board::create_post(
+            &s,
+            "2026-09-06T08:00:00Z".into(),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "code".into(),
+                thread: "plan".into(),
+                summary: "try a measured change".into(),
+                body: "one variable\n".into(),
+                agent: Some(Box::new(row_agent(author))),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let suggestions = crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into());
+        let cards =
+            crate::plan::ballot_due(&s, "proj".into(), TEST_NOW.into(), suggestions.clone());
+        assert!(
+            cards.is_empty(),
+            "ballot due with only author voter: {cards:?}"
+        );
+        join(&s, "voter");
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE agents SET kind = 'worker', status = 'active' WHERE name = 'voter'",
+                [],
+            )
+            .unwrap();
+        let suggestions = crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into());
+        let cards =
+            crate::plan::ballot_due(&s, "proj".into(), TEST_NOW.into(), suggestions.clone());
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].id, card.str("id"));
+        assert!(
+            cards.len() <= 1,
+            "ballot due with available voter: {cards:?}"
+        );
+    }
+
+    #[test]
+    fn idle_note_handoffs_and_tried() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        let worker = join(&s, "worker-one");
+        let h = crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "handoff".into(),
+                project: "proj".into(),
+                area: "code".into(),
+                thread: "handoff".into(),
+                summary: "continue this".into(),
+                body: "leftover work\n".into(),
+                agent: Some(Box::new(row_agent(worker))),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let got = idle_note(&s, "proj".into(), TEST_NOW.into());
+        assert!(got.contains("1 handoffs"), "handoff idle note: {got:?}");
+        assert!(!got.contains("1 handoffs ("), "handoff idle note: {got:?}");
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "try handoff".into(),
+            "brief".into(),
+            0,
+            1,
+            format!("handoff:{}", h.str("id")),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let got = idle_note(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            got.contains("1 handoffs (1 tried)"),
+            "tried handoff idle note: {got:?}"
+        );
+    }
+
+    #[test]
+    fn idle_note_questions() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        let worker = join(&s, "worker-one");
+        crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "code".into(),
+                thread: "q".into(),
+                summary: "what next?".into(),
+                body: "what next?\n".into(),
+                agent: Some(Box::new(row_agent(worker))),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let got = idle_note(&s, "proj".into(), TEST_NOW.into());
+        assert!(got.contains("1 questions"), "question idle note: {got:?}");
     }
 
     #[test]
     fn record_idle_notes_readable_by_inspect() {
+        let _serial = crate::test_helpers::serial();
         let s = new_store();
         new_bare_repo(&s);
         record_idle_notes(
@@ -353,6 +521,7 @@ mod tests {
 
     #[test]
     fn idle_notes_changed() {
+        let _serial = crate::test_helpers::serial();
         let got = super::idle_notes_changed(
             BTreeMap::from([
                 ("a".into(), "same".into()),
@@ -370,6 +539,7 @@ mod tests {
 
     #[test]
     fn reflect_idle_part_status_truth() {
+        let _serial = crate::test_helpers::serial();
         for source in [
             format!("reflect:proj:{}", &TEST_NOW[..10]),
             "onboard-reflect:proj".into(),
@@ -404,6 +574,7 @@ mod tests {
 
     #[test]
     fn reflect_idle_part_status_truth_due() {
+        let _serial = crate::test_helpers::serial();
         for (project, kind, source, created) in [
             ("", "", "", ""),
             (
@@ -453,6 +624,7 @@ mod tests {
 
     #[test]
     fn reflect_idle_part_status_truth_latest_attempt() {
+        let _serial = crate::test_helpers::serial();
         for created in [TEST_NOW, "2026-09-06T09:00:00Z"] {
             let s = new_store();
             s.conn()
@@ -473,18 +645,5 @@ mod tests {
                 "reflect failed today"
             );
         }
-    }
-
-    fn status_truth_project(s: &pulse_store::Store) {
-        s.conn()
-            .unwrap()
-            .execute(
-                "INSERT INTO projects(slug, name, path, added_at) VALUES('proj', 'proj', ?, ?)",
-                params![
-                    tempfile::tempdir().unwrap().keep().display().to_string(),
-                    TEST_NOW
-                ],
-            )
-            .unwrap();
     }
 }

@@ -1,5 +1,14 @@
 //! Skeleton port of internal/runner/brief.go.
 
+#![cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "ported Go runner APIs are consumed incrementally across slices"
+    )
+)]
+#![cfg_attr(test, allow(dead_code))]
+
 use crate::recipe::Recipe;
 use crate::util::{Row, trunc};
 use std::sync::LazyLock;
@@ -476,9 +485,7 @@ pub(crate) fn write_focus_brief_section(
     b.push(String::new());
     let lines = focus_lines(s, project.clone(), agent, now);
     if lines.is_empty() {
-        b.push(format!(
-            "Nobody else holds a job or a claim on this project right now."
-        ));
+        b.push("Nobody else holds a job or a claim on this project right now.".into());
     } else {
         b.extend(lines);
     }
@@ -745,9 +752,12 @@ impl Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::*;
+    use crate::test_helpers_f4::must_write_brief;
 
     #[test]
     fn card_body_turns_one_line_card_into_fields() {
+        let _serial = crate::test_helpers::serial();
         let (body, summary, ok) = card_body("Shorten the intro; Class: operating-layer; File: README.md; Variable: intro length; Hypothesis: the README check scores higher; Tier: 1".into());
         assert!(ok);
         assert_eq!(summary, "Shorten the intro");
@@ -783,8 +793,9 @@ mod tests {
 
     #[test]
     fn parse_result_text_collects_report_lines() {
+        let _serial = crate::test_helpers::serial();
         let rep = parse_result_text(Some(
-            "SUMMARY: done\nQUESTION: owner?\nFINDING: @lead help\nVOTE: p1 UP because yes\nDECIDE: p2 no too risky\nSUGGESTION: area/thread: card".into(),
+            "SUMMARY: done\nQUESTION: owner?\nFINDING: @lead help\nVOTE: p1 UP because yes\nDECIDE: p2 no too risky\nSUGGESTION: parser/empty-input: card".into(),
         ));
         assert!(rep.found);
         assert_eq!(rep.summary, "done");
@@ -792,7 +803,285 @@ mod tests {
         assert_eq!(rep.findings, vec!["@lead help"]);
         assert_eq!(rep.votes[0].vote, "up");
         assert_eq!(rep.decisions[0].answer, "no");
-        assert_eq!(rep.suggestions[0].area, "area");
-        assert_eq!(rep.suggestions[0].thread, "thread");
+        assert_eq!(rep.suggestions[0].area, "parser");
+        assert_eq!(rep.suggestions[0].thread, "empty-input");
+    }
+
+    #[test]
+    fn worker_brief_remote_reporting() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (project, _) = new_repo(&s);
+        let brief = must_write_brief(BriefOpts {
+            job: {
+                let mut r = Row::new();
+                r.insert("id", serde_json::json!("job-remote"));
+                r.insert("kind", serde_json::json!("task"));
+                r.insert("tier", serde_json::json!(0));
+                r
+            },
+            project,
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            remote: true,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        for want in [
+            "This machine has no PULSE store, so report by printing these lines",
+            "`SUMMARY:`",
+            "`FINDING:`",
+            "`VOTE:`",
+            "Never write a PULSE_RESULT.md or any other report file into the clone.",
+        ] {
+            assert!(
+                brief.contains(want),
+                "missing remote reporting guidance: {want:?}"
+            );
+        }
+        assert!(
+            !brief.contains("pulse job finish"),
+            "remote brief requires a store-backed finish command"
+        );
+    }
+
+    #[test]
+    fn worker_brief_finish_commands() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for status in ["done", "failed"] {
+            let s = new_store();
+            let (project, dir) = new_repo(&s);
+            join(&s, "aurora");
+            let _env_1 = pulse_testutil::setenv("PULSE_AGENT", "aurora");
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                "Repair a typo".into(),
+                "Fix the typo.".into(),
+                0,
+                0,
+                "test".into(),
+                crate::util::HUMAN_AGENT.into(),
+                false,
+            )
+            .expect("add job");
+            let jid = job.str("id");
+            let leased = crate::jobs::lease_job(
+                &s,
+                "aurora".into(),
+                TEST_NOW.into(),
+                crate::jobs::LeaseOpts {
+                    job_id: jid.clone(),
+                    minutes: 10,
+                    ..Default::default()
+                },
+            )
+            .expect("lease job");
+            assert!(!leased.0.is_empty(), "lease failed");
+            let brief = must_write_brief(BriefOpts {
+                job: job.clone(),
+                project,
+                agent: "aurora".into(),
+                clone: dir,
+                minutes: 10,
+                store: Some((*s).clone()),
+                now: TEST_NOW.into(),
+                ..Default::default()
+            });
+            let rest = brief
+                .split_once("Report with `")
+                .expect("missing finish command")
+                .1;
+            let mut command = rest
+                .split_once('`')
+                .expect("unterminated finish command")
+                .0
+                .to_string();
+            if status == "failed" {
+                assert!(
+                    brief.contains("replace `done` with `failed` when you could not do it"),
+                    "missing positional failure-status guidance"
+                );
+                command = command.replacen(" done ", " failed ", 1);
+            }
+            let summary = format!("SUMMARY: typo repair {status}");
+            let args = crate::util::split_shell(&command.replace("<SUMMARY line>", &summary));
+            assert!(
+                args.len() >= 3 && args[0] == "pulse" && args[1] == "job" && args[2] == "finish",
+                "unexpected finish command: {command:?}"
+            );
+            let arg_refs = args[2..].iter().map(String::as_str).collect::<Vec<_>>();
+            let (out, err_text, code) =
+                crate::test_helpers_f6::invoke(&s, "job", "proj", &arg_refs);
+            assert_eq!(
+                (code, out.as_str()),
+                (0, format!("{jid} {status}\n").as_str()),
+                "stderr {err_text:?}"
+            );
+            let finished = crate::jobs::job_row(&s.conn().expect("conn"), jid.clone());
+            assert_eq!(finished.str("status"), status);
+            assert_eq!(finished.str("result"), summary);
+            assert_eq!(finished.str("branch"), format!("pulse/aurora/{jid}"));
+            assert!(!finished.str("finished_at").is_empty());
+            assert_eq!(finished.str("lease_until"), "");
+        }
+    }
+
+    #[test]
+    fn worker_brief_claim_mentions_pulse_cli_fallback() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (project, dir) = new_repo(&s);
+        join(&s, "aurora");
+        let _env_2 = pulse_testutil::setenv("PULSE_AGENT", "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Repair a typo".into(),
+            "Fix the typo.".into(),
+            0,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let brief = must_write_brief(BriefOpts {
+            job,
+            project,
+            agent: "aurora".into(),
+            clone: dir,
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        let rest = brief
+            .split_once("Claim your thread before you start (")
+            .expect("missing claim instruction")
+            .1;
+        let claim = rest
+            .split_once(')')
+            .expect("unterminated claim instruction")
+            .0;
+        assert!(
+            claim.contains("pulse claim --area A --thread T") && claim.contains("$PULSE_CLI"),
+            "claim instruction lacks the $PULSE_CLI fallback: {claim:?}"
+        );
+    }
+
+    #[test]
+    fn worker_brief_recovery_is_bounded_and_transport_aware() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (project, _) = new_repo(&s);
+        for remote in [false, true] {
+            let mut job = Row::new();
+            job.insert("id", serde_json::json!("job-peer"));
+            job.insert("kind", serde_json::json!("task"));
+            job.insert("tier", serde_json::json!(0));
+            let brief = must_write_brief(BriefOpts {
+                job,
+                project: project.clone(),
+                agent: "aurora".into(),
+                clone: "/clone".into(),
+                minutes: 10,
+                remote,
+                store: Some((*s).clone()),
+                now: TEST_NOW.into(),
+                ..Default::default()
+            });
+            for want in [
+                "## Working through a blocker",
+                "different safe approach",
+                "Do not poll",
+                "SUMMARY: blocked:",
+                "Never weaken a check",
+                "never bypass",
+            ] {
+                assert!(
+                    brief.contains(want),
+                    "remote={remote} missing recovery guidance {want:?}"
+                );
+            }
+            if remote {
+                assert!(
+                    brief.contains("FINDING: @proj-lead"),
+                    "storeless worker cannot ask its lead for help"
+                );
+                for invalid in [
+                    "Claim your thread before you start (pulse claim",
+                    "Reply on that thread with `pulse post answer",
+                ] {
+                    assert!(
+                        !brief.contains(invalid),
+                        "remote worker instructed to use unavailable store: {invalid:?}"
+                    );
+                }
+            } else {
+                assert!(
+                    brief.contains("pulse post question --project proj"),
+                    "local worker has no actionable peer help command"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn write_brief_renders_lessons_before_rules() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        let mut job = Row::new();
+        job.insert("id", serde_json::json!("job-1"));
+        job.insert("kind", serde_json::json!("task"));
+        job.insert("tier", serde_json::json!(1));
+        job.insert("title", serde_json::json!("Fix it"));
+        job.insert("brief", serde_json::json!("Do the work."));
+        let brief = must_write_brief(BriefOpts {
+            job: job.clone(),
+            project: project.clone(),
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            lessons: vec!["`MEM-one` Pattern: Run the check.".into()],
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        let section = "## Lessons from this project's recent failures (ADR-036)";
+        assert!(brief.contains(section));
+        assert!(brief.contains("- `MEM-one` Pattern: Run the check."));
+        let task = brief.find("## Task").unwrap();
+        let lesson = brief.find(section).unwrap();
+        let rules = brief.find("## Rules").unwrap();
+        assert!(
+            task < lesson && lesson < rules,
+            "section order task={task} lesson={lesson} rules={rules}"
+        );
+
+        let without = must_write_brief(BriefOpts {
+            job,
+            project,
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        assert!(
+            !without.contains(section),
+            "empty lessons rendered:\n{without}"
+        );
     }
 }

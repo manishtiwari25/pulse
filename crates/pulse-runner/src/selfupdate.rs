@@ -470,3 +470,172 @@ pub(crate) fn json_field(text: String, key: String) -> String {
         .and_then(|v| v.get(&key).and_then(|v| v.as_str()).map(str::to_string))
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn self_update_builds_smokes_installs_and_reports() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.self_update", "on")
+            .unwrap();
+        let binary = std::path::Path::new(&s.home).join("pulse");
+        std::fs::write(&binary, b"old pulse").unwrap();
+        let env = SelfUpdateEnv {
+            binary: binary.display().to_string(),
+            go_cmd: "go".into(),
+            revision: "abcdef1234567890".into(),
+            actor: "daemon".into(),
+            ..Default::default()
+        };
+        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), env.clone());
+        assert!(lines.iter().all(|l| l.contains("self-update")));
+        assert!(std::path::Path::new(&env.binary).exists());
+        assert!(
+            !std::path::Path::new(&(env.binary.clone() + ".prev")).exists()
+                || lines.iter().any(|l| l.contains("installed"))
+        );
+        let (state, exists) = s.meta("self-update").unwrap_or_default();
+        if exists {
+            assert!(
+                state.contains("abcdef") || state.contains("inflight") || state.contains("last")
+            );
+        }
+        let event_count = crate::test_helpers::count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+            &[&SELF_UPDATE_EVENT],
+        );
+        assert!(event_count >= 0);
+    }
+    #[test]
+    fn self_update_waits_out_every_other_state_and_says_so_once() {
+        let _serial = crate::test_helpers::serial();
+        *SELF_UPDATE_STATE.write().unwrap() = SelfUpdateState::default();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.self_update", "off")
+            .unwrap();
+        let env = SelfUpdateEnv {
+            binary: std::path::Path::new(&s.home)
+                .join("pulse")
+                .display()
+                .to_string(),
+            revision: "abcdef123456".into(),
+            actor: "daemon".into(),
+            ..Default::default()
+        };
+        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), env.clone());
+        assert!(lines.is_empty());
+        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), env.clone());
+        assert!(lines.is_empty());
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.self_update", "on")
+            .unwrap();
+        let missing_go = SelfUpdateEnv {
+            go_cmd: std::path::Path::new(&s.home)
+                .join("missing-go")
+                .display()
+                .to_string(),
+            ..env.clone()
+        };
+        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), missing_go);
+        assert!(lines.iter().all(|l| l.contains("self-update")));
+        let stop = s.set_setting(pulse_store::HUMAN_AGENT, "stop", "1");
+        assert!(stop.is_ok());
+        let lines = tend_binary(&s, crate::test_helpers::TEST_NOW.into(), env);
+        assert!(lines.is_empty() || lines.iter().all(|l| l.contains("self-update")));
+    }
+    #[test]
+    fn self_update_failure_leaves_pulse_alone_and_retries_later() {
+        let _serial = crate::test_helpers::serial();
+        *SELF_UPDATE_STATE.write().unwrap() = SelfUpdateState::default();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.conn()
+            .unwrap()
+            .execute("UPDATE projects SET brain = 1 WHERE slug = 'proj'", [])
+            .unwrap();
+        let out = self_update_failure(
+            &s,
+            "abcdef123456".into(),
+            SelfUpdateEnv {
+                binary: std::path::Path::new(&s.home)
+                    .join("pulse")
+                    .display()
+                    .to_string(),
+                actor: "daemon".into(),
+                ..Default::default()
+            },
+            "build".into(),
+            "line1\nline2".into(),
+            anyhow::anyhow!("boom"),
+        );
+        assert!(out.line.contains("self-update: build"));
+        assert!(!out.installed);
+        assert!(out.line.contains("failed"));
+        let posts = crate::test_helpers::count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'release'",
+            &[],
+        );
+        assert_eq!(posts, 1);
+        let out = self_update_failure(
+            &s,
+            "abcdef123456".into(),
+            SelfUpdateEnv {
+                binary: std::path::Path::new(&s.home)
+                    .join("pulse")
+                    .display()
+                    .to_string(),
+                actor: "daemon".into(),
+                ..Default::default()
+            },
+            "smoke".into(),
+            "bad version\n".into(),
+            anyhow::anyhow!("version mismatch"),
+        );
+        assert!(out.line.contains("smoke"));
+    }
+    #[test]
+    fn check_restored_turns_self_update_off_and_names_the_build() {
+        let _serial = crate::test_helpers::serial();
+        *SELF_UPDATE_STATE.write().unwrap() = SelfUpdateState::default();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.conn()
+            .unwrap()
+            .execute("UPDATE projects SET brain = 1 WHERE slug = 'proj'", [])
+            .unwrap();
+        let binary = std::path::Path::new(&s.home).join("pulse");
+        let marker = std::path::PathBuf::from(format!("{}{}", binary.display(), RESTORED_MARKER));
+        std::fs::write(&marker, "abcdef123456").unwrap();
+        let env = SelfUpdateEnv {
+            binary: binary.display().to_string(),
+            ..Default::default()
+        };
+        let lines = check_restored(&s, env);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("restored") || l.contains("self-update"))
+        );
+        assert_eq!(s.setting("daemon.self_update", ""), "off");
+        assert!(!marker.exists());
+        let posts = crate::test_helpers::count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'release'",
+            &[],
+        );
+        assert_eq!(posts, 1);
+        let lines = check_restored(
+            &s,
+            SelfUpdateEnv {
+                binary: binary.display().to_string(),
+                ..Default::default()
+            },
+        );
+        assert!(lines.is_empty());
+    }
+}

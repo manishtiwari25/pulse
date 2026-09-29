@@ -442,6 +442,10 @@ impl Sweeper {
             && let Err(err) =
                 std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path))
         {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                self.rep.removed.push(item);
+                return true;
+            }
             self.failed(format!("cannot remove {path}: {err}"), vec![]);
             return false;
         }
@@ -1009,4 +1013,538 @@ fn kind_rank_value(kind: &str) -> usize {
 
 fn nonempty(s: String) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{TEST_NOW, new_bare_repo, run};
+    use crate::test_helpers_f3b::*;
+    use rusqlite::params;
+    use std::path::Path;
+    use std::time::Duration;
+
+    fn projects(s: &pulse_store::Store) -> Vec<crate::util::Row> {
+        crate::board::project_rows(&*s.conn().unwrap(), false)
+    }
+
+    #[test]
+    fn sweep_work_leftovers() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let work = Path::new(&s.home).join("work");
+        let finished = sweep_job(&s, "done", "");
+        sweep_run(&s, &finished, "done");
+        let running = sweep_job(&s, "leased", "");
+        sweep_run(&s, &running, "running");
+        let lost = sweep_job(&s, "failed", "");
+        sweep_run(&s, &lost, "lost");
+        let unknown = crate::util::new_id("job", TEST_NOW);
+        for job in [&finished, &running, &lost, &unknown] {
+            mkdir_file(work.join(job).join("src/main.go"), "package main\n");
+            mkdir_file(work.join(format!("{job}.key")), "key");
+            mkdir_file(work.join(format!("{job}.brief.md")), "# brief");
+        }
+        mkdir_file(work.join("mine.txt"), "not the runner's");
+        let mut rep = sweep(&s, projects(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        for job in [&finished, &lost] {
+            for p in [
+                job.to_string(),
+                format!("{job}.key"),
+                format!("{job}.brief.md"),
+            ] {
+                assert!(!crate::util::file_exists(
+                    &work.join(p).display().to_string()
+                ));
+            }
+        }
+        for job in [&running, &unknown] {
+            for p in [
+                job.to_string(),
+                format!("{job}.key"),
+                format!("{job}.brief.md"),
+            ] {
+                assert!(crate::util::file_exists(
+                    &work.join(p).display().to_string()
+                ));
+            }
+        }
+        assert!(crate::util::file_exists(
+            &work.join("mine.txt").display().to_string()
+        ));
+        assert_eq!(swept_paths(&rep.removed, "clone").len(), 2);
+        assert_eq!(swept_paths(&rep.removed, "scratch").len(), 4);
+        assert!(held_why(&rep.held, work.join(&running)).contains("in progress"));
+        let why = held_why(&rep.held, work.join(&unknown));
+        assert!(
+            why.contains("no job") && why.contains("30d"),
+            "unknown why = {why:?}"
+        );
+        assert!(rep.bytes() > 0);
+        mkdir_file(work.join(&finished).join("again"), "x");
+        rep = sweep(
+            &s,
+            projects(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                inflight: std::collections::BTreeMap::from([(finished.clone(), true)]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(held_why(&rep.held, work.join(&finished)), "run in flight");
+    }
+
+    #[test]
+    fn sweep_landing_worktree() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let (_, root) = new_bare_repo(&s);
+        let work = Path::new(&s.home).join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let dead = work.join("land-proj-99999999");
+        let alive = work.join(format!("land-proj-{}", std::process::id()));
+        run(
+            &root,
+            &[
+                "git",
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                dead.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        run(
+            &root,
+            &[
+                "git",
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                alive.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let rep = sweep(&s, projects(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert!(!crate::util::file_exists(&dead.display().to_string()));
+        assert!(crate::util::file_exists(&alive.display().to_string()));
+        assert_eq!(
+            swept_paths(&rep.removed, "worktree"),
+            vec![dead.display().to_string()]
+        );
+        assert!(held_why(&rep.held, &alive).contains("still running"));
+        let list = run(&root, &["git", "worktree", "list", "--porcelain"]);
+        assert!(
+            !list.contains(dead.to_str().unwrap()) && !list.contains("prunable"),
+            "{list}"
+        );
+        assert!(list.contains(alive.to_str().unwrap()), "{list}");
+    }
+
+    #[test]
+    fn sweep_stray_worktrees() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let (_, root) = new_bare_repo(&s);
+        let dir = Path::new(&s.home).join("worktrees");
+        let plain = dir.join("proj");
+        mkdir_file(plain.join("leftover.txt"), "x");
+        let forgotten = dir.join("proj-forgotten");
+        mkdir_file(
+            forgotten.join(".git"),
+            &format!(
+                "gitdir: {}\n",
+                Path::new(&root).join(".git/worktrees/gone").display()
+            ),
+        );
+        let live = dir.join("proj-live");
+        run(
+            &root,
+            &[
+                "git",
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                live.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let nested = dir.join("nested");
+        run(
+            &root,
+            &[
+                "git",
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                nested.join("one").to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run(&repo, &["git", "init", "-q"]);
+        let rep = sweep(&s, projects(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        for p in [&plain, &forgotten] {
+            assert!(
+                !crate::util::file_exists(&p.display().to_string()),
+                "{p:?} still there"
+            );
+        }
+        for p in [&live, &nested, &repo] {
+            assert!(
+                crate::util::file_exists(&p.display().to_string()),
+                "{p:?} removed"
+            );
+        }
+        assert!(held_why(&rep.held, &live).contains("git still lists"));
+        assert!(held_why(&rep.held, &nested).contains("git still lists"));
+        assert!(held_why(&rep.held, &repo).contains("repository of its own"));
+    }
+
+    #[test]
+    fn sweep_branches_and_refs() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let (_, root) = new_bare_repo(&s);
+        let mk = |branch: &str, commit: bool| {
+            run(&root, &["git", "branch", branch, "main"]);
+            if commit {
+                run(&root, &["git", "checkout", "-q", branch]);
+                mkdir_file(
+                    Path::new(&root).join(format!("{}.txt", branch.rsplit('/').next().unwrap())),
+                    &format!("work on {branch}"),
+                );
+                run(&root, &["git", "add", "-A"]);
+                run(
+                    &root,
+                    &["git", "commit", "-q", "-m", &format!("work on {branch}")],
+                );
+                run(&root, &["git", "checkout", "-q", "main"]);
+            }
+        };
+        let pending = sweep_job(&s, "done", "");
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET branch = ? WHERE id = ?",
+                params![format!("pulse/w/{pending}"), pending],
+            )
+            .unwrap();
+        mk(&format!("pulse/w/{pending}"), true);
+        let orphan = sweep_job(&s, "failed", "");
+        mk(&format!("pulse/w/{orphan}"), true);
+        let merged = sweep_job(&s, "done", "");
+        mk(&format!("pulse/w/{merged}"), false);
+        mk("evolve/S-1", true);
+        let running = sweep_job(&s, "leased", "");
+        sweep_run(&s, &running, "running");
+        run(
+            &root,
+            &[
+                "git",
+                "update-ref",
+                &format!("refs/pulse/landing/{running}"),
+                "main",
+            ],
+        );
+        let over = sweep_job(&s, "done", "");
+        run(
+            &root,
+            &[
+                "git",
+                "update-ref",
+                &format!("refs/pulse/landing/{over}"),
+                "main",
+            ],
+        );
+        let rep = sweep(
+            &s,
+            projects(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                actor: "daemon".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        let branches = run(
+            &root,
+            &[
+                "git",
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/",
+            ],
+        );
+        assert!(
+            branches.contains("main\n") && branches.contains(&format!("pulse/w/{pending}\n")),
+            "{branches}"
+        );
+        for gone in [
+            format!("pulse/w/{orphan}"),
+            format!("pulse/w/{merged}"),
+            "evolve/S-1".into(),
+        ] {
+            assert!(
+                !branches.contains(&format!("{gone}\n")),
+                "{gone} still there in {branches}"
+            );
+        }
+        assert!(
+            held_why_text(&rep.held, &format!("pulse/w/{pending}")).contains("waiting to land")
+        );
+        let patch = Path::new(&s.home)
+            .join("patches/proj")
+            .join(format!("pulse__w__{orphan}.patch"));
+        assert!(
+            std::fs::metadata(&patch).is_ok_and(|m| m.len() > 0),
+            "orphan patch {patch:?}"
+        );
+        assert!(
+            std::fs::read_to_string(&patch)
+                .unwrap()
+                .contains(&format!("work on pulse/w/{orphan}"))
+        );
+        assert!(crate::util::file_exists(
+            &Path::new(&s.home)
+                .join("patches/proj/evolve__S-1.patch")
+                .display()
+                .to_string()
+        ));
+        assert!(!crate::util::file_exists(
+            &Path::new(&s.home)
+                .join("patches/proj")
+                .join(format!("pulse__w__{merged}.patch"))
+                .display()
+                .to_string()
+        ));
+        assert!(rep.removed.iter().any(|x| x.kind == "branch"
+            && x.path == format!("pulse/w/{merged}")
+            && x.why.contains("every commit is on main")));
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT count(*) AS n FROM events WHERE action = 'land.swept'",
+                &[]
+            ),
+            3
+        );
+        let refs = run(
+            &root,
+            &[
+                "git",
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/pulse/landing/",
+            ],
+        );
+        assert!(!refs.contains(&over) && refs.contains(&running), "{refs}");
+        assert_eq!(
+            swept_paths(&rep.removed, "ref"),
+            vec![format!("refs/pulse/landing/{over}")]
+        );
+    }
+    #[test]
+    fn sweep_branch_age_hold() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        let mut w = Sweeper {
+            s: (*s).clone(),
+            now: crate::test_helpers::TEST_NOW.into(),
+            clock: chrono::Utc::now(),
+            home: String::new(),
+            o: SweepOpts::default(),
+            grace: std::time::Duration::ZERO,
+            branches: std::time::Duration::from_secs(7 * 24 * 3600),
+            keep: std::time::Duration::ZERO,
+            rep: SweepReport::default(),
+            projects: Vec::new(),
+            prune: std::collections::BTreeMap::new(),
+            running: std::collections::BTreeMap::new(),
+        };
+        assert_eq!(w.branch_hold("main".into(), "main".into()), "checked out");
+    }
+    #[test]
+    fn sweep_old_logs_and_patches() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let old = std::time::SystemTime::now() - Duration::from_secs(40 * 24 * 3600);
+        let age = |path: &Path| {
+            let secs = old.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+            let tv = [
+                libc::timeval {
+                    tv_sec: secs,
+                    tv_usec: 0,
+                },
+                libc::timeval {
+                    tv_sec: secs,
+                    tv_usec: 0,
+                },
+            ];
+            let c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::utimes(c.as_ptr(), tv.as_ptr()) }, 0);
+        };
+        let logs = Path::new(&s.home).join("logs");
+        let old_log = logs.join(format!("{}.log", crate::util::new_id("run", TEST_NOW)));
+        mkdir_file(&old_log, "old");
+        age(&old_log);
+        let new_log = logs.join(format!("{}.log", crate::util::new_id("run", TEST_NOW)));
+        mkdir_file(&new_log, "new");
+        let running = sweep_job(&s, "leased", "");
+        let running_log = logs.join(format!("{}.log", sweep_run(&s, &running, "running")));
+        mkdir_file(&running_log, "live");
+        age(&running_log);
+        let daemon_log = logs.join("daemon.log");
+        mkdir_file(&daemon_log, "daemon");
+        age(&daemon_log);
+        let old_patch = Path::new(&s.home).join("patches/proj/pulse__w__old.patch");
+        mkdir_file(&old_patch, "diff");
+        age(&old_patch);
+        let new_patch = Path::new(&s.home).join("patches/proj/pulse__w__new.patch");
+        mkdir_file(&new_patch, "diff");
+        let rep = sweep(&s, projects(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        for p in [&old_log, &old_patch] {
+            assert!(
+                !crate::util::file_exists(&p.display().to_string()),
+                "{p:?} still there"
+            );
+        }
+        for p in [&new_log, &running_log, &daemon_log, &new_patch] {
+            assert!(
+                crate::util::file_exists(&p.display().to_string()),
+                "{p:?} removed"
+            );
+        }
+        assert_eq!(held_why(&rep.held, &running_log), "run in progress");
+        let lines = sweep_lines(Some(rep));
+        assert_eq!(lines.len(), 2, "lines = {lines:?}");
+        assert!(
+            lines[0].contains("swept 1 run log") && lines[1].contains("swept 1 patch"),
+            "lines = {lines:?}"
+        );
+    }
+    #[test]
+    fn sweep_dry_run() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let rep = sweep(
+            &s,
+            Vec::new(),
+            crate::test_helpers::TEST_NOW.into(),
+            SweepOpts {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rep.dry_run);
+    }
+    #[test]
+    fn daemon_sweeps() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let finished = sweep_job(&s, "done", "");
+        sweep_run(&s, &finished, "done");
+        let clone = Path::new(&s.home).join("work").join(&finished);
+        mkdir_file(clone.join("f"), "x");
+        set_setting(&s, "daemon.sweep", "off");
+        let lines = tend_sweep(
+            &s,
+            projects(&s),
+            TEST_NOW.into(),
+            "daemon".into(),
+            Default::default(),
+            None,
+        );
+        assert!(crate::util::file_exists(&clone.display().to_string()));
+        assert!(lines.iter().all(|l| !l.contains("swept")));
+        assert!(s.meta("hygiene").is_ok_and(|(_, exists)| !exists));
+        set_setting(&s, "daemon.sweep", "on");
+        let lines = tend_sweep(
+            &s,
+            projects(&s),
+            TEST_NOW.into(),
+            "daemon".into(),
+            Default::default(),
+            None,
+        );
+        assert!(!crate::util::file_exists(&clone.display().to_string()));
+        assert!(
+            lines
+                .join("\n")
+                .contains(&format!("swept clone {}", clone.display()))
+        );
+        let (raw, exists) = s.meta("hygiene").unwrap();
+        assert!(exists);
+        let note: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(note["removed"]["clone"], 1);
+        assert!(note["bytes"].as_i64().unwrap_or_default() > 0);
+        assert!(!note["at"].as_str().unwrap_or("").is_empty());
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT count(*) AS n FROM events WHERE action = 'daemon.sweep' AND subject = 'local'",
+                &[]
+            ),
+            1
+        );
+    }
+    #[test]
+    fn tend_sweep_cadence() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let lines = tend_sweep(
+            &s,
+            Vec::new(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+            std::collections::BTreeMap::new(),
+            Some(chrono::Utc::now()),
+        );
+        assert!(lines.is_empty());
+    }
+    #[test]
+    fn tend_sweep_checkpoints_wal() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let lines = tend_sweep(
+            &s,
+            Vec::new(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+            std::collections::BTreeMap::new(),
+            None,
+        );
+        assert!(lines.iter().all(|l| !l.is_empty()));
+    }
+    #[test]
+    fn sweep_stale_push_keys() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let key_dir = std::path::Path::new(&s.home).join("tmp/push-old");
+        std::fs::create_dir_all(&key_dir).unwrap();
+        let rep = sweep(
+            &s,
+            Vec::new(),
+            crate::test_helpers::TEST_NOW.into(),
+            SweepOpts::default(),
+        )
+        .unwrap();
+        assert!(rep.errors.is_empty());
+    }
 }

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
+use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::{Arc, LazyLock, RwLock};
@@ -56,6 +57,9 @@ pub(crate) fn run_group_observed(
     if argv.is_empty() {
         return Err(anyhow::anyhow!("empty command"));
     }
+    if cancel.is_cancelled() {
+        return Ok(finish(None, "", "", true));
+    }
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..]);
     if !dir.is_empty() {
@@ -71,7 +75,7 @@ pub(crate) fn run_group_observed(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let input = stdin.to_vec();
-    let mut child = match unsafe {
+    let mut child = unsafe {
         cmd.pre_exec(|| {
             // Put the child in its own process group before exec, matching Go Setpgid.
             if libc::setpgid(0, 0) == -1 {
@@ -80,10 +84,7 @@ pub(crate) fn run_group_observed(
             Ok(())
         });
         cmd.spawn()
-    } {
-        Ok(c) => c,
-        Err(e) => return Err(e.into()),
-    };
+    }?;
     if let Some(mut sin) = child.stdin.take() {
         let _ = std::thread::spawn(move || {
             use std::io::Write;
@@ -104,9 +105,29 @@ pub(crate) fn run_group_observed(
     });
 
     let started = Instant::now();
-    let mut observed = false;
+    let mut observe = observer.is_some();
+    let (beats, stop_ticks) = observer
+        .map(|_| {
+            (crate::heartbeat::HEARTBEAT_TICKS
+                .read()
+                .expect("heartbeat ticks lock"))(pulse_board::HEARTBEAT_INTERVAL)
+        })
+        .unzip();
+    let mut stopped = false;
+    let mut stop_observer = || {
+        if !stopped {
+            stopped = true;
+            if let Some(stop) = observer.and_then(|o| o.stop.as_ref()) {
+                stop();
+            }
+        }
+    };
     loop {
         if let Some(status) = child.try_wait()? {
+            stop_observer();
+            if let Some(stop) = stop_ticks {
+                stop();
+            }
             let stdout = out_thread.join().unwrap_or_default();
             let stderr = err_thread.join().unwrap_or_default();
             let code = status.code().or_else(|| {
@@ -123,26 +144,30 @@ pub(crate) fn run_group_observed(
             return Ok(finish(code, &stdout, &stderr, false));
         }
         if cancel.is_cancelled() || (budget > Duration::ZERO && started.elapsed() >= budget) {
-            if let Some(o) = observer {
-                if let Some(stop) = &o.stop {
-                    stop();
-                }
+            stop_observer();
+            if let Some(stop) = stop_ticks {
+                stop();
             }
-            kill_group_after(child.id() as i32, *KILL_AFTER.read().unwrap());
+            terminate_child_group(&mut child, *KILL_AFTER.read().unwrap());
             let _ = child.wait();
             let stdout = out_thread.join().unwrap_or_default();
             let stderr = err_thread.join().unwrap_or_default();
             return Ok(finish(None, &stdout, &stderr, true));
         }
-        if !observed {
-            if let Some(o) = observer {
-                if let Some(beat) = &o.beat {
-                    beat();
-                }
+        if observe {
+            if let Some(beat) = observer.and_then(|o| o.beat.as_ref()) {
+                beat();
             }
-            observed = true;
+            observe = false;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        if let Some(beats) = &beats
+            && beats.recv_timeout(Duration::from_millis(20)).is_ok()
+        {
+            observe = true;
+            continue;
+        } else {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -171,32 +196,58 @@ pub(crate) fn wait_command(
         Ok(c) => c,
         Err(e) => return (Some(e.into()), false, false),
     };
-    let mut observed = false;
+    let mut observe = observer.is_some();
+    let (beats, stop_ticks) = observer
+        .map(|_| {
+            (crate::heartbeat::HEARTBEAT_TICKS
+                .read()
+                .expect("heartbeat ticks lock"))(pulse_board::HEARTBEAT_INTERVAL)
+        })
+        .unzip();
+    let mut stopped = false;
+    let mut stop_observer = || {
+        if !stopped {
+            stopped = true;
+            if let Some(stop) = observer.and_then(|o| o.stop.as_ref()) {
+                stop();
+            }
+        }
+    };
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return (None, false, true),
+            Ok(Some(_)) => {
+                stop_observer();
+                if let Some(stop) = stop_ticks {
+                    stop();
+                }
+                return (None, false, true);
+            }
             Ok(None) => {}
             Err(e) => return (Some(e.into()), false, true),
         }
         if cancel.is_cancelled() || (budget > Duration::ZERO && start.elapsed() >= budget) {
-            if let Some(o) = observer {
-                if let Some(stop) = &o.stop {
-                    stop();
-                }
+            stop_observer();
+            if let Some(stop) = stop_ticks {
+                stop();
             }
-            kill_group_after(child.id() as i32, grace);
+            terminate_child_group(&mut child, grace);
             let _ = child.wait();
             return (None, true, true);
         }
-        if !observed {
-            if let Some(o) = observer {
-                if let Some(beat) = &o.beat {
-                    beat();
-                }
+        if observe {
+            if let Some(beat) = observer.and_then(|o| o.beat.as_ref()) {
+                beat();
             }
-            observed = true;
+            observe = false;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        if let Some(beats) = &beats
+            && beats.recv_timeout(Duration::from_millis(20)).is_ok()
+        {
+            observe = true;
+            continue;
+        } else {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 /// Go: func killGroup(pid int, done <-chan error)
@@ -214,6 +265,31 @@ pub(crate) fn kill_group_after(pid: i32, grace: Duration) {
         nix::unistd::Pid::from_raw(pid),
         nix::sys::signal::Signal::SIGKILL,
     );
+}
+fn terminate_child_group(child: &mut Child, grace: Duration) {
+    let pid = child.id() as i32;
+    let _ = nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGTERM,
+    );
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _ = nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 pub(crate) static KILL_AFTER: LazyLock<RwLock<Duration>> =
     LazyLock::new(|| RwLock::new(Duration::from_secs(5)));

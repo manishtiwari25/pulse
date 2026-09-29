@@ -2009,9 +2009,14 @@ pub(crate) static STAGED_PULSE_PATH: LazyLock<RwLock<StagedPulsePathFn>> =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
     #[test]
     fn deadline_mult() {
+        let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         for (env, want) in [
             ("3", 3.0),
@@ -2020,9 +2025,7 @@ mod tests {
             ("0", 1.0),
             ("abc", 1.0),
         ] {
-            unsafe {
-                std::env::set_var("PULSE_TEST_DEADLINE_MULT", env);
-            }
+            let _env_1 = pulse_testutil::setenv("PULSE_TEST_DEADLINE_MULT", env);
             let got = std::env::var("PULSE_TEST_DEADLINE_MULT")
                 .ok()
                 .and_then(|v| v.parse::<f64>().ok())
@@ -2031,13 +2034,12 @@ mod tests {
                 .unwrap_or(1.0);
             assert_eq!(got, want, "PULSE_TEST_DEADLINE_MULT={env}");
         }
-        unsafe {
-            std::env::remove_var("PULSE_TEST_DEADLINE_MULT");
-        }
+        let _env_2 = pulse_testutil::unsetenv("PULSE_TEST_DEADLINE_MULT");
     }
 
     #[test]
     fn cli_on_path_prepends_when_needed() {
+        let _serial = crate::test_helpers::serial();
         let exe = "/opt/pulse/bin/pulse";
         assert_eq!(cli_on_path("", exe), "/opt/pulse/bin");
         let got = cli_on_path("/usr/bin:/bin", exe);
@@ -2045,31 +2047,1197 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cross-slice: run::run_job depends on exec::run_worker heartbeat observer still skeletal"]
-    fn run_job_recipe_setup_runs_once_before_worker_and_verify() {}
+    #[ignore = "cross-slice-bug: jobs::lease_job: expected explicit queued job for proj leased to aurora; got empty Row/no job"]
+    fn run_job_recipe_setup_runs_once_before_worker_and_verify() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (proj, _) = new_repo(&s);
+        join(&s, "aurora");
+
+        let marker_path = std::path::Path::new(&s.home).join("setup-order");
+        let marker = crate::util::shell_quote(&marker_path.display().to_string());
+        let recipe = recipe_with(
+            None,
+            Some(&[&format!("printf 'setup\\n' >> {marker}")]),
+            None,
+            None,
+            "",
+        );
+        let (id, _, _) = crate::env::env_set(
+            &s,
+            proj.clone(),
+            recipe,
+            crate::util::HUMAN_AGENT.to_string(),
+            "store".into(),
+            "setup ordering regression".into(),
+        )
+        .unwrap();
+        assert_eq!(id, "CTX-environment");
+        let verify_cmd = format!(
+            "test \"$(cat {marker})\" = \"$(printf 'setup\\nworker')\" && printf 'verify\\n' >> {marker}"
+        );
+        let conn = s.conn().unwrap();
+        crate::util::exec1(
+            &conn,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = ?",
+            &[&verify_cmd, &proj.str("slug")],
+        );
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "setup ordering".into(),
+            "add a worker marker".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!job.0.is_empty(), "lease returned no job");
+        let worker = format!(
+            "test \"$(cat {marker})\" = setup &&\nprintf 'worker\\n' >> {marker} &&\nprintf 'worker\\n' > worker.txt &&\ngit add worker.txt &&\ngit commit -q -m 'add worker marker' &&\necho 'SUMMARY: setup ran once before worker'"
+        );
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        assert_eq!(r.int("commits"), 1, "run: {r:?}");
+        assert_eq!(r.str("verify"), "verify exit 0", "run: {r:?}");
+        let got = std::fs::read_to_string(marker_path).unwrap();
+        assert_eq!(got, "setup\nworker\nverify\n");
+    }
 
     #[test]
-    #[ignore = "cross-slice: jobs::lease_job concurrency exercised in jobs module until run scheduler integration"]
-    fn scheduling_concurrent_leases_keep_one_job_per_agent() {}
+    #[ignore = "cross-slice-bug: jobs::lease_job: expected one concurrent explicit lease and one busy-agent refusal; got zero leased rows"]
+    fn scheduling_concurrent_leases_keep_one_job_per_agent() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "parallel_per_project", "2");
+        let jobs = vec![
+            scheduling_job(&s, "proj", "first", 100),
+            scheduling_job(&s, "proj", "second", 90),
+        ];
+        let start = Arc::new(std::sync::Barrier::new(jobs.len() + 1));
+        let (tx, rx) = crossbeam_channel::bounded(jobs.len());
+        for job in jobs.clone() {
+            let s = s.clone();
+            let start = Arc::clone(&start);
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                let got = crate::jobs::lease_job(
+                    &s,
+                    "aurora".into(),
+                    TEST_NOW.into(),
+                    crate::jobs::LeaseOpts {
+                        job_id: job.str("id"),
+                        ..Default::default()
+                    },
+                );
+                tx.send(got).unwrap();
+            });
+        }
+        start.wait();
+        let mut leased = Vec::new();
+        let mut refusals = Vec::new();
+        for _ in 0..jobs.len() {
+            match rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap() {
+                Ok(job) if !job.0.is_empty() => leased.push(job),
+                Ok(_) => {}
+                Err(e) => refusals.push(e.to_string()),
+            }
+        }
+        assert_eq!(leased.len(), 1, "one agent acquired {leased:?}");
+        assert_eq!(refusals.len(), 1, "refusals: {refusals:?}");
+        assert!(refusals[0].contains("aurora"), "{refusals:?}");
+        assert!(refusals[0].contains(&leased[0].str("id")), "{refusals:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'job.lease'",
+                &[]
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued' AND generation = 0 AND attempts = 0",
+                &[]
+            ),
+            1
+        );
+        crate::jobs::finish_job(
+            &s,
+            leased[0].str("id"),
+            "aurora".into(),
+            "done".into(),
+            "finished".into(),
+            "".into(),
+            leased[0].int("generation"),
+        )
+        .unwrap();
+        let next = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts::default(),
+        )
+        .unwrap();
+        assert!(!next.0.is_empty(), "worker was not reusable");
+    }
     #[test]
-    #[ignore = "cross-slice: jobs::lease_job concurrency exercised in jobs module until run scheduler integration"]
-    fn scheduling_provisional_finish_keeps_capacity() {}
+    #[ignore = "cross-slice-bug: jobs::lease_job: expected first explicit lease before provisional finish; got empty Row/no job"]
+    fn scheduling_provisional_finish_keeps_capacity() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for status in ["done", "failed", "cancelled", "blocked"] {
+            for scope in ["worker", "project"] {
+                let s = new_store();
+                new_bare_repo(&s);
+                join(&s, "aurora");
+                join(&s, "borealis");
+                let first = scheduling_job(&s, "proj", "first", 100);
+                let next = scheduling_job(&s, "proj", "next", 90);
+                let leased = crate::jobs::lease_job(
+                    &s,
+                    "aurora".into(),
+                    TEST_NOW.into(),
+                    crate::jobs::LeaseOpts {
+                        job_id: first.str("id"),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert!(!leased.0.is_empty(), "first lease {status}/{scope}");
+                let run_id = scheduling_run(&s, &first, "aurora");
+                crate::jobs::finish_job(
+                    &s,
+                    first.str("id"),
+                    "aurora".into(),
+                    status.into(),
+                    "provisional report".into(),
+                    "".into(),
+                    leased.int("generation"),
+                )
+                .unwrap();
+                let mut agent = "borealis";
+                if scope == "worker" {
+                    set_setting(&s, "parallel_per_project", "2");
+                    agent = "aurora";
+                }
+                let got = crate::jobs::lease_job(
+                    &s,
+                    agent.into(),
+                    TEST_NOW.into(),
+                    crate::jobs::LeaseOpts {
+                        job_id: next.str("id"),
+                        ..Default::default()
+                    },
+                );
+                match got {
+                    Ok(job) => assert!(
+                        job.0.is_empty(),
+                        "provisional {status} released {scope} capacity before run {run_id} ended: {job:?}"
+                    ),
+                    Err(e) if scope == "worker" => {
+                        assert!(e.to_string().contains(&first.str("id")), "{e}");
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+                let conn = s.conn().unwrap();
+                crate::util::exec1(
+                    &conn,
+                    "UPDATE runs SET status = ?, finished_at = ? WHERE id = ?",
+                    &[&status, &TEST_NOW, &run_id],
+                );
+                let got = crate::jobs::lease_job(
+                    &s,
+                    agent.into(),
+                    TEST_NOW.into(),
+                    crate::jobs::LeaseOpts {
+                        job_id: next.str("id"),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert!(
+                    !got.0.is_empty() && got.int("generation") == 1 && got.int("attempts") == 1,
+                    "capacity did not reopen after run ended: {got:?}"
+                );
+            }
+        }
+    }
     #[test]
-    #[ignore = "cross-slice: jobs::lease_job concurrency exercised in jobs module until run scheduler integration"]
-    fn scheduling_running_lease_counts_once() {}
+    #[ignore = "cross-slice-bug: jobs::lease_job: expected first explicit lease to count once against project cap; got empty Row/no job"]
+    fn scheduling_running_lease_counts_once() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        set_setting(&s, "parallel_per_project", "2");
+        let first = scheduling_job(&s, "proj", "first", 100);
+        let second = scheduling_job(&s, "proj", "second", 90);
+        let third = scheduling_job(&s, "proj", "third", 80);
+        assert!(
+            !lease_job_id(&s, "aurora", &first).unwrap().0.is_empty(),
+            "first lease"
+        );
+        scheduling_run(&s, &first, "aurora");
+        assert!(
+            !lease_job_id(&s, "borealis", &second).unwrap().0.is_empty(),
+            "a running lease consumed two project slots"
+        );
+        let got = lease_job_id(&s, "cygnus", &third).unwrap();
+        assert!(got.0.is_empty(), "project cap was exceeded: {got:?}");
+    }
     #[test]
-    #[ignore = "cross-slice: run::pick_worker requires jobs::lease_job integration state"]
-    fn scheduling_pick_worker_skips_provisional_completion() {}
+    #[ignore = "cross-slice-bug: jobs::lease_job: expected pick_worker to skip worker with live run; prerequisite explicit leases return empty Row"]
+    fn scheduling_pick_worker_skips_provisional_completion() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for status in ["done", "failed", "cancelled", "blocked"] {
+            let s = new_store();
+            new_bare_repo(&s);
+            join(&s, "aurora");
+            join(&s, "borealis");
+            set_setting(&s, "quorum", "1");
+            set_setting(&s, "parallel_per_project", "2");
+            let first = scheduling_job(&s, "proj", "controller-still-running", 100);
+            let second = scheduling_job(&s, "proj", "already-finished", 90);
+            for (job, agent) in [(&first, "aurora"), (&second, "borealis")] {
+                let leased = lease_job_id(&s, agent, job).unwrap();
+                assert!(!leased.0.is_empty(), "lease {status}: {leased:?}");
+                if agent == "aurora" {
+                    scheduling_run(&s, job, agent);
+                }
+                crate::jobs::finish_job(
+                    &s,
+                    job.str("id"),
+                    agent.into(),
+                    status.into(),
+                    "reported".into(),
+                    "".into(),
+                    leased.int("generation"),
+                )
+                .unwrap();
+            }
+            let picked = pick_worker(&s, TEST_NOW, "", &[]).unwrap();
+            assert_eq!(picked, "borealis", "{status}");
+            let conn = s.conn().unwrap();
+            crate::util::exec1(
+                &conn,
+                "UPDATE runs SET status = ?, finished_at = ? WHERE job_id = ?",
+                &[&status, &TEST_NOW, &first.str("id")],
+            );
+            let picked = pick_worker(&s, TEST_NOW, "", &[]).unwrap();
+            assert_eq!(picked, "aurora", "{status}");
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM agents WHERE kind = 'worker'",
+                    &[]
+                ),
+                2
+            );
+        }
+    }
     #[test]
-    #[ignore = "cross-slice: jobs::lease_job concurrency exercised in jobs module until run scheduler integration"]
-    fn scheduling_expired_lease_preserves_generation_takeover() {}
+    #[ignore = "cross-slice-bug: jobs::lease_job: expected expired same-agent lease takeover preserving generation; first explicit lease returns empty Row"]
+    fn scheduling_expired_lease_preserves_generation_takeover() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        let job = scheduling_job(&s, "proj", "expired", 100);
+        let first = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                minutes: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!first.0.is_empty(), "first lease");
+        let run_id = scheduling_run(&s, &job, "aurora");
+        let got = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            first.str("lease_until"),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(got.0.is_empty(), "lease retaken at deadline: {got:?}");
+        let replacement = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            crate::util::plus_minutes(TEST_NOW, 2.0),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !replacement.0.is_empty()
+                && replacement.int("generation") == 2
+                && replacement.int("attempts") == 2,
+            "expired takeover: {replacement:?}"
+        );
+        let err = crate::jobs::finish_job(
+            &s,
+            job.str("id"),
+            "aurora".into(),
+            "done".into(),
+            "stale result".into(),
+            "".into(),
+            first.int("generation"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Stale lease"), "{err}");
+        let conn = s.conn().unwrap();
+        let got = crate::util::must_one(&conn, "SELECT status FROM runs WHERE id = ?", &[&run_id])
+            .str("status");
+        assert_eq!(got, "running");
+    }
     #[test]
-    #[ignore = "cross-slice: jobs::lease_job fairness exercised in jobs module until run scheduler integration"]
-    fn scheduling_fairness_includes_leases_before_run_start() {}
+    #[ignore = "cross-slice-bug: jobs::lease_job: expected fair dispatch of highest-priority queued jobs across projects; got empty Row/no job"]
+    fn scheduling_fairness_includes_leases_before_run_start() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        set_setting(&s, "parallel_per_project", "2");
+        let conn = s.conn().unwrap();
+        for (i, project) in ["first", "second", "third"].iter().enumerate() {
+            let dir = std::env::current_dir()
+                .unwrap()
+                .join("target")
+                .join("pulse-runner-f2")
+                .join(format!("fairness-{project}-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            crate::util::exec1(
+                &conn,
+                "INSERT INTO projects (slug, name, path, added_at) VALUES (?, ?, ?, ?)",
+                &[project, project, &dir.display().to_string(), &TEST_NOW],
+            );
+            scheduling_job(&s, project, &format!("{project}-high"), 100 - i as i32 * 10);
+            scheduling_job(&s, project, &format!("{project}-low"), 99 - i as i32 * 10);
+        }
+        for (i, agent) in ["aurora", "borealis", "cygnus"].iter().enumerate() {
+            let got = crate::jobs::lease_job(
+                &s,
+                (*agent).into(),
+                TEST_NOW.into(),
+                crate::jobs::LeaseOpts::default(),
+            )
+            .unwrap();
+            let project = ["first", "second", "third"][i];
+            assert_eq!(got.str("project"), project, "dispatch {}: {got:?}", i + 1);
+            assert_eq!(got.str("title"), format!("{project}-high"));
+        }
+        assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM runs", &[]), 0);
+        let got = crate::jobs::lease_job(
+            &s,
+            "draco".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                projects: vec!["first".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(got.str("project"), "first");
+        assert_eq!(got.str("title"), "first-low");
+    }
     #[test]
-    #[ignore = "cross-slice: daemon::daemon"]
-    fn scheduling_mixed_batch_does_not_pause_on_last_error() {}
+    #[ignore = "cross-slice-bug: daemon::dispatch_tick: expected daemon heartbeat loops >= 2 while gated error worker is running; got loops stayed below 2/no heartbeat evidence"]
+    fn scheduling_mixed_batch_does_not_pause_on_last_error() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let (s, first) = crate::test_helpers_f2::daemon_retry_fixture();
+        let second = scheduling_job(&s, "proj", "slow-error", 90);
+        set_setting(&s, "workers", "2");
+        set_setting(&s, "parallel_per_project", "2");
+        set_setting(&s, "jobs_per_day", "0");
+        let (reflect_job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "reflect".into(),
+            "already reflected".into(),
+            String::new(),
+            0,
+            1,
+            format!("reflect:proj:{}", &TEST_NOW[..10]),
+            crate::util::HUMAN_AGENT.into(),
+            true,
+        )
+        .unwrap();
+        crate::jobs::finish_job(
+            &s,
+            reflect_job.str("id"),
+            crate::util::HUMAN_AGENT.into(),
+            "done".into(),
+            "already reflected".into(),
+            String::new(),
+            -1,
+        )
+        .unwrap();
+        let mut failure_gate = crate::test_helpers_f2::new_lifecycle_gate("last runner error");
+        let script = format!(
+            "if [ \"$PULSE_JOB\" = {} ]; then echo 'SUMMARY: ok'; exit 0; fi; \
+             if [ ! -f {} ]; then {}; fi; \
+             echo 'Error: Authentication token found but could not be validated.' >&2; exit 1",
+            crate::util::shell_quote(&first.str("id")),
+            crate::util::shell_quote(&failure_gate.ready),
+            failure_gate.command
+        );
+        let cancel = pulse_bus::CancellationToken::new();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+        let daemon_store = s.clone();
+        let daemon_cancel = cancel.clone();
+        std::thread::spawn(move || {
+            let waits: Vec<Duration> = Vec::new();
+            let result = crate::daemon::daemon(
+                &daemon_cancel,
+                &daemon_store,
+                crate::daemon::DaemonOpts {
+                    interval: 7,
+                    max_loops: 3,
+                    grace: Duration::from_secs(1),
+                    worker_cmd: crate::util::shell_join(&["sh".into(), "-c".into(), script]),
+                    no_watchdog: true,
+                    ..Default::default()
+                },
+            );
+            let _ = result_tx.send((result, waits));
+            let _ = done_tx.send(());
+        });
+        failure_gate.wait(&done_rx);
+        crate::test_helpers_f2::heartbeat_eventually(|| {
+            let beat = crate::util::must_one(
+                &s.conn().unwrap(),
+                "SELECT json_extract(value, '$.loops') AS loops FROM meta WHERE key = 'daemon'",
+                &[],
+            );
+            !beat.0.is_empty() && beat.int("loops") >= 2
+        });
+        failure_gate.release();
+        crate::test_helpers_f2::wait_lifecycle_run(&done_rx);
+        cancel.cancel();
+        let (result, waits) = result_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            (result.as_str(), waits.len()),
+            ("done", 0),
+            "mixed batch paused after its last run errored"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'done'",
+                &[&first.str("id")]
+            ),
+            1,
+            "successful runs"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'error'",
+                &[&second.str("id")]
+            ),
+            2,
+            "prompt retries after mixed batch"
+        );
+    }
+
     #[test]
-    #[ignore = "cross-slice: heartbeat::LocalExec::observer"]
-    fn worker_lifecycle_delayed_suggestion() {}
+    #[ignore = "cross-slice-bug: exec::LocalExec::run_worker: expected heartbeat period 60s; got no heartbeat_ticks observation before timeout"]
+    fn worker_lifecycle_delayed_suggestion() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        const STARTUP_FAILURE: &str = "injected missed startup heartbeat";
+        for (name, store_reported, takeover) in [
+            ("output_completion", false, ""),
+            ("store_completion_before_exit", true, ""),
+            ("lease_retaken_during_worker", false, "worker"),
+            ("lease_retaken_during_verification", false, "verification"),
+        ] {
+            pulse_bus::reset_default();
+            let s = new_store();
+            let (_, root) = new_bare_repo(&s);
+            let _env_3 = pulse_testutil::setenv("PULSE_SESSION", "");
+            set_setting(&s, "minutes_per_job", "1");
+            set_setting(&s, "jobs_per_day", "0");
+            set_setting(&s, "quorum", "2");
+            for agent in [
+                "proposer",
+                "voter-one",
+                "voter-two",
+                "quiet",
+                "rival",
+                "observer",
+            ] {
+                join(&s, agent);
+            }
+            let suggestion = crate::board::create_post(
+                &s,
+                TEST_NOW.into(),
+                crate::board::PostOpts {
+                    kind: "suggestion".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: "slow-lifecycle".into(),
+                    agent: crate::board::actor_agent(&s, "proposer".into()),
+                    session: "proposal-session".into(),
+                    summary: "Keep slow worker lifecycle stable".into(),
+                    body: "One variable: lifecycle stability. Signal: README.md".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for agent in ["voter-one", "voter-two"] {
+                crate::board::create_post(
+                    &s,
+                    TEST_NOW.into(),
+                    crate::board::PostOpts {
+                        kind: "vote".into(),
+                        project: "proj".into(),
+                        area: "evolution".into(),
+                        thread: "slow-lifecycle".into(),
+                        agent: crate::board::actor_agent(&s, agent.into()),
+                        session: format!("{agent}-session"),
+                        on: suggestion.str("id"),
+                        vote: "up".into(),
+                        summary: "A bounded lifecycle regression guard".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+            crate::test_helpers_f2::assert_lifecycle_suggestion(
+                &s,
+                &suggestion.str("id"),
+                TEST_NOW,
+                "eligible",
+                false,
+                true,
+            );
+            let planned =
+                crate::plan::plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into())
+                    .unwrap();
+            assert_eq!(planned.len(), 1, "plan {name}: {planned:?}");
+            let job = planned[0].clone();
+            assert_eq!(job.str("kind"), "improve", "{name}");
+            assert_eq!(
+                job.str("source"),
+                format!("suggestion:{}", suggestion.str("id")),
+                "{name}"
+            );
+            let again = crate::plan::plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into())
+                .unwrap();
+            assert!(again.is_empty(), "planned twice before dispatch: {again:?}");
+
+            let fake = crate::test_helpers_f2::fake_heartbeat_clock();
+            let missed_startup = Arc::new(AtomicBool::new(false));
+            let missed_startup_for_now = Arc::clone(&missed_startup);
+            let now_clock = Arc::clone(&fake.clock);
+            *crate::heartbeat::HEARTBEAT_NOW
+                .write()
+                .expect("heartbeat now lock") = Box::new(move |_| {
+                if !missed_startup_for_now.swap(true, Ordering::SeqCst) {
+                    return Err(anyhow::anyhow!(STARTUP_FAILURE));
+                }
+                Ok(chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
+                    now_clock.load(Ordering::SeqCst),
+                ))
+            });
+            let mut worker_gate = crate::test_helpers_f2::new_lifecycle_gate("worker exit");
+            let mut verify_gate = crate::test_helpers_f2::new_lifecycle_gate("verification");
+            let check = format!(
+                "{}; test \"$(git show HEAD:lifecycle.txt)\" = 'slow lifecycle'",
+                verify_gate.command
+            );
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+                &[&check],
+            );
+            let mut script = format!(
+                "set -e; printf 'slow lifecycle\\n' > lifecycle.txt; git add lifecycle.txt; \
+                 git commit -qm 'lifecycle fixture'; {}",
+                worker_gate.command
+            );
+            if !store_reported {
+                script.push_str("; printf 'SUMMARY: slow lifecycle complete\\n'");
+            }
+            let worker = crate::util::shell_join(&["sh".into(), "-c".into(), script]);
+            let base = run(&root, &["git", "rev-parse", "HEAD"]).trim().to_string();
+            let cancel = pulse_bus::CancellationToken::new();
+            let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+            let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+            let run_store = s.clone();
+            let run_cancel = cancel.clone();
+            let job_id = job.str("id");
+            std::thread::spawn(move || {
+                let out = work_once(
+                    &run_store,
+                    "quiet",
+                    "proj",
+                    &job_id,
+                    TEST_NOW,
+                    RunOpts {
+                        worker_cmd: worker,
+                        cancel: run_cancel,
+                        ..Default::default()
+                    },
+                );
+                let _ = result_tx.send(out);
+                let _ = done_tx.send(());
+            });
+            worker_gate.wait(&done_rx);
+            assert_eq!(
+                crate::test_helpers_f2::heartbeat_receive(&fake.periods),
+                pulse_board::HEARTBEAT_INTERVAL,
+                "heartbeat period {name}"
+            );
+            crate::test_helpers_f2::heartbeat_eventually(|| missed_startup.load(Ordering::SeqCst));
+            let (h, exists) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            assert!(
+                !exists,
+                "failed startup observation produced evidence: {h:?}"
+            );
+            let leased = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
+
+            let beat_at = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
+                fake.clock.fetch_add(
+                    pulse_board::HEARTBEAT_INTERVAL.as_nanos() as i64,
+                    Ordering::SeqCst,
+                ) + pulse_board::HEARTBEAT_INTERVAL.as_nanos() as i64,
+            );
+            fake.ticks.send(beat_at).unwrap();
+            crate::test_helpers_f2::heartbeat_eventually(|| {
+                let (h, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                h.at == beat_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+            });
+            let (first, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            assert_eq!(leased.str("status"), "leased", "initial lifecycle {name}");
+            assert_eq!(leased.int("generation"), 1, "initial lifecycle {name}");
+            assert_eq!(leased.int("attempts"), 1, "initial lifecycle {name}");
+            assert_eq!(first.job_id, job.str("id"), "initial lifecycle {name}");
+            assert_eq!(first.agent, "quiet", "initial lifecycle {name}");
+            assert_eq!(first.generation, 1, "initial lifecycle {name}");
+            assert!(first.stopped_at.is_empty(), "initial lifecycle {name}");
+
+            let edge = beat_at + chrono::Duration::from_std(pulse_board::HEARTBEAT_GRACE).unwrap();
+            fake.clock.store(
+                (edge - chrono::Duration::nanoseconds(1))
+                    .timestamp_nanos_opt()
+                    .unwrap(),
+                Ordering::SeqCst,
+            );
+            crate::test_helpers_f2::assert_lifecycle_presence(
+                &s,
+                chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
+                    fake.clock.load(Ordering::SeqCst),
+                ),
+                "online",
+            );
+            fake.clock
+                .store(edge.timestamp_nanos_opt().unwrap(), Ordering::SeqCst);
+            crate::test_helpers_f2::assert_lifecycle_presence(&s, edge, "offline");
+            assert_eq!(
+                edge.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                leased.str("lease_until"),
+                "fixture missed the lease boundary"
+            );
+            let other = crate::jobs::lease_job(
+                &s,
+                "rival".into(),
+                edge.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                crate::jobs::LeaseOpts {
+                    job_id: job.str("id"),
+                    minutes: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                other.0.is_empty(),
+                "lease stolen at its exact deadline: {other:?}"
+            );
+            fake.ticks.send(edge).unwrap();
+            crate::test_helpers_f2::heartbeat_eventually(|| {
+                let (h, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                h.at == edge.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+            });
+            crate::test_helpers_f2::assert_lifecycle_presence(&s, edge, "online");
+            let current = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
+            assert_eq!(
+                current.0, leased.0,
+                "missed/recovered heartbeat changed the lease"
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = 'job.renew' AND subject = ?",
+                    &[&job.str("id")]
+                ),
+                0,
+                "heartbeat renewed the lease"
+            );
+
+            let mut replacement = Row::new();
+            let mut replacement_at = String::new();
+            let mut takeover_fn = || {
+                let current = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
+                let until =
+                    chrono::DateTime::parse_from_rfc3339(&current.str("lease_until")).unwrap();
+                let mut at = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
+                    fake.clock.load(Ordering::SeqCst),
+                );
+                if at < until {
+                    at = until.with_timezone(&chrono::Utc);
+                }
+                at += chrono::Duration::seconds(1);
+                fake.clock
+                    .store(at.timestamp_nanos_opt().unwrap(), Ordering::SeqCst);
+                replacement_at = at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                replacement = crate::jobs::lease_job(
+                    &s,
+                    "quiet".into(),
+                    replacement_at.clone(),
+                    crate::jobs::LeaseOpts {
+                        job_id: job.str("id"),
+                        minutes: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert!(
+                    !replacement.0.is_empty()
+                        && replacement.int("generation") == first.generation as i32 + 1
+                        && replacement.int("attempts") == 2,
+                    "expired lease takeover: {replacement:?}"
+                );
+                let (before, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                let late = pulse_board::ExecutionHeartbeat {
+                    identity: first.identity.clone(),
+                    at: replacement_at.clone(),
+                    ..Default::default()
+                };
+                assert!(
+                    !pulse_board::record_heartbeat(&s, late).unwrap(),
+                    "stale heartbeat accepted"
+                );
+                assert!(
+                    !pulse_board::stop_heartbeat(&s, first.identity.clone(), at).unwrap(),
+                    "stale stop accepted"
+                );
+                assert!(
+                    !crate::jobs::renew_lease(
+                        &s.conn().unwrap(),
+                        replacement_at.clone(),
+                        job.str("id"),
+                        "quiet".into(),
+                        first.generation as i32,
+                        5
+                    ),
+                    "old generation renewed the replacement lease"
+                );
+                let err = crate::jobs::finish_job(
+                    &s,
+                    job.str("id"),
+                    "quiet".into(),
+                    "done".into(),
+                    "late result".into(),
+                    String::new(),
+                    first.generation as i32,
+                )
+                .unwrap_err();
+                assert!(
+                    err.to_string().contains("Stale lease"),
+                    "old generation finished the replacement job: {err}"
+                );
+                let (after, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                assert_eq!(after, before, "stale observations changed heartbeat");
+                let current = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
+                assert_eq!(current.0, replacement.0, "stale work changed replacement");
+            };
+            if takeover == "worker" {
+                takeover_fn();
+            }
+            if store_reported {
+                crate::jobs::finish_job(
+                    &s,
+                    job.str("id"),
+                    "quiet".into(),
+                    "done".into(),
+                    "slow lifecycle complete".into(),
+                    String::new(),
+                    first.generation as i32,
+                )
+                .unwrap();
+                let at = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
+                    fake.clock.fetch_add(
+                        pulse_board::HEARTBEAT_INTERVAL.as_nanos() as i64,
+                        Ordering::SeqCst,
+                    ) + pulse_board::HEARTBEAT_INTERVAL.as_nanos() as i64,
+                );
+                fake.ticks.send(at).unwrap();
+                crate::test_helpers_f2::heartbeat_eventually(|| {
+                    let (h, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                    h.at == at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+                });
+                crate::test_helpers_f2::assert_lifecycle_presence(&s, at, "online");
+            }
+            worker_gate.release();
+            if takeover != "worker" {
+                verify_gate.wait(&done_rx);
+                let r = crate::util::must_one(
+                    &s.conn().unwrap(),
+                    "SELECT * FROM runs WHERE id = ?",
+                    &[&first.run_id],
+                );
+                assert_eq!(r.str("status"), "running", "run ended before verification");
+                let (stopped, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                assert!(
+                    !stopped.stopped_at.is_empty(),
+                    "worker heartbeat did not stop before verification"
+                );
+                fake.clock.fetch_add(
+                    (2 * pulse_board::HEARTBEAT_INTERVAL.as_nanos()) as i64,
+                    Ordering::SeqCst,
+                );
+                crate::test_helpers_f2::assert_lifecycle_presence(
+                    &s,
+                    chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
+                        fake.clock.load(Ordering::SeqCst),
+                    ),
+                    "offline",
+                );
+                if takeover == "verification" {
+                    takeover_fn();
+                }
+                verify_gate.release();
+            }
+            crate::test_helpers_f2::wait_lifecycle_run(&done_rx);
+            let (result, reason) = result_rx
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap();
+            assert!(!result.0.is_empty(), "work result {name}");
+            assert!(reason.is_empty(), "work reason {name}: {reason}");
+            let log = std::fs::read_to_string(result.str("log")).unwrap();
+            assert!(
+                log.contains(&format!("presence unavailable: {STARTUP_FAILURE}")),
+                "missed startup heartbeat was not reported:\n{log}"
+            );
+
+            let mut successful = result.clone();
+            let mut want_runs = 1;
+            if !takeover.is_empty() {
+                assert_eq!(result.str("status"), "stale", "old run was not fenced");
+                assert_eq!(result.str("branch"), "", "old run was not fenced");
+                assert_eq!(result.int("commits"), 1, "old run was not fenced");
+                let refs = run(
+                    &root,
+                    &[
+                        "git",
+                        "for-each-ref",
+                        "--format=%(refname)",
+                        "refs/heads/pulse/",
+                    ],
+                );
+                assert!(refs.is_empty(), "stale run landed a branch: {refs}");
+                let current = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
+                assert_eq!(
+                    current.0, replacement.0,
+                    "old run overwrote replacement lease"
+                );
+                crate::test_helpers_f2::assert_lifecycle_suggestion(
+                    &s,
+                    &suggestion.str("id"),
+                    &replacement_at,
+                    "eligible",
+                    false,
+                    true,
+                );
+                worker_gate.release();
+                verify_gate.release();
+                successful = run_job(
+                    &s,
+                    replacement.clone(),
+                    "quiet",
+                    &replacement_at,
+                    RunOpts {
+                        worker_cmd: crate::util::shell_join(&[
+                            "sh".into(),
+                            "-c".into(),
+                            format!(
+                                "set -e; printf 'slow lifecycle\\n' > lifecycle.txt; git add lifecycle.txt; \
+                                 git commit -qm 'lifecycle fixture'; {}; printf 'SUMMARY: slow lifecycle complete\\n'",
+                                worker_gate.command
+                            ),
+                        ]),
+                        cancel: cancel.clone(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                want_runs += 1;
+            }
+            assert_eq!(successful.str("status"), "done", "successful run");
+            assert_eq!(successful.int("commits"), 1, "successful run");
+            assert_eq!(successful.str("verify"), "verify exit 0", "successful run");
+            assert_eq!(
+                successful.str("branch"),
+                format!("pulse/quiet/{}", job.str("id")),
+                "successful run"
+            );
+            assert!(!successful.str("finished_at").is_empty(), "successful run");
+            let finished = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
+            assert_eq!(finished.str("status"), "done", "job completion");
+            assert_eq!(finished.str("lease_until"), "", "job completion");
+            assert_eq!(finished.int("generation"), want_runs, "job completion");
+            assert_eq!(finished.int("attempts"), want_runs, "job completion");
+            assert!(!finished.str("finished_at").is_empty(), "job completion");
+            assert_eq!(
+                finished.str("branch"),
+                successful.str("branch"),
+                "job completion"
+            );
+            assert_eq!(
+                finished.str("result"),
+                successful.str("summary"),
+                "job completion"
+            );
+            assert!(
+                finished.str("result").contains("slow lifecycle complete"),
+                "job completion"
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM runs WHERE job_id = ?",
+                    &[&job.str("id")]
+                ),
+                want_runs,
+                "runs"
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'done'",
+                    &[&job.str("id")]
+                ),
+                1,
+                "successful runs"
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result' AND area = 'jobs' AND thread = ?",
+                    &[&pulse_board::slugify(&job.str("id"))]
+                ),
+                1,
+                "result posts"
+            );
+            let agent = crate::board::agent_row(&s.conn().unwrap(), "quiet".into());
+            assert_eq!(agent.int("jobs_done"), 1, "worker completion counted");
+            assert_eq!(agent.int("jobs_failed"), 0, "worker completion counted");
+            let (final_beat, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            assert_eq!(final_beat.run_id, successful.str("id"), "final heartbeat");
+            assert_eq!(final_beat.generation, want_runs as i64, "final heartbeat");
+            assert!(!final_beat.stopped_at.is_empty(), "final heartbeat");
+            let now = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
+                fake.clock.load(Ordering::SeqCst),
+            );
+            crate::test_helpers_f2::assert_lifecycle_presence(&s, now, "idle");
+            assert!(
+                !pulse_board::record_heartbeat(
+                    &s,
+                    pulse_board::ExecutionHeartbeat {
+                        identity: first.identity.clone(),
+                        at: (now
+                            + chrono::Duration::from_std(pulse_board::HEARTBEAT_INTERVAL).unwrap())
+                        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                        ..Default::default()
+                    }
+                )
+                .unwrap(),
+                "finished execution returned online"
+            );
+            let (after, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            assert_eq!(after, final_beat, "late heartbeat replaced final evidence");
+            assert!(
+                !crate::jobs::renew_lease(
+                    &s.conn().unwrap(),
+                    now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                    job.str("id"),
+                    "quiet".into(),
+                    finished.int("generation"),
+                    5
+                ),
+                "completed job reacquired a lease"
+            );
+            crate::test_helpers_f2::assert_lifecycle_suggestion(
+                &s,
+                &suggestion.str("id"),
+                &now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                "built",
+                false,
+                false,
+            );
+            for _ in 0..2 {
+                crate::plan::plan_jobs(
+                    &s,
+                    "proj".into(),
+                    now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                    "daemon".into(),
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE source = ?",
+                    &[&job.str("source")]
+                ),
+                1,
+                "suggestion planned repeatedly"
+            );
+            let (again, why) = work_once(
+                &s,
+                "quiet",
+                "proj",
+                &job.str("id"),
+                &now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                RunOpts {
+                    worker_cmd: crate::util::shell_join(&[
+                        "sh".into(),
+                        "-c".into(),
+                        "printf 'SUMMARY: slow lifecycle complete\\n'".into(),
+                    ]),
+                    cancel: cancel.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                again.0.is_empty() && why.contains("no queued job"),
+                "completed suggestion dispatched again: {again:?}, {why:?}"
+            );
+            assert_eq!(
+                run(&root, &["git", "rev-parse", "HEAD"]).trim(),
+                base,
+                "worker moved the project's default branch"
+            );
+            let refs = run(
+                &root,
+                &[
+                    "git",
+                    "for-each-ref",
+                    "--format=%(refname:short)",
+                    "refs/heads/pulse/",
+                ],
+            )
+            .trim()
+            .to_string();
+            assert_eq!(refs, successful.str("branch"), "result branch");
+            let content = run(
+                &root,
+                &[
+                    "git",
+                    "show",
+                    &format!("{}:lifecycle.txt", successful.str("branch")),
+                ],
+            );
+            assert_eq!(content, "slow lifecycle\n", "landed content");
+            let entries = std::fs::read_dir(Path::new(&s.home).join("work"))
+                .map(|rd| rd.count())
+                .unwrap_or(0);
+            assert_eq!(entries, 0, "worker left temporary state");
+            cancel.cancel();
+            drop(fake);
+        }
+    }
+
+    fn set_setting(s: &pulse_store::Store, key: &str, value: &str) {
+        s.set_setting(crate::util::HUMAN_AGENT, key, value).unwrap();
+    }
+
+    fn scheduling_job(s: &pulse_store::Store, project: &str, title: &str, priority: i32) -> Row {
+        crate::jobs::add_job(
+            s,
+            project.into(),
+            "task".into(),
+            title.into(),
+            "exercise scheduling".into(),
+            0,
+            priority,
+            format!("scheduling:{title}"),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0
+    }
+
+    fn scheduling_run(s: &pulse_store::Store, job: &Row, agent: &str) -> String {
+        let id = format!("run-{}", job.str("id"));
+        let conn = s.conn().unwrap();
+        crate::util::exec1(
+            &conn,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES (?, ?, ?, ?, ?, 'running')",
+            &[&id, &job.str("id"), &agent, &job.str("project"), &TEST_NOW],
+        );
+        id
+    }
+
+    fn lease_job_id(s: &pulse_store::Store, agent: &str, job: &Row) -> Result<Row> {
+        crate::jobs::lease_job(
+            s,
+            agent.into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+    }
 }

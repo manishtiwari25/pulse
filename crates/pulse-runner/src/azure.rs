@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -112,7 +112,7 @@ impl AzureProvider {
         &self,
         ctx: &pulse_bus::CancellationToken,
         req: crate::provider::ProvisionRequest,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<crate::provider::Machine> {
         let (s, hub_home, log) = crate::provider::provision_start("azure".into(), req.clone())?;
         let cfg = azure_settings(&s, req.size.clone())?;
         let (rc, out, err_text) = (RUN_AZ.read().unwrap())(
@@ -136,7 +136,7 @@ impl AzureProvider {
                 err_text,
                 anyhow!(""),
             )
-            .map(|_| None);
+            .map(|_| unreachable!());
         }
         log("azure subscription: %s", &[json!(out.trim())]);
         let mut lines = Vec::new();
@@ -168,39 +168,38 @@ impl AzureProvider {
                 "none".into(),
             ]),
             AZ_SHORT,
-        ) {
+        ) && rc != 0
+        {
+            let (rc, out, err_text) = (RUN_AZ.read().unwrap())(
+                ctx,
+                cfg.args(&[
+                    "group".into(),
+                    "create".into(),
+                    "--name".into(),
+                    cfg.resource_group.clone(),
+                    "--location".into(),
+                    cfg.location.clone(),
+                    "--tags".into(),
+                    format!("{}=hands", crate::provider::TAG_HANDS),
+                    "-o".into(),
+                    "none".into(),
+                ]),
+                Duration::from_secs(120),
+            )?;
             if rc != 0 {
-                let (rc, out, err_text) = (RUN_AZ.read().unwrap())(
-                    ctx,
-                    cfg.args(&[
-                        "group".into(),
-                        "create".into(),
-                        "--name".into(),
-                        cfg.resource_group.clone(),
-                        "--location".into(),
-                        cfg.location.clone(),
-                        "--tags".into(),
-                        format!("{}=hands", crate::provider::TAG_HANDS),
-                        "-o".into(),
-                        "none".into(),
-                    ]),
-                    Duration::from_secs(120),
-                )?;
-                if rc != 0 {
-                    return az_err(
-                        format!("az group create {}", cfg.resource_group),
-                        rc,
-                        out,
-                        err_text,
-                        anyhow!(""),
-                    )
-                    .map(|_| None);
-                }
-                log(
-                    "created resource group %s in %s",
-                    &[json!(cfg.resource_group), json!(cfg.location)],
-                );
+                return az_err(
+                    format!("az group create {}", cfg.resource_group),
+                    rc,
+                    out,
+                    err_text,
+                    anyhow!(""),
+                )
+                .map(|_| unreachable!());
             }
+            log(
+                "created resource group %s in %s",
+                &[json!(cfg.resource_group), json!(cfg.location)],
+            );
         }
         let rendered = crate::provider::write_cloud_init(String::new(), !s.harness_native())?;
         let show = (RUN_AZ.read().unwrap())(
@@ -269,12 +268,12 @@ impl AzureProvider {
             )?;
             if rc != 0 {
                 return az_err(format!("az vm create {vm}"), rc, out, err_text, anyhow!(""))
-                    .map(|_| Some(Box::new(m)));
+                    .map(|_| m);
             }
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
-                if let Some(ip) = v.get("publicIpAddress").and_then(|v| v.as_str()) {
-                    m.address = format!("{AZURE_ADMIN_USER}@{ip}");
-                }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+                && let Some(ip) = v.get("publicIpAddress").and_then(|v| v.as_str())
+            {
+                m.address = format!("{AZURE_ADMIN_USER}@{ip}");
             }
         } else {
             log("vm %s exists; not recreated", &[json!(vm)]);
@@ -314,7 +313,7 @@ impl AzureProvider {
             )?;
             if rc != 0 {
                 return az_err(format!("az vm show {vm}"), rc, out, err_text, anyhow!(""))
-                    .map(|_| Some(Box::new(m)));
+                    .map(|_| m);
             }
             ip = out.trim().split(',').next().unwrap_or("").to_string();
         }
@@ -351,14 +350,14 @@ impl AzureProvider {
                 err_text,
                 anyhow!(""),
             )
-            .map(|_| Some(Box::new(m)));
+            .map(|_| m);
         }
         let hostkeys = crate::provider::host_key_lines(out);
         if hostkeys.is_empty() {
             return Err(anyhow!("vm {} gave no ssh host key", vm));
         }
-        crate::provider::provision_finish(ctx, req, &m, hub_home, ip, hostkeys, log)?;
-        Ok(Some(Box::new(m)))
+        crate::provider::provision_finish(ctx, req, &mut m, hub_home, ip, hostkeys, log)?;
+        Ok(m)
     }
     /// Go: func (p azureProvider) config(m *Machine) azureConfig
     pub(crate) fn config(&self, m: &crate::provider::Machine) -> AzureConfig {
@@ -475,7 +474,7 @@ impl AzureProvider {
         _unused: &pulse_store::Store,
         executor: String,
         host: String,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<Option<crate::provider::Machine>> {
         let query = format!(
             "[?tags.pulse=='hands' && (name=='{}' || publicIps=='{}')].{{name:name,rg:resourceGroup,ip:publicIps}}",
             executor, host
@@ -511,7 +510,7 @@ impl AzureProvider {
         let Some(f) = found.first() else {
             return Ok(None);
         };
-        Ok(Some(Box::new(crate::provider::Machine {
+        Ok(Some(crate::provider::Machine {
             provider: "azure".into(),
             name: f.name.clone(),
             tags: BTreeMap::from([(crate::provider::TAG_HANDS.into(), "hands".into())]),
@@ -520,7 +519,7 @@ impl AzureProvider {
                 ("public_ip".into(), f.ip.clone()),
             ]),
             ..Default::default()
-        })))
+        }))
     }
     /// Go: func (p azureProvider) Stop(ctx context.Context, m *Machine) error
     pub(crate) fn stop(
@@ -645,7 +644,7 @@ impl crate::provider::Provider for AzureProvider {
         &self,
         cancel: &pulse_bus::CancellationToken,
         req: crate::provider::ProvisionRequest,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<crate::provider::Machine> {
         self.provision(cancel, req)
     }
     fn release(
@@ -668,7 +667,7 @@ impl crate::provider::Provider for AzureProvider {
         s: &pulse_store::Store,
         executor: &str,
         host: &str,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<Option<crate::provider::Machine>> {
         self.find(cancel, s, executor.to_string(), host.to_string())
     }
     fn stop(

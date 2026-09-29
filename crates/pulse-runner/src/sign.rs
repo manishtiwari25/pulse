@@ -123,17 +123,105 @@ mod tests {
 
     #[test]
     fn signing_gives_every_build_the_same_requirement() {
+        let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let binary = dir.path().join("pulse");
         std::fs::write(&binary, b"not a mach-o").unwrap();
+        let binary = binary.display().to_string();
 
         *SIGNING_SYSTEM.write().unwrap() = "linux".into();
-        assert!(!signed(&binary.display().to_string()));
-        sign(&binary.display().to_string(), true).unwrap();
+        assert!(!signed(&binary));
+        sign(&binary, true).unwrap();
         let mut out = Vec::new();
-        ensure_signed(&mut out, &binary.display().to_string());
+        ensure_signed(&mut out, &binary);
         assert!(out.is_empty());
         assert_eq!(std::fs::read_to_string(&binary).unwrap(), "not a mach-o");
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            *SIGNING_SYSTEM.write().unwrap() = String::new();
+            return;
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if which::which("codesign").is_err() {
+                *SIGNING_SYSTEM.write().unwrap() = String::new();
+                return;
+            }
+            *SIGNING_SYSTEM.write().unwrap() = "darwin".into();
+            let missing = dir.path().join("missing").display().to_string();
+            assert!(sign(&missing, true).is_err());
+            assert!(!std::path::Path::new(&(missing + ".signing")).exists());
+
+            let build = dir.path().join("hello").display().to_string();
+            let src = dir.path().join("hello.go").display().to_string();
+            std::fs::write(&src, b"package main\nfunc main() {}\n").unwrap();
+            let built = std::process::Command::new("go")
+                .args(["build", "-o", &build, &src])
+                .output();
+            let Ok(built) = built else {
+                *SIGNING_SYSTEM.write().unwrap() = String::new();
+                return;
+            };
+            if !built.status.success() {
+                *SIGNING_SYSTEM.write().unwrap() = String::new();
+                return;
+            }
+            let (ok, applicable) = pulse_cli::code_signed(&build);
+            assert!(
+                !ok && applicable,
+                "a fresh build is not pulse-signed: {ok} {applicable}"
+            );
+            sign(&build, false).unwrap();
+            assert!(signed(&build));
+            let req = std::process::Command::new("codesign")
+                .args(["-d", "-r-", &build])
+                .output()
+                .unwrap();
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&req.stdout),
+                String::from_utf8_lossy(&req.stderr)
+            )
+            .replace('"', "");
+            assert!(
+                text.contains("designated => identifier pulse"),
+                "requirement: {text}"
+            );
+            let verify = std::process::Command::new("codesign")
+                .args(["--verify", "--strict", &build])
+                .output()
+                .unwrap();
+            assert!(
+                verify.status.success(),
+                "the signed build does not verify: {}",
+                String::from_utf8_lossy(&verify.stderr)
+            );
+            out.clear();
+            ensure_signed(&mut out, &build);
+            let said = String::from_utf8(out.clone()).unwrap();
+            assert!(said.contains("is signed as pulse"), "{said}");
+
+            let resign = std::process::Command::new("codesign")
+                .args(["--force", "-s", "-", &build])
+                .output()
+                .unwrap();
+            assert!(
+                resign.status.success(),
+                "re-sign ad-hoc: {}",
+                String::from_utf8_lossy(&resign.stderr)
+            );
+            out.clear();
+            ensure_signed(&mut out, &build);
+            let said = String::from_utf8(out).unwrap();
+            assert!(
+                said.contains(&format!("signed {build} as pulse"))
+                    && signed(&build)
+                    && !std::path::Path::new(&(build + ".signing")).exists(),
+                "running-binary sign: {said}"
+            );
+        }
         *SIGNING_SYSTEM.write().unwrap() = String::new();
     }
 }

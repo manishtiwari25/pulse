@@ -1,3 +1,5 @@
+#![allow(dead_code, clippy::type_complexity)]
+
 use crate::util::Row;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -70,6 +72,7 @@ pub trait Provider: Send + Sync {
     fn place(&self, m: &Machine) -> String;
     fn start_hint(&self, m: &Machine) -> String;
 }
+
 pub(crate) static PROVIDER_SET: LazyLock<RwLock<BTreeMap<String, Arc<dyn Provider>>>> =
     LazyLock::new(|| RwLock::new(BTreeMap::new()));
 /// Go: func init() { tasks.LoginSourceCheck = hasLoginSource }
@@ -100,7 +103,10 @@ pub(crate) fn compute_executor_name(request_id: &str) -> String {
 /// Go: func redactSecrets(text string) string
 pub(crate) fn redact_secrets(text: &str) -> String {
     static WORD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\S+").unwrap());
+    static STAR_SECRET_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\*{6,}").unwrap());
     let text = crate::executor::redact_tokens(text);
+    let text = STAR_SECRET_RE.replace_all(&text, "[redacted]").to_string();
     WORD_RE
         .replace_all(&text, |caps: &regex::Captures<'_>| {
             let word = caps.get(0).unwrap().as_str();
@@ -115,7 +121,8 @@ pub(crate) fn redact_secrets(text: &str) -> String {
 }
 /// Go: func saveMachine(s *store.Store, requestID string, m *Machine, now string)
 pub(crate) fn save_machine(s: &pulse_store::Store, request_id: &str, m: &Machine, now: &str) {
-    let detail = pulse_store::gojson::to_string(&json!({"tags": m.tags, "detail": m.detail})).unwrap();
+    let detail =
+        pulse_store::gojson::to_string(&json!({"tags": m.tags, "detail": m.detail})).unwrap();
     let conn = s.conn().unwrap();
     crate::util::exec1(
         &conn,
@@ -291,13 +298,12 @@ impl ComputeWorker {
                 self.fail(req, &why);
             }
         }
-        if self.s.setting("compute.auto_approve", "0") == "1" {
-            if let Ok(pending) = pulse_tasks::list_compute(&self.s, "", "pending")
-                && let Some(req) = pending.into_iter().next()
-                && !crate::token::has_login_source(&self.s)
-            {
-                self.no_source_finding(req, now);
-            }
+        if self.s.setting("compute.auto_approve", "0") == "1"
+            && let Ok(pending) = pulse_tasks::list_compute(&self.s, "", "pending")
+            && let Some(req) = pending.into_iter().next()
+            && !crate::token::has_login_source(&self.s)
+        {
+            self.no_source_finding(req, now);
         }
         if let Ok(ready) = pulse_tasks::list_compute(&self.s, "", "ready") {
             for req in ready {

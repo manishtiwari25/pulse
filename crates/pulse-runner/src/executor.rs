@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
-use std::process::{Command, Stdio};
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
 
@@ -570,9 +569,53 @@ pub(crate) fn ssh_command(r: &Row, args: &[String]) -> Result<Vec<String>> {
     Ok(cmd)
 }
 
-pub(crate) type SshRunner =
-    fn(&pulse_bus::CancellationToken, &[String], &[u8], Duration) -> Result<(i32, String, String)>;
-pub(crate) static RUN_SSH: LazyLock<RwLock<SshRunner>> = LazyLock::new(|| RwLock::new(run_process));
+/// Go: `var runSSH = runProcess` — a package variable tests swap for a fake.
+/// Go tests assign closures, so the hook is a shared trait object rather than a
+/// plain fn pointer.
+pub(crate) type SshRunner = std::sync::Arc<
+    dyn Fn(
+            &pulse_bus::CancellationToken,
+            &[String],
+            &[u8],
+            Duration,
+        ) -> Result<(i32, String, String)>
+        + Send
+        + Sync,
+>;
+pub(crate) static RUN_SSH: LazyLock<RwLock<SshRunner>> =
+    LazyLock::new(|| RwLock::new(std::sync::Arc::new(run_process)));
+
+/// run_ssh_hook returns the current `runSSH` implementation.
+pub(crate) fn run_ssh_hook() -> SshRunner {
+    RUN_SSH.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// set_run_ssh installs `f` as `runSSH` and returns the previous hook so a
+/// test can restore it.
+#[allow(dead_code)]
+pub(crate) fn set_run_ssh<F>(f: F) -> SshRunner
+where
+    F: Fn(
+            &pulse_bus::CancellationToken,
+            &[String],
+            &[u8],
+            Duration,
+        ) -> Result<(i32, String, String)>
+        + Send
+        + Sync
+        + 'static,
+{
+    std::mem::replace(
+        &mut *RUN_SSH.write().unwrap_or_else(|e| e.into_inner()),
+        std::sync::Arc::new(f),
+    )
+}
+
+/// restore_run_ssh puts a hook returned by [`set_run_ssh`] or [`run_ssh_hook`] back.
+#[allow(dead_code)]
+pub(crate) fn restore_run_ssh(old: SshRunner) {
+    *RUN_SSH.write().unwrap_or_else(|e| e.into_inner()) = old;
+}
 
 /// Go: func runProcess(ctx context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error)
 pub(crate) fn run_process(
@@ -627,7 +670,7 @@ pub(crate) fn ssh_run_context(
     timeout: Duration,
 ) -> Result<(i32, String, String)> {
     let argv = ssh_command(r, args)?;
-    let runner = *RUN_SSH.read().unwrap();
+    let runner = run_ssh_hook();
     let res = runner(cancel, &argv, stdin, timeout);
     match res {
         Err(err) => {
@@ -694,7 +737,7 @@ pub(crate) fn admin_ssh_run(
 ) -> Result<(i32, String, String)> {
     let argv = admin_ssh_command(address, remote_command, control_path)?;
     let cancel = pulse_bus::CancellationToken::new();
-    let runner = *RUN_SSH.read().unwrap();
+    let runner = run_ssh_hook();
     match runner(&cancel, &argv, stdin, timeout) {
         Err(err) => {
             if err
@@ -773,77 +816,54 @@ pub(crate) fn github_api_base(api: &str) -> String {
     v.trim_end_matches('/').to_string()
 }
 
-fn github_get_full(token: &str, url: &str) -> Result<(u16, BTreeMap<String, String>, Vec<u8>)> {
-    let script = r#"
-import sys, urllib.request
-url = sys.argv[1]
-token = sys.stdin.read().strip()
-req = urllib.request.Request(url, headers={
-    'Authorization': 'Bearer ' + token,
-    'User-Agent': 'pulse',
-    'Accept': 'application/vnd.github+json',
-})
-try:
-    resp = urllib.request.urlopen(req, timeout=15)
-    body = resp.read()
-    status = resp.getcode()
-    headers = resp.headers
-except Exception as e:
-    if hasattr(e, 'code') and hasattr(e, 'read'):
-        body = e.read()
-        status = e.code
-        headers = e.headers
-    else:
-        print(str(e), file=sys.stderr)
-        sys.exit(1)
-sys.stdout.buffer.write((str(status)+'\n').encode())
-sys.stdout.buffer.write((headers.get('github-authentication-token-expiration','')+'\n').encode())
-sys.stdout.buffer.write(body)
-"#;
-    let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(script)
-        .arg(url)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        stdin.write_all(token.as_bytes())?;
-    }
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        return Err(anyhow!(
-            String::from_utf8_lossy(&out.stderr).trim().to_string()
-        ));
-    }
-    let first = out
-        .stdout
+/// Go: githubHTTP - carries every call to the GitHub API; tests point it at a fake transport.
+/// (token, url) -> (status, lower-cased headers, body).
+pub(crate) type GithubHttpFn =
+    dyn Fn(&str, &str) -> Result<(u16, BTreeMap<String, String>, Vec<u8>)> + Send + Sync;
+pub(crate) static GITHUB_HTTP: LazyLock<RwLock<Box<GithubHttpFn>>> =
+    LazyLock::new(|| RwLock::new(Box::new(github_http_real)));
+
+/// Swaps the GitHub transport, returning the previous one so a test can restore it.
+pub(crate) fn set_github_http(f: Box<GithubHttpFn>) -> Box<GithubHttpFn> {
+    std::mem::replace(&mut *GITHUB_HTTP.write().expect("github http poisoned"), f)
+}
+
+/// Go: &http.Client{Timeout: 15 * time.Second}
+pub(crate) fn github_http_real(
+    token: &str,
+    url: &str,
+) -> Result<(u16, BTreeMap<String, String>, Vec<u8>)> {
+    static CLIENT: LazyLock<reqwest::blocking::Client> = LazyLock::new(|| {
+        reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("github http client")
+    });
+    let resp = CLIENT
+        .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "pulse")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .map_err(|e| anyhow!("Get \"{url}\": {}", redact_tokens(&e.to_string())))?;
+    let status = resp.status().as_u16();
+    let headers = resp
+        .headers()
         .iter()
-        .position(|b| *b == b'\n')
-        .unwrap_or(out.stdout.len());
-    let status = String::from_utf8_lossy(&out.stdout[..first])
-        .trim()
-        .parse::<u16>()?;
-    let rest = if first < out.stdout.len() {
-        &out.stdout[first + 1..]
-    } else {
-        &[]
-    };
-    let second = rest.iter().position(|b| *b == b'\n').unwrap_or(rest.len());
-    let expires = String::from_utf8_lossy(&rest[..second]).to_string();
-    let body = if second < rest.len() {
-        rest[second + 1..].to_vec()
-    } else {
-        Vec::new()
-    };
-    let mut headers = BTreeMap::new();
-    headers.insert(
-        "github-authentication-token-expiration".to_string(),
-        expires,
-    );
+        .map(|(k, v)| {
+            (
+                k.as_str().to_ascii_lowercase(),
+                v.to_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let body = resp.bytes().map(|b| b.to_vec()).unwrap_or_default();
     Ok((status, headers, body))
+}
+
+/// Go: githubGet - one authenticated GET; the token travels in the header and nowhere else.
+fn github_get_full(token: &str, url: &str) -> Result<(u16, BTreeMap<String, String>, Vec<u8>)> {
+    (GITHUB_HTTP.read().expect("github http poisoned"))(token, url)
 }
 
 #[allow(dead_code)]

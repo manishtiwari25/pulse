@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -126,20 +126,19 @@ pub(crate) fn aws_json(
     what: String,
     args: Vec<String>,
     timeout: std::time::Duration,
-    mut v: serde_json::Value,
+    _v: serde_json::Value,
 ) -> anyhow::Result<()> {
     let (rc, out, err_text) = (RUN_AWS.read().unwrap())(ctx, args, timeout)?;
     if rc != 0 {
         return aws_err(what, rc, out, err_text, anyhow!(""));
     }
-    v = serde_json::from_str(out.trim()).map_err(|_| {
+    let _parsed: serde_json::Value = serde_json::from_str(out.trim()).map_err(|_| {
         anyhow!(
             "{}: unreadable answer: {}",
             what,
             crate::run::squeeze(out.trim(), 200)
         )
     })?;
-    let _ = v;
     Ok(())
 }
 
@@ -190,7 +189,7 @@ pub(crate) fn aws_describe(
 }
 
 /// Go: func awsMachine(cfg awsConfig, i awsInstance) *Machine
-pub(crate) fn aws_machine(cfg: AwsConfig, i: AwsInstance) -> Option<Box<crate::provider::Machine>> {
+pub(crate) fn aws_machine(cfg: AwsConfig, i: AwsInstance) -> Option<crate::provider::Machine> {
     let mut name = i.tag("Name".into());
     if name.is_empty() {
         name = i.instance_id.clone();
@@ -213,13 +212,13 @@ pub(crate) fn aws_machine(cfg: AwsConfig, i: AwsInstance) -> Option<Box<crate::p
     if let Some(g) = i.security_groups.first() {
         detail.insert("security_group".into(), g.group_id.clone());
     }
-    Some(Box::new(crate::provider::Machine {
+    Some(crate::provider::Machine {
         provider: "aws".into(),
         name,
         tags,
         detail,
         ..Default::default()
-    }))
+    })
 }
 
 /// Go: func awsNetwork(ctx context.Context, cfg awsConfig, log func(string, ...any)) (subnet, group string, err error)
@@ -228,7 +227,7 @@ pub(crate) fn aws_network(
     cfg: AwsConfig,
     log: &(dyn Fn(&str, &[serde_json::Value]) + Send + Sync),
 ) -> anyhow::Result<(String, String)> {
-    let mut vpc = String::new();
+    let vpc;
     let mut subnet = cfg.subnet.clone();
     if !subnet.is_empty() {
         #[derive(Deserialize)]
@@ -468,7 +467,7 @@ impl AwsProvider {
         &self,
         ctx: &pulse_bus::CancellationToken,
         req: crate::provider::ProvisionRequest,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<crate::provider::Machine> {
         let (s, hub_home, log) = crate::provider::provision_start("aws".into(), req.clone())?;
         let mut cfg = aws_settings(&s, req.size.clone());
         #[derive(Deserialize, Default)]
@@ -489,17 +488,17 @@ impl AwsProvider {
             AWS_SHORT,
         )?;
         if rc != 0 {
-            return aws_err("not logged in to AWS (run `aws configure` or `aws sso login` on this machine as the daemon's user)".into(), rc, out, err_text, anyhow!("")).map(|_| None);
+            return aws_err("not logged in to AWS (run `aws configure` or `aws sso login` on this machine as the daemon's user)".into(), rc, out, err_text, anyhow!("")).map(|_| unreachable!());
         }
         let who: Who = serde_json::from_str(out.trim()).unwrap_or_default();
-        if cfg.region.is_empty() {
-            if let Ok((0, out, _)) = (RUN_AWS.read().unwrap())(
+        if cfg.region.is_empty()
+            && let Ok((0, out, _)) = (RUN_AWS.read().unwrap())(
                 ctx,
                 cfg.scope(vec!["configure".into(), "get".into(), "region".into()]),
                 AWS_SHORT,
-            ) {
-                cfg.region = out.trim().into();
-            }
+            )
+        {
+            cfg.region = out.trim().into();
         }
         if cfg.region.is_empty() {
             return Err(anyhow!(
@@ -583,7 +582,7 @@ impl AwsProvider {
                     err_text,
                     anyhow!(""),
                 )
-                .map(|_| Some(Box::new(m)));
+                .map(|_| m);
             }
             let res: Res = serde_json::from_str(out.trim()).unwrap_or_default();
             if res.instances.is_empty() {
@@ -633,7 +632,7 @@ impl AwsProvider {
             ctx,
             format!("the host key of {name} on its console"),
             || {
-                let args = cfg.scope(vec![
+                let mut args = cfg.scope(vec![
                     "ec2".into(),
                     "get-console-output".into(),
                     "--instance-id".into(),
@@ -641,9 +640,8 @@ impl AwsProvider {
                     "--latest".into(),
                     "--query".into(),
                     "Output".into(),
-                    "--output".into(),
-                    "text".into(),
                 ]);
+                args.extend(["--output".into(), "text".into()]);
                 let (rc, out, err_text) = (RUN_AWS.read().unwrap())(ctx, args, AWS_SHORT)?;
                 if rc != 0 {
                     return aws_err(
@@ -659,8 +657,8 @@ impl AwsProvider {
                 Ok(!hostkeys.is_empty())
             },
         )?;
-        crate::provider::provision_finish(ctx, req, &m, hub_home, ip, hostkeys, log)?;
-        Ok(Some(Box::new(m)))
+        crate::provider::provision_finish(ctx, req, &mut m, hub_home, ip, hostkeys, log)?;
+        Ok(m)
     }
     /// Go: func (p awsProvider) config(m *Machine) awsConfig
     pub(crate) fn config(&self, m: &crate::provider::Machine) -> AwsConfig {
@@ -737,7 +735,7 @@ impl AwsProvider {
         s: &pulse_store::Store,
         executor: String,
         host: String,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<Option<crate::provider::Machine>> {
         let cfg = aws_settings(s, String::new());
         let got = aws_describe(
             ctx,
@@ -895,7 +893,7 @@ impl crate::provider::Provider for AwsProvider {
         &self,
         cancel: &pulse_bus::CancellationToken,
         req: crate::provider::ProvisionRequest,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<crate::provider::Machine> {
         self.provision(cancel, req)
     }
     fn release(
@@ -918,7 +916,7 @@ impl crate::provider::Provider for AwsProvider {
         s: &pulse_store::Store,
         executor: &str,
         host: &str,
-    ) -> anyhow::Result<Option<Box<crate::provider::Machine>>> {
+    ) -> anyhow::Result<Option<crate::provider::Machine>> {
         self.find(cancel, s, executor.to_string(), host.to_string())
     }
     fn stop(
@@ -940,5 +938,80 @@ impl crate::provider::Provider for AwsProvider {
     }
     fn start_hint(&self, m: &crate::provider::Machine) -> String {
         self.start_hint(m)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::new_store;
+
+    #[test]
+    fn aws_provision_needs_login_and_region() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        let old = set_run_aws(Box::new(|_, args, _| {
+            let cmd = args.join(" ");
+            if cmd.starts_with("sts get-caller-identity") {
+                return Ok((
+                    255,
+                    String::new(),
+                    "Unable to locate credentials. You can configure credentials by running \"aws configure\".".into(),
+                ));
+            }
+            Ok((0, String::new(), String::new()))
+        }));
+        let err = AwsProvider {}
+            .provision(
+                &pulse_bus::CancellationToken::new(),
+                crate::provider::ProvisionRequest {
+                    store: Some((*s).clone()),
+                    id: "CR-001".into(),
+                    executor: "hands-cr-001".into(),
+                    project: "proj".into(),
+                    hub_home: tempfile::tempdir()
+                        .expect("hub")
+                        .path()
+                        .display()
+                        .to_string(),
+                    ..Default::default()
+                },
+            )
+            .expect_err("missing AWS login");
+        assert!(
+            err.to_string().contains("not logged in to AWS")
+                && err.to_string().contains("aws configure"),
+            "err: {err}"
+        );
+        let _ = set_run_aws(Box::new(|_, args, _| {
+            let cmd = args.join(" ");
+            if cmd.starts_with("sts get-caller-identity") {
+                return Ok((0, r#"{"Account":"1","Arn":"arn"}"#.into(), String::new()));
+            }
+            if cmd.starts_with("configure get region") {
+                return Ok((1, String::new(), String::new()));
+            }
+            Ok((1, String::new(), "unexpected".into()))
+        }));
+        let err = AwsProvider {}
+            .provision(
+                &pulse_bus::CancellationToken::new(),
+                crate::provider::ProvisionRequest {
+                    store: Some((*s).clone()),
+                    id: "CR-001".into(),
+                    executor: "hands-cr-001".into(),
+                    project: "proj".into(),
+                    hub_home: tempfile::tempdir()
+                        .expect("hub")
+                        .path()
+                        .display()
+                        .to_string(),
+                    ..Default::default()
+                },
+            )
+            .expect_err("missing AWS region");
+        assert!(err.to_string().contains("compute.aws.region"), "err: {err}");
+        let _ = set_run_aws(old);
     }
 }

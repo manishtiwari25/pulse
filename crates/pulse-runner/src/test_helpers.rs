@@ -23,15 +23,63 @@ pub(crate) struct TemplateStoreInfo {
     pub(crate) base_seq: i32,
 }
 
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Go runs a package's tests one at a time; every test here holds this guard for its whole body because the
+/// process-wide state the tests share (PULSE_* env, the working directory, the default bus, the login-gate /
+/// sealed-call / gh-token / GitHub-transport hooks, PULSE_TEST_HANDS helper branches) is not per-test.
+pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Port of runner_test.go TestMain setup. Rust's built-in harness has no TestMain hook, so tests call this
-/// from helpers; subprocess hands tests use `std::env::current_exe()` with `PULSE_TEST_HANDS=1`.
+/// from helpers (once per process, like TestMain); subprocess hands tests use `std::env::current_exe()`
+/// with `PULSE_TEST_HANDS=1`.
 pub(crate) fn test_main_setup() {
-    for (k, _) in std::env::vars().collect::<Vec<_>>() {
-        if k.starts_with("GIT_") && k != "GIT_SSH_COMMAND" {
-            // Callers hold pulse_testutil::env_lock() while mutating the environment.
-            unsafe { std::env::remove_var(k) };
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // The pre-commit hook runs this suite from inside `git commit`, where git exports GIT_INDEX_FILE and
+        // friends; tests that drive git in temp repositories must not inherit the committing repo's index.
+        for (k, _) in std::env::vars().collect::<Vec<_>>() {
+            if k.starts_with("GIT_") && k != "GIT_SSH_COMMAND" {
+                // Callers hold pulse_testutil::env_lock() while mutating the environment.
+                unsafe { std::env::remove_var(k) };
+            }
         }
+        // No test may reach the real runner command through the daemon's sealed held-out call.
+        crate::heldout::set_sealed_call(Box::new(|_, _, _| {
+            Err(anyhow!("the sealed call is stubbed in tests"))
+        }));
+        // The login gate would ask the real provider about this machine's sign-in; tests that exercise it
+        // call local_login_gate with a fake provider (login_gate.rs) or swap the gate themselves.
+        crate::login_gate::set_login_gate(Box::new(|_| String::new()));
+        // ADR-034: no test asks the hub's gh for a token or reaches GitHub; tests that need answers swap
+        // GITHUB_HTTP (or point PULSE_GITHUB_API at a pulse_testutil::httptest server).
+        *crate::token::GH_AUTH_TOKEN.write().unwrap() = || Ok(String::new());
+        crate::executor::set_github_http(Box::new(no_network_github_http));
+    });
+}
+
+/// Go TestMain's githubHTTP transport: `errors.New("no network in tests: " + r.URL.Host)`, as
+/// http.Client wraps it, unless PULSE_GITHUB_API points at a test server.
+pub(crate) fn no_network_github_http(
+    token: &str,
+    url: &str,
+) -> Result<(u16, std::collections::BTreeMap<String, String>, Vec<u8>)> {
+    if let Ok(api) = std::env::var("PULSE_GITHUB_API")
+        && !api.is_empty()
+        && url.starts_with(api.trim_end_matches('/'))
+    {
+        return crate::executor::github_http_real(token, url);
     }
+    let host = url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    Err(anyhow!("Get \"{url}\": no network in tests: {host}"))
 }
 
 /// Helper-process branch for `pulse hands` round trips.
@@ -54,17 +102,56 @@ pub(crate) fn maybe_run_hands_helper() {
     }
 }
 
+/// The store newStore hands a test plus the `t.Setenv` state that goes with it: PULSE_HOME and the empty
+/// PULSE_JOB/AGENT/SESSION/PROJECT hold while the fixture lives and revert when it drops (Go's cleanup),
+/// so a nested fixture or a later test sees the environment it expects. Derefs to the store.
+#[derive(Clone)]
+pub(crate) struct TestStore {
+    store: pulse_store::Store,
+    _env: std::sync::Arc<Vec<pulse_testutil::SetenvGuard>>,
+}
+
+impl std::ops::Deref for TestStore {
+    type Target = pulse_store::Store;
+
+    fn deref(&self) -> &pulse_store::Store {
+        &self.store
+    }
+}
+
+impl std::ops::DerefMut for TestStore {
+    fn deref_mut(&mut self) -> &mut pulse_store::Store {
+        &mut self.store
+    }
+}
+
+impl std::fmt::Debug for TestStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.store.fmt(f)
+    }
+}
+
+impl AsRef<pulse_store::Store> for TestStore {
+    fn as_ref(&self) -> &pulse_store::Store {
+        &self.store
+    }
+}
+
+impl TestStore {
+    /// The bare store, leaving the environment as newStore set it (for fixtures that outlive the guard).
+    pub(crate) fn leak(self) -> pulse_store::Store {
+        std::mem::forget(self._env);
+        self.store
+    }
+}
+
 /// Go: func newStore(t *testing.T) *store.Store
-pub(crate) fn new_store() -> pulse_store::Store {
+pub(crate) fn new_store() -> TestStore {
     test_main_setup();
     let home = tempfile::tempdir().expect("temp home").keep();
-    unsafe {
-        std::env::set_var("PULSE_HOME", &home);
-    }
+    let mut env = vec![pulse_testutil::setenv("PULSE_HOME", &home)];
     for name in ["PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"] {
-        unsafe {
-            std::env::set_var(name, "");
-        }
+        env.push(pulse_testutil::setenv(name, ""));
     }
     pulse_store::Store::create(home.join(pulse_store::STORE_NAME)).expect("create store");
     let s = pulse_store::Store::open(pulse_store::Options {
@@ -82,7 +169,64 @@ pub(crate) fn new_store() -> pulse_store::Store {
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.idle_hours", "0");
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.research_minutes", "0");
     let _ = s.set_setting(util::HUMAN_AGENT, "evolve.draft_hours", "0");
-    s
+    TestStore {
+        store: s,
+        _env: std::sync::Arc::new(env),
+    }
+}
+
+/// Go: `var out bytes.Buffer; o.Out = &out; ... out.String()` - a shared byte buffer the daemon writes.
+#[derive(Clone, Default)]
+pub(crate) struct OutBuf(pub(crate) std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl OutBuf {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// The `io.Writer` handed to DaemonOpts.out.
+    pub(crate) fn writer(&self) -> crate::daemon::DaemonOut {
+        std::sync::Arc::new(std::sync::Mutex::new(OutBufWriter(self.0.clone())))
+    }
+
+    /// Go: out.String()
+    pub(crate) fn string(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
+    }
+
+    /// Go: out.Reset()
+    pub(crate) fn reset(&self) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
+pub(crate) struct OutBufWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Write for OutBufWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Go: func onceDaemon(t *testing.T, s *store.Store, o daemonOpts) string
+pub(crate) fn once_daemon(s: &pulse_store::Store, mut o: crate::daemon::DaemonOpts) -> String {
+    let out = OutBuf::new();
+    o.out = Some(out.writer());
+    if o.interval == 0 {
+        o.interval = 1;
+    }
+    o.max_loops = 1;
+    let result = crate::daemon::daemon(&pulse_bus::CancellationToken::new(), s, o);
+    assert_eq!(result, "done", "daemon = {result}\n{}", out.string());
+    out.string()
 }
 
 /// Go: func run(t *testing.T, dir string, argv ...string) string
@@ -268,12 +412,12 @@ pub(crate) fn new_test_hands(
     workdir: &str,
     stdout: Option<Box<dyn Write + Send>>,
     stderr: Option<Box<dyn Write + Send>>,
-) -> Hands {
-    unsafe {
-        std::env::set_var("PULSE_TEST_HANDS", "1");
-        std::env::set_var("PATH", fake_hands_path(&[]).trim_start_matches("PATH="));
-    }
-    Hands {
+) -> (Hands, Vec<pulse_testutil::SetenvGuard>) {
+    let env = vec![
+        pulse_testutil::setenv("PULSE_TEST_HANDS", "1"),
+        pulse_testutil::setenv("PATH", fake_hands_path(&[]).trim_start_matches("PATH=")),
+    ];
+    let h = Hands {
         workdir: workdir.into(),
         home: tempfile::tempdir()
             .expect("home")
@@ -283,7 +427,8 @@ pub(crate) fn new_test_hands(
         stdin: Box::new(std::io::empty()),
         stdout: stdout.unwrap_or_else(|| Box::new(Vec::<u8>::new())),
         stderr: stderr.unwrap_or_else(|| Box::new(Vec::<u8>::new())),
-    }
+    };
+    (h, env)
 }
 
 /// Go: func b64(argv ...string) string

@@ -1,3 +1,12 @@
+#![allow(
+    dead_code,
+    reason = "ported Go runner APIs are consumed incrementally across slices"
+)]
+#![allow(
+    clippy::type_complexity,
+    reason = "test hook mirrors the Go lock holder callback shape"
+)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -218,7 +227,7 @@ impl AbandonedLock {
 
 fn fmt_duration(d: Duration) -> String {
     let secs = d.as_secs();
-    if secs % 3600 == 0 && secs >= 3600 {
+    if secs.is_multiple_of(3600) && secs >= 3600 {
         format!("{}h0m0s", secs / 3600)
     } else if secs >= 60 {
         format!("{}m{}s", secs / 60, secs % 60)
@@ -229,4 +238,92 @@ fn fmt_duration(d: Duration) -> String {
 
 fn fmt_duration_round_minutes(d: Duration) -> String {
     fmt_duration(Duration::from_secs(((d.as_secs() + 30) / 60) * 60))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::run;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn landing_leaves_index_lock_when_holders_unknown() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().expect("repo").keep();
+        let dir = dir.display().to_string();
+        run(&dir, &["git", "init", "-q", "-b", "main", "."]);
+        let lock = Path::new(&dir).join(".git").join("index.lock");
+        std::fs::write(&lock, "").expect("lock");
+        let old = std::time::SystemTime::now()
+            - Duration::from_secs(((INDEX_LOCK_MINUTES + 1) as u64) * 60);
+        let stamp = chrono::DateTime::<chrono::Local>::from(old)
+            .format("%Y%m%d%H%M.%S")
+            .to_string();
+        std::process::Command::new("touch")
+            .args(["-t", &stamp, &lock.display().to_string()])
+            .status()
+            .expect("touch");
+        let holders = set_lock_holders(Box::new(|_| (Vec::new(), false)));
+        let (note, moved) = free_index_lock(dir.clone(), chrono::Utc::now());
+        let _ = set_lock_holders(holders);
+        assert!(moved.is_none(), "moved {moved:?}");
+        assert!(
+            note.contains("cannot say whose it is") && note.contains("remove it by hand"),
+            "note {note:?}"
+        );
+        assert!(lock.exists(), "lock was touched");
+        let (note, moved) = free_index_lock(
+            tempfile::tempdir()
+                .expect("empty")
+                .keep()
+                .display()
+                .to_string(),
+            chrono::Utc::now(),
+        );
+        assert!(
+            note.is_empty() && moved.is_none(),
+            "no lock: {note:?} {moved:?}"
+        );
+        assert!(locked_checkout(
+            "fatal: Unable to create '/x/.git/index.lock': File exists.".into()
+        ));
+        assert!(!locked_checkout(
+            "fatal: Not possible to fast-forward, aborting.".into()
+        ));
+    }
+
+    #[test]
+    fn landing_sets_abandoned_index_lock_aside() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().expect("repo").keep();
+        let dir = dir.display().to_string();
+        run(&dir, &["git", "init", "-q", "-b", "main", "."]);
+        let lock = Path::new(&dir).join(".git").join("index.lock");
+        std::fs::write(&lock, "").expect("lock");
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let fresh = free_index_lock(dir.clone(), chrono::Utc::now());
+        assert!(fresh.0.contains("is mid-write") && fresh.1.is_none());
+        assert!(lock.exists(), "fresh lock touched");
+        let old = std::time::SystemTime::now()
+            - Duration::from_secs(((INDEX_LOCK_MINUTES + 1) as u64) * 60);
+        let stamp = chrono::DateTime::<chrono::Local>::from(old)
+            .format("%Y%m%d%H%M.%S")
+            .to_string();
+        std::process::Command::new("touch")
+            .args(["-t", &stamp, &lock.display().to_string()])
+            .status()
+            .expect("touch");
+        let holders = set_lock_holders(Box::new(|_| (vec![4242], true)));
+        let held = free_index_lock(dir.clone(), chrono::Utc::now());
+        assert!(held.0.contains(".git/index.lock open in process 4242"));
+        assert!(held.1.is_none() && lock.exists());
+        let _ = set_lock_holders(Box::new(|_| (Vec::new(), true)));
+        let (note, moved) = free_index_lock(dir, chrono::Utc::now());
+        let _ = set_lock_holders(holders);
+        assert!(note.is_empty(), "note {note:?}");
+        let moved = moved.expect("moved abandoned lock");
+        assert!(!lock.exists(), "abandoned lock still there");
+        assert!(Path::new(&moved.to).exists(), "quarantine missing");
+        assert_eq!(moved.size, 0);
+    }
 }

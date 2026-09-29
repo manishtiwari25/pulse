@@ -363,3 +363,316 @@ pub(crate) fn heldout_step(s: &pulse_store::Store) -> String {
         "2. nothing for the held-out set: the daemon writes two sealed fixtures itself (ADR-033); evolve.heldout = owner to hand-write them instead".into()
     }
 }
+
+#[cfg(test)]
+mod tests_existing {
+    use super::*;
+    use crate::test_helpers::*;
+    use rusqlite::params;
+
+    #[test]
+    fn daemon_status_default_interval() {
+        let _serial = crate::test_helpers::serial();
+        for (state, extra) in [("alive", 0), ("silent", 1)] {
+            let s = new_store();
+            let age = chrono::TimeDelta::seconds(i64::from(
+                2 * crate::daemon::DEFAULT_DAEMON_INTERVAL_SECONDS + 60 + extra,
+            ));
+            let beat = pulse_store::gojson::to_string(&serde_json::json!({
+                "pid": 42,
+                "at": crate::util::must_iso(&s.now()).checked_sub_signed(age).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            }))
+            .unwrap();
+            s.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO meta (key, value) VALUES ('daemon', ?)",
+                    params![beat],
+                )
+                .unwrap();
+            let got = daemon_status(&s, s.now());
+            assert!(
+                got.starts_with(&format!("{state} ")),
+                "daemon status = {got:?}"
+            );
+            assert!(
+                got.ends_with(&format!(
+                    "interval {}s",
+                    crate::daemon::DEFAULT_DAEMON_INTERVAL_SECONDS
+                )),
+                "daemon status = {got:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{TEST_NOW, new_store};
+    use crate::test_helpers_f3b::*;
+
+    #[test]
+    fn onboard_seeds_starters_and_names_the_human_steps() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let dir = simple_repo("seeded");
+        let lines = onboard_project(
+            &s,
+            dir.clone(),
+            TEST_NOW.into(),
+            OnboardOpts {
+                actor: pulse_store::HUMAN_AGENT.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = lines.join("\n");
+        for want in [
+            "seeded 6 starter fixtures (pulse evolve fixture list --project seeded)",
+            "What stays human:",
+            "1. the baseline records itself: once evolve.loop is 1 the daemon measures main with the enabled fixtures and archives the baseline (ADR-031; costs real agent runs); sooner by hand: pulse job add --project seeded --kind baseline --title 'Record baseline'",
+            "2. keep at least two private fixtures in evolve.heldout_dir: pulse evolve setup DIR",
+            "3. set loop: on in the constitution record",
+            "4. keep the daemon and the hub alive with `pulse service install`",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        s.set_setting(pulse_store::HUMAN_AGENT, "evolve.heldout", "auto")
+            .unwrap();
+        let got = heldout_step(&s);
+        assert!(
+            got.contains("the daemon writes two sealed fixtures itself (ADR-033)"),
+            "auto heldout step = {got:?}"
+        );
+        assert!(
+            !text.contains("B- row")
+                && !text.contains("starter fixtures absent")
+                && !text.contains("Establish baseline"),
+            "stale wording:\n{text}"
+        );
+        let fixtures = pulse_evolve::list_fixtures(&s, "seeded", true).unwrap();
+        assert_eq!(fixtures.len(), 6);
+        let status = pulse_evolve::status(&s, "seeded").unwrap();
+        assert_eq!(status.public_fixtures, 6);
+        let lines = onboard_project(
+            &s,
+            dir.clone(),
+            TEST_NOW.into(),
+            OnboardOpts {
+                actor: pulse_store::HUMAN_AGENT.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = lines.join("\n");
+        assert!(
+            !text.contains("seeded 6") && !text.contains("starter fixtures absent"),
+            "refresh wording:\n{text}"
+        );
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE evolution_fixtures SET name = 'renamed-' || name WHERE project = 'seeded'",
+                [],
+            )
+            .unwrap();
+        let lines = onboard_project(
+            &s,
+            dir,
+            TEST_NOW.into(),
+            OnboardOpts {
+                actor: pulse_store::HUMAN_AGENT.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = lines.join("\n");
+        assert!(
+            text.contains("starter fixtures absent: pulse evolve fixture seed --project seeded"),
+            "absent-starters wording:\n{text}"
+        );
+    }
+
+    #[test]
+    fn onboard_reports_the_seeded_records() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let dir = simple_repo("bare");
+        let lines = onboard_project(
+            &s,
+            dir,
+            TEST_NOW.into(),
+            OnboardOpts {
+                actor: pulse_store::HUMAN_AGENT.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = lines.join("\n");
+        for want in [
+            "no docs/evolution/ scaffold written: the loop's constitution and evaluators live as records",
+            "constitution: copied from TPL-evolution-constitution@r1 (EVO-constitution-bare)",
+            "evaluators: copied from TPL-evolution-evaluators@r1 (EVO-evaluators-bare)",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        onboard_templates(&s);
+        let copied = simple_repo("copied");
+        let lines = onboard_project(
+            &s,
+            copied.clone(),
+            TEST_NOW.into(),
+            OnboardOpts {
+                actor: pulse_store::HUMAN_AGENT.into(),
+                name: "Lamplit Labs".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = lines.join("\n");
+        for want in [
+            "constitution: copied from TPL-evolution-constitution@r2 (EVO-constitution-lamplit-labs)",
+            "evaluators: copied from TPL-evolution-evaluators@r2 (EVO-evaluators-lamplit-labs)",
+            "seeded 6 starter fixtures (pulse evolve fixture list --project lamplit-labs)",
+            "3. set loop: on in the constitution record",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        assert!(
+            !text.contains("constitution: absent") && !text.contains("record new"),
+            "a seeded project is still told to write records:\n{text}"
+        );
+        let (_, rev) = s.get_record("EVO-constitution-lamplit-labs", 0).unwrap();
+        let rev = rev.unwrap();
+        assert_eq!(rev.author, pulse_store::HUMAN_AGENT);
+        assert_eq!(
+            rev.frontmatter.get("seeded_by").and_then(|v| v.as_str()),
+            Some(pulse_store::HUMAN_AGENT)
+        );
+        assert!(rev.body.contains("The Lamplit Labs loop."));
+        pulse_records::amend(
+            &s,
+            "EVO-constitution-lamplit-labs",
+            "# Ours\n",
+            pulse_store::HUMAN_AGENT,
+            "shaped",
+        )
+        .unwrap();
+        let lines = onboard_project(
+            &s,
+            copied,
+            TEST_NOW.into(),
+            OnboardOpts {
+                actor: pulse_store::HUMAN_AGENT.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = lines.join("\n");
+        assert!(text.contains("constitution: present (EVO-constitution-lamplit-labs r2)") && text.contains("evaluators: copied from TPL-evolution-evaluators@r2 (EVO-evaluators-lamplit-labs)"), "refresh after owner edit:\n{text}");
+        let front = "---\nid: CONSTITUTION\ntitle: Amistio Constitution\nstatus: Active\ndate: 2026-01-02\nloop: off\n---\n\n";
+        let own = onboard_repo(
+            "amistio",
+            vec![
+                (
+                    "docs/evolution/constitution.md",
+                    format!("{front}# Amistio Constitution\n\nHand-written scope.\n"),
+                ),
+                (
+                    "docs/evolution/evaluators.md",
+                    format!(
+                        "{}# Amistio Evaluators\n\nHand-written evaluators.\n",
+                        front.replace(
+                            "CONSTITUTION\ntitle: Amistio Constitution",
+                            "EVALUATORS\ntitle: Amistio Evaluators"
+                        )
+                    ),
+                ),
+                ("docs/evolution/archive.md", "# Archive\n".into()),
+            ],
+        );
+        let lines = onboard_project(
+            &s,
+            own.clone(),
+            TEST_NOW.into(),
+            OnboardOpts {
+                actor: pulse_store::HUMAN_AGENT.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = lines.join("\n");
+        for want in [
+            "docs/evolution/ already present, untouched",
+            "constitution: imported from docs/evolution/constitution.md (EVO-constitution-amistio)",
+            "evaluators: imported from docs/evolution/evaluators.md (EVO-evaluators-amistio)",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        let (rec, rev) = s.get_record("EVO-constitution-amistio", 0).unwrap();
+        assert!(
+            rec.origin
+                .starts_with("markdown:docs/evolution/constitution.md@")
+        );
+        assert!(rev.unwrap().body.contains("Hand-written scope."));
+        assert!(
+            std::fs::metadata(std::path::Path::new(&own).join("docs/evolution/archive.md")).is_ok()
+        );
+        assert_eq!(
+            s.list_records(pulse_store::RecordFilter {
+                project: "amistio".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .len(),
+            2
+        );
+    }
+
+    fn onboard_templates(s: &pulse_store::Store) {
+        let brain = simple_repo("brain");
+        onboard_project(
+            s,
+            brain,
+            TEST_NOW.into(),
+            OnboardOpts {
+                actor: pulse_store::HUMAN_AGENT.into(),
+                brain: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for name in ["constitution", "evaluators"] {
+            let title = format!(
+                "<Project> Evolution {}{}",
+                name[..1].to_uppercase(),
+                &name[1..]
+            );
+            let rec = pulse_store::Record {
+                id: format!("TPL-evolution-{name}"),
+                project: pulse_store::COMMONS_SLUG.into(),
+                kind: "template".into(),
+                slug: format!("evolution-{name}"),
+                title: title.clone(),
+                status: "Active".into(),
+                path: format!("docs/evolution/_template-{name}.md"),
+                ..Default::default()
+            };
+            let frontmatter = serde_json::json!({"id": name.to_uppercase(), "title": title, "status": "Active", "loop": "off"})
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            s.put_record(
+                rec,
+                frontmatter,
+                &format!("# {title}\n\nThe <Project> loop.\n"),
+                pulse_store::HUMAN_AGENT,
+                "shaped",
+            )
+            .unwrap();
+        }
+    }
+}

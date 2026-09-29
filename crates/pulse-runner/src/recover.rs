@@ -1,4 +1,5 @@
 //! Port of internal/runner/recover.go.
+#![allow(dead_code)]
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -80,7 +81,14 @@ fn exec1(q: &Querier, query: &str, args: &[&dyn rusqlite::ToSql]) {
     q.conn().execute(query, args).unwrap();
 }
 
-fn event_at(q: &Querier, at: &str, actor: &str, action: &str, subject: &str, detail: Value) {
+fn event_at(
+    q: &Querier,
+    at: &str,
+    actor: &str,
+    action: &str,
+    subject: &str,
+    detail: Value,
+) -> Result<()> {
     let text = if detail.is_null() {
         String::new()
     } else if let Some(s) = detail.as_str() {
@@ -88,11 +96,17 @@ fn event_at(q: &Querier, at: &str, actor: &str, action: &str, subject: &str, det
     } else {
         crate::util::py_json(&detail)
     };
-    exec1(
-        q,
+    q.conn().execute(
         "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, ?, ?, ?, ?)",
-        &[&at, &actor, &action, &subject, &text],
-    );
+        [
+            &at as &dyn rusqlite::ToSql,
+            &actor,
+            &action,
+            &subject,
+            &text,
+        ],
+    )?;
+    Ok(())
 }
 
 fn err_message(err: &anyhow::Error) -> String {
@@ -642,7 +656,7 @@ pub(crate) fn recover_one(
                 root.clone(),
                 n,
                 String::new(),
-            );
+            )?;
             return Ok(());
         }
         let later = recovery_carrier(q, job.clone(), root.clone());
@@ -658,7 +672,7 @@ pub(crate) fn recover_one(
                 root.clone(),
                 n,
                 later,
-            );
+            )?;
             return Ok(());
         }
         if job.str("source").starts_with("task:")
@@ -691,7 +705,7 @@ pub(crate) fn recover_one(
                 root.clone(),
                 n,
                 String::new(),
-            );
+            )?;
             line = format!("held {}: {}", job.str("id"), f.reason);
             acted = true;
             capped = true;
@@ -708,7 +722,7 @@ pub(crate) fn recover_one(
                 root.clone(),
                 n,
                 String::new(),
-            );
+            )?;
             line = format!("held {} (structural): {}", job.str("id"), f.reason);
             acted = true;
             return Ok(());
@@ -809,7 +823,7 @@ pub(crate) fn queue_recovery(
                 "job.queued",
                 &job.str("id"),
                 Value::String(crate::util::trunc(&result, 400)),
-            );
+            )?;
             recovery_event(
                 q,
                 now,
@@ -820,7 +834,7 @@ pub(crate) fn queue_recovery(
                 root,
                 n + 1,
                 String::new(),
-            );
+            )?;
             drop_stale_branch(project.str("path"), job.clone(), run)?;
             Ok((job.str("id"), "requeued".into()))
         }
@@ -851,7 +865,7 @@ pub(crate) fn queue_recovery(
                 "job.add",
                 &copy_id,
                 json!({"project": job.str("project"), "kind": job.str("kind"), "title": title}),
-            );
+            )?;
             recovery_event(
                 q,
                 now,
@@ -862,7 +876,7 @@ pub(crate) fn queue_recovery(
                 root,
                 n + 1,
                 copy_id.clone(),
-            );
+            )?;
             Ok((copy_id, "replanned".into()))
         }
         _ => Err(crate::util::fail(2, "structural failures must remain held").into()),
@@ -908,6 +922,7 @@ pub(crate) fn current_recovery_failure(q: &Querier, snapshot: Row) -> anyhow::Re
 }
 
 /// Go: func holdRecoveryFailure(...)
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn hold_recovery_failure(
     s: &pulse_store::Store,
     job: Row,
@@ -934,7 +949,7 @@ pub(crate) fn hold_recovery_failure(
                 root,
                 n,
                 new_job,
-            );
+            )?;
         }
         Ok(())
     })
@@ -983,7 +998,7 @@ pub(crate) fn block_environment_failure(
             "job.blocked",
             &job.str("id"),
             Value::String(crate::util::trunc(&reason, 400)),
-        );
+        )?;
         let f = crate::failure::Failure {
             class: crate::failure::FailureClass("structural".into()),
             reason: reason.clone(),
@@ -1002,7 +1017,7 @@ pub(crate) fn block_environment_failure(
             root.clone(),
             n,
             String::new(),
-        );
+        )?;
         let _ = executor;
         Ok(())
     });
@@ -1031,7 +1046,7 @@ pub(crate) fn recovery_event(
     root: String,
     n: i32,
     new_job: String,
-) {
+) -> Result<()> {
     let mut detail = Map::new();
     detail.insert("outcome".into(), json!(outcome));
     detail.insert("class".into(), json!(f.class.0));
@@ -1049,7 +1064,7 @@ pub(crate) fn recovery_event(
         pulse_board::JOB_RECOVER_ACTION,
         &job_id,
         Value::Object(detail),
-    );
+    )
 }
 
 /// Go: func correctedBrief(job, run row, f failure) string
@@ -1497,16 +1512,97 @@ impl RecoveryStats {
 
 #[cfg(test)]
 mod tests {
-    macro_rules! ignored {
-        ($name:ident, $reason:literal) => {
-            #[test]
-            #[ignore = $reason]
-            fn $name() {}
-        };
+    use super::*;
+    use crate::test_helpers::*;
+    use crate::test_helpers_f7::*;
+    use serde_json::{Value, json};
+    use std::path::Path;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    };
+    use std::time::{Duration, SystemTime};
+
+    static TEST_WALL_CLOCK_CALLS: AtomicU64 = AtomicU64::new(0);
+    static FAKE_SSH_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    fn advancing_wall_clock() -> SystemTime {
+        SystemTime::UNIX_EPOCH
+            + Duration::from_secs(
+                TEST_WALL_CLOCK_CALLS
+                    .fetch_add(crate::run::LAUNCH_SECONDS as u64 + 1, Ordering::SeqCst),
+            )
+    }
+
+    fn ample_tmp_space(_: &str) -> anyhow::Result<u64> {
+        Ok(crate::tmpspace::MIN_TMP_SPACE * 4)
+    }
+
+    fn use_ample_tmp_space() -> crate::tmpspace::FreeSpaceFn {
+        let old = *crate::tmpspace::FREE_SPACE.read().expect("free space");
+        *crate::tmpspace::FREE_SPACE.write().expect("free space") = ample_tmp_space;
+        old
+    }
+
+    fn fake_login_fault_ssh(
+        _cancel: &pulse_bus::CancellationToken,
+        argv: &[String],
+        _stdin: &[u8],
+        _timeout: Duration,
+    ) -> anyhow::Result<(i32, String, String)> {
+        let n = FAKE_SSH_CALLS.fetch_add(1, Ordering::SeqCst);
+        let text = argv.join(" ");
+        if n == 0 || text.contains("probe") {
+            Ok((
+                0,
+                "hands=ok pulse=ok heartbeat=1 git=ok harness=yes keys_ok=yes keys=- remotes=0 disk_free_mb=4096".into(),
+                String::new(),
+            ))
+        } else if text.contains("verify") {
+            Ok((0, String::new(), String::new()))
+        } else if n >= 3 || text.contains("run") {
+            Ok((
+                1,
+                String::new(),
+                "Error: Authentication token found but could not be validated. GitHub returned: Sorry. Your account was suspended".into(),
+            ))
+        } else {
+            Ok((0, String::new(), String::new()))
+        }
+    }
+
+    fn conn(s: &pulse_store::Store) -> pulse_store::PooledConn {
+        s.conn().expect("conn")
+    }
+
+    fn event_at_test(
+        s: &pulse_store::Store,
+        at: &str,
+        actor: &str,
+        action: &str,
+        subject: &str,
+        detail: Value,
+    ) {
+        super::event_at(&conn(s), at, actor, action, subject, detail).expect("event");
+    }
+
+    fn exec1_test(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) {
+        conn(s).execute(sql, args).expect("exec");
+    }
+
+    fn one(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Row {
+        crate::util::query_one(&conn(s), sql, args)
+            .expect("query")
+            .unwrap_or_default()
+    }
+
+    fn rows(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Vec<Row> {
+        crate::util::query_rows(&conn(s), sql, args).expect("query")
     }
 
     #[test]
     fn retry_title_prefixes_once() {
+        let _serial = crate::test_helpers::serial();
         assert_eq!(
             super::retry_title("job-1".into(), "Fix the build".into()),
             "Retry job-1: Fix the build"
@@ -1517,201 +1613,3096 @@ mod tests {
         );
     }
 
-    ignored!(
-        post_recovery_finding_dedupe_uses_normalized_thread,
-        "cross-slice: board::create_post"
-    );
-    ignored!(
-        post_recovery_finding_dedupe_allows_summary_drift,
-        "cross-slice: board::create_post"
-    );
-    ignored!(
-        recover_off_switch_writes_note_only_with_failures,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_transient_waits_then_requeues_and_drops_branch,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_deterministic_non_task_queues_corrected_job_with_log_tail,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_corrected_chain_keeps_root_and_backoff,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_dedupe_open_corrected_job,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_holds_owner_cancelled_jobs,
-        "cross-slice: failure::failure_signature"
-    );
-    ignored!(
-        recover_task_owned_deterministic_waits_for_lead,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_structural_held_without_finding,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_limit_held_posts_one_finding_across_ticks,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_skips_owned_kinds_and_old_window,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_per_tick_cap,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_meta_shape_and_removal_preserves_other_projects,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_idempotent_for_handled_failure,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_superseded_failure_is_held_once,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_task_owned_transient_defers_to_lead_follow_up,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_pending_only_for_unanswered_transient_within_limit,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_waits_while_the_queue_is_full,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recover_never_retries_answer_jobs,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_failed_write_is_atomic,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_does_not_mutate_stale_failures,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_branch_cleanup_failure_remains_retryable,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_cleanup_only_deletes_this_jobs_branches,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_one_corrected_job_without_source,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_chain_has_one_corrected_carrier,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_write_errors_respect_tick_cap,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_held_write_errors_respect_tick_cap,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_same_second_failure_is_not_stranded,
-        "cross-slice: jobs::lease_job"
-    );
-    ignored!(
-        recovery_resilience_pending_matches_recovery_gates,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_corrected_brief_is_bounded,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_compacts_legacy_brief_without_dropping_instructions,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_missing_log_is_explicit,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        recovery_resilience_cap_finding_retries_after_write_failure,
-        "cross-slice: failure::classify_failure"
-    );
-    ignored!(
-        sweep_lost_runs_releases_lease,
-        "cross-slice: sweep::sweep_lost_runs"
-    );
-    ignored!(report_reported, "cross-slice: run::parse_result_text");
-    ignored!(
-        launch_rejection_on_local_is_runner_error,
-        "cross-slice: run::work_once"
-    );
-    ignored!(
-        native_not_logged_in_exit_four_is_runner_error_after_slow_start,
-        "cross-slice: run::work_once"
-    );
-    ignored!(
-        worker_exit_summary_includes_harness_stop_reason,
-        "cross-slice: run::work_once"
-    );
-    ignored!(
-        worker_exit_five_is_owner_cancelled_failure,
-        "cross-slice: run::work_once"
-    );
-    ignored!(
-        failure_worker_exit_five_keeps_plain_cancel_summary,
-        "cross-slice: run::work_once"
-    );
-    ignored!(
-        run_harness_cancel_watcher_cancels_context,
-        "cross-slice: run::watch_run_harness_cancel_every"
-    );
-    ignored!(
-        launch_rejection_on_remote_drains_executor,
-        "cross-slice: run::work_once"
-    );
-    ignored!(
-        peer_questions_same_timestamp_answers,
-        "cross-slice: lead::open_questions"
-    );
-    ignored!(
-        peer_help_wakes_lead_once_without_duplicate_worker,
-        "cross-slice: lead::tend_lead"
-    );
-    ignored!(
-        peer_help_does_not_bypass_owner_gates,
-        "cross-slice: lead::tend_lead"
-    );
-    ignored!(
-        peer_help_batches_only_delivered_mentions,
-        "cross-slice: lead::tend_lead"
-    );
-    ignored!(
-        incomplete_worker_reports_reach_recovery_and_peer_help,
-        "cross-slice: run::work_once"
-    );
-    ignored!(
-        incomplete_report_prefixes_are_explicit,
-        "cross-slice: run::report::incomplete"
-    );
-    ignored!(
-        worker_brief_recovery_is_bounded_and_transport_aware,
-        "cross-slice: brief::must_write_brief"
-    );
+    #[test]
+    fn post_recovery_finding_dedupe_uses_normalized_thread() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        let root = "job-20260912T062520Z-b434fc";
+        let normalized = pulse_board::normalize_thread(root);
+
+        let created = super::post_recovery_finding(
+            &s,
+            "proj".into(),
+            root.into(),
+            3,
+            TEST_NOW.into(),
+            "daemon".into(),
+        )
+        .expect("first finding");
+        assert!(created, "first finding was not created");
+        let created = super::post_recovery_finding(
+            &s,
+            "proj".into(),
+            root.into(),
+            3,
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            "daemon".into(),
+        )
+        .expect("second finding");
+        assert!(!created, "second finding was created");
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE project = 'proj' AND kind = 'finding' AND area = 'jobs' AND thread = ?",
+            &[&normalized],
+        );
+        assert_eq!(n, 1, "findings on normalized thread");
+        let post = one(
+            &s,
+            "SELECT thread FROM posts WHERE project = 'proj' AND kind = 'finding'",
+            &[],
+        );
+        assert_eq!(post.str("thread"), normalized);
+    }
+
+    #[test]
+    fn post_recovery_finding_dedupe_allows_summary_drift() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        let root = "job-20260912T062520Z-b434fc";
+        crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "finding".into(),
+                project: "proj".into(),
+                area: "jobs".into(),
+                thread: root.into(),
+                summary: "Recovery held for an older summary shape".into(),
+                body: "already reported".into(),
+                agent: crate::board::actor_agent(&s, "planner".into()),
+                ..Default::default()
+            },
+        )
+        .expect("create existing post");
+        let created = super::post_recovery_finding(
+            &s,
+            "proj".into(),
+            root.into(),
+            3,
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            "daemon".into(),
+        )
+        .expect("finding after drifted summary");
+        assert!(
+            !created,
+            "drifted recovery finding summary was not treated as existing"
+        );
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE project = 'proj' AND kind = 'finding' AND area = 'jobs' AND thread = ?",
+            &[&pulse_board::normalize_thread(root)],
+        );
+        assert_eq!(n, 1, "findings after drifted summary");
+    }
+
+    #[test]
+    fn recover_off_switch_writes_note_only_with_failures() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        set_recover_setting(&s, "daemon.recover", "off");
+        insert_recover_failed_job(
+            &s,
+            "job-off",
+            "task",
+            "manual",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        let lines = super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert!(lines.is_empty(), "lines = {lines:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&pulse_board::JOB_RECOVER_ACTION],
+            ),
+            0
+        );
+        assert_eq!(
+            recover_meta(&s).get("proj").expect("proj note").note,
+            "recovery off (daemon.recover)"
+        );
+
+        exec1_test(
+            &s,
+            "UPDATE jobs SET status = 'done' WHERE id = 'job-off'",
+            &[],
+        );
+        super::recover_failed_jobs(
+            &s,
+            one(&s, "SELECT * FROM projects WHERE slug = 'proj'", &[]),
+            TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert!(
+            !recover_meta(&s).contains_key("proj"),
+            "recovery note kept for a project with no failed jobs"
+        );
+    }
+
+    #[test]
+    fn recover_transient_waits_then_requeues_and_drops_branch() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, root) = new_bare_repo(&s);
+        let job = insert_recover_failed_job(
+            &s,
+            "job-transient",
+            "task",
+            "manual",
+            "runner error: connection reset",
+            &crate::util::plus_minutes(TEST_NOW, -2.0),
+        );
+        let branch = format!("pulse/w1/{}", job.str("id"));
+        run(&root, &["git", "branch", &branch]);
+        insert_recover_run(
+            &s,
+            &job.str("id"),
+            "run-transient",
+            "error",
+            "runner error: connection reset",
+            "",
+            &branch,
+        );
+
+        super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&pulse_board::JOB_RECOVER_ACTION],
+            ),
+            0
+        );
+        let notes = recover_meta(&s);
+        let note = &notes.get("proj").expect("proj note").note;
+        assert!(
+            note.contains(&format!(
+                "next at {}",
+                crate::failure::recover_due(job.str("finished_at"), 0)
+            )),
+            "note before due = {note}"
+        );
+
+        let lines = super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 4.0),
+            "daemon".into(),
+        );
+        assert_eq!(lines.len(), 1, "lines = {lines:?}");
+        assert!(
+            lines[0].contains("recovered job-transient (transient): queued again after a 5m pause"),
+            "lines = {lines:?}"
+        );
+        let again = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(again.str("status"), "queued");
+        assert_eq!(again.int("attempts"), 0);
+        assert_eq!(again.str("branch"), "");
+        assert!(
+            !crate::util::git(
+                &root,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}")
+                ]
+            )
+            .ok(),
+            "stale branch {branch} still exists",
+        );
+        let detail = recover_detail(&s, &job.str("id"));
+        assert_eq!(detail.get("outcome"), Some(&json!("requeued")));
+        assert_eq!(detail.get("class"), Some(&json!("transient")));
+        assert_eq!(detail.get("root"), Some(&json!(job.str("id"))));
+        assert_eq!(detail.get("n"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn recover_deterministic_non_task_queues_corrected_job_with_log_tail() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, root) = new_bare_repo(&s);
+        let job = insert_recover_failed_job(
+            &s,
+            "job-det",
+            "improve",
+            "manual",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        let log_path = Path::new(&root).join("run-det.log");
+        let mut log_lines = (0..45)
+            .map(|i| format!("log line {}", char::from(b'A' + (i % 26) as u8)))
+            .collect::<Vec<_>>();
+        log_lines.push("last important github_pat_abcdefghijklmnopqrstuvwxyz".into());
+        std::fs::write(&log_path, log_lines.join("\n")).expect("write log");
+        insert_recover_run(
+            &s,
+            &job.str("id"),
+            "run-det",
+            "failed",
+            "verify exit 1",
+            &log_path.display().to_string(),
+            "",
+        );
+
+        let out = super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert_eq!(out.len(), 1, "lines = {out:?}");
+        assert!(out[0].contains("re-planned job-det as"), "lines = {out:?}");
+        let copy = one(
+            &s,
+            "SELECT * FROM jobs WHERE source = 'manual' AND status = 'queued'",
+            &[],
+        );
+        assert!(!copy.0.is_empty(), "corrected job missing");
+        assert_eq!(copy.str("status"), "queued");
+        assert!(
+            copy.str("title")
+                .starts_with("Retry job-det: Original job-det"),
+            "copy = {copy:?}"
+        );
+        let brief = copy.str("brief");
+        for want in [
+            "original brief job-det",
+            "verify exit 1",
+            "Job `job-det` (run `run-det`, executor `local`)",
+            "last important",
+            "[redacted]",
+        ] {
+            assert!(brief.contains(want), "brief missing {want:?}:\n{brief}");
+        }
+        assert!(
+            !brief.contains("github_pat_abcdefghijklmnopqrstuvwxyz"),
+            "brief leaked a token-shaped value"
+        );
+        let detail = recover_detail(&s, &job.str("id"));
+        assert_eq!(detail.get("outcome"), Some(&json!("replanned")));
+        assert_eq!(detail.get("job"), Some(&json!(copy.str("id"))));
+        assert_eq!(detail.get("n"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn recover_corrected_chain_keeps_root_and_backoff() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        insert_recover_failed_job(
+            &s,
+            "job-root",
+            "improve",
+            "manual",
+            "verify exit 1",
+            &crate::util::plus_hours(TEST_NOW, -2.0),
+        );
+        event_at_test(
+            &s,
+            &crate::util::plus_hours(TEST_NOW, -1.0),
+            "daemon",
+            pulse_board::JOB_RECOVER_ACTION,
+            "job-root",
+            json!({"outcome": "replanned", "class": "deterministic", "why": "verify exit 1", "root": "job-root", "n": 1, "signature": "deterministic:verify exit #", "job": "job-corrected"}),
+        );
+        let corrected = insert_recover_failed_job(
+            &s,
+            "job-corrected",
+            "improve",
+            "manual",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -5.0),
+        );
+        insert_recover_run(
+            &s,
+            &corrected.str("id"),
+            "run-corrected",
+            "failed",
+            "verify exit 1",
+            "",
+            "",
+        );
+
+        super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = 'job-corrected'",
+                &[&pulse_board::JOB_RECOVER_ACTION],
+            ),
+            0
+        );
+        let notes = recover_meta(&s);
+        let note = &notes.get("proj").expect("proj note").note;
+        assert!(
+            note.contains(&format!(
+                "next at {}",
+                crate::failure::recover_due(corrected.str("finished_at"), 1)
+            )),
+            "note = {note}"
+        );
+
+        super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 11.0),
+            "daemon".into(),
+        );
+        let detail = recover_detail(&s, &corrected.str("id"));
+        assert_eq!(detail.get("root"), Some(&json!("job-root")));
+        assert_eq!(detail.get("n"), Some(&json!(2)));
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source = 'manual' AND status = 'queued'",
+                &[]
+            ),
+            1
+        );
+        let copy_title = crate::jobs::job_row(
+            &conn(&s),
+            detail
+                .get("job")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string(),
+        )
+        .str("title");
+        assert_eq!(copy_title, "Retry job-root: Original job-corrected");
+    }
+
+    #[test]
+    fn recover_dedupe_open_corrected_job() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        insert_recover_failed_job(
+            &s,
+            "job-dedupe",
+            "improve",
+            "manual",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        exec1_test(
+            &s,
+            "INSERT INTO jobs (id, project, kind, tier, title, brief, source, status, created_at)
+\t\tVALUES ('job-open-recover', 'proj', 'improve', 1, 'open', 'open', 'manual', 'queued', ?)",
+            &[&TEST_NOW],
+        );
+
+        super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source = 'manual'",
+                &[]
+            ),
+            2
+        );
+        let detail = recover_detail(&s, "job-dedupe");
+        assert_eq!(detail.get("outcome"), Some(&json!("held")));
+        assert_eq!(
+            detail.get("why"),
+            Some(&json!("superseded by job-open-recover"))
+        );
+    }
+
+    #[test]
+    fn recover_holds_owner_cancelled_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        let job = insert_recover_failed_job(
+            &s,
+            "job-cancelled",
+            "task",
+            "manual",
+            "cancelled by the owner: stopped after cancel",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        insert_recover_run(
+            &s,
+            &job.str("id"),
+            "run-cancelled",
+            "failed",
+            "cancelled by the owner: stopped after cancel",
+            "",
+            "",
+        );
+
+        let lines = super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert!(lines.is_empty(), "lines = {lines:?}");
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), job.str("id")).str("status"),
+            "failed"
+        );
+        let detail = recover_detail(&s, &job.str("id"));
+        assert_eq!(detail.get("outcome"), Some(&json!("held")));
+        assert_eq!(detail.get("why"), Some(&json!("cancelled by the owner")));
+        let notes = recover_meta(&s);
+        let note = &notes.get("proj").expect("proj note").note;
+        assert!(note.contains("cancelled by the owner"), "note = {note}");
+    }
+
+    #[test]
+    fn recover_task_owned_deterministic_waits_for_lead() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        let job = insert_recover_failed_job(
+            &s,
+            "job-task",
+            "task",
+            "task:TASK-1",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), job.str("id")).str("status"),
+            "failed"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&pulse_board::JOB_RECOVER_ACTION]
+            ),
+            0
+        );
+        let notes = recover_meta(&s);
+        let note = &notes.get("proj").expect("proj note").note;
+        assert!(note.contains("with the lead"), "note = {note}");
+    }
+
+    #[test]
+    fn recover_structural_held_without_finding() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        let job = insert_recover_failed_job(
+            &s,
+            "job-struct",
+            "task",
+            "manual",
+            "needs a real decision",
+            &crate::util::plus_minutes(TEST_NOW, -1.0),
+        );
+        super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), job.str("id")).str("status"),
+            "failed"
+        );
+        let detail = recover_detail(&s, &job.str("id"));
+        assert_eq!(detail.get("outcome"), Some(&json!("held")));
+        assert_eq!(detail.get("class"), Some(&json!("structural")));
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding'",
+                &[]
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn recover_limit_held_posts_one_finding_across_ticks() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        set_recover_setting(&s, "daemon.recover_limit", "1");
+        insert_recover_failed_job(
+            &s,
+            "job-limit",
+            "improve",
+            "manual",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -40.0),
+        );
+        insert_recover_failed_job(
+            &s,
+            "job-limit-copy",
+            "improve",
+            "manual",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -39.0),
+        );
+        event_at_test(
+            &s,
+            &crate::util::plus_hours(TEST_NOW, -2.0),
+            "daemon",
+            pulse_board::JOB_RECOVER_ACTION,
+            "job-old",
+            json!({"outcome": "replanned", "class": "deterministic", "why": "verify exit 1", "root": "job-limit", "n": 1, "signature": "deterministic:verify exit #", "job": "job-limit-copy"}),
+        );
+
+        super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ? AND json_extract(detail, '$.outcome') = 'held'",
+                &[&pulse_board::JOB_RECOVER_ACTION]
+            ),
+            2
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND area = 'jobs' AND thread = 'job-limit'",
+                &[]
+            ),
+            1
+        );
+        let post = one(
+            &s,
+            "SELECT body FROM posts WHERE kind = 'finding' AND thread = 'job-limit'",
+            &[],
+        );
+        assert!(
+            post.str("body")
+                .contains("pulse job retry job-limit --as-new"),
+            "finding body = {:?}",
+            post.str("body")
+        );
+    }
+
+    #[test]
+    fn recover_skips_owned_kinds_and_old_window() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        for (id, kind) in [
+            ("job-lead", "lead"),
+            ("job-baseline", "baseline"),
+            ("job-experiment", "experiment"),
+        ] {
+            insert_recover_failed_job(
+                &s,
+                id,
+                kind,
+                "manual",
+                "runner error",
+                &crate::util::plus_minutes(TEST_NOW, -30.0),
+            );
+        }
+        insert_recover_failed_job(
+            &s,
+            "job-old",
+            "task",
+            "manual",
+            "runner error",
+            &crate::util::plus_hours(TEST_NOW, -24.0 * 8.0),
+        );
+        super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&pulse_board::JOB_RECOVER_ACTION]
+            ),
+            0
+        );
+        assert!(
+            !recover_meta(&s).contains_key("proj"),
+            "note written for skipped jobs"
+        );
+    }
+
+    #[test]
+    fn recover_per_tick_cap() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        for i in 0..6 {
+            let id = format!("job-cap-{}", char::from(b'a' + i));
+            insert_recover_failed_job(
+                &s,
+                &id,
+                "task",
+                &format!("manual:{id}"),
+                "runner error",
+                &crate::util::plus_minutes(TEST_NOW, -30.0),
+            );
+        }
+        super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&pulse_board::JOB_RECOVER_ACTION]
+            ),
+            RECOVER_PER_TICK
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'",
+                &[]
+            ),
+            RECOVER_PER_TICK
+        );
+        let notes = recover_meta(&s);
+        let note = &notes.get("proj").expect("proj note").note;
+        assert!(note.contains("cap 5 reached"), "note = {note}");
+    }
+
+    #[test]
+    fn recover_meta_shape_and_removal_preserves_other_projects() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        exec1_test(
+            &s,
+            "INSERT INTO meta (key, value) VALUES ('recovery', ?)",
+            &[&r#"{"other":{"at":"2026-09-06T09:00:00Z","note":"kept"}}"#],
+        );
+        insert_recover_failed_job(
+            &s,
+            "job-meta",
+            "task",
+            "manual",
+            "runner error",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        let notes = recover_meta(&s);
+        assert_eq!(notes["proj"].at, TEST_NOW);
+        assert!(notes["proj"].note.contains("1 failed in 7d"));
+        assert_eq!(notes["other"].note, "kept");
+
+        exec1_test(
+            &s,
+            "UPDATE jobs SET status = 'done' WHERE id = 'job-meta'",
+            &[],
+        );
+        super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            "daemon".into(),
+        );
+        let notes = recover_meta(&s);
+        assert!(!notes.contains_key("proj"));
+        assert_eq!(notes["other"].note, "kept");
+    }
+
+    #[test]
+    fn recover_idempotent_for_handled_failure() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        insert_recover_failed_job(
+            &s,
+            "job-idem",
+            "improve",
+            "manual",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&pulse_board::JOB_RECOVER_ACTION]
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source = 'manual' AND status = 'queued'",
+                &[]
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn recover_superseded_failure_is_held_once() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        let failed = insert_recover_failed_job(
+            &s,
+            "job-old",
+            "improve",
+            "suggestion:POST-1",
+            "runner error: connection reset",
+            &crate::util::plus_hours(TEST_NOW, -3.0),
+        );
+        exec1_test(
+            &s,
+            "INSERT INTO jobs (id, project, kind, tier, title, brief, source, priority, status, created_at, created_by)
+\t\tVALUES ('job-later', 'proj', 'improve', 1, 'Later carrier', 'brief', 'suggestion:POST-1', 0, 'done', ?, 'lead')",
+            &[&crate::util::plus_hours(TEST_NOW, -2.0)],
+        );
+
+        let lines = super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        assert!(lines.is_empty(), "lines = {lines:?}");
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), failed.str("id")).str("status"),
+            "failed"
+        );
+        let detail = recover_detail(&s, &failed.str("id"));
+        assert_eq!(detail.get("outcome"), Some(&json!("held")));
+        assert_eq!(detail.get("why"), Some(&json!("superseded by job-later")));
+        assert_eq!(detail.get("job"), Some(&json!("job-later")));
+        assert_eq!(recover_meta(&s)["proj"].note, "1 failed in 7d: 1 held");
+        super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = 'job-old'",
+                &[&pulse_board::JOB_RECOVER_ACTION]
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn recover_task_owned_transient_defers_to_lead_follow_up() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        let job = insert_recover_failed_job(
+            &s,
+            "job-task",
+            "task",
+            "task:TASK-1",
+            "runner error: connection reset",
+            &crate::util::plus_hours(TEST_NOW, -1.0),
+        );
+        assert!(super::recovery_pending(&s, job.str("id")));
+        event_at_test(
+            &s,
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+            "daemon",
+            FOLLOW_UP_ACTION,
+            "TASK-1",
+            json!({"job": "lead-1", "why": "failed"}),
+        );
+        super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), job.str("id")).str("status"),
+            "failed"
+        );
+        let notes = recover_meta(&s);
+        let note = &notes.get("proj").expect("proj note").note;
+        assert!(note.contains("1 with the lead"), "note = {note}");
+    }
+
+    #[test]
+    fn recovery_pending_only_for_unanswered_transient_within_limit() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        insert_recover_failed_job(
+            &s,
+            "job-det",
+            "task",
+            "task:TASK-2",
+            "verify exit 1",
+            &crate::util::plus_hours(TEST_NOW, -1.0),
+        );
+        assert!(!super::recovery_pending(&s, "job-det".into()));
+        insert_recover_failed_job(
+            &s,
+            "job-tr",
+            "task",
+            "task:TASK-3",
+            "runner error: connection reset",
+            &crate::util::plus_hours(TEST_NOW, -1.0),
+        );
+        assert!(super::recovery_pending(&s, "job-tr".into()));
+        event_at_test(
+            &s,
+            TEST_NOW,
+            "daemon",
+            pulse_board::JOB_RECOVER_ACTION,
+            "job-tr",
+            json!({"outcome": "held", "class": "transient", "why": "recovered 3 times", "root": "job-tr", "n": 3, "signature": "transient:runner error"}),
+        );
+        assert!(!super::recovery_pending(&s, "job-tr".into()));
+        set_recover_setting(&s, "daemon.recover", "off");
+        insert_recover_failed_job(
+            &s,
+            "job-off",
+            "task",
+            "task:TASK-4",
+            "runner error: connection reset",
+            &crate::util::plus_hours(TEST_NOW, -1.0),
+        );
+        assert!(!super::recovery_pending(&s, "job-off".into()));
+    }
+
+    #[test]
+    fn recover_waits_while_the_queue_is_full() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        for i in 0..RECOVER_QUEUE_ROOM {
+            exec1_test(
+                &s,
+                "INSERT INTO jobs (id, project, kind, tier, title, brief, source, status, created_at)
+\t\t\tVALUES (?, 'proj', 'improve', 1, 'fresh', 'fresh', ?, 'queued', ?)",
+                &[&format!("job-fresh-{i}"), &format!("fresh:{i}"), &TEST_NOW],
+            );
+        }
+        insert_recover_failed_job(
+            &s,
+            "job-waits",
+            "improve",
+            "manual",
+            "runner error: connection reset",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        insert_recover_failed_job(
+            &s,
+            "job-held",
+            "improve",
+            "manual-2",
+            "1 commit(s) touch owner-owned paths (.github/x.yml); nothing landed",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+
+        let lines = super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(lines.len(), 1, "lines = {lines:?}");
+        assert!(
+            lines[0].contains("held job-held (structural)"),
+            "lines = {lines:?}"
+        );
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), "job-waits".into()).str("status"),
+            "failed"
+        );
+        let notes = recover_meta(&s);
+        let note = &notes.get("proj").expect("proj note").note;
+        assert!(
+            note.contains(&format!(
+                "waits for the queue ({RECOVER_QUEUE_ROOM} queued)"
+            )),
+            "note = {note}"
+        );
+
+        exec1_test(
+            &s,
+            "UPDATE jobs SET status = 'done' WHERE id LIKE 'job-fresh-%'",
+            &[],
+        );
+        super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), "job-waits".into()).str("status"),
+            "queued"
+        );
+    }
+
+    #[test]
+    fn recover_never_retries_answer_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        insert_recover_failed_job(
+            &s,
+            "job-ans-1",
+            "answer",
+            "question:q-one",
+            "runner error: connection reset",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        insert_recover_failed_job(
+            &s,
+            "job-ans-2",
+            "answer",
+            "question:q-two",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        insert_recover_failed_job(
+            &s,
+            "job-imp",
+            "improve",
+            "manual",
+            "runner error: connection reset",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        let lines = super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert_eq!(lines.len(), 1, "lines = {lines:?}");
+        assert!(
+            lines[0].contains("recovered job-imp (transient)"),
+            "lines = {lines:?}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'answer'",
+                &[]
+            ),
+            2
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'answer' AND status <> 'failed'",
+                &[]
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject LIKE 'job-ans-%'",
+                &[&pulse_board::JOB_RECOVER_ACTION]
+            ),
+            0
+        );
+        let notes = recover_meta(&s);
+        let note = &notes.get("proj").expect("proj note").note;
+        assert!(note.contains("3 failed in"), "note = {note}");
+        assert!(note.contains("2 answer(s) tried once"), "note = {note}");
+    }
+
+    // Assigned recovery_resilience/peer_recovery/lost tests that still depend on non-F7 behavior.
+    #[test]
+    fn recovery_resilience_failed_write_is_atomic() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for (class, result, action) in [
+            ("transient", "runner error: connection reset", "job.queued"),
+            (
+                "transient",
+                "runner error: connection reset",
+                pulse_board::JOB_RECOVER_ACTION,
+            ),
+            ("deterministic", "verify exit 1", "job.add"),
+            (
+                "deterministic",
+                "verify exit 1",
+                pulse_board::JOB_RECOVER_ACTION,
+            ),
+        ] {
+            let s = new_store();
+            let (p, root) = new_bare_repo(&s);
+            let job = insert_recover_failed_job(
+                &s,
+                "job-write-failure",
+                "improve",
+                "",
+                result,
+                &crate::util::plus_minutes(TEST_NOW, -30.0),
+            );
+            run(&root, &["git", "branch", &job.str("branch")]);
+            exec1_test(
+                &s,
+                &format!(
+                    "CREATE TRIGGER reject_recovery_write BEFORE INSERT ON events
+\t\tWHEN NEW.action = '{}' BEGIN SELECT RAISE(ABORT, 'injected recovery write failure'); END",
+                    action
+                ),
+                &[],
+            );
+            let f = crate::failure::classify_failure(
+                job.str("result"),
+                String::new(),
+                String::new(),
+                false,
+            );
+            let (line, acted) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::recover_one(
+                    &s,
+                    p.clone(),
+                    job.clone(),
+                    Row::new(),
+                    TEST_NOW.into(),
+                    "daemon".into(),
+                    f.clone(),
+                    job.str("id"),
+                    0,
+                    3,
+                )
+            }))
+            .expect("recovery panicked instead of reporting the failed write");
+            assert!(
+                !acted && line.contains("injected recovery write failure"),
+                "{class}/{action}: failed write claimed recovery or lost its error: acted={acted} line={line:?}"
+            );
+            let after = crate::jobs::job_row(&conn(&s), job.str("id"));
+            for key in [
+                "status",
+                "result",
+                "branch",
+                "finished_at",
+                "lease_agent",
+                "brief",
+            ] {
+                assert_eq!(
+                    after.str(key),
+                    job.str(key),
+                    "{class}/{action}: {key} changed after rollback"
+                );
+            }
+            assert_eq!(
+                after.int("attempts"),
+                job.int("attempts"),
+                "{class}/{action}: attempts reset"
+            );
+            assert_eq!(count(&s, "SELECT COUNT(*) AS n FROM jobs", &[]), 1);
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action IN ('job.queued', 'job.add', ?)",
+                    &[&pulse_board::JOB_RECOVER_ACTION]
+                ),
+                0
+            );
+            assert!(
+                crate::util::git(
+                    &root,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{}", job.str("branch"))
+                    ]
+                )
+                .ok(),
+                "{class}/{action}: branch was deleted before recovery writes succeeded"
+            );
+            exec1_test(&s, "DROP TRIGGER reject_recovery_write", &[]);
+            let (line, acted) = super::recover_one(
+                &s,
+                p,
+                job.clone(),
+                Row::new(),
+                TEST_NOW.into(),
+                "daemon".into(),
+                f,
+                job.str("id"),
+                0,
+                3,
+            );
+            assert!(
+                acted && !line.is_empty(),
+                "{class}/{action}: recovery did not resume after write fault cleared: {line}"
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                    &[&pulse_board::JOB_RECOVER_ACTION]
+                ),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_resilience_does_not_mutate_stale_failures() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for mode in [
+            "leased",
+            "done",
+            "cancelled",
+            "owner result",
+            "new failure",
+            "active run",
+            "owner question",
+        ] {
+            let s = new_store();
+            let (p, root) = new_bare_repo(&s);
+            let job = insert_recover_failed_job(
+                &s,
+                "job-stale",
+                "improve",
+                "",
+                "runner error: connection reset",
+                &crate::util::plus_minutes(TEST_NOW, -30.0),
+            );
+            run(&root, &["git", "branch", &job.str("branch")]);
+            let f = crate::failure::classify_failure(
+                job.str("result"),
+                String::new(),
+                String::new(),
+                false,
+            );
+            match mode {
+                "leased" | "done" | "cancelled" => exec1_test(
+                    &s,
+                    "UPDATE jobs SET status = ?, lease_agent = 'other', generation = generation + 1 WHERE id = ?",
+                    &[&mode, &job.str("id")],
+                ),
+                "owner result" => exec1_test(
+                    &s,
+                    "UPDATE jobs SET result = 'cancelled by the owner: stop retrying' WHERE id = ?",
+                    &[&job.str("id")],
+                ),
+                "new failure" => exec1_test(
+                    &s,
+                    "UPDATE jobs SET finished_at = ?, generation = generation + 1 WHERE id = ?",
+                    &[&crate::util::plus_minutes(TEST_NOW, -10.0), &job.str("id")],
+                ),
+                "active run" => {
+                    insert_recover_run(
+                        &s,
+                        &job.str("id"),
+                        "run-active",
+                        "running",
+                        "",
+                        "",
+                        &job.str("branch"),
+                    );
+                }
+                "owner question" => {
+                    crate::board::create_post(
+                        &s,
+                        TEST_NOW.into(),
+                        crate::board::PostOpts {
+                            project: "proj".into(),
+                            kind: "question".into(),
+                            area: "jobs".into(),
+                            thread: job.str("id"),
+                            summary: "Owner approval required".into(),
+                            agent: crate::board::actor_agent(&s, "daemon".into()),
+                            for_owner: true,
+                            ..Default::default()
+                        },
+                    )
+                    .expect("create question");
+                }
+                _ => unreachable!(),
+            }
+            let before = crate::jobs::job_row(&conn(&s), job.str("id"));
+            let _ = super::recover_one(
+                &s,
+                p,
+                job.clone(),
+                Row::new(),
+                TEST_NOW.into(),
+                "daemon".into(),
+                f,
+                job.str("id"),
+                0,
+                3,
+            );
+            let after = crate::jobs::job_row(&conn(&s), job.str("id"));
+            for key in ["status", "result", "branch", "finished_at", "lease_agent"] {
+                assert_eq!(
+                    after.str(key),
+                    before.str(key),
+                    "{mode}: stale recovery changed {key}"
+                );
+            }
+            assert_eq!(
+                after.int("attempts"),
+                before.int("attempts"),
+                "{mode}: stale recovery reset attempts"
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = ? AND json_extract(detail, '$.outcome') IN ('requeued', 'replanned')",
+                    &[&pulse_board::JOB_RECOVER_ACTION]
+                ),
+                0,
+                "{mode}: stale recovery recorded a successful action"
+            );
+            assert!(
+                crate::util::git(
+                    &root,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{}", job.str("branch"))
+                    ]
+                )
+                .ok(),
+                "{mode}: stale recovery deleted the branch"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_resilience_branch_cleanup_failure_remains_retryable() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, root) = new_bare_repo(&s);
+        let job = insert_recover_failed_job(
+            &s,
+            "job-checked-out",
+            "improve",
+            "",
+            "runner error: connection reset",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        run(&root, &["git", "checkout", "-q", "-b", &job.str("branch")]);
+        let f = crate::failure::classify_failure(
+            job.str("result"),
+            String::new(),
+            String::new(),
+            false,
+        );
+        let (line, acted) = super::recover_one(
+            &s,
+            p.clone(),
+            job.clone(),
+            Row::new(),
+            TEST_NOW.into(),
+            "daemon".into(),
+            f.clone(),
+            job.str("id"),
+            0,
+            3,
+        );
+        assert!(!acted, "cleanup failure claimed action: {line}");
+        assert!(
+            line.contains(&job.str("branch")),
+            "cleanup failure was not reported: {line}"
+        );
+        let after = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(after.str("status"), "failed");
+        assert_eq!(after.str("branch"), job.str("branch"));
+        assert_eq!(after.int("attempts"), 3);
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&pulse_board::JOB_RECOVER_ACTION]
+            ),
+            0
+        );
+        run(&root, &["git", "checkout", "-q", "main"]);
+        let (line, acted) = super::recover_one(
+            &s,
+            p,
+            job.clone(),
+            Row::new(),
+            TEST_NOW.into(),
+            "daemon".into(),
+            f,
+            job.str("id"),
+            0,
+            3,
+        );
+        assert!(acted, "cleanup did not resume after checkout moved: {line}");
+    }
+
+    #[test]
+    fn recovery_resilience_cleanup_only_deletes_this_jobs_branches() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for branch in ["main", "feature/human-work", "pulse/other/job-unrelated"] {
+            for source in ["job", "run"] {
+                let s = new_store();
+                let (p, root) = new_bare_repo(&s);
+                let mut job = insert_recover_failed_job(
+                    &s,
+                    "job-cleanup-scope",
+                    "improve",
+                    "",
+                    "runner error: connection reset",
+                    &crate::util::plus_minutes(TEST_NOW, -30.0),
+                );
+                let canonical = job.str("branch");
+                run(&root, &["git", "branch", &canonical]);
+                if branch != "main" {
+                    run(&root, &["git", "branch", branch]);
+                }
+                run(
+                    &root,
+                    &["git", "checkout", "-q", "-b", "unrelated-checkout"],
+                );
+                if source == "job" {
+                    exec1_test(
+                        &s,
+                        "UPDATE jobs SET branch = ? WHERE id = ?",
+                        &[&branch, &job.str("id")],
+                    );
+                    job = crate::jobs::job_row(&conn(&s), job.str("id"));
+                } else {
+                    insert_recover_run(
+                        &s,
+                        &job.str("id"),
+                        "run-scoped-cleanup",
+                        "failed",
+                        "runner error",
+                        "",
+                        branch,
+                    );
+                }
+                let f = crate::failure::classify_failure(
+                    job.str("result"),
+                    String::new(),
+                    String::new(),
+                    false,
+                );
+                let (line, acted) = super::recover_one(
+                    &s,
+                    p,
+                    job.clone(),
+                    Row::new(),
+                    TEST_NOW.into(),
+                    "daemon".into(),
+                    f,
+                    job.str("id"),
+                    0,
+                    3,
+                );
+                assert!(
+                    !acted,
+                    "{branch}/{source}: unrelated branch was accepted for cleanup: {line}"
+                );
+                assert!(
+                    line.contains("not owned by job"),
+                    "{branch}/{source}: line = {line}"
+                );
+                for kept in [branch, canonical.as_str()] {
+                    assert!(
+                        crate::util::git(
+                            &root,
+                            &[
+                                "rev-parse",
+                                "--verify",
+                                "--quiet",
+                                &format!("refs/heads/{kept}")
+                            ]
+                        )
+                        .ok(),
+                        "{branch}/{source}: cleanup deleted {kept} before validating every branch",
+                    );
+                }
+                assert_eq!(
+                    crate::jobs::job_row(&conn(&s), job.str("id")).str("status"),
+                    "failed"
+                );
+                assert_eq!(
+                    count(
+                        &s,
+                        "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                        &[&pulse_board::JOB_RECOVER_ACTION]
+                    ),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_resilience_one_corrected_job_without_source() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        let job = insert_recover_failed_job(
+            &s,
+            "job-no-source",
+            "improve",
+            "",
+            "verify exit 1",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        let f = crate::failure::classify_failure(
+            job.str("result"),
+            String::new(),
+            String::new(),
+            false,
+        );
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                let s_ref = &s;
+                let p_ref = p.clone();
+                let job_ref = job.clone();
+                let f_ref = f.clone();
+                scope.spawn(move || {
+                    let _ = super::recover_one(
+                        s_ref,
+                        p_ref,
+                        job_ref.clone(),
+                        Row::new(),
+                        TEST_NOW.into(),
+                        "daemon".into(),
+                        f_ref,
+                        job_ref.str("id"),
+                        0,
+                        3,
+                    );
+                });
+            }
+        });
+        let _ = super::recover_one(
+            &s,
+            p,
+            job.clone(),
+            Row::new(),
+            TEST_NOW.into(),
+            "daemon".into(),
+            f,
+            job.str("id"),
+            0,
+            3,
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'",
+                &[]
+            ),
+            1,
+            "one failed job created duplicate corrected jobs"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&pulse_board::JOB_RECOVER_ACTION]
+            ),
+            1,
+            "one failed job wrote duplicate recovery events"
+        );
+    }
+
+    #[test]
+    fn recovery_resilience_chain_has_one_corrected_carrier() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        set_recover_setting(&s, "daemon.recover_limit", "5");
+        insert_recover_failed_job(
+            &s,
+            "job-chain-root",
+            "improve",
+            "",
+            "verify exit 1",
+            &crate::util::plus_hours(TEST_NOW, -7.0),
+        );
+        for id in ["job-chain-first", "job-chain-second"] {
+            insert_recover_failed_job(
+                &s,
+                id,
+                "improve",
+                "",
+                "verify exit 1",
+                &crate::util::plus_hours(TEST_NOW, -4.0),
+            );
+            super::recovery_event(
+                &conn(&s),
+                crate::util::plus_hours(TEST_NOW, -5.0),
+                "human".into(),
+                "job-chain-root".into(),
+                "replanned".into(),
+                crate::failure::Failure {
+                    class: crate::failure::FailureClass(
+                        crate::failure::FAILURE_DETERMINISTIC.into(),
+                    ),
+                    ..Default::default()
+                },
+                "job-chain-root".into(),
+                1,
+                id.into(),
+            )
+            .expect("recovery event");
+        }
+        super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'",
+                &[]
+            ),
+            1,
+            "one chain produced duplicate corrected jobs"
+        );
+        let carrier = one(&s, "SELECT id FROM jobs WHERE status = 'queued'", &[]);
+        exec1_test(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            &[&TEST_NOW, &carrier.str("id")],
+        );
+        super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'",
+                &[]
+            ),
+            0,
+            "superseded sibling queued another copy after carrier completed"
+        );
+    }
+
+    #[test]
+    fn recovery_resilience_write_errors_respect_tick_cap() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        for i in 0..=RECOVER_PER_TICK {
+            insert_recover_failed_job(
+                &s,
+                &format!("job-write-cap-{i}"),
+                "improve",
+                "",
+                "runner error",
+                &crate::util::plus_hours(TEST_NOW, -1.0),
+            );
+        }
+        exec1_test(
+            &s,
+            "CREATE TRIGGER reject_recovery_write BEFORE INSERT ON events
+\t\tWHEN NEW.action = 'job.recover' BEGIN SELECT RAISE(ABORT, 'injected recovery write failure'); END",
+            &[],
+        );
+        let lines = super::recover_failed_jobs(&s, p, TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            lines.len(),
+            RECOVER_PER_TICK as usize,
+            "write failures bypassed tick budget: {lines:?}"
+        );
+        let notes = recover_meta(&s);
+        let note = &notes.get("proj").expect("proj note").note;
+        assert!(note.contains("cap 5 reached"), "note = {note}");
+        assert!(note.contains("5 recovery error(s)"), "note = {note}");
+    }
+
+    #[test]
+    fn recovery_resilience_held_write_errors_respect_tick_cap() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for mode in ["cancelled", "superseded", "cap finding"] {
+            let s = new_store();
+            let (p, _) = new_bare_repo(&s);
+            for i in 0..=RECOVER_PER_TICK {
+                let id = format!("job-held-write-{i}");
+                let result = if mode == "cancelled" {
+                    "cancelled by the owner"
+                } else {
+                    "verify exit 1"
+                };
+                let job = insert_recover_failed_job(
+                    &s,
+                    &id,
+                    "improve",
+                    &format!("test:{id}"),
+                    result,
+                    &crate::util::plus_hours(TEST_NOW, -1.0),
+                );
+                match mode {
+                    "superseded" => {
+                        let (copy, _) = crate::jobs::add_job(
+                            &s,
+                            "proj".into(),
+                            "improve".into(),
+                            "New carrier".into(),
+                            "brief".into(),
+                            0,
+                            0,
+                            job.str("source"),
+                            "daemon".into(),
+                            true,
+                        )
+                        .expect("add copy");
+                        crate::jobs::finish_job(
+                            &s,
+                            copy.str("id"),
+                            "daemon".into(),
+                            "done".into(),
+                            "already repaired".into(),
+                            String::new(),
+                            -1,
+                        )
+                        .expect("finish copy");
+                    }
+                    "cap finding" => super::recovery_event(
+                        &conn(&s),
+                        TEST_NOW.into(),
+                        "daemon".into(),
+                        id.clone(),
+                        "held".into(),
+                        crate::failure::Failure {
+                            class: crate::failure::FailureClass(
+                                crate::failure::FAILURE_DETERMINISTIC.into(),
+                            ),
+                            reason: "recovered 3 times; the lead and the owner decide".into(),
+                            ..Default::default()
+                        },
+                        id,
+                        3,
+                        String::new(),
+                    )
+                    .expect("recovery event"),
+                    _ => {}
+                }
+            }
+            if mode == "cap finding" {
+                exec1_test(
+                    &s,
+                    "CREATE TRIGGER reject_held_write BEFORE INSERT ON posts
+\t\t\t\t\tWHEN NEW.kind = 'finding' BEGIN SELECT RAISE(ABORT, 'injected held write failure'); END",
+                    &[],
+                );
+            } else {
+                exec1_test(
+                    &s,
+                    "CREATE TRIGGER reject_held_write BEFORE INSERT ON events
+\t\t\t\t\tWHEN NEW.action = 'job.recover' BEGIN SELECT RAISE(ABORT, 'injected held write failure'); END",
+                    &[],
+                );
+            }
+            let lines = super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+            assert_eq!(
+                lines.len(),
+                RECOVER_PER_TICK as usize,
+                "{mode}: held write failures bypassed recovery budget: {lines:?}"
+            );
+            let notes = recover_meta(&s);
+            let note = &notes.get("proj").expect("proj note").note;
+            assert!(note.contains("cap 5 reached"), "{mode}: note = {note}");
+            assert!(
+                note.contains("5 recovery error(s)"),
+                "{mode}: note = {note}"
+            );
+            if mode == "cap finding" {
+                exec1_test(&s, "DROP TRIGGER reject_held_write", &[]);
+                for (i, want) in [RECOVER_PER_TICK, RECOVER_PER_TICK + 1]
+                    .into_iter()
+                    .enumerate()
+                {
+                    super::recover_failed_jobs(
+                        &s,
+                        p.clone(),
+                        crate::util::plus_minutes(TEST_NOW, (i + 1) as f64),
+                        "daemon".into(),
+                    );
+                    assert_eq!(
+                        count(
+                            &s,
+                            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding'",
+                            &[]
+                        ),
+                        want,
+                        "{mode}: notification repair exceeded its cap or was starved"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_resilience_same_second_failure_is_not_stranded() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        let job = insert_recover_failed_job(
+            &s,
+            "job-fast-failure",
+            "improve",
+            "",
+            "runner error",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        let leased = crate::jobs::lease_job(
+            &s,
+            "w1".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .expect("lease recovered job");
+        assert!(!leased.0.is_empty(), "lease recovered job returned no row");
+        crate::jobs::finish_job(
+            &s,
+            job.str("id"),
+            "w1".into(),
+            "failed".into(),
+            "runner error: connection reset".into(),
+            String::new(),
+            leased.int("generation"),
+        )
+        .expect("finish recovered job");
+        assert!(
+            super::recovery_pending(&s, job.str("id")),
+            "new failure was mistaken for recovery recorded in the same second"
+        );
+        super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 16.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), job.str("id")).str("status"),
+            "queued",
+            "new failure did not recover after its next backoff"
+        );
+        let detail = recover_detail(&s, &job.str("id"));
+        assert_eq!(
+            detail.get("n").and_then(|v| v.as_i64()),
+            Some(2),
+            "same-second retry lost chain budget: {detail:?}"
+        );
+    }
+
+    #[test]
+    fn recovery_resilience_pending_matches_recovery_gates() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for mode in [
+            "answer",
+            "lead",
+            "baseline",
+            "experiment",
+            "old",
+            "cancelled",
+            "lead followup",
+            "superseded",
+            "active run",
+        ] {
+            let s = new_store();
+            new_bare_repo(&s);
+            let job = insert_recover_failed_job(
+                &s,
+                "job-not-pending",
+                "task",
+                "task:TASK-guard",
+                "runner error: connection reset",
+                &crate::util::plus_hours(TEST_NOW, -1.0),
+            );
+            match mode {
+                "answer" | "lead" | "baseline" | "experiment" => {
+                    exec1_test(
+                        &s,
+                        "UPDATE jobs SET kind = ? WHERE id = ?",
+                        &[&mode, &job.str("id")],
+                    );
+                }
+                "old" => {
+                    exec1_test(
+                        &s,
+                        "UPDATE jobs SET finished_at = ? WHERE id = ?",
+                        &[
+                            &crate::util::plus_hours(TEST_NOW, -24.0 * 8.0),
+                            &job.str("id"),
+                        ],
+                    );
+                }
+                "cancelled" => {
+                    exec1_test(
+                        &s,
+                        "UPDATE jobs SET result = 'cancelled by the owner: runner error' WHERE id = ?",
+                        &[&job.str("id")],
+                    );
+                }
+                "lead followup" => event_at_test(
+                    &s,
+                    TEST_NOW,
+                    "daemon",
+                    FOLLOW_UP_ACTION,
+                    "TASK-guard",
+                    json!({"job": "job-lead"}),
+                ),
+                "superseded" => {
+                    crate::jobs::add_job(
+                        &s,
+                        "proj".into(),
+                        "task".into(),
+                        "New carrier".into(),
+                        "brief".into(),
+                        1,
+                        5,
+                        job.str("source"),
+                        "daemon".into(),
+                        true,
+                    )
+                    .expect("add carrier");
+                }
+                "active run" => {
+                    insert_recover_run(&s, &job.str("id"), "run-active", "running", "", "", "");
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                !super::recovery_pending(&s, job.str("id")),
+                "{mode}: lead would wait for a recovery the daemon will not perform"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_resilience_corrected_brief_is_bounded() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (_, root) = new_bare_repo(&s);
+        let log_path = Path::new(&root).join("recovery.log");
+        std::fs::write(
+            &log_path,
+            format!(
+                "{}last diagnostic detail\n",
+                "prior debug output\n".repeat(500)
+            ),
+        )
+        .expect("write log");
+        let original = "Fix the parser. Preserve the owner's protected files and use the existing test fixture.";
+        let retry_note =
+            "\n\n## Retry note (human)\n\nUse the approved parser boundary; do not edit fixtures.";
+        let mut brief = original.to_string();
+        for i in 0..12 {
+            let mut job = Row::new();
+            job.insert("id", json!(format!("job-chain-{i}")));
+            job.insert("brief", json!(brief));
+            job.insert("finished_at", json!(TEST_NOW));
+            let mut run = Row::new();
+            run.insert("id", json!(format!("run-chain-{i}")));
+            run.insert("executor", json!("local"));
+            run.insert("log", json!(log_path.display().to_string()));
+            run.insert("summary", json!("verify failed"));
+            let f = crate::failure::classify_failure(
+                format!("verify exit 1: attempt {i} tried a different parser guard"),
+                String::new(),
+                String::new(),
+                false,
+            );
+            brief = super::corrected_brief(job, run, f);
+            if i == 4 {
+                brief.push_str(retry_note);
+            }
+        }
+        for want in [
+            original,
+            retry_note,
+            "job-chain-11",
+            "run-chain-11",
+            "attempt 11",
+            "last diagnostic detail",
+            "ask the current peer or lead once",
+            "attempted fixes",
+            "SUMMARY: blocked:",
+            "SUMMARY: failed:",
+            "QUESTION: only",
+        ] {
+            assert!(
+                brief.contains(want),
+                "corrected brief lost {want:?}:\n{brief}"
+            );
+        }
+        assert_eq!(brief.matches("## Earlier attempt (ADR-036)").count(), 1);
+        assert_eq!(brief.matches("Last lines of its run log:").count(), 1);
+        assert!(
+            brief.len() <= original.len() + retry_note.len() + 8000,
+            "recovery context grew beyond its bounded evidence budget: {} bytes",
+            brief.len()
+        );
+    }
+
+    #[test]
+    fn recovery_resilience_compacts_legacy_brief_without_dropping_instructions() {
+        let _serial = crate::test_helpers::serial();
+        let original = format!(
+            "Fix the parser.\n\n## Earlier attempt (ADR-036)\n\nJob `example` is documentation, not a generated failure.\n{}",
+            RECOVERY_BRIEF_END
+        );
+        let legacy = original.clone()
+            + RECOVERY_BRIEF_HEADING
+            + "Job `job-old` (run `run-old`, executor `local`) failed at "
+            + TEST_NOW
+            + ": verify exit 1.\n\nLast lines of its run log:\n\n```\nold log\n```\n\n"
+            + "First look at the default branch: when the work above already landed another way, stop and say so in SUMMARY:. "
+            + "Otherwise start from the cause: reproduce the failing check, fix it, then deliver the original task above. "
+            + RECOVERY_BRIEF_END
+            + "\n\n## Retry note (human)\n\nKeep the fixture unchanged.";
+        let mut job = Row::new();
+        job.insert("id", json!("job-current"));
+        job.insert("brief", json!(legacy));
+        job.insert("finished_at", json!(TEST_NOW));
+        let brief = super::corrected_brief(
+            job,
+            Row::new(),
+            crate::failure::classify_failure(
+                "verify exit 1".into(),
+                String::new(),
+                String::new(),
+                false,
+            ),
+        );
+        for want in [
+            original.as_str(),
+            "job-old",
+            "job-current",
+            "## Retry note (human)\n\nKeep the fixture unchanged.",
+        ] {
+            assert!(
+                brief.contains(want),
+                "compaction lost original instructions or evidence {want:?}:\n{brief}"
+            );
+        }
+        assert!(
+            !brief.contains("old log"),
+            "legacy log was recursively copied into the corrected brief"
+        );
+    }
+
+    #[test]
+    fn recovery_resilience_missing_log_is_explicit() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let root = tempfile::tempdir().expect("temp root");
+        for mode in ["no run", "no path", "missing", "directory"] {
+            let mut job = Row::new();
+            job.insert("id", json!("job-log"));
+            job.insert("brief", json!("Fix the parser."));
+            job.insert("finished_at", json!(TEST_NOW));
+            let mut run = Row::new();
+            run.insert("id", json!("run-log"));
+            run.insert("executor", json!("local"));
+            run.insert("summary", json!("recorded summary"));
+            match mode {
+                "no run" => run = Row::new(),
+                "missing" => run.insert(
+                    "log",
+                    json!(root.path().join("missing.log").display().to_string()),
+                ),
+                "directory" => run.insert("log", json!(root.path().display().to_string())),
+                _ => {}
+            }
+            let f = crate::failure::classify_failure(
+                "worker exited 1 github_pat_abcdefghijklmnopqrstuvwxyz".into(),
+                String::new(),
+                String::new(),
+                false,
+            );
+            let brief = super::corrected_brief(job, run.clone(), f);
+            assert!(
+                brief.to_lowercase().contains("unavailable"),
+                "missing failure evidence was silently dropped:\n{brief}"
+            );
+            if !run.0.is_empty() {
+                assert!(
+                    brief.contains("recorded summary"),
+                    "recorded summary was lost:\n{brief}"
+                );
+            }
+            assert!(
+                !brief.contains("github_pat_abcdefghijklmnopqrstuvwxyz"),
+                "failure reason leaked a token-shaped value"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_resilience_cap_finding_retries_after_write_failure() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        set_recover_setting(&s, "daemon.recover_limit", "1");
+        let job = insert_recover_failed_job(
+            &s,
+            "job-cap-finding",
+            "improve",
+            "",
+            "verify exit 1: parser still rejects empty input",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
+        event_at_test(
+            &s,
+            &crate::util::plus_hours(TEST_NOW, -2.0),
+            "daemon",
+            pulse_board::JOB_RECOVER_ACTION,
+            &job.str("id"),
+            json!({"outcome": "requeued", "root": job.str("id"), "n": 1}),
+        );
+        exec1_test(
+            &s,
+            "CREATE TRIGGER reject_cap_finding BEFORE INSERT ON posts
+\t\tWHEN NEW.kind = 'finding' BEGIN SELECT RAISE(ABORT, 'injected finding write failure'); END",
+            &[],
+        );
+        let lines = super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            lines.join("\n").contains("injected finding write failure"),
+            "capped finding write failure was hidden: {lines:?}"
+        );
+        exec1_test(&s, "DROP TRIGGER reject_cap_finding", &[]);
+        super::recover_failed_jobs(
+            &s,
+            p.clone(),
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            "daemon".into(),
+        );
+        super::recover_failed_jobs(
+            &s,
+            p,
+            crate::util::plus_minutes(TEST_NOW, 2.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND thread = ?",
+                &[&job.str("id")]
+            ),
+            1
+        );
+        let post = one(
+            &s,
+            "SELECT body FROM posts WHERE kind = 'finding' AND thread = ?",
+            &[&job.str("id")],
+        );
+        for want in [
+            "parser still rejects empty input",
+            &format!("pulse job retry {} --as-new", job.str("id")),
+        ] {
+            assert!(
+                post.str("body").contains(want),
+                "capped finding lacks actionable evidence {want:?}: {}",
+                post.str("body")
+            );
+        }
+    }
+
+    #[test]
+    fn sweep_lost_runs_releases_lease() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "w0");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "t".into(),
+            "do it".into(),
+            1,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let leased = crate::jobs::lease_job(
+            &s,
+            "w0".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                minutes: 1000,
+                ..Default::default()
+            },
+        )
+        .expect("lease");
+        assert!(!leased.0.is_empty(), "lease returned no row");
+        exec1_test(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) VALUES ('run-1', ?, 'w0', 'proj', ?, 'running', '', '', 'real', 'local')",
+            &[&job.str("id"), &TEST_NOW],
+        );
+        exec1_test(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) VALUES ('run-0', 'job-other', 'w0', 'proj', ?, 'done', '', '', 'real', 'local')",
+            &[&TEST_NOW],
+        );
+        assert_eq!(crate::run::sweep_lost_runs(&s, TEST_NOW), 1);
+        assert_eq!(
+            one(&s, "SELECT status FROM runs WHERE id = 'run-1'", &[]).str("status"),
+            "lost"
+        );
+        let j = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(j.str("status"), "queued", "lost run left job: {j:?}");
+        assert_eq!(j.str("lease_agent"), "", "lost run left job leased: {j:?}");
+        assert_eq!(j.str("lease_until"), "", "lost run left lease_until: {j:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'job.requeue' AND subject = ?",
+                &[&job.str("id")]
+            ),
+            1
+        );
+        exec1_test(
+            &s,
+            "UPDATE jobs SET status = 'leased', lease_agent = 'w0', lease_until = '2099-01-01T00:00:00Z', attempts = ? WHERE id = ?",
+            &[&crate::run::MAX_ATTEMPTS, &job.str("id")],
+        );
+        exec1_test(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) VALUES ('run-2', ?, 'w0', 'proj', ?, 'running', '', '', 'real', 'local')",
+            &[&job.str("id"), &TEST_NOW],
+        );
+        assert_eq!(crate::run::sweep_lost_runs(&s, TEST_NOW), 1);
+        let j = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(j.str("status"), "failed", "third loss: {j:?}");
+        assert!(j.str("result").contains("3 times"), "third loss: {j:?}");
+        assert_eq!(j.str("lease_agent"), "", "third loss: {j:?}");
+        exec1_test(
+            &s,
+            "UPDATE jobs SET status = 'leased', lease_agent = 'w1', attempts = 1 WHERE id = ?",
+            &[&job.str("id")],
+        );
+        exec1_test(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, clone, log, mode, executor) VALUES ('run-3', ?, 'w0', 'proj', ?, 'running', '', '', 'real', 'local')",
+            &[&job.str("id"), &TEST_NOW],
+        );
+        crate::run::sweep_lost_runs(&s, TEST_NOW);
+        let j = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(
+            j.str("status"),
+            "leased",
+            "another worker's lease was released: {j:?}"
+        );
+        assert_eq!(
+            j.str("lease_agent"),
+            "w1",
+            "another worker's lease was released: {j:?}"
+        );
+    }
+
+    #[test]
+    fn report_reported() {
+        let _serial = crate::test_helpers::serial();
+        let text = "Error: Authentication token found but could not be validated.\n\nTo authenticate, you can use any of the following methods:\n";
+        let mut r = crate::brief::parse_result_text(Some(text.into()));
+        assert!(r.found, "harness error text was not parsed");
+        assert!(
+            !r.reported(),
+            "harness error text was treated as a worker report"
+        );
+        for line in [
+            "SUMMARY: did it",
+            "- `FINDING`: a thing",
+            "VOTE: 20260907T1-x up fine",
+            "QUESTION: which one?",
+            "SUGGESTION: area/thread - card",
+        ] {
+            let mut r = crate::brief::parse_result_text(Some(line.into()));
+            assert!(r.reported(), "{line:?} not seen as a report");
+        }
+        let mut empty = crate::brief::parse_result_text(None);
+        assert!(!empty.reported(), "nil text reported");
+    }
+
+    #[test]
+    fn launch_rejection_on_local_is_runner_error() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let old_space = use_ample_tmp_space();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "t".into(),
+            "do it".into(),
+            1,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let cmd = "sh -c 'echo \"Error: Authentication token found but could not be validated.\" >&2; exit 1'";
+        let (r, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd: cmd.into(),
+                ..Default::default()
+            },
+        )
+        .expect("work");
+        assert!(!r.0.is_empty(), "work returned no run: {reason}");
+        assert_eq!(r.str("status"), "error", "run = {r:?}");
+        assert!(
+            r.str("summary").contains("rejected at launch"),
+            "run = {r:?}"
+        );
+        assert!(
+            r.str("summary").contains("login on this machine"),
+            "run = {r:?}"
+        );
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), job.str("id")).str("status"),
+            "queued",
+            "job after launch rejection"
+        );
+
+        let old = *crate::run::WALL_CLOCK.read().expect("wall clock");
+        TEST_WALL_CLOCK_CALLS.store(0, Ordering::SeqCst);
+        *crate::run::WALL_CLOCK.write().expect("wall clock") = advancing_wall_clock;
+        let (r, _) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd: "sh -c 'sleep 0.2; echo \"Error: Authentication token found but could not be validated.\" >&2; exit 1'".into(),
+                ..Default::default()
+            },
+        )
+        .expect("slow work");
+        *crate::run::WALL_CLOCK.write().expect("wall clock") = old;
+        assert_eq!(r.str("status"), "failed", "slow rejection: {r:?}");
+        assert_eq!(r.str("summary"), "worker exited 1", "slow rejection: {r:?}");
+        *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
+    }
+
+    #[test]
+    fn native_not_logged_in_exit_four_is_runner_error_after_slow_start() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let old_space = use_ample_tmp_space();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "t".into(),
+            "do it".into(),
+            1,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let old = *crate::run::WALL_CLOCK.read().expect("wall clock");
+        TEST_WALL_CLOCK_CALLS.store(0, Ordering::SeqCst);
+        *crate::run::WALL_CLOCK.write().expect("wall clock") = advancing_wall_clock;
+        let (r, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd: "sh -c 'echo \"not logged in: sign in first\" >&2; exit 4'".into(),
+                ..Default::default()
+            },
+        )
+        .expect("work");
+        *crate::run::WALL_CLOCK.write().expect("wall clock") = old;
+        assert!(!r.0.is_empty(), "work returned no run: {reason}");
+        assert_eq!(r.str("status"), "error", "run = {r:?}");
+        assert!(
+            r.str("summary").contains("provider login on this machine"),
+            "run = {r:?}"
+        );
+        let j = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(j.str("status"), "queued", "job after login fault: {j:?}");
+        assert_eq!(j.int("attempts"), 0, "job after login fault: {j:?}");
+        *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
+    }
+
+    #[test]
+    fn worker_exit_summary_includes_harness_stop_reason() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let old_space = use_ample_tmp_space();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "t".into(),
+            "do it".into(),
+            1,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let (r, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd:
+                    "sh -c 'echo \"SUMMARY: harness stopped: step_limit after 2 steps\"; exit 1'"
+                        .into(),
+                ..Default::default()
+            },
+        )
+        .expect("work");
+        assert!(!r.0.is_empty(), "work returned no run: {reason}");
+        let want = "worker exited 1: harness stopped: step_limit after 2 steps";
+        assert_eq!(r.str("status"), "failed", "run = {r:?}");
+        assert_eq!(r.str("summary"), want, "run = {r:?}");
+        *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
+    }
+
+    #[test]
+    fn worker_exit_five_is_owner_cancelled_failure() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let old_space = use_ample_tmp_space();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "t".into(),
+            "do it".into(),
+            1,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let (r, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd: "sh -c 'echo \"SUMMARY: stopped after cancel\"; exit 5'".into(),
+                ..Default::default()
+            },
+        )
+        .expect("work");
+        assert!(!r.0.is_empty(), "work returned no run: {reason}");
+        assert_eq!(r.str("status"), "failed", "run = {r:?}");
+        assert_eq!(
+            r.str("summary"),
+            "cancelled by the owner: stopped after cancel",
+            "run = {r:?}"
+        );
+        assert_eq!(r.int("exit_code"), 5, "run = {r:?}");
+        let j = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(j.str("status"), "failed", "job = {j:?}");
+        assert_eq!(
+            j.str("result"),
+            "cancelled by the owner: stopped after cancel",
+            "job = {j:?}"
+        );
+        *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
+    }
+
+    #[test]
+    fn failure_worker_exit_five_keeps_plain_cancel_summary() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let old_space = use_ample_tmp_space();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "t".into(),
+            "do it".into(),
+            1,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let want = "harness stopped: cancelled after 1 model calls and 0 commands; error: interrupted: context canceled";
+        let (r, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd: format!("sh -c 'echo \"SUMMARY: {want}\"; exit 5'"),
+                ..Default::default()
+            },
+        )
+        .expect("work");
+        assert!(!r.0.is_empty(), "work returned no run: {reason}");
+        assert_eq!(r.str("status"), "failed", "run = {r:?}");
+        assert_eq!(r.str("summary"), want, "run = {r:?}");
+        assert_eq!(r.int("exit_code"), 5, "run = {r:?}");
+        let j = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(j.str("status"), "failed", "job = {j:?}");
+        assert_eq!(j.str("result"), want, "job = {j:?}");
+        *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
+    }
+
+    #[test]
+    fn run_harness_cancel_watcher_cancels_context() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        s.begin_harness_session(pulse_store::HarnessSession {
+            id: "run-cancel".into(),
+            ..Default::default()
+        })
+        .expect("begin harness session");
+        let worker_cancel = pulse_bus::CancellationToken::new();
+        let owner_cancelled = Arc::new(AtomicBool::new(false));
+        let done = crate::run::watch_run_harness_cancel_every(
+            &worker_cancel,
+            &s,
+            "run-cancel",
+            Arc::clone(&owner_cancelled),
+            Duration::from_millis(1),
+        );
+        let ok = s
+            .request_harness_cancel("run-cancel")
+            .expect("request harness cancel");
+        assert!(ok, "request cancel = {ok}");
+        let start = SystemTime::now();
+        while !worker_cancel.is_cancelled() {
+            assert!(
+                start.elapsed().unwrap_or_default() < Duration::from_secs(10),
+                "worker context was not cancelled"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            owner_cancelled.load(Ordering::SeqCst),
+            "owner cancellation flag was not set"
+        );
+        done();
+    }
+
+    #[test]
+    #[ignore = "cross-slice-bug: run::work_once: expected status error summary containing 'the login on hands, not the job' and drained executor got status error summary 'ssh prepare unavailable until executor transport slice is filled'"]
+    fn launch_rejection_on_remote_drains_executor() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        crate::commands::register();
+        let old_space = use_ample_tmp_space();
+        let old_ssh = crate::executor::run_ssh_hook();
+        FAKE_SSH_CALLS.store(0, Ordering::SeqCst);
+        crate::executor::set_run_ssh(fake_login_fault_ssh);
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        s.set_setting(pulse_store::HUMAN_AGENT, "minutes_per_job", "1")
+            .expect("set minutes");
+        let workdir = tempfile::tempdir().expect("workdir").keep();
+        crate::executor::add_executor(
+            &s,
+            TEST_NOW,
+            "hands",
+            "pulse@hands",
+            &workdir.display().to_string(),
+            1,
+            "*",
+            pulse_store::HUMAN_AGENT,
+        )
+        .expect("add executor");
+        let (ok, note) =
+            crate::executor::probe_executor(&s, "hands", pulse_store::HUMAN_AGENT, TEST_NOW)
+                .expect("probe");
+        assert!(ok, "probe: {ok} {note}");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "remote".into(),
+            "say hi remotely".into(),
+            1,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let cmd = "sh -c 'echo \"Error: Authentication token found but could not be validated. GitHub returned: Sorry. Your account was suspended\" >&2; exit 1'";
+        let (r, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            TEST_NOW,
+            crate::run::RunOpts {
+                executor: "hands".into(),
+                worker_cmd: cmd.into(),
+                ..Default::default()
+            },
+        )
+        .expect("work");
+        crate::executor::restore_run_ssh(old_ssh);
+        *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
+        assert!(!r.0.is_empty(), "work returned no run: {reason}");
+        assert_eq!(r.str("status"), "error", "run = {r:?}");
+        assert!(
+            r.str("summary").contains("the login on hands, not the job"),
+            "run = {r:?}"
+        );
+        let j = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(j.str("status"), "queued", "job = {j:?}");
+        assert_eq!(j.int("attempts"), 0, "job = {j:?}");
+        let ex = crate::executor::executor_row(&s, "hands");
+        assert_eq!(ex.str("status"), "drained", "executor = {ex:?}");
+        assert!(ex.str("probe_note").contains("fault:"), "executor = {ex:?}");
+    }
+
+    #[test]
+    fn peer_questions_same_timestamp_answers() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for mode in ["linked", "same-time thread reply", "older same-time reply"] {
+            let s = new_store();
+            new_repo(&s);
+            join(&s, "aurora");
+            join(&s, "borealis");
+            let post = |id: &str, kind: &str, on: &str| {
+                pulse_board::create_post(
+                    &s,
+                    pulse_board::PostInput {
+                        post_id: id.into(),
+                        project: "proj".into(),
+                        kind: kind.into(),
+                        area: "parser".into(),
+                        thread: "empty-input".into(),
+                        agent: "aurora".into(),
+                        agent_row: crate::board::actor_agent(&s, "aurora".into()).map(|a| *a),
+                        summary: id.into(),
+                        on: on.into(),
+                        ..Default::default()
+                    },
+                )
+                .expect("create post");
+            };
+            if mode == "older same-time reply" {
+                post("a-before", "answer", "");
+            }
+            post("q-first", "question", "");
+            post("q-second", "question", "");
+            match mode {
+                "linked" => {
+                    pulse_board::create_post(
+                        &s,
+                        pulse_board::PostInput {
+                            post_id: "a-linked".into(),
+                            project: "proj".into(),
+                            kind: "answer".into(),
+                            area: "parser".into(),
+                            thread: "empty-input".into(),
+                            agent: "borealis".into(),
+                            agent_row: crate::board::actor_agent(&s, "borealis".into()).map(|a| *a),
+                            summary: "First question answered".into(),
+                            on: "q-first".into(),
+                            ..Default::default()
+                        },
+                    )
+                    .expect("create linked answer");
+                }
+                "same-time thread reply" => post("a-after", "answer", ""),
+                _ => {}
+            }
+            let open = crate::plan::open_questions(
+                &s,
+                "proj".into(),
+                crate::util::plus_minutes(TEST_NOW, 2.0),
+            );
+            match mode {
+                "linked" => {
+                    assert_eq!(
+                        open.len(),
+                        1,
+                        "linked reply consumed unrelated question: {open:?}"
+                    );
+                    assert_eq!(open[0].str("id"), "q-second");
+                }
+                "same-time thread reply" => assert!(
+                    open.is_empty(),
+                    "answered questions would waste new worker runs: {open:?}"
+                ),
+                "older same-time reply" => assert_eq!(
+                    open.len(),
+                    2,
+                    "older reply consumed fresh questions: {open:?}"
+                ),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn peer_help_wakes_lead_once_without_duplicate_worker() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        crate::lead::ensure_lead(&s, "proj".into()).expect("ensure lead");
+        let q = pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                post_id: "q-peer-help".into(),
+                project: "proj".into(),
+                kind: "question".into(),
+                area: "parser".into(),
+                thread: "empty-input".into(),
+                agent: "aurora".into(),
+                agent_row: crate::board::actor_agent(&s, "aurora".into()).map(|a| *a),
+                summary: "@proj-lead which existing fixture covers empty input?".into(),
+                body: "I reproduced the failure and tried the parser guard.".into(),
+                ..Default::default()
+            },
+        )
+        .expect("create question");
+        let lines = crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let jobs = rows(
+            &s,
+            "SELECT * FROM jobs WHERE kind = ?",
+            &[&crate::lead::LEAD_KIND],
+        );
+        assert_eq!(
+            jobs.len(),
+            1,
+            "peer blocker did not reach lead: jobs={jobs:?} lines={lines:?}"
+        );
+        assert!(
+            jobs[0].str("brief").contains(&q.id),
+            "lead brief lacks question id: {:?}",
+            jobs[0]
+        );
+        assert!(
+            jobs[0].str("title").contains("help with 1 peer request(s)"),
+            "lead title = {}",
+            jobs[0].str("title")
+        );
+        crate::plan::plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into())
+            .expect("plan jobs");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source = ?",
+                &[&format!("question:{}", q.id)]
+            ),
+            0,
+            "lead-directed question also dispatched ordinary workers"
+        );
+        exec1_test(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            &[&TEST_NOW, &jobs[0].str("id")],
+        );
+        for now in [
+            crate::util::plus_minutes(TEST_NOW, 1.0),
+            crate::util::plus_hours(TEST_NOW, 7.0),
+        ] {
+            crate::lead::tend_lead(&s, "proj".into(), now, "daemon".into());
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE kind = ?",
+                    &[&crate::lead::LEAD_KIND]
+                ),
+                1,
+                "unchanged peer request spun up another lead"
+            );
+        }
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                post_id: "q-new-evidence".into(),
+                project: "proj".into(),
+                kind: "question".into(),
+                area: "parser".into(),
+                thread: "empty-input".into(),
+                agent: "aurora".into(),
+                agent_row: crate::board::actor_agent(&s, "aurora".into()).map(|a| *a),
+                summary: "@proj-lead new evidence: the fixture also fails on main".into(),
+                date: crate::util::plus_hours(TEST_NOW, 8.0),
+                ..Default::default()
+            },
+        )
+        .expect("create new evidence");
+        crate::lead::tend_lead(
+            &s,
+            "proj".into(),
+            crate::util::plus_hours(TEST_NOW, 8.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE kind = ?",
+                &[&crate::lead::LEAD_KIND]
+            ),
+            2,
+            "new peer evidence did not get a fresh lead turn"
+        );
+    }
+
+    #[test]
+    fn peer_help_does_not_bypass_owner_gates() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for mode in [
+            "owner flag",
+            "owner paths",
+            "tier two",
+            "hard stop",
+            "loop stop",
+            "daemon",
+            "answered",
+            "closed",
+            "owner report",
+        ] {
+            let s = new_store();
+            new_repo(&s);
+            join(&s, "aurora");
+            crate::lead::ensure_lead(&s, "proj".into()).expect("ensure lead");
+            let mut input = pulse_board::PostInput {
+                post_id: "q-guarded".into(),
+                project: "proj".into(),
+                kind: "question".into(),
+                area: "parser".into(),
+                thread: "empty-input".into(),
+                agent: "aurora".into(),
+                agent_row: crate::board::actor_agent(&s, "aurora".into()).map(|a| *a),
+                summary: "@proj-lead help with the parser".into(),
+                ..Default::default()
+            };
+            match mode {
+                "owner flag" => input.for_owner = true,
+                "owner paths" => input.body = "Edit docs/evolution/constitution.md".into(),
+                "tier two" => input.summary = "@proj-lead should ADR-021 change?".into(),
+                "hard stop" => input.body = "This needs a hard stop overridden.".into(),
+                "loop stop" => {
+                    input.summary = pulse_evolve::STOP_SUMMARY.into();
+                    input.body = "@proj-lead".into();
+                }
+                "daemon" => {
+                    join(&s, "daemon");
+                    input.agent = "daemon".into();
+                    input.agent_row = crate::board::actor_agent(&s, "daemon".into()).map(|a| *a);
+                }
+                "closed" => input.resolution = "answered".into(),
+                "owner report" => {
+                    input.kind = "result".into();
+                    input.summary = "failed: requires owner approval".into();
+                    input.body = "- Finding: @proj-lead need approval".into();
+                }
+                _ => {}
+            }
+            pulse_board::create_post(&s, input.clone()).expect("create guarded post");
+            if mode == "answered" {
+                pulse_board::create_post(
+                    &s,
+                    pulse_board::PostInput {
+                        post_id: "a-guarded".into(),
+                        project: "proj".into(),
+                        kind: "answer".into(),
+                        area: input.area,
+                        thread: input.thread,
+                        agent: "aurora".into(),
+                        agent_row: crate::board::actor_agent(&s, "aurora".into()).map(|a| *a),
+                        summary: "I found the fixture.".into(),
+                        on: input.post_id,
+                        ..Default::default()
+                    },
+                )
+                .expect("create answer");
+            }
+            let lines = crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE kind = ?",
+                    &[&crate::lead::LEAD_KIND]
+                ),
+                0,
+                "{mode}: guarded mention woke lead: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn peer_help_batches_only_delivered_mentions() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        crate::lead::ensure_lead(&s, "proj".into()).expect("ensure lead");
+        for i in 0..14 {
+            pulse_board::create_post(
+                &s,
+                pulse_board::PostInput {
+                    post_id: format!("q-peer-{i:02}"),
+                    project: "proj".into(),
+                    kind: "question".into(),
+                    area: "parser".into(),
+                    thread: format!("fixture-{i:02}"),
+                    agent: "aurora".into(),
+                    agent_row: crate::board::actor_agent(&s, "aurora".into()).map(|a| *a),
+                    summary: "@proj-lead help diagnose this fixture".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("create peer post");
+        }
+        for (i, want) in [10, 4].into_iter().enumerate() {
+            let now = crate::util::plus_minutes(TEST_NOW, i as f64);
+            crate::lead::tend_lead(&s, "proj".into(), now.clone(), "daemon".into());
+            let jobs = rows(
+                &s,
+                "SELECT * FROM jobs WHERE kind = ? ORDER BY rowid",
+                &[&crate::lead::LEAD_KIND],
+            );
+            assert_eq!(jobs.len(), i + 1, "batch {i}: jobs={jobs:?}");
+            assert!(
+                jobs[i]
+                    .str("title")
+                    .contains(&format!("help with {want} peer request(s)")),
+                "batch {i}: jobs={jobs:?}"
+            );
+            assert_eq!(
+                jobs[i].str("brief").matches("- q-peer-").count(),
+                10,
+                "batch {i}: brief = {}",
+                jobs[i].str("brief")
+            );
+            exec1_test(
+                &s,
+                "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+                &[&now, &jobs[i].str("id")],
+            );
+        }
+        crate::lead::tend_lead(
+            &s,
+            "proj".into(),
+            crate::util::plus_minutes(TEST_NOW, 2.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE kind = ?",
+                &[&crate::lead::LEAD_KIND]
+            ),
+            2,
+            "delivered help requests churned"
+        );
+    }
+
+    #[test]
+    fn incomplete_worker_reports_reach_recovery_and_peer_help() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let old_space = use_ample_tmp_space();
+        for prefix in ["blocked:", "FAILED:"] {
+            let s = new_store();
+            new_repo(&s);
+            join(&s, "aurora");
+            crate::lead::ensure_lead(&s, "proj".into()).expect("ensure lead");
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                "Fix parser".into(),
+                "Fix the parser guard.".into(),
+                0,
+                0,
+                String::new(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .expect("add job");
+            let summary = format!("{prefix} tried the parser guard; the fixture still fails");
+            let cmd = format!(
+                "sh -c {}",
+                crate::util::shell_quote(&format!(
+                    "printf '%s\\n' {} {}",
+                    crate::util::shell_quote(&format!("SUMMARY: {summary}")),
+                    crate::util::shell_quote(
+                        "FINDING: @proj-lead need a second diagnosis of the parser fixture"
+                    )
+                ))
+            );
+            let (r, reason) = crate::run::work_once(
+                &s,
+                "aurora",
+                "proj",
+                &job.str("id"),
+                TEST_NOW,
+                crate::run::RunOpts {
+                    worker_cmd: cmd,
+                    ..Default::default()
+                },
+            )
+            .expect("work");
+            assert!(!r.0.is_empty(), "work returned no run: {reason}");
+            assert_eq!(r.str("status"), "failed", "{prefix}: run = {r:?}");
+            assert_eq!(r.str("summary"), summary, "{prefix}: run = {r:?}");
+            let finished = crate::jobs::job_row(&conn(&s), job.str("id"));
+            assert_eq!(
+                finished.str("status"),
+                "failed",
+                "{prefix}: job = {finished:?}"
+            );
+            assert_eq!(finished.str("branch"), "", "{prefix}: job = {finished:?}");
+            crate::lead::tend_lead(
+                &s,
+                "proj".into(),
+                crate::util::plus_minutes(TEST_NOW, 1.0),
+                "daemon".into(),
+            );
+            let leads = rows(
+                &s,
+                "SELECT * FROM jobs WHERE kind = ?",
+                &[&crate::lead::LEAD_KIND],
+            );
+            assert_eq!(leads.len(), 1, "{prefix}: leads = {leads:?}");
+            assert!(
+                leads[0].str("brief").contains("need a second diagnosis"),
+                "{prefix}: leads = {leads:?}"
+            );
+        }
+        *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
+    }
+
+    #[test]
+    fn incomplete_report_prefixes_are_explicit() {
+        let _serial = crate::test_helpers::serial();
+        for (summary, failed) in [
+            ("blocked: fixture still fails", true),
+            ("FAILED: tried both parser paths", true),
+            ("Blocked : missing evidence", true),
+            ("fixed the previously blocked fixture", false),
+            ("failed tests now pass", false),
+            ("diagnosis: failed parser guard", false),
+            ("", false),
+        ] {
+            let mut report = crate::brief::Report {
+                summary: summary.into(),
+                ..Default::default()
+            };
+            assert_eq!(report.incomplete(), failed, "incomplete({summary:?})");
+        }
+    }
+
+    #[test]
+    fn worker_brief_recovery_is_bounded_and_transport_aware() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (project, _) = new_repo(&s);
+        for remote in [false, true] {
+            let mut job = Row::new();
+            job.insert("id", json!("job-peer"));
+            job.insert("kind", json!("task"));
+            job.insert("tier", json!(0));
+            let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+                job,
+                project: project.clone(),
+                agent: "aurora".into(),
+                clone: "/clone".into(),
+                minutes: 10,
+                remote,
+                store: Some((*s).clone()),
+                now: TEST_NOW.into(),
+                ..Default::default()
+            });
+            for want in [
+                "## Working through a blocker",
+                "different safe approach",
+                "Do not poll",
+                "SUMMARY: blocked:",
+                "Never weaken a check",
+                "never bypass",
+            ] {
+                assert!(
+                    brief.contains(want),
+                    "remote={remote} missing recovery guidance {want:?}: {brief}"
+                );
+            }
+            if remote {
+                assert!(
+                    brief.contains("FINDING: @proj-lead"),
+                    "storeless worker cannot ask its lead for help: {brief}"
+                );
+                for invalid in [
+                    "Claim your thread before you start (pulse claim",
+                    "Reply on that thread with `pulse post answer",
+                ] {
+                    assert!(
+                        !brief.contains(invalid),
+                        "remote worker instructed to use unavailable store: {invalid:?}"
+                    );
+                }
+            } else {
+                assert!(
+                    brief.contains("pulse post question --project proj"),
+                    "local worker has no actionable peer help command: {brief}"
+                );
+            }
+        }
+    }
 }
