@@ -16,7 +16,9 @@ serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
 chrono.workspace = true
+fs2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 pulse-testutil.workspace = true
+rusqlite.workspace = true

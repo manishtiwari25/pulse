@@ -20,7 +20,12 @@ serde_json.workspace = true
 regex.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+libc.workspace = true
+rand.workspace = true
+hex.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 pulse-testutil.workspace = true
+pulse-provider-openai.workspace = true
