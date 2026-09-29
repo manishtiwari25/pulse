@@ -14,6 +14,7 @@ serde_json.workspace = true
 pulse-gitenv.workspace = true
 anyhow.workspace = true
 tempfile.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

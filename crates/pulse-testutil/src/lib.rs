@@ -3,16 +3,22 @@
 pub mod httptest;
 
 use std::process::Command;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::OnceLock;
 
-static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
+
+static ENV_LOCK: OnceLock<ReentrantMutex<()>> = OnceLock::new();
+
+/// Guard returned by [`env_lock`].
+pub type EnvGuard = ReentrantMutexGuard<'static, ()>;
 
 /// Global guard for tests that mutate process environment variables.
-pub fn env_lock() -> MutexGuard<'static, ()> {
-    ENV_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("env test mutex poisoned")
+///
+/// Reentrant so a test that holds the lock may call helpers (such as a
+/// `test_store()`) that take it again on the same thread; never poisoned, so
+/// one panicking test does not cascade into every later one.
+pub fn env_lock() -> EnvGuard {
+    ENV_LOCK.get_or_init(|| ReentrantMutex::new(())).lock()
 }
 
 /// Environment for test git invocations: hook vars stripped and host config disabled.

@@ -1510,12 +1510,16 @@ name = "pulse-hooks"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "pulse-bus",
  "pulse-cli",
  "pulse-evolve",
+ "pulse-parity",
  "pulse-store",
+ "pulse-tally",
  "pulse-testutil",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -1744,6 +1748,7 @@ dependencies = [
  "pulse-cli",
  "pulse-gitenv",
  "pulse-goals",
+ "pulse-parity",
  "pulse-store",
  "pulse-testutil",
  "regex",
@@ -1778,6 +1783,7 @@ name = "pulse-testutil"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "parking_lot",
  "pulse-gitenv",
  "pulse-testutil",
  "serde",

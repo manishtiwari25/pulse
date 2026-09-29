@@ -533,7 +533,7 @@ mod tests {
         }
     }
 
-    fn setup_store() -> (std::sync::MutexGuard<'static, ()>, Store) {
+    fn setup_store() -> (pulse_testutil::EnvGuard, Store) {
         let guard = pulse_testutil::env_lock();
         for key in [
             "PULSE_JOB",

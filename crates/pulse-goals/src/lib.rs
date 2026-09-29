@@ -428,7 +428,7 @@ mod tests {
         set_env("PULSE_HOME", home.to_str().unwrap());
     }
 
-    fn goal_store() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir, Store) {
+    fn goal_store() -> (pulse_testutil::EnvGuard, tempfile::TempDir, Store) {
         let guard = pulse_testutil::env_lock();
         let home = tempfile::tempdir().unwrap();
         clear_goal_env(home.path());
