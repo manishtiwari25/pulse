@@ -80,3 +80,6 @@ htmlcov/
 .cache/
 tmp/
 temp/
+
+# Rust
+/target/

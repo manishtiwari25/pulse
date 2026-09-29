@@ -1,0 +1,26 @@
+[package]
+name = "pulse-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: the built-in agent harness: bash-tool loop, limits, deny rules, trajectories, sessions"
+
+[dependencies]
+pulse-bus.workspace = true
+pulse-cli.workspace = true
+pulse-provider.workspace = true
+pulse-provider-fake.workspace = true
+pulse-store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "pulse-bus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: in-process event bus, redaction, tail/bridge for other processes"
+
+[dependencies]
+pulse-store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true

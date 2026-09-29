@@ -1,0 +1,108 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/manishtiwari25/pulse"
+publish = false
+
+[workspace.dependencies]
+# internal crates (one per former Go package)
+pulse-gitenv = { path = "crates/pulse-gitenv" }
+pulse-cred = { path = "crates/pulse-cred" }
+pulse-provider = { path = "crates/pulse-provider" }
+pulse-store = { path = "crates/pulse-store" }
+pulse-cli = { path = "crates/pulse-cli" }
+pulse-bus = { path = "crates/pulse-bus" }
+pulse-testutil = { path = "crates/pulse-testutil" }
+pulse-provider-copilot = { path = "crates/pulse-provider-copilot" }
+pulse-provider-fake = { path = "crates/pulse-provider-fake" }
+pulse-provider-openai = { path = "crates/pulse-provider-openai" }
+pulse-records = { path = "crates/pulse-records" }
+pulse-goals = { path = "crates/pulse-goals" }
+pulse-cred-setup = { path = "crates/pulse-cred-setup" }
+pulse-board = { path = "crates/pulse-board" }
+pulse-cred-command = { path = "crates/pulse-cred-command" }
+pulse-harness = { path = "crates/pulse-harness" }
+pulse-tally = { path = "crates/pulse-tally" }
+pulse-tasks = { path = "crates/pulse-tasks" }
+pulse-goals-command = { path = "crates/pulse-goals-command" }
+pulse-codedelivery = { path = "crates/pulse-codedelivery" }
+pulse-evolve = { path = "crates/pulse-evolve" }
+pulse-hooks = { path = "crates/pulse-hooks" }
+pulse-runner = { path = "crates/pulse-runner" }
+pulse-inspect = { path = "crates/pulse-inspect" }
+pulse-hub = { path = "crates/pulse-hub" }
+pulse-parity = { path = "crates/pulse-parity" }
+
+# errors
+anyhow = "1.0"
+thiserror = "2.0"
+# sqlite (bundled: no system library, like modernc.org/sqlite was)
+rusqlite = { version = "0.40", features = ["bundled", "backup", "functions", "column_decltype"] }
+# serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+# time
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+humantime = "2.4"
+# text
+regex = "1.13"
+strsim = "0.11"
+unicode-width = "0.2"
+tabwriter = "1.4"
+shell-words = "1.1"
+tinytemplate = "1.2"
+indexmap = { version = "2.14", features = ["serde"] }
+# ids, hashing, encoding
+uuid = { version = "1.26", features = ["v4"] }
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
+base64 = "0.23"
+rand = "0.10"
+# os
+libc = "0.2"
+nix = { version = "0.31", features = ["signal", "process", "fs", "user", "hostname", "term"] }
+signal-hook = "0.4"
+which = "8.0"
+walkdir = "2.5"
+home = "0.5"
+fs2 = "0.4"
+filetime = "0.2"
+sysinfo = "0.39"
+# concurrency
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+once_cell = "1.21"
+# net
+url = "2.5"
+tokio = { version = "1.53", features = ["full"] }
+axum = { version = "0.8", features = ["json", "query", "tokio", "http1", "macros"] }
+tower-http = { version = "0.7", features = ["fs", "cors", "trace"] }
+hyper = "1.11"
+http-body-util = "0.1"
+bytes = "1.12"
+futures = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "blocking", "rustls", "webpki-roots", "rustls-native-certs", "charset", "http2", "stream", "gzip"] }
+rust-embed = { version = "8.12", features = ["include-exclude"] }
+mime_guess = "2.0"
+# test
+tempfile = "3.27"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,22 @@
+[package]
+name = "pulse-cred-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: the pulse cred command"
+
+[dependencies]
+pulse-cli.workspace = true
+pulse-cred.workspace = true
+pulse-cred-setup.workspace = true
+pulse-store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true

@@ -1,0 +1,30 @@
+[package]
+name = "pulse-inspect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: status, projects, jobs, agents, events, settings, schema, verify, signers"
+
+[dependencies]
+pulse-board.workspace = true
+pulse-bus.workspace = true
+pulse-cli.workspace = true
+pulse-gitenv.workspace = true
+pulse-provider.workspace = true
+pulse-provider-copilot.workspace = true
+pulse-runner.workspace = true
+pulse-store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+tabwriter.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true
