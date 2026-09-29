@@ -41,8 +41,9 @@ impl ExecutionIdentity {
 pub struct ExecutionHeartbeat {
     #[serde(flatten)]
     pub identity: ExecutionIdentity,
+    #[serde(default)]
     pub at: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub stopped_at: String,
 }
 impl std::ops::Deref for ExecutionHeartbeat {
@@ -324,6 +325,103 @@ fn calculate_presence(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::{JoinInput, join_agent, prune_agents, scorecards};
+    use crate::jobs::job_by_id;
+    use crate::test_helpers::{TEST_NOW, new_home};
+
+    fn presence_time() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(TEST_NOW)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    fn heartbeat_time(at: chrono::DateTime<chrono::Utc>) -> String {
+        if at.timestamp_subsec_nanos() == 0 {
+            at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        } else {
+            at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+        }
+    }
+
+    fn presence_sql(s: &pulse_store::Store, query: &str, args: &[&dyn rusqlite::ToSql]) {
+        s.conn().unwrap().execute(query, args).unwrap();
+    }
+
+    fn presence_exec(
+        s: &pulse_store::Store,
+        name: &str,
+        kind: &str,
+        run: &str,
+        job: &str,
+        generation: i64,
+    ) -> ExecutionIdentity {
+        join_agent(
+            s,
+            JoinInput {
+                name: name.into(),
+                kind: kind.into(),
+                session: run.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        presence_sql(
+            s,
+            "INSERT INTO jobs(id, project, kind, title, status, created_at, lease_agent, lease_until, generation)
+             VALUES (?, 'commons', 'task', 'presence', 'leased', ?, ?, ?, ?)",
+            &[&job, &TEST_NOW, &name, &"2026-09-07T10:00:00Z", &generation],
+        );
+        presence_sql(
+            s,
+            "INSERT INTO runs(id, job_id, agent, project, started_at, status, executor)
+             VALUES (?, ?, ?, 'commons', ?, 'running', 'local')",
+            &[&run, &job, &name, &TEST_NOW],
+        );
+        ExecutionIdentity {
+            agent: name.into(),
+            session: run.into(),
+            run_id: run.into(),
+            job_id: job.into(),
+            generation,
+            executor: "local".into(),
+        }
+    }
+
+    fn require_presence(
+        s: &pulse_store::Store,
+        agent: &str,
+        at: chrono::DateTime<chrono::Utc>,
+        want: &str,
+    ) -> AgentPresence {
+        let rows =
+            agent_presences(s, &at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)).unwrap();
+        let p = rows.get(agent).unwrap_or_else(|| panic!("missing {agent}"));
+        assert_eq!(
+            p.presence,
+            want,
+            "{agent} at {}: {p:?}",
+            at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+        );
+        p.clone()
+    }
+
+    fn record_beat(
+        s: &pulse_store::Store,
+        id: &ExecutionIdentity,
+        at: chrono::DateTime<chrono::Utc>,
+    ) {
+        let accepted = record_heartbeat(
+            s,
+            ExecutionHeartbeat {
+                identity: id.clone(),
+                at: heartbeat_time(at),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(accepted);
+    }
+
     #[test]
     fn identity_validation() {
         assert!(
@@ -338,5 +436,435 @@ mod tests {
             .validate()
             .is_ok()
         );
+    }
+
+    #[test]
+    fn heartbeat_boundaries_return_and_bounded_metadata() {
+        let (_dir, _home, s) = new_home();
+        let id = presence_exec(&s, "quiet", "worker", "run-quiet", "job-quiet", 7);
+        presence_sql(
+            &s,
+            "INSERT INTO posts(id, project, area, thread, kind, agent, date, summary, body, created_at)
+             VALUES('old-post', 'commons', 'agents', 'presence', 'finding', 'quiet', ?, 'old finding', 'history', ?)",
+            &[&TEST_NOW, &TEST_NOW],
+        );
+        let before = s.agent(&id.agent).unwrap();
+        let job_before = job_by_id(&s, &id.job_id).unwrap();
+        let event_count: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        let base = presence_time();
+        record_beat(&s, &id, base);
+        for delta in [
+            chrono::Duration::zero(),
+            chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap() - chrono::Duration::nanoseconds(1),
+            chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
+            chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap() + chrono::Duration::nanoseconds(1),
+        ] {
+            let want = if delta >= chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap() {
+                "offline"
+            } else {
+                "online"
+            };
+            let p = require_presence(&s, &id.agent, base + delta, want);
+            assert_eq!(p.last_heartbeat_at, TEST_NOW);
+            assert_eq!(p.presence_session, id.session);
+        }
+        for n in 1..=20 {
+            record_beat(
+                &s,
+                &id,
+                base + chrono::Duration::from_std(HEARTBEAT_INTERVAL * n).unwrap(),
+            );
+        }
+        require_presence(
+            &s,
+            &id.agent,
+            base + chrono::Duration::from_std(HEARTBEAT_INTERVAL * 20).unwrap(),
+            "online",
+        );
+        let beats: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM meta WHERE key LIKE 'agent-heartbeat:%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let events: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        let posts: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM posts", [], |r| r.get(0))
+            .unwrap();
+        let runs: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(beats, 1);
+        assert_eq!(events, event_count);
+        assert_eq!(posts, 1);
+        assert_eq!(runs, 1);
+        assert_eq!(before, s.agent(&id.agent).unwrap());
+        assert_eq!(job_before, job_by_id(&s, &id.job_id).unwrap());
+    }
+
+    #[test]
+    fn heartbeat_stop_is_final_and_does_not_extend_last_beat() {
+        let (_dir, _home, s) = new_home();
+        let id = presence_exec(&s, "quiet", "session", "run-quiet", "job-quiet", 1);
+        let base = presence_time();
+        assert!(!stop_heartbeat(&s, id.clone(), base).unwrap());
+        record_beat(&s, &id, base);
+        assert!(stop_heartbeat(&s, id.clone(), base + chrono::Duration::seconds(1)).unwrap());
+        let p = require_presence(
+            &s,
+            &id.agent,
+            base + chrono::Duration::seconds(1),
+            "offline",
+        );
+        assert_eq!(p.last_heartbeat_at, TEST_NOW);
+        assert!(
+            !record_heartbeat(
+                &s,
+                ExecutionHeartbeat {
+                    identity: id.clone(),
+                    at: heartbeat_time(base + chrono::Duration::seconds(2)),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        );
+        presence_sql(
+            &s,
+            "UPDATE runs SET status='done' WHERE id=?",
+            &[&id.run_id],
+        );
+        presence_sql(
+            &s,
+            "UPDATE jobs SET status='done' WHERE id=?",
+            &[&id.job_id],
+        );
+        require_presence(
+            &s,
+            &id.agent,
+            base + chrono::Duration::seconds(2),
+            "offline",
+        );
+    }
+
+    #[test]
+    fn heartbeat_fences_generations_and_historical_sessions() {
+        let (_dir, _home, s) = new_home();
+        let old = presence_exec(&s, "quiet", "worker", "run-old", "job-old", 1);
+        let base = presence_time();
+        record_beat(&s, &old, base);
+        presence_sql(
+            &s,
+            "UPDATE jobs SET generation=2 WHERE id=?",
+            &[&old.job_id],
+        );
+        assert!(
+            !record_heartbeat(
+                &s,
+                ExecutionHeartbeat {
+                    identity: old.clone(),
+                    at: heartbeat_time(base + chrono::Duration::seconds(1)),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        );
+        require_presence(
+            &s,
+            &old.agent,
+            base + chrono::Duration::seconds(1),
+            "offline",
+        );
+        let current = presence_exec(&s, "quiet", "worker", "run-new", "job-new", 3);
+        require_presence(
+            &s,
+            &current.agent,
+            base + chrono::Duration::seconds(1),
+            "unknown",
+        );
+        record_beat(&s, &current, base + chrono::Duration::seconds(2));
+        let raw: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM meta WHERE key=?",
+                [format!("{HEARTBEAT_PREFIX}{}", current.agent)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !record_heartbeat(
+                &s,
+                ExecutionHeartbeat {
+                    identity: old.clone(),
+                    at: heartbeat_time(base + chrono::Duration::seconds(3)),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        );
+        assert!(!stop_heartbeat(&s, old, base + chrono::Duration::seconds(3)).unwrap());
+        let after: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM meta WHERE key=?",
+                [format!("{HEARTBEAT_PREFIX}{}", current.agent)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, after);
+        let p = require_presence(
+            &s,
+            &current.agent,
+            base + chrono::Duration::seconds(3),
+            "online",
+        );
+        assert_eq!(p.presence_session, current.session);
+        presence_sql(
+            &s,
+            "UPDATE agents SET status='pruned', pruned_reason='no useful output' WHERE name=?",
+            &[&current.agent],
+        );
+        require_presence(
+            &s,
+            &current.agent,
+            base + chrono::Duration::seconds(3),
+            "pruned",
+        );
+        assert!(
+            !record_heartbeat(
+                &s,
+                ExecutionHeartbeat {
+                    identity: current,
+                    at: heartbeat_time(base + chrono::Duration::seconds(4)),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn heartbeat_restart_idle_legacy_and_pruning_stay_separate() {
+        let (_dir, home, s) = new_home();
+        let id = presence_exec(&s, "quiet", "worker", "run-quiet", "job-quiet", 1);
+        let base = presence_time();
+        for kind in ["worker", "lead", "session", "legacy"] {
+            join_agent(
+                &s,
+                JoinInput {
+                    name: format!("idle-{kind}"),
+                    kind: kind.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let want = match kind {
+                "session" => "unknown",
+                "legacy" => "legacy",
+                _ => "idle",
+            };
+            require_presence(&s, &format!("idle-{kind}"), base, want);
+        }
+        record_beat(&s, &id, base);
+        let reopened = pulse_store::Store::open(pulse_store::Options {
+            home,
+            now: (base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap())
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+            ..Default::default()
+        })
+        .unwrap();
+        require_presence(
+            &reopened,
+            &id.agent,
+            base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
+            "offline",
+        );
+        let j = job_by_id(&s, &id.job_id).unwrap().unwrap();
+        assert_eq!(j.status, "leased");
+        assert_eq!(j.generation, 1);
+        assert_eq!(j.lease_agent, id.agent);
+        record_beat(
+            &s,
+            &id,
+            base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
+        );
+        require_presence(
+            &s,
+            &id.agent,
+            base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
+            "online",
+        );
+        presence_sql(
+            &s,
+            "UPDATE agents SET last_useful_at='2026-08-01T00:00:00Z' WHERE name=?",
+            &[&id.agent],
+        );
+        assert!(
+            prune_agents(&s, TEST_NOW, 14, "daemon", true)
+                .unwrap()
+                .is_empty()
+        );
+        presence_sql(
+            &s,
+            "UPDATE runs SET status='done' WHERE id=?",
+            &[&id.run_id],
+        );
+        presence_sql(
+            &s,
+            "UPDATE jobs SET status='done' WHERE id=?",
+            &[&id.job_id],
+        );
+        require_presence(
+            &s,
+            &id.agent,
+            base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
+            "idle",
+        );
+        let pruned = prune_agents(&s, TEST_NOW, 14, "daemon", false).unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].name, id.agent);
+        assert!(
+            join_agent(
+                &s,
+                JoinInput {
+                    name: id.agent.clone(),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        let all = scorecards(&s, true).unwrap();
+        assert!(all.iter().any(|a| a.name == id.agent
+            && a.presence.presence == "pruned"
+            && a.sessions.first() == Some(&id.session)));
+    }
+
+    #[test]
+    fn heartbeat_missing_malformed_and_ambiguous_evidence() {
+        let (_dir, _home, s) = new_home();
+        let id = presence_exec(&s, "quiet", "worker", "run-quiet", "job-quiet", 1);
+        let base = presence_time();
+        let good = ExecutionHeartbeat {
+            identity: id.clone(),
+            at: TEST_NOW.into(),
+            ..Default::default()
+        };
+        let mut cases = BTreeMap::from([
+            ("absent", "".to_string()),
+            ("broken", "{".to_string()),
+            ("null", "null".to_string()),
+            ("empty", "{}".to_string()),
+            ("array", "[]".to_string()),
+        ]);
+        let mut add = |name: &'static str, h: ExecutionHeartbeat| {
+            cases.insert(name, serde_json::to_string(&h).unwrap());
+        };
+        let mut h = good.clone();
+        h.at.clear();
+        add("missing time", h);
+        let mut h = good.clone();
+        h.at = "yesterday".into();
+        add("malformed time", h);
+        let mut h = good.clone();
+        h.at =
+            (base + chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        add("future", h);
+        let mut h = good.clone();
+        h.identity.session = "old-session".into();
+        add("wrong session", h);
+        let mut h = good.clone();
+        h.identity.job_id = "job-old".into();
+        add("wrong job", h);
+        let mut h = good;
+        h.identity.generation = 0;
+        add("no generation", h);
+        for (_name, raw) in cases {
+            presence_sql(
+                &s,
+                "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                &[&format!("{HEARTBEAT_PREFIX}{}", id.agent), &raw],
+            );
+            let p = require_presence(&s, &id.agent, base, "unknown");
+            assert!(p.last_heartbeat_at.is_empty());
+            assert!(p.presence_session.is_empty());
+            require_presence(
+                &s,
+                &id.agent,
+                base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
+                "offline",
+            );
+        }
+        presence_sql(
+            &s,
+            "UPDATE meta SET value='{}' WHERE key=?",
+            &[&format!("{HEARTBEAT_PREFIX}{}", id.agent)],
+        );
+        record_beat(&s, &id, base + chrono::Duration::seconds(1));
+        require_presence(&s, &id.agent, base + chrono::Duration::seconds(1), "online");
+    }
+
+    #[test]
+    fn heartbeat_concurrent_stop_fences_late_observations() {
+        let (_dir, _home, s) = new_home();
+        let base = presence_time();
+        for n in 0..20 {
+            let suffix = n.to_string();
+            let id = presence_exec(
+                &s,
+                "quiet",
+                "worker",
+                &format!("run-{suffix}"),
+                &format!("job-{suffix}"),
+                n + 1,
+            );
+            record_beat(&s, &id, base);
+            assert!(stop_heartbeat(&s, id.clone(), base + chrono::Duration::seconds(2)).unwrap());
+            record_heartbeat(
+                &s,
+                ExecutionHeartbeat {
+                    identity: id.clone(),
+                    at: heartbeat_time(base + chrono::Duration::seconds(1)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let p = require_presence(
+                &s,
+                &id.agent,
+                base + chrono::Duration::seconds(2),
+                "offline",
+            );
+            assert!(
+                p.last_heartbeat_at == TEST_NOW
+                    || p.last_heartbeat_at == heartbeat_time(base + chrono::Duration::seconds(1)),
+                "{p:?}"
+            );
+            presence_sql(
+                &s,
+                "UPDATE runs SET status='done' WHERE id=?",
+                &[&id.run_id],
+            );
+            presence_sql(
+                &s,
+                "UPDATE jobs SET status='done' WHERE id=?",
+                &[&id.job_id],
+            );
+        }
     }
 }

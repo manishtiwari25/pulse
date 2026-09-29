@@ -352,7 +352,14 @@ pub(crate) fn create_post_conn(
         extra.insert("for_owner".to_string(), Value::Bool(true));
     }
     let mentions = post_mentions(s, &agent_name, &(summary.clone() + "\n" + &input.body))?;
-    extra.insert("mentions".to_string(), json!(mentions));
+    extra.insert(
+        "mentions".to_string(),
+        if mentions.is_empty() {
+            serde_json::Value::Null
+        } else {
+            json!(mentions)
+        },
+    );
     let extra_text = pulse_store::py_json(Value::Object(extra))?;
     pulse_store::post_for_owner(&extra_text).map_err(|e| refuse(2, e.to_string()))?;
     let read_line = i64::from(has_read_line(&input.body));
@@ -367,9 +374,7 @@ pub(crate) fn create_post_conn(
         touch_agent_conn(conn, &arow.name, contains(USEFUL_KINDS, &input.kind), &date)?;
     }
     let thread_key = format!("{area}/{thread}");
-    event_conn(
-        conn,
-        s,
+    s.event(
         &arow.name,
         &format!("post.{}", input.kind),
         &pid,
@@ -378,9 +383,7 @@ pub(crate) fn create_post_conn(
         )?,
     )?;
     for name in mentions {
-        event_conn(
-            conn,
-            s,
+        s.event(
             &arow.name,
             "mention",
             &name,
@@ -422,10 +425,458 @@ pub(crate) fn touch_agent_conn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{
+        TEST_NOW, code, count_rows, fixture, oracle, oracle_available, snapshot_home, what_any,
+    };
+    use std::time::Duration;
+
+    const AMENDMENT_BODY: &str =
+        "## Current text\n\n```\nold line\n```\n\n## Proposed text\n\n```\nnew line\n```\n";
+
+    fn seed_posts(s: &pulse_store::Store) -> (Post, Post, Post) {
+        let suggestion = create_post(
+            s,
+            PostInput {
+                kind: "suggestion".into(),
+                project: "demo".into(),
+                area: "runner".into(),
+                thread: "faster-tests".into(),
+                summary: "Cache the build".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:00:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let amendment = create_post(
+            s,
+            PostInput {
+                kind: "amendment".into(),
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "constitution".into(),
+                summary: "Amend a line".into(),
+                body: AMENDMENT_BODY.into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:00:01Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let finding = create_post(
+            s,
+            PostInput {
+                kind: "finding".into(),
+                project: "demo".into(),
+                area: "runner".into(),
+                thread: "faster-tests".into(),
+                summary: "Found it".into(),
+                agent: "bob".into(),
+                date: "2026-09-06T09:00:02Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (suggestion, amendment, finding)
+    }
+
     #[test]
     fn bare_vote_summary() {
         assert!(is_bare_vote_summary("vote", " up "));
         assert!(!is_bare_vote_summary("finding", "up"));
         assert!(!is_bare_vote_summary("vote", "up because"));
+    }
+
+    #[test]
+    fn create_post_summary_limit() {
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let ascii = "x".repeat(MAX_SUMMARY_CHARS);
+        let emoji = "🙂".repeat(MAX_SUMMARY_CHARS);
+        let combining = "e\u{301}".repeat(MAX_SUMMARY_CHARS / 2);
+        let over_limit = "summary is 241 chars; limit 240 - move detail to --body";
+        let body = "detail ".repeat(60);
+        let cases = [
+            (
+                "ascii-below",
+                ascii[..239].to_string(),
+                ascii[..239].to_string(),
+                "",
+            ),
+            ("ascii-at", ascii.clone(), ascii.clone(), ""),
+            ("ascii-over", format!("{ascii}x"), String::new(), over_limit),
+            ("emoji-at", emoji.clone(), emoji.clone(), ""),
+            (
+                "emoji-over",
+                format!("{emoji}🙂"),
+                String::new(),
+                over_limit,
+            ),
+            ("combining-at", combining.clone(), combining.clone(), ""),
+            (
+                "combining-over",
+                format!("{combining}e"),
+                String::new(),
+                over_limit,
+            ),
+            (
+                "normalized-at",
+                format!("\t {} \n\t y \r\n", &ascii[..238]),
+                format!("{} y", &ascii[..238]),
+                "",
+            ),
+            (
+                "normalized-over",
+                format!("\t {} \n\t y \r\n", &ascii[..239]),
+                String::new(),
+                over_limit,
+            ),
+        ];
+        for (_, summary, want, want_err) in cases {
+            let before = count_rows(&s, "posts", "agent = 'alice'", &[]);
+            let result = create_post(
+                &s,
+                PostInput {
+                    kind: "finding".into(),
+                    project: "demo".into(),
+                    area: "board".into(),
+                    thread: "summary-limit".into(),
+                    agent: "alice".into(),
+                    summary,
+                    body: body.clone(),
+                    ..Default::default()
+                },
+            );
+            if want_err.is_empty() {
+                let post = result.unwrap();
+                assert_eq!(post.summary, want);
+                assert_eq!(post.body, body);
+                assert!(post.summary.chars().count() <= MAX_SUMMARY_CHARS);
+            } else {
+                let err = result.unwrap_err();
+                assert_eq!(code(Some(&err)), 2);
+                assert_eq!(what_any(&err), want_err);
+                assert_eq!(count_rows(&s, "posts", "agent = 'alice'", &[]), before);
+            }
+        }
+    }
+
+    #[test]
+    fn create_post_for_owner_preserves_extra() {
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let mut extra = Map::new();
+        extra.insert("for_owner".into(), Value::Bool(false));
+        extra.insert("ticket".into(), Value::String("T-12".into()));
+        let before = extra.clone();
+        let p = create_post(
+            &s,
+            PostInput {
+                kind: "suggestion".into(),
+                project: "demo".into(),
+                area: "routing".into(),
+                thread: "support-window".into(),
+                summary: "Choose the support window".into(),
+                agent: "alice".into(),
+                for_owner: true,
+                extra: extra.clone(),
+                body: "Ask @bob to add context.".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(p.for_owner);
+        assert_eq!(extra, before);
+        let saved: Value = serde_json::from_str(&p.extra).unwrap();
+        assert_eq!(saved["for_owner"], Value::Bool(true));
+        assert_eq!(saved["ticket"], Value::String("T-12".into()));
+        assert_eq!(saved["mentions"], json!(["bob"]));
+    }
+
+    #[test]
+    fn create_post_rejects_invalid_for_owner() {
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let values = [
+            Value::String("yes".into()),
+            Value::String(String::new()),
+            Value::Number(1.into()),
+            Value::Null,
+            Value::Array(vec![]),
+            Value::Object(Map::new()),
+        ];
+        for value in values {
+            let mut extra = Map::new();
+            extra.insert("for_owner".into(), value);
+            let err = create_post(
+                &s,
+                PostInput {
+                    kind: "question".into(),
+                    project: "demo".into(),
+                    area: "routing".into(),
+                    thread: "review".into(),
+                    summary: "Choose a window".into(),
+                    agent: "alice".into(),
+                    extra,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(code(Some(&err)), 2);
+            assert!(what_any(&err).contains("for_owner must be true or false"));
+        }
+        assert_eq!(count_rows(&s, "posts", "1=1", &[]), 0);
+        assert_eq!(s.agent("alice").unwrap().unwrap().posts, 0);
+    }
+
+    #[test]
+    fn post_id_collision_suffix() {
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(
+                create_post(
+                    &s,
+                    PostInput {
+                        kind: "finding".into(),
+                        project: "demo".into(),
+                        area: "a".into(),
+                        thread: "b".into(),
+                        summary: "again".into(),
+                        agent: "alice".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .id,
+            );
+        }
+        let base = format!("{}-alice", stamp_of(TEST_NOW));
+        assert_eq!(
+            ids,
+            vec![base.clone(), format!("{base}-2"), format!("{base}-3")]
+        );
+        let a = s.agent("alice").unwrap().unwrap();
+        assert_eq!(a.posts, 3);
+        assert_eq!(a.last_useful_at, TEST_NOW);
+        assert_eq!(a.last_active_at, TEST_NOW);
+        assert_eq!(
+            count_rows(
+                &s,
+                "events",
+                "action = 'post.finding' AND actor = 'alice'",
+                &[]
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn create_post_mentions_and_events() {
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        s.conn()
+            .unwrap()
+            .execute("UPDATE agents SET status = 'pruned' WHERE name = 'bob'", [])
+            .unwrap();
+        pulse_bus::reset_default();
+        let (ch, cancel) = pulse_bus::default().subscribe(pulse_bus::Filter::default(), 16);
+        let p = create_post(
+            &s,
+            PostInput {
+                kind: "question".into(),
+                project: "demo".into(),
+                area: "API".into(),
+                thread: "Rate Limits".into(),
+                summary: "@alice @bob @cinder @owner @alice can you check?".into(),
+                body: "self @alice and owner again @human".into(),
+                agent: "alice".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let extra: Value = serde_json::from_str(&p.extra).unwrap();
+        assert_eq!(extra["mentions"], json!(["human"]));
+        let mut events = Vec::new();
+        while events.len() < 2 {
+            let e = ch.recv_timeout(Duration::from_secs(2)).unwrap();
+            if (e.action == "post.question" && e.subject == p.id)
+                || (e.action == "mention" && e.subject == "human")
+            {
+                events.push(e);
+            }
+        }
+        cancel();
+        assert_eq!(events[0].action, "post.question");
+        assert_eq!(events[0].subject, p.id);
+        assert_eq!(events[0].actor, "alice");
+        assert_eq!(
+            events[0].detail,
+            r#"{"agent": "alice", "kind": "question", "project": "demo", "thread": "api/rate-limits"}"#
+        );
+        assert_eq!(events[1].action, "mention");
+        assert_eq!(events[1].subject, "human");
+        assert_eq!(events[1].actor, "alice");
+        assert_eq!(
+            events[1].detail,
+            format!(
+                r#"{{"by": "alice", "kind": "question", "post": "{}", "project": "demo", "thread": "api/rate-limits"}}"#,
+                p.id
+            )
+        );
+    }
+
+    #[test]
+    fn claim_expiry() {
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        assert_eq!(
+            super::claim_expiry(&s, 0.0).unwrap(),
+            "2026-09-06T14:00:00Z"
+        );
+        assert_eq!(
+            super::claim_expiry(&s, 1.5).unwrap(),
+            "2026-09-06T11:30:00Z"
+        );
+        s.set_setting("human", "claim_hours", "6").unwrap();
+        assert_eq!(
+            super::claim_expiry(&s, 0.0).unwrap(),
+            "2026-09-06T16:00:00Z"
+        );
+    }
+
+    fn test_create_post_rule_matrix() {
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let (sug, am, fin) = seed_posts(&s);
+        assert_eq!(am.text_hash, block_hash(&["new line".to_string()]));
+        let cases = [
+            (
+                PostInput { kind: "rumour".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "alice".into(), ..Default::default() },
+                format!("Kind must be one of: {}", KINDS.join(", ")),
+            ),
+            (
+                PostInput { kind: "finding".into(), project: "demo".into(), area: "!!!".into(), thread: "b".into(), summary: "s".into(), agent: "alice".into(), ..Default::default() },
+                "Both --area and --thread are needed (lowercase words with dashes)".into(),
+            ),
+            (
+                PostInput { kind: "finding".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "   ".into(), agent: "alice".into(), ..Default::default() },
+                "A one-line --summary is required".into(),
+            ),
+            (
+                PostInput { kind: "vote".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "bob".into(), vote: "up".into(), ..Default::default() },
+                "A vote needs --on POST_ID (the suggestion or amendment it answers)".into(),
+            ),
+            (
+                PostInput { kind: "vote".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "bob".into(), on: sug.id.clone(), ..Default::default() },
+                "A vote needs --vote up or --vote down".into(),
+            ),
+            (
+                PostInput { kind: "finding".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "bob".into(), vote: "up".into(), ..Default::default() },
+                "Only a vote carries --vote".into(),
+            ),
+            (
+                PostInput { kind: "answer".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "bob".into(), on: "nope".into(), ..Default::default() },
+                "No post 'nope' to answer".into(),
+            ),
+            (
+                PostInput { kind: "vote".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "alice".into(), on: sug.id.clone(), vote: "up".into(), ..Default::default() },
+                format!("No self-votes: alice wrote {}", sug.id),
+            ),
+            (
+                PostInput { kind: "vote".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "alice".into(), on: fin.id.clone(), vote: "down".into(), ..Default::default() },
+                "Votes answer a suggestion or an amendment, not a finding".into(),
+            ),
+            (
+                PostInput { kind: "vote".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "bob".into(), on: am.id.clone(), vote: "up".into(), ..Default::default() },
+                format!("A vote on an amendment carries --text-hash (see `pulse hash {}`)", am.id),
+            ),
+            (
+                PostInput { kind: "vote".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "bob".into(), on: am.id.clone(), vote: "up".into(), text_hash: am.text_hash.clone(), body: "no read line".into(), ..Default::default() },
+                "A vote on an amendment carries a `Read:` line restating the change in the body".into(),
+            ),
+            (
+                PostInput { kind: "amendment".into(), project: "demo".into(), area: "a".into(), thread: "b".into(), summary: "s".into(), agent: "bob".into(), body: "just text".into(), ..Default::default() },
+                "An amendment body needs `## Current text` and `## Proposed text`, each with a fenced block".into(),
+            ),
+        ];
+        for (input, want) in cases {
+            let err = create_post(&s, input).unwrap_err();
+            assert_eq!(code(Some(&err)), 2);
+            assert_eq!(what_any(&err), want);
+        }
+        assert!(
+            create_post(
+                &s,
+                PostInput {
+                    kind: "finding".into(),
+                    project: "demo".into(),
+                    area: "Runner Speed".into(),
+                    thread: "b".into(),
+                    summary: "  two   spaces  ".into(),
+                    agent: "bob".into(),
+                    body: "text".into(),
+                    ..Default::default()
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            create_post(
+                &s,
+                PostInput {
+                    kind: "vote".into(),
+                    project: "demo".into(),
+                    area: "a".into(),
+                    thread: "b".into(),
+                    summary: "s".into(),
+                    agent: "bob".into(),
+                    on: am.id,
+                    vote: "up".into(),
+                    text_hash: am.text_hash,
+                    body: "Read: the new line".into(),
+                    ..Default::default()
+                }
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn create_post_rule_matrix() {
+        if oracle_available().is_none() {
+            eprintln!("no Go oracle; running Rust rule matrix only");
+        }
+        test_create_post_rule_matrix();
+    }
+
+    #[test]
+    fn create_post_rule_matrix_without_oracle() {
+        test_create_post_rule_matrix();
+    }
+
+    #[test]
+    fn hash_parity_with_oracle() {
+        let Some((home_dir, _home, s)) = snapshot_home() else {
+            eprintln!("no snapshot at /tmp/pulse-parity/pulse.sqlite; skipping");
+            return;
+        };
+        let row = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT id, body FROM posts WHERE kind = 'amendment' AND text_hash != '' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .ok();
+        let Some((id, body)) = row else {
+            eprintln!("no amendment in snapshot; skipping");
+            return;
+        };
+        let Some(block) = fenced_block(&body, "Proposed text") else {
+            panic!("no proposed text block");
+        };
+        let Some(_bin) = oracle_available() else {
+            eprintln!("no Go oracle; skipping");
+            return;
+        };
+        let (out, err, code) = oracle(home_dir.path(), &[], &["hash", &id]).unwrap();
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(block_hash(&block), out.trim());
     }
 }

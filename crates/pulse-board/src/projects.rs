@@ -309,11 +309,13 @@ pub fn split_list(v: &str) -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Registry {
     pub projects: Vec<RegistryProject>,
     pub commons: String,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RegistryProject {
     pub slug: String,
     pub path: String,
@@ -360,6 +362,7 @@ pub struct InitResult {
     pub created: bool,
     pub job: Job,
     pub job_queued: bool,
+    pub environment: String,
     pub environment_record: String,
     pub store: String,
 }
@@ -392,6 +395,7 @@ pub fn init(
         created,
         job,
         job_queued: queued,
+        environment: env_id.clone(),
         environment_record: env_id,
         store: s.path.clone(),
     })
@@ -400,11 +404,415 @@ pub fn init(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{TEST_NOW, count_rows, git_repo, new_home};
+    use rusqlite::params;
+
     #[test]
     fn frontmatter_and_lists() {
         let (fm, body) = split_frontmatter("---\ntitle: \"Hi\"\n---\nBody");
         assert_eq!(fm["title"], "Hi");
         assert_eq!(body, "Body");
         assert_eq!(split_list("[a, 'b']"), vec!["a", "b"]);
+    }
+
+    fn hook_ok(s: &pulse_store::Store, p: &pulse_store::Project, actor: &str) -> Result<()> {
+        s.conn()?.execute(
+            "INSERT INTO meta(key, value) VALUES ('hook-call', ?) ON CONFLICT(key) DO UPDATE SET value = value || ',' || excluded.value",
+            [format!("{}/{}", p.slug, actor)],
+        )?;
+        Ok(())
+    }
+
+    fn hook_err(_: &pulse_store::Store, _: &pulse_store::Project, _: &str) -> Result<()> {
+        anyhow::bail!("seeding broke")
+    }
+
+    #[test]
+    fn register_project_runs_the_creation_hook_once() {
+        let (_dir, _home, s) = new_home();
+        let repo = git_repo();
+        let _guard = pulse_testutil::env_lock();
+        unsafe {
+            let previous = OnProjectCreated;
+            OnProjectCreated = Some(hook_ok);
+            let (p, created) = register_project(
+                &s,
+                &repo.path().display().to_string(),
+                "demo",
+                "",
+                false,
+                "",
+                "alice",
+                "",
+            )
+            .unwrap();
+            assert!(created);
+            assert_eq!(p.slug, "demo");
+            let (_, created) = register_project(
+                &s,
+                &repo.path().display().to_string(),
+                "demo",
+                "",
+                false,
+                "",
+                "alice",
+                "",
+            )
+            .unwrap();
+            assert!(!created);
+            let calls: String = s
+                .conn()
+                .unwrap()
+                .query_row("SELECT value FROM meta WHERE key = 'hook-call'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(calls, "demo/alice");
+            OnProjectCreated = None;
+            let second = git_repo();
+            let (_, created) = register_project(
+                &s,
+                &second.path().display().to_string(),
+                "second",
+                "",
+                false,
+                "",
+                "alice",
+                "",
+            )
+            .unwrap();
+            assert!(created);
+            OnProjectCreated = previous;
+        }
+    }
+
+    #[test]
+    fn register_project_survives_a_failing_hook() {
+        let (_dir, _home, s) = new_home();
+        let repo = git_repo();
+        let _guard = pulse_testutil::env_lock();
+        unsafe {
+            let previous = OnProjectCreated;
+            OnProjectCreated = Some(hook_err);
+            let (p, created) = register_project(
+                &s,
+                &repo.path().display().to_string(),
+                "demo",
+                "",
+                false,
+                "",
+                "human",
+                "",
+            )
+            .unwrap();
+            assert!(created);
+            assert_eq!(p.slug, "demo");
+            assert_eq!(s.project("demo").unwrap().unwrap().status, "active");
+            assert_eq!(
+                count_rows(
+                    &s,
+                    "events",
+                    "action = 'project.hook_failed' AND subject = 'demo' AND detail LIKE '%seeding broke%'",
+                    &[]
+                ),
+                1
+            );
+            OnProjectCreated = previous;
+        }
+    }
+
+    #[test]
+    fn project_goal_canonical_slug_registration() {
+        let (_dir, _home, s) = new_home();
+        const NAME: &str = "customer-support-ticket-management-system";
+        let slug = slugify(NAME);
+        assert_eq!(slug, "customer-support-ticket-management-syste");
+        assert_eq!(slug.len(), 40);
+        for want in [slug.clone(), format!("{slug}-2")] {
+            let repo = git_repo();
+            let (p, created) = register_project(
+                &s,
+                &repo.path().display().to_string(),
+                NAME,
+                "",
+                false,
+                "",
+                "human",
+                "",
+            )
+            .unwrap();
+            assert!(created);
+            assert_eq!(p.slug, want);
+            let goal = pulse_goals::get(&s, &p.slug).unwrap();
+            assert_eq!(goal.source, pulse_goals::GENERATED);
+            assert!(goal.text.contains("real product defects"));
+            pulse_goals::normalize(&goal.text).unwrap();
+            let owner = pulse_goals::set(
+                &s,
+                &p.slug,
+                "Improve correct ticket results with the existing checks.",
+                "human",
+            )
+            .unwrap();
+            init(
+                &s,
+                &repo.path().display().to_string(),
+                "",
+                "",
+                false,
+                "",
+                "human",
+            )
+            .unwrap();
+            assert_eq!(pulse_goals::get(&s, &p.slug).unwrap(), owner);
+        }
+    }
+
+    #[test]
+    fn project_goal_registration_reinit_and_restore() {
+        let (_dir, _home, s) = new_home();
+        let repo = git_repo();
+        let result = init(
+            &s,
+            &repo.path().display().to_string(),
+            "Goal Project",
+            "",
+            false,
+            "",
+            "human",
+        )
+        .unwrap();
+        let p = result.project;
+        let goal = pulse_goals::get(&s, &p.slug).unwrap();
+        assert_eq!(goal.source, pulse_goals::GENERATED);
+        assert_eq!(goal.updated_by, pulse_goals::GENERATED_BY);
+        assert_eq!(
+            count_rows(
+                &s,
+                "settings",
+                "name = ?",
+                &[&format!("project.goal.{}", p.slug)]
+            ),
+            1
+        );
+        let owner = pulse_goals::set(
+            &s,
+            &p.slug,
+            "Keep imports useful and reliable with measured regression coverage.",
+            "human",
+        )
+        .unwrap();
+        init(
+            &s,
+            &repo.path().display().to_string(),
+            "Different Name",
+            "",
+            false,
+            "go test ./...",
+            "human",
+        )
+        .unwrap();
+        assert_eq!(pulse_goals::get(&s, &p.slug).unwrap(), owner);
+        crate::remove::remove_project(&s, &p.slug, "human", false).unwrap();
+        init(
+            &s,
+            &repo.path().display().to_string(),
+            "",
+            "",
+            false,
+            "",
+            "human",
+        )
+        .unwrap();
+        assert_eq!(pulse_goals::get(&s, &p.slug).unwrap(), owner);
+    }
+
+    #[test]
+    fn project_goal_legacy_registration_preserves_explicit_value() {
+        let (_dir, _home, s) = new_home();
+        let repo = git_repo();
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, added_at) VALUES ('legacy', 'Legacy', ?, ?)",
+                params![repo.path().display().to_string(), TEST_NOW],
+            )
+            .unwrap();
+        let goal = pulse_goals::get(&s, "legacy").unwrap();
+        assert_eq!(goal.source, pulse_goals::GENERATED);
+        let owner = pulse_goals::set(
+            &s,
+            "legacy",
+            "Reduce user-facing search defects using current checks.",
+            "human",
+        )
+        .unwrap();
+        register_project(
+            &s,
+            &repo.path().display().to_string(),
+            "",
+            "",
+            false,
+            "",
+            "human",
+            "",
+        )
+        .unwrap();
+        assert_eq!(pulse_goals::get(&s, "legacy").unwrap(), owner);
+    }
+
+    #[test]
+    fn init_registers_project() {
+        let (_dir, _home, s) = new_home();
+        let repo = git_repo();
+        let context = repo.path().join("docs").join("context");
+        std::fs::create_dir_all(&context).unwrap();
+        std::fs::write(
+            context.join("environment.md"),
+            "---\ntitle: Environment\nareas: [runner, tooling]\n---\n\n# Environment\n\n| tool | pin |\n|---|---|\n| go | go@1.26 |\n",
+        )
+        .unwrap();
+        let out = init(
+            &s,
+            &repo.path().display().to_string(),
+            "My App",
+            "",
+            false,
+            "go test ./...",
+            "human",
+        )
+        .unwrap();
+        assert!(out.created);
+        assert_eq!(out.project.slug, "my-app");
+        assert_eq!(out.project.verify_cmd, "go test ./...");
+        assert_eq!(out.project.default_branch, "main");
+        assert_eq!(out.project.added_by, "human");
+        assert_eq!(out.project.status, "active");
+        assert!(out.job_queued);
+        assert_eq!(out.environment, "CTX-environment-my-app");
+        assert_eq!(
+            count_rows(
+                &s,
+                "jobs",
+                "project = 'my-app' AND kind = 'onboard' AND status = 'queued' AND tier = 0 AND priority = 20 AND source = 'onboard:my-app'",
+                &[]
+            ),
+            1
+        );
+        let (rec, rev) = s.get_record("CTX-environment-my-app", 0).unwrap();
+        let rev = rev.unwrap();
+        assert_eq!(rec.kind, "context");
+        assert_eq!(rec.slug, "environment");
+        assert_eq!(rec.project, "my-app");
+        assert_eq!(rec.title, "Environment");
+        assert_eq!(rec.areas, vec!["runner", "tooling"]);
+        assert!(
+            rec.origin
+                .starts_with("markdown:docs/context/environment.md@")
+        );
+        assert_eq!(rec.path, "docs/context/environment.md");
+        assert!(rev.body.contains("go@1.26"));
+        assert_eq!(rev.frontmatter["title"], "Environment");
+        let second = init(
+            &s,
+            &repo.path().display().to_string(),
+            "",
+            "",
+            false,
+            "",
+            "human",
+        )
+        .unwrap();
+        assert!(!second.created);
+        assert!(!second.job_queued);
+        assert_eq!(
+            count_rows(
+                &s,
+                "record_revisions",
+                "record_id = 'CTX-environment-my-app'",
+                &[]
+            ),
+            1
+        );
+        let onboard_id: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM jobs WHERE source = 'onboard:my-app'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        crate::jobs::finish_job(&s, &onboard_id, "human", "done", "onboarded", "", None).unwrap();
+        let refreshed = init(
+            &s,
+            &repo.path().display().to_string(),
+            "",
+            "",
+            false,
+            "go test -timeout 30m ./...",
+            "human",
+        )
+        .unwrap();
+        assert!(!refreshed.job_queued);
+        assert_eq!(
+            s.project("my-app").unwrap().unwrap().verify_cmd,
+            "go test -timeout 30m ./..."
+        );
+        let brain = git_repo();
+        let brain_result = init(
+            &s,
+            &brain.path().display().to_string(),
+            "",
+            "",
+            true,
+            "",
+            "human",
+        )
+        .unwrap();
+        assert!(brain_result.project.brain);
+        assert!(brain_result.environment.is_empty());
+        assert_eq!(
+            environment_record_id(&brain_result.project),
+            "CTX-environment"
+        );
+        assert!(brain_result.job.brief.contains(&format!(
+            "pulse env set --project {}",
+            brain_result.project.slug
+        )));
+        assert_eq!(s.brain().unwrap().unwrap().slug, brain_result.project.slug);
+    }
+
+    #[test]
+    fn import_registry() {
+        let (_dir, _home, s) = new_home();
+        let repo = git_repo();
+        let reg_dir = tempfile::tempdir().unwrap();
+        let reg = reg_dir.path().join("projects.json");
+        std::fs::write(
+            &reg,
+            format!(
+                r#"{{"projects": [{{"slug": "one", "path": "{}", "brain": true}}, {{"path": "/nope/missing"}}], "commons": "/tmp/commons"}}"#,
+                repo.path().display()
+            ),
+        )
+        .unwrap();
+        let got = super::import_registry(&s, &reg.display().to_string(), "migrate").unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].slug, "one");
+        assert!(got[0].created);
+        let (v, ok) = s.meta("commons_path").unwrap();
+        assert!(ok);
+        assert_eq!(v, "/tmp/commons");
+        assert_eq!(s.brain().unwrap().unwrap().slug, "one");
+        assert!(
+            super::import_registry(
+                &s,
+                &reg_dir.path().join("none.json").display().to_string(),
+                "migrate"
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 }

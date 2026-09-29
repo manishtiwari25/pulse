@@ -323,7 +323,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn helpers_match_go_shapes() {
+    fn helpers() {
         assert_eq!(slugify("Hello, World!"), "hello-world");
         assert_eq!(py_repr("a'b"), "\"a'b\"");
         assert!(valid_name("agent-1"));

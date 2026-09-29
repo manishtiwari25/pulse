@@ -103,7 +103,14 @@ pub(crate) fn add_job_conn(
             format!("Job kind must be one of: {}", JOB_KINDS.join(", ")),
         ));
     }
-    if s.project(&input.project)?.is_none() {
+    let project_exists: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM projects WHERE slug = ?",
+            [&input.project],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if project_exists.is_none() {
         return Err(refuse(2, format!("No project {}", py_repr(&input.project))));
     }
     if input.tier != 0 && input.tier != 1 {
@@ -649,22 +656,15 @@ pub fn decide(
             "The owner is away (owner.presence = away); **{decided_by}** answered **{answer}** on the owner's behalf.\n\n{said}\n\nProposal: {post_id}\n"
         )
     };
-    let post = crate::posts::create_post_conn(
+    let post = create_decision_result_conn(
         s,
         &tx,
-        crate::posts::PostInput {
-            kind: "result".into(),
-            project: target.project.clone(),
-            area: target.area.clone(),
-            thread: target.thread.clone(),
-            summary: format!("{resolution}: {}", trunc(&target.summary, 200)),
-            body,
-            agent_row: Some(decider),
-            on: post_id.into(),
-            resolution: resolution.into(),
-            branch: Some(String::new()),
-            ..Default::default()
-        },
+        &target,
+        &decider,
+        post_id,
+        resolution,
+        &format!("{resolution}: {}", trunc(&target.summary, 200)),
+        &body,
     )?;
     let now = s.now();
     tx.execute(
@@ -702,6 +702,103 @@ pub fn decide(
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn create_decision_result_conn(
+    s: &pulse_store::Store,
+    conn: &Connection,
+    target: &crate::posts::Post,
+    decider: &pulse_store::Agent,
+    post_id: &str,
+    resolution: &str,
+    summary: &str,
+    body: &str,
+) -> Result<crate::posts::Post> {
+    let date = s.now();
+    let base = format!("{}-{}", stamp_of(&date), decider.name);
+    let mut pid = base.clone();
+    let mut n = 2;
+    while conn
+        .query_row("SELECT 1 FROM posts WHERE id = ?", [&pid], |r| {
+            r.get::<_, i64>(0)
+        })
+        .optional()?
+        .is_some()
+    {
+        pid = format!("{base}-{n}");
+        n += 1;
+    }
+    let session = crate::agents::agent_session(Some(decider), "");
+    let display = if decider.display != decider.name {
+        decider.display.clone()
+    } else {
+        String::new()
+    };
+    let extra = pulse_store::py_json(serde_json::json!({"mentions": null}))?;
+    conn.execute(
+        &format!("INSERT INTO posts ({}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", crate::posts::POST_COLS),
+        params![
+            pid,
+            target.project,
+            target.area,
+            target.thread,
+            "result",
+            decider.name,
+            decider.runner,
+            decider.model,
+            session,
+            date,
+            "",
+            "",
+            post_id,
+            "",
+            "",
+            0_i64,
+            resolution,
+            summary,
+            body,
+            "",
+            "",
+            display,
+            "",
+            extra,
+            "store",
+            s.now()
+        ],
+    )?;
+    if conn
+        .query_row(
+            "SELECT 1 FROM agents WHERE name = ?",
+            [&decider.name],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some()
+    {
+        conn.execute(
+            "UPDATE agents SET posts = posts + 1 WHERE name = ?",
+            [&decider.name],
+        )?;
+        if decider.name != pulse_store::HUMAN_AGENT {
+            crate::posts::touch_agent_conn(conn, &decider.name, true, &date)?;
+        }
+    }
+    event_conn(
+        conn,
+        s,
+        &decider.name,
+        "post.result",
+        &pid,
+        pulse_store::Detail::json(serde_json::json!({
+            "agent": decider.name,
+            "kind": "result",
+            "project": target.project,
+            "thread": format!("{}/{}", target.area, target.thread),
+        }))?,
+    )?;
+    crate::posts::post_by_id_conn(conn, &pid)?
+        .ok_or_else(|| anyhow::anyhow!("inserted post disappeared"))
+}
+
 fn decision_decider(
     s: &pulse_store::Store,
     conn: &Connection,
@@ -710,14 +807,12 @@ fn decision_decider(
     decided_by: &str,
 ) -> Result<pulse_store::Agent> {
     if decided_by == pulse_store::HUMAN_AGENT {
-        return Ok(s
-            .agent(pulse_store::HUMAN_AGENT)?
-            .unwrap_or_else(|| pulse_store::Agent {
-                name: pulse_store::HUMAN_AGENT.into(),
-                display: "the human".into(),
-                sessions: vec![],
-                ..Default::default()
-            }));
+        return Ok(pulse_store::Agent {
+            name: pulse_store::HUMAN_AGENT.into(),
+            display: "the human".into(),
+            sessions: vec![],
+            ..Default::default()
+        });
     }
     if !s.owner_away() {
         return Err(refuse(
@@ -725,7 +820,7 @@ fn decision_decider(
             "pulse decide is the human's call; a lead decides only while owner.presence is away",
         ));
     }
-    let lead = s.agent(decided_by)?;
+    let lead = agent_by_name_conn(conn, decided_by)?;
     if !matches!(lead, Some(ref l) if l.kind == "lead" && l.status == "active") {
         return Err(refuse(2, "only a project's lead decides for the owner"));
     }
@@ -771,6 +866,38 @@ fn decision_decider(
     Ok(lead.expect("lead checked"))
 }
 
+fn agent_by_name_conn(conn: &Connection, name: &str) -> Result<Option<pulse_store::Agent>> {
+    let row = conn
+        .query_row(
+            "SELECT name, display, runner, model, kind, status, created_at, last_active_at, last_useful_at, sessions, jobs_done, jobs_failed, posts, pruned_at, pruned_reason, legacy_id, notes FROM agents WHERE name = ?",
+            [name],
+            |r| {
+                let sessions: String = r.get(9)?;
+                Ok(pulse_store::Agent {
+                    name: r.get(0)?,
+                    display: r.get(1)?,
+                    runner: r.get(2)?,
+                    model: r.get(3)?,
+                    kind: r.get(4)?,
+                    status: r.get(5)?,
+                    created_at: r.get(6)?,
+                    last_active_at: r.get(7)?,
+                    last_useful_at: r.get(8)?,
+                    sessions: serde_json::from_str(&sessions).unwrap_or_default(),
+                    jobs_done: r.get(10)?,
+                    jobs_failed: r.get(11)?,
+                    posts: r.get(12)?,
+                    pruned_at: r.get(13)?,
+                    pruned_reason: r.get(14)?,
+                    legacy_id: r.get(15)?,
+                    notes: r.get(16)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
 fn decision_marker_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(r"(?m)^[ \t]*(pair|onboard):[ \t]*\S").unwrap())
@@ -799,7 +926,14 @@ fn decision_job_conn(
     words: &str,
     decided_by: &str,
 ) -> Result<Option<Job>> {
-    if s.project(&target.project)?.is_none()
+    let project_exists: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM projects WHERE slug = ?",
+            [&target.project],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if project_exists.is_none()
         || decision_marker_re().is_match(&target.body)
         || is_stop_question(target)
     {
@@ -982,6 +1116,7 @@ pub fn queue_onboarding_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::what_any;
     use rusqlite::params;
     use serde_json::Value;
     use tempfile::TempDir;
@@ -1058,9 +1193,46 @@ mod tests {
             .clone()
     }
 
+    fn join_alice(s: &pulse_store::Store) {
+        crate::agents::join_agent(
+            s,
+            crate::agents::JoinInput {
+                name: "alice".into(),
+                runner: "copilot".into(),
+                model: "m".into(),
+                session: "sess-alice".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    fn seed_proposal(s: &pulse_store::Store, project: &str) -> crate::posts::Post {
+        join_alice(s);
+        crate::posts::create_post(
+            s,
+            crate::posts::PostInput {
+                kind: "suggestion".into(),
+                project: project.into(),
+                area: "plan".into(),
+                thread: "next".into(),
+                summary: "Cache the build".into(),
+                body: "Do a useful thing.".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:00:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
     #[test]
     fn retry_title_once() {
         assert_eq!(retry_title("job-1", "Retry job-1: x"), "Retry job-1: x");
+    }
+
+    fn err_what<T: std::fmt::Debug>(result: anyhow::Result<T>) -> String {
+        what_any(&result.unwrap_err())
     }
 
     #[test]
@@ -1207,33 +1379,1052 @@ mod tests {
     }
 
     #[test]
-    fn decide_yes_queues_job() {
+    fn retry_job_refusals_and_cancelled() {
         let (_dir, s, p) = fixture();
-        crate::agents::join_agent(
+        assert_eq!(
+            err_what(retry_job(
+                &s,
+                RetryInput {
+                    job_id: "missing".into(),
+                    actor: "human".into(),
+                    ..Default::default()
+                }
+            )),
+            "No job 'missing'"
+        );
+        let done = make_failed_job(&s, &p.slug, "task:done");
+        finish_job(&s, &done.id, "human", "done", "ok", "", None).unwrap();
+        assert!(
+            err_what(retry_job(
+                &s,
+                RetryInput {
+                    job_id: done.id.clone(),
+                    actor: "human".into(),
+                    ..Default::default()
+                }
+            ))
+            .contains("nothing to retry")
+        );
+        let (queued, _) = add_job(
             &s,
-            crate::agents::JoinInput {
-                name: "alice".into(),
-                runner: "copilot".into(),
-                model: "m".into(),
-                session: "sess-alice".into(),
+            JobInput {
+                project: p.slug.clone(),
+                kind: "task".into(),
+                title: "Queued".into(),
+                tier: 1,
+                created_by: "alice".into(),
                 ..Default::default()
             },
         )
         .unwrap();
-        let proposal = crate::posts::create_post(
+        assert!(
+            err_what(retry_job(
+                &s,
+                RetryInput {
+                    job_id: queued.id,
+                    actor: "human".into(),
+                    ..Default::default()
+                }
+            ))
+            .contains("already running")
+        );
+        let (leased, _) = add_job(
+            &s,
+            JobInput {
+                project: p.slug.clone(),
+                kind: "task".into(),
+                title: "Leased".into(),
+                tier: 1,
+                created_by: "alice".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET status = 'leased', lease_agent = 'alice' WHERE id = ?",
+                [&leased.id],
+            )
+            .unwrap();
+        assert!(
+            err_what(retry_job(
+                &s,
+                RetryInput {
+                    job_id: leased.id,
+                    actor: "human".into(),
+                    ..Default::default()
+                }
+            ))
+            .contains("already running")
+        );
+        let cancelled = make_failed_job(&s, &p.slug, "task:cancelled");
+        finish_job(&s, &cancelled.id, "human", "cancelled", "stopped", "", None).unwrap();
+        let got = retry_job(
+            &s,
+            RetryInput {
+                job_id: cancelled.id,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(got.job.status, "queued");
+    }
+
+    #[test]
+    fn retry_job_active_run_refused() {
+        let (_dir, s, p) = fixture();
+        let job = make_failed_job(&s, &p.slug, "");
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs(id, job_id, agent, project, started_at, status) VALUES ('run-active', ?, 'alice', ?, ?, 'running')",
+                params![job.id, p.slug, TEST_NOW],
+            )
+            .unwrap();
+        for as_new in [false, true] {
+            assert!(
+                err_what(retry_job(
+                    &s,
+                    RetryInput {
+                        job_id: job.id.clone(),
+                        as_new,
+                        actor: "human".into(),
+                        ..Default::default()
+                    }
+                ))
+                .contains("active run")
+            );
+        }
+    }
+
+    #[test]
+    fn retry_job_source_dedupe_stays_in_project() {
+        let (_dir, s, p) = fixture();
+        let job = make_failed_job(&s, &p.slug, "shared-source");
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects(slug, name, path, added_at) VALUES ('other', 'Other', ?, ?)",
+                params![
+                    tempfile::tempdir().unwrap().path().display().to_string(),
+                    TEST_NOW
+                ],
+            )
+            .unwrap();
+        add_job(
+            &s,
+            JobInput {
+                project: "other".into(),
+                kind: "task".into(),
+                title: "Other work".into(),
+                tier: 1,
+                source: job.source.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let out = retry_job(
+            &s,
+            RetryInput {
+                job_id: job.id,
+                as_new: true,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(out.job.project, p.slug);
+        assert!(!out.reused);
+    }
+
+    #[test]
+    fn retry_job_no_source_and_superseded_in_place() {
+        let (_dir, s, p) = fixture();
+        let job = make_failed_job(&s, &p.slug, "");
+        let first = retry_job(
+            &s,
+            RetryInput {
+                job_id: job.id.clone(),
+                as_new: true,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let second = retry_job(
+            &s,
+            RetryInput {
+                job_id: job.id.clone(),
+                as_new: true,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.job.id, first.job.id);
+        assert!(second.reused);
+        let queued: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM jobs WHERE status = 'queued'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued, 1);
+        let again = retry_job(
+            &s,
+            RetryInput {
+                job_id: job.id.clone(),
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(again.reused);
+        assert_ne!(again.job.id, job.id);
+        assert_eq!(
+            crate::test_helpers::count_rows(
+                &s,
+                "events",
+                "action = ? AND subject = ?",
+                &[&JOB_RECOVER_ACTION, &job.id]
+            ),
+            1
+        );
+        finish_job(&s, &again.job.id, "human", "done", "landed", "", None).unwrap();
+        for as_new in [false, true] {
+            assert!(
+                err_what(retry_job(
+                    &s,
+                    RetryInput {
+                        job_id: job.id.clone(),
+                        as_new,
+                        actor: "human".into(),
+                        ..Default::default()
+                    }
+                ))
+                .contains("superseded")
+            );
+        }
+    }
+
+    fn store_at(s: &pulse_store::Store, hours: f64) -> pulse_store::Store {
+        let now = plus_hours(TEST_NOW, hours).unwrap();
+        pulse_store::Store::open(pulse_store::Options {
+            home: s.home.clone(),
+            now,
+            skip_records: true,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn retry_job_cancelled_root_allows_later_child_recovery() {
+        for source in ["", "manual:cancelled-chain"] {
+            for as_new in [false, true] {
+                let (_dir, s, p) = fixture();
+                let root = make_failed_job(&s, &p.slug, source);
+                let cancelled = finish_job(
+                    &s,
+                    &root.id,
+                    pulse_store::HUMAN_AGENT,
+                    "cancelled",
+                    "cancelled by the owner",
+                    "",
+                    None,
+                )
+                .unwrap();
+                let child = retry_job(
+                    &store_at(&s, 1.0),
+                    RetryInput {
+                        job_id: root.id.clone(),
+                        as_new: true,
+                        actor: pulse_store::HUMAN_AGENT.into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let later = store_at(&s, 2.0);
+                finish_job(
+                    &later,
+                    &child.job.id,
+                    pulse_store::HUMAN_AGENT,
+                    "failed",
+                    "verify exit 1",
+                    "",
+                    None,
+                )
+                .unwrap();
+                let retry = retry_job(
+                    &later,
+                    RetryInput {
+                        job_id: child.job.id,
+                        as_new,
+                        actor: pulse_store::HUMAN_AGENT.into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| {
+                    panic!("{source}/{as_new}: older root cancellation blocked child: {e}")
+                });
+                assert_eq!(retry.job.status, "queued");
+                assert_eq!(retry.root, root.id);
+                let root_after = job_by_id(&s, &root.id).unwrap().unwrap();
+                assert_eq!(root_after.status, "cancelled");
+                assert_eq!(root_after.finished_at, cancelled.finished_at);
+                assert_eq!(root_after.result, cancelled.result);
+            }
+        }
+    }
+
+    fn completion_run_fixture() -> (TempDir, pulse_store::Store, Job, RunJobResult) {
+        let (dir, s, p) = fixture();
+        let (mut job, _) = add_job(
+            &s,
+            JobInput {
+                project: p.slug,
+                kind: "task".into(),
+                title: "Complete the fixture".into(),
+                created_by: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET status = 'leased', lease_agent = 'alice', generation = 3 WHERE id = ?",
+                [&job.id],
+            )
+            .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at) VALUES ('run-completion', ?, 'alice', 'demo', ?)",
+                params![job.id, TEST_NOW],
+            )
+            .unwrap();
+        job = finish_job(
+            &s,
+            &job.id,
+            "alice",
+            "done",
+            "provisional report",
+            "pulse/alice/provisional",
+            Some(3),
+        )
+        .unwrap();
+        let input = RunJobResult {
+            run_id: "run-completion".into(),
+            job_id: job.id.clone(),
+            agent: "alice".into(),
+            generation: 3,
+            status: "done".into(),
+            result: "controller result".into(),
+            ..Default::default()
+        };
+        (dir, s, job, input)
+    }
+
+    #[test]
+    fn completion_finalize_replaces_branch() {
+        for (status, branch) in [
+            ("done", ""),
+            ("done", "pulse/alice/verified"),
+            ("failed", ""),
+            ("queued", "evolve/planned"),
+        ] {
+            let (_dir, s, _job, mut input) = completion_run_fixture();
+            input.status = status.into();
+            input.branch = branch.into();
+            let got = finish_run_job(&s, input.clone()).unwrap();
+            assert_eq!(got.status, status);
+            assert_eq!(got.branch, branch);
+            assert_eq!(got.result, input.result);
+            assert_eq!(got.generation, input.generation);
+            if status == "queued" {
+                assert!(got.lease_agent.is_empty());
+                assert!(got.finished_at.is_empty());
+            }
+            let run_status: String = s
+                .conn()
+                .unwrap()
+                .query_row(
+                    "SELECT status FROM runs WHERE id = ?",
+                    [&input.run_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(run_status, "running");
+        }
+    }
+
+    #[test]
+    fn completion_finalize_rejects_stale_ownership() {
+        for name in [
+            "missing run",
+            "finished run",
+            "generation",
+            "agent",
+            "lease owner",
+            "run project",
+            "cancelled",
+            "failed",
+        ] {
+            let (_dir, s, _job, mut input) = completion_run_fixture();
+            match name {
+                "missing run" => input.run_id = "missing".into(),
+                "finished run" => {
+                    s.conn()
+                        .unwrap()
+                        .execute(
+                            "UPDATE runs SET status = 'done' WHERE id = ?",
+                            [&input.run_id],
+                        )
+                        .unwrap();
+                }
+                "generation" => input.generation += 1,
+                "agent" => input.agent = "bob".into(),
+                "lease owner" => {
+                    s.conn()
+                        .unwrap()
+                        .execute(
+                            "UPDATE jobs SET lease_agent = 'bob' WHERE id = ?",
+                            [&input.job_id],
+                        )
+                        .unwrap();
+                }
+                "run project" => {
+                    s.conn()
+                        .unwrap()
+                        .execute(
+                            "UPDATE runs SET project = 'other' WHERE id = ?",
+                            [&input.run_id],
+                        )
+                        .unwrap();
+                }
+                "cancelled" | "failed" => {
+                    s.conn()
+                        .unwrap()
+                        .execute(
+                            "UPDATE jobs SET status = ? WHERE id = ?",
+                            params![name, input.job_id],
+                        )
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let before = job_by_id(&s, &input.job_id).unwrap().unwrap();
+            assert!(finish_run_job(&s, input.clone()).is_err(), "{name}");
+            let after = job_by_id(&s, &input.job_id).unwrap().unwrap();
+            assert_eq!(before, after, "{name}");
+        }
+    }
+
+    #[test]
+    fn completion_finalize_rolls_back_on_event_failure() {
+        let (_dir, s, before, input) = completion_run_fixture();
+        s.conn()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER completion_event_failure BEFORE INSERT ON events
+                WHEN NEW.action = 'job.done' BEGIN SELECT RAISE(ABORT, 'fixture event failure'); END",
+            )
+            .unwrap();
+        assert!(finish_run_job(&s, input.clone()).is_err());
+        let after = job_by_id(&s, &input.job_id).unwrap().unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn decide_no_and_markers() {
+        let (_dir, s, p) = fixture();
+        let sug = seed_proposal(&s, &p.slug);
+        let d = decide(&s, &sug.id, "no", "", "").unwrap();
+        assert_eq!(d.result.resolution, "declined");
+        assert_eq!(d.result.agent, "human");
+        assert!(d.job.is_none());
+        assert_eq!(d.decided_by, "human");
+        assert!(d.result.summary.starts_with("declined: Cache the build"));
+        assert!(d.result.body.contains("(no words recorded)"));
+        assert_eq!(
+            err_what(decide(&s, &sug.id, "maybe", "", "")),
+            "The answer is yes or no"
+        );
+        assert_eq!(
+            err_what(decide(&s, "nope", "yes", "", "")),
+            "No post 'nope'"
+        );
+
+        let prop = crate::posts::create_post(
             &s,
             crate::posts::PostInput {
                 kind: "suggestion".into(),
                 project: p.slug.clone(),
-                area: "plan".into(),
-                thread: "next".into(),
-                summary: "Ship the next slice".into(),
-                body: "Do a useful thing.".into(),
+                area: "hands".into(),
+                thread: "vm".into(),
+                summary: "pair the vm".into(),
+                body: "pair: hands-2\n".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:10:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = decide(&s, &prop.id, "yes", "go", "").unwrap();
+        assert!(d.job.is_none());
+        let auth = authorizing_decision(&s, "pair: hands-2", "", 0)
+            .unwrap()
+            .unwrap();
+        assert!(auth.valid);
+        assert_eq!(auth.post_id, prop.id);
+        assert_eq!(
+            agent_gate(&s, "pair: hands-2", "alice", "").unwrap(),
+            prop.id
+        );
+        assert_eq!(
+            err_what(agent_gate(&s, "pair: other", "alice", "")),
+            "An agent may run this only after the human's `pulse decide ... yes` on a board proposal whose body carries the line `pair: other`; no decided proposal names it"
+        );
+        assert!(
+            err_what(agent_gate(
+                &s,
+                "pair: hands-2",
+                "alice",
+                "2026-09-20T10:00:00Z"
+            ))
+            .contains("does not authorize")
+        );
+        assert_eq!(agent_gate(&s, "pair: other", "", "").unwrap(), "");
+    }
+
+    #[test]
+    fn stop_question_is_the_owners_alone_and_queues_no_job() {
+        let (_dir, s, p) = fixture();
+        crate::agents::join_agent(
+            &s,
+            crate::agents::JoinInput {
+                name: lead_name(&p.slug),
+                kind: "lead".into(),
+                runner: "copilot".into(),
+                model: "m".into(),
+                session: "sess-lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let flagged = seed_proposal(&s, &p.slug);
+        let question = crate::posts::create_post(
+            &s,
+            crate::posts::PostInput {
+                kind: "question".into(),
+                project: p.slug.clone(),
+                area: "evolution".into(),
+                thread: "docs".into(),
+                agent: "alice".into(),
+                on: flagged.id.clone(),
+                for_owner: true,
+                summary: pulse_store::EVOLUTION_STOP_SUMMARY.into(),
+                body: "an instruction-shaped post was detected".into(),
+                date: "2026-09-06T09:31:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.set_setting("human", "owner.presence", "away").unwrap();
+        assert_eq!(
+            err_what(decide(
+                &s,
+                &question.id,
+                "yes",
+                "looks fine",
+                &lead_name(&p.slug)
+            )),
+            "a stop question from the evolution loop is the owner's alone (ADR-043)"
+        );
+        let d = decide(
+            &s,
+            &question.id,
+            "yes",
+            "a card about the verify step, not a command to agents",
+            "",
+        )
+        .unwrap();
+        assert!(d.job.is_none());
+        assert_eq!(d.decided_by, pulse_store::HUMAN_AGENT);
+        assert_eq!(d.result.resolution, "accepted");
+        assert_eq!(d.result.on, question.id);
+        let jobs: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(jobs, 0);
+    }
+
+    #[test]
+    fn owner_away_lead_decide_guards() {
+        let (_dir, s, p) = fixture();
+        for slug in [&p.slug, "other"] {
+            crate::agents::join_agent(
+                &s,
+                crate::agents::JoinInput {
+                    name: lead_name(slug),
+                    kind: "lead".into(),
+                    runner: "copilot".into(),
+                    model: "m".into(),
+                    session: format!("sess-{slug}-lead"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let sug = seed_proposal(&s, &p.slug);
+        assert_eq!(
+            err_what(decide(&s, &sug.id, "yes", "", &lead_name(&p.slug))),
+            "pulse decide is the human's call; a lead decides only while owner.presence is away"
+        );
+        s.set_setting("human", "owner.presence", "away").unwrap();
+        assert_eq!(
+            err_what(decide(&s, &sug.id, "yes", "", "alice")),
+            "only a project's lead decides for the owner"
+        );
+        assert_eq!(
+            err_what(decide(&s, &sug.id, "yes", "", &lead_name("other"))),
+            "only the proposal project's lead decides for the owner"
+        );
+        let d = decide(&s, &sug.id, "yes", "ship it", &lead_name(&p.slug)).unwrap();
+        assert_eq!(d.result.agent, lead_name(&p.slug));
+        assert_eq!(d.decided_by, lead_name(&p.slug));
+        assert!(
+            d.result
+                .body
+                .contains("answered **yes** on the owner's behalf")
+        );
+        assert!(
+            d.job
+                .as_ref()
+                .unwrap()
+                .title
+                .starts_with("Act on the lead's yes")
+        );
+        assert!(
+            d.job
+                .unwrap()
+                .brief
+                .contains("never accepts, changes or supersedes an ADR")
+        );
+    }
+
+    #[test]
+    fn owner_away_lead_decide_still_waits_for_owner() {
+        let (_dir, s, p) = fixture();
+        let lead = lead_name(&p.slug);
+        crate::agents::join_agent(
+            &s,
+            crate::agents::JoinInput {
+                name: lead.clone(),
+                kind: "lead".into(),
+                runner: "copilot".into(),
+                model: "m".into(),
+                session: "sess-lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        join_alice(&s);
+        s.set_setting("human", "owner.presence", "away").unwrap();
+        let compute = crate::posts::create_post(
+            &s,
+            crate::posts::PostInput {
+                kind: "suggestion".into(),
+                project: p.slug.clone(),
+                area: "compute".into(),
+                thread: "vm".into(),
+                summary: "Rent a vm".into(),
+                body: "need capacity".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:30:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.conn()
+                .unwrap()
+                .execute("INSERT INTO compute_requests (id, project, requested_by, size, hours, reason, proposal_post, at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params!["CR-001", p.slug, "alice", "Standard_B2ms", 1_i64, "need capacity", compute.id, s.now(), s.now()])
+                .unwrap();
+        assert_eq!(
+            err_what(decide(&s, &compute.id, "yes", "", &lead)),
+            "compute is money: it waits for the owner; compute.auto_approve and the caps pre-authorize it"
+        );
+        let marker = crate::posts::create_post(
+            &s,
+            crate::posts::PostInput {
+                kind: "suggestion".into(),
+                project: p.slug.clone(),
+                area: "hands".into(),
+                thread: "vm".into(),
+                summary: "pair the vm".into(),
+                body: "pair: x\n".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:31:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            err_what(decide(&s, &marker.id, "yes", "", &lead)),
+            "a proposal that authorizes a command waits for the human (ADR-021)"
+        );
+        assert!(
+            authorizing_decision(&s, "pair: x", "", 0)
+                .unwrap()
+                .is_none()
+        );
+        let adr = crate::posts::create_post(
+            &s,
+            crate::posts::PostInput {
+                kind: "suggestion".into(),
+                project: p.slug.clone(),
+                area: "evolution".into(),
+                thread: "adr".into(),
+                summary: "Accept ADR-023 and start its plan".into(),
+                body: "the record is ready".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:32:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            err_what(decide(&s, &adr.id, "no", "not now", &lead)),
+            "a proposal that names ADR-023 is a Tier 2 decision: it waits for the owner"
+        );
+        let paths = crate::posts::create_post(
+            &s,
+            crate::posts::PostInput {
+                kind: "suggestion".into(),
+                project: p.slug,
+                area: "evolution".into(),
+                thread: "ci".into(),
+                summary: "Speed up CI".into(),
+                body: "Edit .github/workflows/ci.yml to cache modules".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:33:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            err_what(decide(&s, &paths.id, "yes", "cheap", &lead)),
+            "a proposal that points at .github/ is a Tier 2 decision: it waits for the owner"
+        );
+        assert_eq!(crate::test_helpers::count_rows(&s, "decisions", "", &[]), 0);
+        decide(&s, &adr.id, "yes", "go", "").unwrap();
+        for (summary, body, want) in [
+            ("Retry per ADR-036", "cites the decision", "names ADR-036"),
+            (
+                "Retry with backoff",
+                "as ADR-036 decided; edit internal/runner",
+                "",
+            ),
+            (
+                "Tidy docs",
+                "touch docs/decisions/ADR-001.md",
+                "points at docs/decisions/",
+            ),
+            (
+                "Kill switch",
+                "create docs/evolution/STOP",
+                "points at docs/evolution/STOP",
+            ),
+            ("Small fix", "internal/tally/gate.go", ""),
+        ] {
+            assert_eq!(tier2_proposal(summary, body), want);
+        }
+    }
+
+    #[test]
+    fn lead_yes_job_brief_never_accepts_an_adr() {
+        let (_dir, s, p) = fixture();
+        let lead = lead_name(&p.slug);
+        crate::agents::join_agent(
+            &s,
+            crate::agents::JoinInput {
+                name: lead.clone(),
+                kind: "lead".into(),
+                runner: "copilot".into(),
+                model: "m".into(),
+                session: "sess-lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.set_setting("human:dashboard", "owner.presence", "away")
+            .unwrap();
+        let sug = seed_proposal(&s, &p.slug);
+        let d = decide(&s, &sug.id, "yes", "small and reversible", &lead).unwrap();
+        let brief = &d.job.as_ref().unwrap().brief;
+        assert!(!brief.contains("If it accepts an ADR"));
+        assert!(brief.contains("never accepts, changes or supersedes an ADR"));
+        assert!(brief.contains("Tier 2 waits for the owner"));
+        s.set_setting(&lead, "owner.presence", "away").unwrap();
+        let other = crate::posts::create_post(
+            &s,
+            crate::posts::PostInput {
+                kind: "suggestion".into(),
+                project: p.slug,
+                area: "evolution".into(),
+                thread: "b".into(),
+                summary: "Another small thing".into(),
+                body: "Signal: README.md".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:40:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            err_what(decide(&s, &other.id, "yes", "", &lead)),
+            "pulse decide is the human's call; a lead decides only while owner.presence is away"
+        );
+    }
+
+    #[test]
+    fn jobs_add_finish() {
+        let (_dir, s, p) = fixture();
+        let (job, created) = add_job(
+            &s,
+            JobInput {
+                project: p.slug.clone(),
+                kind: "task".into(),
+                title: "Do a thing".into(),
+                source: "task:1".into(),
+                priority: 5,
+                created_by: "alice".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(created);
+        assert!(job.id.starts_with("job-20260906T100000Z-"));
+        let (dedupe, created) = add_job(
+            &s,
+            JobInput {
+                project: p.slug.clone(),
+                kind: "task".into(),
+                title: "Do a thing".into(),
+                source: "task:1".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!created);
+        assert_eq!(dedupe.id, job.id);
+        assert_eq!(
+            err_what(add_job(
+                &s,
+                JobInput {
+                    project: p.slug.clone(),
+                    kind: "party".into(),
+                    title: "t".into(),
+                    ..Default::default()
+                }
+            )),
+            format!("Job kind must be one of: {}", JOB_KINDS.join(", "))
+        );
+        assert_eq!(
+            err_what(add_job(
+                &s,
+                JobInput {
+                    project: p.slug.clone(),
+                    kind: "task".into(),
+                    title: "t".into(),
+                    tier: 2,
+                    ..Default::default()
+                }
+            )),
+            "The runner takes Tier 0 and Tier 1 jobs only; Tier 2 needs an ADR and the human"
+        );
+        assert_eq!(
+            err_what(add_job(
+                &s,
+                JobInput {
+                    project: "zzz".into(),
+                    kind: "task".into(),
+                    title: "t".into(),
+                    ..Default::default()
+                }
+            )),
+            "No project 'zzz'"
+        );
+        let (exp, created) = add_job(
+            &s,
+            JobInput {
+                project: p.slug,
+                kind: "experiment".into(),
+                title: "try it".into(),
+                source: "suggestion:x".into(),
+                branch: "evolve/x".into(),
+                created_by: "evolve".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(created);
+        assert_eq!(exp.branch, "evolve/x");
+        s.conn()
+                .unwrap()
+                .execute(
+                    "UPDATE jobs SET status = 'leased', lease_agent = 'bob', lease_until = '2026-09-06T11:00:00Z' WHERE id = ?",
+                    [&job.id],
+                )
+                .unwrap();
+        assert_eq!(
+            err_what(finish_job(&s, &job.id, "alice", "done", "", "", None)),
+            format!("Job {} is leased by bob, not alice", job.id)
+        );
+        assert!(
+            err_what(finish_job(&s, &job.id, "bob", "done", "", "", Some(3)))
+                .starts_with("Stale lease:")
+        );
+        assert_eq!(
+            err_what(finish_job(&s, &job.id, "bob", "paused", "", "", None)),
+            "A job ends done, failed, cancelled, blocked, or back to queued"
+        );
+        assert_eq!(
+            err_what(finish_job(&s, "nope", "bob", "done", "", "", None)),
+            "No job 'nope'"
+        );
+        let done = finish_job(
+            &s,
+            &job.id,
+            "bob",
+            "done",
+            "SUMMARY: ok",
+            "pulse/bob/x",
+            None,
+        )
+        .unwrap();
+        assert_eq!(done.status, "done");
+        assert_eq!(done.result, "SUMMARY: ok");
+        assert_eq!(done.branch, "pulse/bob/x");
+        assert_eq!(done.finished_at, TEST_NOW);
+        assert_eq!(done.lease_agent, "bob");
+        let queued = finish_job(&s, &job.id, "human", "queued", "", "", None).unwrap();
+        assert!(queued.lease_agent.is_empty());
+        assert!(queued.finished_at.is_empty());
+    }
+
+    #[test]
+    fn board_writes_reach_bus_subscribers() {
+        let (_dir, s, p) = fixture();
+        join_alice(&s);
+        let bus = pulse_bus::default();
+        let (rx, cancel) = bus.subscribe(
+            pulse_bus::Filter {
+                actions: vec!["post.finding".into()],
+                ..Default::default()
+            },
+            16,
+        );
+        let post = crate::posts::create_post(
+            &s,
+            crate::posts::PostInput {
+                kind: "finding".into(),
+                project: p.slug,
+                area: "a".into(),
+                thread: "b".into(),
+                summary: "seen on the bus".into(),
                 agent: "alice".into(),
                 ..Default::default()
             },
         )
         .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut found = None;
+        while std::time::Instant::now() < deadline {
+            let Ok(e) = rx.recv_timeout(std::time::Duration::from_millis(100)) else {
+                continue;
+            };
+            if e.subject == post.id {
+                found = Some(e);
+                break;
+            }
+        }
+        cancel();
+        let e = found.expect("no event published in-process");
+        assert_eq!(e.action, "post.finding");
+        assert_eq!(e.subject, post.id);
+        assert_eq!(e.actor, "alice");
+        assert!(e.id > 0);
+        assert_eq!(
+            crate::test_helpers::count_rows(
+                &s,
+                "events",
+                "action = 'post.finding' AND subject = ?",
+                &[&post.id]
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn decide_is_atomic_under_race() {
+        for answers in [vec!["yes"], vec!["no"], vec!["yes", "no"]] {
+            let (_dir, s, p) = fixture();
+            let sug = seed_proposal(&s, &p.slug);
+            let mut wins = 0;
+            let mut refused = 0;
+            for i in 0..6 {
+                match decide(&s, &sug.id, answers[i % answers.len()], "", "") {
+                    Ok(_) => wins += 1,
+                    Err(e)
+                        if what_any(&e)
+                            .ends_with("was already decided; a new proposal needs a new post") =>
+                    {
+                        refused += 1
+                    }
+                    Err(e) => panic!("unexpected: {e}"),
+                }
+            }
+            assert_eq!(wins, 1);
+            assert_eq!(refused, 5);
+            assert_eq!(
+                crate::test_helpers::count_rows(&s, "decisions", "post_id = ?", &[&sug.id]),
+                1
+            );
+            assert_eq!(
+                crate::test_helpers::count_rows(
+                    &s,
+                    "posts",
+                    "kind = 'result' AND on_post = ?",
+                    &[&sug.id]
+                ),
+                1
+            );
+            assert_eq!(
+                crate::test_helpers::count_rows(
+                    &s,
+                    "events",
+                    "action = 'decide' AND subject = ?",
+                    &[&sug.id]
+                ),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn decide_yes_queues_job() {
+        let (_dir, s, p) = fixture();
+        let proposal = seed_proposal(&s, &p.slug);
 
         let d = decide(&s, &proposal.id, "yes", "approved", "human").unwrap();
 

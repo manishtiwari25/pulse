@@ -5,6 +5,8 @@ use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+pub use crate::projects::import_registry;
+
 pub fn export_store(
     s: &pulse_store::Store,
     sql_path: &str,
@@ -111,11 +113,82 @@ fn sql_literal(v: rusqlite::types::Value) -> String {
 }
 #[cfg(test)]
 mod tests {
+    use crate::test_helpers::{count_rows, fixture, git_repo, new_home, what_any};
+
     #[test]
     fn literal_quotes() {
         assert_eq!(
             super::sql_literal(rusqlite::types::Value::Text("a'b".into())),
             "'a''b'"
         );
+    }
+
+    #[test]
+    fn import_registry() {
+        let (_home_dir, _, s) = new_home();
+        let repo = git_repo();
+        let dir = tempfile::tempdir().unwrap();
+        let reg = dir.path().join("projects.json");
+        std::fs::write(
+            &reg,
+            format!(
+                r#"{{"projects": [{{"slug": "one", "path": "{}", "brain": true}}, {{"path": "/nope/missing"}}], "commons": "/tmp/commons"}}"#,
+                repo.path().display()
+            ),
+        )
+        .unwrap();
+        let got =
+            crate::projects::import_registry(&s, &reg.display().to_string(), "migrate").unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].slug, "one");
+        assert!(got[0].created);
+        let (v, ok) = s.meta("commons_path").unwrap();
+        assert!(ok);
+        assert_eq!(v, "/tmp/commons");
+        assert_eq!(s.brain().unwrap().unwrap().slug, "one");
+        let missing = dir.path().join("none.json");
+        assert!(
+            crate::projects::import_registry(&s, &missing.display().to_string(), "migrate")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn export_store() {
+        let (_home_dir, _, s, p, _repo) = fixture();
+        let err = super::export_store(&s, "", "", false).unwrap_err();
+        assert_eq!(what_any(&err), "export --sql PATH or --db PATH");
+        let inside = std::path::Path::new(&p.path).join("dump.sql");
+        let err = super::export_store(&s, &inside.display().to_string(), "", false).unwrap_err();
+        assert!(what_any(&err).starts_with("Refusing to export into the registered project demo"));
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("copy.sqlite");
+        let got = super::export_store(&s, "", &db.display().to_string(), false).unwrap();
+        assert_eq!(got, db.display().to_string());
+        let err = super::export_store(&s, "", &db.display().to_string(), false).unwrap_err();
+        assert_eq!(
+            what_any(&err),
+            format!("{} exists; pass --force to overwrite", db.display())
+        );
+        super::export_store(&s, "", &db.display().to_string(), true).unwrap();
+        let copy_dir = dir.path().join("home");
+        std::fs::create_dir_all(&copy_dir).unwrap();
+        std::fs::copy(&db, copy_dir.join(pulse_store::STORE_NAME)).unwrap();
+        let c = pulse_store::Store::open(pulse_store::Options {
+            home: copy_dir.display().to_string(),
+            skip_records: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(count_rows(&c, "agents", "", &[]), 3);
+        let sql_path = dir.path().join("sub").join("dump.sql");
+        super::export_store(&s, &sql_path.display().to_string(), "", false).unwrap();
+        let text = std::fs::read_to_string(sql_path).unwrap();
+        assert!(text.starts_with("BEGIN TRANSACTION;\n"));
+        assert!(text.ends_with("COMMIT;\n"));
+        assert!(text.contains("CREATE TABLE agents"));
+        assert!(text.contains(r#"INSERT INTO "agents" VALUES('alice'"#));
+        assert!(text.contains("CREATE TRIGGER posts_no_update"));
     }
 }

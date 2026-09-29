@@ -311,6 +311,17 @@ pub fn prune_agents(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Scorecard {
+    pub name: String,
+    pub runner: String,
+    pub model: String,
+    pub kind: String,
+    pub status: String,
+    pub last_useful_at: String,
+    pub sessions: Vec<String>,
+    pub jobs_done: i64,
+    pub jobs_failed: i64,
+    pub posts: i64,
+    pub last_heartbeat_at: String,
     #[serde(flatten)]
     pub agent: pulse_store::Agent,
     #[serde(flatten)]
@@ -353,6 +364,20 @@ pub fn scorecards(s: &pulse_store::Store, include_pruned: bool) -> Result<Vec<Sc
             );
             let (f, sg, v, an, r, n, last): PostCounts = conn.query_row("SELECT SUM(kind = 'finding'), SUM(kind = 'suggestion'), SUM(kind = 'vote'), SUM(kind = 'answer'), SUM(kind = 'result'), COUNT(*), MAX(date) FROM posts WHERE agent = ?", [&name], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)))?;
             out.push(Scorecard {
+                name: agent.name.clone(),
+                runner: agent.runner.clone(),
+                model: agent.model.clone(),
+                kind: agent.kind.clone(),
+                status: agent.status.clone(),
+                last_useful_at: agent.last_useful_at.clone(),
+                sessions: agent.sessions.clone(),
+                jobs_done: agent.jobs_done,
+                jobs_failed: agent.jobs_failed,
+                posts: agent.posts,
+                last_heartbeat_at: presence
+                    .get(&name)
+                    .map(|p| p.last_heartbeat_at.clone())
+                    .unwrap_or_default(),
                 agent,
                 presence: presence.get(&name).cloned().unwrap_or_default(),
                 findings: f.unwrap_or(0),
@@ -372,6 +397,9 @@ pub fn scorecards(s: &pulse_store::Store, include_pruned: bool) -> Result<Vec<Sc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{TEST_NOW, count_rows, new_home};
+    use rusqlite::params;
+
     #[test]
     fn session_resolution() {
         let a = pulse_store::Agent {
@@ -381,5 +409,156 @@ mod tests {
         assert_eq!(agent_session(Some(&a), ""), "s2");
         assert!(same_session("x", "x"));
         assert!(!same_session("", ""));
+    }
+
+    #[test]
+    fn agents_join_spawn_prune() {
+        let (_dir, _home, s) = new_home();
+        let (a, created) = join_agent(
+            &s,
+            JoinInput {
+                name: "Alice".into(),
+                runner: "copilot".into(),
+                model: "m1".into(),
+                session: "s1".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(created);
+        assert_eq!(a.name, "alice");
+        let (a, created) = join_agent(
+            &s,
+            JoinInput {
+                name: "alice".into(),
+                runner: "copilot".into(),
+                session: "s2".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!created);
+        assert_eq!(a.sessions, vec!["s1", "s2"]);
+        for input in [
+            JoinInput {
+                name: "alice".into(),
+                runner: "claude".into(),
+                ..Default::default()
+            },
+            JoinInput {
+                name: "human".into(),
+                ..Default::default()
+            },
+            JoinInput {
+                name: "A".into(),
+                ..Default::default()
+            },
+            JoinInput {
+                name: "9lives".into(),
+                ..Default::default()
+            },
+        ] {
+            assert!(join_agent(&s, input).is_err());
+        }
+        let aurora = spawn_agent(&s, "copilot", "m", "").unwrap();
+        let borealis = spawn_agent(&s, "copilot", "m", "").unwrap();
+        assert_eq!(aurora.name, "aurora");
+        assert_eq!(borealis.name, "borealis");
+        assert_eq!(s.agent("aurora").unwrap().unwrap().kind, "worker");
+
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE agents SET last_active_at = '2026-08-01T00:00:00Z', last_useful_at = '2026-08-01T00:00:00Z' WHERE name IN ('alice', 'borealis')",
+                [],
+            )
+            .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects(slug, name, path, added_at) VALUES ('demo', 'demo', ?, ?)",
+                params![
+                    tempfile::tempdir().unwrap().path().display().to_string(),
+                    TEST_NOW
+                ],
+            )
+            .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO jobs (id, project, kind, title, status, created_at, lease_agent) VALUES ('job-1', 'demo', 'task', 't', 'leased', ?, 'borealis')",
+                [TEST_NOW],
+            )
+            .unwrap();
+        let dry = prune_agents(&s, TEST_NOW, 14, "daemon", true).unwrap();
+        assert_eq!(
+            dry,
+            vec![Pruned {
+                name: "alice".into(),
+                reason: "no useful output since 2026-08-01T00:00:00Z (limit 14 days)".into()
+            }]
+        );
+        assert_eq!(s.agent("alice").unwrap().unwrap().status, "active");
+        let pruned = prune_agents(&s, TEST_NOW, 30, "daemon", false).unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].name, "alice");
+        let alice = s.agent("alice").unwrap().unwrap();
+        assert_eq!(alice.status, "pruned");
+        assert_eq!(alice.pruned_at, TEST_NOW);
+        assert!(resolve_agent(&s, "alice", true).is_err());
+        assert!(
+            join_agent(
+                &s,
+                JoinInput {
+                    name: "alice".into(),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE agents SET legacy_id = 'copilot/m' WHERE name = 'aurora'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_agent(&s, "copilot/m", true).unwrap().unwrap().name,
+            "aurora"
+        );
+        assert!(resolve_agent(&s, "", false).unwrap().is_none());
+        assert_eq!(count_rows(&s, "events", "action = 'agent.prune'", &[]), 1);
+    }
+
+    #[test]
+    fn prune_agents_keeps_leads() {
+        let (_dir, _home, s) = new_home();
+        for input in [
+            JoinInput {
+                name: "proj-lead".into(),
+                kind: "lead".into(),
+                ..Default::default()
+            },
+            JoinInput {
+                name: "stale-worker".into(),
+                kind: "worker".into(),
+                ..Default::default()
+            },
+        ] {
+            join_agent(&s, input).unwrap();
+        }
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE agents SET last_useful_at='2026-08-01T00:00:00Z', last_active_at='2026-08-01T00:00:00Z' WHERE name IN ('proj-lead', 'stale-worker')",
+                [],
+            )
+            .unwrap();
+        let pruned = prune_agents(&s, TEST_NOW, 14, "daemon", false).unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].name, "stale-worker");
+        assert_eq!(s.agent("proj-lead").unwrap().unwrap().status, "active");
+        assert_eq!(s.agent("stale-worker").unwrap().unwrap().status, "pruned");
     }
 }
