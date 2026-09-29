@@ -294,7 +294,7 @@ pub(crate) fn record_idle_notes(
             )
         })
         .collect();
-    if let Ok(data) = serde_json::to_string(&out)
+    if let Ok(data) = pulse_store::gojson::to_string(&out)
         && let Ok(conn) = s.conn()
     {
         let _ = conn.execute(

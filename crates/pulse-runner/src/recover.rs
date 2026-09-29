@@ -1393,7 +1393,7 @@ pub(crate) fn write_recovery_note(
     } else {
         notes.remove(&slug);
     }
-    let data = serde_json::to_string(&notes).unwrap();
+    let data = pulse_store::gojson::to_string(&notes).unwrap();
     exec1(
         &conn,
         "INSERT INTO meta (key, value) VALUES ('recovery', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",

@@ -115,7 +115,7 @@ pub(crate) fn redact_secrets(text: &str) -> String {
 }
 /// Go: func saveMachine(s *store.Store, requestID string, m *Machine, now string)
 pub(crate) fn save_machine(s: &pulse_store::Store, request_id: &str, m: &Machine, now: &str) {
-    let detail = serde_json::to_string(&json!({"tags": m.tags, "detail": m.detail})).unwrap();
+    let detail = pulse_store::gojson::to_string(&json!({"tags": m.tags, "detail": m.detail})).unwrap();
     let conn = s.conn().unwrap();
     crate::util::exec1(
         &conn,

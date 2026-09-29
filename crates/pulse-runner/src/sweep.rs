@@ -299,7 +299,7 @@ pub(crate) fn record_sweep(
         "errors": rep.errors.len(),
     });
     if let Ok(conn) = s.conn()
-        && let Ok(text) = serde_json::to_string(&note)
+        && let Ok(text) = pulse_store::gojson::to_string(&note)
     {
         let _ = conn.execute(
             "INSERT INTO meta (key, value) VALUES ('hygiene', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",

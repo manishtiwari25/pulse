@@ -144,7 +144,7 @@ pub(crate) fn record_landing_holds(
         .into_iter()
         .map(|(slug, note)| (slug, serde_json::json!({"at": now, "note": note})))
         .collect::<BTreeMap<_, _>>();
-    let Ok(data) = serde_json::to_string(&out) else {
+    let Ok(data) = pulse_store::gojson::to_string(&out) else {
         return;
     };
     if let Ok(conn) = s.conn() {

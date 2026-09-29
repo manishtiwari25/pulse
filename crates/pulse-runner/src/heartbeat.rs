@@ -141,7 +141,7 @@ pub(crate) fn write_hands_heartbeat(
     path: String,
     h: pulse_board::ExecutionHeartbeat,
 ) -> anyhow::Result<()> {
-    let data = serde_json::to_vec(&h)?;
+    let data = pulse_store::gojson::to_vec(&h)?;
     let dir = Path::new(&path)
         .parent()
         .ok_or_else(|| anyhow!("heartbeat path has no parent"))?;
