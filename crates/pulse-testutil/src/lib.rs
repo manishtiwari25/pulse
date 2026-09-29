@@ -1,5 +1,7 @@
 //! Shared test helpers for PULSE crates.
 
+pub mod httptest;
+
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
