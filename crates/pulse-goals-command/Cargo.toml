@@ -20,3 +20,4 @@ serde_json.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 pulse-testutil.workspace = true
+rusqlite.workspace = true
