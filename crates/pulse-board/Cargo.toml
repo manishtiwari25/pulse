@@ -28,3 +28,4 @@ home.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 pulse-testutil.workspace = true
+pulse-parity.workspace = true
