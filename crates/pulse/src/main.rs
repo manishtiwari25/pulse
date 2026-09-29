@@ -1,8 +1,6 @@
-//! Command pulse is the PULSE store, board, records and runner in one binary.
-//!
-//! ```text
-//! pulse [global flags] <command> [command flags] [args]
-//! ```
 fn main() {
-    println!("pulse: rust port scaffold");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
+    std::process::exit(pulse::run(&args, &mut stdout, &mut stderr));
 }

@@ -10,9 +10,12 @@ description = "PULSE: credential references: token, set, status, clear"
 
 [dependencies]
 anyhow.workspace = true
+thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
+once_cell.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

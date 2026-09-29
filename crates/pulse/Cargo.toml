@@ -16,20 +16,6 @@ path = "src/main.rs"
 [dependencies]
 pulse-cli.workspace = true
 pulse-store.workspace = true
-pulse-board.workspace = true
-pulse-cred-command.workspace = true
-pulse-evolve.workspace = true
-pulse-goals-command.workspace = true
-pulse-harness.workspace = true
-pulse-hooks.workspace = true
-pulse-hub.workspace = true
-pulse-inspect.workspace = true
-pulse-provider-copilot.workspace = true
-pulse-provider-openai.workspace = true
-pulse-records.workspace = true
-pulse-runner.workspace = true
-pulse-tally.workspace = true
-pulse-tasks.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 

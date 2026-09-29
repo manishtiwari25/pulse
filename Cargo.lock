@@ -731,6 +731,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "humantime"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1283,22 +1289,8 @@ name = "pulse"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "pulse-board",
  "pulse-cli",
- "pulse-cred-command",
- "pulse-evolve",
- "pulse-goals-command",
- "pulse-harness",
- "pulse-hooks",
- "pulse-hub",
- "pulse-inspect",
- "pulse-provider-copilot",
- "pulse-provider-openai",
- "pulse-records",
- "pulse-runner",
  "pulse-store",
- "pulse-tally",
- "pulse-tasks",
  "pulse-testutil",
  "serde_json",
  "tempfile",
@@ -1333,6 +1325,7 @@ dependencies = [
  "pulse-store",
  "pulse-testutil",
  "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1343,13 +1336,16 @@ name = "pulse-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "humantime",
  "nix",
+ "once_cell",
  "pulse-store",
  "pulse-testutil",
  "serde",
  "serde_json",
  "strsim",
  "tempfile",
+ "thiserror 2.0.21",
  "unicode-width",
 ]
 
@@ -1372,11 +1368,13 @@ name = "pulse-cred"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "once_cell",
  "pulse-testutil",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
