@@ -1,5 +1,5 @@
 // Href builders. Every route is a static page; state lives in search params
-// so the export has no dynamic segments and the Go hub serves one
+// so the export has no dynamic segments and the pulse hub serves one
 // index.html per route.
 
 export type ProjectTab = "overview" | "tasks" | "chat" | "threads" | "proposals" | "suggestions" | "amendments" | "evolution" | "timeline" | "notices" | "env";

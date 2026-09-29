@@ -63,19 +63,18 @@ pub fn legacy_agent_listing(text: &str) -> String {
     heartbeat_column.replace_all(&text, "").to_string()
 }
 
-/// The Go oracle binary: `$PULSE_GO_ORACLE`, else the coordinator's session
-/// copy, else `None` (tests skip).
+/// DEFAULT_ORACLE is where the Go oracle binary (the last Go `pulse`, built from
+/// 28f35b8) lives unless PULSE_GO_ORACLE says otherwise.
+pub const DEFAULT_ORACLE: &str = "/tmp/pulse-oracle/pulse";
+
+/// The Go oracle binary: `$PULSE_GO_ORACLE`, else [`DEFAULT_ORACLE`], else
+/// `None` (tests skip).
 pub fn oracle() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("PULSE_GO_ORACLE") {
-        let p = PathBuf::from(p);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    let session = PathBuf::from(
-        "/Users/work/.copilot/session-state/eb2b69f5-ae4f-4495-904e-534f0b2fbf3e/files/oracle/pulse",
-    );
-    session.is_file().then_some(session)
+    let p = std::env::var("PULSE_GO_ORACLE")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map_or_else(|| PathBuf::from(DEFAULT_ORACLE), PathBuf::from);
+    p.is_file().then_some(p)
 }
 
 /// One `pulse` invocation of a scenario.

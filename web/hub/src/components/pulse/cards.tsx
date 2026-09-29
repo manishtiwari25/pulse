@@ -244,7 +244,7 @@ export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug:
         description={r.summary}
         action={open === "yes" ? "Yes, proceed" : "No, decline"}
         destructive={open === "no"}
-        words={{ label: "Your words", placeholder: open === "yes" ? "e.g. approved - keep the scope as written" : "e.g. not now - revisit after the Go port lands", required: true }}
+        words={{ label: "Your words", placeholder: open === "yes" ? "e.g. approved - keep the scope as written" : "e.g. not now - revisit after the next release", required: true }}
         success={open === "yes" ? "Decided yes - the board records your answer; a job is queued when the proposal asks for work." : "Decided no - the board records your answer."}
         onConfirm={(words) => writes.decide(r.id, open === "yes" ? "yes" : "no", words)}
       />

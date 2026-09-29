@@ -1,4 +1,4 @@
-# The static export out/ IS committed (the Go hub embeds it; a human builds the binary without Node).
+# The static export out/ IS committed (the pulse hub embeds it; a human builds the binary without Node).
 /node_modules
 /.next/
 /build

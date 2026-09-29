@@ -1,9 +1,9 @@
-// The API client. Every route is same-origin JSON under /api/v1/ (the Go hub
+// The API client. Every route is same-origin JSON under /api/v1/ (the pulse hub
 // serves the export and the API from one origin; `next dev` proxies /api to a
 // running `pulse hub`). Shapes of the existing routes come from what the
 // Python dashboard returned (legacy/dashboard/src/api.ts); the new routes
 // (tasks, messages, compute, records, constitution, events) follow the
-// "API v1 additions" contract - the Go hub is checked against these types.
+// "API v1 additions" contract - the pulse hub is checked against these types.
 
 export class ApiError extends Error {
   status: number;
@@ -455,7 +455,7 @@ export interface Org {
   totals: Totals;
   active_claims: Claim[];
   proposals: Proposal[];
-  // Go hub metadata (absent on the Python server).
+  // pulse hub metadata (absent on the Python server).
   store?: string;
   schema_version?: string;
   records_version?: string;
@@ -658,7 +658,7 @@ export type SettingKind = "count" | "count-or-none" | "credits" | "number" | "fr
 // One of the owner's caps as the store holds it (ADR-025). `secret` marks
 // keys whose values the API never returns (compute credentials never live
 // here - each provider's auth is its CLI login on the hub machine - but the flag is the
-// contract for anything the Go hub decides to hide).
+// contract for anything the pulse hub decides to hide).
 export interface Setting {
   name: string;
   value: string;
@@ -1561,7 +1561,7 @@ export const writes = {
   adoptDraft: (id: string, words: string) => post<{ record: RecordRow }>("records/" + enc(id) + "/adopt", words ? { words } : {}),
   discardDraft: (id: string, words: string) => post<{ record: RecordRow; discarded: boolean }>("records/" + enc(id) + "/discard", words ? { words } : {}),
   draftJob: (id: string) => post<{ job: JobRef; created: boolean; reason: string }>("records/" + enc(id) + "/draft-job", {}),
-  // `id` is the contract field; `post_id` is what the Python hub read - the Go hub accepts both.
+  // `id` is the contract field; `post_id` is what the Python hub read - the pulse hub accepts both.
   decide: (id: string, answer: "yes" | "no", words: string) => post<{ ok?: boolean; decided?: unknown }>("decide", { id, post_id: id, answer, words }),
   setSetting: (name: string, value: string) => post<{ ok?: boolean; setting?: Setting }>("settings", { name, value }),
   harnessLogin: () => post<HarnessDeviceFlow>("harness/login", {}),

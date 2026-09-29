@@ -100,7 +100,7 @@ const GROUPS: Group[] = [
   },
 ];
 
-// Mirrors store.ModelSettings, store.ComputeSettings, store.EvolveSettings and store.DaemonSettings in the Go store.
+// Mirrors ModelSettings, ComputeSettings, EvolveSettings and DaemonSettings in the store (crates/pulse-store).
 // These rows are not inserted at Create, so when the hub omits one the
 // screen still lists it at its effective (default) value and the owner can
 // set it from here.

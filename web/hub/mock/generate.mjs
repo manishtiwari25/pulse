@@ -1,12 +1,12 @@
 // Regenerates web/hub/mock/api from a throwaway store the real `pulse` binary
 // seeds with synthetic projects, agents, posts, tasks, records and settings,
 // then serves through its own hub. The fixtures therefore keep the exact
-// shapes the Go hub returns, and nothing here reads or writes ~/.pulse.
+// shapes the pulse hub returns, and nothing here reads or writes ~/.pulse.
 //
-//   npm run mock:generate          # builds ./cmd/pulse, seeds, captures, cleans up
+//   npm run mock:generate          # cargo-builds the pulse binary, seeds, captures, cleans up
 //   PULSE_BIN=/path/to/pulse npm run mock:generate
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -338,7 +338,12 @@ async function capture() {
 }
 
 try {
-  if (!process.env.PULSE_BIN) execFileSync("go", ["build", "-o", bin, "./cmd/pulse"], { cwd: repo, stdio: "inherit" });
+  if (!process.env.PULSE_BIN) {
+    const target = join(root, "target");
+    execFileSync("cargo", ["build", "--release", "--locked", "--bin", "pulse", "--target-dir", target], { cwd: repo, stdio: "inherit" });
+    mkdirSync(dirname(bin), { recursive: true });
+    copyFileSync(join(target, "release", "pulse"), bin);
+  }
   seed();
   if (!rosterOnly) rmSync(out, { recursive: true, force: true });
   await capture();

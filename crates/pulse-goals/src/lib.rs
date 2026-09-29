@@ -1143,9 +1143,8 @@ mod tests {
     fn oracle_goal_rows_match_rust_for_same_inputs() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
-        let oracle = std::env::var("PULSE_GO_ORACLE").unwrap_or_else(|_| {
-            "/Users/work/.copilot/session-state/eb2b69f5-ae4f-4495-904e-534f0b2fbf3e/files/oracle/pulse".into()
-        });
+        let oracle =
+            std::env::var("PULSE_GO_ORACLE").unwrap_or_else(|_| "/tmp/pulse-oracle/pulse".into());
         if !Path::new(&oracle).exists() {
             return;
         }

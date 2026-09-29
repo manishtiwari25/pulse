@@ -1,9 +1,9 @@
 // Fixture server for `npm run dev:mock`. Serves web/hub/mock/api/**.json at
-// /api/v1/<path> with the same shapes the Go hub returns, answers the
+// /api/v1/<path> with the same shapes the pulse hub returns, answers the
 // owner's writes in memory (nothing is written to disk), and streams
 // events over SSE so the live timeline and chat can be exercised without a
 // hub. Not part of the export. The fixtures are synthetic; regenerate them
-// from the Go hub with `npm run mock:generate`.
+// from the pulse hub with `npm run mock:generate`.
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
@@ -16,8 +16,8 @@ import { createCodeDeliveryMock } from "./code-deliveries.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "api");
 const port = Number(process.env.PULSE_HUB_PORT ?? 8787);
 const delay = Number(process.env.MOCK_DELAY_MS ?? 120);
-// MOCK_STATIC=out serves the static export next to the API the way the Go
-// hub does (dist.go embeds web/hub/out); used by `npm run serve:out`.
+// MOCK_STATIC=out serves the static export next to the API the way the pulse
+// hub does (crates/pulse-hub embeds web/hub/out); used by `npm run serve:out`.
 const staticDir = process.env.MOCK_STATIC ? normalize(join(dirname(fileURLToPath(import.meta.url)), "..", process.env.MOCK_STATIC)) : "";
 const now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 // Begin the return on the first roster read, so startup delays cannot skip it.
@@ -185,7 +185,7 @@ function folders(raw) {
   const children = TREE[path];
   if (!children) return { error: "No folder " + path };
   const registered = (p) => state.projects.find((x) => x.path === p)?.slug || "";
-  // The registered project a folder sits inside (ADR-032), "" when none - the current path only, like the Go hub.
+  // The registered project a folder sits inside (ADR-032), "" when none - the current path only, like the pulse hub.
   const inside = state.projects.find((x) => x.status === "active" && path.startsWith(x.path + "/"))?.slug || "";
   const parent = path === "/" ? "" : path.slice(0, path.lastIndexOf("/")) || "/";
   const entries = children.map((name) => {
@@ -201,7 +201,7 @@ function folders(raw) {
 const privatePath = (dir) => ((dir === "~" || dir.startsWith("~/") ? HOME + dir.slice(1) : dir).replace(/\/+$/, "") || "/");
 const heldoutRefused = (res, why) => fail(res, 400, "Private fixture set is not ready", why, "pulse evolve setup DIR");
 // The projects whose next human step was the held-out one: after a write their
-// gates move the way the real hub's do (status.go), so the card leaves the inbox.
+// gates move the way the real hub's do (crates/pulse-hub/src/lifecycle.rs), so the card leaves the inbox.
 const heldoutGated = new Set();
 const heldoutAuto = () => (state.settings.settings.find((s) => s.name === "evolve.heldout")?.value || "auto") !== "owner";
 function heldoutGates() {
@@ -355,7 +355,7 @@ async function serveStatic(res, pathname) {
 // "[owner-private]" when a value is set and "" when it is not.
 const maskSetting = (s) => (s.secret ? { ...s, value: s.value ? "[owner-private]" : "" } : s);
 
-// The Python secret_shaped rule the Go store keeps (store.SecretShaped).
+// The Python secret_shaped rule the store keeps (pulse_store::secret_shaped).
 function secretShaped(v) {
   return /^(sk|ghp|gho|ghu|ghs|ghr|xox[abpr]|AKIA|AIza|ya29|eyJ)[A-Za-z0-9_\-]{8,}/.test(v) || /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(v) || /^ssh-(rsa|ed25519|dss) /.test(v) || (/^[A-Za-z0-9+/=_\-]{40,}$/.test(v) && !/^[0-9a-f\-]{36}$/i.test(v));
 }
@@ -530,7 +530,7 @@ async function handle(req, res) {
       if (s.name === "compute.provider") state.compute.caps.provider = v;
       syncHarnessSetting(s.name, v);
       // Owner-private settings: the event names the key only and the echo masks
-      // the value exactly like the Go hub ("[owner-private]" when set, "" when cleared).
+      // the value exactly like the pulse hub ("[owner-private]" when set, "" when cleared).
       emit("owner", "settings.set", s.name, s.secret ? { masked: true } : { value: v, previous });
       return send(res, 200, { ok: true, setting: maskSetting(s) });
     }

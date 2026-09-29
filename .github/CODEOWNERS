@@ -4,8 +4,8 @@
 #
 # Control-plane records (decisions, plans, constitution, evaluators, board)
 # live in the PULSE store, not in the tree; the loop's immutable paths are the
-# Go store schema, the web console, and this folder.
+# store schema, the web console, and this folder.
 
-/internal/store/                     @manishtiwari25
+/crates/pulse-store/                 @manishtiwari25
 /web/hub/                            @manishtiwari25
 /.github/                            @manishtiwari25

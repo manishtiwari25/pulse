@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
-// Static export: the Go hub embeds web/hub/out with //go:embed all:out and
-// serves out/<route>/index.html. The dev-only rewrite proxies /api to a
+// Static export: the pulse hub embeds web/hub/out (rust-embed in
+// crates/pulse-hub/src/server.rs) and serves out/<route>/index.html. The dev-only rewrite proxies /api to a
 // running `pulse hub --no-browser --port 8787`; `output: "export"` ignores
 // rewrites at build time, which is what we want (every API call is relative).
 const hubPort = process.env.PULSE_HUB_PORT ?? "8787";

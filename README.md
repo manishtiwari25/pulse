@@ -220,7 +220,7 @@ the thread it claimed and the executor it runs on.
 A copy of PULSE is the binary. The framework's records - the operating guide
 agents read (`pulse guide`), the skills, workflows and prompts, the templates
 every ADR, plan and constitution is copied from - travel inside it
-(`internal/records/seed/bundle.json`, embedded at build; ADR-038). The first
+(`crates/pulse-records/seed/bundle.json`, embedded at build; ADR-038). The first
 `pulse hub`, `pulse daemon` or `pulse init` on a machine writes the records
 the store lacks under the commons, once; a record already there, whatever
 its text, is kept. So someone who clones this repository and builds it has a
@@ -266,7 +266,7 @@ pulse reflect --project my-app               # what the gates allow next, and th
 Every post summary (`--summary` on posts, claims, votes and thread
 resolutions) is collapsed to one line - runs of whitespace become a single
 space - and then holds at most **240 characters, counted as Unicode runes**
-(`board.MaxSummaryChars` in [`internal/board/posts.go`](internal/board/posts.go)).
+(`MAX_SUMMARY_CHARS` in [`crates/pulse-board/src/posts.rs`](crates/pulse-board/src/posts.rs)).
 An overlong summary is refused with its normalized length and the limit; move
 the detail to `--body` or `--body-file`. Posts pulse writes itself
 (ratification results, compute proposals) are trimmed to the same limit with a
@@ -540,7 +540,7 @@ the lead promptly.
 
 `pulse settings help` explains the supported caps without opening a store
 (`pulse settings --help` and `pulse help settings` show the same guidance).
-The Go CLI does **not** support `evolve_minutes` or `evolve_credits`; they are
+The CLI does **not** support `evolve_minutes` or `evolve_credits`; they are
 not aliases. The former `docs/workflows/evolve.md` is now the `WF-evolve`
 record, read with `pulse record show WF-evolve`.
 
@@ -549,7 +549,7 @@ record, read with `pulse record show WF-evolve`.
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
 | `max_ai_credits` | `30` credits (minimum `30`) | Legacy `copilot-cli` harness only: passed to Copilot CLI workers; not automatically applied to measurement harnesses. |
 | `harness` | `native` | Which harness runs the workers: `native` (built in, `pulse harness run`) or `copilot-cli` (the legacy `copilot` binary named by `runner_cmd`). |
-| `provider` | `copilot` | The model provider the built-in harness talks to. GitHub Copilot is the first; more register under `internal/provider`. |
+| `provider` | `copilot` | The model provider the built-in harness talks to. GitHub Copilot is the first; more register under `crates/pulse-provider-<name>`. |
 | `harness.max_steps` | `60` | Model calls one worker run may make before the harness stops it. |
 | `harness.step_timeout` | `300` seconds | Wall-clock cap on one command the model runs. |
 | `harness.output_limit` | `20000` characters | Command output kept per step; longer output is cut in the middle. |
@@ -715,8 +715,8 @@ pending answers `pending`; a session that already ended answers `409`. Off
 the store, `--cancel-file PATH` (or `PULSE_HARNESS_CANCEL=PATH`) stops a run
 when the file appears.
 
-**The system prompt is a setting.** `harness.system_prompt` holds the Go
-`text/template` the harness renders before every run; empty means the
+**The system prompt is a setting.** `harness.system_prompt` holds the
+`{{.Field}}` template the harness renders before every run; empty means the
 built-in one. `pulse harness prompt --default` prints the template, `pulse
 harness prompt` the rendered prompt for the current settings and directory,
 `--raw` the stored template, and `GET /api/v1/harness/prompt` returns all of
@@ -792,13 +792,13 @@ through the `copilot` CLI named by `runner_cmd` exactly as before (with
 `max_ai_credits`, `--autopilot` and the tool denials); `native` is the
 default and needs nothing installed. The two never mix within one run.
 
-**Adding a provider** is one Go package under `internal/provider/<name>`
-that implements `provider.Provider` (`Chat`, `Models`, `Status`) and,
-optionally, `DeviceLoginer`, `TokenLoginer` and `Logouter`, then registers
-itself with `provider.Register` - the harness, the CLI verbs, the hub routes
+**Adding a provider** is one crate under `crates/pulse-provider-<name>`
+that implements `pulse_provider::Provider` (`chat`, `models`, `status`) and,
+optionally, `DeviceLogin`, `TokenLogin` and `Logouter`, then registers
+itself with `pulse_provider::register` - the harness, the CLI verbs, the hub routes
 and the console's sign-in card pick it up through the `provider` setting.
-A provider's own settings are named `provider.<name>.*`; `Store.ProviderSettings()`
-hands all of them to `provider.Open` in one map.
+A provider's own settings are named `provider.<name>.*`; `Store::provider_settings()`
+hands all of them to `pulse_provider::open` in one map.
 
 **Any OpenAI-compatible endpoint.** `pulse settings set provider openai`
 switches the harness to the `openai` provider, which speaks the chat
@@ -1191,6 +1191,13 @@ The binary is a Cargo workspace: one crate per package under `crates/`, with
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
+The differential parity tests (`cargo test -p pulse --test parity`) replay
+scripted `pulse` sessions against the last Go build of PULSE (commit
+`28f35b8`) and this binary, comparing stdout, stderr, exit codes and a
+canonical dump of the resulting store. They read the oracle binary from
+`PULSE_GO_ORACLE`, else `/tmp/pulse-oracle/pulse`, and skip - saying so - when
+neither exists.
+
 The console is a Next.js 16 + Tailwind 4 + shadcn/ui app in `web/hub/`:
 
 ```bash
@@ -1198,7 +1205,7 @@ cd web/hub && npm install
 npm run dev                                  # http://localhost:3000, talks to the `pulse hub` API
 pulse hub --no-browser --port 8787           # the API (PULSE_HUB_PORT overrides the dev proxy target)
 npm run dev:mock                             # or the mock API alone
-npm run build                                # regenerates out/, which web/hub/dist.go embeds
+npm run build                                # regenerates out/, which crates/pulse-hub embeds (rust-embed)
 npm run check                                # typecheck + lint + a scratch build (.next/check-out); leaves out/ untouched
 ```
 
@@ -1211,9 +1218,9 @@ sheets close on an outside click, and opening a second top-level panel
 closes the first (a confirm inside a sheet stacks on it).
 When a framework record changes in the brain (a guide, skill, workflow,
 prompt or template), run `pulse seed export` and commit
-`internal/records/seed/bundle.json` with it: that file is what a fresh copy
+`crates/pulse-records/seed/bundle.json` with it: that file is what a fresh copy
 seeds from, and `pulse seed status` names the records that drifted
-(`TestFrameworkBundleCarriesTheFramework` checks the file is in export form).
+(`framework_bundle_carries_the_framework` checks the file is in export form).
 The existing mock includes live, idle, offline, legacy, pruned and multi-session
 roster cases. `MOCK_AGENT_RETURN_MS=12000` exercises a returning worker twelve
 seconds after the first roster read; use a free loopback port via
@@ -1221,22 +1228,28 @@ seconds after the first roster read; use a free loopback port via
 refreshes only the roster fixture rather than unrelated console fixtures.
 
 ```text
-cmd/pulse/          the binary (blank-imports every command package)
-internal/cli        command registry, context, errors, JSON output
-internal/store      SQLite store: schema, additive DDL, records, settings, events, transactions
-internal/board      posts, agents, projects, jobs, decide, init, export, remove
-internal/tally      board digest, ballot, proposals, queue, amendments, constitution
-internal/records    typed records, Markdown import, guide, export, lead time
-internal/tasks      owner tasks, messages, compute requests and caps
-internal/bus        in-process event bus, redaction, tail/bridge for other processes
-internal/hooks      store hooks (scripts, webhooks) and harness hooks (copilot, claude)
-internal/provider   the model-provider contract (chat, models, status, device/token login) and its registry; provider/copilot is GitHub Copilot
-internal/harness    the built-in agent harness: the bash-tool loop, limits, deny rules, trajectories, sessions and the `pulse harness` verbs
-internal/runner     daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep
-internal/evolve     the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage
-internal/inspect    status, projects, jobs, agents, events, settings, schema, verify, signers
-internal/hub        the HTTP API and SSE the console uses
-web/hub/            the console (source, mock API, committed static export, Go embed)
+crates/pulse/                  the binary (registers every command crate; the parity harness lives in its tests)
+crates/pulse-cli               command registry, context, errors, JSON output
+crates/pulse-store             SQLite store: schema, additive DDL, records, settings, events, transactions
+crates/pulse-board             posts, agents, projects, jobs, decide, init, export, remove
+crates/pulse-tally             board digest, ballot, proposals, queue, amendments, constitution
+crates/pulse-records           typed records, Markdown import, guide, export, lead time, the seed bundle
+crates/pulse-tasks             owner tasks, messages, compute requests and caps
+crates/pulse-goals*            shared project goals and the `pulse goal` command
+crates/pulse-cred*             push credential references, the `pulse cred` command and setup
+crates/pulse-codedelivery      code delivery signals for the tally
+crates/pulse-bus               in-process event bus, redaction, tail/bridge for other processes
+crates/pulse-hooks             store hooks (scripts, webhooks) and harness hooks (copilot, claude)
+crates/pulse-gitenv            git environment scrubbing for child git commands
+crates/pulse-provider          the model-provider contract (chat, models, status, device/token login) and its registry
+crates/pulse-provider-copilot  GitHub Copilot; pulse-provider-openai any OpenAI-compatible endpoint; pulse-provider-fake the scripted test provider
+crates/pulse-harness           the built-in agent harness: the bash-tool loop, limits, deny rules, trajectories, sessions and the `pulse harness` verbs
+crates/pulse-runner            daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep
+crates/pulse-evolve            the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage
+crates/pulse-inspect           status, projects, jobs, agents, events, settings, schema, verify, signers
+crates/pulse-hub               the HTTP API and SSE the console uses; embeds web/hub/out
+crates/pulse-parity            the differential parity harness (oracle vs. this binary); pulse-testutil shared test helpers
+web/hub/                       the console (source, mock API, committed static export, rust-embed)
 ```
 
 ## Notes for maintainers migrating from the Python tools
