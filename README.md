@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  An agent-first control plane for software work: one Go binary, one SQLite store, one owner console.
+  An agent-first control plane for software work: one Rust binary, one SQLite store, one owner console.
 </p>
 
 # PULSE
@@ -25,16 +25,16 @@ The only Markdown in this repository is this file.
 
 ## Install
 
-Requires Go 1.26+. No Node, Python, or Bash tooling is needed to build or run:
-the console's static export is committed under `web/hub/out/` and embedded in
-the binary, and the agent harness that runs every job is built in - PULSE
+Requires a Rust toolchain (stable, 1.95+; [rustup](https://rustup.rs)). No Go,
+Node, Python, or Bash tooling is needed to build or run: the console's static
+export is committed under `web/hub/out/` and embedded in the binary, and the agent harness that runs every job is built in - PULSE
 talks to the model provider (GitHub Copilot first) itself, so there is no
 `copilot` CLI, no Node runtime and no other agent tool to install or keep
 logged in.
 
 ```bash
 git clone https://github.com/manishtiwari25/pulse.git && cd pulse
-go build -o ~/.pulse/bin/pulse ./cmd/pulse
+cargo install --path crates/pulse --root ~/.pulse --locked   # builds release, lands ~/.pulse/bin/pulse
 export PATH="$HOME/.pulse/bin:$PATH"      # add to your shell profile
 pulse version
 ```
@@ -96,14 +96,14 @@ a minute and shows the build it runs beside the daemon's under **Settings →
 Running**. A build that then exits three times early is put back to the
 previous one by the launcher, which turns `daemon.self_update` off and leaves
 a finding. Set `daemon.self_update` to `off` to keep the build you have and
-`go build -o ~/.pulse/bin/pulse ./cmd/pulse` by hand.
+`cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
 
 On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
 system ask once whether `pulse` may access that folder the first time the
 daemon touches it; answer Allow (the loop waits on the dialog, and `pulse
 status` reports the daemon as silent until then). macOS ties that answer to
-the binary's code-signing requirement, and a plain Go build's requirement is
-its own hash - so every rebuild would ask again. `pulse service install`
+the binary's code-signing requirement, and a plain `cargo build`'s requirement
+is its own hash - so every rebuild would ask again. `pulse service install`
 therefore re-signs the installed `pulse` with a requirement every build meets,
 `identifier "pulse"`, and the daemon signs each build it installs the same way:
 no certificate, no password, and the answer holds. Checkouts elsewhere never
@@ -230,7 +230,7 @@ the same guide.
 
 ```bash
 git clone https://github.com/manishtiwari25/pulse.git && cd pulse
-go build -o ~/.pulse/bin/pulse ./cmd/pulse
+cargo install --path crates/pulse --root ~/.pulse --locked
 pulse hub                # add a project, click Keep PULSE running - that is the whole setup
 pulse seed status        # what this build carries against what the store has
 pulse seed apply         # write what is missing by hand (the hub and the daemon do it on start)
@@ -944,9 +944,12 @@ a decision of its own.
 
 `pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) reads the
 machine and prints the proposed scripts without applying them. For installed
-hands it loads or builds the Linux template locally, then reports mismatches
-as `hands=differs (installed VERSION SHA7, template VERSION SHA7)`. Versions
-come from Go build metadata or a script's `# pulse-hands VERSION` header;
+hands it loads or builds the Linux template locally (`PULSE_HANDS_BINARY`, a
+`pulse-linux-ARCH` beside the binary, or `cargo build --release --target
+ARCH-unknown-linux-musl` from the checkout), then reports mismatches as
+`hands=differs (installed VERSION SHA7, template VERSION SHA7)`. Versions come
+from the build metadata embedded in the binary or a script's `# pulse-hands
+VERSION` header;
 `SHA7` is the first seven hex digits of its SHA-256. Metadata is read, never
 executed. Exact shipped pre-Go script hashes report `hands=older` with
 `legacy-COMMIT` versions, including the old `.sh` installation path. Edited
@@ -1181,15 +1184,18 @@ reason.
 
 ## Development
 
+The binary is a Cargo workspace: one crate per package under `crates/`, with
+`crates/pulse` the `pulse` binary itself.
+
 ```bash
-go build ./... && go vet ./... && go test -race ./...
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
 The console is a Next.js 16 + Tailwind 4 + shadcn/ui app in `web/hub/`:
 
 ```bash
 cd web/hub && npm install
-npm run dev                                  # http://localhost:3000, talks to the Go API
+npm run dev                                  # http://localhost:3000, talks to the `pulse hub` API
 pulse hub --no-browser --port 8787           # the API (PULSE_HUB_PORT overrides the dev proxy target)
 npm run dev:mock                             # or the mock API alone
 npm run build                                # regenerates out/, which web/hub/dist.go embeds

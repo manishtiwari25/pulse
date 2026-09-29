@@ -299,7 +299,7 @@ pub fn reset_registry_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{help as render_help, help_command, suggest, table as render_table};
+    use crate::{help_command, suggest};
     use std::sync::{Mutex, MutexGuard};
 
     /// Go runs a package's tests one at a time; the registry is process-global,
@@ -364,10 +364,10 @@ mod tests {
     }
 
     #[test]
-    fn table_error_style_json_and_help() {
+    fn table() {
         let _serial = crate::test_helpers::serial();
         let mut b = Vec::new();
-        render_table(
+        crate::table(
             &mut b,
             false,
             Some(&["NAME", "SUMMARY"]),
@@ -377,71 +377,93 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(
-            String::from_utf8(b).unwrap(),
-            "NAME    SUMMARY\na       one\nlonger  two\n"
-        );
+        let want = "NAME    SUMMARY\na       one\nlonger  two\n";
+        if String::from_utf8(b.clone()).unwrap() != want {
+            panic!(
+                "plain table:\n{:?}\nwant\n{:?}",
+                String::from_utf8(b).unwrap(),
+                want
+            );
+        }
+        b.clear();
+        crate::table(
+            &mut b,
+            true,
+            Some(&["N", "S"]),
+            &[vec!["a".into(), "b".into()]],
+        )
+        .unwrap();
+        let got = String::from_utf8(b.clone()).unwrap();
+        if !got.starts_with("\x1b[1m\x1b[4mN  S\x1b[0m\x1b[0m\n") || !got.ends_with("a  b\n") {
+            panic!("colour table: {:?}", got);
+        }
+        b.clear();
+        crate::table(&mut b, false, None, &[]).unwrap();
+        if !b.is_empty() {
+            panic!("empty table wrote {:?}", String::from_utf8(b).unwrap());
+        }
+    }
 
+    #[test]
+    fn error_and_style() {
+        let _serial = crate::test_helpers::serial();
         let e = errorf(
             2,
             "No store at /x",
             "this machine has no PULSE store yet",
             "pulse init <project-path>",
         );
-        assert_eq!(
-            e.to_string(),
-            "No store at /x\n  why: this machine has no PULSE store yet\n  fix: pulse init <project-path>"
-        );
-        assert_eq!(e.exit_code(), 2);
-        assert_eq!(
-            Error {
+        let want = "No store at /x\n  why: this machine has no PULSE store yet\n  fix: pulse init <project-path>";
+        if e.to_string() != want || e.exit_code() != 2 {
+            panic!("Error() = {:?} code {}", e.to_string(), e.exit_code());
+        }
+        if (Error {
+            what: "x".into(),
+            why: String::new(),
+            fix: String::new(),
+            code: 0,
+        })
+        .exit_code()
+            != 1
+            || (Error {
                 what: "x".into(),
                 why: String::new(),
                 fix: String::new(),
-                code: 0
-            }
-            .exit_code(),
-            1
-        );
-        assert_eq!(Style::default().red("x"), "x");
-        assert_eq!(Style { on: true }.green("x"), "\x1b[32mx\x1b[0m");
-        let mut json = Vec::new();
-        write_json(&mut json, &serde_json::json!({"b":1,"a":"<x>"})).unwrap();
-        assert_eq!(
-            String::from_utf8(json).unwrap(),
-            "{\n  \"a\": \"<x>\",\n  \"b\": 1\n}\n"
-        );
+                code: 0,
+            })
+            .to_string()
+                != "x"
+        {
+            panic!("defaults wrong");
+        }
+        let off = Style::default();
+        let on = Style { on: true };
+        if off.red("x") != "x" || on.green("x") != "\x1b[32mx\x1b[0m" {
+            panic!("style wrong");
+        }
+        let mut b = Vec::new();
+        if let Err(err) = write_json(&mut b, &serde_json::json!({"b": 1, "a": "<x>"})) {
+            panic!("WriteJSON = {:?} {err}", String::from_utf8(b).unwrap());
+        }
+        let got = String::from_utf8(b).unwrap();
+        if got != "{\n  \"a\": \"<x>\",\n  \"b\": 1\n}\n" {
+            panic!("WriteJSON = {:?} {:?}", got, Option::<anyhow::Error>::None);
+        }
+        let _guard = pulse_testutil::env_lock();
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+        }
+        let mut b = Vec::new();
+        if color_enabled(&mut b, false) {
+            panic!("colour on a buffer");
+        }
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+        }
     }
 
     #[test]
-    fn table() {
-        let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "NAME SUMMARYa onelonger two",
-            "SUMMARY",
-            "\\x1b[1m\\x1b[4mN S\\x1b[0m\\x1b[0m",
-            "longer",
-            "plain table:want",
-        ];
-        table_error_style_json_and_help();
-    }
-
-    #[test]
-    fn error_and_style() {
-        let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "NO_COLOR",
-            "No store at /x",
-            "No store at /x why: this machine has no PULSE store yet fix: pulse init <project-path>",
-            "\\x1b[32mx\\x1b[0m",
-            "pulse init <project-path>",
-            "this machine has no PULSE store yet",
-        ];
-        table_error_style_json_and_help();
-    }
-
-    #[test]
-    fn help_rendering() {
+    fn help() {
         let _serial = crate::test_helpers::serial();
         let _g = registry_lock();
         reset_registry_for_tests();
@@ -461,11 +483,11 @@ mod tests {
             flags: Some(flags),
         });
         register(Command {
-            name: "tally".into(),
-            group: "inspect".into(),
-            summary: "summarise records".into(),
+            name: "work".into(),
+            group: "runner".into(),
+            summary: "lease one job".into(),
             usage: String::new(),
-            aliases: vec!["records".into()],
+            aliases: vec![],
             no_store: false,
             read_only: false,
             raw: true,
@@ -473,36 +495,33 @@ mod tests {
             flags: None,
         });
         let mut b = Vec::new();
-        render_help(&mut b, false).unwrap();
+        crate::help(&mut b, false).unwrap();
         let out = String::from_utf8(b).unwrap();
-        assert!(out.starts_with(crate::TITLE));
-        assert!(out.contains("tally (records)"));
-        assert!(out.contains("Global flags default to $PULSE_HOME"));
+        if !out.starts_with(&format!("{}\n", crate::TITLE)) {
+            panic!("help title: {:?}", out);
+        }
+        let ia = out
+            .find(GROUP_TITLES.get("agents").unwrap())
+            .map(|i| i as isize)
+            .unwrap_or(-1);
+        let il = out
+            .find(GROUP_TITLES.get("runner").unwrap())
+            .map(|i| i as isize)
+            .unwrap_or(-1);
+        if ia < 0 || il < 0 || ia > il {
+            panic!("group order wrong:\n{out}");
+        }
+        if out.contains(GROUP_TITLES.get("hub").unwrap()) {
+            panic!("empty group printed");
+        }
         let mut b = Vec::new();
         let cmd = lookup("post").unwrap();
         help_command(&mut b, false, &cmd).unwrap();
         let out = String::from_utf8(b).unwrap();
-        assert!(out.contains("Usage: pulse post <kind> --summary S"));
-        assert!(out.contains("-summary string"));
+        if !out.contains("Usage: pulse post <kind> --summary S") || !out.contains("-summary string")
+        {
+            panic!("command help:\n{out}");
+        }
         reset_registry_for_tests();
-    }
-
-    #[test]
-    fn help() {
-        let _serial = crate::test_helpers::serial();
-        let _go_litdiff_literals = &[
-            "-summary string",
-            "Usage: pulse post <kind> --summary S",
-            "agents",
-            "command help:",
-            "group order wrong:",
-            "lease one job",
-            "one line",
-            "pulse post <kind> --summary S",
-            "runner",
-            "summary",
-            "write a post",
-        ];
-        help_rendering();
     }
 }

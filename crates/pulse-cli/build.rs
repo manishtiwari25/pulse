@@ -47,7 +47,78 @@ fn stamp(secs: i64) -> String {
     format!("{y:04}{mo:02}{d:02}{h:02}{m:02}{s:02}")
 }
 
+/// Go: strconv.Quote, applied by BuildInfo.String() to a setting value that quoteValue()
+/// says needs it (" \t\r\n\"`"). Versions and -ldflags values are printable ASCII, so the
+/// short escapes are the whole alphabet strconv.Quote would use for them.
+fn strconv_quote(value: &str) -> String {
+    if !value.contains([' ', '\t', '\r', '\n', '"', '`']) {
+        return value.to_string();
+    }
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn rust_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The text `debug.ReadBuildInfo` would return for a Go build of cmd/pulse: `pulse version`,
+/// `Revision()` and the pair hands inspection all read this block, so a Rust build carries the
+/// same lines (leading '\n' so a grep for `^mod\t...` anchors inside the binary's rodata).
+fn write_build_info(version: &str, rev: &str, dirty: Option<bool>) {
+    let module_version = if rev.is_empty() { "(devel)" } else { version };
+    let mut text = format!(
+        "\npath\tgithub.com/manishtiwari25/pulse/cmd/pulse\nmod\tgithub.com/manishtiwari25/pulse\t{module_version}\t\n"
+    );
+    if let Ok(v) = std::env::var("PULSE_VERSION")
+        && !v.is_empty()
+    {
+        text.push_str("build\t-ldflags=");
+        text.push_str(&strconv_quote(&format!(
+            "-X github.com/manishtiwari25/pulse/internal/cli.version={v}"
+        )));
+        text.push('\n');
+    }
+    if let Some(dirty) = dirty {
+        text.push_str(&format!("build\tvcs.revision={rev}\n"));
+        text.push_str(&format!("build\tvcs.modified={dirty}\n"));
+    }
+    let out = std::env::var("OUT_DIR").expect("OUT_DIR");
+    fs::write(
+        Path::new(&out).join("build_info_const.rs"),
+        format!(
+            "pub const BUILD_INFO_TEXT: &str = {};\n",
+            rust_string(&text)
+        ),
+    )
+    .expect("write build_info_const.rs");
+}
+
 fn main() {
+    println!("cargo:rerun-if-env-changed=PULSE_VERSION");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
     println!("cargo:rerun-if-changed=../../.git/refs/tags");
@@ -58,8 +129,7 @@ fn main() {
         println!("cargo:rerun-if-changed=../../.git/{r}");
     }
     if !Path::new("../../.git").exists() {
-        println!("cargo:rustc-env=PULSE_BUILD_VERSION=dev");
-        println!("cargo:rustc-env=PULSE_REVISION=");
+        write_build_info("dev", "", None);
         return;
     }
     let rev = git(&["rev-parse", "HEAD"]).unwrap_or_default();
@@ -97,6 +167,5 @@ fn main() {
             }
         };
     }
-    println!("cargo:rustc-env=PULSE_BUILD_VERSION={version}");
-    println!("cargo:rustc-env=PULSE_REVISION={rev}");
+    write_build_info(&version, &rev, Some(dirty));
 }

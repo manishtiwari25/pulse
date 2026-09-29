@@ -545,9 +545,9 @@ pub fn dump_store(path: &Path) -> Result<String> {
         let mut rows = st.query([])?;
         while let Some(row) = rows.next()? {
             let mut cells = Vec::with_capacity(cols.len());
-            for i in 0..cols.len() {
+            for (i, col) in cols.iter().enumerate() {
                 // a run's wall-clock duration is measured, not played
-                if t == "runs" && cols[i] == "seconds" {
+                if t == "runs" && col == "seconds" {
                     cells.push("<SECONDS>".to_string());
                     continue;
                 }

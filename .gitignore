@@ -35,7 +35,7 @@ dist/
 build/
 coverage/
 *.out
-# `go build ./cmd/pulse` drops the binary at the repo root; build into ~/.pulse/bin with -o instead.
+# A stray `pulse` binary at the repo root; install into ~/.pulse/bin with `cargo install --root ~/.pulse` instead.
 /pulse
 
 # JavaScript / TypeScript
@@ -46,7 +46,7 @@ node_modules/
 .turbo/
 .vite/
 out/
-# The hub UI's static export is committed so a human builds the Go binary without Node.
+# The hub UI's static export is committed so a human builds the binary without Node.
 !web/hub/out/
 !web/hub/out/**
 .nyc_output/
