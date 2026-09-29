@@ -62,38 +62,44 @@ impl Globals {
 
 static REGISTER: Once = Once::new();
 
-fn register_commands() {
+pub fn register_all() {
     REGISTER.call_once(|| {
-        // register every command crate here
-        pulse_cli::register(Command {
-            name: "version".into(),
-            group: "inspect".into(),
-            summary: "print the pulse version".into(),
-            usage: "pulse version [--json]".into(),
-            aliases: Vec::new(),
-            no_store: true,
-            read_only: false,
-            raw: false,
-            run: |c, _, _| {
-                if c.json {
-                    pulse_cli::write_json(
-                        &mut c.out,
-                        &serde_json::json!({
-                            "version": pulse_cli::version()
-                        }),
-                    )?;
-                } else {
-                    writeln!(c.out, "{}", pulse_cli::version())?;
-                }
-                Ok(())
-            },
-            flags: None,
-        });
+        register_version();
+        // Coordinator: add every command crate's register() call here as ports land.
     });
 }
 
+pub fn register_version() {
+    pulse_cli::register(Command {
+        name: "version".into(),
+        group: "inspect".into(),
+        summary: "print the pulse version".into(),
+        usage: "pulse version [--json]".into(),
+        aliases: Vec::new(),
+        no_store: true,
+        read_only: false,
+        raw: false,
+        run: version_run,
+        flags: None,
+    });
+}
+
+fn version_run(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Result<()> {
+    if c.json {
+        pulse_cli::write_json(
+            c.out.as_mut(),
+            &serde_json::json!({
+                "version": pulse_cli::version()
+            }),
+        )?;
+    } else {
+        writeln!(c.out, "{}", pulse_cli::version())?;
+    }
+    Ok(())
+}
+
 pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    register_commands();
+    register_all();
     let mut gfs = FlagSet::new("pulse");
     Globals::default().bind(&mut gfs);
     if let Err(e) = gfs.parse(argv) {
@@ -169,6 +175,7 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     };
     apply_late(&fs, &mut ctx);
     ctx.args = args.clone();
+
     if !cmd.no_store {
         match pulse_store::Store::open(pulse_store::Options {
             home: g.home,
@@ -284,4 +291,242 @@ fn report(name: &str, errv: AnyError, err: &mut dyn Write) -> i32 {
     }
     let _ = writeln!(err, "pulse {name}: {errv}");
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use once_cell::sync::Lazy;
+    use std::path::Path;
+    use std::sync::Mutex;
+    use tempfile::tempdir;
+
+    type Seen = Option<(String, String, String, String, Vec<String>)>;
+
+    static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+    static SEEN: Lazy<Mutex<Seen>> = Lazy::new(|| Mutex::new(None));
+
+    fn sv(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn test_flags(fs: &mut FlagSet) {
+        fs.string_var("kind", "", "kind");
+    }
+
+    fn test_run(c: &mut Context, fs: &FlagSet, args: &[String]) -> anyhow::Result<()> {
+        *SEEN.lock().unwrap() = Some((
+            c.agent.clone(),
+            c.project.clone(),
+            c.now.clone(),
+            fs.get_string("kind"),
+            args.to_vec(),
+        ));
+        if args.first().is_some_and(|s| s == "fail") {
+            return Err(pulse_cli::errorf(3, "boom", "because", "pulse zz-post ok").into());
+        }
+        if args.first().is_some_and(|s| s == "input") {
+            return Err(pulse_store::InputError {
+                msg: "quorum takes a whole number, not 'x'".into(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    fn needs_store(_c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn register_test_commands() {
+        if pulse_cli::lookup("zz-post").is_none() {
+            pulse_cli::register(Command {
+                name: "zz-post".into(),
+                group: "agents".into(),
+                summary: "test".into(),
+                usage: String::new(),
+                aliases: vec![],
+                no_store: false,
+                read_only: false,
+                raw: false,
+                run: test_run,
+                flags: Some(test_flags),
+            });
+        }
+        if pulse_cli::lookup("zz-needs-store").is_none() {
+            pulse_cli::register(Command {
+                name: "zz-needs-store".into(),
+                group: "inspect".into(),
+                summary: "test".into(),
+                usage: String::new(),
+                aliases: vec![],
+                no_store: false,
+                read_only: false,
+                raw: false,
+                run: needs_store,
+                flags: None,
+            });
+        }
+    }
+
+    #[test]
+    fn help_and_version() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(run(&sv(&["help"]), &mut out, &mut err), 0);
+        assert!(
+            String::from_utf8(out.clone())
+                .unwrap()
+                .starts_with(pulse_cli::TITLE)
+        );
+        out.clear();
+        assert_eq!(run(&[], &mut out, &mut err), 0);
+        assert!(
+            String::from_utf8(out.clone())
+                .unwrap()
+                .contains("Inspect - read the store")
+        );
+        out.clear();
+        assert_eq!(run(&sv(&["-h"]), &mut out, &mut err), 0);
+        assert!(
+            String::from_utf8(out.clone())
+                .unwrap()
+                .starts_with(pulse_cli::TITLE)
+        );
+        out.clear();
+        assert_eq!(run(&sv(&["help", "version"]), &mut out, &mut err), 0);
+        assert!(
+            String::from_utf8(out.clone())
+                .unwrap()
+                .contains("Usage: pulse version [--json]")
+        );
+        out.clear();
+        assert_eq!(run(&sv(&["version"]), &mut out, &mut err), 0);
+        assert!(!String::from_utf8(out.clone()).unwrap().trim().is_empty());
+        out.clear();
+        assert_eq!(run(&sv(&["--json", "version"]), &mut out, &mut err), 0);
+        assert!(String::from_utf8(out).unwrap().contains("\"version\""));
+    }
+
+    #[test]
+    fn unknown_and_store_mapping() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        register_test_commands();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let home = tempdir().unwrap();
+        assert_eq!(
+            run(
+                &sv(&["--home", home.path().to_str().unwrap(), "statuz"]),
+                &mut out,
+                &mut err
+            ),
+            2
+        );
+        let stderr = String::from_utf8(err.clone()).unwrap();
+        assert!(stderr.contains("unknown command \"statuz\""));
+        assert!(stderr.contains("did you mean:"));
+        err.clear();
+        assert_eq!(
+            run(
+                &sv(&["--home", home.path().to_str().unwrap(), "zz-needs-store"]),
+                &mut out,
+                &mut err
+            ),
+            2
+        );
+        let want = pulse_store::store_path(home.path().to_str().unwrap()).unwrap();
+        let stderr = String::from_utf8(err).unwrap();
+        assert!(stderr.contains(&format!("No store at {want}")));
+        assert!(stderr.contains("fix: pulse init <project-path>"));
+        assert!(!Path::new(&want).exists());
+    }
+
+    #[test]
+    fn interleaved_flags_and_errors() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        register_test_commands();
+        let home = tempdir().unwrap();
+        pulse_store::create(home.path().join(pulse_store::STORE_NAME)).unwrap();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(
+            run(
+                &sv(&[
+                    "--home",
+                    home.path().to_str().unwrap(),
+                    "--agent",
+                    "early",
+                    "zz-post",
+                    "one",
+                    "--kind",
+                    "finding",
+                    "two",
+                    "--project",
+                    "pulse",
+                    "--json",
+                    "--now",
+                    "2026-09-06T10:00:00Z",
+                    "--",
+                    "-three"
+                ]),
+                &mut out,
+                &mut err
+            ),
+            0
+        );
+        let seen = SEEN.lock().unwrap().clone().unwrap();
+        assert_eq!(seen.0, "early");
+        assert_eq!(seen.1, "pulse");
+        assert_eq!(seen.2, "2026-09-06T10:00:00Z");
+        assert_eq!(seen.3, "finding");
+        assert_eq!(seen.4, sv(&["one", "two", "-three"]));
+
+        err.clear();
+        assert_eq!(
+            run(
+                &sv(&["--home", home.path().to_str().unwrap(), "zz-post", "fail"]),
+                &mut out,
+                &mut err
+            ),
+            3
+        );
+        assert_eq!(
+            String::from_utf8(err.clone()).unwrap(),
+            "boom\n  why: because\n  fix: pulse zz-post ok\n"
+        );
+        err.clear();
+        assert_eq!(
+            run(
+                &sv(&["--home", home.path().to_str().unwrap(), "zz-post", "input"]),
+                &mut out,
+                &mut err
+            ),
+            2
+        );
+        assert_eq!(
+            String::from_utf8(err.clone()).unwrap(),
+            "pulse zz-post: quorum takes a whole number, not 'x'\n"
+        );
+        err.clear();
+        assert_eq!(
+            run(
+                &sv(&[
+                    "--home",
+                    home.path().to_str().unwrap(),
+                    "zz-post",
+                    "--bogus"
+                ]),
+                &mut out,
+                &mut err
+            ),
+            2
+        );
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .contains("flag provided but not defined: -bogus")
+        );
+    }
 }

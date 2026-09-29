@@ -13,12 +13,23 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
         .expect("env test mutex poisoned")
 }
 
-/// Runs `git` with hook variables scrubbed, mirroring the tiny Go test helper.
+/// Environment for test git invocations: hook vars stripped and host config disabled.
+pub fn git_env() -> Vec<String> {
+    let mut env =
+        pulse_gitenv::strip_hook(std::env::vars().map(|(k, v)| format!("{k}={v}")).collect());
+    env.push("GIT_CONFIG_NOSYSTEM=1".to_string());
+    env.push(format!(
+        "GIT_CONFIG_GLOBAL={}",
+        if cfg!(windows) { "NUL" } else { "/dev/null" }
+    ));
+    env
+}
+
+/// Runs `git` with the test environment.
 pub fn git(args: &[&str]) -> anyhow::Result<String> {
-    let env_pairs = pulse_gitenv::env();
     let mut cmd = Command::new("git");
     cmd.args(args).env_clear();
-    for kv in env_pairs {
+    for kv in git_env() {
         if let Some((k, v)) = kv.split_once('=') {
             cmd.env(k, v);
         }
@@ -32,4 +43,19 @@ pub fn git(args: &[&str]) -> anyhow::Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn git_env_drops_hook_variables() {
+        let env = vec![
+            "GIT_DIR=/tmp/repo/.git".to_string(),
+            "GIT_SSH_COMMAND=ssh -F none".to_string(),
+            "PATH=/bin".to_string(),
+        ];
+        let got = pulse_gitenv::strip_hook(env);
+        assert!(!got.iter().any(|kv| kv.starts_with("GIT_DIR=")));
+        assert!(got.iter().any(|kv| kv.starts_with("GIT_SSH_COMMAND=")));
+    }
 }

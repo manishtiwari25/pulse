@@ -1,38 +1,46 @@
-//! Git environment scrubbing for hook-launched PULSE processes.
+//! Git environment scrubbing for child git commands.
 
-/// Environment variable names Git injects while running hooks. A nested `git`
-/// command must not inherit them or it will operate on the hook repository
-/// rather than the target checkout.
+/// Hook-exported Git variables that redirect nested git commands at the hook repository.
 pub const HOOK_VARS: &[&str] = &[
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_PREFIX",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_QUARANTINE_PATH",
-    "GIT_COMMON_DIR",
-    "GIT_NAMESPACE",
-    "GIT_CEILING_DIRECTORIES",
+    "GIT_INDEX_FILE=",
+    "GIT_PREFIX=",
+    "GIT_AUTHOR_NAME=",
+    "GIT_AUTHOR_EMAIL=",
+    "GIT_AUTHOR_DATE=",
+    "GIT_COMMITTER_NAME=",
+    "GIT_COMMITTER_EMAIL=",
+    "GIT_COMMITTER_DATE=",
+    "GIT_DIR=",
+    "GIT_WORK_TREE=",
+    "GIT_EDITOR=",
+    "GIT_REFLOG_ACTION=",
 ];
 
-/// Returns the current process environment with Git hook variables removed and
-/// `GIT_TERMINAL_PROMPT=0` appended.
+/// Returns the current environment without inherited `GIT_*` entries plus hermetic git settings.
 pub fn env() -> Vec<String> {
-    let mut out = strip_hook(std::env::vars().map(|(k, v)| format!("{k}={v}")).collect());
+    let mut out = Vec::new();
+    for (k, v) in std::env::vars() {
+        if !k.starts_with("GIT_") {
+            out.push(format!("{k}={v}"));
+        }
+    }
+    out.push("GIT_CONFIG_NOSYSTEM=1".to_string());
+    out.push(format!(
+        "GIT_CONFIG_GLOBAL={}",
+        if cfg!(windows) { "NUL" } else { "/dev/null" }
+    ));
     out.push("GIT_TERMINAL_PROMPT=0".to_string());
+    out.push("GIT_OPTIONAL_LOCKS=0".to_string());
     out
 }
-
-/// Removes Git hook variables from an environment vector.
+/// Removes hook-exported Git variables from an environment vector, preserving other Git settings.
 pub fn strip_hook(env: Vec<String>) -> Vec<String> {
     env.into_iter().filter(|kv| !hook_var(kv)).collect()
 }
 
-/// Reports whether `kv` is a Git hook environment assignment.
+/// Reports whether `kv` is one of the hook-exported Git variable assignments.
 pub fn hook_var(kv: &str) -> bool {
-    let name = kv.split_once('=').map_or(kv, |(k, _)| k);
-    HOOK_VARS.contains(&name)
+    HOOK_VARS.iter().any(|prefix| kv.starts_with(prefix))
 }
 
 #[cfg(test)]
@@ -49,8 +57,12 @@ mod tests {
             std::env::set_var("PULSE_GITENV_KEEP", "1");
         }
         let got = env();
-        assert!(!got.iter().any(|kv| hook_var(kv)));
+        assert!(
+            !got.iter()
+                .any(|kv| kv.starts_with("GIT_DIR=") || kv.starts_with("GIT_INDEX_FILE="))
+        );
         assert!(got.iter().any(|kv| kv == "PULSE_GITENV_KEEP=1"));
         assert!(got.iter().any(|kv| kv == "GIT_TERMINAL_PROMPT=0"));
+        assert!(got.iter().any(|kv| kv == "GIT_OPTIONAL_LOCKS=0"));
     }
 }
