@@ -2,6 +2,8 @@
 //!
 //! One module per Go file (`internal/hub/<name>.go` -> `<name>.rs`); `web/hub/out` is embedded via rust-embed in server.rs.
 
+#![allow(unused_imports)]
+
 pub mod additions;
 pub mod board;
 pub mod code_deliveries;
@@ -12,6 +14,7 @@ pub mod evolution;
 pub mod folders;
 pub mod harness;
 pub mod heldout;
+pub mod httpx;
 pub mod job_repair;
 pub mod lifecycle;
 pub mod privacy;
