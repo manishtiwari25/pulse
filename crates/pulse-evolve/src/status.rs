@@ -146,10 +146,13 @@ pub(crate) fn scope_present(root: &str, paths: &str) -> bool {
         if p.is_empty() {
             continue;
         }
-        if Path::new(root).join(&p).exists() {
+        let joined = crate::gopath::join(&[root, &p]);
+        if std::fs::metadata(&joined).is_ok() {
             return true;
         }
-        if glob_exists(root, &p) {
+        if let Ok(matches) = crate::gopath::filepath_glob(&joined)
+            && !matches.is_empty()
+        {
             return true;
         }
     }
@@ -685,31 +688,6 @@ fn set_ladder(s: &pulse_store::Store, status: &mut LoopStatus, project: &str) {
             }
         }
     }
-}
-
-fn glob_exists(root: &str, pattern: &str) -> bool {
-    fn walk(dir: &Path, root: &Path, pattern: &str) -> bool {
-        let Ok(rd) = std::fs::read_dir(dir) else {
-            return false;
-        };
-        for ent in rd.flatten() {
-            let path = ent.path();
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            if crate::card::matches_scope(&rel, pattern) {
-                return true;
-            }
-            if path.is_dir() && walk(&path, root, pattern) {
-                return true;
-            }
-        }
-        false
-    }
-    let rootp = Path::new(root);
-    walk(rootp, rootp, pattern)
 }
 
 #[cfg(test)]

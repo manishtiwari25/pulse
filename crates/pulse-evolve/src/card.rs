@@ -308,7 +308,10 @@ pub(crate) fn matches_scope(file: &str, pattern: &str) -> bool {
         let base = pattern.trim_end_matches("**").trim_end_matches('/');
         return file == base || file.starts_with(&format!("{base}/"));
     }
-    glob_match(pattern, file) || file == pattern
+    match crate::gopath::path_match(pattern, file) {
+        Ok(matched) => matched || file == pattern,
+        Err(_) => false,
+    }
 }
 /// Go: func immutablePaths(body string) []string
 pub(crate) fn immutable_paths(body: &str) -> Vec<String> {
@@ -573,20 +576,6 @@ pub(crate) fn make_card(
         status.heldout.count
     );
     Ok(card)
-}
-
-fn glob_match(pattern: &str, text: &str) -> bool {
-    fn inner(p: &[u8], t: &[u8]) -> bool {
-        if p.is_empty() {
-            return t.is_empty();
-        }
-        match p[0] {
-            b'*' => (0..=t.len()).any(|i| inner(&p[1..], &t[i..])),
-            b'?' => !t.is_empty() && t[0] != b'/' && inner(&p[1..], &t[1..]),
-            c => !t.is_empty() && c == t[0] && inner(&p[1..], &t[1..]),
-        }
-    }
-    inner(pattern.as_bytes(), text.as_bytes())
 }
 
 #[cfg(test)]

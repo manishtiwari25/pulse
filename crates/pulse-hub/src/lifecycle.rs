@@ -76,17 +76,15 @@ impl Handler {
                         .enumerate()
                         .map(|(i, p)| {
                             scope.spawn(move || {
-                                let present = crate::board::present(&p);
-                                let mut row = json!(p);
+                                let mut row = json!({
+                                    "slug": p.slug, "name": p.name, "path": p.path, "remote": p.remote,
+                                    "brain": p.brain, "status": p.status, "verify_cmd": p.verify_cmd,
+                                    "default_branch": p.default_branch, "added_at": p.added_at,
+                                    "added_by": p.added_by, "last_seen": p.last_seen,
+                                    "present": crate::board::present(&p),
+                                });
                                 if let Some(obj) = row.as_object_mut() {
-                                    obj.insert("present".into(), json!(present));
-                                    for (key, value) in project_gates(
-                                        store,
-                                        obj.get("slug")
-                                            .and_then(Value::as_str)
-                                            .unwrap_or("")
-                                            .to_string(),
-                                    ) {
+                                    for (key, value) in project_gates(store, p.slug.clone()) {
                                         obj.insert(key, value);
                                     }
                                 }

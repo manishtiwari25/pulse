@@ -18,6 +18,7 @@ pub mod finalization; // crate-private items only; not re-exported
 pub mod fixtures;
 pub mod fleet;
 pub mod format; // crate-private items only; not re-exported
+pub(crate) mod gopath;
 pub mod heldout_auto;
 pub mod measure; // crate-private items only; not re-exported
 pub mod plan;
