@@ -869,7 +869,14 @@ naming that worktree. When the checkout is on the default branch and has
 uncommitted changes, `landing.auto_stash` (default
 `on`) stashes them with a clear message so the landing can proceed, and a
 stash that cannot be made blocks the landing with the reason instead of
-silently deferring. Your work in progress is never committed or lost. The hold
+silently deferring. Your work in progress is never committed or lost. A verify
+failure on the merged result is charged to the branch (patch saved, job
+requeued, branch removed) only when the default branch passes the same command
+in the same worktree; when the default branch is red itself - a tool gone from
+the machine, a broken dependency, a suite that fails on its own - the branch
+is kept, the project's landings wait thirty minutes, the hold names the failing
+line, a `land.base-red` event records the tail, and `pulse land --project X`
+retries at once after you fixed it. The hold
 shows in `pulse status` and the hub as `landing` (how many branches wait and
 why), and the daemon logs it and writes `land.held` once per change,
 `land.resumed` when the branches land again.

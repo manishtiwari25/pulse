@@ -18,6 +18,10 @@ use std::time::Duration;
 
 pub(crate) const LAND_LOCK_MINUTES: i32 = 30;
 pub(crate) const LAND_REQUEUE_LIMIT: i32 = 2;
+/// How long a project's landings wait after its default branch itself failed the verify
+/// command, before the daemon tries again on its own (`pulse land` retries at once).
+pub(crate) const LAND_BASE_RED_RETRY_MINUTES: i32 = 30;
+const LAND_RETRY_META_PREFIX: &str = "landing-retry:";
 pub(crate) const RESULT_FILE: &str = "PULSE_RESULT.md";
 pub(crate) static LANDED_BRANCH_PREFIXES: &[&str] = &["pulse/", "evolve/"];
 pub(crate) static LAND_REFUSED_PATHS: &[&str] = &[
@@ -881,8 +885,10 @@ pub(crate) fn land_branch(
             run_base_check_files(worktree.clone(), before.clone(), guarded.clone());
         }
         let budget = Duration::from_secs((minutes as u64) * 60).max(Duration::from_secs(60));
+        let verify_started = std::time::Instant::now();
         let (rc, so, se) =
             crate::landing_context::sh_with_context(&cancel, worktree.clone(), vc.clone(), budget);
+        let verify_took = verify_started.elapsed();
         if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
             && !why.is_empty()
         {
@@ -890,6 +896,7 @@ pub(crate) fn land_branch(
         }
         let mut ok = false;
         let mut tail_text = String::new();
+        let answered = rc.is_some();
         if let Some(rc) = rc {
             ok = *rc == 0;
             verify_note = format!("verify exit {}", *rc);
@@ -918,6 +925,49 @@ pub(crate) fn land_branch(
                     .join(", ")
                     + &extra
             ));
+        }
+        if !ok && answered && !before.is_empty() {
+            // The merged result failed. Before charging the branch - a requeue throws the
+            // work away and spends a worker run - ask whether {def} itself passes the same
+            // command in the same worktree. A red base (a tool gone from the machine, a
+            // broken dependency, a flaky suite) is not the branch's fault: keep the branch,
+            // hold the project's landings and try again later.
+            let base_budget = (verify_took * 2).clamp(Duration::from_secs(60), budget);
+            let (base_red, base_tail) =
+                base_verify_red(&cancel, &worktree, &before, &vc, base_budget);
+            if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
+                && !why.is_empty()
+            {
+                return Ok(("stopped".into(), why));
+            }
+            if base_red != Some(false) {
+                let hint = verify_hint(if base_red.is_some() {
+                    &base_tail
+                } else {
+                    &tail_text
+                });
+                let retry_at = crate::util::plus_minutes(&now, LAND_BASE_RED_RETRY_MINUTES as f64);
+                let base_note = if base_red.is_some() {
+                    format!("{def} itself fails `{vc}` ({hint})")
+                } else {
+                    format!("`{vc}` on {def} itself gave no answer in time ({hint})")
+                };
+                let note = format!(
+                    "{base_note}; {verify_note} on the merged result is not the branch's fault, so it is kept and the landing waits until {retry_at} (`pulse land --project {slug}` retries now)"
+                );
+                if let Ok(conn) = s.conn() {
+                    crate::util::event_at(
+                        &conn,
+                        &now,
+                        &actor,
+                        "land.base-red",
+                        &branch,
+                        serde_json::json!({"project": slug, "note": verify_note, "base": if base_red.is_some() { "red" } else { "unknown" }, "retry_at": retry_at, "tail": crate::executor::tail(if base_red.is_some() { &base_tail } else { &tail_text }, 1500)}),
+                    );
+                }
+                set_landing_retry(s, &slug, &retry_at, &note);
+                return Ok(("deferred".into(), note));
+            }
         }
         if !ok {
             let patch = save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
@@ -1282,7 +1332,18 @@ pub(crate) fn land_pending_context(
         Err(_) => return Vec::new(),
     };
     let mut out = Vec::new();
-    for job in pending_landings(&conn, project.str("slug")) {
+    let pending = pending_landings(&conn, project.str("slug"));
+    if !force
+        && !pending.is_empty()
+        && let Some(note) = landing_retry_hold(s, &project.str("slug"), &now)
+    {
+        out.push(LandResult {
+            state: "deferred".into(),
+            note,
+        });
+        return out;
+    }
+    for job in pending {
         if limit > 0 && out.len() >= limit as usize {
             break;
         }
@@ -1314,6 +1375,9 @@ pub(crate) fn land_pending_context(
                 Err(e) => ("error".into(), crate::run::err_message(&e)),
             }
         };
+        if state == "landed" {
+            clear_landing_retry(s, &project.str("slug"));
+        }
         if state == "missing" {
             crate::util::exec1(
                 &conn,
@@ -1483,6 +1547,101 @@ fn check_files() -> Vec<String> {
     .collect::<Vec<_>>();
     files.extend(setup_lockfiles());
     files
+}
+
+/// Runs `verify_cmd` on `before` in the landing worktree after the merged result failed
+/// it. `Some(true)` when the default branch fails the command as well, `Some(false)` when
+/// it passes, `None` when there is no answer (the worktree could not be reset, or the
+/// command did not finish within `budget`). The second value is the tail of that run.
+fn base_verify_red(
+    cancel: &pulse_bus::CancellationToken,
+    worktree: &str,
+    before: &str,
+    verify_cmd: &str,
+    budget: Duration,
+) -> (Option<bool>, String) {
+    let reset = crate::util::git_timeout(
+        worktree,
+        Duration::from_secs(120),
+        &["reset", "-q", "--hard", before],
+    );
+    if !reset.ok() {
+        return (None, reset.stderr.trim().to_string());
+    }
+    let (rc, so, se) = crate::landing_context::sh_with_context(
+        cancel,
+        worktree.to_string(),
+        verify_cmd.to_string(),
+        budget,
+    );
+    let tail = format!(
+        "{}{}",
+        crate::executor::tail(&so, 4000),
+        crate::executor::tail(&se, 4000)
+    );
+    (rc.map(|code| *code != 0), tail)
+}
+
+static VERIFY_HINT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)command not found|: not found|No such file or directory|ENOENT|No module named|Cannot find module|not recognized as",
+    )
+    .unwrap()
+});
+
+/// The one line of a verify tail worth repeating in a hold note: the first that names a
+/// missing tool or file, else the last non-empty line.
+pub(crate) fn verify_hint(tail: &str) -> String {
+    let lines: Vec<&str> = tail
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let pick = lines
+        .iter()
+        .find(|l| VERIFY_HINT_RE.is_match(l))
+        .or(lines.last())
+        .copied()
+        .unwrap_or("no output");
+    crate::util::trunc(pick, 160)
+}
+
+/// The note and retry time recorded for a project whose default branch failed its own verify
+/// command, when that time has not passed yet.
+pub(crate) fn landing_retry_hold(s: &pulse_store::Store, slug: &str, now: &str) -> Option<String> {
+    let (raw, found) = s
+        .meta(&format!("{LAND_RETRY_META_PREFIX}{slug}"))
+        .unwrap_or_default();
+    if !found || raw.is_empty() {
+        return None;
+    }
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    let until = v.get("until")?.as_str()?;
+    if until <= now {
+        return None;
+    }
+    v.get("note").and_then(Value::as_str).map(str::to_string)
+}
+
+fn set_landing_retry(s: &pulse_store::Store, slug: &str, until: &str, note: &str) {
+    if let Ok(conn) = s.conn() {
+        let _ = conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![
+                format!("{LAND_RETRY_META_PREFIX}{slug}"),
+                serde_json::json!({"until": until, "note": note}).to_string()
+            ],
+        );
+    }
+}
+
+pub(crate) fn clear_landing_retry(s: &pulse_store::Store, slug: &str) {
+    if let Ok(conn) = s.conn() {
+        let _ = conn.execute(
+            "DELETE FROM meta WHERE key = ?",
+            [format!("{LAND_RETRY_META_PREFIX}{slug}")],
+        );
+    }
 }
 
 /// The path of a worktree of `root` that has `default_branch` checked out, or empty.

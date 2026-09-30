@@ -818,6 +818,171 @@ mod tests {
         }
     }
 
+    fn done_job_on_branch(s: &pulse_store::Store, dir: &str, branch: &str, file: &str) -> String {
+        run(dir, &["git", "checkout", "-q", "-b", branch, "main"]);
+        std::fs::write(std::path::Path::new(dir).join(file), b"x\n").unwrap();
+        run(dir, &["git", "add", "-A"]);
+        run(dir, &["git", "commit", "-q", "-m", "work"]);
+        run(dir, &["git", "checkout", "-q", "main"]);
+        let (j, _) = pulse_board::add_job(
+            s,
+            pulse_board::JobInput {
+                project: "proj".into(),
+                kind: "task".into(),
+                title: format!("work on {branch}"),
+                brief: "b".into(),
+                tier: 1,
+                created_by: "aurora".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        exec1(
+            s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &j.id],
+        );
+        j.id
+    }
+
+    #[test]
+    fn landing_holds_when_the_default_branch_fails_verify_itself() {
+        let _serial = crate::test_helpers::serial();
+        skip_slow();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (_, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+
+        // The verify command needs a tool that is not installed on this machine.
+        let tool = std::path::Path::new(&dir)
+            .parent()
+            .unwrap()
+            .join("tool-installed")
+            .display()
+            .to_string();
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&format!("cat {tool}")],
+        );
+        let proj = job_row_project(&s);
+        let branch = "pulse/aurora/env-rot";
+        let job_id = done_job_on_branch(&s, &dir, branch, "feature.txt");
+
+        let (lines, held) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        let note = held.get("proj").cloned().unwrap_or_default();
+        if lines.len() != 1
+            || !note.contains("main itself fails")
+            || !note.contains("No such file or directory")
+            || !note.contains("waits until 2026-09-06T10:30:00Z")
+        {
+            panic!("expected a base-red hold; lines={lines:?} held={held:?}");
+        }
+        let r = job_row(&s, &job_id);
+        if r.str("status") != "done" || r.str("branch") != branch {
+            panic!("held job lost its work: {r:?}");
+        }
+        if run(&dir, &["git", "branch", "--list", branch])
+            .trim()
+            .is_empty()
+        {
+            panic!("branch removed");
+        }
+        for (action, want) in [
+            ("land.base-red", 1),
+            ("land.failed-verify", 0),
+            ("job.requeue", 0),
+        ] {
+            let n = count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&action],
+            );
+            if n != want {
+                panic!("{action}: {n} events, want {want}");
+            }
+        }
+
+        // Within the wait the daemon does not merge or verify again; the note stands.
+        let again = crate::land::land_pending(&s, proj.clone(), "daemon", TEST_NOW, true, 0, false);
+        if again.len() != 1 || again[0].state != "deferred" || !note.ends_with(&again[0].note) {
+            panic!("expected the standing hold: {again:?}");
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'land.base-red'",
+            &[],
+        );
+        if n != 1 {
+            panic!("the hold re-ran verify: {n} base-red events");
+        }
+
+        // The tool is installed; after the wait the branch lands untouched.
+        std::fs::write(&tool, b"ok\n").unwrap();
+        let later = crate::util::plus_minutes(TEST_NOW, 31);
+        let (lines, held) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            later,
+            BTreeMap::new(),
+        );
+        if !held.is_empty()
+            || !lines
+                .join("\n")
+                .contains(&format!("landing landed: {branch}"))
+        {
+            panic!("expected landing after the wait; lines={lines:?} held={held:?}");
+        }
+        if crate::land::landing_retry_hold(&s, "proj", TEST_NOW).is_some() {
+            panic!("landing kept the retry hold");
+        }
+
+        // A branch that breaks a green main is still requeued.
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = 'test ! -f broken.txt' WHERE slug = 'proj'",
+            &[],
+        );
+        let proj = job_row_project(&s);
+        let bad = "pulse/aurora/breaks-main";
+        let bad_id = done_job_on_branch(&s, &dir, bad, "broken.txt");
+        let (lines, held) = tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        if !held.is_empty() || !lines.join("\n").contains("failed-verify") {
+            panic!("expected a requeue; lines={lines:?} held={held:?}");
+        }
+        let r = job_row(&s, &bad_id);
+        if r.str("status") != "queued" || !r.str("branch").is_empty() {
+            panic!("breaking branch not requeued: {r:?}");
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'land.base-red'",
+            &[],
+        );
+        if n != 1 {
+            panic!("a green base was called red: {n} base-red events");
+        }
+    }
+
+    fn job_row_project(s: &pulse_store::Store) -> crate::util::Row {
+        crate::board::project_by_slug(&s.conn().expect("conn"), "proj".into())
+    }
+
     #[test]
     fn landing_auto_stash_off_defers() {
         let _serial = crate::test_helpers::serial();
