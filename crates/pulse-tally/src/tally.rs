@@ -1,7 +1,8 @@
 use anyhow::{Result as AnyResult, anyhow};
 use rusqlite::{OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::Hash;
 
 use crate::cache::cached_compute;
 use crate::card_class::{card_fields, first_card_text, normalized_field, normalized_summary};
@@ -230,22 +231,24 @@ pub struct TallyResult {
     pub amendments: Vec<Amendment>,
 }
 
+// Go's `map` plus an insertion-ordered key slice; the map is only ever indexed,
+// iteration always walks `keys`.
 #[derive(Clone)]
-struct OMap<K: Ord + Clone, V> {
+struct OMap<K: Eq + Hash + Clone, V> {
     keys: Vec<K>,
-    m: BTreeMap<K, V>,
+    m: HashMap<K, V>,
 }
 
-impl<K: Ord + Clone, V> Default for OMap<K, V> {
+impl<K: Eq + Hash + Clone, V> Default for OMap<K, V> {
     fn default() -> Self {
         Self {
             keys: Vec::new(),
-            m: BTreeMap::new(),
+            m: HashMap::new(),
         }
     }
 }
 
-impl<K: Ord + Clone, V> OMap<K, V> {
+impl<K: Eq + Hash + Clone, V> OMap<K, V> {
     fn set(&mut self, k: K, v: V) {
         if !self.m.contains_key(&k) {
             self.keys.push(k.clone());
@@ -263,7 +266,7 @@ pub struct OpenSuggestionJob {
     pub status: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct VoteKey {
     on: String,
     who: String,
@@ -537,13 +540,19 @@ impl Tally {
     }
     fn suggestion_records(&self) -> Vec<Suggestion> {
         let mut out = Vec::new();
+        // Go walks every vote for every suggestion; grouping by target keeps the
+        // per-suggestion vote order and drops the quadratic scan.
+        let mut votes_on: HashMap<&str, Vec<&VoteKey>> = HashMap::new();
+        for vk in &self.votes.keys {
+            votes_on.entry(vk.on.as_str()).or_default().push(vk);
+        }
         for sid in &self.suggs.keys {
             let s = &self.suggs.m[sid];
             let is_closed = self.closed.get(&s.key).copied().unwrap_or(false);
             let (mut up, mut down, mut voters) = (0, 0, 0);
-            for vk in &self.votes.keys {
-                let v = &self.votes.m[vk];
-                if vk.on != *sid || vk.who == s.agent || same_session(&v.session, &s.session) {
+            for vk in votes_on.get(sid.as_str()).into_iter().flatten() {
+                let v = &self.votes.m[*vk];
+                if vk.who == s.agent || same_session(&v.session, &s.session) {
                     continue;
                 }
                 voters += 1;
@@ -624,6 +633,10 @@ impl Tally {
         let p = &self.params;
         let mut out = Vec::new();
         let mut avotes = Vec::new();
+        let mut avotes_on: HashMap<&str, Vec<&VoteKey>> = HashMap::new();
+        for vk in &self.avotes.keys {
+            avotes_on.entry(vk.on.as_str()).or_default().push(vk);
+        }
         for aid in &self.amends.keys {
             let a = &self.amends.m[aid];
             let chk = check(&a.body, &p.constitution, &p.protected);
@@ -631,11 +644,8 @@ impl Tally {
             let (mut up, mut down, mut voters, mut selfv, mut badhash, mut noread) =
                 (0, 0, 0, 0, 0, 0);
             let mut idents: BTreeMap<String, bool> = BTreeMap::new();
-            for vk in &self.avotes.keys {
-                if vk.on != *aid {
-                    continue;
-                }
-                let v = &self.avotes.m[vk];
+            for vk in avotes_on.get(aid.as_str()).into_iter().flatten() {
+                let v = &self.avotes.m[*vk];
                 let cls = if vk.who == a.session || vk.who.is_empty() {
                     selfv += 1;
                     "self"
