@@ -613,21 +613,23 @@ impl Handler {
 
     pub(crate) fn org<V: OrgViews>(&self, views: V) -> JsonMap {
         let views = views.into_views();
-        let mut projects = Vec::new();
+        // Go's projects, commons and all alias the same maps, so the
+        // identities/proposals deletes below show in the emitted rows too.
+        let mut project_idx = Vec::new();
+        let mut commons_idx = None;
         let mut all = Vec::new();
-        let mut commons = Value::Null;
         let mut brains = Vec::<String>::new();
         let mut stamps = Vec::<String>::new();
         for view in &views {
             let summary = self.summary(view);
             stamps.push(str_map(&summary, "built_at"));
             if view.project.slug == pulse_store::COMMONS_SLUG {
-                commons = json!(summary);
+                commons_idx = Some(all.len());
             } else {
                 if view.project.brain {
                     brains.push(view.project.slug.clone());
                 }
-                projects.push(json!(summary.clone()));
+                project_idx.push(all.len());
             }
             all.push(summary);
         }
@@ -710,6 +712,8 @@ impl Handler {
         }
         order(&mut claims, &["expires"]);
         order(&mut proposals, &["-date", "-slug"]);
+        let projects: Vec<Value> = project_idx.iter().map(|&i| json!(all[i])).collect();
+        let commons = commons_idx.map_or(Value::Null, |i| json!(all[i]));
         let commons_ok = commons.get("present").and_then(Value::as_bool) == Some(true);
         let commons_base = commons
             .get("base")

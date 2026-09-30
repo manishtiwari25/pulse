@@ -484,18 +484,26 @@ impl BoardData {
     }
 
     pub(crate) fn overview(&self) -> JsonMap {
-        let active = self
-            .claims
-            .iter()
-            .filter(|c| str_key(c, "status") == "active")
-            .cloned()
-            .collect::<Vec<_>>();
-        let stale = self
-            .claims
-            .iter()
-            .filter(|c| matches!(str_key(c, "status").as_str(), "expired" | "no expiry"))
-            .cloned()
-            .collect::<Vec<_>>();
+        let (mut active, mut stale) = (Vec::new(), Vec::new());
+        for claim in &self.claims {
+            let mut row = claim.clone();
+            let post = self.by_id.get(&str_key(&row, "id"));
+            row.insert(
+                "name".into(),
+                json!(post.map(|p| str_key(p, "name")).unwrap_or_default()),
+            );
+            row.insert(
+                "session".into(),
+                json!(post.map(|p| str_key(p, "session")).unwrap_or_default()),
+            );
+            match str_key(&row, "status").as_str() {
+                "active" => active.push(row),
+                "expired" | "no expiry" => stale.push(row),
+                _ => {}
+            }
+        }
+        order(&mut active, &["expires"]);
+        order(&mut stale, &["-expires"]);
         let mut open = self
             .threads
             .iter()
