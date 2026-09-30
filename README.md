@@ -131,7 +131,10 @@ Everything else happens in the console:
   import and onboarding job as `pulse init`), typing its path or browsing the
   machine's folders with checkouts and registered projects marked; remove one
   after a preview of what deactivates, and restore a removed one from the
-  picker. The brain is never removable from the console. Each project card
+  picker. A checkout the runner made itself - a worker clone under
+  `PULSE_HOME/work`, a fleet clone or measurement root under `PULSE_HOME/fleet`,
+  a landing worktree under `PULSE_HOME/worktrees` - is refused: those come and
+  go with jobs, and a project is the checkout they are cloned from. The brain is never removable from the console. Each project card
   shows its self-improvement state - constitution revision (and whether it is
   still the seeded text), enabled fixtures, baseline (measured by the daemon,
   "measuring" while its job runs), the level the loop may reach - and the
@@ -449,7 +452,11 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   inside a worker clone is gone with the run and does not count - and that
   evidence must stay off
   owner-only paths (`docs/evolution/constitution.md`, `evaluators.md`, `STOP`,
-  `docs/decisions/`, `.github/`); then the operating-layer cap above. Votes
+  `docs/decisions/`, `.github/`); a card whose `File:` names only paths whose
+  whole top-level tree is gone from the checkout (written before a port, a
+  rename or a removal) is held as `names gone paths` - a card that adds a file,
+  however deep, under a tree that exists is fine; then the operating-layer cap
+  above. Votes
   carry no evidence for the card they vote on: a gated card is replaced by a
   corrected one, not voted through. The
   reflect brief asks for one provable Tier 0 *product* defect first (a wrong
@@ -1047,7 +1054,10 @@ hands supervisor record an execution heartbeat and refresh it every 60 seconds,
 including quiet work and lead jobs; exit, cancellation and timeout stop that
 observation. A stop is the execution's last word, not death: the agent stays
 `online` while the runner verifies and lands its run, and is `dead` once
-`heartbeat.dead_after` has passed since the stop without a fresh beat.
+`heartbeat.dead_after` has passed since the stop without a fresh beat. While
+the runner runs the project's check on the finished worker's clone it beats for
+the worker itself (source `verify`, every 60 seconds), so a check longer than
+`heartbeat.dead_after` never shows a working run as dead.
 Presence is `dead` once the latest beat is older than
 `heartbeat.dead_after` seconds (300 by default, never under 30; `pulse settings
 set heartbeat.dead_after 600` for slow harnesses) and returns to `online` on
@@ -1168,19 +1178,25 @@ holding ref, a run log, a `pulse/<agent>/<job>` branch waiting to land. A run
 that ends removes its own; a runner that died mid-run, a landing killed
 half-way or an older hub does not. So the daemon sweeps once at start and
 then every ten minutes, removing only what the store says nothing holds any
-more: clones, keys and bundles of finished jobs once they have sat untouched
+more: queued or blocked jobs of a project that was removed (`pulse project
+remove` lets a leased job finish, but one whose run is lost would come back
+queued for a project no daemon lists), clones, keys and bundles of finished jobs once they have sat untouched
 for `daemon.sweep_grace_minutes` (default 30; a lost run's go at once),
 landing worktrees whose process is gone (and `git worktree prune`), holding
 refs of landing steps that are over, dead folders under `~/.pulse/worktrees`,
-run logs and saved patches older than `daemon.sweep_keep_days` (default 30),
-and `pulse/*` or `evolve/*` branches that no job will land whose last commit
+measurement clone roots (`~/.pulse/fleet/measure-*`) whose measuring process
+is gone once they have sat for the grace period (a measurement removes its
+own root when it ends; one left behind came from a kill),
+run logs, saved patches and the step transcripts of harness sessions older
+than `daemon.sweep_keep_days` (default 30; a session keeps its counts, tokens,
+cost and submission), and `pulse/*` or `evolve/*` branches that no job will land whose last commit
 is older than `daemon.sweep_branch_days` (default 7) - their commits are saved
 under `~/.pulse/patches/<slug>/` first unless they are already on the default
 branch (`land.swept`). Never touched: a run in flight (this daemon's
 dispatches and every `running` run in the store), a branch a `done` job waits
 to land, the checked-out branch, a worktree git still lists, a repository of
-its own, anything under `~/.pulse` the runner did not make, and fleet clones
-(`pulse fleet clean` is their lifecycle). Each pass logs what went (`swept
+its own, anything under `~/.pulse` the runner did not make, and prepared
+fleet clones (`pulse fleet clean` is their lifecycle). Each pass logs what went (`swept
 clone …`, `swept 12 run logs (3.1 MB)`), writes one `daemon.sweep` event when
 something went or failed, and a `hygiene` line in `pulse status` says when the
 last pass ran, what it removed and freed, and what it held. `pulse sweep
