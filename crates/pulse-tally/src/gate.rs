@@ -18,7 +18,7 @@ pub const OWNER_PATHS: &[&str] = pulse_store::OWNER_PATHS;
 pub const GATE_NET_VOTES: &str = "net votes <= 0: the planner takes score > 0 only";
 pub const GATE_OWNER: &str = "addressed to the owner; not a worker job";
 pub const GATE_NO_EVIDENCE: &str =
-    "without evidence: no Signal: line names an existing file, post or check";
+    "without evidence: no Signal: line names an existing file, post, job, record or check";
 pub const GATE_OWNER_PATHS: &str =
     "points at owner-only paths (constitution, evaluators, decisions, .github)";
 pub const GATE_UNLANDED: &str =
@@ -37,13 +37,44 @@ pub fn signal_tokens(text: &str) -> Vec<String> {
             .trim()
             .trim_matches(['`', '\'', '"', '(', ')', '[', ']', ',', ';']);
         for tok in split.split(raw) {
-            let tok = tok.trim_matches(['`', '\'', '"', '(', ')', '[', ']', ',', ';', '.']);
+            // A trailing dot is punctuation; a leading one is a dotfile (`.nvmrc`,
+            // `.github/workflows/ci.yml`) and stays.
+            let tok = tok
+                .trim_matches(['`', '\'', '"', '(', ')', '[', ']', ',', ';'])
+                .trim_end_matches('.');
             if !tok.is_empty() {
                 out.push(tok.to_string());
             }
         }
     }
     out
+}
+
+/// Prefixes a Signal token may carry in front of a store id (`post:2026...`, `job:job-...`).
+const STORE_ID_PREFIXES: &[&str] = &["post:", "job:", "run:", "record:", "memory:"];
+
+/// Whether `tok` names a row the store holds: a post, a job, a run or a record (an ADR, a
+/// memory entry such as `MEM-...`). Such evidence outlives the run that produced it, unlike a
+/// log under /tmp or a worker clone, and the gate accepts it as it accepts an existing file.
+pub fn store_evidence(s: &pulse_store::Store, tok: &str) -> bool {
+    let bare = STORE_ID_PREFIXES
+        .iter()
+        .find_map(|p| tok.strip_prefix(p))
+        .unwrap_or(tok);
+    if bare.is_empty() {
+        return false;
+    }
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    ["posts", "jobs", "runs", "records"].iter().any(|table| {
+        conn.query_row(
+            &format!("SELECT 1 FROM {table} WHERE id = ?"),
+            [bare],
+            |_| Ok(()),
+        )
+        .is_ok()
+    })
 }
 
 fn rel_and_symbol(tok: &str) -> (String, String) {
@@ -67,16 +98,7 @@ pub fn signal_resolves(
         if tok.to_ascii_lowercase().starts_with("check:") && tok.len() > "check:".len() {
             return true;
         }
-        if s.conn()
-            .ok()
-            .and_then(|conn| {
-                conn.query_row("SELECT id FROM posts WHERE id = ?", [&tok], |r| {
-                    r.get::<_, String>(0)
-                })
-                .ok()
-            })
-            .is_some()
-        {
+        if store_evidence(s, &tok) {
             return true;
         }
         let rel = rel_of_token(&tok);
@@ -125,16 +147,7 @@ pub fn signal_unlanded(
         if tok.to_ascii_lowercase().starts_with("check:") && tok.len() > "check:".len() {
             return false;
         }
-        if s.conn()
-            .ok()
-            .and_then(|conn| {
-                conn.query_row("SELECT id FROM posts WHERE id = ?", [&tok], |r| {
-                    r.get::<_, String>(0)
-                })
-                .ok()
-            })
-            .is_some()
-        {
+        if store_evidence(s, &tok) {
             return false;
         }
     }

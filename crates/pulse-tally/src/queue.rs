@@ -302,7 +302,7 @@ fn project_work(
                     format!("already {}: wait for job {}", x.job_status, x.job)
                 } else {
                     format!(
-                        "not planned: {}; vote it up with evidence (a Signal: line naming a file or check) or close the thread",
+                        "not planned: {}; the card itself must carry the evidence (a Signal: line naming an existing file, post, job, record or check) - post a corrected card and close this thread",
                         out[i].blocked
                     )
                 };

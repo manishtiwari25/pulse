@@ -2302,6 +2302,59 @@ fn plan_gate_outcomes() {
         "",
         &["up", "up"],
     );
+    // Evidence that lives in the store outlives the run that saw it: a job, a post named
+    // with its `post:` prefix, a memory record. A dotfile is a file like any other.
+    let job_evidence = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "6",
+        "runner-worker/model",
+        "worker-job-signal",
+        "Worker card with a job as its signal",
+        "Signal: job:J-blocked",
+        "",
+        &["up", "up"],
+    );
+    let post_signal = format!("Signal: post:{}", f.ids["eligible"]);
+    let post_evidence = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "7",
+        "runner-worker/model",
+        "worker-post-signal",
+        "Worker card with a post as its signal",
+        &post_signal,
+        "",
+        &["up", "up"],
+    );
+    let memory_evidence = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "8",
+        "runner-worker/model",
+        "worker-memory-signal",
+        "Worker card with a memory entry as its signal",
+        "Signal: MEM-failure-pattern-fixture.",
+        "",
+        &["up", "up"],
+    );
+    let dotfile_evidence = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "9",
+        "runner-worker/model",
+        "worker-dotfile-signal",
+        "Worker card with a dotfile as its signal",
+        "Signal: .nvmrc",
+        "",
+        &["up", "up"],
+    );
+    let gone_evidence = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "10",
+        "runner-worker/model",
+        "worker-gone-signal",
+        "Worker card whose signal is a log that is gone",
+        "Signal: /tmp/webtest.log (this run) and job-20990101T000000Z-000000",
+        "",
+        &["up", "up"],
+    );
     {
         let conn = f.st.conn().unwrap();
         conn.execute(
@@ -2309,9 +2362,15 @@ fn plan_gate_outcomes() {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO records (id, project, kind, slug, title, created_at, created_by, updated_at, origin) VALUES ('MEM-failure-pattern-fixture', 'fixture', 'memory', 'failure-pattern-fixture', 'Memory', ?, 'worker', ?, 'store')",
+            params![FIXTURE_NOW, FIXTURE_NOW],
+        )
+        .unwrap();
     }
     fs::create_dir_all(f.repo.join("docs/decisions")).unwrap();
     fs::write(f.repo.join("docs/decisions/adr.md"), "# ADR\n").unwrap();
+    fs::write(f.repo.join(".nvmrc"), "22\n").unwrap();
 
     let res = compute(
         &f.st,
@@ -2336,6 +2395,11 @@ fn plan_gate_outcomes() {
         (no_evidence.as_str(), GATE_NO_EVIDENCE),
         (owner_path.as_str(), GATE_OWNER_PATHS),
         (plannable.as_str(), ""),
+        (job_evidence.as_str(), ""),
+        (post_evidence.as_str(), ""),
+        (memory_evidence.as_str(), ""),
+        (dotfile_evidence.as_str(), ""),
+        (gone_evidence.as_str(), GATE_NO_EVIDENCE),
     ] {
         assert_eq!(
             plan_gate(&f.st, &res.repo, &suggestions[id], Some(posts[id])),

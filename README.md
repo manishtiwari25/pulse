@@ -409,9 +409,14 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   (`owner-*` threads, "for the owner" / "vote
   requested" summaries - those are yours to answer or queue, never a worker's
   job); a worker's own suggestion must carry evidence - a `Signal:` line
-  naming an existing file, post or `check:` - and that evidence must stay off
+  naming an existing file (dotfiles included), post, job, run, record (an
+  ADR, a `MEM-…` memory entry) or `check:`; a log under `/tmp` or a path
+  inside a worker clone is gone with the run and does not count - and that
+  evidence must stay off
   owner-only paths (`docs/evolution/constitution.md`, `evaluators.md`, `STOP`,
-  `docs/decisions/`, `.github/`); then the operating-layer cap above. The
+  `docs/decisions/`, `.github/`); then the operating-layer cap above. Votes
+  carry no evidence for the card they vote on: a gated card is replaced by a
+  corrected one, not voted through. The
   reflect brief asks for one provable Tier 0 *product* defect first (a wrong
   message, a wrong default, a broken user path, a swallowed error) and only
   then a flaky test, broken link, stale doc or lint finding; research jobs
