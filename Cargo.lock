@@ -1634,6 +1634,7 @@ dependencies = [
  "chrono",
  "fs2",
  "pulse-cli",
+ "pulse-gitenv",
  "pulse-store",
  "pulse-testutil",
  "regex",

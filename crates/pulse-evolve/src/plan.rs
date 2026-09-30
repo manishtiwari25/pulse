@@ -463,7 +463,7 @@ pub(crate) fn fix_already_landed(
     if p.path.is_empty() || p.default_branch.is_empty() {
         return Ok(false);
     }
-    let mut ancestor = Command::new("git");
+    let mut ancestor = Command::new(pulse_gitenv::git_program());
     ancestor.args([
         "-C",
         &p.path,
@@ -476,7 +476,7 @@ pub(crate) fn fix_already_landed(
     if ancestor.status().is_ok_and(|st| st.success()) {
         return Ok(true);
     }
-    let mut log = Command::new("git");
+    let mut log = Command::new(pulse_gitenv::git_program());
     log.args([
         "-C",
         &p.path,

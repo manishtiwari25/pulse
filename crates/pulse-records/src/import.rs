@@ -457,7 +457,7 @@ pub fn git_read(repo: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn git_read_owned(repo: &Path, args: &[String]) -> Result<String> {
-    let output = Command::new("git")
+    let output = Command::new(pulse_gitenv::git_program())
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -500,7 +500,7 @@ pub fn git_cat_blobs(
             input.push('\n');
         }
     }
-    let mut child = Command::new("git")
+    let mut child = Command::new(pulse_gitenv::git_program())
         .arg("-C")
         .arg(repo)
         .args(["cat-file", "--batch"])
@@ -638,7 +638,7 @@ mod tests {
     }
 
     fn git_fixture(repo: &std::path::Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        let out = Command::new(pulse_gitenv::git_program())
             .arg("-C")
             .arg(repo)
             .args(args)

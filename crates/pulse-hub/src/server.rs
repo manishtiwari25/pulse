@@ -654,7 +654,7 @@ mod tests {
     fn project_presence_does_not_require_docs() {
         let _serial = crate::test_helpers::serial();
         let path = tempdir().expect("git dir");
-        let out = Command::new("git")
+        let out = Command::new(pulse_gitenv::git_program())
             .arg("init")
             .arg("-q")
             .arg(path.path())

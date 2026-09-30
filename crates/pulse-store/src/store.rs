@@ -809,7 +809,7 @@ fn refuse_inside_checkout(home: &str) -> Result<()> {
 }
 
 fn git_top_level(dir: &Path) -> String {
-    let out = std::process::Command::new("git")
+    let out = std::process::Command::new(pulse_gitenv::git_program())
         .arg("-C")
         .arg(dir)
         .args(["rev-parse", "--show-toplevel"])
@@ -1024,6 +1024,35 @@ mod tests {
             .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
             .unwrap();
         assert_eq!(got, BUSY_TIMEOUT_MS as i64);
+    }
+
+    // The workspace .cargo/config.toml compiles SQLite without the unified
+    // page cache and without memory statistics; both put every connection in
+    // the process behind one mutex, which the hub's parallel snapshots
+    // contend on. A build that loses those flags is slower, not wrong, so
+    // this is the only place that would notice.
+    #[test]
+    fn bundled_sqlite_has_no_process_wide_mutexes() {
+        let _serial = crate::test_helpers::serial();
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        let conn = s.conn().unwrap();
+        let used = |opt: &str| -> i64 {
+            conn.query_row("SELECT sqlite_compileoption_used(?)", [opt], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(
+            used("ENABLE_MEMORY_MANAGEMENT"),
+            0,
+            "SQLite was built with SQLITE_ENABLE_MEMORY_MANAGEMENT: is LIBSQLITE3_FLAGS from .cargo/config.toml reaching the libsqlite3-sys build?"
+        );
+        assert_eq!(
+            used("DEFAULT_MEMSTATUS=0"),
+            1,
+            "SQLite was built without SQLITE_DEFAULT_MEMSTATUS=0: is LIBSQLITE3_FLAGS from .cargo/config.toml reaching the libsqlite3-sys build?"
+        );
     }
 
     #[test]

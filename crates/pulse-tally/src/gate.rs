@@ -255,7 +255,7 @@ fn default_branch_head(project_path: &str, branch: &str) -> Option<String> {
 }
 
 fn landed_git<const N: usize>(project_path: &str, args: [&str; N]) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(pulse_gitenv::git_program());
     cmd.arg("-C").arg(project_path).args(args);
     cmd.stderr(Stdio::null());
     cmd.env_clear();

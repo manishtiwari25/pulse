@@ -277,7 +277,7 @@ impl Hands {
                 }
                 let clone = e.path().join("clone");
                 if clone.join(".git").is_dir() {
-                    let out = Command::new("git")
+                    let out = Command::new(pulse_gitenv::git_program())
                         .args(["-C", &clone.display().to_string(), "remote"])
                         .env_clear()
                         .envs(crate::util::git_env(&[]).into_iter().filter_map(|kv| {
@@ -890,7 +890,7 @@ mod tests {
                     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
                 }
             }
-            let out = std::process::Command::new("git")
+            let out = std::process::Command::new(pulse_gitenv::git_program())
                 .args(["config", "--local", "--get", "user.signingkey"])
                 .current_dir(&clone)
                 .env_clear()

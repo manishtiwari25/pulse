@@ -343,7 +343,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("signing key"), "{err}");
-        let out = std::process::Command::new("git")
+        let out = std::process::Command::new(pulse_gitenv::git_program())
             .args(["config", "--local", "--get", "user.signingkey"])
             .current_dir(clone.path())
             .env_clear()

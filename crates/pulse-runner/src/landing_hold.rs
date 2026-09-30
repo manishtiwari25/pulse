@@ -801,7 +801,7 @@ mod tests {
         std::fs::write(std::path::Path::new(&dir).join("a.txt"), b"main\n").unwrap();
         run(&dir, &["git", "add", "-A"]);
         run(&dir, &["git", "commit", "-q", "-m", "main commit"]);
-        let mut merge = std::process::Command::new("git");
+        let mut merge = std::process::Command::new(pulse_gitenv::git_program());
         merge.args(["-C", &dir, "merge", "side"]);
         merge.env_clear();
         for kv in crate::proc::environ() {

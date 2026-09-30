@@ -226,7 +226,7 @@ pub(crate) fn limited_git_output(
         full.extend(["-C".to_string(), repo]);
     }
     full.extend(args.iter().cloned());
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(pulse_gitenv::git_program());
     cmd.args(&full);
     cmd.env_clear();
     for kv in crate::util::strip_hook_git_env(

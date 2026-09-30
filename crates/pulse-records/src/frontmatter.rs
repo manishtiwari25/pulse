@@ -410,7 +410,7 @@ mod tests {
     }
 
     fn git_fixture(repo: &std::path::Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        let out = Command::new(pulse_gitenv::git_program())
             .arg("-C")
             .arg(repo)
             .args(args)

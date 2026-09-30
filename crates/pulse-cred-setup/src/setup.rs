@@ -607,7 +607,7 @@ pub fn default_branch(b: &str) -> String {
 
 /// UpstreamRemote is the remote the branch tracks, or "".
 pub fn upstream_remote(root: &str, branch: &str) -> String {
-    let out = Command::new("git")
+    let out = Command::new(pulse_gitenv::git_program())
         .args([
             "-C",
             root,
@@ -626,7 +626,7 @@ pub fn upstream_remote(root: &str, branch: &str) -> String {
 
 /// ProbeRemote checks that the key opens the remote for writing without changing it.
 pub fn probe_remote(root: &str, remote: &str, ssh_command: &str) -> AnyResult<()> {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(pulse_gitenv::git_program());
     cmd.args([
         "-C",
         root,
@@ -1140,7 +1140,7 @@ mod tests {
             vec!["-C", root_arg, "remote", "add", "origin", bare_arg],
             vec!["-C", root_arg, "push", "-q", "-u", "origin", "main"],
         ] {
-            let mut cmd = Command::new("git");
+            let mut cmd = Command::new(pulse_gitenv::git_program());
             cmd.args(args)
                 .env_clear()
                 .envs(env_pairs(pulse_testutil::git_env()));

@@ -118,7 +118,7 @@ impl Verification {
 }
 
 pub fn git_output(root: &str, args: &[String]) -> Result<(String, String, i32)> {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(pulse_gitenv::git_program());
     cmd.arg("--no-pager")
         .arg("-C")
         .arg(root)

@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::tally::TallyResult;
@@ -19,9 +19,13 @@ struct CacheKey {
     th_hash: String,
 }
 
+// Go keeps a *Result in the cache and hands the same pointer to every caller;
+// here callers own their copy, so the cache holds an Arc and the deep clone
+// happens after the lock is released - the hub's parallel snapshots would
+// otherwise queue on this one mutex for the duration of every copy.
 #[derive(Clone)]
 struct CacheValue {
-    result: TallyResult,
+    result: Arc<TallyResult>,
     version: String,
     at: Instant,
 }
@@ -210,35 +214,41 @@ where
 {
     let key = cache_key_for(s, project, area, th);
     let version = cache_version(s, project, area)?;
+    let hit = {
+        let mut c = TALLY_CACHE.lock().expect("tally cache poisoned");
+        match c.entries.get(&key) {
+            Some(cv) if cv.at.elapsed() < CACHE_TTL && cv.version == version => {
+                let result = Arc::clone(&cv.result);
+                c.order.retain(|k| k != &key);
+                c.order.push_front(key.clone());
+                Some(result)
+            }
+            _ => None,
+        }
+    };
+    if let Some(result) = hit {
+        return Ok((*result).clone());
+    }
+    let res = Arc::new(compute()?);
     {
         let mut c = TALLY_CACHE.lock().expect("tally cache poisoned");
-        if let Some(cv) = c.entries.get(&key).cloned()
-            && cv.at.elapsed() < CACHE_TTL
-            && cv.version == version
-        {
-            c.order.retain(|k| k != &key);
-            c.order.push_front(key);
-            return Ok(cv.result);
+        c.entries.insert(
+            key.clone(),
+            CacheValue {
+                result: Arc::clone(&res),
+                version,
+                at: Instant::now(),
+            },
+        );
+        c.order.retain(|k| k != &key);
+        c.order.push_front(key);
+        while c.entries.len() > CACHE_MAX_ENTRIES {
+            if let Some(old) = c.order.pop_back() {
+                c.entries.remove(&old);
+            } else {
+                break;
+            }
         }
     }
-    let res = compute()?;
-    let mut c = TALLY_CACHE.lock().expect("tally cache poisoned");
-    c.entries.insert(
-        key.clone(),
-        CacheValue {
-            result: res.clone(),
-            version,
-            at: Instant::now(),
-        },
-    );
-    c.order.retain(|k| k != &key);
-    c.order.push_front(key.clone());
-    while c.entries.len() > CACHE_MAX_ENTRIES {
-        if let Some(old) = c.order.pop_back() {
-            c.entries.remove(&old);
-        } else {
-            break;
-        }
-    }
-    Ok(res)
+    Ok(Arc::try_unwrap(res).unwrap_or_else(|shared| (*shared).clone()))
 }

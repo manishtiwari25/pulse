@@ -686,8 +686,12 @@ pub(crate) fn order(rows: &mut [JsonMap], fields: &[&str]) {
     });
 }
 
+/// Go: exec.CommandContext(5s) + Output(): stdout is read while the command
+/// runs, so a long listing never fills the pipe and stalls git, and a command
+/// still running at the deadline is killed. Any failure reads as "" - an
+/// unborn checkout has no branch, a missing remote is normal.
 pub(crate) fn git_value(repo: &str, args: &[&str]) -> String {
-    let mut command = Command::new("git");
+    let mut command = Command::new(pulse_gitenv::git_program());
     command.arg("-C").arg(repo).args(args);
     command.env_clear();
     for kv in pulse_gitenv::env() {
@@ -698,28 +702,39 @@ pub(crate) fn git_value(repo: &str, args: &[&str]) -> String {
     let Ok(mut child) = command.stdout(std::process::Stdio::piped()).spawn() else {
         return String::new();
     };
+    let Some(mut stdout) = child.stdout.take() else {
+        return String::new();
+    };
+    let reader = std::thread::Builder::new()
+        .name("pulse-hub-git".into())
+        .spawn(move || {
+            let mut out = Vec::new();
+            std::io::Read::read_to_end(&mut stdout, &mut out).map(|_| out)
+        });
     let start = std::time::Instant::now();
-    loop {
+    let mut nap = std::time::Duration::from_micros(250);
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let Ok(out) = child.wait_with_output() else {
-                    return String::new();
-                };
-                if !status.success() {
-                    return String::new();
-                }
-                return String::from_utf8_lossy(&out.stdout).trim().to_string();
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if start.elapsed() >= std::time::Duration::from_secs(5) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
             }
             Ok(None) => {
-                if start.elapsed() >= std::time::Duration::from_secs(5) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return String::new();
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(nap);
+                nap = (nap * 2).min(std::time::Duration::from_millis(10));
             }
-            Err(_) => return String::new(),
+            Err(_) => break None,
         }
+    };
+    let out = match reader.map(|r| r.join()) {
+        Ok(Ok(Ok(out))) => out,
+        _ => return String::new(),
+    };
+    match status {
+        Some(status) if status.success() => String::from_utf8_lossy(&out).trim().to_string(),
+        _ => String::new(),
     }
 }
 

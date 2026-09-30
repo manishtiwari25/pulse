@@ -247,7 +247,7 @@ pub fn block_hash(lines: &[String]) -> String {
 }
 
 pub(crate) fn git(repo: &str, args: &[&str]) -> (String, bool) {
-    let mut cmd = ProcessCommand::new("git");
+    let mut cmd = ProcessCommand::new(pulse_gitenv::git_program());
     cmd.arg("-C").arg(repo).args(args);
     cmd.env_clear();
     for kv in pulse_gitenv::env() {
