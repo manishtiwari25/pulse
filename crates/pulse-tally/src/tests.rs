@@ -239,6 +239,8 @@ pub(crate) mod test_fixture {
         let home = tempfile::tempdir().expect("temp home");
         let repo = home.path().join("fixture-repo");
         fs::create_dir_all(repo.join("docs/evolution")).expect("create fixture repo");
+        // The product tree the fixture cards' `File:` lines name.
+        fs::create_dir_all(repo.join("src")).expect("create fixture src");
         fs::write(
             repo.join("docs/evolution/constitution.md"),
             FIXTURE_CONSTITUTION_FILE,
@@ -2355,6 +2357,28 @@ fn plan_gate_outcomes() {
         "",
         &["up", "up"],
     );
+    // A card written against a tree that was since removed (a port) names a file whose
+    // directory is gone; a card that adds a file to an existing directory is fine.
+    let file_gone = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "11",
+        "runner-plain/model",
+        "ported-away",
+        "Card from before the port",
+        "Class: product\nFile: internal/tally/gate.go\nVariable: strip GIT_DIR\nHypothesis: goes FAIL -> ok\nSignal: docs/decisions/adr.md",
+        "",
+        &["up", "up"],
+    );
+    let file_new = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "12",
+        "runner-plain/model",
+        "new-file",
+        "Card that adds a file",
+        "Class: product\nFile: docs/decisions/0099-new.md\nVariable: record the decision\nHypothesis: the ADR exists\nSignal: docs/decisions/adr.md",
+        "",
+        &["up", "up"],
+    );
     {
         let conn = f.st.conn().unwrap();
         conn.execute(
@@ -2400,6 +2424,8 @@ fn plan_gate_outcomes() {
         (memory_evidence.as_str(), ""),
         (dotfile_evidence.as_str(), ""),
         (gone_evidence.as_str(), GATE_NO_EVIDENCE),
+        (file_gone.as_str(), GATE_FILE_GONE),
+        (file_new.as_str(), ""),
     ] {
         assert_eq!(
             plan_gate(&f.st, &res.repo, &suggestions[id], Some(posts[id])),
@@ -2549,6 +2575,48 @@ fn run_check_is_no_op() {
         "check: go test ./x -run TestMissing",
         ""
     ));
+}
+
+#[test]
+fn card_file_gone_reads_the_file_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("crates/pulse-tally/src")).unwrap();
+    fs::write(root.join("crates/pulse-tally/src/gate.rs"), "").unwrap();
+    let repo = root.display().to_string();
+    let gone = |body: &str| card_file_gone(&repo, body);
+    assert!(gone("File: internal/tally/gate.go\nVariable: x"));
+    assert!(gone(
+        "- **File:** `internal/tally/gate.go`, internal/runner/exec.go"
+    ));
+    assert!(gone("Path: cmd/pulse/main.go"));
+    assert!(!gone("File: crates/pulse-tally/src/gate.rs"), "exists");
+    assert!(
+        !gone("File: crates/pulse-tally/src/new.rs"),
+        "new file, directory exists"
+    );
+    assert!(!gone("File: CHANGELOG.md"), "new top-level file");
+    assert!(
+        !gone("File: crates/pulse-new/src/lib.rs"),
+        "new directory under a tree that exists"
+    );
+    assert!(
+        !gone("File: internal/tally/gate.go, crates/pulse-tally/src/gate.rs"),
+        "one named file exists"
+    );
+    assert!(
+        !gone("File: the three git callers in the tally"),
+        "a class, not a path"
+    );
+    assert!(!gone("File: internal/**/*.go"), "a glob");
+    assert!(!gone("File: /etc/hosts"), "absolute");
+    assert!(!gone("File: ../other/x.go"), "escapes the checkout");
+    assert!(!gone("Variable: no file line"));
+    assert!(!gone(""));
+    assert!(
+        !card_file_gone("", "File: internal/tally/gate.go"),
+        "no checkout"
+    );
 }
 
 #[test]

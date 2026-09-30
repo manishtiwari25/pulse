@@ -963,7 +963,11 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
-        new_repo(&s);
+        let (_, root) = new_repo(&s);
+        // The cards name files under trees the checkout has; a tree that is gone would hold them.
+        for tree in ["src", "internal/hub"] {
+            std::fs::create_dir_all(std::path::Path::new(&root).join(tree)).unwrap();
+        }
         set_setting(&s, "quorum", "1");
         set_setting(&s, "evolve.draft_hours", "0");
         for agent in ["alice", "bob", "carol"] {

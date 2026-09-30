@@ -27,6 +27,7 @@ pub const GATE_DUPLICATE: &str = "duplicate of";
 pub const GATE_OPERATING_LAYER_CAP: &str = "operating-layer cap";
 pub const GATE_NO_OP_CHECK: &str =
     "check selects no test: its `go test -run` regex matches nothing in `go test -list`";
+pub const GATE_FILE_GONE: &str = "File: names a path whose whole tree is gone from the checkout; the card predates a move or removal";
 
 pub fn signal_tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -348,6 +349,54 @@ pub fn owner_targeted(summary: &str, body: &str) -> bool {
     false
 }
 
+/// Whether the card's `File:` line names only paths that are gone from the checkout
+/// together with their directories. A card that names a file to create keeps its directory
+/// and passes; a card written against a tree that was since moved or removed (a port, a
+/// rename of a whole package) does not, and no worker should be sent to look for it.
+pub fn card_file_gone(project_path: &str, body: &str) -> bool {
+    if project_path.is_empty() {
+        return false;
+    }
+    let fields = crate::card_class::card_fields(body);
+    let value = crate::card_class::first_card_text(&[
+        fields.get("file").cloned().unwrap_or_default(),
+        fields.get("path").cloned().unwrap_or_default(),
+    ]);
+    let mut concrete = 0;
+    for part in value.split(',') {
+        let raw = part
+            .trim()
+            .trim_matches(['`', '\'', '"', '(', ')', '[', ']'])
+            .trim_end_matches(['.', ':', ';']);
+        // A file class ("the three git callers", "src/**/*.rs") is not a path to look up.
+        if raw.is_empty()
+            || raw.contains(char::is_whitespace)
+            || raw.contains(['*', '?', '{', '}'])
+            || Path::new(raw).is_absolute()
+        {
+            continue;
+        }
+        let clean = clean_rel(raw);
+        if clean.is_empty() || clean == "." || clean.split('/').any(|p| p == "..") {
+            continue;
+        }
+        concrete += 1;
+        let full = Path::new(project_path).join(&clean);
+        if full.exists() {
+            return false;
+        }
+        // A new file may go anywhere under a tree that exists, however deep; only a
+        // path whose whole top-level tree is missing predates a move or removal.
+        let Some((top, _)) = clean.split_once('/') else {
+            return false;
+        };
+        if Path::new(project_path).join(top).exists() {
+            return false;
+        }
+    }
+    concrete > 0
+}
+
 pub fn in_flight_gate(sg: &Suggestion) -> String {
     if sg.job.is_empty() || sg.job_status.is_empty() {
         return String::new();
@@ -398,6 +447,9 @@ pub fn plan_gate_with(
         }
         body = &post.body;
         agent = &post.agent;
+    }
+    if card_file_gone(project_path, body) {
+        return GATE_FILE_GONE.into();
     }
     if post.is_some() && is_worker_post(s, agent) {
         if !signal_resolves(s, project_path, summary, body) {

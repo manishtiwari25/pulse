@@ -61,6 +61,7 @@ pub(crate) fn suggestion_idle_part(s: &pulse_store::Store, slug: String, now: St
     let mut net_non_positive = 0;
     let mut owner = 0;
     let mut no_evidence = 0;
+    let mut file_gone = 0;
     let mut over_operating_cap = 0;
     let mut duplicates = 0;
     let mut needs_votes = 0;
@@ -92,6 +93,8 @@ pub(crate) fn suggestion_idle_part(s: &pulse_store::Store, slug: String, now: St
                     duplicates += 1;
                 } else if gate.starts_with(pulse_tally::GATE_OPERATING_LAYER_CAP) {
                     over_operating_cap += 1;
+                } else if gate == pulse_tally::GATE_FILE_GONE {
+                    file_gone += 1;
                 } else if gate == pulse_tally::GATE_NO_EVIDENCE
                     || gate == pulse_tally::GATE_OWNER_PATHS
                     || gate == pulse_tally::GATE_UNLANDED
@@ -134,6 +137,9 @@ pub(crate) fn suggestion_idle_part(s: &pulse_store::Store, slug: String, now: St
     }
     if no_evidence > 0 {
         held.push(format!("{no_evidence} without evidence"));
+    }
+    if file_gone > 0 {
+        held.push(format!("{file_gone} name gone paths"));
     }
     if duplicates > 0 {
         held.push(format!("{duplicates} duplicates"));
