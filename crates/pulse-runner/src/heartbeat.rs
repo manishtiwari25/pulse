@@ -255,6 +255,43 @@ impl crate::exec::LocalExec {
             })),
         })
     }
+    /// Runs `f` while beating for the worker under `source`, at once and then every
+    /// heartbeat interval. The worker's execution heartbeat stopped with its process;
+    /// the check the runner runs on its clone afterwards can outlast
+    /// `heartbeat.dead_after`, and the roster would read a working run as dead.
+    pub(crate) fn beat_during<T>(&self, source: &str, f: impl FnOnce() -> T) -> T {
+        let reported = heartbeat_reporter(Some(self.log.clone()));
+        let home = self.home.clone();
+        let agent = self.agent.clone();
+        let source = source.to_string();
+        let done = Arc::new(AtomicBool::new(false));
+        let thread_done = Arc::clone(&done);
+        let (ticks, stop_ticks) = heartbeat_ticks(pulse_board::HEARTBEAT_INTERVAL);
+        let beater = std::thread::spawn(move || {
+            let mut due = true;
+            while !thread_done.load(Ordering::SeqCst) {
+                if due {
+                    let err = (|| -> Result<()> {
+                        let s = open_store(&home)?;
+                        let now = heartbeat_now(&s)?;
+                        pulse_board::beat_agent_at(&s, &agent, &source, now)?;
+                        Ok(())
+                    })()
+                    .err();
+                    report_presence(err, &reported);
+                    due = false;
+                }
+                if ticks.recv_timeout(Duration::from_millis(20)).is_ok() {
+                    due = true;
+                }
+            }
+        });
+        let out = f();
+        done.store(true, Ordering::SeqCst);
+        stop_ticks();
+        let _ = beater.join();
+        out
+    }
     /// Go: func (e *localExec) stopHeartbeat(id board.ExecutionIdentity, report func(error))
     pub(crate) fn stop_heartbeat(
         &mut self,
@@ -983,6 +1020,83 @@ mod tests {
         old.observer(id.clone()).unwrap().beat.unwrap()();
         let (after, _) = runner_heartbeat(&s, &id.agent).unwrap();
         assert_eq!(after, h, "old supervisor changed evidence after restart");
+    }
+
+    #[test]
+    fn verify_beats_for_the_worker_whose_process_stopped() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let fake = fake_heartbeat_clock();
+        let (e, id, _env) = runner_heartbeat_fixture(&s, "local");
+        let presence = |at: DateTime<Utc>| {
+            pulse_board::agent_presences(&s, &pulse_store::rfc3339_nano(at))
+                .unwrap()
+                .remove("quiet")
+                .unwrap()
+        };
+        let stop = Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst));
+        pulse_board::record_heartbeat(
+            &s,
+            pulse_board::ExecutionHeartbeat {
+                identity: id.clone(),
+                at: pulse_store::rfc3339_nano(stop),
+                stopped_at: String::new(),
+            },
+        )
+        .unwrap();
+        pulse_board::stop_heartbeat(&s, id.clone(), stop).unwrap();
+        // The check starts once the stop's own beat is past the debounce window.
+        let started = stop + chrono::Duration::seconds(15);
+        let dead_at = started + pulse_board::dead_after(&s) + chrono::Duration::seconds(1);
+        assert_eq!(
+            presence(dead_at).presence,
+            "dead",
+            "a stopped execution alone must read dead past dead_after"
+        );
+
+        fake.clock
+            .store(started.timestamp_nanos_opt().unwrap(), Ordering::SeqCst);
+        let out = e.beat_during("verify", || {
+            heartbeat_eventually(|| presence(started).heartbeat_source == "verify");
+            let first = presence(started);
+            assert_eq!(first.presence, "online", "{first:?}");
+            assert_eq!(first.last_heartbeat_at, pulse_store::rfc3339_nano(started));
+            assert_eq!(
+                presence(dead_at).presence,
+                "dead",
+                "one beat at the start cannot cover a check longer than dead_after"
+            );
+            fake.clock
+                .store(dead_at.timestamp_nanos_opt().unwrap(), Ordering::SeqCst);
+            fake.ticks.send(dead_at).unwrap();
+            heartbeat_eventually(|| {
+                presence(dead_at).last_heartbeat_at == pulse_store::rfc3339_nano(dead_at)
+            });
+            7
+        });
+        assert_eq!(out, 7, "beat_during returns the check's result");
+        let checked = presence(dead_at);
+        assert_eq!(checked.presence, "online", "{checked:?}");
+        assert_eq!(checked.heartbeat_source, "verify");
+        assert!(
+            checked
+                .presence_reason
+                .starts_with("alive: verify heartbeat"),
+            "{checked:?}"
+        );
+
+        // Once the check has returned, ticks beat nothing more.
+        let later = dead_at + chrono::Duration::seconds(60);
+        fake.clock
+            .store(later.timestamp_nanos_opt().unwrap(), Ordering::SeqCst);
+        fake.ticks.send(later).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            presence(later).last_heartbeat_at,
+            pulse_store::rfc3339_nano(dead_at),
+            "verify beat outlived the check"
+        );
     }
 
     #[test]

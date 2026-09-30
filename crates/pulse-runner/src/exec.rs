@@ -308,14 +308,17 @@ impl Executor for LocalExec {
         minutes: i32,
     ) -> (Option<i32>, String) {
         let secs = (minutes.max(1) as u64 * 60).max(60);
-        match crate::proc::run_group(
-            cancel,
-            &["/bin/sh".into(), "-c".into(), cmd.into()],
-            &self.clone_dir,
-            &crate::proc::environ(),
-            &[],
-            Duration::from_secs(secs),
-        ) {
+        let run = self.beat_during("verify", || {
+            crate::proc::run_group(
+                cancel,
+                &["/bin/sh".into(), "-c".into(), cmd.into()],
+                &self.clone_dir,
+                &crate::proc::environ(),
+                &[],
+                Duration::from_secs(secs),
+            )
+        });
+        match run {
             Ok(out) if out.timeout => (None, String::new()),
             Ok(out) => (
                 Some(out.exit_code),
@@ -706,17 +709,20 @@ impl Executor for SshExec {
         } else {
             minutes.to_string()
         };
-        match self.call(
-            &[
-                "verify".into(),
-                self.local.job.str("id"),
-                budget,
-                "--".into(),
-                cmd.into(),
-            ],
-            &[],
-            Duration::from_secs((minutes.max(1) * 60 + 120) as u64),
-        ) {
+        let call = self.local.beat_during("verify", || {
+            self.call(
+                &[
+                    "verify".into(),
+                    self.local.job.str("id"),
+                    budget,
+                    "--".into(),
+                    cmd.into(),
+                ],
+                &[],
+                Duration::from_secs((minutes.max(1) * 60 + 120) as u64),
+            )
+        });
+        match call {
             Ok((crate::executor::REMOTE_EXIT_TIMEOUT, out, err)) => (
                 None,
                 format!("{}{}", tail_str(&out, 20000), tail_str(&err, 20000)),
