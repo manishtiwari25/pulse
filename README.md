@@ -868,7 +868,11 @@ admin@host` copies that login to the hand's `pulse` user (`--with-token`
 still reads a token from stdin; `--remove` forgets it). The hand's probe reports
 `harness=yes|no` and the `pulse` build it runs. The probe also refuses a hand
 whose workdir filesystem has under `daemon.min_free_mb` (default 1024) megabytes
-free and names that path in its note; 0 turns the check off. The login check the daemon
+free and names that path in its note; 0 turns the check off. `pulse executor
+probe local` probes this machine the same way (git, free space under
+`~/.pulse/work`), and a passing probe run by the owner clears the projects a
+failed setup marked unfit here, instead of waiting a day for the marks to
+expire. The login check the daemon
 runs on an executor is a two-step harness run that must answer `SUMMARY: ok`. While the checkout is
 on another branch the landing does not touch it: the merge is verified in the
 throwaway worktree as always and the default branch then moves by ref (a

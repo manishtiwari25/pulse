@@ -1820,16 +1820,60 @@ mod tests {
         ] {
             assert!(why.contains(want), "wait reason lacks {want:?}: {why}");
         }
-        clear_unfit(
-            &s.conn().unwrap(),
-            &crate::util::plus_hours(crate::test_helpers::TEST_NOW, 2.0),
-            crate::executor::LOCAL_EXECUTOR,
+        // The command the wait reason names works for this machine too. A worker's probe
+        // does not clear the mark; a human's passing probe does; a machine under the free
+        // space floor fails the probe and keeps the mark.
+        let later = crate::util::plus_hours(crate::test_helpers::TEST_NOW, 2.0);
+        let (ok, note) =
+            crate::executor::probe_executor(&s, crate::executor::LOCAL_EXECUTOR, "aurora", &later)
+                .unwrap();
+        assert!(
+            ok && note.starts_with("ok: git="),
+            "worker probe: {ok} {note}"
         );
-        let got = unfit_projects(
-            &s.conn().unwrap(),
-            crate::executor::LOCAL_EXECUTOR,
-            &crate::util::plus_hours(crate::test_helpers::TEST_NOW, 2.0),
+        let got = unfit_projects(&s.conn().unwrap(), crate::executor::LOCAL_EXECUTOR, &later);
+        assert_eq!(
+            got.len(),
+            1,
+            "a worker's probe cleared the unfit mark: {got:?}"
         );
+        s.set_setting(
+            crate::util::HUMAN_AGENT,
+            "daemon.min_free_mb",
+            &i32::MAX.to_string(),
+        )
+        .unwrap();
+        let (ok, note) = crate::executor::probe_executor(
+            &s,
+            crate::executor::LOCAL_EXECUTOR,
+            crate::util::HUMAN_AGENT,
+            &later,
+        )
+        .unwrap();
+        assert!(
+            !ok && note.contains("free on"),
+            "full disk probe: {ok} {note}"
+        );
+        let got = unfit_projects(&s.conn().unwrap(), crate::executor::LOCAL_EXECUTOR, &later);
+        assert_eq!(
+            got.len(),
+            1,
+            "a failed probe cleared the unfit mark: {got:?}"
+        );
+        s.set_setting(crate::util::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        let (ok, note) = crate::executor::probe_executor(
+            &s,
+            crate::executor::LOCAL_EXECUTOR,
+            crate::util::HUMAN_AGENT,
+            &later,
+        )
+        .unwrap();
+        assert!(
+            ok && note.contains(&format!("unfit_cleared={}", proj.str("slug"))),
+            "human probe: {ok} {note}"
+        );
+        let got = unfit_projects(&s.conn().unwrap(), crate::executor::LOCAL_EXECUTOR, &later);
         assert!(got.is_empty(), "probe clear left unfit marks: {got:?}");
     }
 

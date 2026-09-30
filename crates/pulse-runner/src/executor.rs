@@ -1544,14 +1544,76 @@ pub(crate) fn parse_probe(text: &str) -> BTreeMap<String, String> {
     fields
 }
 
+/// The local executor is this machine: no ssh, no hands. Its probe answers what a hand's
+/// probe answers - git present, room under `PULSE_HOME/work` - and, as for a hand, a
+/// human's passing probe clears the projects marked unfit here, so the owner who fixed
+/// the machine does not wait a day for the marks to expire.
+fn probe_local(s: &pulse_store::Store, actor: &str, now: &str) -> (bool, String) {
+    let mut problems = Vec::new();
+    let gitv = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|v| v.split_whitespace().nth(2).map(ToOwned::to_owned))
+        .unwrap_or_else(|| "missing".into());
+    if gitv == "missing" {
+        problems.push("git missing".to_string());
+    }
+    let work = std::path::Path::new(&s.home).join("work");
+    let _ = std::fs::create_dir_all(&work);
+    let free_mb = std::process::Command::new("df")
+        .args(["-Pm", &work.display().to_string()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|t| {
+            t.lines().nth(1).and_then(|l| {
+                l.split_whitespace()
+                    .nth(3)
+                    .and_then(|n| n.parse::<i32>().ok())
+            })
+        })
+        .unwrap_or(0);
+    let min_free = setting_int(s, "daemon.min_free_mb");
+    if min_free > 0 && free_mb < min_free {
+        let want = if min_free % 1024 == 0 {
+            format!("{} GiB", min_free / 1024)
+        } else {
+            format!("{min_free} MB")
+        };
+        problems.push(format!("under {want} free on {}", work.display()));
+    }
+    if !problems.is_empty() {
+        return (false, problems.join("; "));
+    }
+    let mut note = format!("ok: git={gitv} disk_free_mb={free_mb}");
+    if actor == crate::util::HUMAN_AGENT
+        && let Ok(conn) = s.conn()
+    {
+        let marks = crate::recipe::unfit_projects(&conn, LOCAL_EXECUTOR, now);
+        crate::recipe::clear_unfit(&conn, now, LOCAL_EXECUTOR);
+        if !marks.is_empty() {
+            note.push_str(&format!(
+                " unfit_cleared={}",
+                marks.keys().cloned().collect::<Vec<_>>().join(",")
+            ));
+        }
+    }
+    (true, note)
+}
+
 pub(crate) fn probe_executor(
     s: &pulse_store::Store,
     name: &str,
     actor: &str,
     now: &str,
 ) -> Result<(bool, String)> {
+    if name == LOCAL_EXECUTOR {
+        return Ok(probe_local(s, actor, now));
+    }
     let r = executor_row(s, name);
-    if is_nil(&r) || name == LOCAL_EXECUTOR {
+    if is_nil(&r) {
         return Err(fail(2, format!("No executor {name}")).into());
     }
     let drained_for_login = login_drained(&r);
