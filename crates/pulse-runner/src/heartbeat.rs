@@ -1215,9 +1215,15 @@ mod tests {
         let _ = fake
             .ticks
             .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)));
-        check("dead");
         let (h, _) = runner_heartbeat(&s, &id.agent).unwrap();
         assert!(!h.stopped_at.is_empty());
+        // The stop is the last word, not death: the runner is still landing the run.
+        check("online");
+        fake.clock.fetch_add(
+            pulse_board::dead_after(&s).num_nanoseconds().unwrap(),
+            Ordering::SeqCst,
+        );
+        check("dead");
     }
 
     #[test]

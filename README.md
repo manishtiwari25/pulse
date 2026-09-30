@@ -969,8 +969,10 @@ hook, taking or renewing a job lease, the runner's supervision of its run, or
 `pulse agent beat` by hand. Successfully started local workers and the SSH
 hands supervisor record an execution heartbeat and refresh it every 60 seconds,
 including quiet work and lead jobs; exit, cancellation and timeout stop that
-observation, and a stopped execution counts as dead until the agent beats
-again. Presence is `dead` once the latest beat is older than
+observation. A stop is the execution's last word, not death: the agent stays
+`online` while the runner verifies and lands its run, and is `dead` once
+`heartbeat.dead_after` has passed since the stop without a fresh beat.
+Presence is `dead` once the latest beat is older than
 `heartbeat.dead_after` seconds (300 by default, never under 30; `pulse settings
 set heartbeat.dead_after 600` for slow harnesses) and returns to `online` on
 the next beat from any source. A worker or lead with no lease and no running
@@ -981,7 +983,8 @@ threshold, while retaining their identity/history fields (`--all` still
 includes pruned names).
 
 Death has consequences, once, in the daemon's loop: a dead agent's running run
-that this daemon is not itself supervising is closed as `lost` and its job is
+that this daemon is not itself supervising (neither the run nor its job is in
+flight here) is closed as `lost` and its job is
 queued again (its next lease starts a new generation, so the dead agent's late
 writes are fenced; after the usual attempts it fails instead); a job a dead
 agent leased without a run is released the same way. A dead session

@@ -2924,12 +2924,14 @@ mod tests {
                     (2 * pulse_board::HEARTBEAT_INTERVAL.as_nanos()) as i64,
                     Ordering::SeqCst,
                 );
+                // Stopped two beats ago but well inside `dead_after`: the worker stays
+                // online while its run is verified, so no sweep can take the run away.
                 crate::test_helpers_f2::assert_lifecycle_presence(
                     &s,
                     chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
                         fake.clock.load(Ordering::SeqCst),
                     ),
-                    "dead",
+                    "online",
                 );
                 if takeover == "verification" {
                     takeover_fn();

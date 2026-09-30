@@ -518,6 +518,8 @@ fn calculate_presence(
         p.heartbeat_age_seconds = Some(age.unwrap().num_seconds().max(0));
     }
     // A stop ends the execution: evidence from before it is superseded; only a later beat revives the agent.
+    // The stop itself is the agent's last word, so the dead clock runs from it: the runner is still
+    // verifying and landing the run in that window, and sweeping it would throw finished work away.
     let stopped_since = exec_stop.filter(|stop| latest.as_ref().is_none_or(|(at, _)| *at <= *stop));
     let fresh = stopped_since.is_none() && age.is_some_and(|age| age < dead_after);
     let supervised = e.kind == "worker" || e.kind == "lead";
@@ -551,11 +553,22 @@ fn calculate_presence(
             p.presence_expires_at = pulse_store::rfc3339_nano(*at + dead_after);
         }
         _ if let Some(stop) = stopped_since => {
-            p.presence = "dead".into();
-            p.presence_reason = format!(
-                "execution stopped {} ago; no heartbeat since",
-                age_text(now - stop)
-            );
+            let since = now - stop;
+            if since < dead_after {
+                p.presence = "online".into();
+                p.presence_reason = format!(
+                    "execution stopped {} ago; dead after {} without a heartbeat",
+                    age_text(since),
+                    age_text(dead_after)
+                );
+                p.presence_expires_at = pulse_store::rfc3339_nano(stop + dead_after);
+            } else {
+                p.presence = "dead".into();
+                p.presence_reason = format!(
+                    "execution stopped {} ago; no heartbeat since",
+                    age_text(since)
+                );
+            }
         }
         _ if let Some(age) = age => {
             p.presence = "dead".into();
@@ -812,11 +825,27 @@ mod tests {
         assert!(!stop_heartbeat(&s, id.clone(), base).unwrap());
         record_beat(&s, &id, base);
         assert!(stop_heartbeat(&s, id.clone(), base + chrono::Duration::seconds(1)).unwrap());
-        let p = require_presence(&s, &id.agent, base + chrono::Duration::seconds(1), "dead");
+        // The stop is the agent's last word: the run is being verified and landed, so the
+        // agent stays online until `dead_after` has passed since the stop.
+        let p = require_presence(&s, &id.agent, base + chrono::Duration::seconds(1), "online");
         assert_eq!(p.last_heartbeat_at, TEST_NOW);
         assert_eq!(
             p.presence_reason,
-            "execution stopped 0s ago; no heartbeat since"
+            "execution stopped 0s ago; dead after 5m without a heartbeat"
+        );
+        assert_eq!(
+            p.presence_expires_at,
+            pulse_store::rfc3339_nano(base + chrono::Duration::seconds(1) + dead_after(&s))
+        );
+        let p = require_presence(
+            &s,
+            &id.agent,
+            base + chrono::Duration::seconds(1) + dead_after(&s),
+            "dead",
+        );
+        assert_eq!(
+            p.presence_reason,
+            "execution stopped 5m ago; no heartbeat since"
         );
         assert!(
             !record_heartbeat(
@@ -839,7 +868,13 @@ mod tests {
             "UPDATE jobs SET status='done' WHERE id=?",
             &[&id.job_id],
         );
-        require_presence(&s, &id.agent, base + chrono::Duration::seconds(2), "dead");
+        require_presence(&s, &id.agent, base + chrono::Duration::seconds(2), "online");
+        require_presence(
+            &s,
+            &id.agent,
+            base + chrono::Duration::seconds(2) + dead_after(&s),
+            "dead",
+        );
         // A later sign of life from any source revives the agent.
         assert_eq!(
             beat_agent_at(&s, &id.agent, "cli", base + chrono::Duration::seconds(12)).unwrap(),
@@ -1152,12 +1187,23 @@ mod tests {
                 },
             )
             .unwrap();
-            let p = require_presence(&s, &id.agent, base + chrono::Duration::seconds(2), "dead");
+            let stopped = base + chrono::Duration::seconds(2);
+            let p = require_presence(&s, &id.agent, stopped, "online");
             assert!(
                 p.last_heartbeat_at == TEST_NOW
                     || p.last_heartbeat_at == heartbeat_time(base + chrono::Duration::seconds(1)),
                 "{p:?}"
             );
+            // The late observation did not reopen the execution: the stop still rules.
+            assert_eq!(
+                p.presence_reason,
+                "execution stopped 0s ago; dead after 5m without a heartbeat"
+            );
+            assert_eq!(
+                p.presence_expires_at,
+                pulse_store::rfc3339_nano(stopped + dead_after(&s))
+            );
+            require_presence(&s, &id.agent, stopped + dead_after(&s), "dead");
             presence_sql(
                 &s,
                 "UPDATE runs SET status='done' WHERE id=?",

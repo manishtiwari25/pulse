@@ -10,7 +10,9 @@ use std::collections::BTreeSet;
 /// Each daemon loop: the `running` runs of dead agents that this daemon is not
 /// supervising are closed as lost, and the jobs dead agents hold without a run
 /// are queued again (or fail after `MAX_ATTEMPTS`, like a lost run). Runs and
-/// jobs in flight here are the daemon's own and are left to their observers.
+/// jobs in flight here are the daemon's own and are left to their observers;
+/// a run counts as in flight by its id or by its job, because the daemon only
+/// learns the run id when the run has finished.
 /// Returns the lines the daemon says.
 pub(crate) fn sweep_dead_agents(
     s: &pulse_store::Store,
@@ -43,7 +45,7 @@ pub(crate) fn sweep_dead_agents(
             let Some(p) = dead.get(&agent) else {
                 continue;
             };
-            if inflight_runs.contains(&r.str("id")) {
+            if inflight_runs.contains(&r.str("id")) || inflight_jobs.contains(&r.str("job_id")) {
                 continue;
             }
             let why = format!("{agent} is dead: {}", p.presence_reason);
@@ -180,7 +182,14 @@ mod tests {
     fn dead_agents_lose_runs_and_leases_but_inflight_and_alive_ones_keep_them() {
         let _serial = crate::test_helpers::serial();
         let s = new_store();
-        for name in ["w-dead", "w-inflight", "w-alive", "w-spent", "w-lease"] {
+        for name in [
+            "w-dead",
+            "w-inflight",
+            "w-alive",
+            "w-spent",
+            "w-lease",
+            "w-landing",
+        ] {
             join_agent(
                 &s,
                 JoinInput {
@@ -209,6 +218,11 @@ mod tests {
                 [TEST_NOW],
             )
             .unwrap();
+        // The daemon knows a dispatched run only by its job until the run has finished, so a
+        // run whose job is in flight is left alone even when its id is not.
+        seed_running(&s, "w-landing", "job-landing", "run-landing", 1);
+        let inflight_runs = BTreeSet::from(["run-inflight".to_string()]);
+        let inflight_jobs = BTreeSet::from(["job-inflight".to_string(), "job-landing".to_string()]);
         let base = chrono::DateTime::parse_from_rfc3339(TEST_NOW)
             .unwrap()
             .with_timezone(&chrono::Utc);
@@ -218,12 +232,7 @@ mod tests {
         let early = pulse_store::rfc3339_nano(later - chrono::Duration::seconds(1));
         assert!(sweep_dead_agents(&s, &early, &BTreeSet::new(), &BTreeSet::new()).is_empty());
         let now = pulse_store::rfc3339_nano(later);
-        let lines = sweep_dead_agents(
-            &s,
-            &now,
-            &BTreeSet::from(["run-inflight".to_string()]),
-            &BTreeSet::from(["job-inflight".to_string()]),
-        );
+        let lines = sweep_dead_agents(&s, &now, &inflight_runs, &inflight_jobs);
         assert_eq!(
             lines,
             vec![
@@ -244,6 +253,8 @@ mod tests {
         );
         assert_eq!(column(&s, run_status, "run-inflight"), "running");
         assert_eq!(column(&s, job_status, "job-inflight"), "leased");
+        assert_eq!(column(&s, run_status, "run-landing"), "running");
+        assert_eq!(column(&s, job_status, "job-landing"), "leased");
         assert_eq!(column(&s, run_status, "run-alive"), "running");
         assert_eq!(column(&s, job_status, "job-alive"), "leased");
         assert_eq!(column(&s, run_status, "run-spent"), "lost");
@@ -273,18 +284,11 @@ mod tests {
             ]
         );
         // The second sweep finds nothing left to do; the dead workers are idle now.
-        assert!(
-            sweep_dead_agents(
-                &s,
-                &now,
-                &BTreeSet::from(["run-inflight".to_string()]),
-                &BTreeSet::from(["job-inflight".to_string()]),
-            )
-            .is_empty()
-        );
+        assert!(sweep_dead_agents(&s, &now, &inflight_runs, &inflight_jobs).is_empty());
         let presence = pulse_board::agent_presences(&s, &now).unwrap();
         assert_eq!(presence["w-dead"].presence, "idle");
         assert_eq!(presence["w-inflight"].presence, "dead");
+        assert_eq!(presence["w-landing"].presence, "dead");
         assert_eq!(presence["w-alive"].presence, "online");
     }
 }
