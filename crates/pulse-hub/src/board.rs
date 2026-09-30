@@ -758,7 +758,13 @@ pub(crate) fn git_value(repo: &str, args: &[&str]) -> String {
             command.env(k, v);
         }
     }
-    let Ok(mut child) = command.stdout(std::process::Stdio::piped()).spawn() else {
+    // Output() with a nil Stderr captures the child's stderr into the error;
+    // nothing here reads it, so it must not reach the hub's own log either.
+    let Ok(mut child) = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
         return String::new();
     };
     let Some(mut stdout) = child.stdout.take() else {
@@ -985,6 +991,33 @@ mod tests {
             .output()
             .unwrap();
         dir
+    }
+
+    // Output() reads stdout while git runs; the earlier poll-then-read loop
+    // hung on any listing longer than the pipe buffer until its 5 s kill and
+    // then returned "" for a command that had succeeded.
+    #[test]
+    fn git_value_reads_output_longer_than_a_pipe_buffer() {
+        let dir = repo();
+        let repo = dir.path().to_str().unwrap();
+        for i in 0..3000 {
+            std::fs::write(
+                dir.path().join(format!("untracked-file-number-{i:05}.txt")),
+                "x",
+            )
+            .unwrap();
+        }
+        let start = std::time::Instant::now();
+        let listing = git_value(repo, &["status", "--porcelain", "--untracked-files=all"]);
+        assert!(start.elapsed() < std::time::Duration::from_secs(4));
+        assert!(listing.len() > 64 * 1024, "{} bytes", listing.len());
+        assert_eq!(listing.lines().count(), 3000);
+        assert_eq!(
+            git_value(repo, &["rev-parse", "--is-inside-work-tree"]),
+            "true"
+        );
+        // An unborn branch has no HEAD: git fails on stderr, the value is "".
+        assert_eq!(git_value(repo, &["rev-parse", "--short", "HEAD"]), "");
     }
 
     fn join(store: &pulse_store::Store, name: &str) -> pulse_store::Agent {
