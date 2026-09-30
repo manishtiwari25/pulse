@@ -652,13 +652,22 @@ pub(crate) fn land_branch(
         }
     }
     let (on_default, mut clean) = checkout_state_pair(&root, &def);
-    if !on_default {
-        return Ok((
-            "deferred".into(),
-            format!("the checkout of {root} is not on {def}"),
-        ));
+    // A checkout parked on another branch is the human's; the landing then moves
+    // `refs/heads/{def}` itself once the merge is verified and never touches the working
+    // tree. Only a worktree that has {def} checked out still defers the landing.
+    let by_ref = !on_default;
+    if by_ref {
+        let parked = default_branch_worktree(&root, &def);
+        if !parked.is_empty() {
+            return Ok((
+                "deferred".into(),
+                format!(
+                    "{def} is checked out at {parked} while the checkout of {root} is not on {def}"
+                ),
+            ));
+        }
     }
-    if !clean {
+    if !by_ref && !clean {
         if s.setting("landing.auto_stash", "on") == "off" {
             return Ok((
                 "deferred".into(),
@@ -950,31 +959,76 @@ pub(crate) fn land_branch(
         return Ok(("stopped".into(), why));
     }
     let (on_default, clean) = checkout_state_pair(&root, &def);
-    if !(on_default && clean) {
-        return Ok((
-            "deferred".into(),
-            "the checkout changed while the merge was verified; nothing landed, try again".into(),
-        ));
-    }
     let reflog_action = crate::util::new_id("pulse-code-delivery", &s.now());
-    let ff = crate::util::git_timeout_env(
-        &root,
-        Duration::from_secs(120),
-        &[format!("GIT_REFLOG_ACTION={reflog_action}")],
-        &["merge", "--ff-only", &sha],
-    );
-    if !ff.ok() {
-        let why = crate::util::trunc(ff.stderr.trim(), 200);
-        if crate::land_lock::locked_checkout(ff.stderr) {
+    let mut landed_how = "a fast-forward of the checkout".to_string();
+    if by_ref {
+        if on_default {
             return Ok((
                 "deferred".into(),
-                format!("the checkout of {root} is locked ({why}); nothing landed, try again"),
+                format!(
+                    "the checkout moved to {def} while the merge was verified; nothing landed, try again"
+                ),
             ));
         }
-        return Ok((
-            "deferred".into(),
-            format!("{def} moved while the merge was verified; nothing landed, try again ({why})"),
-        ));
+        if before.is_empty() {
+            return Ok((
+                "deferred".into(),
+                format!("{def} has no commit in {root}; nothing landed"),
+            ));
+        }
+        let moved = crate::util::git_timeout(
+            &root,
+            Duration::from_secs(30),
+            &[
+                "update-ref",
+                "-m",
+                &format!("{reflog_action}: fast-forward of {def} by ref"),
+                &format!("refs/heads/{def}"),
+                &sha,
+                &before,
+            ],
+        );
+        if !moved.ok() {
+            let why = crate::util::trunc(moved.stderr.trim(), 200);
+            return Ok((
+                "deferred".into(),
+                format!(
+                    "{def} moved while the merge was verified; nothing landed, try again ({why})"
+                ),
+            ));
+        }
+        landed_how = format!(
+            "a fast-forward of `{def}` by ref (the checkout was on another branch and was not touched)"
+        );
+    } else {
+        if !(on_default && clean) {
+            return Ok((
+                "deferred".into(),
+                "the checkout changed while the merge was verified; nothing landed, try again"
+                    .into(),
+            ));
+        }
+        let ff = crate::util::git_timeout_env(
+            &root,
+            Duration::from_secs(120),
+            &[format!("GIT_REFLOG_ACTION={reflog_action}")],
+            &["merge", "--ff-only", &sha],
+        );
+        if !ff.ok() {
+            let why = crate::util::trunc(ff.stderr.trim(), 200);
+            if crate::land_lock::locked_checkout(ff.stderr) {
+                return Ok((
+                    "deferred".into(),
+                    format!("the checkout of {root} is locked ({why}); nothing landed, try again"),
+                ));
+            }
+            return Ok((
+                "deferred".into(),
+                format!(
+                    "{def} moved while the merge was verified; nothing landed, try again ({why})"
+                ),
+            ));
+        }
     }
     let (effective_before, effective_after) = crate::landing_evidence::landing_ref_transition(
         &cancel,
@@ -1070,7 +1124,7 @@ pub(crate) fn land_branch(
                 230,
             ),
             body: format!(
-                "Branch `{branch}` landed on `{def}` by {actor} under ADR-024 (agent-driven landing): merged in a throwaway worktree, `{vc_shown}` on the merged result ({verify_note}), then a fast-forward of the checkout. The branch is removed; the commits are on {def}.\n"
+                "Branch `{branch}` landed on `{def}` by {actor} under ADR-024 (agent-driven landing): merged in a throwaway worktree, `{vc_shown}` on the merged result ({verify_note}), then {landed_how}. The branch is removed; the commits are on {def}.\n"
             ),
             agent: crate::board::actor_agent(s, actor),
             branch: Some(Box::new(def_copy)),
@@ -1429,6 +1483,30 @@ fn check_files() -> Vec<String> {
     .collect::<Vec<_>>();
     files.extend(setup_lockfiles());
     files
+}
+
+/// The path of a worktree of `root` that has `default_branch` checked out, or empty.
+/// Moving a branch under a working tree would leave that tree reporting the landed
+/// change as local edits, so such a landing waits instead.
+fn default_branch_worktree(root: &str, default_branch: &str) -> String {
+    let list = crate::util::git_timeout(
+        root,
+        Duration::from_secs(30),
+        &["worktree", "list", "--porcelain"],
+    );
+    if !list.ok() {
+        return String::new();
+    }
+    let want = format!("branch refs/heads/{default_branch}");
+    let mut path = String::new();
+    for line in list.stdout.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            path = p.trim().to_string();
+        } else if line.trim() == want {
+            return path;
+        }
+    }
+    String::new()
 }
 
 fn checkout_state_pair(root: &str, default_branch: &str) -> (bool, bool) {

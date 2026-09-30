@@ -858,8 +858,15 @@ still reads a token from stdin; `--remove` forgets it). The hand's probe reports
 `harness=yes|no` and the `pulse` build it runs. The probe also refuses a hand
 whose workdir filesystem has under `daemon.min_free_mb` (default 1024) megabytes
 free and names that path in its note; 0 turns the check off. The login check the daemon
-runs on an executor is a two-step harness run that must answer `SUMMARY: ok`. Landing waits while the checkout is
-on another branch; if it has uncommitted changes, `landing.auto_stash` (default
+runs on an executor is a two-step harness run that must answer `SUMMARY: ok`. While the checkout is
+on another branch the landing does not touch it: the merge is verified in the
+throwaway worktree as always and the default branch then moves by ref (a
+compare-and-swap `update-ref` with the same reflog receipt, so the code
+delivery evidence is unchanged); your branch, your edits and your stash stay as
+you left them, and the next worker clone starts from the landed commit. Only a
+second worktree that has the default branch checked out makes the landing wait,
+naming that worktree. When the checkout is on the default branch and has
+uncommitted changes, `landing.auto_stash` (default
 `on`) stashes them with a clear message so the landing can proceed, and a
 stash that cannot be made blocks the landing with the reason instead of
 silently deferring. Your work in progress is never committed or lost. The hold

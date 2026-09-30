@@ -692,6 +692,133 @@ mod tests {
     }
 
     #[test]
+    fn landing_moves_default_by_ref_when_checkout_is_parked_elsewhere() {
+        let _serial = crate::test_helpers::serial();
+        skip_slow();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (proj, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+
+        let branch = "pulse/aurora/by-ref";
+        run(&dir, &["git", "checkout", "-q", "-b", branch, "main"]);
+        std::fs::write(std::path::Path::new(&dir).join("feature.txt"), b"feature\n").unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "add feature"]);
+        // The owner parks the checkout on their own branch, with edits in progress.
+        run(&dir, &["git", "checkout", "-q", "-b", "owner-work", "main"]);
+        std::fs::write(
+            std::path::Path::new(&dir).join("README.md"),
+            b"# proj\n\nowner's work\n",
+        )
+        .unwrap();
+        let main_before = run(&dir, &["git", "rev-parse", "main"]).trim().to_string();
+
+        let (j, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "proj".into(),
+                kind: "task".into(),
+                title: "land by ref".into(),
+                brief: "b".into(),
+                tier: 1,
+                created_by: "aurora".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &j.id],
+        );
+
+        // With main checked out in a second worktree the landing waits: moving the
+        // branch under that tree would show the landed change as local edits there.
+        let parked = std::path::Path::new(&dir)
+            .parent()
+            .unwrap()
+            .join("main-worktree")
+            .display()
+            .to_string();
+        run(&dir, &["git", "worktree", "add", "-q", &parked, "main"]);
+        let (lines, _) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        let want = format!(
+            "landing held proj: 1 pending landing job; deferred: main is checked out at {parked} while the checkout of {dir} is not on main"
+        );
+        if lines.len() != 1 || lines[0] != want {
+            panic!("expected deferral; lines={lines:?}");
+        }
+        run(&dir, &["git", "worktree", "remove", "--force", &parked]);
+
+        let (lines, held) = tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        let joined = lines.join("\n");
+        if !held.is_empty() || !joined.contains(&format!("landing landed: {branch}")) {
+            panic!("expected landing to succeed; lines={lines:?} held={held:?}");
+        }
+        let main_after = run(&dir, &["git", "rev-parse", "main"]).trim().to_string();
+        if main_after == main_before {
+            panic!("main did not move");
+        }
+        let landed_file = run(&dir, &["git", "show", "main:feature.txt"]);
+        if landed_file.trim() != "feature" {
+            panic!("main lacks the landed file: {landed_file:?}");
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM jobs WHERE id = ? AND status = 'done' AND branch = ''",
+            &[&j.id],
+        );
+        if n != 1 {
+            panic!("job not finished: {:?}", job_row(&s, &j.id));
+        }
+        let detail = must_one(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.landed' AND subject = ?",
+            &[&branch],
+        )
+        .str("detail");
+        if !detail.contains(&format!("\"before\": \"{main_before}\"")) {
+            panic!("landing evidence lacks the ref transition: {detail}");
+        }
+        // The owner's tree is exactly as they left it.
+        let head = run(&dir, &["git", "rev-parse", "--abbrev-ref", "HEAD"]);
+        if head.trim() != "owner-work" {
+            panic!("checkout moved: {head:?}");
+        }
+        let readme = std::fs::read_to_string(std::path::Path::new(&dir).join("README.md")).unwrap();
+        if !readme.contains("owner's work") {
+            panic!("owner's edits lost: {readme:?}");
+        }
+        let stash_list = run(&dir, &["git", "stash", "list"]);
+        if stash_list.trim() != "" {
+            panic!("unexpected stash created: {stash_list:?}");
+        }
+        let body = must_one(
+            &s,
+            "SELECT body FROM posts WHERE kind = 'result' AND project = 'proj' ORDER BY date DESC LIMIT 1",
+            &[],
+        )
+        .str("body");
+        if !body.contains("by ref (the checkout was on another branch and was not touched)") {
+            panic!("result post does not say how it landed: {body}");
+        }
+    }
+
+    #[test]
     fn landing_auto_stash_off_defers() {
         let _serial = crate::test_helpers::serial();
         skip_slow();
