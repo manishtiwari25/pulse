@@ -214,8 +214,11 @@ fn group_index(g: &str) -> usize {
 }
 
 pub fn write_json(w: &mut dyn Write, v: &impl Serialize) -> Result<()> {
-    pulse_store::gojson::to_writer_pretty_no_html(&mut *w, v)?;
-    writeln!(w)?;
+    // json.Encoder.Encode marshals into a buffer and issues one Write; streaming
+    // fragments into a line-buffered stdout costs a syscall per line instead.
+    let mut buf = pulse_store::gojson::to_vec_pretty_no_html(v)?;
+    buf.push(b'\n');
+    w.write_all(&buf)?;
     Ok(())
 }
 
