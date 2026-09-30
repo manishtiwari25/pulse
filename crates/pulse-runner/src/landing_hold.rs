@@ -984,6 +984,122 @@ mod tests {
     }
 
     #[test]
+    fn landing_runs_the_projects_setup_in_the_worktree_before_verify() {
+        let _serial = crate::test_helpers::serial();
+        skip_slow();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (_, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+
+        // main's recipe installs the "dependency" the check needs; the worktree starts
+        // without it, exactly like a fresh clone starts without node_modules or .venv.
+        let recipe_dir = std::path::Path::new(&dir).join("docs/context");
+        std::fs::create_dir_all(&recipe_dir).unwrap();
+        std::fs::write(
+            recipe_dir.join("environment.md"),
+            b"---\nrecipe: 1\nsetup:\n  - printf installed > .deps\n---\n",
+        )
+        .unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "recipe"]);
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = 'test -f .deps && test -f feature.txt' WHERE slug = 'proj'",
+            &[],
+        );
+        let proj = job_row_project(&s);
+        let branch = "pulse/aurora/needs-deps";
+        let job_id = done_job_on_branch(&s, &dir, branch, "feature.txt");
+
+        let (lines, held) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        if !held.is_empty()
+            || !lines
+                .join("\n")
+                .contains(&format!("landing landed: {branch}"))
+        {
+            panic!("expected the landing after setup; lines={lines:?} held={held:?}");
+        }
+        if job_row(&s, &job_id).str("status") != "done" {
+            panic!("landed job changed status");
+        }
+        // `run` panics when git fails: main must now carry the branch's file.
+        run(&dir, &["git", "cat-file", "-e", "main:feature.txt"]);
+        if std::path::Path::new(&dir).join(".deps").exists() {
+            panic!("setup ran in the checkout instead of the worktree");
+        }
+
+        // A setup that fails on this machine defers the landing: nothing is charged to the
+        // branch, the job keeps its work, and the event names the recipe and the failure.
+        std::fs::write(
+            recipe_dir.join("environment.md"),
+            b"---\nrecipe: 1\nsetup:\n  - echo no such tool here >&2; exit 3\n---\n",
+        )
+        .unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "recipe breaks"]);
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = 'test -f other.txt' WHERE slug = 'proj'",
+            &[],
+        );
+        let proj = job_row_project(&s);
+        let other = "pulse/aurora/other";
+        let other_id = done_job_on_branch(&s, &dir, other, "other.txt");
+        let (lines, held) = tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        let note = held.get("proj").cloned().unwrap_or_default();
+        if lines.len() != 1
+            || !note
+                .contains("deferred: setup from docs/context/environment.md failed on this machine")
+            || !note.contains("no such tool here")
+        {
+            panic!("expected a setup deferral; lines={lines:?} held={held:?}");
+        }
+        let r = job_row(&s, &other_id);
+        if r.str("status") != "done" || r.str("branch") != other {
+            panic!("deferred job lost its work: {r:?}");
+        }
+        if run(&dir, &["git", "branch", "--list", other])
+            .trim()
+            .is_empty()
+        {
+            panic!("branch removed");
+        }
+        let ev = must_one(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.deferred' AND subject = ?",
+            &[&other],
+        );
+        let d: serde_json::Value = serde_json::from_str(&ev.str("detail")).unwrap();
+        if d["setup"] != "docs/context/environment.md" || d["rc"] != 3 {
+            panic!("land.deferred detail: {d}");
+        }
+        for action in ["land.failed-verify", "land.base-red", "job.requeue"] {
+            let n = count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&action],
+            );
+            if n != 0 {
+                panic!("{action}: {n} events, want 0");
+            }
+        }
+    }
+
+    #[test]
     fn landing_auto_stash_off_defers() {
         let _serial = crate::test_helpers::serial();
         skip_slow();

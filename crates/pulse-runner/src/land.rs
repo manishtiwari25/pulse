@@ -884,6 +884,61 @@ pub(crate) fn land_branch(
         if !guarded.is_empty() {
             run_base_check_files(worktree.clone(), before.clone(), guarded.clone());
         }
+        // The throwaway worktree starts bare: no node_modules, no .venv. The same setup a
+        // worker clone gets (the recipe's `setup:` lines, else the lockfile rules) runs here
+        // first, from {def}'s recipe so a branch cannot change what installs for its own check.
+        let setup_minutes = minutes.max(crate::recipe::SETUP_MINUTES);
+        let (base_recipe, base_problems, _) = crate::recipe::read_recipe(s, &slug, &root, &before);
+        let base_recipe = if base_problems.is_empty() {
+            base_recipe.unwrap_or_default()
+        } else {
+            crate::recipe::Recipe::default()
+        };
+        let (setup_cmd, setup_files, _) =
+            crate::recipe::project_setup(&root, &before, &base_recipe, &worktree);
+        if !setup_cmd.is_empty() {
+            let setup_budget =
+                Duration::from_secs((setup_minutes as u64) * 60).max(Duration::from_secs(60));
+            let (rc, so, se) = crate::landing_context::sh_with_context(
+                &cancel,
+                worktree.clone(),
+                setup_cmd,
+                setup_budget,
+            );
+            if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
+                && !why.is_empty()
+            {
+                return Ok(("stopped".into(), why));
+            }
+            let prep_tail = match rc.as_deref() {
+                None => format!("timed out after {setup_minutes} min"),
+                Some(_) => crate::run::squeeze(&format!("{so}{se}"), 300),
+            };
+            if rc.as_deref() != Some(&0) {
+                let from = setup_files.join(", ");
+                if let Ok(conn) = s.conn() {
+                    crate::util::event_at(
+                        &conn,
+                        &now,
+                        &actor,
+                        "land.deferred",
+                        &branch,
+                        serde_json::json!({
+                            "project": slug,
+                            "setup": from,
+                            "rc": rc.as_deref().copied(),
+                            "tail": prep_tail,
+                        }),
+                    );
+                }
+                return Ok((
+                    "deferred".into(),
+                    format!(
+                        "setup from {from} failed on this machine ({prep_tail}); nothing landed, try again once it is fixed"
+                    ),
+                ));
+            }
+        }
         let budget = Duration::from_secs((minutes as u64) * 60).max(Duration::from_secs(60));
         let verify_started = std::time::Instant::now();
         let (rc, so, se) =
