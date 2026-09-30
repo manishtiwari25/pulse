@@ -644,6 +644,7 @@ pub(crate) fn executors_text(s: &pulse_store::Store, now: &str) -> String {
     let mut out = Vec::new();
     for r in crate::executor::executor_rows(s, true) {
         let name = r.str("name");
+        let busy = crate::executor::executor_running(s, &name, now);
         let addr = if r.str("address").is_empty() {
             "this machine".into()
         } else {
@@ -655,7 +656,7 @@ pub(crate) fn executors_text(s: &pulse_store::Store, now: &str) -> String {
             r.str("status"),
             addr,
             r.int("workers"),
-            0,
+            busy,
             r.str("projects")
         ));
         if name != crate::executor::LOCAL_EXECUTOR {

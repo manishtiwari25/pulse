@@ -412,18 +412,18 @@ pub fn digest_for(
         w!("  STOP is present: the loop and ratification are paused until the owner lifts it");
     }
     if !agent.is_empty() {
-        let mentions = pulse_board::mentions_for(s, project, agent, 20)?;
-        if !mentions.is_empty() {
+        let mentions = pulse_board::mentions_for(s, project, agent, 10)?;
+        let total = pulse_board::mention_count(s, project, agent)?;
+        if total > 0 {
             w!("");
-            w!("MENTIONS FOR YOU ({})", mentions.len());
+            w!("MENTIONS FOR YOU ({total})");
             for p in mentions {
                 w!(
-                    "  {}  {}/{}  by {}  {}",
+                    "  {:<44} {:<38} by {:<16} {}",
                     p.id,
-                    p.area,
-                    p.thread,
-                    p.agent,
-                    p.summary
+                    format!("{}/{}", p.area, p.thread),
+                    trunc(&p.agent, 16),
+                    trunc(&p.summary, 60)
                 );
             }
         }

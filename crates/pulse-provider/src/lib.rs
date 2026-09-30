@@ -526,10 +526,18 @@ pub fn new_by_name(name: &str, options: Options) -> Result<Box<dyn Provider>> {
 /// Go-compatible alias for [`open`].
 pub use open as Open;
 
+/// Go: &http.Client{Timeout: 120 * time.Second}. Go's net/http sends
+/// `User-Agent: Go-http-client/1.1` on every request that sets none, and
+/// GitHub's REST API refuses a request without one ("Request forbidden by
+/// administrative rules"), so the client carries the same default; a request
+/// that sets its own User-Agent still wins.
+pub const DEFAULT_USER_AGENT: &str = "Go-http-client/1.1";
+
 /// Builds the default blocking HTTP client with the Go provider timeout.
 pub fn default_http_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
+        .user_agent(DEFAULT_USER_AGENT)
         .build()
         .map_err(Into::into)
 }
@@ -817,5 +825,41 @@ mod tests {
 
         let login_err: anyhow::Error = NotLoggedInError.into();
         assert!(is_not_logged_in(&login_err));
+    }
+
+    #[test]
+    fn default_http_client_sends_go_user_agent_unless_the_request_sets_one() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let n = conn.read(&mut buf).unwrap();
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let ua = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("user-agent: "))
+                    .map(str::to_string);
+                seen.push(ua);
+                conn.write_all(
+                    b"HTTP/1.1 204 No Content\r\nconnection: close\r\ncontent-length: 0\r\n\r\n",
+                )
+                .unwrap();
+            }
+            seen
+        });
+        let client = default_http_client().unwrap();
+        client.get(format!("http://{addr}/")).send().unwrap();
+        client
+            .get(format!("http://{addr}/"))
+            .header("User-Agent", "pulse-test/1")
+            .send()
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(seen[0].as_deref(), Some(DEFAULT_USER_AGENT), "{seen:?}");
+        assert_eq!(seen[1].as_deref(), Some("pulse-test/1"), "{seen:?}");
     }
 }
