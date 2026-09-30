@@ -899,7 +899,15 @@ impl Handler {
             row.insert("name".into(), Value::String(name.to_string()));
             row.insert("value".into(), Value::String(store.setting(name, "")));
             row.insert("kind".into(), Value::String(rule.kind));
-            row.insert("choices".into(), go_value(&rule.choices));
+            // Go: rule.Choices is a nil slice for rules without choices.
+            row.insert(
+                "choices".into(),
+                if rule.choices.is_empty() {
+                    Value::Null
+                } else {
+                    go_value(&rule.choices)
+                },
+            );
             row.insert("description".into(), Value::String(rule.description));
             row
         })

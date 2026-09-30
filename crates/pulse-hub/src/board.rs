@@ -8,8 +8,36 @@ use std::sync::LazyLock;
 
 pub(crate) type JsonMap = BTreeMap<String, Value>;
 
+/// Go's nil map read: every key is absent.
+static EMPTY_ROW: JsonMap = JsonMap::new();
+
+/// Go: d.ByID[id]
+fn post_at<'a>(
+    by_id: &BTreeMap<String, usize>,
+    posts: &'a [JsonMap],
+    id: &str,
+) -> Option<&'a JsonMap> {
+    by_id.get(id).map(|&i| &posts[i])
+}
+
 pub trait TallySource: Send + Sync {
     fn records(&self, project: &str, area: &str) -> Result<String>;
+}
+
+/// Go: type nativeTally struct{ store *store.Store }
+pub struct NativeTally {
+    pub store: std::sync::Arc<pulse_store::Store>,
+}
+
+impl TallySource for NativeTally {
+    fn records(&self, project: &str, area: &str) -> Result<String> {
+        pulse_tally::records(
+            &self.store,
+            project,
+            area,
+            pulse_tally::Thresholds::default(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -17,7 +45,8 @@ pub(crate) struct BoardData {
     pub(crate) meta: JsonMap,
     pub(crate) params: JsonMap,
     pub(crate) posts: Vec<JsonMap>,
-    pub(crate) by_id: BTreeMap<String, JsonMap>,
+    /// Go's ByID shares the post maps with Posts; here it indexes into them.
+    pub(crate) by_id: BTreeMap<String, usize>,
     pub(crate) claims: Vec<JsonMap>,
     pub(crate) threads: Vec<JsonMap>,
     pub(crate) proposals: Vec<JsonMap>,
@@ -72,8 +101,7 @@ impl crate::server::Handler {
         let raw_posts = pulse_tally::posts_for(store, project, "")?;
         let open_jobs = pulse_tally::open_suggestion_jobs(store)?;
         let db_posts = raw_posts
-            .iter()
-            .cloned()
+            .into_iter()
             .map(|p| (p.id.clone(), p))
             .collect::<BTreeMap<_, _>>();
         let mut d = BoardData {
@@ -127,12 +155,12 @@ impl crate::server::Handler {
                             json!(f[4]), json!(f[5]), json!(post.runner), json!(post.model), json!(f[12]),
                             json!(f[6]), json!(post.branch), json!(f[7]), json!(f[8]), json!(f[9]), json!(f[13]),
                             json!(if f[14] == "1" { 1 } else { 0 }), json!(f[10]), json!(f[11]), json!(post.links),
-                            json!(post.files), json!(fm), json!(post.body.trim_end_matches('\n')), json!(if missing.is_empty() { 1 } else { 0 }),
+                            json!(post.files), json!(fm), json!(post.body.trim_matches('\n')), json!(if missing.is_empty() { 1 } else { 0 }),
                             json!(missing), json!(if area.is_empty() || area == f[1] { 1 } else { 0 }),
                             json!(truncate(&post.name, 40)), json!(truncate(&post.origin_project, 60)),
                         ],
                     );
-                    d.by_id.insert(f[3].to_string(), row.clone());
+                    d.by_id.insert(f[3].to_string(), d.posts.len());
                     d.posts.push(row);
                 }
                 "claim" => d.claims.push(object("id thread_key agent expires status summary", vals(&f[0..6]))),
@@ -194,21 +222,14 @@ impl crate::server::Handler {
         let plan_ctx = pulse_tally::plan_context_for(store, project, &now, plan_res.as_ref());
         d.enrich_threads();
         for row in &mut d.proposals {
-            let post = d
-                .by_id
-                .get(&str_key(row, "id"))
-                .cloned()
-                .unwrap_or_default();
-            let decided = d
-                .by_id
-                .get(&str_key(row, "decided_id"))
-                .cloned()
-                .unwrap_or_default();
+            let post = post_at(&d.by_id, &d.posts, &str_key(row, "id")).unwrap_or(&EMPTY_ROW);
+            let decided =
+                post_at(&d.by_id, &d.posts, &str_key(row, "decided_id")).unwrap_or(&EMPTY_ROW);
             for key in ["name", "session", "rel_path", "body", "kind"] {
-                row.insert(key.to_string(), json!(str_key(&post, key)));
+                row.insert(key.to_string(), json!(str_key(post, key)));
             }
             for key in ["summary", "agent", "name"] {
-                row.insert(format!("decided_{key}"), json!(str_key(&decided, key)));
+                row.insert(format!("decided_{key}"), json!(str_key(decided, key)));
             }
             row.insert(
                 "proposal_text".to_string(),
@@ -226,9 +247,9 @@ impl crate::server::Handler {
         let mut rank = 0;
         for row in &mut d.suggestions {
             let id = str_key(row, "id");
-            let post = d.by_id.get(&id).cloned().unwrap_or_default();
-            row.insert("name".into(), json!(str_key(&post, "name")));
-            row.insert("session".into(), json!(str_key(&post, "session")));
+            let post = post_at(&d.by_id, &d.posts, &id).unwrap_or(&EMPTY_ROW);
+            row.insert("name".into(), json!(str_key(post, "name")));
+            row.insert("session".into(), json!(str_key(post, "session")));
             let job = open_jobs.get(&id).cloned().unwrap_or_default();
             row.insert("job".into(), json!(job.id));
             row.insert("job_status".into(), json!(job.status));
@@ -262,14 +283,11 @@ impl crate::server::Handler {
             }
             let mut votes = svotes.remove(&id).unwrap_or_default();
             for vote in &mut votes {
-                let post = d
-                    .by_id
-                    .get(&str_key(vote, "post_id"))
-                    .cloned()
-                    .unwrap_or_default();
-                vote.insert("reason".into(), json!(str_key(&post, "summary")));
-                vote.insert("name".into(), json!(str_key(&post, "name")));
-                vote.insert("session".into(), json!(str_key(&post, "session")));
+                let post =
+                    post_at(&d.by_id, &d.posts, &str_key(vote, "post_id")).unwrap_or(&EMPTY_ROW);
+                vote.insert("reason".into(), json!(str_key(post, "summary")));
+                vote.insert("name".into(), json!(str_key(post, "name")));
+                vote.insert("session".into(), json!(str_key(post, "session")));
             }
             order(&mut votes, &["date", "agent"]);
             row.insert("votes".into(), json!(votes));
@@ -282,20 +300,17 @@ impl crate::server::Handler {
         });
         for row in &mut d.amendments {
             let id = str_key(row, "id");
-            let post = d.by_id.get(&id).cloned().unwrap_or_default();
-            row.insert("name".into(), json!(str_key(&post, "name")));
-            row.insert("session".into(), json!(str_key(&post, "session")));
+            let post = post_at(&d.by_id, &d.posts, &id).unwrap_or(&EMPTY_ROW);
+            row.insert("name".into(), json!(str_key(post, "name")));
+            row.insert("session".into(), json!(str_key(post, "session")));
             let mut votes = avotes.remove(&id).unwrap_or_default();
             for vote in &mut votes {
-                let post = d
-                    .by_id
-                    .get(&str_key(vote, "post_id"))
-                    .cloned()
-                    .unwrap_or_default();
-                vote.insert("reason".into(), json!(str_key(&post, "summary")));
-                vote.insert("name".into(), json!(str_key(&post, "name")));
+                let post =
+                    post_at(&d.by_id, &d.posts, &str_key(vote, "post_id")).unwrap_or(&EMPTY_ROW);
+                vote.insert("reason".into(), json!(str_key(post, "summary")));
+                vote.insert("name".into(), json!(str_key(post, "name")));
                 let mut read_line = String::new();
-                for line in str_key(&post, "body").split('\n') {
+                for line in str_key(post, "body").split('\n') {
                     if let Some(rest) = line.strip_prefix("Read:") {
                         read_line = rest.trim().to_string();
                         break;
@@ -397,16 +412,17 @@ impl BoardData {
             thread.insert("open_handoffs".into(), json!(0));
             thread.insert("active_claims".into(), json!(Vec::<String>::new()));
         }
-        let mut posts = self.posts.clone();
+        // Go sorts a copy of the slice; the maps behind it are shared.
+        let mut posts = self.posts.iter().collect::<Vec<_>>();
         order(&mut posts, &["date", "id"]);
         let mut seen = BTreeMap::<String, BTreeSet<String>>::new();
-        let mut by_thread = BTreeMap::<String, Vec<JsonMap>>::new();
-        for post in &posts {
+        let mut by_thread = BTreeMap::<String, Vec<&JsonMap>>::new();
+        for &post in &posts {
             let key = str_key(post, "thread_key");
             let Some(&idx) = threads.get(&key) else {
                 continue;
             };
-            by_thread.entry(key.clone()).or_default().push(post.clone());
+            by_thread.entry(key.clone()).or_default().push(post);
             let agent = str_key(post, "agent");
             if !agent.is_empty() && seen.entry(key.clone()).or_default().insert(agent.clone()) {
                 let mut values = self.threads[idx]
@@ -467,8 +483,13 @@ impl BoardData {
         }
     }
 
+    /// Go: d.ByID[id]
+    pub(crate) fn post_by_id(&self, id: &str) -> Option<&JsonMap> {
+        post_at(&self.by_id, &self.posts, id)
+    }
+
     pub(crate) fn post(&self, id: &str) -> JsonMap {
-        let Some(p) = self.by_id.get(id) else {
+        let Some(p) = self.post_by_id(id) else {
             return JsonMap::new();
         };
         let mut result = p.clone();
@@ -487,7 +508,7 @@ impl BoardData {
         let (mut active, mut stale) = (Vec::new(), Vec::new());
         for claim in &self.claims {
             let mut row = claim.clone();
-            let post = self.by_id.get(&str_key(&row, "id"));
+            let post = self.post_by_id(&str_key(&row, "id"));
             row.insert(
                 "name".into(),
                 json!(post.map(|p| str_key(p, "name")).unwrap_or_default()),
@@ -511,9 +532,13 @@ impl BoardData {
             .cloned()
             .collect::<Vec<_>>();
         order(&mut open, &["-last"]);
-        let mut recent = self
-            .posts
+        // Go picks every post and stable-sorts the picks by -date; pick keeps
+        // "date", so sorting references first yields the same head.
+        let mut by_date = self.posts.iter().collect::<Vec<_>>();
+        order(&mut by_date, &["-date"]);
+        let recent = by_date
             .iter()
+            .take(12)
             .map(|p| {
                 pick(
                     p,
@@ -521,10 +546,10 @@ impl BoardData {
                 )
             })
             .collect::<Vec<_>>();
-        order(&mut recent, &["-date"]);
-        recent.truncate(12);
         let mut kinds = BTreeMap::<String, i64>::new();
         let mut areas = BTreeSet::<String>::new();
+        // Go keys the agent rows by agent + "\x00" + session and walks them sorted.
+        let mut agents = BTreeMap::<String, JsonMap>::new();
         let mut without = 0;
         for p in &self.posts {
             let mut kind = str_key(p, "kind");
@@ -534,7 +559,32 @@ impl BoardData {
             *kinds.entry(kind).or_default() += 1;
             areas.insert(str_key(p, "area"));
             without += 1 - num_value(p.get("provenance_ok").unwrap_or(&Value::Null));
+            let key = format!("{}\x00{}", str_key(p, "agent"), str_key(p, "session"));
+            let row = agents.entry(key).or_insert_with(|| {
+                object(
+                    "agent session name posts last",
+                    vec![
+                        p.get("agent").cloned().unwrap_or(Value::Null),
+                        p.get("session").cloned().unwrap_or(Value::Null),
+                        Value::Null,
+                        json!(0),
+                        json!(""),
+                    ],
+                )
+            });
+            let posts = num_value(row.get("posts").unwrap_or(&Value::Null)) + 1;
+            row.insert("posts".into(), json!(posts));
+            if str_key(p, "date") > str_key(row, "last") {
+                row.insert("last".into(), p.get("date").cloned().unwrap_or(Value::Null));
+            }
+            let name = str_key(p, "name");
+            if !name.is_empty() && name > str_key(row, "name") {
+                row.insert("name".into(), p.get("name").cloned().unwrap_or(Value::Null));
+            }
         }
+        let mut agent_rows = agents.into_values().collect::<Vec<_>>();
+        order(&mut agent_rows, &["-last"]);
+        agent_rows.truncate(12);
         let mut evo = crate::evolution::evolution_summary(self.evolution.clone());
         if let Some(v) = evo.get("missing_files").cloned() {
             evo.insert(
@@ -583,7 +633,7 @@ impl BoardData {
                 json!(evo),
                 json!(kinds),
                 json!(areas.into_iter().collect::<Vec<_>>()),
-                json!(Vec::<Value>::new()),
+                json!(agent_rows),
             ],
         )
     }
@@ -671,13 +721,22 @@ pub(crate) fn pick(row: &JsonMap, keys: &str) -> JsonMap {
     out
 }
 
-pub(crate) fn order(rows: &mut [JsonMap], fields: &[&str]) {
+pub(crate) fn order<R: std::borrow::Borrow<JsonMap>>(rows: &mut [R], fields: &[&str]) {
+    // str() of a field without allocating when it already is a string.
+    fn key<'a>(row: &'a JsonMap, field: &str) -> std::borrow::Cow<'a, str> {
+        match row.get(field) {
+            Some(Value::String(s)) => std::borrow::Cow::Borrowed(s.as_str()),
+            Some(v) => std::borrow::Cow::Owned(str_value(v)),
+            None => std::borrow::Cow::Borrowed(""),
+        }
+    }
     rows.sort_by(|a, b| {
+        let (a, b) = (a.borrow(), b.borrow());
         for field in fields {
             let desc = field.starts_with('-');
             let field = field.trim_start_matches('-');
-            let av = str_key(a, field);
-            let bv = str_key(b, field);
+            let av = key(a, field);
+            let bv = key(b, field);
             if av != bv {
                 return if desc { bv.cmp(&av) } else { av.cmp(&bv) };
             }
@@ -835,15 +894,15 @@ fn line_trim(s: &str) -> &str {
     s.trim()
 }
 
-pub(crate) fn later_hub_kind(posts: &[JsonMap], index: usize, kinds: &[&str]) -> bool {
+pub(crate) fn later_hub_kind(posts: &[&JsonMap], index: usize, kinds: &[&str]) -> bool {
     let want = kinds.iter().copied().collect::<BTreeSet<_>>();
     posts[index + 1..]
         .iter()
         .any(|post| want.contains(str_key(post, "kind").as_str()))
 }
 
-pub(crate) fn later_hub_answer_date(posts: &[JsonMap], index: usize) -> bool {
-    let date = str_key(&posts[index], "date");
+pub(crate) fn later_hub_answer_date(posts: &[&JsonMap], index: usize) -> bool {
+    let date = str_key(posts[index], "date");
     posts[index + 1..]
         .iter()
         .any(|post| str_key(post, "kind") == "answer" && str_key(post, "date") > date)

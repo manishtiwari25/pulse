@@ -491,12 +491,13 @@ impl Handler {
         let reference = crate::read::parse_dt(&now).unwrap_or_else(go_zero_time);
         for view in views {
             let Some(d) = &view.data else { continue };
-            let mut by_agent = BTreeMap::<String, Vec<JsonMap>>::new();
+            // Go appends the post maps themselves; borrow them here.
+            let mut by_agent = BTreeMap::<String, Vec<&JsonMap>>::new();
             for post in &d.posts {
                 by_agent
                     .entry(str_field(post, "agent"))
                     .or_default()
-                    .push(post.clone());
+                    .push(post);
             }
             for (name, mut posts) in by_agent {
                 let row = people.entry(name.clone()).or_insert_with(|| {
@@ -510,14 +511,17 @@ impl Handler {
                         .map(|p| str_field(p, "model"))
                         .max()
                         .unwrap_or_default();
-                    new_person(&pulse_store::Agent {
+                    let mut row = new_person(&pulse_store::Agent {
                         name: name.clone(),
                         kind: "legacy".into(),
                         status: "active".into(),
                         runner,
                         model,
                         ..Default::default()
-                    })
+                    });
+                    // Go: row["names"] = []string{}
+                    row.insert("names".into(), json!(Vec::<String>::new()));
+                    row
                 });
                 crate::board::order(&mut posts, &["-date"]);
                 let mut label = String::new();
@@ -660,8 +664,11 @@ impl Handler {
             status_rank(a)
                 .cmp(&status_rank(b))
                 .then_with(|| {
-                    num_value(a.get("days_since").unwrap_or(&Value::Null))
-                        .cmp(&num_value(b.get("days_since").unwrap_or(&Value::Null)))
+                    // Go compares the float64 days_since values.
+                    let days = |row: &JsonMap| {
+                        row.get("days_since").and_then(Value::as_f64).unwrap_or(0.0)
+                    };
+                    days(a).total_cmp(&days(b))
                 })
                 .then_with(|| str_field(a, "agent").cmp(&str_field(b, "agent")))
         });

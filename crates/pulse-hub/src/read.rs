@@ -3,6 +3,7 @@ use crate::httpx::{Request, ResponseWriter};
 use crate::server::Handler;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) type JsonMap = BTreeMap<String, Value>;
@@ -15,24 +16,34 @@ pub(crate) struct ProjectView {
     pub(crate) present: bool,
 }
 
-pub(crate) trait OrgViews {
-    fn into_views(self) -> Vec<ProjectView>;
+/// Go returns the response and lets the garbage collector reclaim the snapshot
+/// on its own time; freeing a multi-gigabyte view set inline would hold the
+/// response until the deallocation finished, so it leaves the request thread.
+/// A failed spawn drops the value right here instead.
+fn release<T: Send + 'static>(value: T) {
+    let _ = std::thread::Builder::new()
+        .name("pulse-hub-release".into())
+        .spawn(move || drop(value));
 }
 
-impl OrgViews for &[ProjectView] {
-    fn into_views(self) -> Vec<ProjectView> {
-        self.to_vec()
+pub(crate) trait OrgViews<'a> {
+    fn into_views(self) -> Cow<'a, [ProjectView]>;
+}
+
+impl<'a> OrgViews<'a> for &'a [ProjectView] {
+    fn into_views(self) -> Cow<'a, [ProjectView]> {
+        Cow::Borrowed(self)
     }
 }
 
-impl OrgViews for &Vec<ProjectView> {
-    fn into_views(self) -> Vec<ProjectView> {
-        self.clone()
+impl<'a> OrgViews<'a> for &'a Vec<ProjectView> {
+    fn into_views(self) -> Cow<'a, [ProjectView]> {
+        Cow::Borrowed(self.as_slice())
     }
 }
 
-impl OrgViews for Value {
-    fn into_views(self) -> Vec<ProjectView> {
+impl OrgViews<'static> for Value {
+    fn into_views(self) -> Cow<'static, [ProjectView]> {
         self.as_array()
             .cloned()
             .unwrap_or_default()
@@ -117,7 +128,8 @@ impl OrgViews for Value {
                     data,
                 }
             })
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 }
 
@@ -241,7 +253,7 @@ impl Handler {
             "amendments" => json!(d.amendments),
             "proposals" => json!(d.proposals),
             "notices" => json!(d.notices()),
-            "timeline" => json!(timeline(d.posts.clone(), str_map(&d.params, "now"))),
+            "timeline" => json!(timeline(&d.posts, str_map(&d.params, "now"))),
             "evolution" => json!(d.evolution),
             _ => Value::Null,
         };
@@ -405,6 +417,7 @@ impl Handler {
         let data = match route.as_str() {
             "org" => {
                 let mut org = self.org(&views);
+                release(views);
                 match self.metadata() {
                     Ok(metadata) => org.extend(metadata),
                     Err(err) => {
@@ -458,6 +471,7 @@ impl Handler {
             },
             _ => Value::Null,
         };
+        release(views);
         self.respond(w, data, String::new());
     }
 
@@ -485,10 +499,12 @@ impl Handler {
         };
         let overview = d.overview();
         let evo = crate::evolution::evolution_summary(d.evolution.clone());
-        let mut recent = d.posts.clone();
-        order(&mut recent, &["-date"]);
-        let last = recent
-            .first()
+        // Go copies the post slice and stable-sorts it by -date; the head of
+        // that order is the first post carrying the greatest date.
+        let last = d
+            .posts
+            .iter()
+            .min_by(|a, b| str_map(b, "date").cmp(&str_map(a, "date")))
             .map(|p| {
                 json!(pick(
                     p,
@@ -611,8 +627,9 @@ impl Handler {
         )
     }
 
-    pub(crate) fn org<V: OrgViews>(&self, views: V) -> JsonMap {
+    pub(crate) fn org<'a, V: OrgViews<'a>>(&self, views: V) -> JsonMap {
         let views = views.into_views();
+        let views = views.as_ref();
         // Go's projects, commons and all alias the same maps, so the
         // identities/proposals deletes below show in the emitted rows too.
         let mut project_idx = Vec::new();
@@ -620,7 +637,7 @@ impl Handler {
         let mut all = Vec::new();
         let mut brains = Vec::<String>::new();
         let mut stamps = Vec::<String>::new();
-        for view in &views {
+        for view in views {
             let summary = self.summary(view);
             stamps.push(str_map(&summary, "built_at"));
             if view.project.slug == pulse_store::COMMONS_SLUG {
@@ -906,7 +923,7 @@ pub(crate) fn org_activity(views: &[ProjectView], limit: usize) -> Vec<JsonMap> 
     out
 }
 
-pub(crate) fn timeline(posts: Vec<JsonMap>, now: String) -> JsonMap {
+pub(crate) fn timeline<R: std::borrow::Borrow<JsonMap>>(posts: &[R], now: String) -> JsonMap {
     let end = parse_dt(&now).unwrap_or_else(chrono::Utc::now);
     let mut hours = Vec::new();
     let mut days = Vec::new();
@@ -934,7 +951,8 @@ pub(crate) fn timeline(posts: Vec<JsonMap>, now: String) -> JsonMap {
     }
     let mut before = 0;
     let mut unparsed = 0;
-    for p in &posts {
+    for p in posts {
+        let p = p.borrow();
         let Some(mut dt) = parse_dt(&str_map(p, "date")) else {
             unparsed += 1;
             continue;
@@ -971,21 +989,22 @@ pub(crate) fn timeline(posts: Vec<JsonMap>, now: String) -> JsonMap {
 }
 
 pub(crate) fn org_timeline(views: &[ProjectView], mut now: String) -> JsonMap {
-    let mut posts = Vec::new();
+    // Go appends every project's post maps to one slice; the maps are shared.
+    let mut posts = Vec::<&JsonMap>::new();
     for view in views {
         if let Some(d) = &view.data {
-            posts.extend(d.posts.clone());
+            posts.extend(d.posts.iter());
             let n = str_map(&d.params, "now");
             if n > now {
                 now = n;
             }
         }
     }
-    let mut total = timeline(posts, now.clone());
+    let mut total = timeline(&posts, now.clone());
     let mut series = Vec::new();
     for view in views {
         if let Some(d) = &view.data {
-            let mut row = timeline(d.posts.clone(), now.clone());
+            let mut row = timeline(&d.posts, now.clone());
             let kind = if view.project.slug == pulse_store::COMMONS_SLUG {
                 "commons"
             } else {

@@ -261,6 +261,12 @@ pub fn new_handler(
     store: Option<Arc<pulse_store::Store>>,
     source: Option<Arc<dyn crate::board::TallySource>>,
 ) -> Handler {
+    // Go: if source == nil && s != nil { source = nativeTally{s} }
+    let source = source.or_else(|| {
+        store.clone().map(|store| {
+            Arc::new(crate::board::NativeTally { store }) as Arc<dyn crate::board::TallySource>
+        })
+    });
     Handler {
         store,
         source,
