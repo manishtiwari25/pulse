@@ -387,6 +387,14 @@ pub fn recent_baseline_failure(s: &pulse_store::Store, project: &str, now: &str)
 pub fn status(s: &pulse_store::Store, project: &str) -> Result<LoopStatus> {
     let mut status = loop_status(s, project)?;
     status.planning = crate::readiness::planning_status(s, &status)?;
+    // The ladder says "none" at Level D; a blocked planner that names an owner step is
+    // the next human step, otherwise the digest hides the one thing the owner must do.
+    if status.planning.state == "blocked"
+        && status.next_human_step == "none"
+        && let Some((_, step)) = status.planning.reason.split_once("; owner: ")
+    {
+        status.next_human_step = step.to_string();
+    }
     Ok(status)
 }
 /// Go: func loopStatus(s *store.Store, project string) (*LoopStatus, error)

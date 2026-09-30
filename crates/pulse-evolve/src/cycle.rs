@@ -699,6 +699,17 @@ mod tests {
                 .unwrap();
             let question = pulse_board::post_by_id(&s, &question_id).unwrap().unwrap();
             assert!(question.for_owner, "{question:?}");
+            if scenario == "instruction" || scenario == "result instruction" {
+                let status = crate::status::status(&s, "demo").unwrap();
+                assert_eq!(status.planning.state, "blocked", "{scenario}: {status:?}");
+                assert_eq!(status.level, "D", "{scenario}");
+                let step = format!("pulse decide {question_id} yes");
+                assert!(
+                    status.next_human_step.starts_with(&step),
+                    "{scenario}: next human step {:?} should be {step:?}",
+                    status.next_human_step
+                );
+            }
         }
     }
     #[test]

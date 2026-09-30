@@ -369,8 +369,9 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "     for the same File+Variable and vote on that card instead of reposting. Name one file class, one variable, and"
     );
     w!(
-        "     the check that should move (optional, repeatable), ending in `Signal: <path in the clone | post id |"
+        "     the check that should move (optional, repeatable; omit the line when you saw none - a `none` answer is"
     );
+    w!("     dropped, not posted), ending in `Signal: <path in the clone | post id |");
     w!(
         "     check:NAME>` naming the evidence; a card whose Signal does not resolve is listed for votes but never"
     );
@@ -655,7 +656,12 @@ pub(crate) fn parse_result_text(text: Option<String>) -> Report {
             "SUMMARY" if out.summary.is_empty() => out.summary = val,
             "QUESTION" => out.questions.push(val),
             "FINDING" => out.findings.push(val),
-            "SUGGESTION" => out.suggestions.push(parse_suggestion_line(val)),
+            "SUGGESTION" => {
+                let sg = parse_suggestion_line(val);
+                if !empty_suggestion(&sg.card) {
+                    out.suggestions.push(sg);
+                }
+            }
             _ => {}
         }
     }
@@ -707,6 +713,48 @@ pub(crate) fn card_body(text: String) -> (String, String, bool) {
         }
     }
     (lines.join("\n"), summary, true)
+}
+
+/// A `SUGGESTION:` line that only says the worker saw nothing ("none", "none beyond the
+/// ballot", "nothing further", "n/a", "no suggestion") is not an improvement. Posting it puts
+/// an empty card on the ballot that other agents are then given jobs to vote on, and each of
+/// those votes tends to end in another such line.
+pub(crate) fn empty_suggestion(card: &str) -> bool {
+    if card_body(card.to_string()).2 {
+        return false;
+    }
+    let text = card
+        .trim()
+        .trim_start_matches(['-', '*', '`', '"', '\''])
+        .trim()
+        .to_lowercase();
+    let mut words = text
+        .split(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    ';' | ',' | '.' | ':' | '!' | '(' | ')' | '`' | '"' | '\''
+                )
+        })
+        .filter(|w| !w.is_empty());
+    let first = words.next().unwrap_or("");
+    let second = words.next().unwrap_or("");
+    text.is_empty()
+        || first == "n/a"
+        || (first == "none" && second != "of")
+        || (first == "nothing"
+            && matches!(
+                second,
+                "" | "further" | "new" | "beyond" | "to" | "else" | "more" | "this" | "additional"
+            ))
+        || [
+            "no suggestion",
+            "no further",
+            "no improvement",
+            "no one-variable",
+        ]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
 }
 
 /// Go: func parseSuggestionLine(text string) suggestion
@@ -805,6 +853,32 @@ mod tests {
         assert_eq!(rep.decisions[0].answer, "no");
         assert_eq!(rep.suggestions[0].area, "parser");
         assert_eq!(rep.suggestions[0].thread, "empty-input");
+    }
+
+    #[test]
+    fn parse_result_text_drops_empty_suggestions() {
+        let _serial = crate::test_helpers::serial();
+        let rep = parse_result_text(Some(
+            "SUMMARY: voted\nSUGGESTION: none beyond the ballot; pattern observed across cards was fine.\nSUGGESTION: evolution/ballot: None this run - used the slot purely for voting.\nSUGGESTION: Nothing further.\nSUGGESTION: N/A\nSUGGESTION: no suggestions beyond what is already filed\nSUGGESTION: runner/none-handling: drop `SUGGESTION: none` lines instead of posting them".into(),
+        ));
+        assert_eq!(rep.suggestions.len(), 1, "{:?}", rep.suggestions);
+        assert_eq!(rep.suggestions[0].area, "runner");
+        assert_eq!(rep.suggestions[0].thread, "none-handling");
+        assert!(
+            rep.suggestions[0]
+                .card
+                .starts_with("drop `SUGGESTION: none`")
+        );
+        for real in [
+            "Nonetheless the parser misses X",
+            "nonempty input crashes",
+            "None of the handlers validate input",
+            "Nothing prevents a double landing",
+            "No-op detection: File: a.rs; Variable: b",
+            "None; File: a.rs; Variable: b; Hypothesis: c",
+        ] {
+            assert!(!empty_suggestion(real), "{real}");
+        }
     }
 
     #[test]

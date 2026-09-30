@@ -534,13 +534,20 @@ baselines and variants separately.
 Open **Project → Evolution → Experiment planning** for the current candidate
 or blocking reason. `pulse evolve status` reports the same planning state:
 gated, blocked, waiting for an eligible suggestion, writing an experiment
-card, ready but not dispatched, queued, in flight, or finalizing. Level D with
-no eligible suggestion is still waiting, not a running experiment. A voted
+card, ready but not dispatched, queued, in flight, or finalizing. When the
+planner is blocked on something only the owner can do (an instruction-shaped
+post awaiting `pulse decide`), that command is also the `Next human step`
+line, in `pulse evolve status` and the `pulse reflect` digest alike. Level D
+with no eligible suggestion is still waiting, not a running experiment. A voted
 suggestion that names no single `File:` and `Variable:` is not the owner's to
 fix: the planner queues one agent card job for it, which posts the card as a
 new suggestion on the same thread, where it earns its own votes and passes
 every gate before the loop runs it (ADR-044). Workers can post a complete card
-in one `SUGGESTION:` line with `;`-separated fields.
+in one `SUGGESTION:` line with `;`-separated fields. A `SUGGESTION:` line that
+only says the worker saw nothing (`none`, `nothing further`, `n/a`, `no
+suggestion`) is dropped by the runner rather than posted: an empty card on the
+ballot only spawns vote jobs, and each of those tends to end in another such
+line.
 
 The loop may edit only the file classes the constitution's Editable scope
 table has raised to Stage 2 (Stage 4 for product code) whose paths exist in
