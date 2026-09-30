@@ -57,6 +57,10 @@ pub fn unique_slug(
     }
 }
 
+/// Subdirectories of PULSE_HOME whose checkouts the runner makes and removes:
+/// worker clones, fleet clones and measurement roots, landing worktrees.
+const RUNNER_MANAGED_DIRS: [&str; 3] = ["work", "fleet", "worktrees"];
+
 pub(crate) fn is_inside(path: &Path, root: &Path) -> bool {
     path.strip_prefix(root).is_ok()
 }
@@ -106,6 +110,22 @@ pub fn register_project(
                 s.path,
                 root.display()
             ),
+        ));
+    }
+    let home = real_path(&s.home);
+    if let Some(managed) = RUNNER_MANAGED_DIRS
+        .iter()
+        .find(|dir| is_inside(&root, &home.join(dir)))
+    {
+        return Err(refuse_fix(
+            2,
+            format!(
+                "{} is the runner's own clone under PULSE_HOME ({}/{managed})",
+                root.display(),
+                home.display()
+            ),
+            "worker clones, fleet clones and worktrees there are made and removed by the runner; a project is the checkout they are cloned from",
+            "pulse project add /path/to/the/checkout",
         ));
     }
     if git_top_level(root.to_str().unwrap_or_default()).is_empty() {
@@ -686,6 +706,71 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pulse_goals::get(&s, "legacy").unwrap(), owner);
+    }
+
+    #[test]
+    fn register_project_refuses_the_runners_own_clones() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, home, s) = new_home();
+        // A worker running inside its clone under PULSE_HOME/work must not register it as a
+        // project (three did in September and left onboarding jobs nothing could run).
+        let clone = Path::new(&home)
+            .join("work")
+            .join("job-20260915T175451Z-5ac772");
+        std::fs::create_dir_all(&clone).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&clone)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let err = register_project(
+            &s,
+            &clone.display().to_string(),
+            "",
+            "",
+            false,
+            "",
+            "cinder",
+            "",
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("runner's own clone under PULSE_HOME"),
+            "unexpected error: {msg}"
+        );
+        assert_eq!(
+            s.conn()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        // A checkout elsewhere under the home is the owner's business, not a runner clone.
+        let own = Path::new(&home).join("checkouts").join("proj");
+        std::fs::create_dir_all(&own).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&own)
+                .status()
+                .unwrap()
+                .success()
+        );
+        register_project(
+            &s,
+            &own.display().to_string(),
+            "",
+            "",
+            false,
+            "",
+            "owner",
+            "",
+        )
+        .unwrap();
     }
 
     #[test]

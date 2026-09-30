@@ -350,6 +350,78 @@ pub(crate) fn check_clone(
     Ok(())
 }
 
+/// The file in a measurement's clone root naming the process that measures
+/// there; the sweep removes roots whose process is gone.
+pub const MEASURE_PID_FILE: &str = ".pulse-pid";
+
+/// The prefix of a measurement's clone root under the fleet directory.
+pub const MEASURE_ROOT_PREFIX: &str = "measure-";
+
+/// A measurement clone root under the fleet directory as the sweep sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeasurementRoot {
+    pub id: String,
+    pub path: String,
+    /// The pid from `MEASURE_PID_FILE`; `None` when the file is missing or unreadable.
+    pub pid: Option<i32>,
+}
+
+/// Writes this process's pid into a fresh measurement root.
+pub(crate) fn claim_measurement_root(root: &str) -> Result<()> {
+    fs::write(
+        Path::new(root).join(MEASURE_PID_FILE),
+        format!("{}\n", std::process::id()),
+    )?;
+    Ok(())
+}
+
+/// Every `measure-*` clone root under the fleet directory, oldest id first.
+pub fn measurement_roots(s: &pulse_store::Store) -> Result<Vec<MeasurementRoot>> {
+    let base = fleet_root(s, false)?;
+    let entries = match fs::read_dir(&base) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut roots = Vec::new();
+    for entry in entries.flatten() {
+        let id = entry.file_name().to_string_lossy().to_string();
+        if !id.starts_with(MEASURE_ROOT_PREFIX) || !crate::fleet::MANAGED_ID.is_match(&id) {
+            continue;
+        }
+        let meta = match fs::symlink_metadata(entry.path()) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_dir() || meta.file_type().is_symlink() {
+            continue;
+        }
+        let pid = fs::read_to_string(entry.path().join(MEASURE_PID_FILE))
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .filter(|pid| *pid > 0);
+        roots.push(MeasurementRoot {
+            id,
+            path: entry.path().display().to_string(),
+            pid,
+        });
+    }
+    roots.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(roots)
+}
+
+/// Removes a measurement clone root by id (see `measurement_roots`).
+pub fn remove_measurement_root(s: &pulse_store::Store, id: &str) -> Result<()> {
+    if !id.starts_with(MEASURE_ROOT_PREFIX) {
+        return Err(crate::fixtures::input_error(
+            "Cannot remove clone root",
+            "expected a measurement id (measure-...)",
+            "pulse fleet list",
+        ));
+    }
+    remove_managed(s, id)
+}
+
 /// Go: func removeManaged(s *store.Store, id string) error {
 pub(crate) fn remove_managed(s: &pulse_store::Store, id: &str) -> Result<()> {
     if !crate::fleet::MANAGED_ID.is_match(id) {

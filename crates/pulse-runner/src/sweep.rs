@@ -25,13 +25,16 @@ pub(crate) static SWEEP_BRANCH_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         .expect("sweep branch regex")
 });
 pub(crate) static SWEEP_KINDS: &[&str] = &[
+    "job",
     "clone",
+    "measure",
     "worktree",
     "stray-worktree",
     "branch",
     "ref",
     "scratch",
     "log",
+    "transcript",
     "patch",
 ];
 
@@ -121,12 +124,15 @@ pub(crate) fn sweep(
     if w.o.actor.is_empty() {
         w.o.actor = "daemon".into();
     }
+    w.sweep_orphan_jobs();
     w.sweep_work();
     w.sweep_push_keys();
+    w.sweep_measure_roots();
     w.sweep_stray_worktrees();
     for proj in w.projects.clone() {
         w.sweep_checkout(proj);
     }
+    w.sweep_harness_steps();
     w.sweep_files(
         Path::new(&w.home).join("logs").display().to_string(),
         "log".into(),
@@ -685,6 +691,154 @@ impl Sweeper {
         }
         self.remove("worktree".into(), path, slug, why);
     }
+    /// Open jobs of a project that was removed: `pulse project remove` cancels the queued
+    /// ones and lets leased ones finish, but a leased job whose run is lost comes back as
+    /// queued for a project no daemon lists any more and would wait forever.
+    pub(crate) fn sweep_orphan_jobs(&mut self) {
+        let Ok(conn) = self.s.conn() else { return };
+        let rows = crate::util::must_rows(
+            &conn,
+            "SELECT j.id, j.project, j.status FROM jobs j JOIN projects p ON p.slug = j.project \
+             WHERE j.status IN ('queued', 'blocked') AND p.status != 'active' ORDER BY j.created_at",
+            &[],
+        );
+        for job in rows {
+            let id = job.str("id");
+            let slug = job.str("project");
+            let why = format!("project {slug} was removed");
+            let item = Swept {
+                kind: "job".into(),
+                path: id.clone(),
+                project: slug.clone(),
+                why: why.clone(),
+                bytes: 0,
+                patch: String::new(),
+            };
+            if self.o.dry_run {
+                self.rep.removed.push(item);
+                continue;
+            }
+            let result = format!("cancelled: {why}");
+            crate::util::exec1(
+                &conn,
+                "UPDATE jobs SET status = 'cancelled', result = ?, finished_at = ?, lease_agent = '', lease_until = '' WHERE id = ? AND status IN ('queued', 'blocked')",
+                &[&result, &self.now, &id],
+            );
+            crate::util::event_at(
+                &conn,
+                &self.now,
+                &self.o.actor,
+                "job.cancelled",
+                &id,
+                serde_json::Value::String(result),
+            );
+            self.rep.removed.push(item);
+        }
+    }
+    /// Step transcripts of harness sessions that ended more than `daemon.sweep_keep_days`
+    /// ago: the session rows keep their counts, tokens, cost and submission; the step-by-step
+    /// content is a run log and goes with the run logs.
+    pub(crate) fn sweep_harness_steps(&mut self) {
+        let keep_days = self.keep.as_secs() / 86_400;
+        let before = crate::util::plus_minutes(&self.now, -((keep_days * 24 * 60) as f64));
+        let found = match self.s.prune_harness_steps(&before, !self.o.dry_run) {
+            Ok(found) => found,
+            Err(err) => {
+                self.failed(
+                    "harness transcripts: {}".into(),
+                    vec![serde_json::Value::String(crate::run::err_message(&err))],
+                );
+                return;
+            }
+        };
+        if found.steps == 0 {
+            return;
+        }
+        self.rep.removed.push(Swept {
+            kind: "transcript".into(),
+            path: format!(
+                "{} {} of {} {}",
+                found.steps,
+                crate::util::plural(found.steps as i32, "harness step"),
+                found.sessions,
+                crate::util::plural(found.sessions as i32, "session")
+            ),
+            project: String::new(),
+            why: format!("ended more than {keep_days}d ago"),
+            bytes: found.bytes,
+            patch: String::new(),
+        });
+    }
+    /// Measurement clone roots (PULSE_HOME/fleet/measure-*) whose measuring
+    /// process is gone: a measurement removes its own root when it ends, so a
+    /// root that outlives its process was left by a kill or a crash.
+    pub(crate) fn sweep_measure_roots(&mut self) {
+        let roots = match pulse_evolve::clones::measurement_roots(&self.s) {
+            Ok(roots) => roots,
+            Err(err) => {
+                self.failed(
+                    "measurement clone roots: {}".into(),
+                    vec![serde_json::Value::String(crate::run::err_message(&err))],
+                );
+                return;
+            }
+        };
+        for root in roots {
+            if let Some(pid) = root.pid
+                && process_alive(pid)
+            {
+                self.held(
+                    "measure".into(),
+                    root.path,
+                    String::new(),
+                    format!("measurement by pid {pid} still running"),
+                );
+                continue;
+            }
+            let owner = match root.pid {
+                Some(pid) => format!("measurement by pid {pid} is gone"),
+                None => "no measurement owns it".to_string(),
+            };
+            let (age, ok) = self.age(root.path.clone());
+            if !ok {
+                continue;
+            }
+            if age < self.grace {
+                self.held(
+                    "measure".into(),
+                    root.path,
+                    String::new(),
+                    format!(
+                        "{owner}; removed after {} untouched",
+                        round_duration(self.grace)
+                    ),
+                );
+                continue;
+            }
+            let item = Swept {
+                kind: "measure".into(),
+                path: root.path.clone(),
+                project: String::new(),
+                why: owner,
+                bytes: disk_usage(root.path.clone()),
+                patch: String::new(),
+            };
+            if self.o.dry_run {
+                self.rep.removed.push(item);
+                continue;
+            }
+            match pulse_evolve::clones::remove_measurement_root(&self.s, &root.id) {
+                Ok(()) => self.rep.removed.push(item),
+                Err(err) => self.failed(
+                    "remove {}: {}".into(),
+                    vec![
+                        serde_json::Value::String(root.path),
+                        serde_json::Value::String(crate::run::err_message(&err)),
+                    ],
+                ),
+            }
+        }
+    }
     /// Go: func (w *sweeper) sweepStrayWorktrees()
     pub(crate) fn sweep_stray_worktrees(&mut self) {
         let dir = Path::new(&self.home).join("worktrees");
@@ -1021,7 +1175,7 @@ fn nonempty(s: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{TEST_NOW, new_bare_repo, run};
+    use crate::test_helpers::{TEST_NOW, count, new_bare_repo, run};
     use crate::test_helpers_f3b::*;
     use rusqlite::params;
     use std::path::Path;
@@ -1144,6 +1298,227 @@ mod tests {
             "{list}"
         );
         assert!(list.contains(alive.to_str().unwrap()), "{list}");
+    }
+
+    #[test]
+    fn sweep_measurement_roots() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let fleet = Path::new(&s.home).join("fleet");
+        std::fs::create_dir_all(&fleet).unwrap();
+        let dead = fleet.join("measure-20260918T000000Z-dead00");
+        let alive = fleet.join("measure-20260918T000000Z-a11e00");
+        let orphan = fleet.join("measure-20260918T000000Z-000000");
+        let other = fleet.join("fleet-20260918T000000Z-000000");
+        mkdir_file(dead.join(".pulse-pid"), "99999999\n");
+        mkdir_file(dead.join("1").join("README.md"), "clone");
+        mkdir_file(
+            alive.join(".pulse-pid"),
+            &format!("{}\n", std::process::id()),
+        );
+        mkdir_file(
+            orphan.join("1").join("README.md"),
+            "clone without a pid file",
+        );
+        mkdir_file(
+            other.join("1").join("README.md"),
+            "a prepared fleet, not a measurement",
+        );
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert!(!crate::util::file_exists(&dead.display().to_string()));
+        assert!(!crate::util::file_exists(&orphan.display().to_string()));
+        assert!(crate::util::file_exists(&alive.display().to_string()));
+        assert!(crate::util::file_exists(&other.display().to_string()));
+        assert_eq!(
+            swept_paths(&rep.removed, "measure"),
+            vec![orphan.display().to_string(), dead.display().to_string()]
+        );
+        let why: Vec<&str> = rep
+            .removed
+            .iter()
+            .filter(|x| x.kind == "measure")
+            .map(|x| x.why.as_str())
+            .collect();
+        assert_eq!(
+            why,
+            vec![
+                "no measurement owns it",
+                "measurement by pid 99999999 is gone"
+            ]
+        );
+        assert!(held_why(&rep.held, &alive).contains("still running"));
+        let lines = sweep_lines(Some(rep));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("swept measure ") && l.contains("pid 99999999 is gone")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn sweep_cancels_open_jobs_of_removed_projects() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let (_, _root) = new_bare_repo(&s);
+        {
+            let conn = s.conn().unwrap();
+            conn.execute(
+                "INSERT INTO projects (slug, name, path, status, added_at, added_by, last_seen, default_branch) VALUES ('gone', 'Gone', '/nonexistent/gone', 'inactive', ?, 'human', ?, 'main')",
+                params![TEST_NOW, TEST_NOW],
+            )
+            .unwrap();
+            for (id, project, status) in [
+                ("job-gone-queued", "gone", "queued"),
+                ("job-gone-blocked", "gone", "blocked"),
+                ("job-gone-done", "gone", "done"),
+                ("job-live-queued", "proj", "queued"),
+            ] {
+                conn.execute(
+                    "INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at, created_by) VALUES (?, ?, 'task', ?, '', 'manual', ?, ?, 'human')",
+                    params![id, project, id, status, TEST_NOW],
+                )
+                .unwrap();
+            }
+        }
+        let status = |id: &str| -> String {
+            crate::util::must_one(
+                &s.conn().unwrap(),
+                "SELECT status FROM jobs WHERE id = ?",
+                &[&id],
+            )
+            .str("status")
+        };
+        let dry = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            swept_paths(&dry.removed, "job"),
+            vec![
+                "job-gone-blocked".to_string(),
+                "job-gone-queued".to_string()
+            ]
+        );
+        assert_eq!(
+            status("job-gone-queued"),
+            "queued",
+            "dry run cancels nothing"
+        );
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert_eq!(status("job-gone-queued"), "cancelled");
+        assert_eq!(status("job-gone-blocked"), "cancelled");
+        assert_eq!(status("job-gone-done"), "done");
+        assert_eq!(status("job-live-queued"), "queued");
+        assert_eq!(
+            crate::util::must_one(
+                &s.conn().unwrap(),
+                "SELECT result FROM jobs WHERE id = 'job-gone-queued'",
+                &[],
+            )
+            .str("result"),
+            "cancelled: project gone was removed"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'job.cancelled' AND subject LIKE 'job-gone-%'",
+                &[]
+            ),
+            2
+        );
+        let lines = sweep_lines(Some(rep));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "swept job job-gone-queued (project gone was removed)"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn sweep_harness_transcripts() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        set_setting(&s, "daemon.sweep_keep_days", "30");
+        let old_end = crate::util::plus_minutes(TEST_NOW, -(31.0 * 24.0 * 60.0));
+        let fresh_end = crate::util::plus_minutes(TEST_NOW, -(29.0 * 24.0 * 60.0));
+        {
+            let conn = s.conn().unwrap();
+            for (id, status, ended) in [
+                ("hs-old", "submitted", old_end.as_str()),
+                ("hs-fresh", "submitted", fresh_end.as_str()),
+                ("hs-live", "running", ""),
+            ] {
+                conn.execute(
+                    "INSERT INTO harness_sessions (id, status, started_at, updated_at, ended_at, steps) VALUES (?, ?, ?, ?, ?, 2)",
+                    params![id, status, old_end, TEST_NOW, ended],
+                )
+                .unwrap();
+                for n in 1..=2 {
+                    conn.execute(
+                        "INSERT INTO harness_steps (session_id, n, at, kind, content, command) VALUES (?, ?, ?, 'tool', 'twelve bytes', 'ls')",
+                        params![id, n, TEST_NOW],
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        let steps = |id: &str| {
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM harness_steps WHERE session_id = ?",
+                &[&id],
+            )
+        };
+        let dry = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(steps("hs-old"), 2, "dry run removes nothing");
+        assert_eq!(
+            swept_paths(&dry.removed, "transcript"),
+            vec!["2 harness steps of 1 session".to_string()]
+        );
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert_eq!(steps("hs-old"), 0);
+        assert_eq!(steps("hs-fresh"), 2);
+        assert_eq!(steps("hs-live"), 2);
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM harness_sessions WHERE id = 'hs-old' AND steps = 2",
+                &[]
+            ),
+            1,
+            "the session row keeps its counts"
+        );
+        let item = rep.removed.iter().find(|x| x.kind == "transcript").unwrap();
+        assert_eq!(item.why, "ended more than 30d ago");
+        assert_eq!(item.bytes, 2 * ("twelve bytes".len() + "ls".len()) as i64);
+        let lines = sweep_lines(Some(rep));
+        assert!(
+            lines.iter().any(|l| l
+                == "swept transcript 2 harness steps of 1 session (ended more than 30d ago, 28 B)"),
+            "{lines:?}"
+        );
+        let again = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(swept_paths(&again.removed, "transcript").is_empty());
     }
 
     #[test]

@@ -53,6 +53,14 @@ pub struct HarnessSessionFilter {
     pub before: String,
     pub limit: i64,
 }
+/// What `Store::prune_harness_steps` found (and, when asked, removed).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HarnessPrune {
+    pub steps: i64,
+    pub sessions: i64,
+    pub bytes: i64,
+}
+
 pub fn harness_session_cursor(h: &HarnessSession) -> String {
     format!("{}|{}", h.started_at, h.id)
 }
@@ -275,6 +283,34 @@ impl Store {
         let conn = self.conn()?;
         let day = format!("{}T00:00:00Z", &self.now()[..10]);
         Ok(HarnessCounts{running:conn.query_row("SELECT COUNT(*) FROM harness_sessions WHERE status = 'running'",[],|r|r.get(0))?,today:conn.query_row("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ?",[&day],|r|r.get(0))?,failed_today:conn.query_row("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ? AND status NOT IN ('running', 'submitted')",[&day],|r|r.get(0))?,submitted_today:conn.query_row("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ? AND status = 'submitted'",[&day],|r|r.get(0))?,cost_today:conn.query_row("SELECT COALESCE(SUM(cost), 0) FROM harness_sessions WHERE started_at >= ?",[&day],|r|r.get(0))?})
+    }
+    /// The step transcripts of harness sessions that ended before `ended_before`: how many
+    /// steps, across how many sessions, holding how many bytes of content and commands. With
+    /// `remove` the steps are deleted; the session rows (counts, tokens, cost, submission) stay.
+    pub fn prune_harness_steps(&self, ended_before: &str, remove: bool) -> Result<HarnessPrune> {
+        if ended_before.trim().is_empty() {
+            return Err(input_err("endedBefore cannot be empty"));
+        }
+        let conn = self.conn()?;
+        let (steps, sessions, bytes) = conn.query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT st.session_id), COALESCE(SUM(LENGTH(st.content) + LENGTH(st.command)), 0) \
+             FROM harness_steps st JOIN harness_sessions h ON h.id = st.session_id \
+             WHERE h.ended_at != '' AND h.ended_at < ?",
+            [ended_before],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+        )?;
+        if remove && steps > 0 {
+            conn.execute(
+                "DELETE FROM harness_steps WHERE session_id IN \
+                 (SELECT id FROM harness_sessions WHERE ended_at != '' AND ended_at < ?)",
+                [ended_before],
+            )?;
+        }
+        Ok(HarnessPrune {
+            steps,
+            sessions,
+            bytes,
+        })
     }
     pub fn mark_lost_harness_sessions(&self, older_than: &str) -> Result<i64> {
         if older_than.trim().is_empty() {

@@ -161,6 +161,7 @@ pub(crate) fn measure(
         .into());
     }
     fs::create_dir(&root)?;
+    crate::clones::claim_measurement_root(&root)?;
     let cleanup_store = s.clone();
     let cleanup_id = id.clone();
     let mut scores = crate::api::Scores {
