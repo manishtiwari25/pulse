@@ -1378,6 +1378,24 @@ pub(crate) fn land_pending_context(
     limit: i32,
     force: bool,
 ) -> Vec<LandResult> {
+    land_pending_pass(ctx, s, project, actor, now, verify, limit, force, true)
+}
+
+/// One landing pass over a project's queue: plain branches first, experiments
+/// after them, so a measurement never holds the landings queued behind it.
+/// With `experiments` false the experiments are left for the daemon's
+/// experiment lane (`daemon_maintenance::DaemonMaintenance::start_lane`).
+pub(crate) fn land_pending_pass(
+    ctx: &pulse_bus::CancellationToken,
+    s: &pulse_store::Store,
+    project: crate::util::Row,
+    actor: String,
+    now: String,
+    verify: bool,
+    limit: i32,
+    force: bool,
+    experiments: bool,
+) -> Vec<LandResult> {
     if !force && s.setting("landing", "") != "agents" {
         return Vec::new();
     }
@@ -1398,66 +1416,87 @@ pub(crate) fn land_pending_context(
         });
         return out;
     }
-    for job in pending {
+    let (plain, measured): (Vec<_>, Vec<_>) = pending
+        .into_iter()
+        .partition(|job| job.str("kind") != "experiment");
+    let queue = plain
+        .into_iter()
+        .chain(experiments.then_some(measured).into_iter().flatten());
+    for job in queue {
         if limit > 0 && out.len() >= limit as usize {
             break;
         }
-        let (state, note) = if job.str("kind") == "experiment" {
-            crate::experiment::land_experiment_context(
-                ctx,
-                s,
-                project.clone(),
-                job.clone(),
-                actor.clone(),
-                now.clone(),
-                verify,
-            )
-        } else {
-            match land_branch(
-                s,
-                project.clone(),
-                job.str("branch"),
-                actor.clone(),
-                now.clone(),
-                LandOpts {
-                    job: job.clone(),
-                    verify,
-                    ctx: Some(ctx.clone()),
-                    ..Default::default()
-                },
-            ) {
-                Ok(v) => v,
-                Err(e) => ("error".into(), crate::run::err_message(&e)),
-            }
-        };
-        if state == "landed" {
-            clear_landing_retry(s, &project.str("slug"));
-        }
-        if state == "missing" {
-            crate::util::exec1(
-                &conn,
-                "UPDATE jobs SET branch = '' WHERE id = ?",
-                &[&job.str("id")],
-            );
-            crate::util::event_at(
-                &conn,
-                &now,
-                &actor,
-                "land.missing",
-                &job.str("branch"),
-                serde_json::json!({"job": job.str("id")}),
-            );
-        }
-        let held = matches!(
-            state.as_str(),
-            "deferred" | "locked" | "stopped" | "unreadable" | "blocked"
-        );
-        out.push(LandResult { state, note });
+        let lr = land_job_context(ctx, s, &project, &job, &actor, &now, verify);
+        let held = crate::landing_hold::landing_held(lr.state.clone());
+        out.push(lr);
         if held {
             break;
         }
     }
     out
+}
+
+/// Lands one pending job - an experiment is measured first - and records what
+/// its state implies: a landed branch clears the project's retry hold, a
+/// missing branch is forgotten with a `land.missing` event.
+pub(crate) fn land_job_context(
+    ctx: &pulse_bus::CancellationToken,
+    s: &pulse_store::Store,
+    project: &crate::util::Row,
+    job: &crate::util::Row,
+    actor: &str,
+    now: &str,
+    verify: bool,
+) -> LandResult {
+    let (state, note) = if job.str("kind") == "experiment" {
+        crate::experiment::land_experiment_context(
+            ctx,
+            s,
+            project.clone(),
+            job.clone(),
+            actor.to_string(),
+            now.to_string(),
+            verify,
+        )
+    } else {
+        match land_branch(
+            s,
+            project.clone(),
+            job.str("branch"),
+            actor.to_string(),
+            now.to_string(),
+            LandOpts {
+                job: job.clone(),
+                verify,
+                ctx: Some(ctx.clone()),
+                ..Default::default()
+            },
+        ) {
+            Ok(v) => v,
+            Err(e) => ("error".into(), crate::run::err_message(&e)),
+        }
+    };
+    if state == "landed" {
+        clear_landing_retry(s, &project.str("slug"));
+    }
+    if state == "missing"
+        && let Ok(conn) = s.conn()
+    {
+        crate::util::exec1(
+            &conn,
+            "UPDATE jobs SET branch = '' WHERE id = ?",
+            &[&job.str("id")],
+        );
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "land.missing",
+            &job.str("branch"),
+            serde_json::json!({"job": job.str("id")}),
+        );
+    }
+    LandResult { state, note }
 }
 
 /// Go: func branchExists(root, branch string) (exists bool, unreadable string)
@@ -1678,7 +1717,7 @@ pub(crate) fn landing_retry_hold(s: &pulse_store::Store, slug: &str, now: &str) 
     v.get("note").and_then(Value::as_str).map(str::to_string)
 }
 
-fn set_landing_retry(s: &pulse_store::Store, slug: &str, until: &str, note: &str) {
+pub(crate) fn set_landing_retry(s: &pulse_store::Store, slug: &str, until: &str, note: &str) {
     if let Ok(conn) = s.conn() {
         let _ = conn.execute(
             "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",

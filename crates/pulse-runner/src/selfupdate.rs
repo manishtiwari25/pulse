@@ -20,6 +20,9 @@ pub(crate) struct SelfUpdateState {
     pub(crate) last_failure_at: String,
     pub(crate) last_skip: String,
     pub(crate) installed: String,
+    /// A build is due but waits for the experiment lane to finish its
+    /// measurement; the lane starts no new experiment while this is set.
+    pub(crate) lane_wait: bool,
 }
 
 pub(crate) static SELF_UPDATE_STATE: LazyLock<RwLock<SelfUpdateState>> =
@@ -33,6 +36,8 @@ pub(crate) struct SelfUpdateEnv {
     pub revision: String,
     pub actor: String,
     pub inflight: i32,
+    /// The experiment lane is measuring; the daemon sets it per pass.
+    pub measuring: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -52,6 +57,16 @@ pub(crate) fn short_rev(rev: String) -> String {
     }
 }
 
+/// True while a self-update is building or waits for the experiment lane;
+/// the lane then measures nothing new, so the update is never starved and a
+/// measurement is never thrown away by the restart it brings.
+pub(crate) fn update_pending() -> bool {
+    let st = SELF_UPDATE_STATE
+        .read()
+        .expect("self-update state poisoned");
+    st.inflight || st.lane_wait
+}
+
 /// Go: func tendBinary(s *store.Store, now string, env selfUpdateEnv) []string
 pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEnv) -> Vec<String> {
     let mut st = SELF_UPDATE_STATE
@@ -61,6 +76,8 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
     if st.inflight {
         return lines;
     }
+    // Each pass decides afresh whether a due build waits for the lane.
+    st.lane_wait = false;
     let say = |st: &mut SelfUpdateState, lines: &mut Vec<String>, reason: String| {
         if reason != st.last_skip {
             st.last_skip = reason.clone();
@@ -146,6 +163,19 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
             format!(
                 "{} is not on the daemon's PATH; builds are yours until it is",
                 env.cargo_cmd
+            ),
+        );
+        return lines;
+    }
+    if env.measuring {
+        st.lane_wait = true;
+        say(
+            &mut st,
+            &mut lines,
+            format!(
+                "brain HEAD {} differs from the running {}; building once the experiment lane is idle",
+                short_rev(rev.clone()),
+                short_rev(env.revision.clone())
             ),
         );
         return lines;

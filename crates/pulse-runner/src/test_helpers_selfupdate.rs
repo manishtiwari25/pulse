@@ -131,6 +131,7 @@ pub(crate) fn self_update_fixture() -> (
             revision: "0000000000000000000000000000000000000000".into(),
             actor: "daemon".into(),
             inflight: 2,
+            measuring: false,
         },
         SelfUpdateFixtureGuards {
             _env: guards,

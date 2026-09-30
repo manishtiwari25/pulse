@@ -986,18 +986,32 @@ pub(crate) fn daemon(
             }
         }
     }
-    if maintenance.done.is_some() {
+    if maintenance.done.is_some() || maintenance.lane.is_some() {
         say(
             &o,
             format!("{note}: waiting for landing maintenance to finish"),
         );
-        if let Some(done) = maintenance.done.take()
-            && let Ok((lines, held)) = done.recv()
-        {
-            maintenance.held = held;
-            for line in lines {
-                say(&o, line);
-            }
+        // Go waited without bound. A restart (the binary changed on disk)
+        // cancels the experiment under measurement at once - the next daemon
+        // measures it again - and gives the plain landings RESTART_DRAIN
+        // before cancelling them too, so a self-update is never held for a
+        // ninety-minute measurement.
+        let deadline = (result == "restart").then(|| {
+            maintenance.cancel_lane();
+            std::time::Instant::now() + crate::daemon_maintenance::RESTART_DRAIN
+        });
+        let (lines, cut) = maintenance.finish(&maintenance_ctx, deadline);
+        for line in lines {
+            say(&o, line);
+        }
+        if cut {
+            say(
+                &o,
+                format!(
+                    "{note}: landing maintenance cancelled after {}",
+                    pulse_cli::format_duration(crate::daemon_maintenance::RESTART_DRAIN)
+                ),
+            );
         }
     }
     maintenance_ctx.cancel();
@@ -1574,22 +1588,49 @@ mod tests {
                 waiting_rx
                     .recv_timeout(test_wait(Duration::from_secs(20)))
                     .expect("daemon did not enter its maintenance drain");
-                assert!(
-                    cancelled_rx.try_recv().is_err(),
-                    "normal drain cancelled the lane before the caller cancelled"
-                );
-                cancel.cancel();
-                let result = done_rx
-                    .recv_timeout(test_wait(Duration::from_secs(10)))
-                    .expect("caller cancellation was ignored after drain began");
-                joined = true;
-                assert_eq!(
-                    result, "interrupted",
-                    "late cancellation returned {result} instead of interrupted"
-                );
-                cancelled_rx
-                    .recv_timeout(test_wait(Duration::from_secs(10)))
-                    .expect("daemon returned without cancelling and joining its measurement");
+                if exit == "restart" {
+                    // A restart cancels the experiment lane at once instead of
+                    // holding the new binary for the whole measurement.
+                    cancelled_rx
+                        .recv_timeout(test_wait(Duration::from_secs(10)))
+                        .expect("restart drain kept waiting for the measurement");
+                    let result = done_rx
+                        .recv_timeout(test_wait(Duration::from_secs(10)))
+                        .expect("restart drain did not finish once the lane was cancelled");
+                    joined = true;
+                    assert_eq!(result, "restart", "restart drain returned {result}");
+                    let deferred = count(
+                        &s,
+                        "SELECT COUNT(*) AS n FROM events WHERE action = 'land.deferred' AND json_extract(detail, '$.job') = 'draining'",
+                        &[],
+                    );
+                    assert_eq!(
+                        deferred, 1,
+                        "cancelled measurement was not recorded as deferred"
+                    );
+                    assert!(
+                        out.string().contains("measuring on the experiment lane"),
+                        "daemon did not announce the experiment lane: {}",
+                        out.string()
+                    );
+                } else {
+                    assert!(
+                        cancelled_rx.try_recv().is_err(),
+                        "normal drain cancelled the lane before the caller cancelled"
+                    );
+                    cancel.cancel();
+                    let result = done_rx
+                        .recv_timeout(test_wait(Duration::from_secs(10)))
+                        .expect("caller cancellation was ignored after drain began");
+                    joined = true;
+                    assert_eq!(
+                        result, "interrupted",
+                        "late cancellation returned {result} instead of interrupted"
+                    );
+                    cancelled_rx
+                        .recv_timeout(test_wait(Duration::from_secs(10)))
+                        .expect("daemon returned without cancelling and joining its measurement");
+                }
                 let job = crate::jobs::job_row(&*s.conn().unwrap(), "draining".into());
                 assert_eq!(
                     job.str("branch"),
@@ -1804,6 +1845,8 @@ mod tests {
         let s_daemon = s.clone();
         let cancel_daemon = cancel.clone();
         let self_env_daemon = self_env.clone();
+        let out = OutBuf::new();
+        let out_daemon = out.writer();
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
         std::thread::spawn(move || {
             let result = daemon(
@@ -1812,7 +1855,7 @@ mod tests {
                 DaemonOpts {
                     interval: 300,
                     worker_cmd: "sh -c 'echo SUMMARY: fake work complete'".into(),
-                    out: Some(OutBuf::new().writer()),
+                    out: Some(out_daemon),
                     self_update: Some(Box::new(self_env_daemon)),
                     ..Default::default()
                 },
@@ -1869,19 +1912,39 @@ mod tests {
                 1,
                 "started measurements while the first was still pending"
             );
+            // The due self-update waits for the lane: its restart would throw
+            // the running measurement away.
+            let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(10));
+            while std::time::Instant::now() < deadline
+                && !out
+                    .string()
+                    .contains("building once the experiment lane is idle")
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
             let data = std::fs::read(&self_env.binary).unwrap_or_default();
             assert_eq!(
                 String::from_utf8_lossy(&data),
                 "old binary",
-                "self-update installed before measurement/landing finished"
+                "self-update installed while the experiment lane was measuring"
             );
-            let building = crate::selfupdate::SELF_UPDATE_STATE
-                .read()
-                .unwrap()
-                .inflight;
+            let (building, lane_wait) = {
+                let st = crate::selfupdate::SELF_UPDATE_STATE.read().unwrap();
+                (st.inflight, st.lane_wait)
+            };
             assert!(
                 !building && !file_exists(&format!("{}.new", self_env.binary)),
-                "self-update started while landing verification was pending"
+                "self-update started while the experiment lane was measuring"
+            );
+            assert!(
+                lane_wait && crate::selfupdate::update_pending(),
+                "due self-update did not record that it waits for the lane"
+            );
+            assert!(
+                out.string()
+                    .contains("building once the experiment lane is idle"),
+                "daemon did not say the self-update waits for the lane: {}",
+                out.string()
             );
             crate::test_helpers_f3b::set_setting(&s, "stop", "1");
             match done_rx.recv_timeout(test_wait(Duration::from_secs(60))) {

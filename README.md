@@ -511,10 +511,22 @@ and where the vote left them, card jobs, jobs done with and without a change,
 landings, experiments, and the questions still waiting for the owner - so
 "is anything improving" is a table anyone can recompute, not an essay.
 
-Landing and sweeping share one serial maintenance lane outside the supervisor
-tick, so a slow measurement or verification does not freeze worker dispatch,
-heartbeats or STOP handling. Cancellation reaches the measurement and
-verification commands; it does not bypass their results or the landing gates.
+Landing and sweeping share one serial maintenance pass outside the supervisor
+tick, so a slow verification does not freeze worker dispatch, heartbeats or
+STOP handling. That pass lands the plain branches of every project first and
+leaves experiments to a second thread, the experiment lane, which measures one
+experiment at a time; a ninety-minute measurement therefore holds no other
+landing. An experiment the lane could not land stays queued and is tried again
+after an hour (five minutes after a lock or STOP), recorded as `land.deferred`
+with the reason and `retry_after_min`. The measurement harness the lane starts
+is the same `pulse harness run` the workers use, with the same tool denials,
+so it never waits for a permission prompt. When the daemon restarts on a new
+binary it cancels the lane at once (the next daemon measures again) and gives
+the plain landings ten minutes before cancelling them too; a self-update that
+is due while the lane measures waits for the lane instead of throwing the
+measurement away, and the lane starts nothing new until that update has
+built. Cancellation reaches the measurement and verification commands; it
+does not bypass their results or the landing gates.
 
 After a measured experiment is finalized with no pending branch, the daemon
 can queue one durable, result-specific reflection per eligible archive, for

@@ -40,6 +40,20 @@ pub(crate) fn tend_landings_context(
     now: String,
     prev: BTreeMap<String, String>,
 ) -> (Vec<String>, BTreeMap<String, String>) {
+    tend_landings_pass(ctx, s, projects, actor, now, prev, true)
+}
+
+/// The landing pass behind `tend_landings_context`; the daemon runs it with
+/// `experiments` false and measures experiments on its own lane.
+pub(crate) fn tend_landings_pass(
+    ctx: &pulse_bus::CancellationToken,
+    s: &pulse_store::Store,
+    projects: Vec<crate::util::Row>,
+    actor: String,
+    now: String,
+    prev: BTreeMap<String, String>,
+    experiments: bool,
+) -> (Vec<String>, BTreeMap<String, String>) {
     let mut lines = Vec::new();
     let mut cur = BTreeMap::new();
     let mut swept = BTreeMap::new();
@@ -52,7 +66,7 @@ pub(crate) fn tend_landings_context(
         let slug = proj.str("slug");
         swept.insert(slug.clone(), true);
         let mut landed = false;
-        for lr in crate::land::land_pending_context(
+        for lr in crate::land::land_pending_pass(
             ctx,
             s,
             proj.clone(),
@@ -61,6 +75,7 @@ pub(crate) fn tend_landings_context(
             true,
             0,
             false,
+            experiments,
         ) {
             if lr.state == "landed" {
                 landed = true;
@@ -1685,5 +1700,109 @@ mod tests {
                 n
             );
         }
+    }
+
+    #[test]
+    fn plain_landings_go_before_experiments() {
+        let _serial = crate::test_helpers::serial();
+        skip_slow();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (proj, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+
+        // The experiment finished first, so it heads the queue.
+        let experiment = "evolve/slow";
+        run(&dir, &["git", "checkout", "-q", "-b", experiment, "main"]);
+        std::fs::write(std::path::Path::new(&dir).join("exp.txt"), b"exp\n").unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "experiment"]);
+        let plain = "pulse/aurora/plain";
+        run(&dir, &["git", "checkout", "-q", "-b", plain, "main"]);
+        std::fs::write(std::path::Path::new(&dir).join("feature.txt"), b"feature\n").unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "feature"]);
+        run(&dir, &["git", "checkout", "-q", "main"]);
+        exec1(
+            &s,
+            "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at)
+             VALUES ('exp-first', 'proj', 'experiment', 'Experiment', 'done', ?, ?, ?)",
+            &[&experiment, &TEST_NOW, &TEST_NOW],
+        );
+        let later = crate::util::plus_minutes(TEST_NOW, 5.0);
+        exec1(
+            &s,
+            "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at)
+             VALUES ('plain-second', 'proj', 'task', 'Plain', 'done', ?, ?, ?)",
+            &[&plain, &later, &later],
+        );
+
+        let plain_landed_first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (seen, n, s_measure) = (plain_landed_first.clone(), calls.clone(), s.clone());
+        let old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, _project, _repo, _ref, _opts| {
+                n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let row = crate::jobs::job_row(&*s_measure.conn().unwrap(), "plain-second".into());
+                seen.store(
+                    row.str("branch").is_empty(),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                anyhow::bail!("fake measurement fails")
+            }));
+        let ctx = pulse_bus::CancellationToken::new();
+
+        // The daemon's pass leaves experiments to the lane.
+        let (lines, held) = tend_landings_pass(
+            &ctx,
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+            false,
+        );
+        let joined = lines.join("\n");
+        assert!(
+            held.is_empty() && joined.contains(&format!("landing landed: {plain}")),
+            "plain branch behind an experiment did not land; lines={lines:?} held={held:?}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the plain pass measured an experiment"
+        );
+        let job = crate::jobs::job_row(&*s.conn().unwrap(), "exp-first".into());
+        assert_eq!(
+            job.str("branch"),
+            experiment,
+            "the pass touched the experiment"
+        );
+
+        // The CLI's pass measures experiments after the plain branches.
+        exec1(
+            &s,
+            "UPDATE jobs SET branch = ? WHERE id = 'plain-second'",
+            &[&plain],
+        );
+        run(&dir, &["git", "branch", plain, "main"]);
+        let (lines, _) = tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the full pass did not measure the experiment: {lines:?}"
+        );
+        assert!(
+            plain_landed_first.load(std::sync::atomic::Ordering::SeqCst),
+            "the experiment was measured before the plain branch landed: {lines:?}"
+        );
+        let _ = pulse_evolve::set_measure(old);
     }
 }
