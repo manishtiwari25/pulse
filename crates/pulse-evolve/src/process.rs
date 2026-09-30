@@ -97,6 +97,98 @@ pub(crate) fn harness_args(command: &str, request: &str) -> Result<Vec<String>> 
     }
     Ok(args)
 }
+/// The measurement harness for one fixture request: the same non-interactive
+/// agent runtime the workers get, so a fixture can never wait at a permission
+/// prompt. With `harness` `native` and the default `runner_cmd` it is `pulse
+/// harness run` from `exe` with the Settings limits; a bare `copilot` gets the
+/// worker's non-interactive flags; any other `runner_cmd` runs as written.
+pub(crate) fn measurement_argv(
+    s: &pulse_store::Store,
+    exe: &str,
+    request: &str,
+) -> Result<Vec<String>> {
+    let command = s.setting("runner_cmd", "");
+    let words = command_words(&command).unwrap_or_default();
+    let bare_copilot = words.len() == 1
+        && std::path::Path::new(&words[0])
+            .file_name()
+            .is_some_and(|name| name == "copilot");
+    let model = s.run_model("task");
+    if bare_copilot && s.harness_native() && !exe.is_empty() {
+        let mut argv = vec![
+            exe.to_string(),
+            "harness".to_string(),
+            "run".to_string(),
+            "-p".to_string(),
+            request.to_string(),
+            "--quiet".to_string(),
+        ];
+        for (flag, key) in [
+            ("--max-steps", "harness.max_steps"),
+            ("--step-timeout", "harness.step_timeout"),
+            ("--output-limit", "harness.output_limit"),
+            ("--max-cost", "harness.max_cost"),
+            ("--keep-observations", "harness.keep_observations"),
+        ] {
+            let value = s.setting(key, "");
+            if !value.trim().is_empty() {
+                argv.extend([flag.to_string(), value.trim().to_string()]);
+            }
+        }
+        let minutes = s.setting_int("minutes_per_job");
+        if minutes > 1 {
+            argv.extend(["--minutes".to_string(), (minutes - 1).to_string()]);
+        }
+        if !model.is_empty() {
+            argv.extend(["--model".to_string(), model]);
+        }
+        return Ok(argv);
+    }
+    let mut argv = harness_args(&command, request)?;
+    if bare_copilot {
+        argv.push("--allow-all-tools".to_string());
+        for tool in pulse_store::DENIED_TOOLS {
+            argv.extend(["--deny-tool".to_string(), (*tool).to_string()]);
+        }
+        argv.extend([
+            "--disable-builtin-mcps".to_string(),
+            "--no-ask-user".to_string(),
+            "-s".to_string(),
+            "--autopilot".to_string(),
+        ]);
+        if !model.is_empty() {
+            argv.extend(["--model".to_string(), model]);
+        }
+    }
+    Ok(argv)
+}
+/// The isolated home carries the runner's provider logins and nothing else, so
+/// the measured agent signs in like a worker without seeing the store.
+pub(crate) fn seed_provider_logins(from_home: &str, to_home: &str) -> std::io::Result<()> {
+    let src = std::path::Path::new(from_home)
+        .join("private")
+        .join("providers");
+    let Ok(entries) = std::fs::read_dir(&src) else {
+        return Ok(());
+    };
+    let dst = std::path::Path::new(to_home)
+        .join("private")
+        .join("providers");
+    std::fs::create_dir_all(&dst)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&dst, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "json") || !path.is_file() {
+            continue;
+        }
+        let target = dst.join(entry.file_name());
+        std::fs::copy(&path, &target)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&target, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    }
+    Ok(())
+}
 /// Go: func isolatedEnv(home string) []string
 pub(crate) fn isolated_env(home: &str) -> Vec<String> {
     let mut env = Vec::new();

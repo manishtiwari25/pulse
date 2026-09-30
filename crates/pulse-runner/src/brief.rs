@@ -13,7 +13,7 @@ use crate::recipe::Recipe;
 use crate::util::{Row, trunc};
 use std::sync::LazyLock;
 
-pub(crate) static DENIED_TOOLS: &[&str] = &["shell(git push)", "shell(git remote)", "shell(gh:*)"];
+pub(crate) static DENIED_TOOLS: &[&str] = pulse_store::DENIED_TOOLS;
 pub(crate) static VOTE_LINE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?i)^\s*[-*]?\s*\**`?VOTE:?`?:?\**\s*`?([A-Za-z0-9._-]+)`?\s+(up|down)\b\s*[:—-]?\s*(.*)$").expect("vote line regex")
 });

@@ -203,7 +203,8 @@ pub(crate) fn measure(
                 .display()
                 .to_string();
             fs::create_dir_all(&home)?;
-            let argv = crate::process::harness_args(&s.setting("runner_cmd", ""), &f.request)?;
+            crate::process::seed_provider_logins(&s.home, &home)?;
+            let argv = crate::process::measurement_argv(s, &exe, &f.request)?;
             let mut sink = std::io::sink();
             let job_cancel = cancel.with_timeout(timeout);
             crate::process::run_process(
@@ -645,6 +646,95 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
             assert_eq!(args.iter().filter(|arg| arg.as_str() == request).count(), 1);
         }
         assert!(crate::process::harness_args("fake -p old-request", request).is_err());
+    }
+
+    #[test]
+    fn measurement_harness_never_waits_for_a_prompt() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let request = "Improve the value in the clone.";
+        s.set_setting("human", "harness", "copilot-cli").unwrap();
+        s.set_setting("human", "worker_model", "fable").unwrap();
+        s.set_setting("human", "runner_cmd", "copilot").unwrap();
+        let legacy = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
+        assert_eq!(&legacy[..3], ["copilot", "-p", request]);
+        for flag in ["--allow-all-tools", "--no-ask-user", "--autopilot", "-s"] {
+            assert!(
+                legacy.contains(&flag.to_string()),
+                "{legacy:?} lacks {flag}"
+            );
+        }
+        for tool in pulse_store::DENIED_TOOLS {
+            assert!(
+                legacy.contains(&(*tool).to_string()),
+                "{legacy:?} lacks {tool}"
+            );
+        }
+        assert_eq!(legacy[legacy.len() - 2..], ["--model", "fable"]);
+
+        s.set_setting("human", "harness", "native").unwrap();
+        s.set_setting("human", "harness.max_steps", "7").unwrap();
+        s.set_setting("human", "minutes_per_job", "5").unwrap();
+        let native = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
+        assert_eq!(
+            &native[..5],
+            ["/bin/pulse", "harness", "run", "-p", request]
+        );
+        for pair in [
+            ["--max-steps", "7"],
+            ["--minutes", "4"],
+            ["--model", "fable"],
+        ] {
+            assert!(
+                native.windows(2).any(|w| w == pair),
+                "{native:?} lacks {pair:?}"
+            );
+        }
+        assert!(native.contains(&"--quiet".to_string()));
+        assert!(!native.contains(&"--allow-all-tools".to_string()));
+
+        // A custom command is the measurement harness as written, whatever `harness` says.
+        s.set_setting("human", "runner_cmd", "'/tmp/my harness' --flag")
+            .unwrap();
+        let custom = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
+        assert_eq!(custom, ["/tmp/my harness", "--flag", "-p", request]);
+    }
+
+    #[test]
+    fn isolated_home_carries_only_provider_logins() {
+        let _serial = crate::test_helpers::serial();
+        let from = crate::test_helpers::temp_path();
+        let to = crate::test_helpers::temp_path();
+        let providers = from.join("private").join("providers");
+        std::fs::create_dir_all(&providers).unwrap();
+        std::fs::write(providers.join("copilot.json"), "{\"github_token\":\"x\"}\n").unwrap();
+        std::fs::write(providers.join("notes.txt"), "not a login").unwrap();
+        std::fs::write(from.join("private").join("owner.json"), "{}").unwrap();
+        crate::process::seed_provider_logins(
+            &from.display().to_string(),
+            &to.display().to_string(),
+        )
+        .unwrap();
+        let seeded = to.join("private").join("providers");
+        assert!(seeded.join("copilot.json").is_file());
+        assert!(!seeded.join("notes.txt").exists());
+        assert!(!to.join("private").join("owner.json").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(seeded.join("copilot.json"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "login copied with mode {mode:o}");
+        }
+        let empty = crate::test_helpers::temp_path();
+        crate::process::seed_provider_logins(
+            &empty.display().to_string(),
+            &to.display().to_string(),
+        )
+        .unwrap();
     }
 
     #[test]

@@ -23,6 +23,8 @@ use std::time::Duration;
 pub const SCHEMA_VERSION: i64 = 3;
 pub const STORE_NAME: &str = "pulse.sqlite";
 pub const HUMAN_AGENT: &str = "human";
+/// Tools a worker or measured agent never gets, whatever the harness.
+pub const DENIED_TOOLS: &[&str] = &["shell(git push)", "shell(git remote)", "shell(gh:*)"];
 pub const EVOLUTION_STOP_SUMMARY: &str = "Evolution stopped; owner review needed";
 pub const COMMONS_SLUG: &str = "commons";
 pub const BUSY_TIMEOUT_MS: u64 = 10_000;
