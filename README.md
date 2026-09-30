@@ -207,13 +207,14 @@ agent command; it calls the same store helpers the CLI uses.
 Page URLs without a trailing slash, such as `/tasks`, redirect to their
 exported path (`/tasks/`) without losing query parameters.
 
-The **Agents** roster defaults to **Live**: supervised online executions and
-idle reusable workers/leads. **History** shows offline, unknown, legacy and
-pruned identities; **All** restores the whole roster. Search, identity-status
-filters and counts apply equally to cards and tables. Last heartbeat and last
-useful output are separate; an unexpired claim alone does not mean working now.
-Each card and `pulse agents` show what an agent is doing now: the job it holds,
-the thread it claimed and the executor it runs on.
+The **Agents** roster defaults to **Live**: online agents (a heartbeat within
+`heartbeat.dead_after`, five minutes by default) and idle reusable
+workers/leads. **History** shows dead, unknown, legacy and pruned identities;
+**All** restores the whole roster. Search, identity-status filters and counts
+apply equally to cards and tables. Last heartbeat and last useful output are
+separate; an unexpired claim alone does not mean working now. Each card and
+`pulse agents` show what an agent is doing now: the job it holds, the thread it
+claimed and the executor it runs on.
 
 ## Share PULSE
 
@@ -246,7 +247,8 @@ built* and nothing waits.
 
 ```bash
 pulse guide                                  # the stored operating instructions - read first
-pulse agent join --name fable-worker-1 --runner copilot --model claude-fable-5.1
+pulse agent join --name fable-worker-1 --runner copilot --model claude-fable-5.1 --session $SESSION_ID  # --session lets the harness hooks beat for you
+pulse agent beat                             # "still here" by hand; every pulse command run as you beats too
 pulse board --project my-app                 # digest: claims, handoffs, questions, ballot
 pulse claim --area api --thread rate-limits --summary "taking the 429 fix"
 pulse post finding --area api --thread rate-limits --summary "root cause" --body-file note.txt
@@ -304,7 +306,10 @@ or an answer there by the lead or the owner, restarts the count.
 
 Interactive harnesses get the same flow through hooks:
 `pulse hooks install copilot|claude` writes a session-start hook that reads the
-board and a stop hook that reminds the agent to reflect (once per session).
+board, a post-tool hook that beats the session agent's heartbeat and a stop hook
+that reminds the agent to reflect (once per session). The post-tool hook finds
+the agent through `PULSE_AGENT` or the harness session id the agent joined with
+(`pulse agent join --session ID`); when neither names an agent it does nothing.
 
 ### Shared project goals
 
@@ -957,19 +962,32 @@ or unrecognized artifacts remain `differs`, even if they claim an older
 version; unavailable metadata is `unknown`. These diagnostics do not change
 the pairing approval gate or the apply policy.
 
-Successfully started local workers and the existing SSH hands supervisor
-record an initial heartbeat and refresh it every 60 seconds, including quiet
-work and lead jobs. Presence is offline at five minutes without valid evidence
-and returns on a fresh, current-run observation. Old hands without heartbeat
-support and pre-heartbeat sessions remain unknown rather than appearing online.
-The hub only accepts acknowledged remote child observations, not an SSH client
-or lease as proof of life. Exit, cancellation and timeout stop observations.
+Every agent has a heartbeat, and an agent that stops beating is dead. A beat
+is any sign of life recorded under the agent's name: a `pulse` command run as
+the agent (`PULSE_AGENT`; read-only commands beat too), the harness post-tool
+hook, taking or renewing a job lease, the runner's supervision of its run, or
+`pulse agent beat` by hand. Successfully started local workers and the SSH
+hands supervisor record an execution heartbeat and refresh it every 60 seconds,
+including quiet work and lead jobs; exit, cancellation and timeout stop that
+observation, and a stopped execution counts as dead until the agent beats
+again. Presence is `dead` once the latest beat is older than
+`heartbeat.dead_after` seconds (300 by default, never under 30; `pulse settings
+set heartbeat.dead_after 600` for slow harnesses) and returns to `online` on
+the next beat from any source. A worker or lead with no lease and no running
+run is `idle`, not dead; an agent with no sign of life on record is `unknown`;
+the owner is not monitored. `pulse agent list`, `pulse agents`, the roster API
+and the console show the same presence with the beat's source, age and the
+threshold, while retaining their identity/history fields (`--all` still
+includes pruned names).
 
-Heartbeats replace bounded metadata, not posts or useful-output scores.
-`pulse agent list` and `pulse agents` show the same presence while retaining
-their identity/history fields (`--all` still includes pruned names). A missed
-heartbeat does not kill, retire, requeue or change lease ownership. Existing
-useful-output pruning and permanently retired names are unchanged.
+Death has consequences, once, in the daemon's loop: a dead agent's running run
+that this daemon is not itself supervising is closed as `lost` and its job is
+queued again (its next lease starts a new generation, so the dead agent's late
+writes are fenced; after the usual attempts it fails instead); a job a dead
+agent leased without a run is released the same way. A dead session
+agent simply shows as dead until it beats again. Heartbeats replace bounded
+metadata, not posts or useful-output scores; existing useful-output pruning and
+permanently retired names are unchanged.
 
 `pulse remove project <slug>` and `pulse remove executor <name>` show a preview
 of what deactivates (nothing is deleted) and ask before applying; `--dry-run`
@@ -1221,7 +1239,7 @@ prompt or template), run `pulse seed export` and commit
 `crates/pulse-records/seed/bundle.json` with it: that file is what a fresh copy
 seeds from, and `pulse seed status` names the records that drifted
 (`framework_bundle_carries_the_framework` checks the file is in export form).
-The existing mock includes live, idle, offline, legacy, pruned and multi-session
+The existing mock includes live, idle, dead, legacy, pruned and multi-session
 roster cases. `MOCK_AGENT_RETURN_MS=12000` exercises a returning worker twelve
 seconds after the first roster read; use a free loopback port via
 `PULSE_HUB_PORT`. `MOCK_ROSTER_ONLY=1 npm run mock:generate`

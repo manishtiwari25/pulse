@@ -1,6 +1,6 @@
 use crate::hooks::{deliveries, delivery_states, fire, get, list, set_enabled};
 use crate::install::{
-    Install, context_json, install_harness, run_pulse, stop_json, uninstall_harness,
+    Install, beat_json, context_json, install_harness, run_pulse, stop_json, uninstall_harness,
 };
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, register as cli_register, write_json};
@@ -60,11 +60,12 @@ pulse hook test <id>        (fires it with a synthetic event)".into(),
         cli_register(Command {
             name: "hooks".into(),
             group: "human".into(),
-            summary: "harness hooks for interactive agents: install copilot|claude (session start reads the board, stop reminds to reflect)".into(),
+            summary: "harness hooks for interactive agents: install copilot|claude (session start reads the board, every tool use beats, stop reminds to reflect)".into(),
             usage: "pulse hooks install copilot|claude [--dir PATH] [--dry-run]\n\
 pulse hooks uninstall copilot|claude [--dir PATH] [--dry-run]\n\
 pulse hooks context --harness copilot|claude   (what the installed sessionStart hook runs)\n\
-pulse hooks stop --harness copilot|claude      (what the installed stop hook runs)".into(),
+pulse hooks stop --harness copilot|claude      (what the installed stop hook runs)\n\
+pulse hooks beat --harness copilot|claude      (what the installed post-tool hook runs: the session agent's heartbeat)".into(),
             aliases: vec![],
             no_store: true,
             read_only: false,
@@ -369,7 +370,7 @@ fn run_hooks(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         return Err(cli_error(
             2,
             "pulse hooks needs a subcommand",
-            "install, uninstall, context or stop",
+            "install, uninstall, context, stop or beat",
             "pulse help hooks",
         ));
     }
@@ -452,6 +453,14 @@ fn run_hooks(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             };
             writeln!(c.out, "{}", context_json(&harness, scoped))?;
         }
+        "beat" => {
+            let input = hook_payload();
+            writeln!(
+                c.out,
+                "{}",
+                beat_json(&c.home, &c.agent, &c.now, &input[..])
+            )?;
+        }
         "stop" => {
             let opened = pulse_store::Store::open(pulse_store::Options {
                 home: c.home.clone(),
@@ -459,15 +468,7 @@ fn run_hooks(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 ..Default::default()
             })
             .ok();
-            let input = STDIN
-                .lock()
-                .expect("stdin lock")
-                .clone()
-                .unwrap_or_else(|| {
-                    let mut buf = Vec::new();
-                    let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf);
-                    buf
-                });
+            let input = hook_payload();
             writeln!(
                 c.out,
                 "{}",
@@ -483,12 +484,25 @@ fn run_hooks(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             return Err(cli_error(
                 2,
                 format!("pulse hooks: unknown subcommand {sub:?}"),
-                "install, uninstall, context or stop",
+                "install, uninstall, context, stop or beat",
                 "pulse help hooks",
             ));
         }
     }
     Ok(())
+}
+
+/// The JSON the harness pipes to a hook (tests set it; a hook reads stdin to its end).
+fn hook_payload() -> Vec<u8> {
+    STDIN
+        .lock()
+        .expect("stdin lock")
+        .clone()
+        .unwrap_or_else(|| {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf);
+            buf
+        })
 }
 
 pub fn context_args(c: &Context, args: &[&str]) -> Vec<String> {
@@ -605,6 +619,14 @@ mod tests {
         assert!(out.string().contains("would write"));
         assert!(out.string().contains("Undo: pulse hooks uninstall copilot"));
         assert!(run_cmd(&mut c, "hooks", &["install", "vim"]).is_err());
+        // `hooks beat` always answers `{}` (no store here) and never fails the harness.
+        set_stdin_for_tests(Some(br#"{"sessionId":"cmd"}"#.to_vec()));
+        let (mut c, out) = ctx_for(None, &home_s, false);
+        run_cmd(&mut c, "hooks", &["beat", "--harness", "copilot"]).unwrap();
+        assert_eq!(out.string().trim(), "{}");
+        let (mut c, _out) = ctx_for(None, &home_s, false);
+        let err = run_cmd(&mut c, "hooks", &["dance"]).unwrap_err();
+        assert!(err.to_string().contains("beat"), "{err}");
         set_stdin_for_tests(None);
     }
 

@@ -2744,7 +2744,7 @@ mod tests {
             assert_eq!(first.generation, 1, "initial lifecycle {name}");
             assert!(first.stopped_at.is_empty(), "initial lifecycle {name}");
 
-            let edge = beat_at + chrono::Duration::from_std(pulse_board::HEARTBEAT_GRACE).unwrap();
+            let edge = beat_at + pulse_board::dead_after(&s);
             fake.clock.store(
                 (edge - chrono::Duration::nanoseconds(1))
                     .timestamp_nanos_opt()
@@ -2760,7 +2760,7 @@ mod tests {
             );
             fake.clock
                 .store(edge.timestamp_nanos_opt().unwrap(), Ordering::SeqCst);
-            crate::test_helpers_f2::assert_lifecycle_presence(&s, edge, "offline");
+            crate::test_helpers_f2::assert_lifecycle_presence(&s, edge, "dead");
             assert_eq!(
                 pulse_store::rfc3339_nano(edge),
                 leased.str("lease_until"),
@@ -2929,7 +2929,7 @@ mod tests {
                     chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
                         fake.clock.load(Ordering::SeqCst),
                     ),
-                    "offline",
+                    "dead",
                 );
                 if takeover == "verification" {
                     takeover_fn();

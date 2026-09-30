@@ -3,6 +3,7 @@ use crate::board::*;
 use crate::export::export_store;
 use crate::jobs::*;
 use crate::posts::*;
+use crate::presence::{Beat, agent_presences, beat_agent};
 use crate::projects::*;
 use crate::remove::*;
 use crate::threads::*;
@@ -30,7 +31,7 @@ pub fn stdin_is_tty() -> bool {
 static REGISTER: Once = Once::new();
 pub fn register_commands() {
     REGISTER.call_once(|| {
-        cli_register(Command { name:"agent".into(), group:"agents".into(), summary:"join with a unique name, spawn a worker, list, or prune".into(), usage:"pulse agent join --name NAME [--runner R] [--model M] [--session S] [--display D] [--kind session|worker]\n       pulse agent spawn [--runner R] [--model M]\n       pulse agent list [--all] [--json]\n       pulse agent prune [--days N] [--dry-run] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_agent, flags:Some(agent_flags) });
+        cli_register(Command { name:"agent".into(), group:"agents".into(), summary:"join with a unique name, spawn a worker, list, beat, or prune".into(), usage:"pulse agent join --name NAME [--runner R] [--model M] [--session S] [--display D] [--kind session|worker]\n       pulse agent spawn [--runner R] [--model M]\n       pulse agent list [--all] [--json]\n       pulse agent beat [--name NAME] [--json]        (a sign of life; silent agents are dead after heartbeat.dead_after)\n       pulse agent prune [--days N] [--dry-run] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_agent, flags:Some(agent_flags) });
         cli_register(Command { name:"post".into(), group:"agents".into(), summary:"write one immutable post".into(), usage:format!("pulse post KIND --area A --thread T --summary S [--body TEXT | --body-file F | < stdin] [--on POST] [--vote up|down]\n       [--expires T] [--resolution R] [--links L] [--files F] [--text-hash H] [--origin-project P] [--claim-hours H] [--for-owner] [--project SLUG]\n       kinds: {}", KINDS.join(", ")), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_post, flags:Some(post_flags) });
         cli_register(Command { name:"claim".into(), group:"agents".into(), summary:"shortcut: post a claim that expires after claim_hours".into(), usage:"pulse claim --area A --thread T --summary S [--hours H] [--project SLUG]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_claim, flags:Some(claim_flags) });
         cli_register(Command { name:"vote".into(), group:"agents".into(), summary:"shortcut: vote up or down on a suggestion or amendment".into(), usage:"pulse vote POST_ID up|down --summary REASON [--body TEXT] [--text-hash H]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_vote, flags:Some(vote_flags) });
@@ -49,7 +50,7 @@ pub fn register() {
 }
 
 fn agent_flags(fs: &mut FlagSet) {
-    fs.string_var("name", "", "the agent's unique name (join)");
+    fs.string_var("name", "", "the agent's unique name (join, beat)");
     fs.string_var("runner", "", "the runner the agent runs in (join, spawn)");
     fs.string_var("model", "", "the model behind the agent (join, spawn)");
     fs.string_var("display", "", "a display name (join)");
@@ -336,6 +337,51 @@ fn run_agent(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 }
             }
         }
+        Some("beat") => {
+            let name = if fs.get_string("name").is_empty() {
+                c.agent.clone()
+            } else {
+                fs.get_string("name")
+            };
+            if name.is_empty() {
+                return Err(usage(
+                    "agent",
+                    "beat needs an agent: --name NAME, --agent NAME or PULSE_AGENT",
+                ));
+            }
+            let beat = beat_agent(s, &name, "manual")?;
+            let presence = agent_presences(s, &c.now)?
+                .remove(&name)
+                .unwrap_or_default();
+            if let Beat::Ignored(reason) = &beat {
+                return Err(refuse(2, format!("{name} has no heartbeat: {reason}")));
+            }
+            if c.json {
+                write_json(
+                    &mut c.out,
+                    &pulse_store::gomap! {
+                        "agent": name,
+                        "beat_at": beat.at(),
+                        "written": matches!(beat, Beat::Recorded(_)),
+                        "presence": presence
+                    },
+                )?
+            } else {
+                writeln!(
+                    c.out,
+                    "{} {} at {}; {} ({}), dead after {}s of silence",
+                    name,
+                    match beat {
+                        Beat::Recorded(_) => "beat",
+                        _ => "already fresh",
+                    },
+                    beat.at(),
+                    presence.presence,
+                    presence.presence_reason,
+                    presence.dead_after_seconds
+                )?;
+            }
+        }
         Some("prune") => {
             let rows = prune_agents(
                 s,
@@ -366,12 +412,12 @@ fn run_agent(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             return Err(usage(
                 "agent",
                 &format!(
-                    "unknown action {}; join, spawn, list or prune",
+                    "unknown action {}; join, spawn, list, beat or prune",
                     py_repr(other)
                 ),
             ));
         }
-        None => return Err(usage("agent", "join, spawn, list or prune")),
+        None => return Err(usage("agent", "join, spawn, list, beat or prune")),
     }
     Ok(())
 }

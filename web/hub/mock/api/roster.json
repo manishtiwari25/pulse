@@ -39,7 +39,7 @@
     "presence": "unknown",
     "presence_checked_at": "2026-09-07T09:00:00.000Z",
     "presence_expires_at": "",
-    "presence_reason": "no supervised heartbeat evidence",
+    "presence_reason": "no heartbeat yet",
     "presence_session": "",
     "projects": [
       "demo-app"
@@ -55,7 +55,10 @@
     "status": "active",
     "store_posts": 2,
     "suggestions": 0,
-    "votes": 0
+    "votes": 0,
+    "heartbeat_source": "",
+    "heartbeat_age_seconds": null,
+    "dead_after_seconds": 300
   },
   {
     "current_task": "TASK-002",
@@ -116,7 +119,10 @@
     "status": "active",
     "store_posts": 8,
     "suggestions": 1,
-    "votes": 3
+    "votes": 3,
+    "heartbeat_source": "execution",
+    "heartbeat_age_seconds": 0,
+    "dead_after_seconds": 300
   },
   {
     "current_task": "",
@@ -186,7 +192,10 @@
     "status": "active",
     "store_posts": 9,
     "suggestions": 1,
-    "votes": 3
+    "votes": 3,
+    "heartbeat_source": "execution",
+    "heartbeat_age_seconds": 0,
+    "dead_after_seconds": 300
   },
   {
     "current_task": "",
@@ -246,7 +255,10 @@
     "status": "active",
     "store_posts": 6,
     "suggestions": 2,
-    "votes": 2
+    "votes": 2,
+    "heartbeat_source": "",
+    "heartbeat_age_seconds": null,
+    "dead_after_seconds": 300
   },
   {
     "current_task": "",
@@ -293,10 +305,10 @@
     ],
     "notes": "",
     "posts": 6,
-    "presence": "offline",
+    "presence": "dead",
     "presence_checked_at": "2026-09-07T09:00:00.000Z",
     "presence_expires_at": "",
-    "presence_reason": "no valid heartbeat for five minutes",
+    "presence_reason": "no heartbeat for 6m; dead after 5m",
     "presence_session": "run-offline",
     "projects": [
       "demo-app",
@@ -315,7 +327,10 @@
     "status": "active",
     "store_posts": 6,
     "suggestions": 0,
-    "votes": 3
+    "votes": 3,
+    "heartbeat_source": "execution",
+    "heartbeat_age_seconds": 360,
+    "dead_after_seconds": 300
   },
   {
     "current_task": "",
@@ -408,10 +423,10 @@
     ],
     "notes": "",
     "posts": 7,
-    "presence": "offline",
+    "presence": "dead",
     "presence_checked_at": "2026-09-07T08:59:00.000Z",
     "presence_expires_at": "",
-    "presence_reason": "no valid heartbeat for five minutes",
+    "presence_reason": "no heartbeat for 6m; dead after 5m",
     "presence_session": "run-delta-old",
     "projects": [
       "demo-app",
@@ -431,7 +446,10 @@
     "status": "active",
     "store_posts": 7,
     "suggestions": 0,
-    "votes": 3
+    "votes": 3,
+    "heartbeat_source": "execution",
+    "heartbeat_age_seconds": 3540,
+    "dead_after_seconds": 300
   },
   {
     "current_task": "",
@@ -489,7 +507,10 @@
     "status": "active",
     "store_posts": 1,
     "suggestions": 0,
-    "votes": 0
+    "votes": 0,
+    "heartbeat_source": "",
+    "heartbeat_age_seconds": null,
+    "dead_after_seconds": 300
   },
   {
     "current_task": "",
@@ -547,7 +568,10 @@
     "status": "active",
     "store_posts": 0,
     "suggestions": 0,
-    "votes": 0
+    "votes": 0,
+    "heartbeat_source": "execution",
+    "heartbeat_age_seconds": 0,
+    "dead_after_seconds": 300
   },
   {
     "current_task": "",
@@ -609,7 +633,10 @@
     "status": "active",
     "store_posts": 0,
     "suggestions": 0,
-    "votes": 0
+    "votes": 0,
+    "heartbeat_source": "execution",
+    "heartbeat_age_seconds": 0,
+    "dead_after_seconds": 300
   },
   {
     "agent": "granite",
@@ -663,6 +690,9 @@
     "presence_checked_at": "2026-09-07T09:00:00.000Z",
     "presence_session": "",
     "last_heartbeat_at": "",
-    "presence_expires_at": ""
+    "presence_expires_at": "",
+    "heartbeat_source": "",
+    "heartbeat_age_seconds": null,
+    "dead_after_seconds": 300
   }
 ]

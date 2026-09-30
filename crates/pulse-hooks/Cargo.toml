@@ -9,6 +9,7 @@ publish.workspace = true
 description = "PULSE: store hooks (scripts, webhooks) and harness hooks (copilot, claude)"
 
 [dependencies]
+pulse-board.workspace = true
 pulse-bus.workspace = true
 pulse-cli.workspace = true
 pulse-evolve.workspace = true

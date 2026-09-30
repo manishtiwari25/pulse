@@ -37,6 +37,7 @@ pub mod landing_evidence;
 pub mod landing_hold;
 pub mod lead;
 pub mod lessons;
+pub mod liveness;
 pub mod login_gate;
 pub mod multipass;
 pub mod onboard;

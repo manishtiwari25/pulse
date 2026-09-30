@@ -55,7 +55,7 @@ pub fn expected(oracle: &str) -> String {
 
 pub fn legacy_agent_listing(text: &str) -> String {
     let presence_column = Regex::new(
-        r"(?m)^(\S+[ \t]+\S+[ \t]+\S+[ \t]+)presence[ \t]+(?:online|idle|offline|unknown|legacy|pruned)[ \t]+",
+        r"(?m)^(\S+[ \t]+\S+[ \t]+\S+[ \t]+)presence[ \t]+(?:online|idle|offline|dead|unknown|legacy|pruned)[ \t]+",
     )
     .unwrap();
     let heartbeat_column = Regex::new(r"last heartbeat [^ \t\r\n]+  ").unwrap();

@@ -970,7 +970,7 @@ export function serviceStep(p: ServicePayload | undefined | null): boolean {
   return !!p && p.service.supported && !p.service.installed;
 }
 
-export type AgentPresence = "online" | "idle" | "offline" | "unknown" | "legacy" | "pruned";
+export type AgentPresence = "online" | "idle" | "dead" | "unknown" | "legacy" | "pruned";
 
 export interface RosterRow extends Who {
   agent: string;
@@ -981,6 +981,11 @@ export interface RosterRow extends Who {
   presence?: AgentPresence;
   presence_reason?: string;
   last_heartbeat_at?: string;
+  // Where the latest heartbeat came from: execution, cli, hook, lease, manual, activity.
+  heartbeat_source?: string;
+  heartbeat_age_seconds?: number | null;
+  // Seconds of silence after which the server counts this agent as dead.
+  dead_after_seconds?: number;
   presence_session?: string;
   presence_checked_at?: string;
   presence_expires_at?: string;

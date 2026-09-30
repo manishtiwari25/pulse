@@ -214,6 +214,15 @@ pub(crate) fn lease_job(
             &r.str("id"),
             json!({"until": until}),
         );
+        // Taking a job is a sign of life; the agent's heartbeat starts with the lease.
+        if let Ok(at) = chrono::DateTime::parse_from_rfc3339(&now) {
+            pulse_board::beat_agent_conn(
+                crate::util::Querier::conn(q),
+                &agent,
+                "lease",
+                at.with_timezone(&chrono::Utc),
+            )?;
+        }
         leased = one_dyn(q, "SELECT * FROM jobs WHERE id = ?", &[&r.str("id")]);
         Ok(())
     })?;

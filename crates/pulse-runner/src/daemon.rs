@@ -1,6 +1,6 @@
 //! Port of internal/runner/daemon.go.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Duration;
 
@@ -521,6 +521,21 @@ pub(crate) fn daemon(
                     ),
                 }
                 last_prune_day = now[..10.min(now.len())].to_string();
+            }
+            if !o.dry_run {
+                let inflight_runs = inflight
+                    .values()
+                    .map(|d| d.run.str("id"))
+                    .collect::<BTreeSet<_>>();
+                let inflight_jobs = inflight
+                    .values()
+                    .map(|d| d.job.str("id"))
+                    .collect::<BTreeSet<_>>();
+                for line in
+                    crate::liveness::sweep_dead_agents(s, &now, &inflight_runs, &inflight_jobs)
+                {
+                    say(&o, line);
+                }
             }
             let conn = s.conn().ok();
             let all_projects = conn

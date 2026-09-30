@@ -89,12 +89,13 @@ const GROUPS: Group[] = [
     id: "daemon",
     title: "Running",
     blurb: "Which pulse runs where, and how it keeps itself current. After a landing in the brain the daemon rebuilds pulse from the checkout, smoke-tests the new binary, installs it in place and restarts once its runs finish; the hub follows within a minute; three early exits in a row put the previous build back and turn this off with a finding (ADR-035). The install line is for the first install only.",
-    keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.recover", "daemon.recover_days", "daemon.recover_limit", "daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb"],
-    match: (n) => n.startsWith("daemon."),
+    keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.recover", "daemon.recover_days", "daemon.recover_limit", "daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb", "heartbeat.dead_after"],
+    match: (n) => n.startsWith("daemon.") || n.startsWith("heartbeat."),
     clusters: [
       { title: "Self-update", keys: ["daemon.self_update", "daemon.self_update_retry_minutes"] },
       { title: "Failed jobs", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
       { title: "Housekeeping", keys: ["daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb"] },
+      { title: "Heartbeat", keys: ["heartbeat.dead_after"] },
     ],
     strip: () => <RunningStrip />,
   },
@@ -142,6 +143,7 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "evolve.draft_hours", value: "24", default: "24", kind: "count", min: 0, choices: null, description: "hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button" },
   { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off"], description: "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
   { name: "daemon.self_update_retry_minutes", value: "60", default: "60", kind: "count", min: 1, choices: null, description: "minutes the daemon waits before building again after a failed build or smoke test" },
+  { name: "heartbeat.dead_after", value: "300", default: "300", kind: "count", min: 30, choices: null, description: "seconds an agent may go without a heartbeat before it counts as dead: every pulse command run as an agent beats, so do its hooks, its job lease and the runner supervising its run; a dead worker's run is closed as lost and its job queued again, a dead session simply shows as dead until it beats again; never under 30" },
   { name: "landing.push", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "main"], description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)" },
   { name: "push.credential", value: "", default: "", kind: "reference", min: null, choices: null, description: "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)" },
 ];

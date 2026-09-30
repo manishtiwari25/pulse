@@ -18,6 +18,7 @@ pub struct Install {
 
 const CONTEXT_CMD: &str = " hooks context --harness ";
 const STOP_CMD: &str = " hooks stop --harness ";
+const BEAT_CMD: &str = " hooks beat --harness ";
 
 fn pulse_bin() -> String {
     if path_has_pulse() {
@@ -84,6 +85,7 @@ pub fn render(harness: &str, bin: &str, existing: &[u8]) -> Result<(String, bool
             let doc = json!({
                 "hooks": {
                     "agentStop": [entry(format!("{bin}{STOP_CMD}copilot"), 10)],
+                    "postToolUse": [entry(format!("{bin}{BEAT_CMD}copilot"), 5)],
                     "sessionStart": [entry(format!("{bin}{CONTEXT_CMD}copilot"), 30)]
                 },
                 "version": 1
@@ -123,6 +125,13 @@ pub fn render(harness: &str, bin: &str, existing: &[u8]) -> Result<(String, bool
                 "Stop",
                 &format!("{bin}{STOP_CMD}claude"),
                 10,
+                &mut changed,
+            );
+            add_claude(
+                &mut hooks,
+                "PostToolUse",
+                &format!("{bin}{BEAT_CMD}claude"),
+                5,
                 &mut changed,
             );
             settings.insert("hooks".to_string(), Value::Object(hooks));
@@ -200,7 +209,7 @@ fn render_removal(existing: &[u8]) -> Result<(String, bool)> {
                 had_list = true;
                 for h in list {
                     let c = h.get("command").and_then(Value::as_str).unwrap_or("");
-                    if c.contains(CONTEXT_CMD) || c.contains(STOP_CMD) {
+                    if c.contains(CONTEXT_CMD) || c.contains(STOP_CMD) || c.contains(BEAT_CMD) {
                         changed = true;
                     } else {
                         keep.push(h);
@@ -417,6 +426,64 @@ pub fn stop_json(
     plain_json(&doc)
 }
 
+/// The harness session id a hook payload carries (Copilot spells it `sessionId`, Claude `session_id`).
+pub fn payload_session(payload: &[u8]) -> String {
+    let input: Value = serde_json::from_slice(payload).unwrap_or(Value::Null);
+    ["session_id", "sessionId"]
+        .iter()
+        .find_map(|k| input.get(*k).and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string()
+}
+
+/// What the installed post-tool hook runs: a heartbeat for the session's agent.
+/// The agent is `agent` when the hook's environment names one (`PULSE_AGENT`),
+/// otherwise the active session agent whose `sessions` list holds the payload's
+/// session id (`pulse agent join --session ID`). Hooks never fail the harness:
+/// an unknown agent or a closed store beats nothing and the output is `{}`.
+pub fn beat_json(home: &str, agent: &str, now: &str, mut payload: impl Read) -> String {
+    let mut raw = Vec::new();
+    let _ = payload.by_ref().take(1 << 20).read_to_end(&mut raw);
+    let sid = payload_session(&raw);
+    let Ok(s) = pulse_store::Store::open(pulse_store::Options {
+        home: home.to_string(),
+        create: false,
+        read_only: false,
+        skip_records: true,
+        now: now.to_string(),
+    }) else {
+        return "{}".to_string();
+    };
+    let name = if agent.is_empty() {
+        session_agent(&s, &sid)
+    } else {
+        agent.to_string()
+    };
+    if name.is_empty() {
+        return "{}".to_string();
+    }
+    let _ = pulse_board::beat_agent(&s, &name, "hook");
+    "{}".to_string()
+}
+
+/// The active session agent that joined with this harness session id, if any.
+pub fn session_agent(s: &pulse_store::Store, sid: &str) -> String {
+    if sid.is_empty() {
+        return String::new();
+    }
+    let Ok(conn) = s.conn() else {
+        return String::new();
+    };
+    conn.query_row(
+        "SELECT name FROM agents a WHERE a.status = 'active' AND a.kind NOT IN ('human','legacy')
+         AND EXISTS (SELECT 1 FROM json_each(a.sessions) WHERE value = ?)
+         ORDER BY a.last_active_at DESC LIMIT 1",
+        [sid],
+        |r| r.get::<_, String>(0),
+    )
+    .unwrap_or_default()
+}
+
 fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -482,12 +549,20 @@ mod tests {
         assert_eq!(doc["version"], 1);
         assert_eq!(doc["hooks"]["sessionStart"].as_array().unwrap().len(), 1);
         assert_eq!(doc["hooks"]["agentStop"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["hooks"]["postToolUse"].as_array().unwrap().len(), 1);
         assert!(
             doc["hooks"]["sessionStart"][0]["bash"]
                 .as_str()
                 .unwrap()
                 .ends_with(" hooks context --harness copilot")
         );
+        assert!(
+            doc["hooks"]["postToolUse"][0]["bash"]
+                .as_str()
+                .unwrap()
+                .ends_with(" hooks beat --harness copilot")
+        );
+        assert_eq!(doc["hooks"]["postToolUse"][0]["timeoutSec"], 5);
         assert!(!install_harness("copilot", &repo_s, false).unwrap().changed);
         assert!(
             uninstall_harness("copilot", &repo_s, false)
@@ -506,11 +581,19 @@ mod tests {
         assert_eq!(doc["model"], "opus");
         assert_eq!(doc["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
         assert_eq!(doc["hooks"]["Stop"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
+        assert!(
+            doc["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .ends_with(" hooks beat --harness claude")
+        );
         assert!(!install_harness("claude", &repo_s, false).unwrap().changed);
         assert!(uninstall_harness("claude", &repo_s, false).unwrap().changed);
         let doc: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         assert!(doc["hooks"].get("SessionStart").is_none());
+        assert!(doc["hooks"].get("PostToolUse").is_none());
         assert_eq!(doc["hooks"]["Stop"].as_array().unwrap().len(), 1);
         assert!(install_harness("cursor", &repo_s, true).is_err());
         let _guard = pulse_testutil::env_lock();
@@ -680,6 +763,85 @@ mod tests {
     }
     fn test_reminder_empty(_: Option<&pulse_store::Store>) -> String {
         String::new()
+    }
+
+    #[test]
+    fn beat_json_beats_the_session_agent_and_never_fails_the_harness() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let home = s.home();
+        let now = "2026-09-06T21:00:00Z";
+        for (name, session) in [("fable-a", "sess-a"), ("fable-b", "sess-b")] {
+            pulse_board::join_agent(
+                &s,
+                pulse_board::JoinInput {
+                    name: name.into(),
+                    kind: "session".into(),
+                    session: session.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(session_agent(&s, "sess-b"), "fable-b");
+        assert_eq!(session_agent(&s, "nobody"), "");
+        assert_eq!(session_agent(&s, ""), "");
+        assert_eq!(
+            payload_session(br#"{"sessionId":"sess-a","cwd":"/x"}"#),
+            "sess-a"
+        );
+        assert_eq!(payload_session(br#"{"session_id":"sess-b"}"#), "sess-b");
+        assert_eq!(payload_session(b"not json"), "");
+        let beat_of = |name: &str| -> String {
+            s.meta(&format!("{}{name}", pulse_board::BEAT_PREFIX))
+                .unwrap()
+                .0
+        };
+        // Copilot names the session; the payload resolves the agent.
+        assert_eq!(
+            beat_json(&home, "", now, br#"{"sessionId":"sess-a"}"#.as_ref()),
+            "{}"
+        );
+        let a: pulse_board::AgentBeat = serde_json::from_str(&beat_of("fable-a")).unwrap();
+        assert_eq!(a.source, "hook");
+        assert_eq!(a.at, now);
+        assert_eq!(beat_of("fable-b"), "");
+        // PULSE_AGENT in the hook's environment wins over the payload.
+        assert_eq!(
+            beat_json(&home, "fable-b", now, br#"{"sessionId":"sess-a"}"#.as_ref()),
+            "{}"
+        );
+        assert!(!beat_of("fable-b").is_empty());
+        // Unknown sessions, humans and a missing store beat nothing and still answer `{}`.
+        assert_eq!(
+            beat_json(&home, "", now, br#"{"sessionId":"sess-x"}"#.as_ref()),
+            "{}"
+        );
+        assert_eq!(beat_json(&home, "human", now, b"".as_ref()), "{}");
+        assert_eq!(beat_json(&home, "", now, b"".as_ref()), "{}");
+        let missing = tempfile::tempdir().unwrap();
+        assert_eq!(
+            beat_json(
+                &missing.path().join("none").display().to_string(),
+                "fable-a",
+                now,
+                b"{}".as_ref()
+            ),
+            "{}"
+        );
+        let beats: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM meta WHERE key LIKE 'agent-beat:%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(beats, 2);
+        let p = pulse_board::agent_presences(&s, now).unwrap();
+        assert_eq!(p["fable-a"].presence, "online");
+        assert_eq!(p["fable-a"].heartbeat_source, "hook");
     }
 
     #[test]

@@ -601,14 +601,18 @@ impl Handler {
                 .unwrap_or(pulse_board::AgentPresence {
                     presence: "legacy".into(),
                     presence_reason: "historical identity; no supervised execution".into(),
-                    last_heartbeat_at: String::new(),
-                    presence_session: String::new(),
                     presence_checked_at: now.clone(),
-                    presence_expires_at: String::new(),
+                    ..Default::default()
                 });
             row.insert("presence".into(), json!(p.presence));
             row.insert("presence_reason".into(), json!(p.presence_reason));
             row.insert("last_heartbeat_at".into(), json!(p.last_heartbeat_at));
+            row.insert("heartbeat_source".into(), json!(p.heartbeat_source));
+            row.insert(
+                "heartbeat_age_seconds".into(),
+                json!(p.heartbeat_age_seconds),
+            );
+            row.insert("dead_after_seconds".into(), json!(p.dead_after_seconds));
             row.insert("presence_session".into(), json!(p.presence_session));
             row.insert("presence_checked_at".into(), json!(p.presence_checked_at));
             row.insert("presence_expires_at".into(), json!(p.presence_expires_at));

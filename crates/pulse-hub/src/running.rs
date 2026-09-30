@@ -213,10 +213,13 @@ mod tests {
                 "presence"
                 | "presence_reason"
                 | "last_heartbeat_at"
+                | "heartbeat_source"
+                | "heartbeat_age_seconds"
+                | "dead_after_seconds"
                 | "presence_session"
                 | "presence_checked_at"
                 | "presence_expires_at" => {
-                    return "WU-024 adds supervised presence separately from unchanged identity, score and history fields";
+                    return "WU-024 adds supervised presence separately from unchanged identity, score and history fields; the heartbeat feature adds the beat's source, age and the dead-after threshold";
                 }
                 "current_job" | "current_job_kind" | "current_job_title" | "current_thread"
                 | "executor" | "focus_since" | "current_task" | "current_task_title"
@@ -347,9 +350,11 @@ mod tests {
         let exec = |query: &str, args: &[&dyn rusqlite::ToSql]| {
             s.conn().unwrap().execute(query, args).unwrap();
         };
+        // "offline" is a worker whose supervised heartbeat went silent six minutes ago: dead.
+        // "unknown" is a session agent with no sign of life on record at all.
         let states = std::collections::BTreeMap::from([
             ("live", "online"),
-            ("offline", "offline"),
+            ("offline", "dead"),
             ("idle-worker", "idle"),
             ("idle-lead", "idle"),
             ("unknown", "unknown"),
@@ -377,6 +382,16 @@ mod tests {
         exec(
             "UPDATE agents SET status='pruned',pruned_at=?,pruned_reason='no useful output for 14 days' WHERE name='pruned'",
             &[&s.now()],
+        );
+        // Joining counts as activity; these joined long before this clock reading, so the
+        // supervised heartbeat is their latest sign of life.
+        exec(
+            "UPDATE agents SET last_active_at='2026-09-06T11:50:00Z' WHERE name IN ('live','offline')",
+            &[],
+        );
+        exec(
+            "UPDATE agents SET last_active_at='' WHERE name='unknown'",
+            &[],
         );
         exec(
             "UPDATE agents SET jobs_done=3,posts=4,last_useful_at='2026-09-01T00:00:00Z' WHERE name='live'",
@@ -557,7 +572,7 @@ mod tests {
         let expired = f2::handler(&later).roster(&views).unwrap();
         for r in expired {
             if r["agent"] == "live" {
-                assert_eq!(r["presence"], "offline");
+                assert_eq!(r["presence"], "dead");
                 assert_ne!(r["status"], "working");
             }
         }
@@ -601,6 +616,9 @@ mod tests {
             "presence",
             "presence_reason",
             "last_heartbeat_at",
+            "heartbeat_source",
+            "heartbeat_age_seconds",
+            "dead_after_seconds",
             "presence_session",
             "presence_checked_at",
             "presence_expires_at",

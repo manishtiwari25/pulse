@@ -1468,6 +1468,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "libc",
+ "pulse-board",
  "pulse-bus",
  "pulse-cli",
  "pulse-evolve",

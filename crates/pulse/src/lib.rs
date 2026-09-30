@@ -259,8 +259,13 @@ pub fn run_streaming(
             Ok(s) => ctx.store = Some(s),
             Err(e) => return report(name, e, err),
         }
+        beat_as_agent(&ctx, cmd.read_only);
     }
-    match (cmd.run)(&mut ctx, &fs, &args) {
+    let result = (cmd.run)(&mut ctx, &fs, &args);
+    if !cmd.no_store {
+        beat_as_agent(&ctx, cmd.read_only);
+    }
+    match result {
         Ok(()) => 0,
         // Go: errors.Is(err, flag.ErrHelp) -> the command's help, exit 0
         Err(e) if matches!(e.downcast_ref::<FlagError>(), Some(FlagError::Help)) => {
@@ -268,6 +273,32 @@ pub fn run_streaming(
             0
         }
         Err(e) => report(name, e, err),
+    }
+}
+
+/// Every command run as an agent is a sign of life: the agent's heartbeat is
+/// refreshed around the command, and `heartbeat.dead_after` seconds of silence
+/// make the agent dead. It never fails the command, and a read-only command
+/// opens a writable store only when the beat is actually due.
+fn beat_as_agent(ctx: &Context, read_only: bool) {
+    let Some(s) = ctx.store.as_ref() else {
+        return;
+    };
+    if ctx.agent.is_empty() || !pulse_board::beat_due(s, &ctx.agent) {
+        return;
+    }
+    if read_only {
+        if let Ok(w) = pulse_store::Store::open(pulse_store::Options {
+            home: ctx.home.clone(),
+            create: false,
+            read_only: false,
+            skip_records: true,
+            now: ctx.now.clone(),
+        }) {
+            let _ = pulse_board::beat_agent(&w, &ctx.agent, "cli");
+        }
+    } else {
+        let _ = pulse_board::beat_agent(s, &ctx.agent, "cli");
     }
 }
 

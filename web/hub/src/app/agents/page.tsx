@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { BotIcon, CircleDotIcon, CrownIcon, GaugeIcon, HardDriveIcon, LayersIcon, LoaderIcon, ServerIcon, TriangleAlertIcon, WifiIcon } from "lucide-react";
+import { BotIcon, CircleDotIcon, CrownIcon, GaugeIcon, HardDriveIcon, HeartOffIcon, LayersIcon, LoaderIcon, ServerIcon, TriangleAlertIcon, WifiIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,7 +13,7 @@ import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Lead, PageTitle, Pane
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Avatar, Mono, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
 import type { AgentPresence, RosterRow, Runner } from "@/lib/api";
-import { num, plural, statusTone, truncate } from "@/lib/format";
+import { num, plural, span, statusTone, truncate } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -33,6 +33,7 @@ interface AgentGroup {
   presence: AgentPresence;
   presence_reason: string;
   last_heartbeat_at: string;
+  heartbeat_source: string;
   last_useful_at: string;
 }
 
@@ -41,7 +42,9 @@ const timestamp = (s?: string) => (s ? Date.parse(s) || 0 : 0);
 const currentSession = (r: RosterRow) => !!r.presence_session && (r.session === r.presence_session || (!r.session && r.sessions?.includes(r.presence_session)));
 
 // The server owns freshness and supplies the deadline. Expiring a cached
-// online badge also works when a refresh hangs or the tab was asleep.
+// online badge also works when a refresh hangs or the tab was asleep. Any
+// heartbeat keeps an agent alive (a command, a hook, a lease, the runner);
+// only a supervised execution beat has to belong to the current session.
 function presence(r: RosterRow, now: number): AgentPresence {
   if (identityStatus(r) === "pruned") return "pruned";
   if (r.kind === "legacy") return "legacy";
@@ -50,8 +53,9 @@ function presence(r: RosterRow, now: number): AgentPresence {
     const beat = timestamp(r.last_heartbeat_at);
     const checked = timestamp(r.presence_checked_at);
     const expires = timestamp(r.presence_expires_at);
-    if (!currentSession(r) || !beat || checked < beat || expires <= checked) return "unknown";
-    return now < expires ? "online" : "offline";
+    if (!beat || checked < beat || expires <= checked) return "unknown";
+    if (r.heartbeat_source === "execution" && !currentSession(r)) return "unknown";
+    return now < expires ? "online" : "dead";
   }
   if (r.presence === "idle")
     return (r.kind === "worker" || r.kind === "lead") && ["active", "idle"].includes(identityStatus(r)) ? "idle" : "unknown";
@@ -91,8 +95,9 @@ function group(rows: RosterRow[], now: number): AgentGroup[] {
         last_seen: rs.map((r) => r.last_seen).sort().reverse()[0] || "",
         active: state === "online" ? rs.reduce((a, r) => a + (r.active_claims?.length || 0), 0) : 0,
         presence: state,
-        presence_reason: state === "offline" && primary.presence === "online" ? "No fresh heartbeat before the server's deadline." : primary.presence_reason || "No supervised heartbeat evidence.",
+        presence_reason: state === "dead" && primary.presence === "online" ? "No fresh heartbeat before the server's deadline." : primary.presence_reason || "No heartbeat on record.",
         last_heartbeat_at: primary.last_heartbeat_at || "",
+        heartbeat_source: primary.heartbeat_source || "",
         last_useful_at: rs.map((r) => r.last_useful_at || "").sort().reverse()[0] || "",
       };
     })
@@ -100,7 +105,7 @@ function group(rows: RosterRow[], now: number): AgentGroup[] {
 }
 
 function PresenceBadge({ g }: { g: AgentGroup }) {
-  return <ToneBadge dot tone={g.presence === "online" ? "ok" : g.presence === "idle" ? "info" : g.presence === "offline" ? "warn" : g.presence === "pruned" ? "bad" : "neutral"} title={g.presence_reason}>{g.presence}</ToneBadge>;
+  return <ToneBadge dot tone={g.presence === "online" ? "ok" : g.presence === "idle" ? "info" : g.presence === "dead" || g.presence === "pruned" ? "bad" : "neutral"} title={g.presence_reason}>{g.presence}</ToneBadge>;
 }
 
 const sessionCount = (g: AgentGroup) => g.sessions.reduce((a, r) => a + (r.session_count ?? r.sessions?.length ?? Number(!!r.session)), 0);
@@ -182,7 +187,7 @@ const COLUMNS: Column<AgentGroup>[] = [
   { key: "votes", label: "votes", align: "right", hide: "sm", sort: (g) => g.votes, render: (g) => num(g.votes) },
   { key: "claims", label: "claims", align: "right", hide: "sm", sort: (g) => g.claims, render: (g) => <span className="tnum">{num(g.claims)}{g.active ? <span className="text-ok">{" (" + g.active + " now)"}</span> : null}</span> },
   { key: "sessions", label: "sessions", align: "right", hide: "md", sort: (g) => sessionCount(g), render: (g) => num(sessionCount(g)) },
-  { key: "heartbeat", label: "last heartbeat", nowrap: true, sort: (g) => g.last_heartbeat_at, render: (g) => <When d={g.last_heartbeat_at} /> },
+  { key: "heartbeat", label: "last heartbeat", nowrap: true, sort: (g) => g.last_heartbeat_at, render: (g) => <span title={g.heartbeat_source ? "from " + g.heartbeat_source : undefined}><When d={g.last_heartbeat_at} /></span> },
   { key: "useful", label: "last useful output", nowrap: true, sort: (g) => g.last_useful_at, render: (g) => <When d={g.last_useful_at} /> },
   { key: "last", label: "last activity", nowrap: true, sort: (g) => g.last_seen, render: (g) => <When d={g.last_seen} /> },
 ];
@@ -312,6 +317,8 @@ export default function AgentsPage() {
   }, [groups, status, text]);
   const rows = matching.filter((g) => scope === "all" || (scope === "live" ? live(g) : !live(g)));
   const liveCount = matching.filter(live).length;
+  // The server states the threshold on every row (heartbeat.dead_after); five minutes is its default.
+  const deadAfterText = span(groups.find((g) => g.primary.dead_after_seconds)?.primary.dead_after_seconds || 300);
   if (q.error)
     return (
       <>
@@ -365,13 +372,14 @@ export default function AgentsPage() {
   );
   return (
     <>
-      <PageTitle icon={BotIcon} sub="Live shows supervised online agents and idle reusable workers/leads. History keeps offline, unknown, legacy and pruned identities; nothing is deleted or retired by a missed heartbeat." bar={filters}>
+      <PageTitle icon={BotIcon} sub={"Live shows online agents (a heartbeat within the last " + deadAfterText + ": a command, a hook, a lease or a supervised run) and idle reusable workers/leads. History keeps dead, unknown, legacy and pruned identities; a dead worker's run is closed as lost and its job queued again, a dead session comes back with its next heartbeat."} bar={filters}>
         Agents
       </PageTitle>
       <Lead>One roster for who is live, who has history and how much work the machine can take right now.</Lead>
       <KpiGrid>
         <Kpi icon={BotIcon} n={rows.length} label="agents shown" sub={plural(matching.length, "matching agent")} />
-        <Kpi icon={WifiIcon} n={rows.filter((g) => g.presence === "online").length} label="online shown" tone={rows.some((g) => g.presence === "online") ? "ok" : "neutral"} sub="heartbeat within five minutes" />
+        <Kpi icon={WifiIcon} n={rows.filter((g) => g.presence === "online").length} label="online shown" tone={rows.some((g) => g.presence === "online") ? "ok" : "neutral"} sub={"heartbeat within " + deadAfterText} />
+        <Kpi icon={HeartOffIcon} n={rows.filter((g) => g.presence === "dead").length} label="dead shown" tone={rows.some((g) => g.presence === "dead") ? "bad" : "neutral"} sub={"silent for " + deadAfterText + " or more"} />
         <Kpi icon={CrownIcon} n={rows.filter((g) => isLead(g.agent)).length} label="leads shown" sub="reusable project identities" />
         <Kpi icon={LayersIcon} n={r ? r.workers.pool : "…"} label="worker pool" sub={r ? num(r.workers.idle) + " idle · " + num(r.workers.busy) + " busy · target " + num(r.workers.target) : "loading"} />
         <Kpi icon={LoaderIcon} n={r ? r.jobs.running : "…"} label="jobs running" sub={r ? num(r.jobs.queued) + " queued · " + num(r.jobs.blocked) + " blocked" : ""} />

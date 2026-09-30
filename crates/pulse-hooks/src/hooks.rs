@@ -782,6 +782,11 @@ pub(crate) mod test_helpers {
         _home: tempfile::TempDir,
         store: Store,
     }
+    impl TestStore {
+        pub fn home(&self) -> String {
+            self._home.path().display().to_string()
+        }
+    }
     impl std::ops::Deref for TestStore {
         type Target = Store;
         fn deref(&self) -> &Self::Target {

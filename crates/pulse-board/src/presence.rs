@@ -7,6 +7,170 @@ use std::collections::BTreeMap;
 pub const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 pub const HEARTBEAT_GRACE: std::time::Duration = std::time::Duration::from_secs(300);
 pub(crate) const HEARTBEAT_PREFIX: &str = "agent-heartbeat:";
+/// meta key prefix of an agent's plain heartbeat: the latest sign of life from any
+/// source (a CLI command run as the agent, a hook, a lease, `pulse agent beat`).
+pub const BEAT_PREFIX: &str = "agent-beat:";
+/// The setting naming how long an agent may stay silent before it counts as dead.
+pub const DEAD_AFTER_SETTING: &str = "heartbeat.dead_after";
+pub const MIN_DEAD_AFTER_SECONDS: i64 = 30;
+/// Beats closer together than this are not written again; the agent is already fresh.
+const BEAT_DEBOUNCE_SECONDS: i64 = 10;
+
+/// How long an agent may go without a heartbeat before it is dead: the
+/// `heartbeat.dead_after` setting in seconds, never under thirty, five minutes by default.
+pub fn dead_after(s: &pulse_store::Store) -> chrono::Duration {
+    let secs = s.setting_int(DEAD_AFTER_SETTING);
+    let secs = if secs <= 0 {
+        HEARTBEAT_GRACE.as_secs() as i64
+    } else {
+        secs.max(MIN_DEAD_AFTER_SECONDS)
+    };
+    chrono::Duration::seconds(secs)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentBeat {
+    pub at: String,
+    #[serde(default)]
+    pub source: String,
+}
+
+/// What a beat did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Beat {
+    /// The heartbeat was written at this time.
+    Recorded(String),
+    /// A beat this fresh already exists; nothing was written.
+    Fresh(String),
+    /// The name is not an agent whose heartbeat is monitored.
+    Ignored(String),
+}
+
+impl Beat {
+    pub fn at(&self) -> &str {
+        match self {
+            Beat::Recorded(at) | Beat::Fresh(at) => at,
+            Beat::Ignored(_) => "",
+        }
+    }
+}
+
+/// Records a sign of life for `name` at the store's clock. `source` says where it
+/// came from (cli, hook, lease, execution, manual); it is shown, not interpreted.
+pub fn beat_agent(s: &pulse_store::Store, name: &str, source: &str) -> Result<Beat> {
+    let now = chrono::DateTime::parse_from_rfc3339(&s.now())
+        .map_err(|e| anyhow!("heartbeat clock: {e}"))?
+        .with_timezone(&chrono::Utc);
+    beat_agent_at(s, name, source, now)
+}
+
+pub fn beat_agent_at(
+    s: &pulse_store::Store,
+    name: &str,
+    source: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Beat> {
+    let tx = s.begin()?;
+    let beat = beat_agent_conn(&tx, name, source, now)?;
+    if matches!(beat, Beat::Recorded(_)) {
+        tx.commit()?;
+    }
+    Ok(beat)
+}
+
+/// The beat inside a caller's transaction (the lease writes one for the worker it hands the job to).
+pub fn beat_agent_conn(
+    conn: &rusqlite::Connection,
+    name: &str,
+    source: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Beat> {
+    if !valid_name(name) {
+        return Ok(Beat::Ignored(format!("{name:?} is not an agent name")));
+    }
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT kind, status FROM agents WHERE name = ?",
+            [name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((kind, status)) = row else {
+        return Ok(Beat::Ignored(format!("{name} has not joined")));
+    };
+    if status == "pruned" {
+        return Ok(Beat::Ignored(format!("{name} is pruned")));
+    }
+    if kind == "legacy" || kind == "human" {
+        return Ok(Beat::Ignored(format!("{kind} presence is not monitored")));
+    }
+    let key = format!("{BEAT_PREFIX}{name}");
+    let prev: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = ?", [&key], |r| r.get(0))
+        .optional()?;
+    if let Some(prev) = prev
+        && let Ok(prev) = serde_json::from_str::<AgentBeat>(&prev)
+        && let Ok(at) = chrono::DateTime::parse_from_rfc3339(&prev.at)
+    {
+        let at = at.with_timezone(&chrono::Utc);
+        if at <= now && now - at < chrono::Duration::seconds(BEAT_DEBOUNCE_SECONDS) {
+            return Ok(Beat::Fresh(prev.at));
+        }
+    }
+    let beat = AgentBeat {
+        at: pulse_store::rfc3339_nano(now),
+        source: source.trim().to_string(),
+    };
+    conn.execute(
+        "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        rusqlite::params![key, pulse_store::gojson::to_string(&beat)?],
+    )?;
+    Ok(Beat::Recorded(beat.at))
+}
+
+/// Whether a beat for `name` would write anything now - lets a read-only command
+/// open a writable store only when its agent's heartbeat is actually due.
+pub fn beat_due(s: &pulse_store::Store, name: &str) -> bool {
+    if !valid_name(name) {
+        return false;
+    }
+    let Ok(now) = chrono::DateTime::parse_from_rfc3339(&s.now()) else {
+        return false;
+    };
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    let monitored = conn
+        .query_row(
+            "SELECT kind NOT IN ('human','legacy') AND status != 'pruned' FROM agents WHERE name = ?",
+            [name],
+            |r| r.get::<_, bool>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    if !monitored {
+        return false;
+    }
+    let Ok((raw, exists)) = s.meta(&format!("{BEAT_PREFIX}{name}")) else {
+        return false;
+    };
+    if !exists {
+        return true;
+    }
+    match serde_json::from_str::<AgentBeat>(&raw)
+        .ok()
+        .and_then(|b| chrono::DateTime::parse_from_rfc3339(&b.at).ok())
+    {
+        Some(at) => {
+            let age = now.with_timezone(&chrono::Utc) - at.with_timezone(&chrono::Utc);
+            age < chrono::Duration::zero()
+                || age >= chrono::Duration::seconds(BEAT_DEBOUNCE_SECONDS)
+        }
+        None => true,
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionIdentity {
@@ -108,6 +272,12 @@ fn record_heartbeat_tx(tx: &pulse_store::Tx, h: &ExecutionHeartbeat) -> Result<b
         }
     }
     tx.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![format!("{HEARTBEAT_PREFIX}{}", h.agent), pulse_store::gojson::to_string(h)?])?;
+    // A live beat is a sign of life; a stop is the opposite and fences everything before it.
+    if h.stopped_at.is_empty()
+        && let Ok(at) = chrono::DateTime::parse_from_rfc3339(&h.at)
+    {
+        beat_agent_conn(tx, &h.agent, "execution", at.with_timezone(&chrono::Utc))?;
+    }
     Ok(true)
 }
 
@@ -145,6 +315,12 @@ pub struct AgentPresence {
     pub presence: String,
     pub presence_reason: String,
     pub last_heartbeat_at: String,
+    /// Where the latest heartbeat came from: execution, cli, hook, lease, manual, activity.
+    pub heartbeat_source: String,
+    /// Seconds since the latest heartbeat; None when the agent never beat.
+    pub heartbeat_age_seconds: Option<i64>,
+    /// Seconds of silence after which this agent counts as dead.
+    pub dead_after_seconds: i64,
     pub presence_session: String,
     pub presence_checked_at: String,
     pub presence_expires_at: String,
@@ -164,6 +340,8 @@ struct PresenceEvidence {
     raw: String,
     generation: i64,
     leased: bool,
+    beat_raw: String,
+    last_active: String,
 }
 
 pub fn agent_presences(
@@ -178,6 +356,7 @@ pub fn agent_presences(
     let checked = chrono::DateTime::parse_from_rfc3339(&now)
         .map_err(|e| anyhow!("presence clock: {e}"))?
         .with_timezone(&chrono::Utc);
+    let dead_after = dead_after(s);
     let conn = s.conn()?;
     let mut stmt = conn.prepare(
         r#"WITH latest_run AS (
@@ -189,14 +368,16 @@ pub fn agent_presences(
 	SELECT a.name,a.kind,a.status,
 		COALESCE(r.id,''),COALESCE(r.job_id,''),COALESCE(r.executor,''),COALESCE(r.started_at,''),COALESCE(r.status,''),
 		COALESCE(j.status,''),COALESCE(j.lease_agent,''),COALESCE(j.generation,0),COALESCE(m.value,''),
-		EXISTS(SELECT 1 FROM jobs busy WHERE busy.lease_agent=a.name AND busy.status='leased')
+		EXISTS(SELECT 1 FROM jobs busy WHERE busy.lease_agent=a.name AND busy.status='leased'),
+		COALESCE(b.value,''),a.last_active_at
 		FROM agents a
 		LEFT JOIN latest_run r ON r.agent=a.name AND r.rn=1
 		LEFT JOIN jobs j ON j.id=r.job_id
-		LEFT JOIN meta m ON m.key=? || a.name"#,
+		LEFT JOIN meta m ON m.key=? || a.name
+		LEFT JOIN meta b ON b.key=? || a.name"#,
     )?;
     let mut out = BTreeMap::new();
-    for row in stmt.query_map([HEARTBEAT_PREFIX], |r| {
+    for row in stmt.query_map([HEARTBEAT_PREFIX, BEAT_PREFIX], |r| {
         Ok((
             r.get::<_, String>(0)?,
             PresenceEvidence {
@@ -212,51 +393,134 @@ pub fn agent_presences(
                 generation: r.get(10)?,
                 raw: r.get(11)?,
                 leased: r.get(12)?,
+                beat_raw: r.get(13)?,
+                last_active: r.get(14)?,
             },
         ))
     })? {
         let (name, evidence) = row?;
-        out.insert(name.clone(), calculate_presence(&name, evidence, checked));
+        out.insert(
+            name.clone(),
+            calculate_presence(&name, evidence, checked, dead_after),
+        );
     }
     Ok(out)
+}
+
+/// The agents whose presence is `dead` right now, with their presence.
+pub fn dead_agents(s: &pulse_store::Store, now: &str) -> Result<BTreeMap<String, AgentPresence>> {
+    Ok(agent_presences(s, now)?
+        .into_iter()
+        .filter(|(_, p)| p.presence == "dead")
+        .collect())
+}
+
+/// A duration as people read it: 45s, 3m, 2h, 5d.
+pub fn age_text(d: chrono::Duration) -> String {
+    let secs = d.num_seconds().max(0);
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
+}
+
+fn utc(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
 }
 
 fn calculate_presence(
     name: &str,
     e: PresenceEvidence,
     now: chrono::DateTime<chrono::Utc>,
+    dead_after: chrono::Duration,
 ) -> AgentPresence {
     let mut p = AgentPresence {
         presence: "unknown".into(),
-        presence_reason: "no supervised heartbeat".into(),
+        presence_reason: "no heartbeat yet".into(),
         presence_checked_at: pulse_store::rfc3339_nano(now),
+        dead_after_seconds: dead_after.num_seconds(),
         ..Default::default()
     };
-    let start = chrono::DateTime::parse_from_rfc3339(&e.started).ok();
+    let start = utc(&e.started);
     let h = serde_json::from_str::<ExecutionHeartbeat>(&e.raw).ok();
-    let mut valid = false;
-    if let Some(ref h) = h {
-        valid = h.validate().is_ok()
-            && h.agent == name
-            && h.run_id == e.run_id
-            && h.job_id == e.job_id
-            && h.executor == e.executor;
-        if valid && let (Some(start), Ok(at)) = (start, chrono::DateTime::parse_from_rfc3339(&h.at))
-        {
-            valid = at >= start && at <= now;
-            if !h.stopped_at.is_empty()
-                && let Ok(stop) = chrono::DateTime::parse_from_rfc3339(&h.stopped_at)
-            {
-                valid = valid && stop <= now;
-            }
-            if valid {
-                p.last_heartbeat_at = h.at.clone();
-                p.presence_session = h.session.clone();
-            }
+    // The supervised execution heartbeat counts when it belongs to this agent's latest run
+    // and its times are sane; `live` is such a beat whose execution has not stopped and
+    // still owns the job it was started for.
+    let mut exec_at = None;
+    let mut exec_stop = None;
+    let mut live = false;
+    if let Some(ref h) = h
+        && h.validate().is_ok()
+        && h.agent == name
+        && h.run_id == e.run_id
+        && h.job_id == e.job_id
+        && h.executor == e.executor
+        && let (Some(start), Some(at)) = (start, utc(&h.at))
+        && at >= start
+        && at <= now
+    {
+        let stop = if h.stopped_at.is_empty() {
+            None
         } else {
-            valid = false;
+            utc(&h.stopped_at)
+        };
+        if stop.is_none_or(|stop| stop <= now) {
+            exec_at = Some(at);
+            exec_stop = stop;
+            p.presence_session = h.session.clone();
+            live = stop.is_none()
+                && e.run_status == "running"
+                && e.lease_agent == name
+                && e.generation == h.generation
+                && (e.job_status == "leased" || e.job_status == "done" || e.job_status == "failed");
         }
     }
+    let beat = serde_json::from_str::<AgentBeat>(&e.beat_raw).ok();
+    let beat_at = beat
+        .as_ref()
+        .and_then(|b| utc(&b.at))
+        .filter(|at| *at <= now);
+    let active_at = utc(&e.last_active).filter(|at| *at <= now);
+    let mut latest: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
+    let mut consider = |at: Option<chrono::DateTime<chrono::Utc>>, source: String| {
+        if let Some(at) = at
+            && latest.as_ref().is_none_or(|(best, _)| at > *best)
+        {
+            latest = Some((at, source));
+        }
+    };
+    consider(exec_at, "execution".into());
+    consider(
+        beat_at,
+        beat.as_ref()
+            .map(|b| {
+                if b.source.is_empty() {
+                    "beat".to_string()
+                } else {
+                    b.source.clone()
+                }
+            })
+            .unwrap_or_default(),
+    );
+    consider(active_at, "activity".into());
+    let mut age = None;
+    if let Some((at, source)) = &latest {
+        p.last_heartbeat_at = pulse_store::rfc3339_nano(*at);
+        p.heartbeat_source = source.clone();
+        age = Some(now - *at);
+        p.heartbeat_age_seconds = Some(age.unwrap().num_seconds().max(0));
+    }
+    // A stop ends the execution: evidence from before it is superseded; only a later beat revives the agent.
+    let stopped_since = exec_stop.filter(|stop| latest.as_ref().is_none_or(|(at, _)| *at <= *stop));
+    let fresh = stopped_since.is_none() && age.is_some_and(|age| age < dead_after);
+    let supervised = e.kind == "worker" || e.kind == "lead";
     match () {
         _ if e.status == "pruned" => {
             p.presence = "pruned".into();
@@ -269,56 +533,50 @@ fn calculate_presence(
         _ if e.kind == "human" => {
             p.presence_reason = "owner presence is not monitored".into();
         }
-        _ if (e.kind == "worker" || e.kind == "lead")
-            && (e.status == "active" || e.status == "idle")
-            && !e.leased
-            && e.run_status != "running" =>
-        {
+        _ if supervised && !e.leased && e.run_status != "running" => {
             p.presence = "idle".into();
             p.presence_reason = "reusable; no active run".into();
         }
-        _ if !valid => {
-            if !e.raw.is_empty() {
-                p.presence_reason = "missing, malformed or historical heartbeat evidence".into();
-            }
-            if e.run_status == "running"
-                && let Some(start) = start
-                && now - start.with_timezone(&chrono::Utc)
-                    >= chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap()
-            {
-                p.presence = "offline".into();
-                p.presence_reason = "no valid heartbeat for five minutes".into();
-            }
+        _ if fresh => {
+            let (at, source) = latest.as_ref().expect("fresh needs a beat");
+            p.presence = "online".into();
+            p.presence_reason = if live && exec_at == Some(*at) {
+                "supervised execution".into()
+            } else {
+                format!(
+                    "alive: {source} heartbeat {} ago",
+                    age_text(age.unwrap_or_default())
+                )
+            };
+            p.presence_expires_at = pulse_store::rfc3339_nano(*at + dead_after);
         }
-        _ if e.run_status != "running" || h.as_ref().is_some_and(|h| !h.stopped_at.is_empty()) => {
-            p.presence = "offline".into();
-            p.presence_reason = "execution is no longer supervised".into();
+        _ if let Some(stop) = stopped_since => {
+            p.presence = "dead".into();
+            p.presence_reason = format!(
+                "execution stopped {} ago; no heartbeat since",
+                age_text(now - stop)
+            );
         }
-        _ if e.lease_agent != name
-            || h.as_ref().is_none_or(|h| e.generation != h.generation)
-            || (e.job_status != "leased" && e.job_status != "done" && e.job_status != "failed") =>
+        _ if let Some(age) = age => {
+            p.presence = "dead".into();
+            p.presence_reason = format!(
+                "no heartbeat for {}; dead after {}",
+                age_text(age),
+                age_text(dead_after)
+            );
+        }
+        _ if supervised
+            && e.run_status == "running"
+            && start.is_some_and(|start| now - start >= dead_after) =>
         {
-            p.presence = "offline".into();
-            p.presence_reason = "execution no longer owns the current job generation".into();
+            p.presence = "dead".into();
+            p.presence_reason = format!(
+                "no heartbeat since the run started {} ago; dead after {}",
+                age_text(now - start.unwrap()),
+                age_text(dead_after)
+            );
         }
-        _ => {
-            if let Some(h) = h
-                && let Ok(at) = chrono::DateTime::parse_from_rfc3339(&h.at)
-            {
-                if now - at.with_timezone(&chrono::Utc)
-                    >= chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap()
-                {
-                    p.presence = "offline".into();
-                    p.presence_reason = "no valid heartbeat for five minutes".into();
-                } else {
-                    p.presence = "online".into();
-                    p.presence_reason = "supervised execution".into();
-                    p.presence_expires_at = pulse_store::rfc3339_nano(
-                        at + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
-                    );
-                }
-            }
-        }
+        _ => {}
     }
     p
 }
@@ -457,18 +715,31 @@ mod tests {
         record_beat(&s, &id, base);
         for delta in [
             chrono::Duration::zero(),
-            chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap() - chrono::Duration::nanoseconds(1),
-            chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
-            chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap() + chrono::Duration::nanoseconds(1),
+            dead_after(&s) - chrono::Duration::nanoseconds(1),
+            dead_after(&s),
+            dead_after(&s) + chrono::Duration::nanoseconds(1),
         ] {
-            let want = if delta >= chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap() {
-                "offline"
+            let want = if delta >= dead_after(&s) {
+                "dead"
             } else {
                 "online"
             };
             let p = require_presence(&s, &id.agent, base + delta, want);
             assert_eq!(p.last_heartbeat_at, TEST_NOW);
+            assert_eq!(p.heartbeat_source, "execution");
+            assert_eq!(p.heartbeat_age_seconds, Some(delta.num_seconds()));
+            assert_eq!(p.dead_after_seconds, 300);
             assert_eq!(p.presence_session, id.session);
+            if want == "online" {
+                assert_eq!(p.presence_reason, "supervised execution");
+                assert_eq!(
+                    p.presence_expires_at,
+                    pulse_store::rfc3339_nano(base + dead_after(&s))
+                );
+            } else {
+                assert_eq!(p.presence_reason, "no heartbeat for 5m; dead after 5m");
+                assert!(p.presence_expires_at.is_empty());
+            }
         }
         for n in 1..=20 {
             record_beat(
@@ -508,6 +779,23 @@ mod tests {
             .query_row("SELECT count(*) FROM runs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(beats, 1);
+        let plain: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM meta WHERE key=?",
+                [format!("{BEAT_PREFIX}{}", id.agent)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let plain: AgentBeat = serde_json::from_str(&plain).unwrap();
+        assert_eq!(plain.source, "execution");
+        assert_eq!(
+            plain.at,
+            pulse_store::rfc3339_nano(
+                base + chrono::Duration::from_std(HEARTBEAT_INTERVAL * 20).unwrap()
+            )
+        );
         assert_eq!(events, event_count);
         assert_eq!(posts, 1);
         assert_eq!(runs, 1);
@@ -524,13 +812,12 @@ mod tests {
         assert!(!stop_heartbeat(&s, id.clone(), base).unwrap());
         record_beat(&s, &id, base);
         assert!(stop_heartbeat(&s, id.clone(), base + chrono::Duration::seconds(1)).unwrap());
-        let p = require_presence(
-            &s,
-            &id.agent,
-            base + chrono::Duration::seconds(1),
-            "offline",
-        );
+        let p = require_presence(&s, &id.agent, base + chrono::Duration::seconds(1), "dead");
         assert_eq!(p.last_heartbeat_at, TEST_NOW);
+        assert_eq!(
+            p.presence_reason,
+            "execution stopped 0s ago; no heartbeat since"
+        );
         assert!(
             !record_heartbeat(
                 &s,
@@ -552,12 +839,22 @@ mod tests {
             "UPDATE jobs SET status='done' WHERE id=?",
             &[&id.job_id],
         );
-        require_presence(
+        require_presence(&s, &id.agent, base + chrono::Duration::seconds(2), "dead");
+        // A later sign of life from any source revives the agent.
+        assert_eq!(
+            beat_agent_at(&s, &id.agent, "cli", base + chrono::Duration::seconds(12)).unwrap(),
+            Beat::Recorded(pulse_store::rfc3339_nano(
+                base + chrono::Duration::seconds(12)
+            ))
+        );
+        let p = require_presence(
             &s,
             &id.agent,
-            base + chrono::Duration::seconds(2),
-            "offline",
+            base + chrono::Duration::seconds(12),
+            "online",
         );
+        assert_eq!(p.heartbeat_source, "cli");
+        assert_eq!(p.presence_reason, "alive: cli heartbeat 0s ago");
     }
 
     #[test]
@@ -583,19 +880,23 @@ mod tests {
             )
             .unwrap()
         );
-        require_presence(
+        // The fenced execution no longer supervises the job, but the agent beat a second ago.
+        let p = require_presence(
             &s,
             &old.agent,
             base + chrono::Duration::seconds(1),
-            "offline",
+            "online",
         );
+        assert_eq!(p.presence_reason, "alive: execution heartbeat 1s ago");
         let current = presence_exec(&s, "quiet", "worker", "run-new", "job-new", 3);
-        require_presence(
+        let p = require_presence(
             &s,
             &current.agent,
             base + chrono::Duration::seconds(1),
-            "unknown",
+            "online",
         );
+        assert!(p.presence_session.is_empty(), "{p:?}");
+        assert_eq!(p.heartbeat_source, "execution");
         record_beat(&s, &current, base + chrono::Duration::seconds(2));
         let raw: String = s
             .conn()
@@ -635,6 +936,7 @@ mod tests {
             "online",
         );
         assert_eq!(p.presence_session, current.session);
+        assert_eq!(p.presence_reason, "supervised execution");
         presence_sql(
             &s,
             "UPDATE agents SET status='pruned', pruned_reason='no useful output' WHERE name=?",
@@ -676,42 +978,30 @@ mod tests {
             )
             .unwrap();
             let want = match kind {
-                "session" => "unknown",
+                "session" => "online",
                 "legacy" => "legacy",
                 _ => "idle",
             };
-            require_presence(&s, &format!("idle-{kind}"), base, want);
+            let p = require_presence(&s, &format!("idle-{kind}"), base, want);
+            if kind == "session" {
+                assert_eq!(p.heartbeat_source, "activity");
+                assert_eq!(p.presence_reason, "alive: activity heartbeat 0s ago");
+            }
         }
         record_beat(&s, &id, base);
         let reopened = pulse_store::Store::open(pulse_store::Options {
             home,
-            now: pulse_store::rfc3339_nano(
-                base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
-            ),
+            now: pulse_store::rfc3339_nano(base + dead_after(&s)),
             ..Default::default()
         })
         .unwrap();
-        require_presence(
-            &reopened,
-            &id.agent,
-            base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
-            "offline",
-        );
+        require_presence(&reopened, &id.agent, base + dead_after(&s), "dead");
         let j = job_by_id(&s, &id.job_id).unwrap().unwrap();
         assert_eq!(j.status, "leased");
         assert_eq!(j.generation, 1);
         assert_eq!(j.lease_agent, id.agent);
-        record_beat(
-            &s,
-            &id,
-            base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
-        );
-        require_presence(
-            &s,
-            &id.agent,
-            base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
-            "online",
-        );
+        record_beat(&s, &id, base + dead_after(&s));
+        require_presence(&s, &id.agent, base + dead_after(&s), "online");
         presence_sql(
             &s,
             "UPDATE agents SET last_useful_at='2026-08-01T00:00:00Z' WHERE name=?",
@@ -732,12 +1022,7 @@ mod tests {
             "UPDATE jobs SET status='done' WHERE id=?",
             &[&id.job_id],
         );
-        require_presence(
-            &s,
-            &id.agent,
-            base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
-            "idle",
-        );
+        require_presence(&s, &id.agent, base + dead_after(&s), "idle");
         let pruned = prune_agents(&s, TEST_NOW, 14, "daemon", false).unwrap();
         assert_eq!(pruned.len(), 1);
         assert_eq!(pruned[0].name, id.agent);
@@ -824,15 +1109,13 @@ mod tests {
                 "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 &[&format!("{HEARTBEAT_PREFIX}{}", id.agent), &raw],
             );
-            let p = require_presence(&s, &id.agent, base, "unknown");
-            assert!(p.last_heartbeat_at.is_empty());
+            // Malformed execution evidence is ignored; joining counted as activity.
+            let p = require_presence(&s, &id.agent, base, "online");
+            assert_eq!(p.heartbeat_source, "activity");
+            assert_eq!(p.last_heartbeat_at, TEST_NOW);
             assert!(p.presence_session.is_empty());
-            require_presence(
-                &s,
-                &id.agent,
-                base + chrono::Duration::from_std(HEARTBEAT_GRACE).unwrap(),
-                "offline",
-            );
+            let p = require_presence(&s, &id.agent, base + dead_after(&s), "dead");
+            assert_eq!(p.presence_reason, "no heartbeat for 5m; dead after 5m");
         }
         presence_sql(
             &s,
@@ -869,12 +1152,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let p = require_presence(
-                &s,
-                &id.agent,
-                base + chrono::Duration::seconds(2),
-                "offline",
-            );
+            let p = require_presence(&s, &id.agent, base + chrono::Duration::seconds(2), "dead");
             assert!(
                 p.last_heartbeat_at == TEST_NOW
                     || p.last_heartbeat_at == heartbeat_time(base + chrono::Duration::seconds(1)),
@@ -891,5 +1169,237 @@ mod tests {
                 &[&id.job_id],
             );
         }
+    }
+
+    #[test]
+    fn beat_records_debounces_and_ignores_unmonitored_identities() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, _home, s) = new_home();
+        let base = presence_time();
+        for (name, kind) in [("s1", "session"), ("w1", "worker"), ("old", "legacy")] {
+            join_agent(
+                &s,
+                JoinInput {
+                    name: name.into(),
+                    kind: kind.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        assert!(beat_due(&s, "s1"));
+        assert_eq!(
+            beat_agent(&s, "s1", "cli").unwrap(),
+            Beat::Recorded(TEST_NOW.into())
+        );
+        assert!(!beat_due(&s, "s1"));
+        assert_eq!(
+            beat_agent_at(&s, "s1", "hook", base + chrono::Duration::seconds(9)).unwrap(),
+            Beat::Fresh(TEST_NOW.into())
+        );
+        let at = base + chrono::Duration::seconds(10);
+        assert_eq!(
+            beat_agent_at(&s, "s1", "hook", at).unwrap(),
+            Beat::Recorded(pulse_store::rfc3339_nano(at))
+        );
+        let raw = s.meta(&format!("{BEAT_PREFIX}s1")).unwrap().0;
+        let stored: AgentBeat = serde_json::from_str(&raw).unwrap();
+        assert_eq!(stored.source, "hook");
+        assert_eq!(stored.at, pulse_store::rfc3339_nano(at));
+        assert_eq!(
+            beat_agent(&s, "human", "cli").unwrap(),
+            Beat::Ignored("human presence is not monitored".into())
+        );
+        assert_eq!(
+            beat_agent(&s, "old", "cli").unwrap(),
+            Beat::Ignored("legacy presence is not monitored".into())
+        );
+        assert_eq!(
+            beat_agent(&s, "nobody", "cli").unwrap(),
+            Beat::Ignored("nobody has not joined".into())
+        );
+        assert_eq!(
+            beat_agent(&s, "Not A Name", "cli").unwrap(),
+            Beat::Ignored("\"Not A Name\" is not an agent name".into())
+        );
+        assert!(!beat_due(&s, "human"));
+        assert!(!beat_due(&s, "old"));
+        assert!(!beat_due(&s, "nobody"));
+        assert!(beat_due(&s, "w1"));
+        presence_sql(
+            &s,
+            "UPDATE agents SET status='pruned', pruned_reason='no useful output' WHERE name=?",
+            &[&"w1"],
+        );
+        assert_eq!(
+            beat_agent(&s, "w1", "cli").unwrap(),
+            Beat::Ignored("w1 is pruned".into())
+        );
+        assert!(!beat_due(&s, "w1"));
+        let none: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM meta WHERE key LIKE 'agent-beat:%' AND key != 'agent-beat:s1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(none, 0);
+        assert_eq!(Beat::Ignored("x".into()).at(), "");
+        assert_eq!(Beat::Fresh("t".into()).at(), "t");
+    }
+
+    #[test]
+    fn session_agent_dies_without_beats_and_revives_on_any_beat() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, _home, s) = new_home();
+        let base = presence_time();
+        join_agent(
+            &s,
+            JoinInput {
+                name: "sess".into(),
+                kind: "session".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let grace = dead_after(&s);
+        assert_eq!(grace, chrono::Duration::seconds(300));
+        let p = require_presence(
+            &s,
+            "sess",
+            base + grace - chrono::Duration::seconds(1),
+            "online",
+        );
+        assert_eq!(p.heartbeat_source, "activity");
+        assert_eq!(p.heartbeat_age_seconds, Some(299));
+        assert_eq!(
+            p.presence_expires_at,
+            pulse_store::rfc3339_nano(base + grace)
+        );
+        assert!(
+            dead_agents(
+                &s,
+                &pulse_store::rfc3339_nano(base + grace - chrono::Duration::seconds(1))
+            )
+            .unwrap()
+            .is_empty()
+        );
+        let p = require_presence(&s, "sess", base + grace, "dead");
+        assert_eq!(p.presence_reason, "no heartbeat for 5m; dead after 5m");
+        assert_eq!(p.heartbeat_age_seconds, Some(300));
+        assert!(p.presence_expires_at.is_empty());
+        let dead = dead_agents(&s, &pulse_store::rfc3339_nano(base + grace)).unwrap();
+        assert_eq!(dead.keys().collect::<Vec<_>>(), vec!["sess"]);
+        let later = base + chrono::Duration::days(3);
+        let p = require_presence(&s, "sess", later, "dead");
+        assert_eq!(p.presence_reason, "no heartbeat for 3d; dead after 5m");
+        assert_eq!(
+            beat_agent_at(&s, "sess", "manual", later).unwrap(),
+            Beat::Recorded(pulse_store::rfc3339_nano(later))
+        );
+        let p = require_presence(&s, "sess", later, "online");
+        assert_eq!(p.heartbeat_source, "manual");
+        assert_eq!(p.last_heartbeat_at, pulse_store::rfc3339_nano(later));
+        assert_eq!(p.presence_reason, "alive: manual heartbeat 0s ago");
+        // Beats from the future are not evidence yet.
+        let p = require_presence(&s, "sess", later - chrono::Duration::seconds(1), "dead");
+        assert_eq!(p.heartbeat_source, "activity");
+        // The plain beat reads back as the roster's heartbeat and never touches the agent row.
+        let row = s.agent("sess").unwrap().unwrap();
+        assert_eq!(row.last_active_at, TEST_NOW);
+    }
+
+    #[test]
+    fn dead_after_setting_bounds_and_default() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, _home, s) = new_home();
+        assert_eq!(dead_after(&s), chrono::Duration::seconds(300));
+        s.set_setting("human", DEAD_AFTER_SETTING, "60").unwrap();
+        assert_eq!(dead_after(&s), chrono::Duration::seconds(60));
+        assert!(s.set_setting("human", DEAD_AFTER_SETTING, "5").is_err());
+        presence_sql(
+            &s,
+            "UPDATE settings SET value='5' WHERE name=?",
+            &[&DEAD_AFTER_SETTING],
+        );
+        assert_eq!(dead_after(&s), chrono::Duration::seconds(30));
+        presence_sql(
+            &s,
+            "UPDATE settings SET value='soon' WHERE name=?",
+            &[&DEAD_AFTER_SETTING],
+        );
+        assert_eq!(dead_after(&s), chrono::Duration::seconds(300));
+        s.set_setting("human", DEAD_AFTER_SETTING, "45").unwrap();
+        join_agent(
+            &s,
+            JoinInput {
+                name: "sess".into(),
+                kind: "session".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let base = presence_time();
+        let p = require_presence(&s, "sess", base + chrono::Duration::seconds(44), "online");
+        assert_eq!(p.dead_after_seconds, 45);
+        let p = require_presence(&s, "sess", base + chrono::Duration::seconds(45), "dead");
+        assert_eq!(p.presence_reason, "no heartbeat for 45s; dead after 45s");
+        assert_eq!(age_text(chrono::Duration::seconds(59)), "59s");
+        assert_eq!(age_text(chrono::Duration::seconds(3599)), "59m");
+        assert_eq!(age_text(chrono::Duration::hours(23)), "23h");
+        assert_eq!(age_text(chrono::Duration::days(9)), "9d");
+        assert_eq!(age_text(chrono::Duration::seconds(-5)), "0s");
+    }
+
+    #[test]
+    fn silent_runs_and_never_active_agents() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, _home, s) = new_home();
+        let base = presence_time();
+        let id = presence_exec(&s, "quiet", "worker", "run-quiet", "job-quiet", 1);
+        presence_sql(
+            &s,
+            "UPDATE agents SET last_active_at='' WHERE name=?",
+            &[&id.agent],
+        );
+        let p = require_presence(&s, &id.agent, base, "unknown");
+        assert_eq!(p.presence_reason, "no heartbeat yet");
+        assert!(p.last_heartbeat_at.is_empty());
+        assert_eq!(p.heartbeat_age_seconds, None);
+        let p = require_presence(&s, &id.agent, base + dead_after(&s), "dead");
+        assert_eq!(
+            p.presence_reason,
+            "no heartbeat since the run started 5m ago; dead after 5m"
+        );
+        assert!(
+            dead_agents(&s, &pulse_store::rfc3339_nano(base + dead_after(&s)))
+                .unwrap()
+                .contains_key(&id.agent)
+        );
+        // The lease's beat (the runner hands the job over) is what keeps a fresh worker alive.
+        assert_eq!(
+            beat_agent_at(&s, &id.agent, "lease", base + dead_after(&s)).unwrap(),
+            Beat::Recorded(pulse_store::rfc3339_nano(base + dead_after(&s)))
+        );
+        let p = require_presence(&s, &id.agent, base + dead_after(&s), "online");
+        assert_eq!(p.presence_reason, "alive: lease heartbeat 0s ago");
+        join_agent(
+            &s,
+            JoinInput {
+                name: "fresh".into(),
+                kind: "session".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        presence_sql(
+            &s,
+            "UPDATE agents SET last_active_at='' WHERE name='fresh'",
+            &[],
+        );
+        require_presence(&s, "fresh", base + chrono::Duration::days(1), "unknown");
+        require_presence(&s, "human", base + chrono::Duration::days(1), "unknown");
     }
 }

@@ -1181,7 +1181,7 @@ mod tests {
             .unwrap();
         heartbeat_receive(&responses_rx);
         fake.clock.fetch_add(
-            pulse_board::HEARTBEAT_GRACE.as_nanos() as i64 - 1,
+            pulse_board::dead_after(&s).num_nanoseconds().unwrap() - 1,
             Ordering::SeqCst,
         );
         let check = |want: &str| {
@@ -1194,7 +1194,7 @@ mod tests {
         };
         check("online");
         fake.clock.fetch_add(1, Ordering::SeqCst);
-        check("offline");
+        check("dead");
         let j = crate::jobs::job_row(&s.conn().unwrap(), id.job_id.clone());
         assert_eq!(j.str("status"), job_before.str("status"));
         assert_eq!(j.int("generation"), job_before.int("generation"));
@@ -1215,7 +1215,7 @@ mod tests {
         let _ = fake
             .ticks
             .send(Utc.timestamp_nanos(fake.clock.load(Ordering::SeqCst)));
-        check("offline");
+        check("dead");
         let (h, _) = runner_heartbeat(&s, &id.agent).unwrap();
         assert!(!h.stopped_at.is_empty());
     }
