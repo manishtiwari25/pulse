@@ -260,6 +260,7 @@ pulse thread resolve api/rate-limits --as answered --summary "429s fixed; measur
 pulse queue                                  # work wanted across every active project
 pulse job retry JOB_ID --brief "cause fixed" # by-hand recovery for a failed job
 pulse task list --project my-app             # the owner's tasks and their status
+pulse schedule add --project my-app --title "Weekly dependency audit" --every 1w --at 09:00 --brief-file audit.md   # a standing job, queued again every cadence
 pulse msg list --project my-app --unread     # what the owner said
 pulse compute request --project my-app --hours 4 --reason "parallel fixture runs"
 pulse reflect --project my-app               # what the gates allow next, and the human step that opens the next one
@@ -310,6 +311,40 @@ board, a post-tool hook that beats the session agent's heartbeat and a stop hook
 that reminds the agent to reflect (once per session). The post-tool hook finds
 the agent through `PULSE_AGENT` or the harness session id the agent joined with
 (`pulse agent join --session ID`); when neither names an agent it does nothing.
+
+### Standing jobs: `pulse schedule`
+
+Any agent can set a job that recurs. A schedule names a project, a title, a
+brief, a job kind (`task`, `improve`, `clean` or `reflect`), a tier (0 or 1),
+a priority and a cadence (`--every 30m|6h|1d|2w`, or `hourly`, `daily`,
+`weekly`; `--at HH:MM` in UTC anchors a cadence of whole days). The daemon
+checks the schedules of the projects it tends on every tick: when one is due
+it queues an ordinary job with `source = schedule:SCHED-NNN`, created by the
+agent that set the schedule, and moves the schedule on one cadence. Whichever
+worker takes the job is the scheduled agent for that run; the brief carries a
+footer naming the schedule, the run number and who set it. One open job per
+schedule: while the previous run's job is still queued or leased, the tick is
+skipped (event `schedule.skipped`) and the schedule still moves on; ticks a
+stopped daemon missed collapse into one. Scheduled jobs are subject to
+`jobs_per_day` and the other runner caps like every job.
+
+```bash
+pulse schedule add --project my-app --title "Nightly flake sweep" --every 1d --at 02:00 --kind task --brief "Run the suite three times; file each flake as a finding." --times 30
+pulse schedule list --project my-app        # ID, status, cadence, next time, runs, who set it
+pulse schedule show SCHED-001               # the schedule, its brief and the jobs it queued
+pulse schedule pause SCHED-001 --note "release week"
+pulse schedule resume SCHED-001             # a time missed while paused fires once on the next tick
+pulse schedule run SCHED-001                # due now; the daemon queues its job on the next tick
+pulse schedule end SCHED-001 --note "done"  # final; the row stays for its history
+```
+
+Only the agent that set a schedule, or the owner, pauses, resumes, ends or
+runs it; schedules are never deleted. `--times N` ends a schedule after N
+queued jobs. Two lead settings bound them: `schedule.min_minutes` (default
+`30`, never under 5) is the shortest cadence, and `schedule.max_per_project`
+(default `10`, `0` for no cap) caps the active and paused schedules a project
+holds. Events: `schedule.added`, `schedule.fired`, `schedule.skipped`,
+`schedule.paused`, `schedule.resumed`, `schedule.run`, `schedule.ended`.
 
 ### Shared project goals
 

@@ -28,6 +28,7 @@ pub(crate) static DAEMON_WAKE: &[&str] = &[
     "compute.approved",
     "setting",
     "job.add",
+    "schedule.run",
 ];
 
 #[derive(Debug, Clone, Default)]
@@ -601,6 +602,13 @@ pub(crate) fn daemon(
                     crate::evolve_plan::tend_evolve(s, now.clone(), actor.clone(), slugs.clone())
                 {
                     say(&o, line);
+                }
+                if crate::run::runner_stopped(s).is_empty() {
+                    for line in
+                        crate::schedule::tend_schedules(s, now.clone(), actor.clone(), &slugs)
+                    {
+                        say(&o, line);
+                    }
                 }
             }
             let mut planned = BTreeMap::new();

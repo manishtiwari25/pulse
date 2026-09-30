@@ -31,6 +31,8 @@ const LABELS: Record<string, string> = {
   "lead.ballot_hours": "Hours a card waits before a ballot",
   "lead.ballot_cap": "Cards per ballot job",
   "plan.operating_layer_per_day": "Operating-layer suggestion jobs per day",
+  "schedule.min_minutes": "Shortest schedule cadence (minutes)",
+  "schedule.max_per_project": "Schedules per project",
   "owner.presence": "Presence",
   "records.auto_adopt": "Adopt record drafts while away",
   "compute.provider": "Cloud provider",

@@ -23,6 +23,8 @@ pub struct StatusReport {
     pub agents: Vec<StatusCount>,
     pub posts: i64,
     pub jobs: Vec<StatusCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schedules: Vec<StatusCount>,
     pub runs_today: i64,
     pub daily_cap: i64,
     pub runner: String,
@@ -508,6 +510,7 @@ pub fn status(s: &pulse_store::Store) -> Result<StatusReport> {
         projects: s.projects(true)?,
         agents: status_counts(s, "SELECT status, COUNT(*) FROM agents GROUP BY status")?,
         jobs: status_counts(s, "SELECT status, COUNT(*) FROM jobs GROUP BY status")?,
+        schedules: status_counts(s, "SELECT status, COUNT(*) FROM schedules GROUP BY status")?,
         ..Default::default()
     };
     let conn = s.conn()?;
@@ -566,10 +569,11 @@ impl StatusReport {
             let j = join_counts(&self.jobs);
             if j.is_empty() { "none".into() } else { j }
         };
-        out.push_str(&format!(
-            "jobs       {jobs}\nruns today {}",
-            self.runs_today
-        ));
+        out.push_str(&format!("jobs       {jobs}\n"));
+        if !self.schedules.is_empty() {
+            out.push_str(&format!("schedules  {}\n", join_counts(&self.schedules)));
+        }
+        out.push_str(&format!("runs today {}", self.runs_today));
         if self.daily_cap > 0 {
             out.push_str(&format!(" of {} (jobs_per_day)\n", self.daily_cap));
         } else {

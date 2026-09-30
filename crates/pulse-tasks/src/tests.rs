@@ -903,3 +903,411 @@ fn compute_auto_approve_held_without_login_source() {
     assert_eq!(r2.status, "approved");
     *LOGIN_SOURCE_CHECK.write().unwrap() = None;
 }
+
+fn sched_input(every: &str) -> schedules::ScheduleInput {
+    schedules::ScheduleInput {
+        project: "demo".into(),
+        title: "Audit the dependencies".into(),
+        kind: "task".into(),
+        brief: "Run the audit; fix or file what it names.".into(),
+        tier: 1,
+        every: every.into(),
+        author: "demo-lead".into(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn schedule_cadence_parsing_and_arithmetic() {
+    for (text, minutes) in [
+        ("30m", 30),
+        ("6h", 360),
+        ("1d", 1440),
+        ("2w", 20160),
+        ("hourly", 60),
+        ("daily", 1440),
+        ("weekly", 10080),
+        ("90", 90),
+        (" 2 hours ", 120),
+    ] {
+        assert_eq!(schedules::parse_every(text).unwrap(), minutes, "{text}");
+    }
+    for text in ["", "0m", "soon", "3x", "-5m"] {
+        assert!(schedules::parse_every(text).is_err(), "{text:?} parsed");
+    }
+    assert_eq!(schedules::format_every(20160), "2w");
+    assert_eq!(schedules::format_every(2880), "2d");
+    assert_eq!(schedules::format_every(360), "6h");
+    assert_eq!(schedules::format_every(90), "90m");
+
+    let now = "2026-09-06T21:00:00Z";
+    assert_eq!(
+        schedules::first_due(now, 360, None).unwrap(),
+        "2026-09-07T03:00:00Z"
+    );
+    let nine = chrono::NaiveTime::from_hms_opt(9, 0, 0);
+    assert_eq!(
+        schedules::first_due(now, 1440, nine).unwrap(),
+        "2026-09-07T09:00:00Z",
+        "the next 09:00 is tomorrow"
+    );
+    let late = chrono::NaiveTime::from_hms_opt(23, 30, 0);
+    assert_eq!(
+        schedules::first_due(now, 1440, late).unwrap(),
+        "2026-09-06T23:30:00Z",
+        "23:30 is still ahead today"
+    );
+    assert_eq!(
+        schedules::advance("2026-09-07T03:00:00Z", 360, "2026-09-07T03:04:00Z").unwrap(),
+        "2026-09-07T09:00:00Z"
+    );
+    assert_eq!(
+        schedules::advance("2026-09-07T03:00:00Z", 360, "2026-09-08T10:00:00Z").unwrap(),
+        "2026-09-08T15:00:00Z",
+        "a day of missed ticks collapses to the next one after now"
+    );
+}
+
+#[test]
+fn schedule_add_validates_and_lists() {
+    let s = new_store();
+    let sc = schedules::add(&s, sched_input("6h")).unwrap();
+    assert_eq!(sc.id, "SCHED-001");
+    assert_eq!(sc.status, "active");
+    assert_eq!(sc.every(), "6h");
+    assert_eq!(sc.next_at, "2026-09-07T03:00:00Z");
+    assert_eq!(sc.source(), "schedule:SCHED-001");
+    assert_eq!(events(&s, "schedule.added").len(), 1);
+
+    let daily = schedules::add(
+        &s,
+        schedules::ScheduleInput {
+            at: "9:00".into(),
+            times: 3,
+            ..sched_input("daily")
+        },
+    )
+    .unwrap();
+    assert_eq!(daily.id, "SCHED-002");
+    assert_eq!(
+        daily.at_time, "09:00",
+        "the time of day is stored normalised"
+    );
+    assert_eq!(daily.next_at, "2026-09-07T09:00:00Z");
+    assert_eq!(daily.max_runs, 3);
+
+    let refused = |input: schedules::ScheduleInput, needle: &str| {
+        let err = schedules::add(&s, input).expect_err(needle).to_string();
+        assert!(err.contains(needle), "wanted {needle:?} in {err}");
+    };
+    refused(sched_input("10m"), "shorter than the 30m floor");
+    refused(sched_input("soon"), "Not a cadence");
+    refused(
+        schedules::ScheduleInput {
+            at: "09:00".into(),
+            ..sched_input("6h")
+        },
+        "whole days",
+    );
+    refused(
+        schedules::ScheduleInput {
+            at: "noon".into(),
+            ..sched_input("1d")
+        },
+        "Not a time of day",
+    );
+    refused(
+        schedules::ScheduleInput {
+            kind: "experiment".into(),
+            ..sched_input("1d")
+        },
+        "cannot queue",
+    );
+    refused(
+        schedules::ScheduleInput {
+            brief: "  ".into(),
+            ..sched_input("1d")
+        },
+        "needs a brief",
+    );
+    refused(
+        schedules::ScheduleInput {
+            title: String::new(),
+            ..sched_input("1d")
+        },
+        "needs a title",
+    );
+    refused(
+        schedules::ScheduleInput {
+            tier: 2,
+            ..sched_input("1d")
+        },
+        "Tier 0 and Tier 1",
+    );
+    refused(
+        schedules::ScheduleInput {
+            author: String::new(),
+            ..sched_input("1d")
+        },
+        "author is needed",
+    );
+    refused(
+        schedules::ScheduleInput {
+            project: "nope".into(),
+            ..sched_input("1d")
+        },
+        "nope",
+    );
+
+    s.set_setting("human", "schedule.max_per_project", "2")
+        .unwrap();
+    refused(sched_input("1d"), "already holds 2 schedules");
+
+    let all = schedules::list(&s, "", "").unwrap();
+    assert_eq!(
+        all.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+        ["SCHED-001", "SCHED-002"],
+        "active first, then by next time"
+    );
+    assert_eq!(schedules::list(&s, "demo", "paused").unwrap().len(), 0);
+    assert_eq!(schedules::list(&s, "other", "").unwrap().len(), 0);
+    assert!(schedules::get(&s, "SCHED-009").is_err());
+}
+
+#[test]
+fn schedule_fires_once_per_open_job_and_ends_after_its_runs() {
+    let s = new_store();
+    let sc = schedules::add(
+        &s,
+        schedules::ScheduleInput {
+            times: 2,
+            ..sched_input("1h")
+        },
+    )
+    .unwrap();
+    let demo = vec!["demo".to_string()];
+    assert!(
+        schedules::fire_due(&s, "2026-09-06T21:30:00Z", &demo, "daemon")
+            .unwrap()
+            .is_empty(),
+        "fired early"
+    );
+    assert!(
+        schedules::fire_due(&s, "2026-09-06T22:00:00Z", &["other".to_string()], "daemon")
+            .unwrap()
+            .is_empty(),
+        "fired for a project the daemon does not tend"
+    );
+
+    let fired = schedules::fire_due(&s, "2026-09-06T22:00:00Z", &demo, "daemon").unwrap();
+    assert_eq!(fired.len(), 1);
+    assert!(fired[0].queued && !fired[0].ended);
+    assert_eq!(fired[0].schedule.runs, 1);
+    assert_eq!(fired[0].schedule.next_at, "2026-09-06T23:00:00Z");
+    assert_eq!(fired[0].schedule.last_at, "2026-09-06T22:00:00Z");
+    assert_eq!(fired[0].schedule.last_job, fired[0].job);
+    let job = pulse_board::job_by_id(&s, &fired[0].job).unwrap().unwrap();
+    assert_eq!(job.source, "schedule:SCHED-001");
+    assert_eq!(job.created_by, "demo-lead");
+    assert_eq!(job.kind, "task");
+    assert_eq!(job.title, "Audit the dependencies");
+    assert!(
+        job.brief
+            .contains("run 1 of schedule SCHED-001 (every 1h), set by demo-lead")
+            && job.brief.contains("It ends after 2 runs."),
+        "brief = {}",
+        job.brief
+    );
+    assert_eq!(schedules::jobs(&s, &sc.id).unwrap().len(), 1);
+
+    // Still open at the next time: skipped, moved on, runs unchanged.
+    let fired = schedules::fire_due(&s, "2026-09-06T23:00:00Z", &demo, "daemon").unwrap();
+    assert_eq!(fired.len(), 1);
+    assert!(!fired[0].queued);
+    assert_eq!(fired[0].job, job.id);
+    assert_eq!(fired[0].schedule.runs, 1);
+    assert_eq!(fired[0].schedule.next_at, "2026-09-07T00:00:00Z");
+    assert_eq!(fired[0].schedule.last_at, "2026-09-06T22:00:00Z");
+    assert_eq!(events(&s, "schedule.skipped").len(), 1);
+    assert_eq!(schedules::jobs(&s, &sc.id).unwrap().len(), 1);
+
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            params!["2026-09-06T23:30:00Z", job.id],
+        )
+        .unwrap();
+    let fired = schedules::fire_due(&s, "2026-09-07T00:00:00Z", &demo, "daemon").unwrap();
+    assert_eq!(fired.len(), 1);
+    assert!(fired[0].queued && fired[0].ended);
+    assert_eq!(fired[0].schedule.status, "ended");
+    assert_eq!(fired[0].schedule.runs, 2);
+    assert_eq!(fired[0].schedule.note, "ended after 2 runs");
+    assert_eq!(events(&s, "schedule.fired").len(), 2);
+    assert_eq!(events(&s, "schedule.ended").len(), 1);
+    assert_eq!(schedules::jobs(&s, &sc.id).unwrap().len(), 2);
+    assert!(
+        schedules::fire_due(&s, "2026-09-07T05:00:00Z", &demo, "daemon")
+            .unwrap()
+            .is_empty(),
+        "an ended schedule fired"
+    );
+    let err = schedules::resume(&s, &sc.id, "demo-lead")
+        .expect_err("resumed an ended schedule")
+        .to_string();
+    assert!(err.contains("has ended"), "{err}");
+}
+
+#[test]
+fn schedule_owner_controls_pause_resume_end_and_run() {
+    let s = new_store();
+    let sc = schedules::add(&s, sched_input("1d")).unwrap();
+    let err = schedules::pause(&s, &sc.id, "", "someone-else")
+        .expect_err("another agent paused it")
+        .to_string();
+    assert!(err.contains("belongs to demo-lead"), "{err}");
+    let err = schedules::end(&s, &sc.id, "", "")
+        .expect_err("anonymous end")
+        .to_string();
+    assert!(err.contains("author is needed"), "{err}");
+
+    let paused = schedules::pause(&s, &sc.id, "holiday", pulse_store::HUMAN_AGENT).unwrap();
+    assert_eq!(paused.status, "paused");
+    assert_eq!(paused.note, "holiday");
+    let demo = vec!["demo".to_string()];
+    assert!(
+        schedules::fire_due(&s, "2026-09-09T00:00:00Z", &demo, "daemon")
+            .unwrap()
+            .is_empty(),
+        "a paused schedule fired"
+    );
+    let err = schedules::run_now(&s, &sc.id, "demo-lead")
+        .expect_err("ran a paused schedule")
+        .to_string();
+    assert!(err.contains("is paused"), "{err}");
+
+    let resumed = schedules::resume(&s, &sc.id, "demo-lead").unwrap();
+    assert_eq!(resumed.status, "active");
+    assert_eq!(resumed.note, "");
+    let fired = schedules::fire_due(&s, "2026-09-09T00:00:00Z", &demo, "daemon").unwrap();
+    assert_eq!(fired.len(), 1, "the missed time fires once after resume");
+    assert_eq!(fired[0].schedule.next_at, "2026-09-09T21:00:00Z");
+
+    let ran = schedules::run_now(&s, &sc.id, "demo-lead").unwrap();
+    assert_eq!(ran.next_at, s.now(), "run makes it due now");
+    assert_eq!(events(&s, "schedule.run").len(), 1);
+
+    let ended = schedules::end(&s, &sc.id, "done with it", "demo-lead").unwrap();
+    assert_eq!(ended.status, "ended");
+    assert_eq!(ended.note, "done with it");
+    assert_eq!(events(&s, "schedule.ended").len(), 1);
+    assert!(
+        s.conn()
+            .unwrap()
+            .execute("DELETE FROM schedules WHERE id = ?", params![sc.id])
+            .is_err(),
+        "schedules are never deleted"
+    );
+}
+
+#[test]
+fn schedule_commands_end_to_end() {
+    let s = new_store();
+    let (mut c, out) = ctx_for(&s, "demo-lead", "demo", false);
+    run_cmd(
+        &mut c,
+        "schedule",
+        &[
+            "add",
+            "--title",
+            "Audit the dependencies",
+            "--every",
+            "daily",
+            "--at",
+            "09:00",
+            "--brief",
+            "Run the audit.",
+            "--times",
+            "5",
+        ],
+    )
+    .unwrap();
+    assert!(
+        out.string().contains(
+            "SCHED-001 set in demo: Audit the dependencies every 1d, first at 2026-09-07T09:00:00Z"
+        ),
+        "{}",
+        out.string()
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["list"]).unwrap();
+    let text = out.string();
+    assert!(
+        text.contains("SCHED-001") && text.contains("0/5") && text.contains("demo-lead"),
+        "{text}"
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["show", "SCHED-001"]).unwrap();
+    let text = out.string();
+    assert!(
+        text.contains("every 1d at 09:00 UTC, 0 of 5 runs")
+            && text.contains("Run the audit.")
+            && text.contains("JOBS"),
+        "{text}"
+    );
+    out.clear();
+    run_cmd(
+        &mut c,
+        "schedule",
+        &["pause", "SCHED-001", "--note", "later"],
+    )
+    .unwrap();
+    assert!(
+        out.string().contains("SCHED-001 paused"),
+        "{}",
+        out.string()
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["resume", "SCHED-001"]).unwrap();
+    assert!(
+        out.string().contains("SCHED-001 active, next at"),
+        "{}",
+        out.string()
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["run", "SCHED-001"]).unwrap();
+    assert!(
+        out.string().contains("SCHED-001 due now"),
+        "{}",
+        out.string()
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["end", "SCHED-001"]).unwrap();
+    assert!(out.string().contains("SCHED-001 ended"), "{}", out.string());
+    assert!(
+        run_cmd(&mut c, "schedule", &["show"]).is_err(),
+        "show without an id"
+    );
+    assert!(run_cmd(&mut c, "schedule", &["bogus"]).is_err());
+    assert!(
+        run_cmd(
+            &mut c,
+            "schedule",
+            &["add", "--title", "x", "--every", "5m", "--brief", "b"]
+        )
+        .is_err(),
+        "a 5m cadence passed the floor"
+    );
+
+    let (mut c, out) = ctx_for(&s, "demo-lead", "demo", true);
+    run_cmd(&mut c, "schedule", &["list", "--status", "ended"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    assert_eq!(v["schedules"][0]["id"], "SCHED-001");
+    assert_eq!(v["schedules"][0]["status"], "ended");
+    out.clear();
+    run_cmd(&mut c, "schedule", &["show", "SCHED-001"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    assert_eq!(v["schedule"]["every_minutes"], 1440);
+    assert_eq!(v["jobs"].as_array().unwrap().len(), 0);
+}

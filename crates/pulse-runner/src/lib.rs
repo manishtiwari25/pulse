@@ -53,6 +53,7 @@ pub mod recovery_api;
 pub mod research;
 pub mod retire;
 pub mod run;
+pub mod schedule;
 pub mod selfupdate;
 pub mod service;
 pub mod sign;

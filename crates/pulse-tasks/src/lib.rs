@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod compute;
 pub mod messages;
+pub mod schedules;
 pub mod tasks;
 pub mod work;
 

@@ -55,4 +55,27 @@ pub const TASKS_DDL: &[&str] = &[
 );"####,
     r####"CREATE INDEX IF NOT EXISTS compute_requests_project_status ON compute_requests (project, status);"####,
     r####"CREATE TRIGGER IF NOT EXISTS compute_requests_no_delete BEFORE DELETE ON compute_requests BEGIN SELECT RAISE(ABORT, 'compute requests are never deleted: deny or release instead'); END;"####,
+    r####"CREATE TABLE IF NOT EXISTS schedules (
+  id TEXT PRIMARY KEY,                -- SCHED-001
+  project TEXT NOT NULL,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'task',
+  brief TEXT NOT NULL DEFAULT '',
+  tier INTEGER NOT NULL DEFAULT 1,
+  priority INTEGER NOT NULL DEFAULT 0,
+  every_minutes INTEGER NOT NULL,     -- the cadence
+  at_time TEXT NOT NULL DEFAULT '',   -- HH:MM UTC anchor for daily and longer cadences
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','ended')),
+  next_at TEXT NOT NULL,              -- when the next job is due
+  last_at TEXT NOT NULL DEFAULT '',   -- when the schedule last fired
+  last_job TEXT NOT NULL DEFAULT '',  -- the job it queued then
+  runs INTEGER NOT NULL DEFAULT 0,    -- jobs queued so far
+  max_runs INTEGER NOT NULL DEFAULT 0, -- 0: no end
+  note TEXT NOT NULL DEFAULT '',      -- why it is paused or ended
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);"####,
+    r####"CREATE INDEX IF NOT EXISTS schedules_project_status ON schedules (project, status, next_at);"####,
+    r####"CREATE TRIGGER IF NOT EXISTS schedules_no_delete BEFORE DELETE ON schedules BEGIN SELECT RAISE(ABORT, 'schedules are never deleted: end instead'); END;"####,
 ];

@@ -1,5 +1,6 @@
 use crate::compute::*;
 use crate::messages::*;
+use crate::schedules;
 use crate::tasks::*;
 use anyhow::{Result, anyhow};
 use pulse_bus::{CancellationToken, Event, Filter};
@@ -65,8 +66,31 @@ pub fn register() {
         pulse_cli::register(Command { name:"task".into(), group:"agents".into(), summary:"the owner's tasks for a project: new, list, show, amend, cancel, status, reply".into(), usage:"pulse task new --project P --title T [--brief-file F | --brief TEXT | stdin] [--priority N]\npulse task list [--project P] [--status S] [--json]\npulse task show TASK-NNN [--json]\npulse task amend TASK-NNN [--title T] [--brief-file F | --brief TEXT | stdin] [--note WHY]\npulse task cancel TASK-NNN [--reason WHY]\npulse task status TASK-NNN <open|planned|in_progress|review|done|cancelled>\npulse task reply TASK-NNN <text> | --file F".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_task, flags:Some(task_flags) });
         pulse_cli::register(Command { name:"msg".into(), group:"agents".into(), summary:"the conversation between the owner and a project's lead: send, list, read".into(), usage:"pulse msg send --project P [--task TASK-NNN] <text> | --file F\npulse msg list [--project P] [--task TASK-NNN] [--since MSG-ID] [--unread] [--json]\npulse msg read MSG-ID... (mark read for --agent)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_msg, flags:Some(msg_flags) });
         pulse_cli::register(Command { name:"compute".into(), group:"agents".into(), summary:"more machines for agents: request (agents), list, approve|deny (the owner)".into(), usage:"pulse compute request --project P [--size S] --hours N --reason WHY\npulse compute list [--project P] [--status S] [--json]\npulse compute approve CR-NNN [--words WHY]   (owner)\npulse compute deny CR-NNN [--words WHY]      (owner)\npulse compute providers [--json]             (the providers this binary can provision with)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_compute, flags:Some(compute_flags) });
+        pulse_cli::register(Command { name:"schedule".into(), group:"agents".into(), summary:"a standing job for a project - queued again every cadence: add, list, show, pause, resume, end, run".into(), usage:"pulse schedule add --project P --title T --every 30m|6h|1d|2w [--at HH:MM] [--kind task|improve|clean|reflect] [--brief TEXT | --brief-file F | stdin] [--tier 0|1] [--priority N] [--times N]\npulse schedule list [--project P] [--status active|paused|ended] [--json]\npulse schedule show SCHED-NNN [--json]\npulse schedule pause SCHED-NNN [--note WHY]\npulse schedule resume SCHED-NNN\npulse schedule end SCHED-NNN [--note WHY]\npulse schedule run SCHED-NNN               (due now; the daemon queues its job on the next tick)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_schedule, flags:Some(schedule_flags) });
         pulse_cli::register(Command { name:"watch".into(), group:"agents".into(), summary:"stream store events as they happen (Ctrl-C exits 0)".into(), usage:"pulse watch [--project P] [--area A] [--thread T] [--action GLOB] [--since ID] [--detail] [--interval 1s] [--json]".into(), aliases:vec![], no_store:false, read_only:true, raw:false, run:run_watch, flags:Some(watch_flags) });
     });
+}
+
+fn schedule_flags(fs: &mut FlagSet) {
+    fs.string_var("title", "", "the title of every job it queues (add)");
+    fs.string_var(
+        "every",
+        "",
+        "the cadence: 30m, 6h, 1d, 2w, hourly, daily, weekly (add)",
+    );
+    fs.string_var("at", "", "HH:MM UTC; anchors a cadence of whole days (add)");
+    fs.string_var("kind", "task", "task, improve, clean or reflect (add)");
+    fs.string_var(
+        "brief",
+        "",
+        "the brief of every job (add); or --brief-file, or stdin",
+    );
+    fs.string_var("brief-file", "", "file holding the brief; - for stdin");
+    fs.int_var("tier", 1, "0 or 1 (add)");
+    fs.int_var("priority", 0, "priority, higher first (add)");
+    fs.int_var("times", 0, "end after this many jobs; 0 keeps going (add)");
+    fs.string_var("note", "", "why (pause, end)");
+    fs.string_var("status", "", "list only active, paused or ended schedules");
 }
 
 fn task_flags(fs: &mut FlagSet) {
@@ -209,6 +233,223 @@ fn print_task(c: &mut Context, t: &Task) -> Result<()> {
         printf(c, format_args!("  lead {}  job {}\n", t.lead, t.job_id))?;
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct ScheduleOut<'a> {
+    schedule: &'a schedules::Schedule,
+}
+
+#[derive(Serialize)]
+struct SchedulesOut<'a> {
+    schedules: &'a [schedules::Schedule],
+}
+
+#[derive(Serialize)]
+struct ScheduleShowOut<'a> {
+    jobs: &'a [Job],
+    schedule: &'a schedules::Schedule,
+}
+
+fn print_schedule(c: &mut Context, sc: &schedules::Schedule) -> Result<()> {
+    let st = c.style();
+    let mut head = format!(
+        "{} {} {} every {}",
+        st.bold(&sc.id),
+        sc.project,
+        sc.status,
+        sc.every()
+    );
+    if !sc.at_time.is_empty() {
+        head.push_str(&format!(" at {} UTC", sc.at_time));
+    }
+    if sc.max_runs > 0 {
+        head.push_str(&format!(", {} of {} runs", sc.runs, sc.max_runs));
+    } else {
+        head.push_str(&format!(", {} runs", sc.runs));
+    }
+    c.println(&head)?;
+    printf(
+        c,
+        format_args!(
+            "{} job, tier {}, priority {}; set by {} at {}\n",
+            sc.kind, sc.tier, sc.priority, sc.created_by, sc.created_at
+        ),
+    )?;
+    if sc.status == "active" {
+        printf(c, format_args!("next at {}\n", sc.next_at))?;
+    }
+    if !sc.last_at.is_empty() {
+        printf(
+            c,
+            format_args!("last at {} ({})\n", sc.last_at, sc.last_job),
+        )?;
+    }
+    if !sc.note.is_empty() {
+        printf(c, format_args!("note: {}\n", sc.note))?;
+    }
+    Ok(())
+}
+
+pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
+    if args.is_empty() {
+        return Err(usage("schedule", ""));
+    }
+    let (sub, rest) = (&args[0], &args[1..]);
+    match sub.as_str() {
+        "add" => {
+            let brief = read_body(&fs.get_string("brief"), &fs.get_string("brief-file"))?;
+            let sc = schedules::add(
+                store(c)?,
+                schedules::ScheduleInput {
+                    project: c.project.clone(),
+                    title: fs.get_string("title"),
+                    kind: fs.get_string("kind"),
+                    brief,
+                    tier: fs.get_int("tier"),
+                    priority: fs.get_int("priority"),
+                    every: fs.get_string("every"),
+                    at: fs.get_string("at"),
+                    times: fs.get_int("times"),
+                    author: actor(c),
+                },
+            )?;
+            if c.json {
+                return pulse_cli::write_json(&mut c.out, &ScheduleOut { schedule: &sc });
+            }
+            printf(
+                c,
+                format_args!(
+                    "{} set in {}: {} every {}, first at {}\n",
+                    sc.id,
+                    sc.project,
+                    sc.title,
+                    sc.every(),
+                    sc.next_at
+                ),
+            )
+        }
+        "list" => {
+            let list = schedules::list(store(c)?, &c.project, &fs.get_string("status"))?;
+            if c.json {
+                return pulse_cli::write_json(&mut c.out, &SchedulesOut { schedules: &list });
+            }
+            if list.is_empty() {
+                c.println("No schedules.")?;
+                return Ok(());
+            }
+            let rows = list
+                .iter()
+                .map(|sc| {
+                    vec![
+                        sc.id.clone(),
+                        sc.project.clone(),
+                        sc.status.clone(),
+                        sc.every(),
+                        if sc.status == "active" {
+                            sc.next_at.clone()
+                        } else {
+                            String::new()
+                        },
+                        if sc.max_runs > 0 {
+                            format!("{}/{}", sc.runs, sc.max_runs)
+                        } else {
+                            sc.runs.to_string()
+                        },
+                        sc.created_by.clone(),
+                        sc.title.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            pulse_cli::table(
+                &mut c.out,
+                c.color,
+                Some(&[
+                    "ID", "PROJECT", "STATUS", "EVERY", "NEXT", "RUNS", "BY", "TITLE",
+                ]),
+                &rows,
+            )?;
+            Ok(())
+        }
+        "show" => {
+            need(rest, 1, "a schedule id")?;
+            let sc = schedules::get(store(c)?, &rest[0])?;
+            let js = schedules::jobs(store(c)?, &sc.id)?;
+            if c.json {
+                return pulse_cli::write_json(
+                    &mut c.out,
+                    &ScheduleShowOut {
+                        jobs: &js,
+                        schedule: &sc,
+                    },
+                );
+            }
+            print_schedule(c, &sc)?;
+            c.println("")?;
+            c.println(sc.brief.trim_end_matches('\n'))?;
+            c.println("")?;
+            c.println(c.style().bold("JOBS"))?;
+            let rows = js
+                .iter()
+                .map(|j| {
+                    vec![
+                        j.id.clone(),
+                        j.status.clone(),
+                        j.agent.clone(),
+                        j.created_at.clone(),
+                        j.finished_at.clone(),
+                        j.branch.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            pulse_cli::table(
+                &mut c.out,
+                c.color,
+                Some(&["JOB", "STATUS", "AGENT", "CREATED", "FINISHED", "BRANCH"]),
+                &rows,
+            )?;
+            Ok(())
+        }
+        "pause" | "end" => {
+            need(rest, 1, "a schedule id")?;
+            let s = store(c)?;
+            let sc = if sub == "pause" {
+                schedules::pause(s, &rest[0], &fs.get_string("note"), &actor(c))?
+            } else {
+                schedules::end(s, &rest[0], &fs.get_string("note"), &actor(c))?
+            };
+            if c.json {
+                return pulse_cli::write_json(&mut c.out, &ScheduleOut { schedule: &sc });
+            }
+            printf(c, format_args!("{} {}\n", sc.id, sc.status))
+        }
+        "resume" => {
+            need(rest, 1, "a schedule id")?;
+            let sc = schedules::resume(store(c)?, &rest[0], &actor(c))?;
+            if c.json {
+                return pulse_cli::write_json(&mut c.out, &ScheduleOut { schedule: &sc });
+            }
+            printf(
+                c,
+                format_args!("{} {}, next at {}\n", sc.id, sc.status, sc.next_at),
+            )
+        }
+        "run" => {
+            need(rest, 1, "a schedule id")?;
+            let sc = schedules::run_now(store(c)?, &rest[0], &actor(c))?;
+            if c.json {
+                return pulse_cli::write_json(&mut c.out, &ScheduleOut { schedule: &sc });
+            }
+            printf(
+                c,
+                format_args!(
+                    "{} due now; the daemon queues its job on the next tick\n",
+                    sc.id
+                ),
+            )
+        }
+        other => Err(usage("schedule", other)),
+    }
 }
 
 pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
