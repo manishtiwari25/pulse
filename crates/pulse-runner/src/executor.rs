@@ -1548,6 +1548,43 @@ pub(crate) fn parse_probe(text: &str) -> BTreeMap<String, String> {
 /// probe answers - git present, room under `PULSE_HOME/work` - and, as for a hand, a
 /// human's passing probe clears the projects marked unfit here, so the owner who fixed
 /// the machine does not wait a day for the marks to expire.
+pub(crate) fn local_work_root(s: &pulse_store::Store) -> std::path::PathBuf {
+    std::path::Path::new(&s.home).join("work")
+}
+
+pub(crate) fn free_mb(path: &std::path::Path) -> i32 {
+    std::process::Command::new("df")
+        .args(["-Pm", &path.display().to_string()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|t| {
+            t.lines().nth(1).and_then(|l| {
+                l.split_whitespace()
+                    .nth(3)
+                    .and_then(|n| n.parse::<i32>().ok())
+            })
+        })
+        .unwrap_or(0)
+}
+
+pub(crate) fn disk_floor_hold(s: &pulse_store::Store) -> Option<(i32, i32, String)> {
+    let min_free = setting_int(s, "daemon.min_free_mb");
+    if min_free <= 0 {
+        return None;
+    }
+    let work = local_work_root(s);
+    let _ = std::fs::create_dir_all(&work);
+    let free = free_mb(&work);
+    (free < min_free).then(|| (free, min_free, work.display().to_string()))
+}
+
+pub(crate) fn disk_floor_note(s: &pulse_store::Store) -> Option<String> {
+    disk_floor_hold(s).map(|(free, floor, path)| {
+        format!("disk under floor: {free} MB free on {path} (daemon.min_free_mb {floor})")
+    })
+}
+
 fn probe_local(s: &pulse_store::Store, actor: &str, now: &str) -> (bool, String) {
     let mut problems = Vec::new();
     let gitv = std::process::Command::new("git")
@@ -1560,21 +1597,9 @@ fn probe_local(s: &pulse_store::Store, actor: &str, now: &str) -> (bool, String)
     if gitv == "missing" {
         problems.push("git missing".to_string());
     }
-    let work = std::path::Path::new(&s.home).join("work");
+    let work = local_work_root(s);
     let _ = std::fs::create_dir_all(&work);
-    let free_mb = std::process::Command::new("df")
-        .args(["-Pm", &work.display().to_string()])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|t| {
-            t.lines().nth(1).and_then(|l| {
-                l.split_whitespace()
-                    .nth(3)
-                    .and_then(|n| n.parse::<i32>().ok())
-            })
-        })
-        .unwrap_or(0);
+    let free_mb = free_mb(&work);
     let min_free = setting_int(s, "daemon.min_free_mb");
     if min_free > 0 && free_mb < min_free {
         let want = if min_free % 1024 == 0 {

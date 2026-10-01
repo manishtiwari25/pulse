@@ -1047,11 +1047,18 @@ admin@host` copies that login to the hand's `pulse` user (`--with-token`
 still reads a token from stdin; `--remove` forgets it). The hand's probe reports
 `harness=yes|no` and the `pulse` build it runs. The probe also refuses a hand
 whose workdir filesystem has under `daemon.min_free_mb` (default 1024) megabytes
-free and names that path in its note; 0 turns the check off. `pulse executor
+free and names that path in its note; 0 turns the check off. The daemon checks
+the same floor before it leases new work or starts an experiment measurement,
+so a full work filesystem pauses dispatch with `disk under floor: <free> MB
+free on <path> (daemon.min_free_mb <floor>)`; after fifteen minutes it writes
+one runner finding that says to free space or adjust the floor. `pulse executor
 probe local` probes this machine the same way (git, free space under
 `~/.pulse/work`), and a passing probe run by the owner clears the projects a
 failed setup marked unfit here, instead of waiting a day for the marks to
-expire. A setup that fails twice the same way marks the project unfit for that
+expire. While queued work waits behind an unfit mark, the maintenance pass
+also re-probes after `daemon.unfit_reprobe_minutes` (default 60; 0 off), then
+doubles the wait for that executor/project/tool up to one day; a passing daemon
+probe clears only that project's mark. A setup that fails twice the same way marks the project unfit for that
 executor; a failure the machine did not cause - a dead network, a full disk
 (`no space left on device`, `disk quota exceeded`) - never does, and the job
 simply goes back to the queue. While a mark holds queued jobs, the daemon's idle
@@ -1311,8 +1318,10 @@ half-way or an older hub does not. So the daemon sweeps once at start and
 then every ten minutes, removing only what the store says nothing holds any
 more: queued or blocked jobs of a project that was removed (`pulse project
 remove` lets a leased job finish, but one whose run is lost would come back
-queued for a project no daemon lists), clones, keys and bundles of finished jobs once they have sat untouched
-for `daemon.sweep_grace_minutes` (default 30; a lost run's go at once),
+queued for a project no daemon lists), clones, keys and bundles of jobs in an
+end state (`done`, `failed`, `cancelled`) whose `finished_at` is more than an
+hour old once they have also sat untouched for `daemon.sweep_grace_minutes`
+(default 30; a lost run's go at once),
 landing worktrees whose process is gone (and `git worktree prune`), holding
 refs of landing steps that are over, dead folders under `~/.pulse/worktrees`,
 measurement clone roots (`~/.pulse/fleet/measure-*`) whose measuring process
@@ -1328,7 +1337,8 @@ dispatches and every `running` run in the store), a branch a `done` job waits
 to land, the checked-out branch, a worktree git still lists, a repository of
 its own, anything under `~/.pulse` the runner did not make, and prepared
 fleet clones (`pulse fleet clean` is their lifecycle). Each pass logs what went (`swept
-clone …`, `swept 12 run logs (3.1 MB)`), writes one `daemon.sweep` event when
+clone …`, `swept 12 run logs (3.1 MB)`, and a finished-work count with the
+bytes freed when job work was removed), writes one `daemon.sweep` event when
 something went or failed, and a `hygiene` line in `pulse status` says when the
 last pass ran, what it removed and freed, and what it held. `pulse sweep
 [--dry-run] [--held] [--json]` is the same pass by hand - `--dry-run` lists

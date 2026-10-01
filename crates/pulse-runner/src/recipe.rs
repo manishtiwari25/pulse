@@ -1179,6 +1179,14 @@ pub(crate) fn unfit_marks(
                                 mm.get("at").map(Value::to_string).unwrap_or_default()
                             }),
                     ),
+                    (
+                        "n".to_string(),
+                        mm.get("n")
+                            .and_then(Value::as_i64)
+                            .map(|n| n.to_string())
+                            .or_else(|| mm.get("n").and_then(Value::as_str).map(str::to_string))
+                            .unwrap_or_else(|| "0".to_string()),
+                    ),
                 ]),
             );
         }
@@ -1197,11 +1205,31 @@ pub(crate) fn save_unfit_marks(
 /// Go: func markUnfit(q querier, now, executor, project, tool string)
 pub(crate) fn mark_unfit(q: &impl Querier, now: &str, executor: &str, project: &str, tool: &str) {
     let mut marks = unfit_marks(q);
+    let n = marks
+        .get(executor)
+        .and_then(|m| m.get(project))
+        .filter(|m| m.get("tool").is_some_and(|old| old == tool))
+        .filter(|m| {
+            m.get("at")
+                .and_then(|at| {
+                    chrono::NaiveDateTime::parse_from_str(at, crate::util::ISO_LAYOUT).ok()
+                })
+                .map(|at| {
+                    crate::util::must_iso(now).signed_duration_since(at.and_utc())
+                        < chrono::Duration::hours(UNFIT_HOURS as i64)
+                })
+                .unwrap_or(false)
+        })
+        .and_then(|m| m.get("n"))
+        .and_then(|n| n.parse::<i32>().ok())
+        .unwrap_or(-1)
+        + 1;
     marks.entry(executor.to_string()).or_default().insert(
         project.to_string(),
         BTreeMap::from([
             ("tool".to_string(), tool.to_string()),
             ("at".to_string(), now.to_string()),
+            ("n".to_string(), n.max(0).to_string()),
         ]),
     );
     let _ = save_unfit_marks(q, &marks);
@@ -1256,6 +1284,20 @@ pub(crate) fn unfit_projects(
     }
     current
 }
+pub(crate) fn bump_unfit_probe(q: &impl Querier, now: &str, executor: &str, project: &str) {
+    let mut marks = unfit_marks(q);
+    let Some(mark) = marks.get_mut(executor).and_then(|m| m.get_mut(project)) else {
+        return;
+    };
+    let n = mark
+        .get("n")
+        .and_then(|n| n.parse::<i32>().ok())
+        .unwrap_or(0)
+        + 1;
+    mark.insert("n".to_string(), n.to_string());
+    mark.insert("at".to_string(), now.to_string());
+    let _ = save_unfit_marks(q, &marks);
+}
 /// Go: func clearUnfit(q querier, now, executor string)
 pub(crate) fn clear_unfit(q: &impl Querier, now: &str, executor: &str) {
     let mut marks = unfit_marks(q);
@@ -1268,6 +1310,34 @@ pub(crate) fn clear_unfit(q: &impl Querier, now: &str, executor: &str) {
             "executor.fit",
             executor,
             Value::String(String::new()),
+        );
+    }
+}
+pub(crate) fn clear_unfit_project(
+    q: &impl Querier,
+    now: &str,
+    executor: &str,
+    project: &str,
+    actor: &str,
+    note: &str,
+) {
+    let mut marks = unfit_marks(q);
+    let mut changed = false;
+    if let Some(exmarks) = marks.get_mut(executor) {
+        changed = exmarks.remove(project).is_some();
+        if exmarks.is_empty() {
+            marks.remove(executor);
+        }
+    }
+    if changed {
+        let _ = save_unfit_marks(q, &marks);
+        crate::util::event_at(
+            q,
+            now,
+            "runner",
+            "executor.fit",
+            executor,
+            json!({"project": project, "cleared_by": actor, "note": note}),
         );
     }
 }

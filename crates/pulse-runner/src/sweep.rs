@@ -11,6 +11,7 @@ use std::time::Duration;
 use crate::util::Row;
 
 pub(crate) const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+pub(crate) const FINISHED_WORK_GRACE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 pub(crate) static SWEEP_JOB_ENTRY_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"^(job-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6})(\.[A-Za-z0-9_.-]+)?$")
         .expect("sweep job regex")
@@ -285,6 +286,19 @@ pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
             ));
         }
     }
+    let work = rep
+        .removed
+        .iter()
+        .filter(|x| matches!(x.kind.as_str(), "clone" | "scratch"))
+        .fold((0, 0), |(n, bytes), x| (n + 1, bytes + x.bytes));
+    if work.0 > 0 && work.1 > 0 {
+        lines.push(format!(
+            "{verb} {} finished work entr{} ({} freed)",
+            work.0,
+            if work.0 == 1 { "y" } else { "ies" },
+            size_text(work.1)
+        ));
+    }
     lines.extend(rep.errors.iter().map(|e| format!("sweep: {e}")));
     lines
 }
@@ -478,26 +492,53 @@ impl Sweeper {
             return format!("run {} in progress", run.str("id"));
         }
         let job = crate::util::must_one(&conn, "SELECT status FROM jobs WHERE id = ?", &[&job_id]);
-        if job.str("status") == "leased" {
-            return "job leased".into();
+        match job.str("status").as_str() {
+            "leased" => return "job leased".into(),
+            "queued" => return "job queued".into(),
+            _ => {}
         }
         String::new()
     }
+    pub(crate) fn job_row(&mut self, job_id: &str) -> Row {
+        let Ok(conn) = self.s.conn() else {
+            return Row::default();
+        };
+        crate::util::must_one(
+            &conn,
+            "SELECT status, finished_at FROM jobs WHERE id = ?",
+            &[&job_id],
+        )
+    }
     /// Go: func (w *sweeper) jobKnown(jobID string) (known, lost bool)
     pub(crate) fn job_known(&mut self, job_id: String) -> (bool, bool) {
-        let Ok(conn) = self.s.conn() else {
-            return (false, false);
-        };
-        let job = crate::util::must_one(&conn, "SELECT 1 AS x FROM jobs WHERE id = ?", &[&job_id]);
+        let job = self.job_row(&job_id);
         if job.0.is_empty() {
             return (false, false);
         }
+        let Ok(conn) = self.s.conn() else {
+            return (true, false);
+        };
         let last = crate::util::must_one(
             &conn,
             "SELECT status FROM runs WHERE job_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
             &[&job_id],
         );
         (true, last.str("status") == "lost")
+    }
+    pub(crate) fn finished_work_due(&mut self, job: &Row) -> bool {
+        if !matches!(job.str("status").as_str(), "done" | "failed" | "cancelled") {
+            return false;
+        }
+        let finished = job.str("finished_at");
+        if finished.is_empty() {
+            return false;
+        }
+        chrono::NaiveDateTime::parse_from_str(&finished, crate::util::ISO_LAYOUT)
+            .map(|finished| {
+                crate::util::must_iso(&self.now).signed_duration_since(finished.and_utc())
+                    >= chrono::Duration::from_std(FINISHED_WORK_GRACE).unwrap()
+            })
+            .unwrap_or(false)
     }
     /// Go: func (w *sweeper) age(path string) (time.Duration, bool)
     pub(crate) fn age(&mut self, path: String) -> (std::time::Duration, bool) {
@@ -554,14 +595,36 @@ impl Sweeper {
                     String::new(),
                     format!("left by a runner that stopped mid-run ({job_id})"),
                 );
-            } else if known && age >= self.grace {
-                self.remove(
-                    kind.into(),
-                    path,
-                    String::new(),
-                    format!("{job_id} finished, untouched for {}", round_duration(age)),
-                );
-            } else if !known && age >= self.keep {
+            } else if known {
+                let job = self.job_row(&job_id);
+                if self.finished_work_due(&job) && age >= self.grace {
+                    self.remove(
+                        kind.into(),
+                        path,
+                        String::new(),
+                        format!(
+                            "{job_id} finished over {}, untouched for {}",
+                            round_duration(FINISHED_WORK_GRACE),
+                            round_duration(age)
+                        ),
+                    );
+                } else {
+                    let status = job.str("status");
+                    self.held(
+                        kind.into(),
+                        path,
+                        String::new(),
+                        if matches!(status.as_str(), "done" | "failed" | "cancelled") {
+                            format!(
+                                "{job_id} finished less than {} ago or was touched recently",
+                                round_duration(FINISHED_WORK_GRACE)
+                            )
+                        } else {
+                            format!("{job_id} is {status}")
+                        },
+                    );
+                }
+            } else if age >= self.keep {
                 self.remove(
                     kind.into(),
                     path,
@@ -569,17 +632,6 @@ impl Sweeper {
                     format!(
                         "no job {job_id} in this store, untouched for {}",
                         round_duration(age)
-                    ),
-                );
-            } else if known {
-                self.held(
-                    kind.into(),
-                    path,
-                    String::new(),
-                    format!(
-                        "{job_id} finished {} ago; removed after {}",
-                        round_duration(age),
-                        round_duration(self.grace)
                     ),
                 );
             } else {
@@ -1870,7 +1922,11 @@ mod tests {
         );
         let lines = sweep_lines(Some(rep));
         assert!(
-            lines.len() == 3 && lines[0].starts_with("would sweep clone "),
+            lines.len() == 4
+                && lines[0].starts_with("would sweep clone ")
+                && lines
+                    .iter()
+                    .any(|line| line.starts_with("would sweep 1 finished work entry")),
             "lines = {lines:?}"
         );
         assert!(

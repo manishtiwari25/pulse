@@ -72,6 +72,7 @@ pub(crate) struct DaemonMaintenance {
     pub(crate) pass_stage: Stage,
     pub(crate) pass_noted: bool,
     pub(crate) pass_restart_noted: bool,
+    pub(crate) lane_disk_floor: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -115,6 +116,85 @@ pub(crate) fn experiment_retry(state: &str) -> Duration {
     } else {
         EXPERIMENT_RETRY
     }
+}
+
+fn unfit_reprobe_due(mark: &BTreeMap<String, String>, now: &str, base_minutes: i64) -> bool {
+    if base_minutes <= 0 {
+        return false;
+    }
+    let at = mark.get("at").cloned().unwrap_or_default();
+    let Ok(at) = chrono::NaiveDateTime::parse_from_str(&at, crate::util::ISO_LAYOUT) else {
+        return false;
+    };
+    let n = mark
+        .get("n")
+        .and_then(|n| n.parse::<u32>().ok())
+        .unwrap_or(0)
+        .min(8);
+    let minutes = base_minutes.saturating_mul(1_i64 << n).min(24 * 60);
+    crate::util::must_iso(now).signed_duration_since(at.and_utc())
+        >= chrono::Duration::minutes(minutes)
+}
+
+pub(crate) fn tend_unfit_reprobes(
+    s: &pulse_store::Store,
+    now: String,
+    actor: String,
+) -> Vec<String> {
+    let base = s.setting_int("daemon.unfit_reprobe_minutes");
+    if base <= 0 {
+        return Vec::new();
+    }
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let marks = crate::recipe::unfit_marks(&conn);
+    let mut lines = Vec::new();
+    for (executor, projects) in marks {
+        for (project, mark) in projects {
+            if !unfit_reprobe_due(&mark, &now, base) {
+                continue;
+            }
+            let row = crate::util::must_one(
+                &conn,
+                "SELECT p.status, COUNT(j.id) AS queued FROM projects p LEFT JOIN jobs j ON j.project = p.slug AND j.status = 'queued' WHERE p.slug = ? GROUP BY p.slug",
+                &[&project],
+            );
+            let queued = row.int("queued");
+            if row.str("status") != "active" || queued <= 0 {
+                continue;
+            }
+            let (ok, note) = match crate::executor::probe_executor(s, &executor, &actor, &now) {
+                Ok(v) => v,
+                Err(err) => (false, crate::run::err_message(&err)),
+            };
+            if ok {
+                crate::recipe::clear_unfit_project(&conn, &now, &executor, &project, &actor, &note);
+                let age = mark
+                    .get("at")
+                    .and_then(|at| {
+                        chrono::NaiveDateTime::parse_from_str(at, crate::util::ISO_LAYOUT).ok()
+                    })
+                    .and_then(|at| {
+                        crate::util::must_iso(&now)
+                            .signed_duration_since(at.and_utc())
+                            .to_std()
+                            .ok()
+                    })
+                    .map(pulse_cli::format_duration)
+                    .unwrap_or_else(|| "unknown age".into());
+                lines.push(format!(
+                    "unfit mark for {project} on {executor} cleared by a passing probe after {age}; {queued} queued job(s) resume"
+                ));
+            } else {
+                crate::recipe::bump_unfit_probe(&conn, &now, &executor, &project);
+                lines.push(format!(
+                    "unfit re-probe for {project} on {executor} failed: {note}"
+                ));
+            }
+        }
+    }
+    lines
 }
 
 fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
@@ -198,10 +278,15 @@ impl DaemonMaintenance {
                             ));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                            set_stage(Some(&stage), "unfit re-probe");
+                            lines.extend(tend_unfit_reprobes(&s, s.now(), actor.clone()));
+                        }
+                        if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             set_stage(Some(&stage), "binary check");
                             lines.extend(crate::selfupdate::tend_binary(&s, s.now(), binary));
                         }
                     }
+
                     set_stage(Some(&stage), "finished");
                     (lines, held)
                 }))
@@ -264,6 +349,14 @@ impl DaemonMaintenance {
         {
             return None;
         }
+        if let Some(note) = crate::executor::disk_floor_note(s) {
+            if self.lane_disk_floor {
+                return None;
+            }
+            self.lane_disk_floor = true;
+            return Some(note);
+        }
+        self.lane_disk_floor = false;
         let (project, job) = self.next_experiment(s, projects, now)?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         let ctx = cancel.child();
@@ -475,6 +568,187 @@ mod tests {
         assert_eq!(experiment_retry("stopped"), EXPERIMENT_RETRY_SHORT);
         assert_eq!(experiment_retry("deferred"), EXPERIMENT_RETRY);
         assert_eq!(experiment_retry("error"), EXPERIMENT_RETRY);
+    }
+
+    fn set_unfit_reprobe_minutes(s: &pulse_store::Store, minutes: &str) {
+        exec1(
+            s,
+            "INSERT INTO settings (name, value, updated_at, updated_by) VALUES ('daemon.unfit_reprobe_minutes', ?, ?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            &[&minutes, &TEST_NOW, &pulse_store::HUMAN_AGENT],
+        );
+    }
+
+    #[test]
+    fn daemon_reprobe_clears_unfit_mark_and_waiting_job_can_lease() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
+        let (proj, _) = new_bare_repo(&s);
+        let slug = proj.str("slug");
+        crate::jobs::add_job(
+            &s,
+            slug.clone(),
+            "task".into(),
+            "Held job".into(),
+            "wait for daemon reprobe".into(),
+            0,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        crate::recipe::mark_unfit(
+            &s.conn().unwrap(),
+            TEST_NOW,
+            crate::executor::LOCAL_EXECUTOR,
+            &slug,
+            "setup:Gemfile.lock",
+        );
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        let now = crate::util::plus_minutes(TEST_NOW, 61.0);
+        let lines = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("cleared by a passing probe")),
+            "lines = {lines:?}"
+        );
+        assert!(
+            crate::recipe::unfit_projects(
+                &s.conn().unwrap(),
+                crate::executor::LOCAL_EXECUTOR,
+                &now
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.fit' AND subject = 'local' AND detail LIKE '%daemon%'",
+                &[]
+            ),
+            1
+        );
+        let (job, _, why) = crate::run::take_job(
+            &s,
+            "aurora",
+            "",
+            "",
+            false,
+            &now,
+            crate::executor::LOCAL_EXECUTOR,
+            0,
+        )
+        .unwrap();
+        assert!(!job.0.is_empty(), "why = {why}");
+    }
+
+    #[test]
+    fn daemon_reprobe_skips_marks_without_queued_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
+        let (proj, _) = new_bare_repo(&s);
+        let slug = proj.str("slug");
+        crate::recipe::mark_unfit(
+            &s.conn().unwrap(),
+            TEST_NOW,
+            crate::executor::LOCAL_EXECUTOR,
+            &slug,
+            "setup:Gemfile.lock",
+        );
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            "daemon.min_free_mb",
+            &i32::MAX.to_string(),
+        )
+        .unwrap();
+        let now = crate::util::plus_minutes(TEST_NOW, 61.0);
+        let lines = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+        assert!(lines.is_empty(), "lines = {lines:?}");
+        let marks = crate::recipe::unfit_marks(&s.conn().unwrap());
+        assert_eq!(
+            marks[crate::executor::LOCAL_EXECUTOR][&slug]
+                .get("n")
+                .map(String::as_str),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn daemon_reprobe_failure_keeps_mark_and_bumps_backoff() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
+        let (proj, _) = new_bare_repo(&s);
+        let slug = proj.str("slug");
+        crate::jobs::add_job(
+            &s,
+            slug.clone(),
+            "task".into(),
+            "Held job".into(),
+            "wait for daemon reprobe".into(),
+            0,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        crate::recipe::mark_unfit(
+            &s.conn().unwrap(),
+            TEST_NOW,
+            crate::executor::LOCAL_EXECUTOR,
+            &slug,
+            "setup:Gemfile.lock",
+        );
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            "daemon.min_free_mb",
+            &i32::MAX.to_string(),
+        )
+        .unwrap();
+        let now = crate::util::plus_minutes(TEST_NOW, 61.0);
+        let lines = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+        assert!(
+            lines.iter().any(|line| line.contains("failed:")),
+            "lines = {lines:?}"
+        );
+        let marks = crate::recipe::unfit_marks(&s.conn().unwrap());
+        let mark = &marks[crate::executor::LOCAL_EXECUTOR][&slug];
+        assert_eq!(mark.get("n").map(String::as_str), Some("1"));
+        assert_eq!(mark.get("at").map(String::as_str), Some(now.as_str()));
+    }
+
+    #[test]
+    fn unfit_reprobe_interval_doubles_and_caps() {
+        let mark = BTreeMap::from([
+            ("at".to_string(), TEST_NOW.to_string()),
+            ("n".to_string(), "1".to_string()),
+            ("tool".to_string(), "setup:Gemfile.lock".to_string()),
+        ]);
+        assert!(!unfit_reprobe_due(
+            &mark,
+            &crate::util::plus_minutes(TEST_NOW, 119.0),
+            60
+        ));
+        assert!(unfit_reprobe_due(
+            &mark,
+            &crate::util::plus_minutes(TEST_NOW, 121.0),
+            60
+        ));
+        let capped = BTreeMap::from([
+            ("at".to_string(), TEST_NOW.to_string()),
+            ("n".to_string(), "8".to_string()),
+            ("tool".to_string(), "setup:Gemfile.lock".to_string()),
+        ]);
+        assert!(unfit_reprobe_due(
+            &capped,
+            &crate::util::plus_minutes(TEST_NOW, 24.0 * 60.0 + 1.0),
+            60
+        ));
     }
 
     fn pending_experiment(s: &pulse_store::Store, dir: &str, id: &str, at: &str) {
