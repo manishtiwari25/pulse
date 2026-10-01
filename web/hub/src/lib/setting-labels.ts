@@ -16,6 +16,8 @@ const LABELS: Record<string, string> = {
   landing: "Who merges verified work",
   "landing.push": "Push after landing",
   "landing.auto_stash": "Stash uncommitted changes before landing",
+  "landing.parallel": "Projects landing at once",
+  "landing.base_red_retry_minutes": "Re-check landings after a red main (minutes)",
   "push.credential": "Push key",
   quorum: "Votes to queue a suggestion",
   expiry_days: "A suggestion expires after (days)",
@@ -30,7 +32,10 @@ const LABELS: Record<string, string> = {
   "lead.research_per_day": "Research jobs per project per day",
   "lead.ballot_hours": "Hours a card waits before a ballot",
   "lead.ballot_cap": "Cards per ballot job",
+  "lead.idle_factor": "Research speed-up while the fleet is idle",
   "plan.operating_layer_per_day": "Operating-layer suggestion jobs per day",
+  "plan.operating_layer_fill": "Lift the operating-layer cap when no product card competes",
+  "board.stale_days": "Retire a card whose files are gone after (days)",
   "schedule.min_minutes": "Shortest schedule cadence (minutes)",
   "schedule.max_per_project": "Schedules per project",
   "owner.presence": "Presence",
@@ -67,8 +72,16 @@ const LABELS: Record<string, string> = {
   "evolve.heldout": "Who writes the held-out set",
   "evolve.heldout_dir": "Held-out folder",
   "evolve.draft_hours": "Hours between drafting jobs",
+  "evolve.measure_parallel": "Fixtures measured at once",
+  "evolve.baseline_ttl_hours": "Reuse a measured baseline for (hours)",
+  "baseline.retry_hours": "Retry a failed baseline after (hours)",
+  "lane.retry_minutes": "Retry a failed experiment after (minutes)",
+  "lane.short_retry_minutes": "Retry a transient lane failure after (minutes)",
   "daemon.self_update": "Self-update",
   "daemon.self_update_retry_minutes": "Retry a failed build after (minutes)",
+  "daemon.restart_drain_minutes": "Drain in-flight runs before a restart (minutes)",
+  "daemon.planner_cache_ttl_seconds": "Keep a planner snapshot for (seconds)",
+  "daemon.unfit_reprobe_minutes": "Re-probe an unfit executor after (minutes)",
   "daemon.recover": "Recover failed jobs",
   "daemon.recover_days": "Recovery window (days)",
   "daemon.recover_limit": "Recoveries per job",
@@ -79,9 +92,12 @@ const LABELS: Record<string, string> = {
   "daemon.min_free_mb": "Minimum free disk (MB)",
   "heartbeat.dead_after": "An agent is dead after (seconds)",
   "provider.openai.base_url": "OpenAI-compatible endpoint",
+  "provider.retry_after_cap_s": "Longest Retry-After honoured (seconds)",
+  "provider.max_body_mb": "Largest provider response read (MiB)",
   harness: "Harness",
   provider: "Model provider",
   "harness.max_steps": "Model calls per run",
+  "harness.format_retries": "Prose-only replies corrected for free",
   "harness.max_cost": "Cost cap per run",
   "harness.keep_observations": "Observations kept verbatim",
   "harness.system_prompt": "System prompt template",
@@ -89,7 +105,7 @@ const LABELS: Record<string, string> = {
   "harness.output_limit": "Output kept per command (characters)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|plan|schedule|heartbeat|records)\./;
 
 export function settingLabel(name: string): string {
   const known = LABELS[name];
