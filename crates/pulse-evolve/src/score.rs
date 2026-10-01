@@ -234,6 +234,28 @@ pub(crate) fn inspect_tree(
             "cd CLONE && pulse evolve score NAME",
         ));
     }
+    let top = crate::process::git_output(
+        cancel,
+        dir,
+        &["rev-parse", "--show-toplevel"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_default();
+    if !top.trim().is_empty()
+        && let (Ok(got), Ok(want)) = (
+            std::fs::canonicalize(top.trim()),
+            std::fs::canonicalize(dir),
+        )
+        && got != want
+    {
+        return Err(crate::fixtures::input_error(
+            "Cannot score the working tree",
+            "the scoring directory must be the checkout root",
+            "cd CLONE && pulse evolve score NAME",
+        ));
+    }
     let mut tree = ScoredTree {
         head: head.clone(),
         commit: commit.trim().to_string(),

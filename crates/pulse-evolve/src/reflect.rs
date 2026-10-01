@@ -11,7 +11,7 @@ pub struct WorkingState {
     pub branch: String,
     pub head: String,
     pub changes: Vec<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub problem: String,
 }
 

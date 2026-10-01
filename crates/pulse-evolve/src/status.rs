@@ -195,6 +195,8 @@ pub struct LoopStatus {
     pub baseline_job: Option<JobRef>,
     #[serde(rename = "baseline_failed_at")]
     pub baseline_failed_at: String,
+    #[serde(rename = "baseline_cache", default)]
+    pub baseline_cache: crate::baseline_cache::BaselineCacheSummary,
     #[serde(rename = "public_fixtures")]
     pub public_fixtures: i64,
     #[serde(rename = "heldout")]
@@ -475,6 +477,7 @@ pub(crate) fn loop_status(s: &pulse_store::Store, project: &str) -> Result<LoopS
     }
     status.baseline_job = open_baseline_job(s, project)?;
     status.baseline_failed_at = recent_baseline_failure(s, project, &s.now())?;
+    status.baseline_cache = crate::baseline_cache::baseline_cache_summary(s, project)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT a.kept,
 		CASE WHEN p.kind = 'suggestion' AND EXISTS (
@@ -573,6 +576,20 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         .baseline
         .map(|b| format!("{} ({b:.4})", s.baseline_id))
         .unwrap_or_else(|| "none".to_string());
+    let baseline_cache = if s.baseline_cache.count == 0 {
+        "empty".to_string()
+    } else {
+        format!(
+            "{} row(s); latest {} at {} ({:.4})",
+            s.baseline_cache.count,
+            s.baseline_cache
+                .commit
+                .get(..7)
+                .unwrap_or(&s.baseline_cache.commit),
+            s.baseline_cache.at,
+            s.baseline_cache.score
+        )
+    };
     let hit = |r: &HitRate| match r.rate {
         Some(rate) => format!("{}/{} kept ({:.1}%)", r.kept, r.tried, 100.0 * rate),
         None => "0 tried; hit rate unavailable".to_string(),
@@ -583,6 +600,7 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         vec!["Limits".into(), s.limits.clone()],
         vec!["Tolerance".into(), format!("{:.4}", s.tolerance)],
         vec!["Baseline".into(), baseline],
+        vec!["Baseline cache".into(), baseline_cache],
         vec!["Public fixtures".into(), s.public_fixtures.to_string()],
         vec!["Held-out fixtures".into(), heldout_label(&s.heldout)],
         vec![
