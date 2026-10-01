@@ -2321,6 +2321,31 @@ mod tests {
     }
 
     #[test]
+    fn native_path_deny_reuses_shell_deny_rule() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".pulse/private")).unwrap();
+        fs::write(dir.path().join(".pulse/private/token"), "secret").unwrap();
+        let mut cfg = base_config();
+        cfg.cwd = dir.path().display().to_string();
+        let mut h = new(
+            Box::new(SharedFakeProvider(Arc::new(FakeProvider::new(Vec::new())))),
+            Box::new(crate::localenv::new_local_env(
+                dir.path().display().to_string(),
+                None,
+            )),
+            cfg,
+            Vec::new(),
+        );
+        h.compile_deny().unwrap();
+        assert!(h.denied("cat .pulse/private/token").is_some());
+        assert!(
+            h.resolve_action_path(".pulse/private/token", false)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn limits() {
         let _serial = crate::test_helpers::serial();
         let mut cfg = base_config();
