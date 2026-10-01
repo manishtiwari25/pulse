@@ -373,9 +373,12 @@ rm -f "{active}/$$"
         for result in &results {
             add_project_seconds(&s, &result.slug, result.seconds, result.start_seq);
         }
+        // Measured against the landings' own durations, not the wall clock,
+        // so a loaded machine that slows every git step does not fail this.
+        let serial: f64 = results.iter().map(|r| r.seconds).sum();
         assert!(
-            elapsed < Duration::from_millis(1900),
-            "landings did not overlap enough: {elapsed:?}, results = {results:?}"
+            elapsed.as_secs_f64() < serial * 0.8,
+            "landings did not overlap enough: {elapsed:?} vs {serial:.3}s run one after the other, results = {results:?}"
         );
         assert!(
             Path::new(&overlap).exists(),

@@ -647,6 +647,8 @@ pub(crate) fn run_job(
     let mut unfit: Option<crate::executor::ExecutorUnfit> = None;
     let mut pubkey = String::new();
     let mut worker_reported = String::new();
+    // The ballot the brief showed; `VOTE:` lines may only name these cards.
+    let mut run_ballot: Vec<BallotItem> = Vec::new();
 
     let body_result: Result<()> = (|| {
         pubkey = crate::keys::make_run_key(&ex.key_path(), agent, &run_id)?;
@@ -678,6 +680,7 @@ pub(crate) fn run_job(
                 }
             }
         }
+        run_ballot = ballot.clone();
         let brief_text = crate::brief::write_brief(crate::brief::BriefOpts {
             job: job.clone(),
             project: project.clone(),
@@ -1354,7 +1357,7 @@ pub(crate) fn run_job(
             now,
             &run_id,
             parsed.votes.clone(),
-            ballot_items_to_values(&[]),
+            ballot_items_to_values(&run_ballot),
             &mut log,
         );
         if !parsed.votes.is_empty() {
@@ -2161,6 +2164,110 @@ mod tests {
         assert_eq!(r.str("verify"), "verify exit 0", "run: {r:?}");
         let got = std::fs::read_to_string(marker_path).unwrap();
         assert_eq!(got, "setup\nworker\nverify\n");
+    }
+
+    #[test]
+    fn run_job_casts_votes_for_cards_on_its_ballot() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "alice");
+        let card = crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "evolution".into(),
+                thread: "votes".into(),
+                agent: crate::board::actor_agent(&s, "alice".into()),
+                session: "alice-session".into(),
+                summary: "Empty input to the parser returns an error instead of panicking".into(),
+                body: "Class: product\nFile: src/parser.rs\nVariable: empty-input guard\nHypothesis: an empty input returns Err\nSignal: check:parser".into(),
+                ..Default::default()
+            },
+        )
+        .expect("suggestion post");
+        let card_id = card.str("id");
+        let on_ballot = crate::tally::ballot_items_for(
+            &s,
+            "proj".into(),
+            "aurora".into(),
+            TEST_NOW.into(),
+            String::new(),
+        );
+        assert_eq!(on_ballot.len(), 1, "fixture card is not on aurora's ballot");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "ballot".into(),
+            "vote on the open cards".into(),
+            "read the ballot and vote".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!job.0.is_empty(), "lease returned no job");
+        let worker = format!(
+            "echo 'SUMMARY: voted on the ballot' && echo 'VOTE: {card_id} up one file, one variable, a check to move' && echo 'VOTE: 20260101T000000Z-nobody-000000 up this card is not on the ballot'"
+        );
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        let votes = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'vote' AND agent = 'aurora' AND on_post = ?",
+            &[&card_id],
+        );
+        assert_eq!(votes, 1, "the VOTE line for a ballot card was not cast");
+        let stray = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'vote' AND on_post = '20260101T000000Z-nobody-000000'",
+            &[],
+        );
+        assert_eq!(stray, 0, "a VOTE line for a card off the ballot was cast");
+        let result = crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT body FROM posts WHERE kind = 'result' AND agent = 'aurora' ORDER BY created_at DESC LIMIT 1",
+            &[],
+        );
+        assert!(
+            result.str("body").contains("Votes: 1 cast of 2"),
+            "result post does not count the cast vote: {}",
+            result.str("body")
+        );
+        let after = crate::tally::ballot_items_for(
+            &s,
+            "proj".into(),
+            "aurora".into(),
+            TEST_NOW.into(),
+            String::new(),
+        );
+        assert!(after.is_empty(), "a voted card is still on aurora's ballot");
     }
 
     #[test]
