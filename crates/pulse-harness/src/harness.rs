@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -14,7 +14,9 @@ pub const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const DEFAULT_OUTPUT_LIMIT: usize = 20000;
 pub const DEFAULT_KEEP_OBSERVATIONS: usize = 5;
 pub const DEFAULT_MAX_FORMAT_ERRORS: i32 = 3;
+pub const DEFAULT_FORMAT_RETRIES: i32 = 1;
 
+pub use DEFAULT_FORMAT_RETRIES as DefaultFormatRetries;
 pub use DEFAULT_KEEP_OBSERVATIONS as DefaultKeepObservations;
 pub use DEFAULT_MAX_FORMAT_ERRORS as DefaultMaxFormatErrors;
 pub use DEFAULT_MAX_STEPS as DefaultMaxSteps;
@@ -58,6 +60,7 @@ pub struct Config {
     pub keep_observations: usize,
     pub context_window: i32,
     pub max_format_errors: i32,
+    pub format_retries: i32,
     pub deny: Vec<String>,
     pub provider: String,
     pub cancel_file: String,
@@ -69,33 +72,49 @@ pub struct Config {
 pub enum StepKind {
     Assistant,
     Command,
+    Read,
+    Grep,
+    Edit,
     Observation,
     Note,
+    FormatRetry,
     Error,
     Exit,
 }
 
 pub const STEP_ASSISTANT: StepKind = StepKind::Assistant;
 pub const STEP_COMMAND: StepKind = StepKind::Command;
+pub const STEP_EDIT: StepKind = StepKind::Edit;
 pub const STEP_OBSERVATION: StepKind = StepKind::Observation;
+pub const STEP_FORMAT_RETRY: StepKind = StepKind::FormatRetry;
+pub const STEP_GREP: StepKind = StepKind::Grep;
 pub const STEP_NOTE: StepKind = StepKind::Note;
+pub const STEP_READ: StepKind = StepKind::Read;
 pub const STEP_ERROR: StepKind = StepKind::Error;
 pub const STEP_EXIT: StepKind = StepKind::Exit;
 
 pub use STEP_ASSISTANT as StepAssistant;
 pub use STEP_COMMAND as StepCommand;
+pub use STEP_EDIT as StepEdit;
 pub use STEP_ERROR as StepError;
 pub use STEP_EXIT as StepExit;
+pub use STEP_FORMAT_RETRY as StepFormatRetry;
+pub use STEP_GREP as StepGrep;
 pub use STEP_NOTE as StepNote;
 pub use STEP_OBSERVATION as StepObservation;
+pub use STEP_READ as StepRead;
 
 impl std::fmt::Display for StepKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Assistant => "assistant",
             Self::Command => "command",
+            Self::Read => "read",
+            Self::Grep => "grep",
+            Self::Edit => "edit",
             Self::Observation => "observation",
             Self::Note => "note",
+            Self::FormatRetry => "format_retry",
             Self::Error => "error",
             Self::Exit => "exit",
         })
@@ -176,6 +195,7 @@ pub struct ResultSummary {
     pub steps: i32,
     pub calls: i32,
     pub usage: Usage,
+    pub format_errors: i32,
     #[serde(skip)]
     pub elapsed: Duration,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -290,7 +310,8 @@ impl Agent {
             },
         ];
         let mut initiator = "user".to_string();
-        let mut format_errors = 0;
+        let mut counted_format_errors = 0;
+        let mut used_format_retries = 0;
         let mut keep_observations = self.cfg.keep_observations;
         let mut last_prompt_tokens = 0;
         let mut last_prune_level = 0;
@@ -406,15 +427,24 @@ impl Agent {
                 model,
                 ..Step::default()
             });
-            let (clean, submitted, submission) = self.handle_assistant(cancel, msg);
+            let free_format_retry = used_format_retries < self.cfg.format_retries.max(0);
+            let (clean, submitted, submission, prose_only) =
+                self.handle_assistant(cancel, msg, free_format_retry);
             if submitted {
                 return Ok(self.finish(EXIT_SUBMITTED, &submission, ""));
             }
             if clean {
-                format_errors = 0;
+                counted_format_errors = 0;
+                used_format_retries = 0;
             } else {
-                format_errors += 1;
-                if format_errors >= self.cfg.max_format_errors {
+                self.result.format_errors += 1;
+                if prose_only && free_format_retry {
+                    used_format_retries += 1;
+                    self.result.calls = self.result.calls.saturating_sub(1);
+                    continue;
+                }
+                counted_format_errors += 1;
+                if counted_format_errors >= self.cfg.max_format_errors {
                     return Ok(self.finish(EXIT_FORMAT_ERROR, "", ""));
                 }
             }
@@ -524,7 +554,12 @@ impl Agent {
         }
     }
 
-    fn handle_assistant(&mut self, cancel: &CancelToken, msg: Message) -> (bool, bool, String) {
+    fn handle_assistant(
+        &mut self,
+        cancel: &CancelToken,
+        msg: Message,
+        free_format_retry: bool,
+    ) -> (bool, bool, String, bool) {
         if !msg.tool_calls.is_empty() {
             let mut all_clean = true;
             for call in msg.tool_calls {
@@ -566,14 +601,22 @@ impl Agent {
                     tool_calls: Vec::new(),
                 });
                 if submit {
-                    return (true, true, sub);
+                    return (true, true, sub, false);
                 }
             }
-            return (all_clean, false, String::new());
+            return (all_clean, false, String::new(), false);
         }
-        let blocks = bash_blocks(&msg.content);
-        if blocks.len() == 1 {
-            let (obs_text, _, submit, sub) = self.run_command(cancel, &blocks[0]);
+        let actions = action_blocks(&msg.content);
+        if actions.len() == 1 {
+            let (obs_text, submit, sub) = match &actions[0] {
+                ActionBlock::Command(command) => {
+                    let (text, _, submit, sub) = self.run_command(cancel, command);
+                    (text, submit, sub)
+                }
+                ActionBlock::Read(spec) => self.run_native_action(NativeAction::Read, spec),
+                ActionBlock::Grep(spec) => self.run_native_action(NativeAction::Grep, spec),
+                ActionBlock::Edit(spec) => self.run_native_action(NativeAction::Edit, spec),
+            };
             self.msgs.push(Message {
                 role: Role::User,
                 content: obs_text,
@@ -582,13 +625,13 @@ impl Agent {
                 name: String::new(),
             });
             if submit {
-                return (true, true, sub);
+                return (true, true, sub, false);
             }
-            return (true, false, String::new());
+            return (true, false, String::new(), false);
         }
-        if blocks.len() > 1 {
+        if actions.len() > 1 {
             let text =
-                "write exactly one ```bash block per message, or your final report with no command"
+                "write exactly one fenced bash/read/grep/edit block per message, or your final report with no command"
                     .to_string();
             self.msgs.push(Message {
                 role: Role::User,
@@ -602,10 +645,10 @@ impl Agent {
                 content: text,
                 ..Step::default()
             });
-            return (false, false, String::new());
+            return (false, false, String::new(), false);
         }
         if is_report(&msg.content) {
-            return (true, true, msg.content);
+            return (true, true, msg.content, false);
         }
         let text = "Your message had no command and no report. Either call the bash tool (or write one ```bash block) to keep working, or finish with your report: a `SUMMARY:` line plus any `FINDING:`/`SUGGESTION:`/`QUESTION:`/`VOTE:` lines.".to_string();
         self.msgs.push(Message {
@@ -616,11 +659,15 @@ impl Agent {
             name: String::new(),
         });
         self.emit(Step {
-            kind: StepKind::Error,
+            kind: if free_format_retry {
+                StepKind::FormatRetry
+            } else {
+                StepKind::Error
+            },
             content: text,
             ..Step::default()
         });
-        (false, false, String::new())
+        (false, false, String::new(), true)
     }
 
     fn run_command(
@@ -672,6 +719,254 @@ impl Agent {
 
     fn denied(&self, command: &str) -> Option<&DenyRule> {
         self.deny.iter().find(|r| r.re.is_match(command))
+    }
+
+    fn run_native_action(&mut self, action: NativeAction, spec: &str) -> (String, bool, String) {
+        self.result.steps += 1;
+        self.emit(Step {
+            kind: action.step_kind(),
+            content: spec.to_string(),
+            command: spec.to_string(),
+            ..Step::default()
+        });
+        let obs = match action {
+            NativeAction::Read => self.native_read(spec),
+            NativeAction::Grep => self.native_grep(spec),
+            NativeAction::Edit => self.native_edit(spec),
+        };
+        let command = format!("{} action", action.name());
+        self.emit_observation(&command, &obs);
+        let formatted = format_observation(&obs, self.cfg.output_limit);
+        (formatted, false, String::new())
+    }
+
+    fn native_read(&self, spec: &str) -> Observation {
+        let start = Instant::now();
+        let mut out = String::new();
+        for raw in spec.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let (path, range) = parse_read_target(raw);
+            let resolved = match self.resolve_action_path(path, false) {
+                Ok(p) => p,
+                Err(e) => return action_error(e, start, 126),
+            };
+            if !resolved.path.exists() {
+                return action_error(format!("read: {} does not exist", path), start, 1);
+            }
+            let data = match fs::read(&resolved.path) {
+                Ok(d) => d,
+                Err(e) => return action_error(format!("read {}: {e}", path), start, 1),
+            };
+            out.push_str(&format!("==> {} <==\n", resolved.rel));
+            if data.contains(&0) {
+                out.push_str(&format!("binary file, {} bytes\n", data.len()));
+                continue;
+            }
+            let text = match String::from_utf8(data) {
+                Ok(t) => t,
+                Err(e) => {
+                    out.push_str(&format!("binary file, {} bytes\n", e.as_bytes().len()));
+                    continue;
+                }
+            };
+            for (idx, line) in text.lines().enumerate() {
+                let n = idx + 1;
+                if let Some((start_line, end_line)) = range
+                    && (n < start_line || n > end_line)
+                {
+                    continue;
+                }
+                out.push_str(&format!("{n:>6}\t{line}\n"));
+            }
+        }
+        Observation {
+            output: out,
+            duration: start.elapsed(),
+            ..Observation::default()
+        }
+    }
+
+    fn native_grep(&self, spec: &str) -> Observation {
+        let start = Instant::now();
+        let mut lines = spec.lines();
+        let pattern = lines.next().unwrap_or("").trim();
+        if pattern.is_empty() {
+            return action_error("grep: missing regex pattern".into(), start, 1);
+        }
+        let re = match Regex::new(pattern) {
+            Ok(r) => r,
+            Err(e) => return action_error(format!("grep: invalid regex: {e}"), start, 1),
+        };
+        let scope = lines
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(".");
+        let root = match self.resolve_action_path(".", false) {
+            Ok(p) => p.path,
+            Err(e) => return action_error(e, start, 126),
+        };
+        let mut files = Vec::new();
+        if scope.contains('*') {
+            collect_files(&root, &root, &mut files);
+            files.retain(|p| {
+                p.strip_prefix(&root)
+                    .ok()
+                    .and_then(|r| r.to_str())
+                    .is_some_and(|r| glob_match(scope, r))
+            });
+        } else {
+            let resolved = match self.resolve_action_path(scope, false) {
+                Ok(p) => p,
+                Err(e) => return action_error(e, start, 126),
+            };
+            if resolved.path.is_file() {
+                files.push(resolved.path);
+            } else {
+                collect_files(&root, &resolved.path, &mut files);
+            }
+        }
+        let mut out = String::new();
+        for file in files {
+            let rel = file
+                .strip_prefix(&root)
+                .ok()
+                .and_then(|p| p.to_str())
+                .unwrap_or("")
+                .to_string();
+            if self.denied(&rel).is_some() {
+                continue;
+            }
+            let Ok(data) = fs::read_to_string(&file) else {
+                continue;
+            };
+            for (idx, line) in data.lines().enumerate() {
+                if re.is_match(line) {
+                    out.push_str(&format!("{}:{}: {}\n", rel, idx + 1, line));
+                }
+            }
+        }
+        Observation {
+            output: out,
+            duration: start.elapsed(),
+            ..Observation::default()
+        }
+    }
+
+    fn native_edit(&self, spec: &str) -> Observation {
+        let start = Instant::now();
+        let Some((path, rest)) = spec.split_once('\n') else {
+            return action_error("edit: missing path and replacement block".into(), start, 1);
+        };
+        let path = path.trim();
+        let blocks = match parse_edit_blocks(rest) {
+            Ok(b) => b,
+            Err(e) => return action_error(e, start, 1),
+        };
+        let create = !Path::new(&self.cfg.cwd).join(path).exists()
+            && blocks.len() == 1
+            && blocks[0].search.is_empty();
+        let resolved = match self.resolve_action_path(path, create) {
+            Ok(p) => p,
+            Err(e) => return action_error(e, start, 126),
+        };
+        if create {
+            if let Err(e) = fs::write(&resolved.path, &blocks[0].replace) {
+                return action_error(format!("edit {}: {e}", resolved.rel), start, 1);
+            }
+            return Observation {
+                output: format!("created {}\n", resolved.rel),
+                duration: start.elapsed(),
+                ..Observation::default()
+            };
+        }
+        let mut text = match fs::read_to_string(&resolved.path) {
+            Ok(t) => t,
+            Err(e) => return action_error(format!("edit {}: {e}", resolved.rel), start, 1),
+        };
+        for block in blocks {
+            if block.search.is_empty() {
+                return action_error(
+                    format!(
+                        "edit {}: empty SEARCH only creates a new file",
+                        resolved.rel
+                    ),
+                    start,
+                    1,
+                );
+            }
+            let count = text.matches(&block.search).count();
+            if count != 1 {
+                let nearest = nearest_line(&text, &block.search);
+                return action_error(
+                    format!(
+                        "edit {}: SEARCH matched {count} times, want exactly 1 (nearest line {nearest})",
+                        resolved.rel
+                    ),
+                    start,
+                    1,
+                );
+            }
+            text = text.replacen(&block.search, &block.replace, 1);
+        }
+        if let Err(e) = fs::write(&resolved.path, text) {
+            return action_error(format!("edit {}: {e}", resolved.rel), start, 1);
+        }
+        Observation {
+            output: format!("edited {}\n", resolved.rel),
+            duration: start.elapsed(),
+            ..Observation::default()
+        }
+    }
+
+    fn resolve_action_path(
+        &self,
+        rel: &str,
+        allow_create: bool,
+    ) -> std::result::Result<ResolvedPath, String> {
+        let rel = rel.trim();
+        if rel.is_empty() {
+            return Err("path is empty".into());
+        }
+        let rel_path = Path::new(rel);
+        if rel_path.is_absolute()
+            || rel_path.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(format!(
+                "path {rel:?} must be relative and stay inside the clone"
+            ));
+        }
+        if let Some(rule) = self.denied(rel) {
+            return Err(format!(
+                "refused by policy: {}. Native actions use the same deny rules as shell commands.",
+                rule.description
+            ));
+        }
+        let root = fs::canonicalize(if self.cfg.cwd.is_empty() {
+            "."
+        } else {
+            &self.cfg.cwd
+        })
+        .map_err(|e| format!("canonicalize clone root: {e}"))?;
+        let path = root.join(rel_path);
+        let check = if allow_create {
+            path.parent().unwrap_or(&root).to_path_buf()
+        } else {
+            path.clone()
+        };
+        let canon = fs::canonicalize(&check)
+            .map_err(|e| format!("path {rel:?} cannot be resolved inside the clone: {e}"))?;
+        if !canon.starts_with(&root) {
+            return Err(format!("path {rel:?} escapes the clone root"));
+        }
+        Ok(ResolvedPath {
+            rel: rel.to_string(),
+            path,
+        })
     }
 
     fn emit_observation(&mut self, command: &str, obs: &Observation) {
@@ -773,8 +1068,17 @@ pub use write_trajectory as WriteTrajectory;
 pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "You are an autonomous software engineering agent working in {{.Info.cwd}} on {{.Info.os}}.\n",
     "You have exactly one tool: bash. Call it with a JSON object containing a command string.\n",
-    "If you cannot call tools, write exactly one fenced ```bash or ```sh block per message.\n",
-    "Each command runs in a fresh non-interactive {{.Info.shell}} in the working directory.\n",
+    "If you cannot call tools, write exactly one fenced block per message; exactly one fenced block is executed.\n",
+    "The working directory is already the clone root ({{.Info.cwd}}), so `cd <root> &&` is unnecessary.\n",
+    "Example command reply: ```bash\ncargo test -p crate_name\n```.\n",
+    "Example report reply: SUMMARY: done\nFINDING: tests pass.\n",
+    "Prose-only replies are not executed.\n",
+    "Shell command fences may use ```bash, ```sh, ```shell, ```zsh, ```console, or ```terminal.\n",
+    "Native action fences are cheaper than shell for the same job:\n",
+    "```read\nsrc/lib.rs:1-80\n```\n",
+    "```grep\nTODO\nsrc\n```\n",
+    "```edit\nsrc/lib.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```\n",
+    "Each shell command runs in a fresh non-interactive {{.Info.shell}} in the working directory.\n",
     "No state survives between commands: cd, exports, aliases, and shell variables are lost.\n",
     "Chain setup and use with &&, or use absolute paths.\n",
     "Commands time out after {{.StepTimeout}}.\n",
@@ -782,7 +1086,7 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "Output over {{.OutputLimit}} characters is cut in the middle.\n",
     "Older command outputs are shortened to their first and last lines as the conversation grows; rerun a command if you need its full output again.\n",
     "Never run interactive programs: editors, pagers, watch modes, or foreground servers.\n",
-    "To edit files, use heredocs, sed -i, or a small python3 -c script.\n",
+    "To edit files, prefer ```edit blocks; shell heredocs, sed -i, or python3 -c are still available when needed.\n",
     "Verify your work by running the project's own checks.\n",
     "On a command failure, inspect the cause, make a small safe correction and rerun the targeted check.\n",
     "If it still fails, try a different evidence-based approach or use the task's peer-help channel; do not repeat an unchanged failure or poll while waiting for help.\n",
@@ -792,7 +1096,7 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "When done, or when you cannot continue, reply with no command and a plain-text final report.\n",
     "The report must include a SUMMARY: line and any FINDING:, SUGGESTION:, QUESTION:, or VOTE: lines the task asked for.\n",
     "Those key words must start their lines because a program reads the report.\n",
-    "A message with neither a command nor a report wastes a step.\n",
+    "A message with neither a command nor a report wastes a call after one corrective retry.\n",
     "You have at most {{.MaxSteps}} model calls.\n",
     "The task follows in the next message and its rules apply in full."
 );
@@ -911,6 +1215,9 @@ pub fn apply_defaults(mut cfg: Config) -> Config {
     if cfg.max_format_errors == 0 {
         cfg.max_format_errors = DEFAULT_MAX_FORMAT_ERRORS;
     }
+    if cfg.format_retries < 0 {
+        cfg.format_retries = 0;
+    }
     cfg
 }
 
@@ -928,18 +1235,246 @@ fn parse_command(args: &str) -> Option<String> {
 }
 
 pub fn bash_blocks(text: &str) -> Vec<String> {
-    static RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r"(?s)```(?:bash|sh)\s*\n(.*?)\n```").unwrap());
-    RE.captures_iter(text)
-        .map(|c| c[1].trim().to_string())
+    action_blocks(text)
+        .into_iter()
+        .filter_map(|b| match b {
+            ActionBlock::Command(command) => Some(command),
+            _ => None,
+        })
         .collect()
 }
 
 pub fn is_report(text: &str) -> bool {
     static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-        Regex::new(r"(?m)^\s*-?\s*`?(SUMMARY|QUESTION|FINDING|SUGGESTION|VOTE)`?:").unwrap()
+        Regex::new(
+            r"(?im)^\s*(?:#{1,6}\s*)?-?\s*`?(SUMMARY|QUESTION|FINDING|SUGGESTION|VOTE|DECIDE)`?:",
+        )
+        .unwrap()
     });
-    text.contains("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT") || RE.is_match(text)
+    static HEADING_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?im)^\s*#{1,6}\s*(?:final\s+)?report\s*$").unwrap()
+    });
+    text.contains("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT")
+        || RE.is_match(text)
+        || HEADING_RE.is_match(text)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ActionBlock {
+    Command(String),
+    Read(String),
+    Grep(String),
+    Edit(String),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum NativeAction {
+    Read,
+    Grep,
+    Edit,
+}
+
+impl NativeAction {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Grep => "grep",
+            Self::Edit => "edit",
+        }
+    }
+
+    fn step_kind(self) -> StepKind {
+        match self {
+            Self::Read => StepKind::Read,
+            Self::Grep => StepKind::Grep,
+            Self::Edit => StepKind::Edit,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedPath {
+    rel: String,
+    path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct EditBlock {
+    search: String,
+    replace: String,
+}
+
+fn action_blocks(text: &str) -> Vec<ActionBlock> {
+    let mut out = Vec::new();
+    out.extend(fenced_action_blocks(text));
+    if out.is_empty()
+        && let Some(command) = inline_code_command(text)
+    {
+        out.push(ActionBlock::Command(command));
+    }
+    out
+}
+
+fn fenced_action_blocks(text: &str) -> Vec<ActionBlock> {
+    static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?s)(```|~~~)[ \t]*([A-Za-z0-9_-]*)[^\n`~]*\n(.*?)\n(?:```|~~~)").unwrap()
+    });
+    RE.captures_iter(text)
+        .filter_map(|c| {
+            let info = c.get(2).map_or("", |m| m.as_str()).to_ascii_lowercase();
+            let body = c.get(3).map_or("", |m| m.as_str()).trim().to_string();
+            match info.as_str() {
+                "bash" | "sh" | "shell" | "zsh" | "console" | "terminal" => {
+                    Some(ActionBlock::Command(strip_prompt_prefix(&body)))
+                }
+                "read" => Some(ActionBlock::Read(body)),
+                "grep" => Some(ActionBlock::Grep(body)),
+                "edit" => Some(ActionBlock::Edit(body)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn strip_prompt_prefix(command: &str) -> String {
+    let mut lines: Vec<&str> = command.lines().collect();
+    if let Some(first) = lines.first_mut() {
+        let trimmed = first.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("$ ") {
+            *first = rest;
+        }
+    }
+    lines.join("\n").trim().to_string()
+}
+
+fn inline_code_command(text: &str) -> Option<String> {
+    static RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"`([^`\n]+)`").unwrap());
+    let mut matches = RE.captures_iter(text);
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    let whole = first.get(0)?;
+    let outside = format!("{}{}", &text[..whole.start()], &text[whole.end()..]);
+    if !outside.trim().is_empty() {
+        return None;
+    }
+    let command = first.get(1)?.as_str().trim();
+    (!command.is_empty()).then(|| command.to_string())
+}
+
+fn parse_read_target(raw: &str) -> (&str, Option<(usize, usize)>) {
+    let Some((path, range)) = raw.rsplit_once(':') else {
+        return (raw, None);
+    };
+    let Some((start, end)) = range.split_once('-') else {
+        return (raw, None);
+    };
+    let Ok(start) = start.parse::<usize>() else {
+        return (raw, None);
+    };
+    let Ok(end) = end.parse::<usize>() else {
+        return (raw, None);
+    };
+    if start == 0 || end < start {
+        return (raw, None);
+    }
+    (path, Some((start, end)))
+}
+
+fn parse_edit_blocks(text: &str) -> std::result::Result<Vec<EditBlock>, String> {
+    let mut blocks = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<<<<<<< SEARCH") {
+        rest = &rest[start + "<<<<<<< SEARCH".len()..];
+        if let Some(stripped) = rest.strip_prefix('\n') {
+            rest = stripped;
+        }
+        let Some((mid, mid_len)) = find_edit_marker(rest, "=======") else {
+            return Err("edit: missing ======= marker".into());
+        };
+        let search = &rest[..mid];
+        rest = &rest[mid + mid_len..];
+        if let Some(stripped) = rest.strip_prefix('\n') {
+            rest = stripped;
+        }
+        let Some((end, end_len)) = find_edit_marker(rest, ">>>>>>> REPLACE") else {
+            return Err("edit: missing >>>>>>> REPLACE marker".into());
+        };
+        let replace = &rest[..end];
+        blocks.push(EditBlock {
+            search: search.to_string(),
+            replace: replace.to_string(),
+        });
+        rest = &rest[end + end_len..];
+    }
+
+    fn find_edit_marker(text: &str, marker: &str) -> Option<(usize, usize)> {
+        if text.starts_with(marker) {
+            return Some((0, marker.len()));
+        }
+        text.find(&format!("\n{marker}"))
+            .map(|idx| (idx, marker.len() + 1))
+    }
+    if blocks.is_empty() {
+        Err("edit: missing SEARCH/REPLACE block".into())
+    } else {
+        Ok(blocks)
+    }
+}
+
+fn nearest_line(text: &str, needle: &str) -> usize {
+    let first = needle.lines().next().unwrap_or("").trim();
+    if first.is_empty() {
+        return 1;
+    }
+    text.lines()
+        .enumerate()
+        .find(|(_, line)| line.trim().contains(first))
+        .map_or(1, |(idx, _)| idx + 1)
+}
+
+fn action_error(output: String, start: Instant, exit_code: i32) -> Observation {
+    Observation {
+        output,
+        exit_code,
+        duration: start.elapsed(),
+        ..Observation::default()
+    }
+}
+
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(canon) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if !canon.starts_with(root) {
+            continue;
+        }
+        if canon.is_dir() {
+            collect_files(root, &canon, out);
+        } else if canon.is_file() {
+            out.push(canon);
+        }
+    }
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    fn inner(p: &[u8], t: &[u8]) -> bool {
+        if p.is_empty() {
+            return t.is_empty();
+        }
+        if p[0] == b'*' {
+            return inner(&p[1..], t) || (!t.is_empty() && inner(p, &t[1..]));
+        }
+        !t.is_empty() && (p[0] == t[0]) && inner(&p[1..], &t[1..])
+    }
+    inner(pattern.as_bytes(), text.as_bytes())
 }
 
 pub fn deny_description(pattern: &str) -> String {
@@ -1529,12 +2064,74 @@ mod tests {
         assert_eq!(rendered, default_system_prompt(&info, cfg.clone()));
         assert!(rendered.contains("Commands time out after 15s."));
         assert!(rendered.contains("Output over 1234 characters"));
+        assert!(rendered.contains("already the clone root"));
+        assert!(rendered.contains("exactly one fenced block"));
         let custom = render_prompt(
             "{{.Cwd}} {{.Provider}} {{.Model}} {{.Info.shell}}",
             prompt_data(&info, &cfg),
         )
         .unwrap();
         assert_eq!(custom, "/work fake m /bin/zsh");
+    }
+
+    #[test]
+    fn lenient_action_parser_accepts_live_shapes() {
+        let _serial = crate::test_helpers::serial();
+        assert_eq!(
+            bash_blocks("~~~shell\n$ cargo test -p pulse-harness\n~~~"),
+            vec!["cargo test -p pulse-harness".to_string()]
+        );
+        assert_eq!(
+            bash_blocks("```console\n$ rg harness README.md\n```"),
+            vec!["rg harness README.md".to_string()]
+        );
+        assert_eq!(
+            bash_blocks("`cargo fmt --all`"),
+            vec!["cargo fmt --all".to_string()]
+        );
+        assert!(matches!(
+            action_blocks("```read\nREADME.md:1-5\n```").as_slice(),
+            [ActionBlock::Read(body)] if body == "README.md:1-5"
+        ));
+        assert!(matches!(
+            action_blocks("```grep\nharness\nREADME.md\n```").as_slice(),
+            [ActionBlock::Grep(body)] if body.contains("harness")
+        ));
+        assert!(matches!(
+            action_blocks("```edit\nREADME.md\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n```")
+                .as_slice(),
+            [ActionBlock::Edit(body)] if body.contains("<<<<<<< SEARCH")
+        ));
+        assert!(is_report("### report\nsummary: done"));
+    }
+
+    #[test]
+    fn prose_only_retry_is_recorded_without_consuming_step_budget_once() {
+        let _serial = crate::test_helpers::serial();
+        let mut cfg = base_config();
+        cfg.max_steps = 1;
+        cfg.format_retries = 1;
+        cfg.max_format_errors = 2;
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(msg("I will inspect first.")),
+            resp(msg("Still planning.")),
+        ]));
+        let (h, got) = run_agent(p, Arc::new(Mutex::new(FakeEnv::default())), cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_STEP_LIMIT);
+        assert_eq!(got.calls, 1);
+        assert_eq!(got.format_errors, 2);
+        assert!(
+            h.trajectory()
+                .steps
+                .iter()
+                .any(|s| s.kind == StepKind::FormatRetry)
+        );
+        assert!(
+            h.trajectory()
+                .steps
+                .iter()
+                .any(|s| s.kind == StepKind::Error)
+        );
     }
 
     #[test]
@@ -1588,6 +2185,139 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn native_read_grep_edit_blocks_run_on_temp_clone() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("lib.rs"),
+            "fn main() {\n    println!(\"old\");\n}\n",
+        )
+        .unwrap();
+        let cfg = Config {
+            cwd: dir.path().display().to_string(),
+            model: "m".into(),
+            task: "do it".into(),
+            system_prompt: "system".into(),
+            max_steps: 10,
+            ..Config::default()
+        };
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(msg("```read\nlib.rs:1-2\n```")),
+            resp(msg("```grep\nprintln\nlib.rs\n```")),
+            resp(msg(
+                "```edit\nlib.rs\n<<<<<<< SEARCH\nprintln!(\"old\");\n=======\nprintln!(\"new\");\n>>>>>>> REPLACE\n```",
+            )),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(crate::localenv::new_local_env(
+                dir.path().display().to_string(),
+                None,
+            )),
+            cfg,
+            Vec::new(),
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.steps, 3);
+        assert!(
+            fs::read_to_string(dir.path().join("lib.rs"))
+                .unwrap()
+                .contains("new")
+        );
+        let steps = h.trajectory().steps;
+        assert!(steps.iter().any(|s| s.kind == StepKind::Read));
+        assert!(steps.iter().any(|s| s.kind == StepKind::Grep));
+        assert!(steps.iter().any(|s| s.kind == StepKind::Edit));
+        assert!(
+            h.messages()
+                .iter()
+                .any(|m| m.content.contains("     1\tfn main()"))
+        );
+    }
+
+    #[test]
+    fn native_edit_reports_zero_multi_and_create() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("dup.txt"), "same\nsame\n").unwrap();
+        let mut cfg = base_config();
+        cfg.cwd = dir.path().display().to_string();
+        cfg.max_steps = 10;
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(msg(
+                "```edit\ndup.txt\n<<<<<<< SEARCH\nmissing\n=======\nnew\n>>>>>>> REPLACE\n```",
+            )),
+            resp(msg(
+                "```edit\ndup.txt\n<<<<<<< SEARCH\nsame\n=======\nnew\n>>>>>>> REPLACE\n```",
+            )),
+            resp(msg(
+                "```edit\ncreated.txt\n<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE\n```",
+            )),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(crate::localenv::new_local_env(
+                dir.path().display().to_string(),
+                None,
+            )),
+            cfg,
+            Vec::new(),
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        let joined = h
+            .messages()
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("matched 0 times"));
+        assert!(joined.contains("matched 2 times"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("created.txt")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn native_actions_reject_path_escape_and_denied_path() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".pulse/private")).unwrap();
+        fs::write(dir.path().join(".pulse/private/token"), "secret").unwrap();
+        let mut cfg = base_config();
+        cfg.cwd = dir.path().display().to_string();
+        cfg.max_steps = 10;
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(msg("```read\n../outside\n```")),
+            resp(msg("```read\n.pulse/private/token\n```")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(crate::localenv::new_local_env(
+                dir.path().display().to_string(),
+                None,
+            )),
+            cfg,
+            Vec::new(),
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        let joined = h
+            .messages()
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("must be relative"));
+        assert!(joined.contains("refused by policy"));
     }
 
     #[test]

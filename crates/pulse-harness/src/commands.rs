@@ -256,6 +256,9 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         "harness.keep_observations",
         DEFAULT_KEEP_OBSERVATIONS as i32,
     );
+    let format_retries = st.as_ref().map_or(DEFAULT_FORMAT_RETRIES, |s| {
+        s.setting_int("harness.format_retries") as i32
+    });
     let mut system_prompt_template = st
         .as_ref()
         .map_or_else(String::new, |s| s.setting("harness.system_prompt", ""));
@@ -330,6 +333,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         max_cost,
         output_limit: output_limit as usize,
         keep_observations: keep_observations as usize,
+        format_retries,
         context_window,
         system_prompt_template,
         cancel_file,
@@ -1503,6 +1507,15 @@ impl Sink for ProgressSink {
             StepKind::Command => {
                 let _ = writeln!(self.w, "{}$ {}", prefix, one_line(&step.command, 160));
             }
+            StepKind::Read | StepKind::Grep | StepKind::Edit => {
+                let _ = writeln!(
+                    self.w,
+                    "{}{}: {}",
+                    prefix,
+                    step.kind,
+                    one_line(&step.command, 160)
+                );
+            }
             StepKind::Observation => {
                 let code = step.exit_code.unwrap_or(0);
                 let _ = writeln!(
@@ -1516,6 +1529,14 @@ impl Sink for ProgressSink {
             }
             StepKind::Note => {
                 let _ = writeln!(self.w, "{}note: {}", prefix, one_line(&step.content, 160));
+            }
+            StepKind::FormatRetry => {
+                let _ = writeln!(
+                    self.w,
+                    "{}format_retry: {}",
+                    prefix,
+                    one_line(&step.content, 160)
+                );
             }
             StepKind::Error => {
                 let _ = writeln!(self.w, "{}error: {}", prefix, one_line(&step.content, 160));
@@ -1560,6 +1581,7 @@ pub fn run_json(
         ("submission".into(), json!(result.submission)),
         ("steps".into(), json!(result.steps)),
         ("calls".into(), json!(result.calls)),
+        ("format_errors".into(), json!(result.format_errors)),
         (
             "usage".into(),
             json!(pulse_store::gomap! {
@@ -1586,8 +1608,8 @@ pub fn write_run_text(w: &mut dyn Write, steps: &[Step], result: &ResultSummary)
         return Ok(());
     }
     let mut summary = format!(
-        "SUMMARY: harness stopped: {} after {} model calls and {} commands",
-        result.exit_status, result.calls, result.steps
+        "SUMMARY: harness stopped: {} after {} model calls and {} commands; format_errors={}",
+        result.exit_status, result.calls, result.steps, result.format_errors
     );
     if !result.error.is_empty() {
         summary.push_str("; error: ");

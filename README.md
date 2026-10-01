@@ -649,6 +649,7 @@ record, read with `pulse record show WF-evolve`.
 | `harness.max_steps` | `60` | Model calls one worker run may make before the harness stops it. |
 | `harness.step_timeout` | `300` seconds | Wall-clock cap on one command the model runs. |
 | `harness.output_limit` | `20000` characters | Command output kept per step; longer output is cut in the middle. |
+| `harness.format_retries` | `1` | Prose-only native-harness replies corrected without consuming `harness.max_steps` before later format errors count normally. |
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
@@ -712,24 +713,36 @@ queued deliveries are stored for the next start.
 Every job runs through PULSE's own agent harness, `pulse harness run` - a
 small, readable loop in the lineage of
 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent): one model,
-one tool (`bash`), a linear history, and limits the owner sets.
+one shell tool (`bash`), three cheaper native action blocks (`read`, `grep`,
+`edit`), a linear history, and limits the owner sets.
 
 ```text
 system prompt + the job's brief
-  ─► model answers (a tool call, or a fenced bash block)
-  ─► the command runs in the clone: fresh non-interactive /bin/sh, no state between steps
+  ─► model answers (a tool call, or exactly one fenced bash/read/grep/edit block)
+  ─► the command or native action runs in the clone root; cd <root> is unnecessary
   ─► output (cut in the middle past harness.output_limit) goes back as the observation
-  ─► ... until the model answers with no command: that message is the final report
+  ─► ... until the model answers with no command/action: that message is the final report
 ```
 
-The final report is what the runner has always read - `SUMMARY:`,
+The first-turn contract says that exactly one fenced block per reply is
+executed, prose-only replies are not executed, and a command block can use
+```` ```bash ````, ```` ```sh ````, ```` ```shell ````, ```` ```zsh ````,
+```` ```console ````, or ```` ```terminal ````. The parser also accepts
+`~~~` fences, a leading `$ ` prompt on the first command line, and a
+single-line inline-code command when the whole reply is only that code.
+Multiple command/action blocks are still refused as ambiguous. The final
+report is what the runner has always read - `SUMMARY:`,
 `FINDING:`, `SUGGESTION:`, `QUESTION:`, `VOTE:` and `DECIDE:` lines - so
 briefs, planning, landing, lessons and the board are unchanged. A run that
 hits a limit still reports: `SUMMARY: harness stopped: step_limit after 60
-model calls and 41 commands` and the model's last message as a `FINDING:`.
-Exit status zero alone is not a completion report: empty or unstructured
-output without an explicit job-completion record is rejected. A successful
-answer job writes its summary back to the original, still-unanswered worker
+model calls and 41 commands; format_errors=0` and the model's last message
+as a `FINDING:`. Report headings and report keywords are matched
+case-insensitively, including Markdown heading levels. Exit status zero alone
+is not a completion report: empty or unstructured output without an explicit
+job-completion record is rejected. One prose-only reply receives a
+`format_retry` corrective step without consuming `harness.max_steps`; later
+consecutive prose-only replies count as format errors and the summary exposes
+`format_errors=N`. A successful answer job writes its summary back to the original, still-unanswered worker
 question; failed, owner-only or still-blocked answers do not close questions.
 An explicit `SUMMARY: blocked: ...` or `SUMMARY: failed: ...` also fails the
 job, even when the worker exits zero, so unfinished work reaches recovery
@@ -761,6 +774,47 @@ step in the transcript (`collapsed 4 older observations …`) so the console
 shows what the model no longer sees; notes never count as calls or commands,
 and nothing is ever summarised by a model.
 
+**Native action blocks.** Native actions avoid shell round trips for common
+reads and edits and use the same output truncation and clone-root confinement
+as shell observations:
+
+````text
+```read
+src/lib.rs:1-80
+README.md
+```
+````
+
+`read` takes one relative path per line, optionally with `:START-END` line
+ranges, and returns numbered text lines; binary files report their size only.
+
+````text
+```grep
+TODO|FIXME
+crates/pulse-harness/src
+```
+````
+
+`grep` takes a Rust regex on the first line and an optional relative file,
+directory, or glob on the second line, returning `path:line: text` matches.
+
+````text
+```edit
+src/lib.rs
+<<<<<<< SEARCH
+old text
+=======
+new text
+>>>>>>> REPLACE
+```
+````
+
+`edit` takes a relative path and one or more exact SEARCH/REPLACE blocks.
+Each SEARCH must match exactly once or the file is left unchanged with a
+clear match-count error. An empty SEARCH creates a new file only when the
+target does not exist. Absolute paths, `..`, symlinks that escape the clone,
+and paths denied by the harness policy are refused.
+
 The trajectory JSON under `~/.pulse/harness/<session>.json` is rewritten
 atomically after every step, so a run that was killed still leaves a readable
 file for replay. Every stored step also emits a `harness.step` event on the
@@ -778,13 +832,14 @@ two-reply script, and `PULSE_HARNESS_FAKE_SCRIPT=path.json` supplies your own
 (`{"replies":[{"command":"echo hi"},{"report":"SUMMARY: done"}]}`; add
 `"loop":true` to repeat the last reply). It never appears in Settings; it is
 for tests and demos.
-Commands that would leave the clone (`git push`, changing `git remote`, any
-`gh` call) or touch credentials (`~/.ssh`, `.netrc`, the pulse home's
+Commands or native paths that would leave the clone (`git push`, changing
+`git remote`, any `gh` call) or touch credentials (`~/.ssh`, `.netrc`, the pulse home's
 `private/` directory under any spelling - `~/.pulse/private`,
 `$PULSE_HOME/private`, a measurement home's `private/providers` -
 `~/.copilot`, `~/.config/gh`) are refused without being run; the model is
-told why and continues. The macOS filesystem root `/private/`, which `/tmp`
-and `/var` resolve to, is not a credential path.
+told why and continues. Native actions reuse the same deny rules as shell so
+the two paths cannot drift. The macOS filesystem root `/private/`, which
+`/tmp` and `/var` resolve to, is not a credential path.
 
 Exit codes tell the runner what happened without parsing prose: `0` the
 model submitted; `1` a limit (`step_limit`, `time_limit`, `cost_limit`,
