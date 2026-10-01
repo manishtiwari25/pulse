@@ -563,7 +563,7 @@ mod go_harness_tests {
                 .to_string()
                 .contains("harness takes one of native, copilot-cli")
         );
-        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, harness.system_prompt, provider, provider.openai.base_url"));
+        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.format_retries, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, harness.system_prompt, provider, provider.max_body_mb, provider.openai.base_url, provider.retry_after_cap_s"));
         assert_eq!(validate_setting("provider", "Copilot").unwrap(), "copilot");
         assert_eq!(validate_setting("provider", "OpenAI").unwrap(), "openai");
         assert_eq!(HARNESS_RULES["provider"].choices, vec!["copilot", "openai"]);
@@ -637,6 +637,7 @@ mod go_harness_tests {
             harness_setting_names(),
             vec![
                 "harness",
+                "harness.format_retries",
                 "harness.keep_observations",
                 "harness.max_cost",
                 "harness.max_steps",
@@ -644,7 +645,9 @@ mod go_harness_tests {
                 "harness.step_timeout",
                 "harness.system_prompt",
                 "provider",
-                "provider.openai.base_url"
+                "provider.max_body_mb",
+                "provider.openai.base_url",
+                "provider.retry_after_cap_s"
             ]
         );
     }
