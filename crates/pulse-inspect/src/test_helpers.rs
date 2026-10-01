@@ -14,6 +14,7 @@ pub struct CommandResult {
 
 pub fn temporary_store() -> (tempfile::TempDir, pulse_store::Store) {
     crate::register();
+    pulse_testutil::neutralize_runner_environment();
     let dir = tempfile::tempdir().unwrap();
     let s = pulse_store::Store::open(pulse_store::Options {
         home: dir.path().display().to_string(),
