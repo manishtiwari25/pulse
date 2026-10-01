@@ -67,9 +67,9 @@ pub(crate) fn retire_stale_suggestions(
     let Ok(conn) = s.conn() else { return 0 };
     let rows = must_rows(
         &conn,
-        "SELECT * FROM posts p WHERE p.project = ? AND p.kind = 'suggestion' AND TRIM(p.files) != '' AND p.date <= ?
+        "SELECT * FROM posts p WHERE p.project = ? AND p.kind = 'suggestion' AND p.date <= ?
          AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.project = p.project AND r.area = p.area AND r.thread = p.thread AND r.resolution != '')
-         ORDER BY p.date, p.id LIMIT 200",
+         ORDER BY p.date, p.id LIMIT 400",
         &[&slug, &cutoff],
     );
     let head = git_output(&repo, &["rev-parse", "HEAD"]).unwrap_or_default();
@@ -82,21 +82,41 @@ pub(crate) fn retire_stale_suggestions(
             break;
         }
         let files = parse_file_list(&row.str("files"));
-        if files.is_empty() || !all_paths_absent_at_head(&repo, &files) {
-            continue;
-        }
-        let names = files.join(", ");
-        let shown = files.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
-        let body = format!(
-            "Suggestion {} is retired because every named file is absent at HEAD {}.\n\nNamed files:\n{}\n",
-            row.str("id"),
-            head,
-            files
-                .iter()
-                .map(|f| format!("- {f}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+        let (shown, body) = if !files.is_empty() {
+            if !all_paths_absent_at_head(&repo, &files) {
+                continue;
+            }
+            (
+                files.iter().take(2).cloned().collect::<Vec<_>>().join(", "),
+                format!(
+                    "Suggestion {} is retired because every named file is absent at HEAD {}.\n\nNamed files:\n{}\n",
+                    row.str("id"),
+                    head,
+                    files
+                        .iter()
+                        .map(|f| format!("- {f}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            )
+        } else {
+            // The planner never runs such a card (GATE_FILE_GONE); the same rule
+            // retires it here so it stops counting as eligible.
+            let body_text = row.str("body");
+            if !pulse_tally::card_file_gone(&repo, &body_text) {
+                continue;
+            }
+            let file = pulse_tally::card_file_text(&body_text);
+            (
+                file.clone(),
+                format!(
+                    "Suggestion {} is retired because its `File:` line names `{}`, a path whose whole top-level tree is gone from the checkout at HEAD {}; the card predates a move or removal.\n",
+                    row.str("id"),
+                    file,
+                    head
+                ),
+            )
+        };
         if crate::board::create_post(
             s,
             now.to_string(),
@@ -116,7 +136,6 @@ pub(crate) fn retire_stale_suggestions(
         )
         .is_ok()
         {
-            let _ = names;
             retired += 1;
         }
     }
@@ -518,6 +537,61 @@ mod tests {
         assert_eq!(rows[0].str("resolution"), "dropped");
         assert_eq!(rows[0].str("on_post"), card.str("id"));
         assert!(rows[0].str("summary").contains("retired: named files gone"));
+    }
+
+    #[test]
+    fn stale_card_whose_file_line_names_a_gone_tree_is_retired() {
+        let _serial = serial();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        let old = crate::util::plus_hours(TEST_NOW, -8.0 * 24.0);
+        let card = |thread: &str, date: &str, file: &str| {
+            crate::board::create_post(
+                &s,
+                date.into(),
+                crate::board::PostOpts {
+                    kind: "suggestion".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: thread.into(),
+                    summary: format!("Fix {thread}"),
+                    body: format!(
+                        "Class: product\nFile: {file}\nVariable: x\nHypothesis: y\nSignal: check:z\n"
+                    ),
+                    agent: crate::board::actor_agent(&s, "aurora".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("suggestion")
+        };
+        let gone = card("gone-tree", &old, "internal/hub/board.go");
+        card("new-file-in-live-tree", &old, "docs/new-page.md");
+        std::fs::create_dir_all(std::path::Path::new(&project.str("path")).join("docs")).unwrap();
+        card("young-gone-tree", TEST_NOW, "cmd/pulse/main.go");
+        card("file-class", &old, "the three git callers");
+        assert_eq!(
+            retire_stale_suggestions(&s, &project, TEST_NOW, "daemon", 20),
+            1
+        );
+        let conn = s.conn().unwrap();
+        let rows = must_rows(&conn, "SELECT * FROM posts WHERE kind = 'result'", &[]);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].str("on_post"), gone.str("id"));
+        assert_eq!(rows[0].str("resolution"), "dropped");
+        assert!(
+            rows[0].str("summary").contains("internal/hub/board.go"),
+            "{}",
+            rows[0].str("summary")
+        );
+        assert!(
+            rows[0].str("body").contains("whole top-level tree is gone"),
+            "{}",
+            rows[0].str("body")
+        );
+        assert_eq!(
+            retire_stale_suggestions(&s, &project, TEST_NOW, "daemon", 20),
+            0
+        );
     }
 
     #[test]

@@ -353,6 +353,19 @@ pub fn owner_targeted(summary: &str, body: &str) -> bool {
 /// together with their directories. A card that names a file to create keeps its directory
 /// and passes; a card written against a tree that was since moved or removed (a port, a
 /// rename of a whole package) does not, and no worker should be sent to look for it.
+/// The card's `File:` (or `Path:`) text as written, backticks and quotes
+/// stripped; empty when the card names none.
+pub fn card_file_text(body: &str) -> String {
+    let fields = crate::card_class::card_fields(body);
+    crate::card_class::first_card_text(&[
+        fields.get("file").cloned().unwrap_or_default(),
+        fields.get("path").cloned().unwrap_or_default(),
+    ])
+    .trim()
+    .trim_matches(['`', '\'', '"'])
+    .to_string()
+}
+
 pub fn card_file_gone(project_path: &str, body: &str) -> bool {
     if project_path.is_empty() {
         return false;

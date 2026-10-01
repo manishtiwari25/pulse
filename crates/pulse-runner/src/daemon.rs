@@ -278,6 +278,12 @@ pub(crate) fn restart_drain(s: &pulse_store::Store) -> Duration {
     Duration::from_secs((s.setting_int("daemon.restart_drain_minutes").max(0) as u64) * 60)
 }
 
+/// The longest a new run may take (its budget plus five minutes of setup and
+/// report), used to decide whether one still fits inside a restart drain.
+fn run_fits(s: &pulse_store::Store) -> Duration {
+    Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(0) as u64) * 60)
+}
+
 fn active_queued_count(s: &pulse_store::Store) -> i32 {
     s.conn()
         .ok()
@@ -674,12 +680,24 @@ pub(crate) fn daemon(
                     break;
                 }
                 None => {
+                    let fits = run_fits(s);
+                    let starts = if fits > drain {
+                        format!(
+                            "no new run starts (one may take up to {} and would not fit the {} drain)",
+                            pulse_cli::format_duration(fits),
+                            pulse_cli::format_duration(drain)
+                        )
+                    } else {
+                        format!(
+                            "new runs may start for up to {}",
+                            pulse_cli::format_duration(drain)
+                        )
+                    };
                     say(
                         &o,
                         format!(
-                            "pulse changed on disk; {} run(s) in flight finish first and new runs may start for up to {}, then this daemon exits with code 3 so the service restarts it",
+                            "pulse changed on disk; {} run(s) in flight finish first and {starts}, then this daemon exits with code 3 so the service restarts it",
                             inflight.len(),
-                            pulse_cli::format_duration(drain)
                         ),
                     );
                     restart_pending = Some(std::time::Instant::now());
@@ -926,9 +944,9 @@ pub(crate) fn daemon(
             slots = crate::run::executor_slots(s, &now, &busy, !gate.is_empty());
             let restart_hold = restart_pending.and_then(|since| {
                 let left = restart_drain(s).saturating_sub(since.elapsed());
-                let fits = Duration::from_secs(
-                    ((s.setting_int("minutes_per_job") + 5).max(0) as u64) * 60,
-                );
+                // Whole seconds, so the idle log sees one line as the countdown moves.
+                let left = Duration::from_secs(left.as_secs());
+                let fits = run_fits(s);
                 (left < fits).then(|| {
                     format!(
                         "restarting: no new runs with {} left of the drain; {} in flight",
@@ -1672,7 +1690,18 @@ mod tests {
         // after the binary changed waits for the next daemon.
         let (s, out, result, slow_id) = restart_with_run_in_flight("1", true);
         assert_eq!(result, "restart", "{out}");
+        assert!(
+            out.contains(
+                "no new run starts (one may take up to 15m0s and would not fit the 1m0s drain)"
+            ),
+            "{out}"
+        );
         assert!(out.contains("restarting: no new runs with"), "{out}");
+        assert_eq!(
+            out.matches("restarting: no new runs with").count(),
+            1,
+            "the hold line should be said once, not per tick: {out}"
+        );
         assert_eq!(
             count(
                 &s,

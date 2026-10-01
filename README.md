@@ -97,7 +97,9 @@ Running**. The restart is a handover, not a pause: a daemon whose binary
 changed on disk while runs are in flight keeps dispatching, planning and
 landing for up to `daemon.restart_drain_minutes` (default 30), stops starting
 runs once less than `minutes_per_job + 5` of that window is left (log line
-`restarting: no new runs with <left> left of the drain; N in flight`), and
+`restarting: no new runs with <left> left of the drain; N in flight`, said
+once per change rather than per countdown tick; when a run could not fit the
+whole drain the first notice already says `no new run starts`), and
 exits with code 3 the moment nothing is in flight; its heartbeat says
 `restarting: N in flight` meanwhile. `0` stops dispatching at once and waits
 for the runs, as before. A build that then exits three times early is put back to the
@@ -446,8 +448,11 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   and planner ballot jobs use that same ballot, ordered closest to quorum then
   oldest, capped by `lead.ballot_cap` (default 10). The board hygiene pass also
   retires open suggestions older than `board.stale_days` (default 7) when their
-  non-empty `files` list names only paths absent at the project's HEAD; it posts
-  a daemon result with `resolution: dropped` and logs
+  non-empty `files` list names only paths absent at the project's HEAD, or -
+  for cards without a `files` list - when their `File:` line names a path whose
+  whole top-level tree is gone from the checkout (the planner's own
+  `GATE_FILE_GONE` rule, so a card the planner would never run stops counting
+  as eligible); it posts a daemon result with `resolution: dropped` and logs
   `retired N stale suggestion(s) for <project>`. Near-identical open cards
   with the same sorted normalized `files` list and normalized summary are
   grouped before the brief is written: the oldest card stays voteable and the
