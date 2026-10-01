@@ -75,7 +75,7 @@ pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
     }
 });
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"harness"=>"native","provider"=>"copilot","provider.openai.base_url"=>"https://api.openai.com/v1","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.output_limit"=>"20000",},
+    || map! {"harness"=>"native","provider"=>"copilot","provider.openai.base_url"=>"https://api.openai.com/v1","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.output_limit"=>"20000","harness.format_retries"=>"1",},
 );
 pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -88,6 +88,7 @@ pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "harness.system_prompt"=>("text",None,[],None,"Go text/template for the harness system prompt; empty = the built-in one (pulse harness prompt --default prints it)"),
         "harness.step_timeout"=>("count",Some(10),[],None,"seconds one command of a native-harness run may take before it is killed"),
         "harness.output_limit"=>("count",Some(1000),[],None,"characters of one command's output kept for the model; longer output is cut in the middle"),
+        "harness.format_retries"=>("count",Some(0),[],None,"prose-only native-harness replies corrected without consuming harness.max_steps before later format errors count normally"),
     }
 });
 pub const COMPUTE_PROVIDERS: &[&str] = &["azure", "aws", "gcp", "multipass"];

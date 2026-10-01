@@ -152,7 +152,7 @@ impl Store {
         }
         let tx = self.begin()?;
         tx.execute(&format!("INSERT OR REPLACE INTO harness_steps ({STEP_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),params![step.session_id,step.n,step.at,step.kind,step.content,step.command,step.exit_code,step.duration_ms,step.prompt_tokens,step.completion_tokens,step.model])?;
-        let n=tx.execute("UPDATE harness_sessions SET updated_at = ?, steps = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind = 'command'), calls = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind = 'assistant'), prompt_tokens = (SELECT COALESCE(SUM(prompt_tokens), 0) FROM harness_steps WHERE session_id = ?), completion_tokens = (SELECT COALESCE(SUM(completion_tokens), 0) FROM harness_steps WHERE session_id = ?) WHERE id = ?",params![self.now(),step.session_id,step.session_id,step.session_id,step.session_id,step.session_id])?;
+        let n=tx.execute("UPDATE harness_sessions SET updated_at = ?, steps = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind IN ('command', 'read', 'grep', 'edit')), calls = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind = 'assistant'), prompt_tokens = (SELECT COALESCE(SUM(prompt_tokens), 0) FROM harness_steps WHERE session_id = ?), completion_tokens = (SELECT COALESCE(SUM(completion_tokens), 0) FROM harness_steps WHERE session_id = ?) WHERE id = ?",params![self.now(),step.session_id,step.session_id,step.session_id,step.session_id,step.session_id])?;
         if n == 0 {
             return Err(input_err(format!(
                 "harness session {:?} does not exist",
