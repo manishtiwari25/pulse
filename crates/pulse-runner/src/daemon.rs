@@ -278,10 +278,37 @@ pub(crate) fn restart_drain(s: &pulse_store::Store) -> Duration {
     Duration::from_secs((s.setting_int("daemon.restart_drain_minutes").max(0) as u64) * 60)
 }
 
-/// The longest a new run may take (its budget plus five minutes of setup and
-/// report), used to decide whether one still fits inside a restart drain.
+/// Finished runs a measured `run_fits` needs before it trusts the measurement.
+const RUN_FITS_MIN_SAMPLES: usize = 10;
+/// Finished runs the measurement looks back over.
+const RUN_FITS_WINDOW: usize = 50;
+
+/// How long a new run is expected to take, used to decide whether one still
+/// fits inside a restart drain: the 90th percentile of the last fifty real
+/// runs that ran a worker to an end plus five minutes of setup and report.
+/// The budget plus five minutes caps it and stands in while fewer than ten
+/// such runs exist. Runs the drain outlives are waited for anyway, so a low
+/// estimate costs one run's overrun before the restart; the budget alone
+/// (two hours against a thirty-minute drain) stopped every dispatch for the
+/// whole drain at each release while the fleet's runs took minutes.
 fn run_fits(s: &pulse_store::Store) -> Duration {
-    Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(0) as u64) * 60)
+    let cap = Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(0) as u64) * 60);
+    let Ok(conn) = s.conn() else { return cap };
+    let mut seconds: Vec<f64> = crate::util::must_rows(
+        &conn,
+        "SELECT seconds FROM runs WHERE finished_at != '' AND mode = 'real' AND seconds > 0
+         AND status IN ('done', 'failed', 'timeout') ORDER BY finished_at DESC LIMIT ?",
+        &[&(RUN_FITS_WINDOW as i64)],
+    )
+    .iter()
+    .map(|r| r.float("seconds"))
+    .collect();
+    if seconds.len() < RUN_FITS_MIN_SAMPLES {
+        return cap;
+    }
+    seconds.sort_by(f64::total_cmp);
+    let p90 = seconds[(seconds.len() * 9 / 10).min(seconds.len() - 1)];
+    Duration::from_secs(p90.ceil() as u64 + 5 * 60).min(cap)
 }
 
 fn active_queued_count(s: &pulse_store::Store) -> i32 {
@@ -1671,6 +1698,73 @@ mod tests {
             1,
             "{out}"
         );
+    }
+
+    fn finished_run(
+        s: &pulse_store::Store,
+        n: usize,
+        age_minutes: f64,
+        status: &str,
+        mode: &str,
+        seconds: f64,
+    ) {
+        let finished = crate::util::plus_minutes(TEST_NOW, -age_minutes);
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, seconds, mode) VALUES (?, ?, 'aurora', 'proj', ?, ?, ?, ?, ?)",
+            &[
+                &format!("run-{n}"),
+                &format!("job-{n}"),
+                &finished,
+                &finished,
+                &status,
+                &seconds,
+                &mode,
+            ],
+        );
+    }
+
+    #[test]
+    fn run_fits_is_the_budget_until_ten_runs_have_finished() {
+        let s = new_store();
+        for n in 0..9 {
+            finished_run(&s, n, n as f64, "done", "real", 60.0);
+        }
+        // minutes_per_job is 10 in the test store: the budget plus five.
+        assert_eq!(run_fits(&s), Duration::from_secs(15 * 60));
+        finished_run(&s, 9, 9.0, "done", "real", 60.0);
+        assert_eq!(run_fits(&s), Duration::from_secs(60 + 5 * 60));
+    }
+
+    #[test]
+    fn run_fits_measures_the_ninetieth_percentile_of_recent_real_runs() {
+        let s = new_store();
+        crate::test_helpers_f5::set_setting(&s, "minutes_per_job", "120");
+        // Fifty runs in the window: forty-five of a minute, five of ten.
+        for n in 0..45 {
+            let status = if n % 2 == 0 { "done" } else { "failed" };
+            finished_run(&s, n, 10.0 + n as f64, status, "real", 60.0);
+        }
+        for n in 45..50 {
+            let status = if n == 45 { "timeout" } else { "done" };
+            finished_run(&s, n, 10.0 + n as f64, status, "real", 600.0);
+        }
+        // Neither a dead worker, a setup error, a dry run (all more recent)
+        // nor a real run older than the window moves the estimate.
+        finished_run(&s, 50, 1.0, "lost", "real", 50_000.0);
+        finished_run(&s, 51, 2.0, "error", "real", 50_000.0);
+        finished_run(&s, 52, 3.0, "done", "dry-run", 50_000.0);
+        finished_run(&s, 53, 100.0, "done", "real", 50_000.0);
+        assert_eq!(run_fits(&s), Duration::from_secs(600 + 5 * 60));
+    }
+
+    #[test]
+    fn run_fits_never_exceeds_the_budget() {
+        let s = new_store();
+        for n in 0..10 {
+            finished_run(&s, n, n as f64, "done", "real", 10_000.0);
+        }
+        assert_eq!(run_fits(&s), Duration::from_secs(15 * 60));
     }
 
     #[test]

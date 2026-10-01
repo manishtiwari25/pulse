@@ -96,12 +96,18 @@ a minute and shows the build it runs beside the daemon's under **Settings →
 Running**. The restart is a handover, not a pause: a daemon whose binary
 changed on disk while runs are in flight keeps dispatching, planning and
 landing for up to `daemon.restart_drain_minutes` (default 30), stops starting
-runs once less than `minutes_per_job + 5` of that window is left (log line
+runs once less of that window is left than a run is expected to take (log line
 `restarting: no new runs with <left> left of the drain; N in flight`, said
 once per change rather than per countdown tick; when a run could not fit the
 whole drain the first notice already says `no new run starts`), and
 exits with code 3 the moment nothing is in flight; its heartbeat says
-`restarting: N in flight` meanwhile. `0` stops dispatching at once and waits
+`restarting: N in flight` meanwhile. The expectation is measured: the 90th
+percentile of the last fifty real runs that ran a worker to an end, plus five
+minutes of setup and report, capped at `minutes_per_job + 5`, which also
+stands in until ten such runs exist - a two-hour budget against a thirty-minute
+drain would otherwise stop every dispatch for the whole drain at each release
+while the fleet's runs take minutes. A run the drain outlives is waited for,
+never cut. `0` stops dispatching at once and waits
 for the runs, as before. A build that then exits three times early is put back to the
 previous one by the launcher, which turns `daemon.self_update` off and leaves
 a finding. Set `daemon.self_update` to `off` to keep the build you have and

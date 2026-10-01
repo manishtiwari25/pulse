@@ -17,9 +17,10 @@ pub(crate) const SUMMARY_EVERY: Duration = Duration::from_secs(60 * 60);
 static DIGITS: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\d+").expect("digits regex"));
 static COUNTDOWN: LazyLock<regex::Regex> = LazyLock::new(|| {
-    // `2h`, `17m`, `40s`, `2h30m`, `1h05m`, `3 minutes`, `2 hours` after the
-    // words the idle notes use for a wait: in, after, ago, for, since.
-    regex::Regex::new(r"\b(\d+h(\d+m)?|\d+m|\d+s|\d+ (minute|hour|second)s?)\b")
+    // `2h`, `17m`, `40s`, `2h30m`, `1h05m`, `23m16s`, `1h2m3s`, `3 minutes`,
+    // `2 hours` after the words the idle notes use for a wait: in, after,
+    // ago, for, since, with.
+    regex::Regex::new(r"\b(\d+h(\d+m)?(\d+s)?|\d+m(\d+s)?|\d+s|\d+ (minute|hour|second)s?)\b")
         .expect("countdown regex")
 });
 
@@ -106,6 +107,19 @@ mod tests {
             "job-20261001T1200Z-ab12 waits # minutes"
         );
         assert_eq!(normalize_countdowns("no queued job"), "no queued job");
+        // format_duration writes minutes and seconds together; the restart
+        // hold line once re-logged every tick because `23m16s` was no
+        // countdown to this regex.
+        assert_eq!(
+            normalize_countdowns(
+                "restarting: no new runs with 23m16s left of the drain; 1 in flight"
+            ),
+            "restarting: no new runs with #m#s left of the drain; 1 in flight"
+        );
+        assert_eq!(
+            normalize_countdowns("one may take up to 1h2m3s"),
+            "one may take up to #h#m#s"
+        );
     }
 
     #[test]
