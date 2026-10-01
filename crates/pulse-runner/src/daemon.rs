@@ -1242,7 +1242,7 @@ pub(crate) fn daemon(
             }
         }
     }
-    if maintenance.done.is_some() || maintenance.lane.is_some() {
+    if maintenance.done.is_some() || maintenance.lane.is_some() || maintenance.landing_busy() > 0 {
         say(
             &o,
             format!("{note}: waiting for landing maintenance to finish"),

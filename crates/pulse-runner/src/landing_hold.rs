@@ -11,6 +11,13 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProjectLandingOutcome {
+    pub(crate) slug: String,
+    pub(crate) lines: Vec<String>,
+    pub(crate) hold: Option<String>,
+}
+
 /// Go: func landingHeld(state string) bool
 pub(crate) fn landing_held(state: String) -> bool {
     matches!(
@@ -60,69 +67,25 @@ pub(crate) fn tend_landings_pass(
     let mut lines = Vec::new();
     let mut cur = BTreeMap::new();
     let mut swept = BTreeMap::new();
-    let mut waiting = BTreeMap::new();
-    let mut states = BTreeMap::new();
     for proj in projects {
         if ctx.is_cancelled() {
             break;
         }
         let slug = proj.str("slug");
-        crate::daemon_maintenance::set_stage(stage, format!("landing {slug}"));
-        swept.insert(slug.clone(), true);
-        let mut landed = false;
-        for lr in crate::land::land_pending_pass(
+        let outcome = tend_landing_project(
             ctx,
             s,
-            proj.clone(),
+            proj,
             actor.clone(),
             now.clone(),
-            true,
-            0,
-            false,
             experiments,
-        ) {
-            if lr.state == "landed" {
-                landed = true;
-            }
-            if !landing_held(lr.state.clone()) {
-                lines.push(format!("landing {}: {}", lr.state, lr.note));
-                continue;
-            }
-            let n = if let Ok(conn) = s.conn() {
-                crate::land::pending_landings(&conn, slug.clone()).len() as i32
-            } else {
-                0
-            };
-            waiting.insert(slug.clone(), n);
-            states.insert(slug.clone(), lr.state.clone());
-            cur.insert(
-                slug.clone(),
-                format!(
-                    "{n} pending landing {}; {}: {}",
-                    crate::util::plural(n, "job"),
-                    lr.state,
-                    lr.note
-                ),
-            );
-        }
-        let (line, note) =
-            if crate::landing_context::landing_stop(ctx, s, proj.str("path")).is_empty() {
-                crate::daemon_maintenance::set_stage(stage, format!("pushing {slug}"));
-                push_landed(s, proj.clone(), actor.clone(), now.clone(), landed)
-            } else {
-                (String::new(), String::new())
-            };
-        if !line.is_empty() {
-            lines.push(line);
-        }
-        if !note.is_empty() {
-            cur.entry(slug.clone())
-                .and_modify(|v| {
-                    v.push_str("; ");
-                    v.push_str(&note);
-                })
-                .or_insert(note);
-            states.entry(slug.clone()).or_insert("push-failed".into());
+            prev.get(&slug).cloned(),
+            stage,
+        );
+        swept.insert(slug.clone(), true);
+        lines.extend(outcome.lines);
+        if let Some(note) = outcome.hold {
+            cur.insert(slug, note);
         }
     }
     for (slug, note) in &prev {
@@ -130,38 +93,110 @@ pub(crate) fn tend_landings_pass(
             cur.insert(slug.clone(), note.clone());
         }
     }
-    if let Ok(conn) = s.conn() {
-        for (slug, note) in &cur {
-            if !swept.contains_key(slug) || prev.get(slug) == Some(note) {
-                continue;
-            }
-            lines.push(format!("landing held {slug}: {note}"));
-            crate::util::event_at(
-                &conn,
-                &now,
-                &actor,
-                "land.held",
-                slug,
-                serde_json::json!({"project": slug, "waiting": waiting.get(slug).copied().unwrap_or_default(), "state": states.get(slug).cloned().unwrap_or_default(), "note": note}),
-            );
-        }
-        for (slug, note) in &prev {
-            if cur.contains_key(slug) || !swept.contains_key(slug) {
-                continue;
-            }
-            lines.push(format!("landing resumed {slug}"));
-            crate::util::event_at(
-                &conn,
-                &now,
-                &actor,
-                "land.resumed",
-                slug,
-                serde_json::json!({"project": slug, "was": note}),
-            );
-        }
-    }
     record_landing_holds(s, cur.clone(), now);
     (lines, cur)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tend_landing_project(
+    ctx: &pulse_bus::CancellationToken,
+    s: &pulse_store::Store,
+    proj: crate::util::Row,
+    actor: String,
+    now: String,
+    experiments: bool,
+    prev: Option<String>,
+    stage: Option<&crate::daemon_maintenance::Stage>,
+) -> ProjectLandingOutcome {
+    let mut lines = Vec::new();
+    let mut hold = None;
+    let mut waiting = 0;
+    let mut state = String::new();
+    let slug = proj.str("slug");
+    crate::daemon_maintenance::set_stage(stage, format!("landing {slug}"));
+    let mut landed = false;
+    for lr in crate::land::land_pending_pass(
+        ctx,
+        s,
+        proj.clone(),
+        actor.clone(),
+        now.clone(),
+        true,
+        0,
+        false,
+        experiments,
+    ) {
+        if lr.state == "landed" {
+            landed = true;
+        }
+        if !landing_held(lr.state.clone()) {
+            lines.push(format!("landing {}: {}", lr.state, lr.note));
+            continue;
+        }
+        waiting = if let Ok(conn) = s.conn() {
+            crate::land::pending_landings(&conn, slug.clone()).len() as i32
+        } else {
+            0
+        };
+        state = lr.state.clone();
+        hold = Some(format!(
+            "{waiting} pending landing {}; {}: {}",
+            crate::util::plural(waiting, "job"),
+            lr.state,
+            lr.note
+        ));
+    }
+    let (line, note) = if crate::landing_context::landing_stop(ctx, s, proj.str("path")).is_empty()
+    {
+        crate::daemon_maintenance::set_stage(stage, format!("pushing {slug}"));
+        push_landed(s, proj.clone(), actor.clone(), now.clone(), landed)
+    } else {
+        (String::new(), String::new())
+    };
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if !note.is_empty() {
+        hold.get_or_insert_with(String::new);
+        if let Some(hold) = &mut hold {
+            if !hold.is_empty() {
+                hold.push_str("; ");
+            }
+            hold.push_str(&note);
+        }
+        if state.is_empty() {
+            state = "push-failed".into();
+        }
+    }
+    if let Ok(conn) = s.conn() {
+        match (&prev, &hold) {
+            (Some(prev), Some(note)) if prev == note => {}
+            (_, Some(note)) => {
+                lines.push(format!("landing held {slug}: {note}"));
+                crate::util::event_at(
+                    &conn,
+                    &now,
+                    &actor,
+                    "land.held",
+                    &slug,
+                    serde_json::json!({"project": slug, "waiting": waiting, "state": state, "note": note}),
+                );
+            }
+            (Some(prev), None) => {
+                lines.push(format!("landing resumed {slug}"));
+                crate::util::event_at(
+                    &conn,
+                    &now,
+                    &actor,
+                    "land.resumed",
+                    &slug,
+                    serde_json::json!({"project": slug, "was": prev}),
+                );
+            }
+            (None, None) => {}
+        }
+    }
+    ProjectLandingOutcome { slug, lines, hold }
 }
 
 /// Go: func recordLandingHolds(s *store.Store, holds map[string]string, now string)
