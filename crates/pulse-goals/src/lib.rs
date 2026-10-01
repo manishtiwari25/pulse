@@ -194,7 +194,7 @@ fn project(conn: &rusqlite::Connection, slug: &str) -> Result<pulse_store::Proje
     }
     let row = conn
         .query_row(
-            "SELECT slug, name, brain, status, added_at, verify_cmd FROM projects WHERE slug = ?",
+            "SELECT slug, name, brain, status, added_at, verify_cmd, path FROM projects WHERE slug = ?",
             [slug],
             |r| {
                 let brain: i64 = r.get(2)?;
@@ -205,6 +205,7 @@ fn project(conn: &rusqlite::Connection, slug: &str) -> Result<pulse_store::Proje
                     status: r.get(3)?,
                     added_at: r.get(4)?,
                     verify_cmd: r.get(5)?,
+                    path: r.get(6)?,
                     ..pulse_store::Project::default()
                 })
             },
@@ -258,15 +259,228 @@ pub fn get(s: &pulse_store::Store, slug: &str) -> Result<Goal> {
     if !parse_rfc3339(&updated_at) {
         return Err(anyhow!("stored project goal has an invalid update time"));
     }
+    // A generated row is a cache of the default direction, not a decision:
+    // its text follows the project's current facts (name, README purpose,
+    // verification command) while the row keeps the time it was first written.
+    let text = if saved.source == GENERATED {
+        refreshed_generated(s, &p)
+    } else {
+        saved.text
+    };
     Ok(Goal {
-        text: saved.text,
+        text,
         source: saved.source,
         updated_at,
         updated_by,
     })
 }
 
+fn refreshed_generated(s: &pulse_store::Store, p: &pulse_store::Project) -> String {
+    let fresh = generated(p);
+    if public_references(s, &fresh.text).is_ok() {
+        fresh.text
+    } else {
+        generated_with(p, None).text
+    }
+}
+
+/// Longest a README purpose line may run inside the generated goal.
+pub const PURPOSE_MAX_CHARS: usize = 280;
+const PURPOSE_MIN_CHARS: usize = 40;
+const README_READ_LIMIT: u64 = 64 * 1024;
+const README_NAMES: [&str; 6] = [
+    "README.md",
+    "README.markdown",
+    "Readme.md",
+    "readme.md",
+    "README",
+    "README.txt",
+];
+
+static MD_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!?\[([^\]]*)\]\([^)]*\)|\[([^\]]*)\]\[[^\]]*\]").unwrap());
+static HTML_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"</?[a-zA-Z][^>]*>").unwrap());
+static BARE_URL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<?[a-z][a-z0-9+.-]*://\S+>?").unwrap());
+static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+
+/// The first descriptive paragraph of the project's README, cleaned of
+/// Markdown and HTML, clipped to [`PURPOSE_MAX_CHARS`] at a sentence or word
+/// boundary. Headings, badges, images, HTML blocks, code fences, lists,
+/// tables, quotes, front matter and link definitions are skipped, and a
+/// paragraph that would not pass [`normalize`] (a private path, a
+/// secret-shaped word) is skipped too. `None` when no paragraph qualifies.
+pub fn purpose_from_readme(path: &str) -> Option<String> {
+    use std::io::Read;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let dir = std::path::Path::new(path);
+    let text = README_NAMES.iter().find_map(|name| {
+        let file = dir.join(name);
+        let meta = std::fs::metadata(&file).ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(&file)
+            .ok()?
+            .take(README_READ_LIMIT)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    })?;
+    readme_paragraphs(&text)
+        .into_iter()
+        .take(6)
+        .find_map(|paragraph| {
+            let clipped = clip_purpose(&paragraph);
+            if clipped.chars().count() < PURPOSE_MIN_CHARS
+                || !clipped.chars().any(|c| c.is_alphabetic())
+            {
+                return None;
+            }
+            normalize(&clipped).ok().filter(|t| t == &clipped)
+        })
+}
+
+fn readme_paragraphs(text: &str) -> Vec<String> {
+    let mut paragraphs = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut in_fence = false;
+    let mut in_comment = false;
+    let mut front_matter = text.starts_with("---");
+    let flush = |current: &mut Vec<String>, paragraphs: &mut Vec<String>| {
+        if !current.is_empty() {
+            paragraphs.push(current.join(" "));
+            current.clear();
+        }
+    };
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if front_matter {
+            if i > 0 && (line == "---" || line == "...") {
+                front_matter = false;
+            }
+            continue;
+        }
+        if in_comment {
+            if line.contains("-->") {
+                in_comment = false;
+            }
+            continue;
+        }
+        if line.starts_with("```") || line.starts_with("~~~") {
+            in_fence = !in_fence;
+            flush(&mut current, &mut paragraphs);
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if line.is_empty() {
+            flush(&mut current, &mut paragraphs);
+            continue;
+        }
+        if line.starts_with("<!--") {
+            flush(&mut current, &mut paragraphs);
+            in_comment = !line.contains("-->");
+            continue;
+        }
+        let structural = line.starts_with('#')
+            || line.starts_with('<')
+            || line.ends_with('>')
+            || line.starts_with("![")
+            || line.starts_with("[![")
+            || line.starts_with('|')
+            || line.starts_with('>')
+            || line.starts_with("- ")
+            || line.starts_with("* ")
+            || line.starts_with("+ ")
+            || line.starts_with("---")
+            || line.starts_with("***")
+            || line.starts_with("===")
+            || raw.starts_with("    ")
+            || raw.starts_with('\t')
+            || is_ordered_item(line)
+            || is_link_definition(line);
+        if structural {
+            flush(&mut current, &mut paragraphs);
+            continue;
+        }
+        let cleaned = clean_markdown(line);
+        if !cleaned.is_empty() {
+            current.push(cleaned);
+        }
+    }
+    flush(&mut current, &mut paragraphs);
+    paragraphs
+}
+
+fn is_ordered_item(line: &str) -> bool {
+    let digits = line.chars().take_while(|c| c.is_ascii_digit()).count();
+    digits > 0
+        && line[digits..]
+            .strip_prefix('.')
+            .or_else(|| line[digits..].strip_prefix(')'))
+            .is_some_and(|rest| rest.starts_with(' '))
+}
+
+fn is_link_definition(line: &str) -> bool {
+    line.starts_with('[')
+        && line
+            .find("]:")
+            .is_some_and(|i| line[..i].find(']').is_none())
+}
+
+fn clean_markdown(line: &str) -> String {
+    let text = MD_LINK.replace_all(line, |caps: &regex::Captures| {
+        caps.get(1)
+            .or_else(|| caps.get(2))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default()
+    });
+    let text = HTML_TAG.replace_all(&text, "");
+    let text = BARE_URL.replace_all(&text, "");
+    let text = text.replace("**", "").replace("__", "").replace('`', "");
+    let words = text
+        .split_whitespace()
+        .map(|w| {
+            let core = w.trim_matches(|c| c == '*' || c == '_');
+            if core.is_empty() { w } else { core }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    SPACES.replace_all(words.trim(), " ").into_owned()
+}
+
+fn clip_purpose(text: &str) -> String {
+    let text = text.trim().trim_end_matches(':').trim();
+    if text.chars().count() <= PURPOSE_MAX_CHARS {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(PURPOSE_MAX_CHARS).collect();
+    for end in [". ", "! ", "? "] {
+        if let Some(i) = head.rfind(end)
+            && i >= PURPOSE_MIN_CHARS
+        {
+            return head[..i + 1].to_string();
+        }
+    }
+    let cut = head.rfind(' ').unwrap_or(head.len());
+    let mut clipped = head[..cut]
+        .trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+        .to_string();
+    clipped.push('…');
+    clipped
+}
+
 fn generated(p: &pulse_store::Project) -> Goal {
+    generated_with(p, purpose_from_readme(&p.path).as_deref())
+}
+
+fn generated_with(p: &pulse_store::Project, purpose: Option<&str>) -> Goal {
     let mut name = "this project".to_string();
     for candidate in [&p.name, &p.slug] {
         let label = candidate.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -285,6 +499,16 @@ fn generated(p: &pulse_store::Project) -> Goal {
     } else {
         format!("Make {name} more useful to its users within its existing product scope.")
     };
+    if let Some(purpose) = purpose {
+        let purpose = purpose.trim().replace('"', "'");
+        let quoted = if purpose.ends_with(['.', '!', '?', '…']) {
+            format!(" {name} describes itself as: \"{purpose}\"")
+        } else {
+            format!(" {name} describes itself as: \"{purpose}.\"")
+        };
+        text.push_str(&quoted);
+        text.push_str(" Every change should serve that purpose for the people it names.");
+    }
     text.push_str(
         " Prioritize real product defects, correctness, reliability and user experience over repeated operating-layer churn. ",
     );
@@ -914,6 +1138,163 @@ mod tests {
             assert!(!goal.text.contains(&s.home));
             assert_eq!(goal.updated_at, "1970-01-01T00:00:00Z");
         }
+    }
+
+    fn goal_project_at(s: &Store, slug: &str, name: &str, brain: bool, path: &Path) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, brain, verify_cmd, added_at) VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    slug,
+                    name,
+                    path.display().to_string(),
+                    if brain { 1 } else { 0 },
+                    "",
+                    GOAL_NOW
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn purpose_from_readme_picks_the_first_descriptive_paragraph() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(purpose_from_readme(dir.path().to_str().unwrap()), None);
+        assert_eq!(purpose_from_readme(""), None);
+        std::fs::write(
+            dir.path().join("README.md"),
+            "---\ntitle: Ticketer\n---\n\
+             <p align=\"center\">\n  <img src=\"logo.svg\" alt=\"Ticketer\" width=\"400\">\n</p>\n\n\
+             [![CI](https://ci.example/badge.svg)](https://ci.example/run)\n\n\
+             # Ticketer\n\n\
+             <!-- keep this short\nand sweet -->\n\
+             **Ticketer** is a *small* help desk for [volunteer](https://example.org/v) teams:\n\
+             open a `ticket`, assign it, and close it with one keyboard shortcut.\n\n\
+             - Fast\n- Free\n\n\
+             ```sh\nnpm start\n```\n\n\
+             The second paragraph explains installation and never becomes the purpose.\n",
+        )
+        .unwrap();
+        assert_eq!(
+            purpose_from_readme(dir.path().to_str().unwrap()).as_deref(),
+            Some(
+                "Ticketer is a small help desk for volunteer teams: open a ticket, assign it, and close it with one keyboard shortcut."
+            )
+        );
+    }
+
+    #[test]
+    fn purpose_from_readme_skips_private_short_and_structural_paragraphs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("README.md"),
+            "# Only badges\n\n![build](https://ci.example/b.svg) ![cov](https://ci.example/c.svg)\n\n\
+             | a | b |\n|---|---|\n\n> a quote that is long enough to count but is a quote all the same\n\n\
+             1. an ordered list item that is long enough to count on its own\n\n\
+             [docs]: https://example.org/docs\n",
+        )
+        .unwrap();
+        assert_eq!(purpose_from_readme(dir.path().to_str().unwrap()), None);
+
+        std::fs::write(
+            dir.path().join("README.md"),
+            "Notes live in /Users/me/private/notes and this paragraph is long enough to qualify.\n\n\
+             Too short to count.\n\n\
+             Token ghp_syntheticvalue1234567890abcdefghij must never reach a shared goal text.\n\n\
+             Shorthand keeps a shared grocery list in sync for a household across phones.\n",
+        )
+        .unwrap();
+        assert_eq!(
+            purpose_from_readme(dir.path().to_str().unwrap()).as_deref(),
+            Some("Shorthand keeps a shared grocery list in sync for a household across phones.")
+        );
+    }
+
+    #[test]
+    fn purpose_clips_a_long_paragraph_at_a_sentence_then_a_word() {
+        let sentence = "Lantern turns meeting notes into tracked decisions for small teams.";
+        let filler = "It also does many other things worth listing at length. ".repeat(12);
+        let clipped = clip_purpose(&format!("{sentence} {filler}"));
+        assert!(clipped.chars().count() <= PURPOSE_MAX_CHARS);
+        assert!(clipped.starts_with(sentence), "{clipped}");
+        assert!(clipped.ends_with('.'), "{clipped}");
+
+        let no_sentence = "word ".repeat(120);
+        let clipped = clip_purpose(&no_sentence);
+        assert!(clipped.chars().count() <= PURPOSE_MAX_CHARS + 1);
+        assert!(clipped.ends_with("word…"), "{clipped}");
+        assert_eq!(clip_purpose("Short and sweet:"), "Short and sweet");
+    }
+
+    #[test]
+    fn generated_goal_quotes_the_readme_purpose_and_refreshes_a_stored_default() {
+        let _serial = crate::test_helpers::serial();
+        let (_guard, _home, s) = goal_store();
+        let repo = tempfile::tempdir().unwrap();
+        goal_project_at(&s, "ticketer", "Ticketer", false, repo.path());
+        ensure_default(&s, "ticketer").unwrap();
+        let before = must_goal(&s, "ticketer");
+        assert_eq!(before.source, GENERATED);
+        assert!(!before.text.contains("describes itself as"));
+
+        std::fs::write(
+            repo.path().join("README.md"),
+            "# Ticketer\n\nTicketer is a small help desk for volunteer teams that says \"hello\" first.\n",
+        )
+        .unwrap();
+        let after = must_goal(&s, "ticketer");
+        assert_eq!(after.source, GENERATED);
+        assert_eq!(after.updated_at, before.updated_at);
+        assert_eq!(after.updated_by, GENERATED_BY);
+        assert!(
+            after.text.contains(
+                "Ticketer describes itself as: \"Ticketer is a small help desk for volunteer teams that says 'hello' first.\""
+            ),
+            "{}",
+            after.text
+        );
+        assert!(after.text.starts_with(
+            "Make Ticketer more useful to its users within its existing product scope."
+        ));
+        assert!(after.text.contains("real product defects"));
+        assert_eq!(normalize(&after.text).unwrap(), after.text);
+        assert!(context(&after).contains("describes itself as"));
+        assert_eq!(must_goal(&s, "ticketer"), after);
+
+        let owner = set(
+            &s,
+            "ticketer",
+            "Cut ticket triage time with the existing checks.",
+            "human",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.path().join("README.md"),
+            "# Ticketer\n\nA completely different purpose line that is long enough.\n",
+        )
+        .unwrap();
+        assert_eq!(must_goal(&s, "ticketer"), owner);
+        let reset_goal = reset(&s, "ticketer", "human").unwrap();
+        assert!(
+            reset_goal
+                .text
+                .contains("A completely different purpose line that is long enough.")
+        );
+
+        let brain = tempfile::tempdir().unwrap();
+        std::fs::write(
+            brain.path().join("README.md"),
+            "An agent-first control plane for software work: one binary, one store, one console.\n",
+        )
+        .unwrap();
+        goal_project_at(&s, "brain", "Brain", true, brain.path());
+        let goal = must_goal(&s, "brain");
+        assert!(goal.text.contains("PULSE workflow"));
+        assert!(
+            goal.text
+                .contains("Brain describes itself as: \"An agent-first control plane")
+        );
     }
 
     #[test]

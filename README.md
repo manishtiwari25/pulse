@@ -371,10 +371,19 @@ holds. Events: `schedule.added`, `schedule.fired`, `schedule.skipped`,
 
 Each project has one effective goal. The owner's goal takes precedence; a
 project without one receives a deterministic default grounded in that project's
-facts, without a model call. The console labels **Owner set** and **Project
-default** separately. Set up to 4,000 characters in **Project → Overview → Edit
-goal**, or confirm **Use project default** to restore the generated direction.
-Goals are shared with agents, so do not include credentials or private data.
+facts, without a model call. The default quotes the project's own purpose: the
+first descriptive paragraph of its README (headings, badges, images, HTML,
+code, lists, tables and quotes are skipped; Markdown is stripped; the paragraph
+is clipped to 280 characters at a sentence or word boundary and must pass the
+same checks as an owner's goal, so a private path or secret-shaped word
+disqualifies it), followed by the standing direction toward real product
+defects, correctness and user experience. The default is a cache, not a
+decision: it follows the README, the project name and the verification command
+as they change, while an owner's goal never moves. The console labels **Owner
+set** and **Project default** separately. Set up to 4,000 characters in
+**Project → Overview → Edit goal**, or confirm **Use project default** to
+restore the generated direction. Goals are shared with agents, so do not
+include credentials or private data.
 
 New agent runs read the current goal, including work already queued before an
 owner edit. A running agent keeps its existing brief. Re-registering or
