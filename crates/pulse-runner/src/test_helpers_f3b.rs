@@ -330,11 +330,16 @@ pub(crate) fn sweep_job(s: &pulse_store::Store, status: &str, branch: &str) -> S
         false,
     )
     .unwrap();
+    let finished_at = if matches!(status, "done" | "failed" | "cancelled") {
+        crate::util::plus_hours(TEST_NOW, -2.0)
+    } else {
+        String::new()
+    };
     s.conn()
         .unwrap()
         .execute(
-            "UPDATE jobs SET status = ?, branch = ? WHERE id = ?",
-            params![status, branch, job.str("id")],
+            "UPDATE jobs SET status = ?, branch = ?, finished_at = ? WHERE id = ?",
+            params![status, branch, finished_at, job.str("id")],
         )
         .unwrap();
     job.str("id")

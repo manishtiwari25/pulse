@@ -10,6 +10,7 @@ type Row = crate::util::Row;
 pub const DEFAULT_DAEMON_INTERVAL_SECONDS: i32 = 300;
 pub(crate) const DISPATCH_TICK_SECONDS: i32 = 15;
 pub(crate) const HANDS_WANTED_MINUTES: i32 = 30;
+pub(crate) const DISK_FLOOR_WANTED_MINUTES: i32 = 15;
 pub(crate) static BINARY_STAMP: LazyLock<RwLock<fn() -> String>> =
     LazyLock::new(|| RwLock::new(pulse_cli::binary_stamp));
 #[cfg(test)]
@@ -187,6 +188,60 @@ pub(crate) fn hands_wanted(
             "capacity.hands-wanted",
             &slug,
             serde_json::json!({"queued": queued, "slots": slots, "minutes": minutes, "post": post.str("id")}),
+        );
+    }
+    post
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn disk_floor_wanted(
+    s: &pulse_store::Store,
+    brain: Row,
+    path: String,
+    free: i32,
+    floor: i32,
+    minutes: i32,
+    now: String,
+    actor: String,
+) -> Row {
+    if brain.0.is_empty() {
+        return Row::default();
+    }
+    let slug = brain.str("slug");
+    let summary = crate::util::trunc(
+        &format!(
+            "disk under floor: {free} MB free on {path} for {minutes} min; daemon.min_free_mb is {floor}"
+        ),
+        230,
+    );
+    let body = format!(
+        "The daemon paused new leases because the work filesystem `{path}` had {free} MB free for {minutes} minutes, under `daemon.min_free_mb` ({floor}) at {now}. Remedy it by freeing space on that filesystem, or adjust `daemon.min_free_mb` up or down to the floor this machine should enforce. Existing runs keep draining; no new job or experiment measurement starts while the floor is crossed.\n"
+    );
+    let Ok(post) = crate::board::create_post(
+        s,
+        now.clone(),
+        crate::board::PostOpts {
+            kind: "finding".into(),
+            project: slug.clone(),
+            area: "runner".into(),
+            thread: "disk-floor".into(),
+            summary,
+            body,
+            agent: crate::board::actor_agent(s, actor.clone()),
+            date: now.clone(),
+            ..Default::default()
+        },
+    ) else {
+        return Row::default();
+    };
+    if let Ok(conn) = s.conn() {
+        crate::util::event_at(
+            &conn,
+            &now,
+            &actor,
+            "capacity.disk-floor",
+            &slug,
+            serde_json::json!({"free_mb": free, "floor_mb": floor, "path": path, "minutes": minutes, "post": post.str("id")}),
         );
     }
     post
@@ -400,6 +455,9 @@ pub(crate) fn daemon(
     let mut completed = false;
     let mut all_errors = true;
     let mut starved_since = String::new();
+    let mut disk_floor_since = String::new();
+    let mut disk_floor_posted = false;
+    let mut disk_floor_was_under = false;
     // Go: report(d)
     fn report(
         o: &DaemonOpts,
@@ -707,140 +765,159 @@ pub(crate) fn daemon(
                 .read()
                 .expect("login gate poisoned"))(s);
             slots = crate::run::executor_slots(s, &now, &busy, !gate.is_empty());
-            reason = if slots.is_empty() {
-                if gate.is_empty() {
-                    "every executor slot is busy".to_string()
-                } else {
-                    gate.clone()
+            let disk_floor = crate::executor::disk_floor_hold(s);
+            if let Some((_, _, _)) = disk_floor {
+                disk_floor_was_under = true;
+                if disk_floor_since.is_empty() {
+                    disk_floor_since = now.clone();
+                    disk_floor_posted = false;
                 }
+                starved_since.clear();
+                reason = crate::executor::disk_floor_note(s).unwrap_or_default();
+                slots.clear();
             } else {
-                let mut names = inflight
-                    .values()
-                    .map(|d| d.worker.clone())
-                    .collect::<Vec<_>>();
-                let mut reasons = BTreeMap::new();
-                let mut rows = BTreeMap::new();
-                for name in &slots {
-                    rows.entry(name.clone())
-                        .or_insert_with(|| crate::executor::executor_row(s, name));
+                if disk_floor_was_under {
+                    let free = crate::executor::free_mb(&crate::executor::local_work_root(s));
+                    say(&o, format!("disk floor cleared: {free} MB free"));
                 }
-                let mut order = (0..slots.len()).collect::<Vec<_>>();
-                order.sort_by_key(|i| {
-                    let unrestricted = rows
-                        .get(&slots[*i])
-                        .is_some_and(|r| r.str("projects") == "*");
-                    (unrestricted, *i)
-                });
-                for i in order {
-                    let slot = &slots[i];
-                    let (lead, job, why) = crate::lead::lead_job_for(
-                        s,
-                        &names,
-                        o.dry_run,
-                        now.clone(),
-                        slot.clone(),
-                        started.len() as i32,
-                    );
-                    let (worker, job) = if !job.0.is_empty() {
-                        (lead, job)
+                disk_floor_was_under = false;
+                disk_floor_since.clear();
+                disk_floor_posted = false;
+                reason = if slots.is_empty() {
+                    if gate.is_empty() {
+                        "every executor slot is busy".to_string()
                     } else {
-                        if !why.is_empty() {
-                            reasons.insert(why, true);
-                        }
-                        let worker = match crate::run::pick_worker(s, &now, &o.agent, &names) {
-                            Ok(worker) => worker,
-                            Err(e) => {
-                                reasons.insert(crate::run::err_message(&e), true);
-                                continue;
-                            }
-                        };
-                        let (job, _, why) = match crate::run::take_job(
+                        gate.clone()
+                    }
+                } else {
+                    let mut names = inflight
+                        .values()
+                        .map(|d| d.worker.clone())
+                        .collect::<Vec<_>>();
+                    let mut reasons = BTreeMap::new();
+                    let mut rows = BTreeMap::new();
+                    for name in &slots {
+                        rows.entry(name.clone())
+                            .or_insert_with(|| crate::executor::executor_row(s, name));
+                    }
+                    let mut order = (0..slots.len()).collect::<Vec<_>>();
+                    order.sort_by_key(|i| {
+                        let unrestricted = rows
+                            .get(&slots[*i])
+                            .is_some_and(|r| r.str("projects") == "*");
+                        (unrestricted, *i)
+                    });
+                    for i in order {
+                        let slot = &slots[i];
+                        let (lead, job, why) = crate::lead::lead_job_for(
                             s,
-                            &worker,
-                            "",
-                            "",
+                            &names,
                             o.dry_run,
-                            &now,
-                            slot,
+                            now.clone(),
+                            slot.clone(),
                             started.len() as i32,
-                        ) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                reasons.insert(crate::run::err_message(&e), true);
-                                continue;
-                            }
-                        };
-                        if job.0.is_empty() {
+                        );
+                        let (worker, job) = if !job.0.is_empty() {
+                            (lead, job)
+                        } else {
                             if !why.is_empty() {
                                 reasons.insert(why, true);
                             }
-                            continue;
-                        }
-                        (worker, job)
-                    };
-                    names.push(worker.clone());
-                    let d = Dispatch {
-                        slot: slot.clone(),
-                        worker,
-                        job,
-                        ..Default::default()
-                    };
-                    inflight.insert(dispatch_key(&d.slot, &d.worker, &d.job), d.clone());
-                    started.push(d.clone());
-                    let tx = results_tx.clone();
-                    let s_run = s.clone();
-                    let o_run = o.clone();
-                    let now_run = now.clone();
-                    let run_parent = run_ctx.child();
-                    std::thread::Builder::new()
-                        .name("daemon-run".into())
-                        .spawn(move || {
-                            let mut d = d;
-                            let result =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    let dctx = run_parent.with_timeout(
-                                        crate::baseline::job_budget(&s_run, d.job.clone()),
-                                    );
-                                    match crate::run::run_job(
-                                        &s_run,
-                                        d.job.clone(),
-                                        &d.worker,
-                                        &now_run,
-                                        crate::run::RunOpts {
-                                            dry_run: o_run.dry_run,
-                                            worker_cmd: o_run.worker_cmd.clone(),
-                                            executor: d.slot.clone(),
-                                            cancel: dctx,
-                                        },
-                                    ) {
-                                        Ok(run) => d.run = run,
-                                        Err(e) => {
-                                            d.reason = format!(
-                                                "daemon error on {}: {}",
-                                                d.slot,
-                                                crate::run::err_message(&e)
-                                            );
-                                        }
-                                    }
-                                }));
-                            if let Err(panic) = result {
-                                let msg = panic
-                                    .downcast_ref::<&str>()
-                                    .map(|s| (*s).to_string())
-                                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                                    .unwrap_or_else(|| "unknown panic".into());
-                                d.reason = format!("daemon error on {}: {}", d.slot, msg);
+                            let worker = match crate::run::pick_worker(s, &now, &o.agent, &names) {
+                                Ok(worker) => worker,
+                                Err(e) => {
+                                    reasons.insert(crate::run::err_message(&e), true);
+                                    continue;
+                                }
+                            };
+                            let (job, _, why) = match crate::run::take_job(
+                                s,
+                                &worker,
+                                "",
+                                "",
+                                o.dry_run,
+                                &now,
+                                slot,
+                                started.len() as i32,
+                            ) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    reasons.insert(crate::run::err_message(&e), true);
+                                    continue;
+                                }
+                            };
+                            if job.0.is_empty() {
+                                if !why.is_empty() {
+                                    reasons.insert(why, true);
+                                }
+                                continue;
                             }
-                            let _ = tx.send(d);
-                        })
-                        .expect("spawn daemon run");
-                }
-                let mut reason = crate::proc::sorted_keys(&bool_keys(reasons)).join("; ");
-                if reason.is_empty() && started.is_empty() {
-                    reason = "no queued job".into();
-                }
-                reason
-            };
+                            (worker, job)
+                        };
+                        names.push(worker.clone());
+                        let d = Dispatch {
+                            slot: slot.clone(),
+                            worker,
+                            job,
+                            ..Default::default()
+                        };
+                        inflight.insert(dispatch_key(&d.slot, &d.worker, &d.job), d.clone());
+                        started.push(d.clone());
+                        let tx = results_tx.clone();
+                        let s_run = s.clone();
+                        let o_run = o.clone();
+                        let now_run = now.clone();
+                        let run_parent = run_ctx.child();
+                        std::thread::Builder::new()
+                            .name("daemon-run".into())
+                            .spawn(move || {
+                                let mut d = d;
+                                let result =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        let dctx = run_parent.with_timeout(
+                                            crate::baseline::job_budget(&s_run, d.job.clone()),
+                                        );
+                                        match crate::run::run_job(
+                                            &s_run,
+                                            d.job.clone(),
+                                            &d.worker,
+                                            &now_run,
+                                            crate::run::RunOpts {
+                                                dry_run: o_run.dry_run,
+                                                worker_cmd: o_run.worker_cmd.clone(),
+                                                executor: d.slot.clone(),
+                                                cancel: dctx,
+                                            },
+                                        ) {
+                                            Ok(run) => d.run = run,
+                                            Err(e) => {
+                                                d.reason = format!(
+                                                    "daemon error on {}: {}",
+                                                    d.slot,
+                                                    crate::run::err_message(&e)
+                                                );
+                                            }
+                                        }
+                                    }));
+                                if let Err(panic) = result {
+                                    let msg = panic
+                                        .downcast_ref::<&str>()
+                                        .map(|s| (*s).to_string())
+                                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                                        .unwrap_or_else(|| "unknown panic".into());
+                                    d.reason = format!("daemon error on {}: {}", d.slot, msg);
+                                }
+                                let _ = tx.send(d);
+                            })
+                            .expect("spawn daemon run");
+                    }
+                    let mut reason = crate::proc::sorted_keys(&bool_keys(reasons)).join("; ");
+                    if reason.is_empty() && started.is_empty() {
+                        reason = "no queued job".into();
+                    }
+                    reason
+                };
+            }
             let queued = active_queued_count(s);
             let total_slots = inflight.len() as i32 + slots.len() as i32 - started.len() as i32;
             let starved = queued > 0 && slots.len() - started.len() == 0 && !inflight.is_empty();
@@ -873,6 +950,32 @@ pub(crate) fn daemon(
                 );
                 if !post.0.is_empty() {
                     say(&o, post.str("summary"));
+                }
+            }
+            if !disk_floor_since.is_empty()
+                && !disk_floor_posted
+                && let Some(c) = conn.as_ref()
+            {
+                let waited = (crate::util::must_iso(&now)
+                    - crate::util::must_iso(&disk_floor_since))
+                .num_minutes() as i32;
+                if waited >= DISK_FLOOR_WANTED_MINUTES
+                    && let Some((free, floor, path)) = crate::executor::disk_floor_hold(s)
+                {
+                    let post = disk_floor_wanted(
+                        s,
+                        crate::board::brain_project(c),
+                        path,
+                        free,
+                        floor,
+                        waited,
+                        now.clone(),
+                        actor.clone(),
+                    );
+                    disk_floor_posted = true;
+                    if !post.0.is_empty() {
+                        say(&o, format!("disk floor wanted: {}", post.str("summary")));
+                    }
                 }
             }
             if !starved_since.is_empty()
@@ -1111,6 +1214,90 @@ mod tests {
         } else {
             "old-fake-binary".into()
         }
+    }
+
+    #[test]
+    fn daemon_disk_floor_pauses_dispatch_before_lease() {
+        let _serial = crate::test_helpers::serial();
+        let _login = with_closed_login_gate();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Needs disk".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            "daemon.min_free_mb",
+            &i32::MAX.to_string(),
+        )
+        .unwrap();
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: should not run'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(out.contains("idle: disk under floor:"), "{out}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE project = 'proj'",
+                &[]
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn daemon_disk_floor_zero_leases_as_before() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Runs with floor off".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(!out.contains("disk under floor"), "{out}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE project = 'proj'",
+                &[]
+            ),
+            1
+        );
     }
 
     struct SignalWriter {

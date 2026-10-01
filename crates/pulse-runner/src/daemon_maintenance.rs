@@ -72,6 +72,7 @@ pub(crate) struct DaemonMaintenance {
     pub(crate) pass_stage: Stage,
     pub(crate) pass_noted: bool,
     pub(crate) pass_restart_noted: bool,
+    pub(crate) lane_disk_floor: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -339,6 +340,14 @@ impl DaemonMaintenance {
         {
             return None;
         }
+        if let Some(note) = crate::executor::disk_floor_note(s) {
+            if self.lane_disk_floor {
+                return None;
+            }
+            self.lane_disk_floor = true;
+            return Some(note);
+        }
+        self.lane_disk_floor = false;
         let (project, job) = self.next_experiment(s, projects, now)?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         let ctx = cancel.child();
@@ -552,10 +561,19 @@ mod tests {
         assert_eq!(experiment_retry("error"), EXPERIMENT_RETRY);
     }
 
+    fn set_unfit_reprobe_minutes(s: &pulse_store::Store, minutes: &str) {
+        exec1(
+            s,
+            "INSERT INTO settings (name, value, updated_at, updated_by) VALUES ('daemon.unfit_reprobe_minutes', ?, ?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            &[&minutes, &TEST_NOW, &pulse_store::HUMAN_AGENT],
+        );
+    }
+
     #[test]
     fn daemon_reprobe_clears_unfit_mark_and_waiting_job_can_lease() {
         let _serial = crate::test_helpers::serial();
         let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
         let (proj, _) = new_bare_repo(&s);
         let slug = proj.str("slug");
         crate::jobs::add_job(
@@ -622,6 +640,7 @@ mod tests {
     fn daemon_reprobe_skips_marks_without_queued_jobs() {
         let _serial = crate::test_helpers::serial();
         let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
         let (proj, _) = new_bare_repo(&s);
         let slug = proj.str("slug");
         crate::recipe::mark_unfit(
@@ -653,6 +672,7 @@ mod tests {
     fn daemon_reprobe_failure_keeps_mark_and_bumps_backoff() {
         let _serial = crate::test_helpers::serial();
         let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
         let (proj, _) = new_bare_repo(&s);
         let slug = proj.str("slug");
         crate::jobs::add_job(
