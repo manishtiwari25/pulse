@@ -40,11 +40,13 @@ pub(crate) fn tend_landings_context(
     now: String,
     prev: BTreeMap<String, String>,
 ) -> (Vec<String>, BTreeMap<String, String>) {
-    tend_landings_pass(ctx, s, projects, actor, now, prev, true)
+    tend_landings_pass(ctx, s, projects, actor, now, prev, true, None)
 }
 
 /// The landing pass behind `tend_landings_context`; the daemon runs it with
-/// `experiments` false and measures experiments on its own lane.
+/// `experiments` false and measures experiments on its own lane, and reads
+/// where the pass is through `stage` when it overruns.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn tend_landings_pass(
     ctx: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -53,6 +55,7 @@ pub(crate) fn tend_landings_pass(
     now: String,
     prev: BTreeMap<String, String>,
     experiments: bool,
+    stage: Option<&crate::daemon_maintenance::Stage>,
 ) -> (Vec<String>, BTreeMap<String, String>) {
     let mut lines = Vec::new();
     let mut cur = BTreeMap::new();
@@ -64,6 +67,7 @@ pub(crate) fn tend_landings_pass(
             break;
         }
         let slug = proj.str("slug");
+        crate::daemon_maintenance::set_stage(stage, format!("landing {slug}"));
         swept.insert(slug.clone(), true);
         let mut landed = false;
         for lr in crate::land::land_pending_pass(
@@ -103,6 +107,7 @@ pub(crate) fn tend_landings_pass(
         }
         let (line, note) =
             if crate::landing_context::landing_stop(ctx, s, proj.str("path")).is_empty() {
+                crate::daemon_maintenance::set_stage(stage, format!("pushing {slug}"));
                 push_landed(s, proj.clone(), actor.clone(), now.clone(), landed)
             } else {
                 (String::new(), String::new())
@@ -1762,6 +1767,7 @@ mod tests {
             TEST_NOW.into(),
             BTreeMap::new(),
             false,
+            None,
         );
         let joined = lines.join("\n");
         assert!(

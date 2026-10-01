@@ -587,7 +587,16 @@ the plain landings ten minutes before cancelling them too; a self-update that
 is due while the lane measures waits for the lane instead of throwing the
 measurement away, and the lane starts nothing new until that update has
 built. Cancellation reaches the measurement and verification commands; it
-does not bypass their results or the landing gates.
+does not bypass their results or the landing gates. A watchdog bounds the
+pass itself: each pass runs under its own one-hour deadline (every command
+inside has a budget; this bounds their sum), and a pass that overruns is
+cancelled and logged with the stage it was at (`landing <project>`,
+`pushing <project>`, `sweep`, `binary check`) so the next pass can start -
+what landed stays landed, the rest waits for it. A pass still running ten
+minutes after that cancellation sits in a call no budget reaches; the daemon
+then logs it and exits with code 3 so the service restarts it (not under
+`--no-restart`, which logs once instead). Without this, one wedged pass once
+held every finished job unlanded for ten hours while dispatch went on.
 
 After a measured experiment is finalized with no pending branch, the daemon
 can queue one durable, result-specific reflection per eligible archive, for

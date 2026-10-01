@@ -455,6 +455,10 @@ pub(crate) fn daemon(
     };
     // Go: leave(result, note) - the loop's exits name their result and the note the say lines carry.
     let leave: (&str, &str);
+    // Set when the watchdog asks for the restart: the stuck pass has already
+    // had `RESTART_DRAIN` since its cancellation, so the exit does not wait
+    // for it again.
+    let mut stuck_pass = false;
     loop {
         loops += 1;
         loops_shared.store(loops, std::sync::atomic::Ordering::SeqCst);
@@ -466,6 +470,18 @@ pub(crate) fn daemon(
         maintenance_wake = false;
         for line in maintenance.drain() {
             say(&o, line);
+        }
+        match maintenance.stuck() {
+            Ok(None) => {}
+            Ok(Some(line)) => say(&o, line),
+            Err(line) => {
+                say(&o, line);
+                if o.restart_on_change {
+                    stuck_pass = true;
+                    leave = ("restart", "restarting");
+                    break;
+                }
+            }
         }
         if completed && inflight.is_empty() {
             if all_errors && !sleep_wait(&mut wake_events, Duration::from_secs(interval as u64)) {
@@ -1004,9 +1020,14 @@ pub(crate) fn daemon(
         // measures it again - and gives the plain landings RESTART_DRAIN
         // before cancelling them too, so a self-update is never held for a
         // ninety-minute measurement.
+        let drain = if stuck_pass {
+            Duration::from_secs(30)
+        } else {
+            crate::daemon_maintenance::RESTART_DRAIN
+        };
         let deadline = (result == "restart").then(|| {
             maintenance.cancel_lane();
-            std::time::Instant::now() + crate::daemon_maintenance::RESTART_DRAIN
+            std::time::Instant::now() + drain
         });
         let (lines, cut) = maintenance.finish(&maintenance_ctx, deadline);
         for line in lines {
@@ -1017,7 +1038,7 @@ pub(crate) fn daemon(
                 &o,
                 format!(
                     "{note}: landing maintenance cancelled after {}",
-                    pulse_cli::format_duration(crate::daemon_maintenance::RESTART_DRAIN)
+                    pulse_cli::format_duration(drain)
                 ),
             );
         }

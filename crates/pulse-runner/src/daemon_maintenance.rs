@@ -20,6 +20,23 @@ pub(crate) const EXPERIMENT_RETRY_SHORT: Duration = Duration::from_secs(5 * 60);
 /// before it cancels them too; the experiment lane is cancelled at once and
 /// the next daemon measures again.
 pub(crate) const RESTART_DRAIN: Duration = Duration::from_secs(10 * 60);
+/// How long one maintenance pass (the plain landings, the sweep, the binary
+/// check) may run before the daemon cancels it so the next pass can start;
+/// every command inside has its own budget, this bounds their sum. A pass
+/// still running `RESTART_DRAIN` after its cancellation is stuck in a call
+/// no budget reaches, and the daemon restarts (exit 3) to free the landings
+/// - once, every job that finished stayed unlanded for ten hours behind one.
+pub(crate) const PASS_DEADLINE: Duration = Duration::from_secs(60 * 60);
+
+/// Where the maintenance pass is, for the watchdog's log line.
+pub(crate) type Stage = std::sync::Arc<std::sync::Mutex<String>>;
+
+/// Notes the pass's current stage.
+pub(crate) fn set_stage(stage: Option<&Stage>, what: impl Into<String>) {
+    if let Some(stage) = stage {
+        *stage.lock().unwrap_or_else(|e| e.into_inner()) = what.into();
+    }
+}
 
 /// Landing states after which the job is no longer pending; every other
 /// state leaves the experiment in the queue for a later attempt.
@@ -48,6 +65,13 @@ pub(crate) struct DaemonMaintenance {
     pub(crate) lane_job: String,
     /// When each experiment's last lane attempt ended, for the retry waits.
     pub(crate) lane_tried: BTreeMap<String, (Instant, Duration)>,
+    /// When the running pass started, its own token (a child of the daemon's
+    /// with `PASS_DEADLINE`), its stage, and whether the deadline was noted.
+    pub(crate) pass_started: Option<Instant>,
+    pub(crate) pass_ctx: Option<pulse_bus::CancellationToken>,
+    pub(crate) pass_stage: Stage,
+    pub(crate) pass_noted: bool,
+    pub(crate) pass_restart_noted: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -130,7 +154,13 @@ impl DaemonMaintenance {
         binary.measuring = self.lane.is_some();
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.done = Some(rx);
-        let cancel = cancel.clone();
+        let cancel = cancel.with_timeout(PASS_DEADLINE);
+        self.pass_started = Some(Instant::now());
+        self.pass_ctx = Some(cancel.clone());
+        self.pass_noted = false;
+        self.pass_restart_noted = false;
+        set_stage(Some(&self.pass_stage), "starting");
+        let stage = self.pass_stage.clone();
         let s = s.clone();
         let held = self.held.clone();
         let last_sweep = self.last_sweep.clone();
@@ -146,8 +176,10 @@ impl DaemonMaintenance {
                         now,
                         held,
                         false,
+                        Some(&stage),
                     );
                     if !dry && !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                        set_stage(Some(&stage), "sweep");
                         lines.extend(crate::sweep::tend_sweep(
                             &s,
                             projects,
@@ -157,9 +189,11 @@ impl DaemonMaintenance {
                             &mut last_sweep.lock().unwrap_or_else(|e| e.into_inner()),
                         ));
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                            set_stage(Some(&stage), "binary check");
                             lines.extend(crate::selfupdate::tend_binary(&s, s.now(), binary));
                         }
                     }
+                    set_stage(Some(&stage), "finished");
                     (lines, held)
                 }))
                 .unwrap_or_else(|panic| {
@@ -294,9 +328,52 @@ impl DaemonMaintenance {
         if let Ok((pass, held)) = rx.try_recv() {
             self.done = None;
             self.held = held;
+            self.pass_started = None;
+            self.pass_ctx = None;
             lines.extend(pass);
         }
         lines
+    }
+    /// The watchdog over the running pass. Past `PASS_DEADLINE` the pass's
+    /// token has expired by itself; this notes it once (`Ok(Some(line))`,
+    /// naming the stage) so the daemon logs it. A pass still running
+    /// `RESTART_DRAIN` later is stuck where no budget reaches, and the
+    /// daemon should restart: `Err(line)` says why.
+    pub(crate) fn stuck(&mut self) -> Result<Option<String>, String> {
+        let (Some(_), Some(started)) = (&self.done, self.pass_started) else {
+            return Ok(None);
+        };
+        let ran = started.elapsed();
+        if ran < PASS_DEADLINE {
+            return Ok(None);
+        }
+        let stage = self
+            .pass_stage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if ran >= PASS_DEADLINE + RESTART_DRAIN {
+            if self.pass_restart_noted {
+                return Ok(None);
+            }
+            self.pass_restart_noted = true;
+            return Err(format!(
+                "landing maintenance has run for {} and did not stop {} after its cancellation (at: {stage}); exiting with code 3 so the service restarts it and the landings resume",
+                pulse_cli::format_duration(ran),
+                pulse_cli::format_duration(RESTART_DRAIN)
+            ));
+        }
+        if self.pass_noted {
+            return Ok(None);
+        }
+        self.pass_noted = true;
+        if let Some(ctx) = &self.pass_ctx {
+            ctx.cancel();
+        }
+        Ok(Some(format!(
+            "landing maintenance has run for {} (at: {stage}); cancelled so the next pass can start - every job landed so far stays landed, the rest wait for it",
+            pulse_cli::format_duration(ran)
+        )))
     }
     /// Waits for the pass and the lane to finish. Past `deadline` whatever
     /// still runs is cancelled through `ctx` and awaited; the flag says so.
@@ -307,11 +384,13 @@ impl DaemonMaintenance {
     ) -> (Vec<String>, bool) {
         let mut lines = std::mem::take(&mut self.lines);
         let mut cut = false;
-        if let Some(rx) = self.done.take()
-            && let Some((pass, held)) = recv_by(&rx, ctx, deadline, &mut cut)
-        {
-            self.held = held;
-            lines.extend(pass);
+        if let Some(rx) = self.done.take() {
+            self.pass_started = None;
+            self.pass_ctx = None;
+            if let Some((pass, held)) = recv_by(&rx, ctx, deadline, &mut cut) {
+                self.held = held;
+                lines.extend(pass);
+            }
         }
         if let Some(rx) = self.lane.take() {
             let got = recv_by(&rx, ctx, deadline, &mut cut);
@@ -582,5 +661,97 @@ mod tests {
             "cut lane touched the branch"
         );
         let _ = pulse_evolve::set_measure(old);
+    }
+
+    #[test]
+    fn stuck_pass_is_cancelled_once_then_restarts_the_daemon() {
+        let (_tx, rx) = crossbeam_channel::bounded::<(Vec<String>, BTreeMap<String, String>)>(1);
+        let parent = pulse_bus::CancellationToken::new();
+        let pass = parent.child();
+        let mut m = DaemonMaintenance {
+            done: Some(rx),
+            pass_started: Some(Instant::now()),
+            pass_ctx: Some(pass.clone()),
+            ..DaemonMaintenance::default()
+        };
+        set_stage(Some(&m.pass_stage), "landing slow-project");
+        assert_eq!(m.stuck(), Ok(None), "a young pass is not stuck");
+        assert!(!pass.is_cancelled());
+
+        m.pass_started = Some(Instant::now() - PASS_DEADLINE);
+        let note = m.stuck().expect("past the deadline is not a restart yet");
+        let note = note.expect("the deadline was not noted");
+        assert!(
+            note.contains("landing maintenance has run for")
+                && note.contains("at: landing slow-project")
+                && note.contains("cancelled"),
+            "note = {note}"
+        );
+        assert!(pass.is_cancelled(), "the overrun did not cancel the pass");
+        assert!(
+            !parent.is_cancelled(),
+            "the overrun cancelled the daemon's token"
+        );
+        assert_eq!(m.stuck(), Ok(None), "the deadline was noted twice");
+
+        m.pass_started = Some(Instant::now() - PASS_DEADLINE - RESTART_DRAIN);
+        let why = m
+            .stuck()
+            .expect_err("a pass still running after the drain is not a restart");
+        assert!(
+            why.contains("did not stop") && why.contains("exiting with code 3"),
+            "why = {why}"
+        );
+        assert_eq!(m.stuck(), Ok(None), "the restart was asked twice");
+    }
+
+    #[test]
+    fn a_finished_pass_is_never_stuck() {
+        let (tx, rx) = crossbeam_channel::bounded::<(Vec<String>, BTreeMap<String, String>)>(1);
+        let mut m = DaemonMaintenance {
+            done: Some(rx),
+            pass_started: Some(Instant::now() - PASS_DEADLINE - RESTART_DRAIN),
+            ..DaemonMaintenance::default()
+        };
+        tx.send((vec!["landing landed: x".into()], BTreeMap::new()))
+            .unwrap();
+        let lines = m.drain();
+        assert_eq!(lines, vec!["landing landed: x".to_string()]);
+        assert!(m.done.is_none() && m.pass_started.is_none());
+        assert_eq!(m.stuck(), Ok(None));
+    }
+
+    #[test]
+    fn the_pass_runs_under_its_own_deadline_token() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let cancel = pulse_bus::CancellationToken::new();
+        let mut m = DaemonMaintenance::default();
+        m.start(
+            &cancel,
+            &s,
+            Vec::new(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+            BTreeMap::new(),
+            crate::selfupdate::SelfUpdateEnv::default(),
+        );
+        let ctx = m.pass_ctx.clone().expect("the pass has no token");
+        assert!(ctx.deadline().is_some(), "the pass token has no deadline");
+        assert!(!ctx.is_cancelled() && !cancel.is_cancelled());
+        let deadline = Instant::now() + test_wait(Duration::from_secs(10));
+        while m.done.is_some() && Instant::now() < deadline {
+            m.drain();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(m.done.is_none(), "the empty pass never finished");
+        assert!(m.pass_started.is_none() && m.pass_ctx.is_none());
+        assert_eq!(
+            m.pass_stage.lock().unwrap().as_str(),
+            "finished",
+            "the pass did not report its last stage"
+        );
     }
 }
