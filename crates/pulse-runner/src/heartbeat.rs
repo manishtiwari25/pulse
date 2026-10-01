@@ -912,10 +912,10 @@ mod tests {
                     let _ = stops_tx.send(());
                 })),
             };
-            let (_, mut argv) = heartbeat_fifo();
+            let (fifo, mut argv) = heartbeat_fifo();
             if mode == "failed launch" {
                 argv = vec![
-                    Path::new(&heartbeat_fifo().0)
+                    Path::new(&fifo)
                         .with_file_name("missing-worker")
                         .display()
                         .to_string(),
@@ -962,6 +962,7 @@ mod tests {
                 assert!(out.timeout, "{mode}: {out:?}");
                 assert_eq!(stops_rx.len(), 1);
             }
+            crate::test_helpers_f2::discard_heartbeat_fifo(&fifo);
         }
     }
 
@@ -971,7 +972,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         let fake = fake_heartbeat_clock();
-        let (mut e, id, env) = runner_heartbeat_fixture(&s, "local");
+        let (mut e, id, env, _scratch) = runner_heartbeat_fixture(&s, "local");
         let (fifo, argv) = heartbeat_fifo();
         let cancel = pulse_bus::CancellationToken::new();
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
@@ -1028,7 +1029,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         let fake = fake_heartbeat_clock();
-        let (e, id, _env) = runner_heartbeat_fixture(&s, "local");
+        let (e, id, _env, _scratch) = runner_heartbeat_fixture(&s, "local");
         let presence = |at: DateTime<Utc>| {
             pulse_board::agent_presences(&s, &pulse_store::rfc3339_nano(at))
                 .unwrap()
@@ -1105,7 +1106,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         let fake = fake_heartbeat_clock();
-        let (local, id, env) = runner_heartbeat_fixture(&s, "hands");
+        let (local, id, env, _scratch) = runner_heartbeat_fixture(&s, "hands");
         let mut e = crate::exec::SshExec {
             local,
             ..Default::default()
@@ -1346,7 +1347,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         for mode in ["legacy", "probe error", "probe exit"] {
             let s = new_store();
-            let (local, id, env) = runner_heartbeat_fixture(&s, "hands");
+            let (local, id, env, _scratch) = runner_heartbeat_fixture(&s, "hands");
             let mut e = crate::exec::SshExec {
                 local,
                 ..Default::default()
@@ -1411,7 +1412,7 @@ mod tests {
         ] {
             let s = new_store();
             let fake = fake_heartbeat_clock();
-            let (local, id, env) = runner_heartbeat_fixture(&s, "hands");
+            let (local, id, env, _scratch) = runner_heartbeat_fixture(&s, "hands");
             let mut e = crate::exec::SshExec {
                 local,
                 ..Default::default()
@@ -1501,20 +1502,22 @@ mod tests {
                 .unwrap();
             let mut argv = vec![dir.join("missing-command").display().to_string()];
             let mut want = 127;
+            let mut fifo = String::new();
             if timeout {
-                argv = heartbeat_fifo().1;
+                (fifo, argv) = heartbeat_fifo();
                 want = crate::executor::REMOTE_EXIT_TIMEOUT;
             }
-            assert_eq!(
-                h.with_timeout_observed(
-                    Duration::from_millis(100),
-                    &dir.display().to_string(),
-                    &argv,
-                    &env,
-                    observer.as_ref()
-                ),
-                want
+            let rc = h.with_timeout_observed(
+                Duration::from_millis(100),
+                &dir.display().to_string(),
+                &argv,
+                &env,
+                observer.as_ref(),
             );
+            if !fifo.is_empty() {
+                crate::test_helpers_f2::discard_heartbeat_fifo(&fifo);
+            }
+            assert_eq!(rc, want);
             let path = hands_heartbeat_path(dir.display().to_string(), "run-quiet".into()).unwrap();
             let data = std::fs::read(&path);
             if !timeout {
@@ -1636,15 +1639,15 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let cancel = pulse_bus::CancellationToken::new();
         let (fifo, _) = heartbeat_fifo();
-        let ready = crate::test_helpers_f2::f2_temp_dir().join("ready");
-        std::fs::create_dir_all(ready.parent().unwrap()).unwrap();
+        let scratch = crate::test_helpers_f2::f2_temp_dir();
+        let ready = scratch.join("ready");
         let argv = vec![
             "sh".into(),
             "-c".into(),
             "printf ready > \"$1\"; read value < \"$2\"".into(),
             "client".into(),
             ready.display().to_string(),
-            fifo,
+            fifo.clone(),
         ];
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
         let cancel_for_thread = cancel.clone();
@@ -1666,6 +1669,7 @@ mod tests {
             &err,
             pulse_bus::ContextError::Canceled
         ));
+        crate::test_helpers_f2::discard_heartbeat_fifo(&fifo);
     }
 
     #[test]
@@ -1673,7 +1677,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
-        let (local, _id, env) = runner_heartbeat_fixture(&s, "hands");
+        let (local, _id, env, _scratch) = runner_heartbeat_fixture(&s, "hands");
         let mut e = crate::exec::SshExec {
             local,
             ..Default::default()

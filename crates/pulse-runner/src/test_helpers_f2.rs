@@ -98,20 +98,49 @@ pub(crate) fn heartbeat_eventually(mut ready: impl FnMut() -> bool) {
     panic!("heartbeat evidence did not arrive");
 }
 
+/// A scratch directory a test owns: removed, with everything in it, when the
+/// guard drops. `keep` hands the path over to a helper that removes it itself.
+pub(crate) struct Scratch(PathBuf);
+
+impl Scratch {
+    pub(crate) fn keep(mut self) -> PathBuf {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
 /// A fresh scratch directory outside any checkout. The FIFOs and fake clones
 /// the heartbeat tests leave behind must never land inside the source tree:
 /// the evolution lane scores a clone after the fixture agent ran the project's
 /// tests there, and a special file in that tree fails the read-only scorer.
-pub(crate) fn f2_temp_dir() -> PathBuf {
+/// Bind the guard for as long as the directory is in use; a temporary drops,
+/// and removes the directory, at the end of its statement.
+pub(crate) fn f2_temp_dir() -> Scratch {
     let dir = std::env::temp_dir()
         .join("pulse-runner-f2")
         .join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    Scratch(dir)
 }
 
+/// A FIFO in a scratch directory of its own; `finish_heartbeat_fifo` or
+/// `discard_heartbeat_fifo` removes the directory, or the gate's `Drop` does.
 pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
-    let path = f2_temp_dir().join("finish");
+    let path = f2_temp_dir().keep().join("finish");
     let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
     let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
     if rc != 0 {
@@ -132,6 +161,12 @@ pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
 pub(crate) fn finish_heartbeat_fifo(path: &str) {
     std::fs::write(path, b"finish\n").unwrap();
     // The reader holds the FIFO open by now; its scratch directory is done.
+    discard_heartbeat_fifo(path);
+}
+
+/// Removes a FIFO's scratch directory when no reader will ever be released
+/// (the worker was killed, cancelled, or never launched).
+pub(crate) fn discard_heartbeat_fifo(path: &str) {
     if let Some(dir) = Path::new(path).parent() {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -194,6 +229,16 @@ impl LifecycleGate {
     }
 }
 
+impl Drop for LifecycleGate {
+    /// The gate owns its scratch directory (the FIFO and the ready marker);
+    /// it goes when the gate does, whether the test passed or panicked.
+    fn drop(&mut self) {
+        if let Some(dir) = Path::new(&self.ready).parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 /// Go: func waitLifecycleRun(t *testing.T, done <-chan struct{})
 pub(crate) fn wait_lifecycle_run(done: &Receiver<()>) {
     done.recv_timeout(LIFECYCLE_WAIT_TIMEOUT)
@@ -209,6 +254,7 @@ pub(crate) fn runner_heartbeat_fixture(
     crate::exec::LocalExec,
     pulse_board::ExecutionIdentity,
     BTreeMap<String, String>,
+    Scratch,
 ) {
     crate::test_helpers::join(s, "quiet");
     let conn = s.conn().unwrap();
@@ -263,12 +309,13 @@ pub(crate) fn runner_heartbeat_fixture(
         &id.agent,
         &mut log,
     );
-    e.clone_dir = f2_temp_dir().display().to_string();
+    let scratch = f2_temp_dir();
+    e.clone_dir = scratch.display().to_string();
     if let Some(parent) = Path::new(&e.key).parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(&e.key, b"synthetic run key").unwrap();
-    (e, id, env)
+    (e, id, env, scratch)
 }
 
 pub(crate) fn runner_heartbeat(

@@ -2416,8 +2416,11 @@ mod tests {
         let s = new_store();
         set_setting(&s, "parallel_per_project", "2");
         let conn = s.conn().unwrap();
+        let mut scratch = Vec::new();
         for (i, project) in ["first", "second", "third"].iter().enumerate() {
-            let dir = crate::test_helpers_f2::f2_temp_dir().join(format!("fairness-{project}"));
+            let root = crate::test_helpers_f2::f2_temp_dir();
+            let dir = root.join(format!("fairness-{project}"));
+            scratch.push(root);
             std::fs::create_dir_all(&dir).unwrap();
             crate::util::exec1(
                 &conn,
