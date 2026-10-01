@@ -279,7 +279,14 @@ pub(crate) fn measurement_failure(
     {
         return err;
     }
-    let mut why = format!("{step} failed; command output is withheld");
+    let mut why = match err
+        .chain()
+        .map(ToString::to_string)
+        .find(|text| text.starts_with("exit status: ") || text.starts_with("signal: "))
+    {
+        Some(status) => format!("{step} failed ({status}); command output is withheld"),
+        None => format!("{step} failed; command output is withheld"),
+    };
     if pulse_bus::ContextError::is(&err, pulse_bus::ContextError::DeadlineExceeded) {
         why = format!("{step} exceeded minutes_per_job");
     }
@@ -605,6 +612,13 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
             if mode == "cancel" {
                 assert!(
                     err.to_string().contains("context deadline exceeded"),
+                    "{err}"
+                );
+            }
+            if mode == "harness failure" {
+                assert!(
+                    err.to_string()
+                        .contains("harness failed (exit status: 7); command output is withheld"),
                     "{err}"
                 );
             }

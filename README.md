@@ -779,9 +779,12 @@ two-reply script, and `PULSE_HARNESS_FAKE_SCRIPT=path.json` supplies your own
 `"loop":true` to repeat the last reply). It never appears in Settings; it is
 for tests and demos.
 Commands that would leave the clone (`git push`, changing `git remote`, any
-`gh` call) or touch credentials (`~/.ssh`, `.netrc`, `~/.pulse/private`,
+`gh` call) or touch credentials (`~/.ssh`, `.netrc`, the pulse home's
+`private/` directory under any spelling - `~/.pulse/private`,
+`$PULSE_HOME/private`, a measurement home's `private/providers` -
 `~/.copilot`, `~/.config/gh`) are refused without being run; the model is
-told why and continues.
+told why and continues. The macOS filesystem root `/private/`, which `/tmp`
+and `/var` resolve to, is not a credential path.
 
 Exit codes tell the runner what happened without parsing prose: `0` the
 model submitted; `1` a limit (`step_limit`, `time_limit`, `cost_limit`,

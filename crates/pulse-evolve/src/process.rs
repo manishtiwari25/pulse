@@ -295,7 +295,7 @@ pub(crate) fn run_process_to(
             return if status.success() {
                 Ok(())
             } else {
-                Err(anyhow!("exit status: {status}"))
+                Err(anyhow!("{status}"))
             };
         }
         std::thread::sleep(Duration::from_millis(10));

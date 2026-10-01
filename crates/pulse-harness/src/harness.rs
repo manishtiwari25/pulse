@@ -33,7 +33,11 @@ pub const DEFAULT_DENY: &[&str] = &[
     r"(?i)(^|[;&|]\s*)git\s+push\b",
     r"(?i)(^|[;&|]\s*)git\s+remote\s+(add|set-url|remove)\b",
     r"(?i)(^|[;&|]\s*)gh\s+",
-    r#"(^|[\s"'`])(~/.ssh/|\.netrc\b|/private/|~/.pulse/private\b|~/.copilot\b|~/.config/gh\b)"#,
+    // Credential paths: the pulse home's private directory under any spelling
+    // (`~/.pulse/private`, `/Users/x/.pulse/private`, `$PULSE_HOME/private`,
+    // an isolated measurement home's `private/providers`), never the macOS
+    // filesystem root `/private/` that `/tmp` and `/var` resolve to.
+    r#"(^|[\s"'`])(~/.ssh/|\.netrc\b|~/.copilot\b|~/.config/gh\b)|\.pulse/private\b|PULSE_HOME\}?/private\b|/private/(providers|heldout)\b"#,
 ];
 
 pub use DEFAULT_DENY as DefaultDeny;
@@ -1847,6 +1851,34 @@ mod tests {
         assert_eq!(got.exit_status, EXIT_SUBMITTED);
         assert!(env.lock().unwrap().commands.is_empty());
         assert!(h.messages()[3].content.contains("refused by policy"));
+    }
+
+    #[test]
+    fn credential_rule_covers_every_pulse_home_but_not_the_macos_private_root() {
+        let rule = Regex::new(DEFAULT_DENY[3]).unwrap();
+        for denied in [
+            "cat ~/.pulse/private/providers/github",
+            "ls ~/.pulse/private",
+            "cat /Users/me/.pulse/private/providers/github",
+            "cat \"$PULSE_HOME/private/providers/github\"",
+            "cat ${PULSE_HOME}/private/heldout/h1.json",
+            "ls /Users/me/.pulse/fleet/x/homes/2/private/heldout",
+            "cat /opt/pulse-home/private/providers/github",
+            "cat ~/.ssh/id_ed25519",
+            "cat .netrc",
+            "ls ~/.copilot",
+            "cat ~/.config/gh/hosts.yml",
+        ] {
+            assert!(rule.is_match(denied), "should refuse: {denied}");
+        }
+        for allowed in [
+            "cd /private/tmp/mh/clone && git tag -l && git log --oneline -3",
+            "ls /private/var/folders/5h/T/pulse-runner-f2",
+            "cat storage/private/notes.txt",
+            "grep -rn private src/",
+        ] {
+            assert!(!rule.is_match(allowed), "should run: {allowed}");
+        }
     }
 
     #[test]
