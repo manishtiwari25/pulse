@@ -1216,11 +1216,14 @@ mod tests {
         let g = gates();
         assert_eq!(g["baseline_job"], Value::Null);
         assert_eq!(g["baseline_failed_at"], s.now());
+        let retry_hours = s.setting("baseline.retry_hours", "");
         assert!(
             g["reason"]
                 .as_str()
                 .unwrap()
-                .contains("retries after 24 hours")
+                .contains(&format!("retries after {retry_hours} hours")),
+            "{}",
+            g["reason"]
         );
         let scores = pulse_evolve::Scores {
             project: slug.clone(),
