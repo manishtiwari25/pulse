@@ -508,7 +508,9 @@ pub(crate) fn evolve_suggestion(s: &pulse_store::Store) -> pulse_board::Post {
             agent: "proposer".into(),
             summary: "Tune README".into(),
             files: "README.md".into(),
-            body: "Class: operating-layer\nFile: README.md\nVariable: one constant\nHypothesis: README gets clearer\nTier: 1\n".into(),
+            // The proposer is a worker, so the planner gates want a Signal: line naming
+            // existing evidence, as they do for the runner's own planner.
+            body: "Class: operating-layer\nFile: README.md\nVariable: one constant\nHypothesis: README gets clearer\nTier: 1\nSignal: README.md\n".into(),
             agent_row: Some(agent_row("proposer")),
             ..Default::default()
         },

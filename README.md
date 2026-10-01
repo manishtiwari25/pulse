@@ -456,7 +456,9 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   whole top-level tree is gone from the checkout (written before a port, a
   rename or a removal) is held as `names gone paths` - a card that adds a file,
   however deep, under a tree that exists is fine; then the operating-layer cap
-  above. Votes
+  above. The evolution loop's experiment planner applies the same gates
+  before it picks a card, so a voted card the runner holds is never run as
+  an experiment either. Votes
   carry no evidence for the card they vote on: a gated card is replaced by a
   corrected one, not voted through. The
   reflect brief asks for one provable Tier 0 *product* defect first (a wrong

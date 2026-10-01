@@ -529,6 +529,7 @@ pub(crate) fn experiment_candidates(
 ) -> Result<Vec<ExperimentCandidate>> {
     let mut out = Vec::new();
     let mut seen = seen;
+    let project_path = s.project(project)?.map(|p| p.path).unwrap_or_default();
     for suggestion in crate::card::ordered_suggestions(s, result, status.product_scope.allowed) {
         if seen
             .as_ref()
@@ -553,6 +554,21 @@ pub(crate) fn experiment_candidates(
         }
         let p = pulse_tally::load_post(s, &suggestion.id)?;
         if p.for_owner || (crate::card::product_post(&p) && !status.product_scope.allowed) {
+            continue;
+        }
+        // The runner's planner gates hold for experiments as well: a card whose File: tree is
+        // gone from the checkout, whose Signal does not resolve, or that targets owner paths
+        // sends no worker anywhere, measured or not. The in-flight gate is left out: the
+        // carrier job of a suggestion is this planner's own to report.
+        let ungated = pulse_tally::Suggestion {
+            job: String::new(),
+            job_status: String::new(),
+            ..suggestion.clone()
+        };
+        if !pulse_tally::plan_gate(s, &project_path, &ungated, Some(&p)).is_empty() {
+            if let Some(m) = seen.as_deref_mut() {
+                m.insert(suggestion.id.clone(), true);
+            }
             continue;
         }
         if held_by_another_job(s, suggestion.clone())? {
@@ -771,6 +787,72 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cards, 0, "created experiment cards for the owner post");
+    }
+    #[test]
+    fn plan_experiment_skips_card_whose_tree_is_gone() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e1_test_lock();
+        set_read_plan_preflight(None);
+        let s = cycle_ready();
+        // A staged class whose paths predate a port: the constitution still lists it.
+        put_record(
+            &s,
+            pulse_store::Record {
+                id: "EVO-constitution-demo".into(),
+                project: "demo".into(),
+                kind: "evolution".into(),
+                slug: "constitution".into(),
+                ..Default::default()
+            },
+            "# Constitution\n\n## Editable scope\n| File class | Paths | Stage | Autonomy |\n| --- | --- | --- | --- |\n| product | `value.txt`, `other.txt` | 4 | standing |\n| operating | `README.md` | 2 | standing |\n| runner | `internal/` | 3 | standing |\n\n## Immutable paths\n| Path | Why |\n| --- | --- |\n| `protected.txt` | owner-owned |\n",
+        );
+        let gone = voted_suggestion_with_votes(
+            &s,
+            "ported-away",
+            "operating-layer",
+            "internal/runner/env.go",
+            &["up", "up", "up"],
+        );
+        let next = voted_suggestion_with_votes(
+            &s,
+            "still-here",
+            "operating-layer",
+            "README.md",
+            &["up", "up"],
+        );
+        let status = crate::status::status(&s, "demo").unwrap();
+        let gone_post = pulse_tally::load_post(&s, &gone.id).unwrap();
+        assert!(
+            crate::card::make_card(&s, &gone_post, &status).is_ok(),
+            "the card is well-formed and in scope; only the planner gate may hold it"
+        );
+        assert_eq!(status.planning.state, "ready", "{status:?}");
+        assert_eq!(status.planning.suggestion, next.id, "{status:?}");
+        let result = plan_experiment(
+            &s,
+            "demo",
+            PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            result.created && result.suggestion == next.id,
+            "planned {result:?}; want {} not {}",
+            next.id,
+            gone.id
+        );
+        let jobs_for_gone: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE source = ?",
+                [format!("suggestion:{}", gone.id)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(jobs_for_gone, 0, "sent a worker to a tree that is gone");
     }
     #[test]
     fn plan_experiment_level_gate_has_no_side_effects() {

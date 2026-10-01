@@ -356,7 +356,7 @@ mod tests {
                         agent: "proposer".into(),
                         summary: "Try the next README variable".into(),
                         files: "README.md".into(),
-                        body: "Class: operating-layer\nFile: README.md\nVariable: another constant\nHypothesis: test the next measured hypothesis\nTier: 1\n".into(),
+                        body: "Class: operating-layer\nFile: README.md\nVariable: another constant\nHypothesis: test the next measured hypothesis\nTier: 1\nSignal: README.md\n".into(),
                         ..Default::default()
                     },
                 )
