@@ -312,6 +312,16 @@ pub(crate) fn plan_jobs(
     now: String,
     created_by: String,
 ) -> anyhow::Result<Vec<Row>> {
+    plan_jobs_with_tally(s, slug, now, created_by, None)
+}
+
+pub(crate) fn plan_jobs_with_tally(
+    s: &pulse_store::Store,
+    slug: String,
+    now: String,
+    created_by: String,
+    cached_tally: Option<&pulse_tally::TallyResult>,
+) -> anyhow::Result<Vec<Row>> {
     let conn = s.conn()?;
     let waiting = must_one(&conn, "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND kind != 'experiment' AND status IN ('queued', 'leased')", &[&slug]).int("n");
     if waiting >= crate::jobs::parallel_per_project(s) {
@@ -380,21 +390,26 @@ pub(crate) fn plan_jobs(
         }
     }
     let mut plan_res = None;
-    let suggestions = pulse_tally::compute_light(
-        s,
-        &slug,
-        "",
-        pulse_tally::Thresholds {
-            now: now.clone(),
-            ..Default::default()
-        },
-    )
-    .map(|r| {
-        let suggestions = r.suggestions.clone();
-        plan_res = Some(r);
-        suggestions
-    })
-    .unwrap_or_default();
+    let suggestions = if let Some(r) = cached_tally {
+        plan_res = Some(r.clone());
+        r.suggestions.clone()
+    } else {
+        pulse_tally::compute_light(
+            s,
+            &slug,
+            "",
+            pulse_tally::Thresholds {
+                now: now.clone(),
+                ..Default::default()
+            },
+        )
+        .map(|r| {
+            let suggestions = r.suggestions.clone();
+            plan_res = Some(r);
+            suggestions
+        })
+        .unwrap_or_default()
+    };
     let plan_ctx = pulse_tally::plan_context_for(s, &slug, &now, plan_res.as_ref());
     let (claims, _) = pulse_evolve::loop_claims_public(s, &slug, &created_by)?;
     if created.is_empty() {

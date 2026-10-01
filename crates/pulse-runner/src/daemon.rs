@@ -23,14 +23,26 @@ pub(crate) static DAEMON_WAKE: &[&str] = &[
     "message.sent",
     "post.question",
     "post.handoff",
+    "post.vote",
+    "post.result",
     "task.created",
     "task.amended",
     "task.status",
     "compute.approved",
     "setting",
     "job.add",
+    "job.queued",
+    "job.requeue",
+    "job.recover",
     "schedule.run",
 ];
+
+#[derive(Debug, Clone)]
+struct PlannerSnapshot {
+    watermark: String,
+    tally: pulse_tally::TallyResult,
+    suggestion_idle: String,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Dispatch {
@@ -94,6 +106,7 @@ pub(crate) fn daemon_heartbeat(s: &pulse_store::Store, loops: i32, interval: i32
         "version": pulse_cli::version(),
         "revision": pulse_cli::revision(),
         "bus": {"subscribers": b.subscribers(), "dropped": b.dropped(), "deduped": b.deduped()},
+        "planner_cache": pulse_tally::cache::cache_stats(),
     });
     if let Ok(conn) = s.conn() {
         let _ = conn.execute(
@@ -273,6 +286,43 @@ fn active_queued_count(s: &pulse_store::Store) -> i32 {
         .unwrap_or(0)
 }
 
+fn planner_snapshot(
+    s: &pulse_store::Store,
+    cache: &mut BTreeMap<String, PlannerSnapshot>,
+    slug: &str,
+    now: &str,
+) -> Option<PlannerSnapshot> {
+    let watermark = pulse_tally::cache::project_watermark(s, slug, "").ok()?;
+    if let Some(snapshot) = cache.get(slug)
+        && snapshot.watermark == watermark
+    {
+        return Some(snapshot.clone());
+    }
+    let tally = pulse_tally::compute_light(
+        s,
+        slug,
+        "",
+        pulse_tally::Thresholds {
+            now: now.to_string(),
+            ..Default::default()
+        },
+    )
+    .ok()?;
+    let suggestion_idle = crate::idle::suggestion_idle_part_with_tally(
+        s,
+        slug.to_string(),
+        now.to_string(),
+        Some(&tally),
+    );
+    let snapshot = PlannerSnapshot {
+        watermark,
+        tally,
+        suggestion_idle,
+    };
+    cache.insert(slug.to_string(), snapshot.clone());
+    Some(snapshot)
+}
+
 fn dispatch_key(slot: &str, worker: &str, job: &Row) -> String {
     format!("{slot}\0{worker}\0{}", job.str("id"))
 }
@@ -445,6 +495,7 @@ pub(crate) fn daemon(
     let mut disk_floor_since = String::new();
     let mut disk_floor_posted = false;
     let mut disk_floor_was_under = false;
+    let mut planner_cache: BTreeMap<String, PlannerSnapshot> = BTreeMap::new();
     // Go: report(d)
     fn report(
         o: &DaemonOpts,
@@ -498,6 +549,44 @@ pub(crate) fn daemon(
             }
         }
     };
+    let sleep_idle_wait =
+        |wake_events: &mut Option<crossbeam_channel::Receiver<pulse_bus::Event>>,
+         d: Duration|
+         -> bool {
+            if let Some(sleep) = &o.sleep {
+                return sleep(d);
+            }
+            let start_queued = active_queued_count(s);
+            let deadline = std::time::Instant::now() + d;
+            let done = cancel.done();
+            loop {
+                let now_i = std::time::Instant::now();
+                if now_i >= deadline {
+                    return true;
+                }
+                let wait = std::cmp::min(
+                    Duration::from_secs(DISPATCH_TICK_SECONDS as u64),
+                    deadline.saturating_duration_since(now_i),
+                );
+                let timer = crossbeam_channel::after(wait);
+                crossbeam_channel::select! {
+                    recv(done) -> _ => return false,
+                    recv(timer) -> _ => {
+                        if active_queued_count(s) != start_queued {
+                            return true;
+                        }
+                    },
+                    recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
+                        if msg.is_err() {
+                            *wake_events = None;
+                            continue;
+                        }
+                        return true;
+                    },
+                    recv(compute_wake) -> _ => return true,
+                }
+            }
+        };
     // Go: leave(result, note) - the loop's exits name their result and the note the say lines carry.
     let leave: (&str, &str);
     // Set when the watchdog asks for the restart: the stuck pass has already
@@ -539,6 +628,19 @@ pub(crate) fn daemon(
         if cancel.is_cancelled() {
             leave = ("interrupted", "stopping on signal");
             break;
+        }
+        if o.max_loops > 0 && inflight.len() == 1 {
+            let done = cancel.done();
+            crossbeam_channel::select! {
+                recv(results_rx) -> msg => if let Ok(d) = msg {
+                    report(&o, &mut inflight, &mut completed, &mut all_errors, d);
+                },
+                recv(done) -> _ => {
+                    leave = ("interrupted", "stopping on signal");
+                    break;
+                },
+            }
+            continue;
         }
         let why = crate::run::runner_stopped(s);
         if !why.is_empty() {
@@ -675,8 +777,14 @@ pub(crate) fn daemon(
             let mut planned = BTreeMap::new();
             for slug in &slugs {
                 let before_plan = crate::plan::last_event_seq(s);
-                let jobs = match crate::plan::plan_jobs(s, slug.clone(), now.clone(), actor.clone())
-                {
+                let snapshot = planner_snapshot(s, &mut planner_cache, slug, &now);
+                let jobs = match crate::plan::plan_jobs_with_tally(
+                    s,
+                    slug.clone(),
+                    now.clone(),
+                    actor.clone(),
+                    snapshot.as_ref().map(|snap| &snap.tally),
+                ) {
                     Ok(jobs) => jobs,
                     Err(e) => {
                         say(
@@ -716,10 +824,20 @@ pub(crate) fn daemon(
                     if !busy.0.is_empty() {
                         continue;
                     }
-                    cur_idle.insert(
-                        slug.clone(),
-                        crate::idle::idle_note(s, slug.clone(), now.clone()),
-                    );
+                    let note = if let Some(snapshot) =
+                        planner_snapshot(s, &mut planner_cache, slug, &now)
+                    {
+                        crate::idle::idle_note_from_parts(
+                            s,
+                            slug.clone(),
+                            now.clone(),
+                            snapshot.suggestion_idle,
+                            snapshot.tally.suggestions,
+                        )
+                    } else {
+                        crate::idle::idle_note(s, slug.clone(), now.clone())
+                    };
+                    cur_idle.insert(slug.clone(), note);
                 }
             }
             for line in crate::idle::idle_notes_changed(prev_idle.clone(), cur_idle.clone()) {
@@ -842,6 +960,12 @@ pub(crate) fn daemon(
                             (worker, job)
                         };
                         names.push(worker.clone());
+                        let wait_s = crate::jobs::job_wait_seconds(
+                            &*s.conn().expect("lease wait connection"),
+                            &job,
+                            &now,
+                        );
+                        say(&o, format!("leased {} after {}s", job.str("id"), wait_s));
                         let d = Dispatch {
                             slot: slot.clone(),
                             worker,
@@ -1006,21 +1130,39 @@ pub(crate) fn daemon(
         let tick = crossbeam_channel::after(Duration::from_secs(DISPATCH_TICK_SECONDS as u64));
         let done = cancel.done();
         if !inflight.is_empty() {
-            crossbeam_channel::select! {
-                recv(results_rx) -> msg => if let Ok(d) = msg {
-                    report(&o, &mut inflight, &mut completed, &mut all_errors, d);
-                },
-                recv(tick) -> _ => {},
-                recv(compute_wake) -> _ => {},
-                recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
-                    if msg.is_err() {
-                        wake_events = None;
-                    }
-                },
-                recv(done) -> _ => {
-                    leave = ("interrupted", "stopping on signal");
-                    break;
-                },
+            if o.max_loops > 0 && inflight.len() == 1 {
+                crossbeam_channel::select! {
+                    recv(results_rx) -> msg => if let Ok(d) = msg {
+                        report(&o, &mut inflight, &mut completed, &mut all_errors, d);
+                    },
+                    recv(compute_wake) -> _ => {},
+                    recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
+                        if msg.is_err() {
+                            wake_events = None;
+                        }
+                    },
+                    recv(done) -> _ => {
+                        leave = ("interrupted", "stopping on signal");
+                        break;
+                    },
+                }
+            } else {
+                crossbeam_channel::select! {
+                    recv(results_rx) -> msg => if let Ok(d) = msg {
+                        report(&o, &mut inflight, &mut completed, &mut all_errors, d);
+                    },
+                    recv(tick) -> _ => {},
+                    recv(compute_wake) -> _ => {},
+                    recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
+                        if msg.is_err() {
+                            wake_events = None;
+                        }
+                    },
+                    recv(done) -> _ => {
+                        leave = ("interrupted", "stopping on signal");
+                        break;
+                    },
+                }
             }
         } else if let Some(done_rx) = maintenance.done.as_ref() {
             crossbeam_channel::select! {
@@ -1037,7 +1179,7 @@ pub(crate) fn daemon(
                     break;
                 },
             }
-        } else if !sleep_wait(&mut wake_events, Duration::from_secs(interval as u64)) {
+        } else if !sleep_idle_wait(&mut wake_events, Duration::from_secs(interval as u64)) {
             leave = ("interrupted", "stopping on signal");
             break;
         }
@@ -1708,6 +1850,10 @@ mod tests {
         assert!(!raw.is_empty(), "daemon = {raw}");
         assert!(raw.contains("\"loops\""), "daemon = {raw}");
         assert!(DAEMON_WAKE.contains(&"post.question"));
+        assert!(DAEMON_WAKE.contains(&"job.add"));
+        assert!(DAEMON_WAKE.contains(&"job.queued"));
+        assert!(DAEMON_WAKE.contains(&"job.requeue"));
+        assert!(DAEMON_WAKE.contains(&"job.recover"));
     }
 
     #[test]

@@ -1660,8 +1660,13 @@ fn compute_caches_result_for_unchanged_store() {
         ..Default::default()
     };
     let r1 = compute(&f.st, "fixture", "", th.clone()).unwrap();
+    let after_first = crate::cache::cache_stats();
     let r2 = compute(&f.st, "fixture", "", th).unwrap();
+    let after_second = crate::cache::cache_stats();
     assert_eq!(r1, r2);
+    assert_eq!(after_first.misses, 1);
+    assert_eq!(after_second.hits, 1);
+    assert_eq!(after_second.misses, 1);
     assert!(crate::cache::cache_len_for_test() > 0);
 }
 
@@ -1711,6 +1716,49 @@ fn compute_invalidates_cache_when_settings_change() {
     let r2 = compute(&f.st, "fixture", "", th).unwrap();
     assert_ne!(r1.params.stop_present, r2.params.stop_present);
     assert!(r2.params.stop_present);
+}
+
+#[test]
+fn compute_invalidates_cache_when_vote_job_or_landing_changes() {
+    let _serial = crate::test_helpers::serial();
+    let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    crate::cache::clear_cache_for_test();
+    let mut f = test_fixture::new_fixture(true);
+    let th = Thresholds {
+        now: FIXTURE_NOW.into(),
+        ..Default::default()
+    };
+    let _ = compute(&f.st, "fixture", "", th.clone()).unwrap();
+    assert_eq!(crate::cache::cache_stats().misses, 1);
+
+    let mut vote = test_fixture::FPost::new(
+        "vote",
+        "evolution",
+        "speedup",
+        "runner-cache/model",
+        "2026-09-02T15:00:00Z",
+        "up",
+        "s-cache",
+    );
+    vote.on = f.ids["eligible"].clone();
+    vote.vote = "up".into();
+    f.post(vote);
+    let _ = compute(&f.st, "fixture", "", th.clone()).unwrap();
+    assert_eq!(crate::cache::cache_stats().misses, 2);
+
+    f.st.conn().unwrap().execute(
+        "INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES ('job-cache', 'fixture', 'improve', 'cache', 'suggestion:x', 'queued', ?)",
+        [FIXTURE_NOW],
+    ).unwrap();
+    let _ = compute(&f.st, "fixture", "", th.clone()).unwrap();
+    assert_eq!(crate::cache::cache_stats().misses, 3);
+
+    f.st.conn().unwrap().execute(
+        "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'test', 'land.pushed', 'fixture', '')",
+        [FIXTURE_NOW],
+    ).unwrap();
+    let _ = compute(&f.st, "fixture", "", th).unwrap();
+    assert_eq!(crate::cache::cache_stats().misses, 4);
 }
 
 #[test]
@@ -2245,6 +2293,7 @@ fn signal_unlanded_under_hook_git_env() {
 #[test]
 fn plan_gate_outcomes() {
     let _serial = crate::test_helpers::serial();
+    reset_landed_cache();
     let mut f = test_fixture::new_fixture(true);
     {
         let conn = f.st.conn().unwrap();

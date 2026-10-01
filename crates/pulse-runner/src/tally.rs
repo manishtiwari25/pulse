@@ -3,6 +3,7 @@
 use serde_json::json;
 
 /// Go: func suggestionRecords(s *store.Store, slug, now string) []tally.Suggestion
+#[allow(dead_code)]
 pub(crate) fn suggestion_records(
     s: &pulse_store::Store,
     slug: String,

@@ -31,6 +31,7 @@ pub struct StatusReport {
     pub harness: String,
     pub daemon: String,
     pub bus: BusStatus,
+    pub planner_cache: PlannerCacheStatus,
     pub executors: String,
     pub capacity: String,
     pub hygiene: String,
@@ -45,6 +46,12 @@ pub struct BusStatus {
     pub subscribers: i64,
     pub dropped: i64,
     pub deduped: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlannerCacheStatus {
+    pub hits: u64,
+    pub misses: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +221,7 @@ pub struct DaemonBeat {
     pub interval: Option<i64>,
     pub note: String,
     pub bus: BusStatus,
+    pub planner_cache: PlannerCacheStatus,
 }
 
 pub fn read_daemon_beat(s: &pulse_store::Store) -> Result<(DaemonBeat, bool)> {
@@ -537,6 +545,7 @@ pub fn status(s: &pulse_store::Store) -> Result<StatusReport> {
     r.daemon = daemon_status(s)?;
     if let Ok((beat, true)) = read_daemon_beat(s) {
         r.bus = beat.bus;
+        r.planner_cache = beat.planner_cache;
     }
     r.executors = executors_line(s)?;
     r.capacity = capacity_status(s)?;
@@ -587,6 +596,12 @@ impl StatusReport {
             out.push_str(&format!(
                 "events     {} event(s) dropped for slow subscribers since the daemon started\n",
                 self.bus.dropped
+            ));
+        }
+        if self.planner_cache.hits > 0 || self.planner_cache.misses > 0 {
+            out.push_str(&format!(
+                "planner    cache {} hit(s), {} miss(es) since the daemon started\n",
+                self.planner_cache.hits, self.planner_cache.misses
             ));
         }
         out.push_str(&format!("executors  {}\n", self.executors));

@@ -416,7 +416,9 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   tie stays `needs votes` until one more voter decides. Eligible is a ballot
   state, not a job: every tick the daemon takes each project's top eligible
   suggestion that passes the gates and queues one worker job for it (source
-  `suggestion:<id>`), one new job per project per tick and only while fewer
+  `suggestion:<id>`), reusing an in-memory planner snapshot while the project's
+  board/job/event/settings watermark is unchanged (default safety TTL:
+  `daemon.planner_cache_ttl_seconds=600`), one new job per project per tick and only while fewer
   than `parallel_per_project` ordinary jobs wait. **Product cards go first**:
   the planner classes every card as *product* (the thing the project ships)
   or *operating-layer* (tests, fixtures, CI, tooling, formatting, PULSE
@@ -1015,8 +1017,11 @@ messages get answers. `pulse work` runs one worker here; `pulse land`,
 Use `pulse daemon --interval S` (or `pulse service install --interval S`) to
 set the idle wait and the retry pause after an all-error batch. The default
 is 300 seconds; zero or negative values use that default. Store events can
-wake the loop early, and cancellation stops the wait. Successful runs and
-work still in flight keep their existing prompt-dispatch behavior.
+wake the loop early; job queue events (`job.add`, `job.queued`, `job.requeue`,
+`job.recover`) wake dispatch, and an idle daemon also polls the active queued
+count every 15 seconds so a missed event still starts work within one dispatch
+tick without multiplying idle log lines. Cancellation stops the wait. Successful
+runs and work still in flight keep their existing prompt-dispatch behavior.
 
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project
@@ -1396,7 +1401,8 @@ evidence, duplicates, over operating-layer cap, in flight, tried), when the
 next research job comes and what it
 looks at, and the daemon log says it once per change.
 Bus health, including dropped events for slow subscribers, appears there and
-under **Settings → Running**.
+under **Settings → Running**. `pulse status` also reports planner cache hit/miss
+counts from the daemon heartbeat.
 `pulse queue` marks such cards `not planned:` with the reason and counts each
 project's plannable items; the console's Votes page shows the same gate on
 the card.
