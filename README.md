@@ -570,7 +570,14 @@ tick, so a slow verification does not freeze worker dispatch, heartbeats or
 STOP handling. That pass lands the plain branches of every project first and
 leaves experiments to a second thread, the experiment lane, which measures one
 experiment at a time; a ninety-minute measurement therefore holds no other
-landing. An experiment the lane could not land stays queued and is tried again
+landing. The lane measures the default branch, then the variant as landing
+would merge it - the branch merged onto the current default branch, built
+from git objects alone so neither the checkout nor the branch moves (a branch
+that already contains the default branch, or one that conflicts with it, is
+measured as it is and landing reports the conflict); a variant measured on
+its stale fork point would miss every fix the default branch gained since,
+and the archive notes `measured as … merged onto …` when that happened. An
+experiment the lane could not land stays queued and is tried again
 after an hour (five minutes after a lock or STOP), recorded as `land.deferred`
 with the reason and `retry_after_min`. The measurement harness the lane starts
 is the same `pulse harness run` the workers use, with the same tool denials,

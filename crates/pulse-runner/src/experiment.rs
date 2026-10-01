@@ -97,6 +97,67 @@ pub(crate) fn score_line(sc: &pulse_evolve::api::Scores) -> String {
     )
 }
 
+/// The revision the lane measures for `branch`: the branch merged onto `def` the way
+/// landing merges it, built from objects alone (`git merge-tree --write-tree` and
+/// `commit-tree`) so neither the checkout nor the branch moves. A variant measured on its
+/// own stale base would be compared against a baseline it never contained and would miss
+/// every fix `def` gained since the branch forked. A branch that already contains `def`
+/// is measured as it is; a conflicting one too, so that landing reports the conflict
+/// itself. Returns the revision and a note for the log (empty when the branch is measured
+/// as it is).
+pub(crate) fn measured_variant(root: &str, def: &str, branch: &str) -> (String, String) {
+    let short = Duration::from_secs(30);
+    if crate::util::git_timeout(root, short, &["merge-base", "--is-ancestor", def, branch]).ok() {
+        return (branch.to_string(), String::new());
+    }
+    let tree = crate::util::git_timeout(
+        root,
+        Duration::from_secs(120),
+        &["merge-tree", "--write-tree", def, branch],
+    );
+    if !tree.ok() {
+        return (branch.to_string(), String::new());
+    }
+    let tree_id = tree.stdout.lines().next().unwrap_or("").trim().to_string();
+    if tree_id.len() < 40 {
+        return (branch.to_string(), String::new());
+    }
+    let def_sha = crate::util::git_timeout(root, short, &["rev-parse", "--verify", def]);
+    let branch_sha = crate::util::git_timeout(root, short, &["rev-parse", "--verify", branch]);
+    if !def_sha.ok() || !branch_sha.ok() {
+        return (branch.to_string(), String::new());
+    }
+    let message = format!("Measure {branch} on {def}");
+    let commit = crate::util::git_timeout_env(
+        root,
+        short,
+        &[
+            "GIT_AUTHOR_NAME=pulse".into(),
+            "GIT_AUTHOR_EMAIL=pulse@pulse.local".into(),
+            "GIT_COMMITTER_NAME=pulse".into(),
+            "GIT_COMMITTER_EMAIL=pulse@pulse.local".into(),
+        ],
+        &[
+            "commit-tree",
+            &tree_id,
+            "-p",
+            def_sha.stdout.trim(),
+            "-p",
+            branch_sha.stdout.trim(),
+            "-m",
+            &message,
+        ],
+    );
+    let sha = commit.stdout.trim().to_string();
+    if !commit.ok() || sha.len() < 40 {
+        return (branch.to_string(), String::new());
+    }
+    (
+        sha.clone(),
+        format!("measured as {branch} merged onto {def} ({})", &sha[..12]),
+    )
+}
+
 /// Go: func landExperiment(s *store.Store, project row, job row, actor, now string, verify bool) (state, note string)
 pub(crate) fn land_experiment(
     s: &pulse_store::Store,
@@ -364,12 +425,13 @@ pub(crate) fn land_experiment_context(
     {
         return ("stopped".into(), why);
     }
+    let (variant_rev, merged_note) = measured_variant(&root, &def, &branch);
     let variant = match pulse_evolve::measure(
         &ctx,
         s,
         &slug,
         &root,
-        &branch,
+        &variant_rev,
         pulse_evolve::MeasureOptions::default(),
     ) {
         Ok(v) => v,
@@ -422,13 +484,17 @@ pub(crate) fn land_experiment_context(
             );
         }
     };
-    let measured = format!(
+    let mut measured = format!(
         "baseline {}; variant {}; tolerance {:.3}; {}",
         score_line(&baseline),
         score_line(&variant),
         tol,
         reason
     );
+    if !merged_note.is_empty() {
+        measured.push_str("; ");
+        measured.push_str(&merged_note);
+    }
     let hyp = if hypothesis.is_empty() {
         String::new()
     } else {
@@ -490,6 +556,104 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_f5::*;
+
+    #[test]
+    fn variant_is_measured_merged_onto_main_when_main_moved() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, _calls) = measured_keep_fixture();
+        let branch = job.str("branch");
+        // main gains a fix after the branch forked; the measured tree must carry both.
+        std::fs::write(
+            std::path::Path::new(&root).join("fix.txt"),
+            "fixed on main\n",
+        )
+        .unwrap();
+        run(&root, &["git", "add", "fix.txt"]);
+        run(&root, &["git", "commit", "-q", "-m", "fix on main"]);
+        let main_before = ref_of(&root, "main");
+        let branch_before = ref_of(&root, &branch);
+        let refs: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let seen = refs.clone();
+        let _old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, _opts| {
+                seen.lock().unwrap().push(r#ref.to_string());
+                let score = if r#ref == "main" { 0.8 } else { 0.9 };
+                Ok(pulse_evolve::Scores {
+                    project: slug.into(),
+                    total: score,
+                    ..Default::default()
+                })
+            }));
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "landed", "{note}");
+        let refs = refs.lock().unwrap().clone();
+        assert_eq!(refs.len(), 2, "{refs:?}");
+        assert_eq!(refs[0], "main");
+        let measured = &refs[1];
+        assert!(
+            measured != &branch && measured != &branch_before && measured.len() >= 40,
+            "variant measured on its stale base: {measured}"
+        );
+        let parents = run(
+            &root,
+            &["git", "rev-list", "--parents", "-n", "1", measured],
+        );
+        assert!(
+            parents.contains(&main_before) && parents.contains(&branch_before),
+            "measured commit does not join main and the branch: {parents}"
+        );
+        assert_eq!(
+            run(&root, &["git", "show", &format!("{measured}:README.md")]),
+            "# measured variant\n"
+        );
+        assert_eq!(
+            run(&root, &["git", "show", &format!("{measured}:fix.txt")]),
+            "fixed on main\n"
+        );
+        // Landing merged the branch commit itself (and removed the branch), not the
+        // measurement commit, which stays an unreferenced object.
+        run(
+            &root,
+            &["git", "merge-base", "--is-ancestor", &branch_before, "main"],
+        );
+        assert!(
+            !run(&root, &["git", "rev-list", "--parents", "-n", "1", "main"]).contains(measured),
+            "the measurement commit landed"
+        );
+    }
+
+    #[test]
+    fn measured_variant_keeps_the_branch_when_it_contains_main_or_conflicts() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (_s, _project, job, root, _calls) = measured_keep_fixture();
+        let branch = job.str("branch");
+        // The branch forked from the current main: nothing to merge.
+        let (rev, note) = measured_variant(&root, "main", &branch);
+        assert_eq!((rev.as_str(), note.as_str()), (branch.as_str(), ""));
+        // main edits the same file the branch edited: the merge conflicts; landing reports it.
+        std::fs::write(
+            std::path::Path::new(&root).join("README.md"),
+            "# conflicting main\n",
+        )
+        .unwrap();
+        run(&root, &["git", "commit", "-q", "-am", "conflict on main"]);
+        let (rev, note) = measured_variant(&root, "main", &branch);
+        assert_eq!((rev.as_str(), note.as_str()), (branch.as_str(), ""));
+        assert_eq!(
+            run(&root, &["git", "status", "--porcelain"]).trim(),
+            "",
+            "merge-tree touched the checkout"
+        );
+    }
 
     #[test]
     fn missing_measured_keep_is_not_delivered() {
