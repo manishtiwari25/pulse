@@ -182,12 +182,21 @@ impl DaemonMaintenance {
                         set_stage(Some(&stage), "sweep");
                         lines.extend(crate::sweep::tend_sweep(
                             &s,
-                            projects,
+                            projects.clone(),
                             s.now(),
                             actor.clone(),
                             inflight,
                             &mut last_sweep.lock().unwrap_or_else(|e| e.into_inner()),
                         ));
+                        if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                            set_stage(Some(&stage), "board hygiene");
+                            lines.extend(crate::hygiene::tend_board_hygiene(
+                                &s,
+                                &projects,
+                                s.now(),
+                                actor.clone(),
+                            ));
+                        }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             set_stage(Some(&stage), "binary check");
                             lines.extend(crate::selfupdate::tend_binary(&s, s.now(), binary));

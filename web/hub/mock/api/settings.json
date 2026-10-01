@@ -28,6 +28,18 @@
     },
     {
       "choices": null,
+      "default": "7",
+      "description": "days before the daemon retires an open suggestion whose non-empty files list names only paths absent at the project HEAD",
+      "kind": "count",
+      "min": 1,
+      "name": "board.stale_days",
+      "secret": false,
+      "updated_at": "2026-09-01T09:07:00Z",
+      "updated_by": "init",
+      "value": "7"
+    },
+    {
+      "choices": null,
       "default": "4",
       "description": "hours a board claim stays active before it is treated as stale",
       "kind": "count",
