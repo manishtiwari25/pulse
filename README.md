@@ -93,7 +93,14 @@ itself current (ADR-035): when a landing moves the brain's `main`, it rebuilds
 `pulse` from that clean checkout, smoke-tests the new binary, installs it in
 place and restarts once its runs in flight finish - the console follows within
 a minute and shows the build it runs beside the daemon's under **Settings →
-Running**. A build that then exits three times early is put back to the
+Running**. The restart is a handover, not a pause: a daemon whose binary
+changed on disk while runs are in flight keeps dispatching, planning and
+landing for up to `daemon.restart_drain_minutes` (default 30), stops starting
+runs once less than `minutes_per_job + 5` of that window is left (log line
+`restarting: no new runs with <left> left of the drain; N in flight`), and
+exits with code 3 the moment nothing is in flight; its heartbeat says
+`restarting: N in flight` meanwhile. `0` stops dispatching at once and waits
+for the runs, as before. A build that then exits three times early is put back to the
 previous one by the launcher, which turns `daemon.self_update` off and leaves
 a finding. Set `daemon.self_update` to `off` to keep the build you have and
 `cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
@@ -1416,7 +1423,12 @@ its own row.
 which bucket held each card back (needs votes, rejected, for the owner, without
 evidence, duplicates, over operating-layer cap, in flight, tried), when the
 next research job comes and what it
-looks at, and the daemon log says it once per change.
+looks at, and the daemon log says it once per change - a countdown ticking
+down (`ballot in 2h` → `1h`, `next after 17m` → `16m`) is not a change. The
+daemon's own idle line (`idle: no queued job`, `idle: every executor slot is
+busy`, ...) follows the same rule: it is logged when the reason changes or a
+run started in between, and otherwise summarised once an hour as
+`idle: <reason> (unchanged for 1h, 240 ticks)`.
 Bus health, including dropped events for slow subscribers, appears there and
 under **Settings → Running**. `pulse status` also reports planner cache hit/miss
 counts from the daemon heartbeat.

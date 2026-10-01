@@ -353,7 +353,11 @@ pub(crate) fn idle_notes_changed(
 ) -> Vec<String> {
     cur.into_iter()
         .filter_map(|(slug, note)| {
-            (prev.get(&slug) != Some(&note)).then(|| format!("idle {slug}: {note}"))
+            let changed = prev.get(&slug).is_none_or(|old| {
+                crate::idle_log::normalize_countdowns(old)
+                    != crate::idle_log::normalize_countdowns(&note)
+            });
+            changed.then(|| format!("idle {slug}: {note}"))
         })
         .collect()
 }
@@ -577,6 +581,28 @@ mod tests {
             ]),
         );
         assert_eq!(got, vec!["idle b: new", "idle c: newer"]);
+    }
+
+    #[test]
+    fn idle_notes_changed_ignores_countdowns() {
+        let _serial = crate::test_helpers::serial();
+        let got = super::idle_notes_changed(
+            BTreeMap::from([
+                (
+                    "a".into(),
+                    "2 eligible suggestions, 0 plannable; ballot in 2h; research: last research 47m ago, next after 13m".into(),
+                ),
+                ("b".into(), "1 eligible suggestion; ballot in 2h".into()),
+            ]),
+            BTreeMap::from([
+                (
+                    "a".into(),
+                    "2 eligible suggestions, 0 plannable; ballot in 1h; research: last research 52m ago, next after 8m".into(),
+                ),
+                ("b".into(), "2 eligible suggestions; ballot in 1h".into()),
+            ]),
+        );
+        assert_eq!(got, vec!["idle b: 2 eligible suggestions; ballot in 1h"]);
     }
 
     #[test]

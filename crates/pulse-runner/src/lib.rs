@@ -29,6 +29,7 @@ pub mod heartbeat;
 pub mod heldout;
 pub mod hygiene;
 pub mod idle;
+pub mod idle_log;
 pub mod jobs;
 pub mod keys;
 pub mod land;

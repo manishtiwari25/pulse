@@ -272,6 +272,12 @@ pub(crate) fn say(o: &DaemonOpts, line: impl AsRef<str>) {
     }
 }
 
+/// How long a daemon whose binary changed on disk keeps dispatching while
+/// runs are in flight (daemon.restart_drain_minutes); zero exits at once.
+pub(crate) fn restart_drain(s: &pulse_store::Store) -> Duration {
+    Duration::from_secs((s.setting_int("daemon.restart_drain_minutes").max(0) as u64) * 60)
+}
+
 fn active_queued_count(s: &pulse_store::Store) -> i32 {
     s.conn()
         .ok()
@@ -346,6 +352,11 @@ pub(crate) fn daemon(
     let mut loops = 0;
     let mut last_prune_day = String::new();
     let mut prev_idle: BTreeMap<String, String> = BTreeMap::new();
+    let mut idle_log = crate::idle_log::IdleLog::default();
+    // Set when the binary changed on disk while runs were in flight: the
+    // daemon keeps dispatching and landing for up to daemon.restart_drain_minutes
+    // and exits with code 3 as soon as nothing is in flight (restart handover).
+    let mut restart_pending: Option<std::time::Instant> = None;
     let mut maintenance = crate::daemon_maintenance::DaemonMaintenance::default();
     let mut maintenance_wake = false;
     let mut probes = crate::checkout::CheckoutProbes::default();
@@ -652,15 +663,58 @@ pub(crate) fn daemon(
             && !stamp.is_empty()
             && (BINARY_STAMP.read().expect("binary stamp"))() != stamp
         {
-            say(
-                &o,
-                "pulse changed on disk; exiting with code 3 so the service restarts it",
-            );
-            leave = ("restart", "restarting");
-            break;
+            let drain = restart_drain(s);
+            match restart_pending {
+                None if inflight.is_empty() || drain.is_zero() => {
+                    say(
+                        &o,
+                        "pulse changed on disk; exiting with code 3 so the service restarts it",
+                    );
+                    leave = ("restart", "restarting");
+                    break;
+                }
+                None => {
+                    say(
+                        &o,
+                        format!(
+                            "pulse changed on disk; {} run(s) in flight finish first and new runs may start for up to {}, then this daemon exits with code 3 so the service restarts it",
+                            inflight.len(),
+                            pulse_cli::format_duration(drain)
+                        ),
+                    );
+                    restart_pending = Some(std::time::Instant::now());
+                }
+                Some(_) if inflight.is_empty() => {
+                    say(
+                        &o,
+                        "pulse changed on disk and nothing is in flight; exiting with code 3 so the service restarts it",
+                    );
+                    leave = ("restart", "restarting");
+                    break;
+                }
+                Some(since) if since.elapsed() >= drain => {
+                    say(
+                        &o,
+                        format!(
+                            "restart drain of {} over with {} run(s) still in flight; exiting with code 3 after they finish",
+                            pulse_cli::format_duration(drain),
+                            inflight.len()
+                        ),
+                    );
+                    leave = ("restart", "restarting");
+                    break;
+                }
+                Some(_) => {}
+            }
+        } else if restart_pending.is_some() {
+            // The binary was changed back: the handover is off.
+            restart_pending = None;
         }
         let now = s.now();
-        heartbeat(loops, "");
+        let restart_note = restart_pending
+            .map(|_| format!("restarting: {} in flight", inflight.len()))
+            .unwrap_or_default();
+        heartbeat(loops, &restart_note);
         let mut started: Vec<Dispatch> = Vec::new();
         let mut reason = String::new();
         let mut slots: Vec<String> = Vec::new();
@@ -870,8 +924,27 @@ pub(crate) fn daemon(
                 .read()
                 .expect("login gate poisoned"))(s);
             slots = crate::run::executor_slots(s, &now, &busy, !gate.is_empty());
+            let restart_hold = restart_pending.and_then(|since| {
+                let left = restart_drain(s).saturating_sub(since.elapsed());
+                let fits = Duration::from_secs(
+                    ((s.setting_int("minutes_per_job") + 5).max(0) as u64) * 60,
+                );
+                (left < fits).then(|| {
+                    format!(
+                        "restarting: no new runs with {} left of the drain; {} in flight",
+                        pulse_cli::format_duration(left),
+                        inflight.len()
+                    )
+                })
+            });
             let disk_floor = crate::executor::disk_floor_hold(s);
-            if let Some((_, _, _)) = disk_floor {
+            if let Some(hold) = restart_hold {
+                if let Some(line) = idle_log.line("restart", &hold, std::time::Instant::now()) {
+                    say(&o, line);
+                }
+                reason = hold;
+                slots.clear();
+            } else if let Some((_, _, _)) = disk_floor {
                 disk_floor_was_under = true;
                 if disk_floor_since.is_empty() {
                     disk_floor_since = now.clone();
@@ -1117,11 +1190,19 @@ pub(crate) fn daemon(
             say(&o, line);
         }
         // Go says "idle" twice in two branches; one guard keeps clippy quiet.
-        if !reason.is_empty()
+        // The idle log says a reason when it changes and summarises it hourly
+        // while it holds; a started run opens the channel again.
+        if !started.is_empty() {
+            idle_log.clear("daemon");
+        }
+        let idle_now = !reason.is_empty()
             && ((started.is_empty() && inflight.is_empty())
-                || (!started.is_empty() && started.len() < slots.len()))
+                || (!started.is_empty() && started.len() < slots.len()));
+        if let Some(line) = idle_now
+            .then(|| idle_log.line("daemon", &reason, std::time::Instant::now()))
+            .flatten()
         {
-            say(&o, format!("idle: {reason}"));
+            say(&o, format!("idle: {line}"));
         }
         if o.max_loops > 0 && loops >= o.max_loops {
             leave = ("done", "loop limit reached");
@@ -1434,6 +1515,182 @@ mod tests {
         waiting: crossbeam_channel::Sender<()>,
         needle: String,
         sent: bool,
+    }
+
+    /// Starts a daemon that restarts on a binary change with one slow task
+    /// in flight, flips the binary stamp once the run is leased and returns
+    /// the daemon's output and result once it exits.
+    fn restart_with_run_in_flight(
+        drain_minutes: &str,
+        queue_after_flip: bool,
+    ) -> (crate::test_helpers::TestStore, String, String, String) {
+        pulse_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "borealis");
+        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+            .unwrap();
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            "daemon.restart_drain_minutes",
+            drain_minutes,
+        )
+        .unwrap();
+        let add = |title: &str| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "test".into(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+        };
+        let (slow, _) = add("Slow run");
+        let slow_id = slow.str("id");
+        let old_stamp = *BINARY_STAMP.read().unwrap();
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        set_binary_stamp(test_restart_stamp);
+        let out = OutBuf::new();
+        let (leased_tx, leased_rx) = crossbeam_channel::bounded(1);
+        let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(SignalWriter {
+            out: out.clone(),
+            waiting: leased_tx,
+            needle: "leased job-".into(),
+            sent: false,
+        }));
+        let opts = DaemonOpts {
+            interval: 300,
+            out: Some(writer),
+            worker_cmd: "sh -c 'sleep 3; echo SUMMARY: ok'".into(),
+            restart_on_change: true,
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = pulse_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            leased_rx
+                .recv_timeout(test_wait(Duration::from_secs(20)))
+                .expect("the slow run was never leased");
+            TEST_RESTART_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+            if queue_after_flip {
+                add("Queued after the binary changed");
+            } else {
+                pulse_bus::emit(
+                    &s,
+                    "human",
+                    "post.question",
+                    "wake-restart",
+                    serde_json::json!({"project": "proj"}),
+                )
+                .unwrap();
+            }
+            done_rx
+                .recv_timeout(test_wait(Duration::from_secs(30)))
+                .expect("the daemon did not exit after the run in flight finished")
+        }));
+        cancel.cancel();
+        set_binary_stamp(old_stamp);
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let result = match result {
+            Ok(result) => result,
+            Err(panic) => panic!("{}\n{}", panic_message(&panic), out.string()),
+        };
+        (s, out.string(), result, slow_id)
+    }
+
+    #[test]
+    fn restart_hands_over_once_the_runs_in_flight_finish() {
+        let _serial = crate::test_helpers::serial();
+        let (s, out, result, slow_id) = restart_with_run_in_flight("30", false);
+        assert_eq!(result, "restart", "{out}");
+        assert!(
+            out.contains("1 run(s) in flight finish first and new runs may start for up to 30m"),
+            "{out}"
+        );
+        assert!(
+            out.contains("nothing is in flight; exiting with code 3"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("restarting: waiting for 1 run(s) in flight"),
+            "the handover still stopped dispatch to wait:\n{out}"
+        );
+        let beat = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT value FROM meta WHERE key = 'daemon'",
+            &[],
+        );
+        assert!(
+            beat.str("value").contains("\"note\":\"restarting\""),
+            "{}",
+            beat.str("value")
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'done'",
+                &[&slow_id]
+            ),
+            1,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn restart_drain_zero_stops_dispatch_at_once() {
+        let _serial = crate::test_helpers::serial();
+        let (_s, out, result, _) = restart_with_run_in_flight("0", false);
+        assert_eq!(result, "restart", "{out}");
+        assert!(
+            out.contains("pulse changed on disk; exiting with code 3 so the service restarts it")
+                && out.contains("restarting: waiting for 1 run(s) in flight"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("finish first and new runs may start"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn restart_drain_holds_runs_that_would_not_fit() {
+        let _serial = crate::test_helpers::serial();
+        // One minute of drain is less than minutes_per_job + 5: the job queued
+        // after the binary changed waits for the next daemon.
+        let (s, out, result, slow_id) = restart_with_run_in_flight("1", true);
+        assert_eq!(result, "restart", "{out}");
+        assert!(out.contains("restarting: no new runs with"), "{out}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE title = 'Queued after the binary changed' AND status = 'queued'",
+                &[]
+            ),
+            1,
+            "{out}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE project = 'proj' AND job_id <> ?",
+                &[&slow_id]
+            ),
+            0,
+            "a run started inside the last minute of the drain:\n{out}"
+        );
     }
 
     impl Write for SignalWriter {
