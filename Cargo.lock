@@ -1569,8 +1569,10 @@ name = "pulse-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "pulse-store",
  "pulse-testutil",
+ "rand",
  "regex",
  "reqwest",
  "serde",

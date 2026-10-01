@@ -3,13 +3,15 @@
 use anyhow::{Result, anyhow};
 use chrono::SecondsFormat;
 use pulse_provider::{
-    CancelToken, Login, LoginExporter, Logouter, Message, Model, Options, Provider, ProviderError,
-    Request, Response, Role, TokenLogin, ToolCall, Usage, default_http_client, err_not_logged_in,
-    is_retryable, private_provider_path, read_private_json, redact, register as register_provider,
-    remember_secret, write_private_json,
+    BodyReadError, CancelToken, ERROR_BODY_LIMIT_BYTES, Login, LoginExporter, Logouter, Message,
+    Model, Options, Provider, ProviderError, Request, Response, Role, TokenLogin, ToolCall, Usage,
+    default_http_client, err_not_logged_in, is_retryable, private_provider_path,
+    provider_max_body_bytes, provider_retry_after_cap, read_body_capped, read_body_up_to,
+    read_private_json, redact, register as register_provider, remember_secret, retry_after_hint,
+    retry_wait, write_private_json,
 };
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -59,12 +61,16 @@ fn openai_from_options(options: &mut Options) -> Result<OpenAI> {
         }
     };
     let base = configured_base(&options.settings, |key| options.env(key));
+    let max_body_bytes = provider_max_body_bytes(&options.settings);
+    let retry_after_cap = provider_retry_after_cap(&options.settings);
     Ok(OpenAI {
         home,
         http,
         env: options.env.clone(),
         log: options.log.clone(),
         base,
+        max_body_bytes,
+        retry_after_cap,
         inner: Mutex::new(Inner::default()),
     })
 }
@@ -79,6 +85,8 @@ pub struct OpenAI {
     env: Option<pulse_provider::EnvFn>,
     log: Option<pulse_provider::LogFn>,
     base: String,
+    max_body_bytes: usize,
+    retry_after_cap: Duration,
     inner: Mutex<Inner>,
 }
 
@@ -148,13 +156,20 @@ impl Provider for OpenAI {
                     if !is_retryable(&err) || attempt == backoffs.len() - 1 {
                         return Err(err);
                     }
-                    let wait = retry_delay(&err, *fallback);
-                    self.log_redacted(&format!(
-                        "openai chat retry in {} after {}",
-                        format_duration(wait),
-                        err
-                    ));
-                    sleep(cancel, wait)?;
+                    let wait = retry_wait(&err, *fallback);
+                    if wait.from_header {
+                        self.log_redacted(&format!(
+                            "rate limited by openai; waiting {} (header)",
+                            format_duration(wait.duration)
+                        ));
+                    } else {
+                        self.log_redacted(&format!(
+                            "openai chat retry in {} after {}",
+                            format_duration(wait.duration),
+                            err
+                        ));
+                    }
+                    sleep(cancel, wait.duration)?;
                 }
             }
         }
@@ -385,10 +400,10 @@ impl OpenAI {
             .into());
         }
         if !status.is_success() {
-            return Err(http_provider_error(res, false));
+            return Err(self.http_provider_error(res, false));
         }
-        let body: ModelsResponse = res
-            .json()
+        let data = self.read_success_body(res)?;
+        let body: ModelsResponse = serde_json::from_slice(&data)
             .map_err(|e| make_provider_error(0, "decode", e.to_string(), false))?;
         Ok(map_models(body))
     }
@@ -413,7 +428,7 @@ impl OpenAI {
             .into());
         }
         if !status.is_success() {
-            return Err(http_provider_error(res, false));
+            return Err(self.http_provider_error(res, false));
         }
         let request_id = res
             .headers()
@@ -421,8 +436,8 @@ impl OpenAI {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_string();
-        let out: ChatResponse = res
-            .json()
+        let data = self.read_success_body(res)?;
+        let out: ChatResponse = serde_json::from_slice(&data)
             .map_err(|e| make_provider_error(0, "decode", e.to_string(), false))?;
         let mut resp = out.provider_response();
         if request_id.is_empty() {
@@ -431,6 +446,23 @@ impl OpenAI {
             resp.request_id = request_id;
         }
         Ok(resp)
+    }
+
+    fn read_success_body(&self, res: reqwest::blocking::Response) -> Result<Vec<u8>> {
+        read_body_capped(res, self.max_body_bytes)
+            .map_err(|e| match e {
+                BodyReadError::TooLarge { .. } => make_provider_error(
+                    0,
+                    "body_too_large",
+                    format!(
+                        "response exceeded {} MiB",
+                        self.max_body_bytes / (1024 * 1024)
+                    ),
+                    false,
+                ),
+                BodyReadError::Io(e) => make_provider_error(0, "network", e.to_string(), true),
+            })
+            .map_err(Into::into)
     }
 
     fn headers(&self, token: &str) -> Result<HeaderMap> {
@@ -512,6 +544,14 @@ impl OpenAI {
         if let Some(log) = &self.log {
             log(&redact(line));
         }
+    }
+
+    fn http_provider_error(
+        &self,
+        res: reqwest::blocking::Response,
+        default_retryable: bool,
+    ) -> anyhow::Error {
+        http_provider_error(res, default_retryable, self.retry_after_cap)
     }
 }
 
@@ -773,27 +813,22 @@ fn is_gpt4o_family(id: &str) -> bool {
     id == "gpt-4o" || id.starts_with("gpt-4o-")
 }
 
-fn http_provider_error(res: reqwest::blocking::Response, default_retryable: bool) -> anyhow::Error {
+fn http_provider_error(
+    res: reqwest::blocking::Response,
+    default_retryable: bool,
+    retry_after_cap: Duration,
+) -> anyhow::Error {
     let status = res.status();
-    let retry_after = res
-        .headers()
-        .get(RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    let retry_after = retry_after_hint(res.headers(), retry_after_cap);
     let status_text = format!(
         "{} {}",
         status.as_u16(),
         status.canonical_reason().unwrap_or("Status")
     );
-    let data = res.bytes().map(|b| b.to_vec()).unwrap_or_default();
-    let limited = if data.len() > 4096 {
-        &data[..4096]
-    } else {
-        &data[..]
-    };
-    let (code, mut msg) = parse_error_body(limited);
+    let data = read_body_up_to(res, ERROR_BODY_LIMIT_BYTES);
+    let (code, mut msg) = parse_error_body(&data);
     if msg.is_empty() {
-        msg = String::from_utf8_lossy(limited).trim().to_string();
+        msg = String::from_utf8_lossy(&data).trim().to_string();
     }
     if msg.is_empty() {
         msg = status_text;
@@ -801,7 +836,7 @@ fn http_provider_error(res: reqwest::blocking::Response, default_retryable: bool
     let retryable = default_retryable || matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504);
     let mut err = make_provider_error(i32::from(status.as_u16()), &code, &msg, retryable);
     if let Some(ra) = retry_after {
-        err.code = format!("{} retry_after={}", err.code, ra.trim());
+        err.code = format!("{} retry_after_s={}", err.code, ra.as_secs());
     }
     err.into()
 }
@@ -867,20 +902,6 @@ fn make_provider_error(
 fn is_unauthorized(err: &anyhow::Error) -> bool {
     pulse_provider::provider_error(err)
         .is_some_and(|e| e.status == 401 || e.status == 403 || e.code == "unauthorized")
-}
-
-fn retry_delay(err: &anyhow::Error, fallback: Duration) -> Duration {
-    if let Some(perr) = pulse_provider::provider_error(err) {
-        for part in perr.code.split_whitespace() {
-            if let Some(raw) = part.strip_prefix("retry_after=")
-                && let Ok(sec) = raw.parse::<u64>()
-            {
-                let d = Duration::from_secs(sec);
-                return d.min(Duration::from_secs(30));
-            }
-        }
-    }
-    fallback
 }
 
 fn key_user(token: &str) -> String {
@@ -1226,6 +1247,34 @@ mod tests {
             .unwrap();
         assert_eq!(resp.message.unwrap().content, "ok");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn chat_response_over_body_cap_is_non_retryable() {
+        let srv = Server::new(move |_| TestResponse::text(200, "x".repeat(1024 * 1024 + 1)));
+        let env = BTreeMap::from([("OPENAI_API_KEY".to_string(), FAKE_KEY.to_string())]);
+        let settings = BTreeMap::from([("provider.max_body_mb".to_string(), "1".to_string())]);
+        let p = new_test_provider(&srv.url(), Some(env), Some(settings));
+        let err = p
+            .chat(
+                &CancelToken::new(),
+                Request {
+                    model: "gpt-4o-mini".to_string(),
+                    messages: vec![Message {
+                        role: Role::User,
+                        content: "hi".to_string(),
+                        tool_calls: Vec::new(),
+                        tool_call_id: String::new(),
+                        name: String::new(),
+                    }],
+                    ..Request::default()
+                },
+            )
+            .unwrap_err();
+        let perr = provider_error(&err).unwrap();
+        assert_eq!(perr.code, "body_too_large");
+        assert_eq!(perr.message, "response exceeded 1 MiB");
+        assert!(!perr.retryable);
     }
 
     #[test]
