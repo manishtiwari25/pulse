@@ -94,6 +94,22 @@ pub fn git(args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// Clear the runner's `PULSE_*` variables once per test process so a store
+/// created inside a PULSE job (where `PULSE_JOB` trips the worker guard and
+/// `PULSE_AGENT` changes the caller's group) behaves like the owner's shell.
+/// Call it from a crate's `temp_store()` before `Store::open`.
+pub fn neutralize_runner_environment() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _guard = env_lock();
+        for name in ["PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"] {
+            // SAFETY: done once per process, behind env_lock, before any test
+            // in this crate opens a store.
+            unsafe { std::env::set_var(name, "") };
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

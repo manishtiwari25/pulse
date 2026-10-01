@@ -440,6 +440,7 @@ mod tests {
     }
     fn temp_store() -> TestStore {
         let home = tempfile::tempdir().unwrap();
+        pulse_testutil::neutralize_runner_environment();
         let store = pulse_store::Store::open(pulse_store::Options {
             home: home.path().display().to_string(),
             create: true,
