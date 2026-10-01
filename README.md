@@ -449,7 +449,14 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   "GIT_DIR=/tmp/x go test ./internal/runner goes FAIL->ok" is not, whatever
   path it names. `plan.operating_layer_per_day` (default 3, `0` = off) caps
   the operating-layer cards planned per project per day; the gate reads
-  `operating-layer cap: N of M today; product cards go first`. Only `needs
+  `operating-layer cap: N of M today; product cards go first`. The cap holds
+  only while a product card of the project passes the plan gates: once the
+  day's slots are used and no product card competes, voted operating-layer
+  cards are planned anyway (`plan.operating_layer_fill`, default `on`; the
+  idle line notes `operating-layer cap N of M lifted: no product card
+  competes`), so ten idle workers do not watch eight voted cards wait for
+  midnight because three morning attempts committed nothing; the moment a
+  product card competes the cap holds again. `off` keeps it strict. Only `needs
   votes` cards appear on ballots; `pulse ballot`, worker briefs, `pulse queue`
   and planner ballot jobs use that same ballot, ordered closest to quorum then
   oldest, capped by `lead.ballot_cap` (default 10). The board hygiene pass also

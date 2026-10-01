@@ -183,6 +183,12 @@ pub(crate) fn suggestion_idle_part_with_tally(
     if over_operating_cap > 0 {
         held.push(format!("{over_operating_cap} over operating-layer cap"));
     }
+    if plan_ctx.operating_layer_filled {
+        held.push(pulse_tally::operating_layer_filled_note(
+            plan_ctx.operating_layer_today,
+            plan_ctx.operating_layer_cap,
+        ));
+    }
     if in_flight > 0 {
         held.push(format!("{in_flight} in flight"));
     }

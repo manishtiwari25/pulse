@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
-use crate::card_class::{CARD_CLASS_OPERATING_LAYER, card_class};
+use crate::card_class::{CARD_CLASS_OPERATING_LAYER, CARD_CLASS_PRODUCT, card_class};
 use crate::gate::GATE_DUPLICATE;
 use crate::gate::GATE_OPERATING_LAYER_CAP;
-use crate::tally::{TallyResult, duplicate_map};
+use crate::gate::plan_gate_with;
+use crate::tally::{Suggestion, TallyResult, duplicate_map, load_post};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlanContext {
@@ -11,6 +12,10 @@ pub struct PlanContext {
     pub operating_layer_today: i32,
     pub operating_layer_cap: i32,
     pub operating_layer_cap_set: bool,
+    /// The day's cap is reached, `plan.operating_layer_fill` is on, and no
+    /// product card is plannable: voted operating-layer cards fill the idle
+    /// slots instead of waiting for tomorrow.
+    pub operating_layer_filled: bool,
 }
 
 pub fn plan_context_for(
@@ -58,7 +63,33 @@ pub fn plan_context_for(
             }
         }
     }
+    if ctx.operating_layer_today >= ctx.operating_layer_cap
+        && s.setting("plan.operating_layer_fill", "on") != "off"
+        && let Some(res) = res
+    {
+        ctx.operating_layer_filled = !product_card_plannable(s, &ctx, &res.repo, &res.suggestions);
+    }
     ctx
+}
+
+/// Whether any eligible product card passes the plan gates: the cap keeps
+/// operating-layer cards waiting only while such a card competes for the slot.
+fn product_card_plannable(
+    s: &pulse_store::Store,
+    ctx: &PlanContext,
+    project_path: &str,
+    suggestions: &[Suggestion],
+) -> bool {
+    suggestions
+        .iter()
+        .filter(|sg| sg.status == "eligible")
+        .any(|sg| {
+            let Ok(post) = load_post(s, &sg.id) else {
+                return false;
+            };
+            card_class(&post.summary, &post.body) == CARD_CLASS_PRODUCT
+                && plan_gate_with(s, ctx.clone(), project_path, sg, Some(&post)).is_empty()
+        })
 }
 
 pub fn duplicate_gate(id: &str) -> String {
@@ -69,4 +100,9 @@ pub fn operating_layer_cap_gate(today: i32, cap: i32) -> String {
     format!(
         "{GATE_OPERATING_LAYER_CAP}: {today} of {cap} today; product cards go first (plan.operating_layer_per_day)"
     )
+}
+
+/// The idle-line note for a lifted cap.
+pub fn operating_layer_filled_note(today: i32, cap: i32) -> String {
+    format!("operating-layer cap {today} of {cap} lifted: no product card competes")
 }

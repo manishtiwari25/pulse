@@ -531,6 +531,7 @@ pub fn plan_gate_with(
         }
     }
     if ctx.operating_layer_cap_set
+        && !ctx.operating_layer_filled
         && ctx.operating_layer_today >= ctx.operating_layer_cap
         && card_class(summary, body) == CARD_CLASS_OPERATING_LAYER
     {

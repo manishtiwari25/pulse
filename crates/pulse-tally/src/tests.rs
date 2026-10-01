@@ -1650,6 +1650,140 @@ fn operating_layer_cap_gate() {
 }
 
 #[test]
+fn operating_layer_cap_lifts_when_no_product_card_competes() {
+    let _serial = crate::test_helpers::serial();
+    let mut f = test_fixture::new_fixture(true);
+    f.st.set_setting("test", "plan.operating_layer_per_day", "1")
+        .unwrap();
+    let mut p = test_fixture::FPost::new(
+        "suggestion",
+        "evolution",
+        "counted",
+        "runner-counted/model",
+        "2026-09-09T08:00:00Z",
+        "check:tools/test.sh stays green",
+        "s-counted",
+    );
+    p.body = "Class: operating-layer\nFile: tools/test.sh\nVariable: shell check".into();
+    let counted = f.post(p);
+    let op = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "7",
+        "runner-op/model",
+        "op-cap",
+        "gofmt -l goes 1->0",
+        "Class: product\nVariable: gofmt\nHypothesis: gofmt",
+        "",
+        &["up", "up"],
+    );
+    // The only product card names a path the checkout no longer has, so it
+    // is held and does not compete for the slot.
+    let gone_product = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "8",
+        "runner-product/model",
+        "product-gone",
+        "Localized OAuth error",
+        "Class: product\nFile: legacy/oauth.go\nVariable: callback copy\nHypothesis: user sees localized error",
+        "",
+        &["up", "up"],
+    );
+    {
+        let conn = f.st.conn().unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at) VALUES ('J-counted', 'fixture', 'improve', 'counted', '', ?, 'queued', ?)",
+            params![format!("suggestion:{counted}"), FIXTURE_NOW],
+        )
+        .unwrap();
+    }
+    let th = Thresholds {
+        now: FIXTURE_NOW.into(),
+        ..Default::default()
+    };
+    let res = compute(&f.st, "fixture", "", th.clone()).unwrap();
+    let sgs: BTreeMap<_, _> = res
+        .suggestions
+        .iter()
+        .map(|sg| (sg.id.as_str(), sg.clone()))
+        .collect();
+    let posts: BTreeMap<_, _> = res.posts.iter().map(|p| (p.id.as_str(), p)).collect();
+    let repo = f.repo.display().to_string();
+    let ctx = plan_context_for(&f.st, "fixture", FIXTURE_NOW, Some(&res));
+    assert_eq!((ctx.operating_layer_today, ctx.operating_layer_cap), (1, 1));
+    assert!(ctx.operating_layer_filled, "cap not lifted: {ctx:?}");
+    assert_eq!(
+        plan_gate_with(
+            &f.st,
+            ctx.clone(),
+            &repo,
+            &sgs[gone_product.as_str()],
+            Some(posts[gone_product.as_str()])
+        ),
+        GATE_FILE_GONE
+    );
+    assert_eq!(
+        plan_gate_with(
+            &f.st,
+            ctx,
+            &repo,
+            &sgs[op.as_str()],
+            Some(posts[op.as_str()])
+        ),
+        ""
+    );
+    // The owner may keep the cap strict.
+    f.st.set_setting("test", "plan.operating_layer_fill", "off")
+        .unwrap();
+    let ctx = plan_context_for(&f.st, "fixture", FIXTURE_NOW, Some(&res));
+    assert!(!ctx.operating_layer_filled);
+    assert_eq!(
+        plan_gate_with(
+            &f.st,
+            ctx,
+            &repo,
+            &sgs[op.as_str()],
+            Some(posts[op.as_str()])
+        ),
+        crate::plan_context::operating_layer_cap_gate(1, 1)
+    );
+    // A product card that passes the gates makes the cap hold again.
+    f.st.set_setting("test", "plan.operating_layer_fill", "on")
+        .unwrap();
+    test_fixture::add_eligible_suggestion(
+        &mut f,
+        "9",
+        "runner-live/model",
+        "product-live",
+        "Sign-in keeps the typed email after a wrong password",
+        "Class: product\nFile: src/login.go\nVariable: keep the email field\nHypothesis: fewer retyped sign-ins",
+        "",
+        &["up", "up"],
+    );
+    let res = compute(&f.st, "fixture", "", th).unwrap();
+    let ctx = plan_context_for(&f.st, "fixture", FIXTURE_NOW, Some(&res));
+    assert!(
+        !ctx.operating_layer_filled,
+        "a live product card competes: {ctx:?}"
+    );
+    let sgs: BTreeMap<_, _> = res
+        .suggestions
+        .iter()
+        .map(|sg| (sg.id.as_str(), sg.clone()))
+        .collect();
+    let posts: BTreeMap<_, _> = res.posts.iter().map(|p| (p.id.as_str(), p)).collect();
+    assert_eq!(
+        plan_gate_with(
+            &f.st,
+            ctx,
+            &repo,
+            &sgs[op.as_str()],
+            Some(posts[op.as_str()])
+        ),
+        crate::plan_context::operating_layer_cap_gate(1, 1)
+    );
+}
+
+#[test]
 fn compute_caches_result_for_unchanged_store() {
     let _serial = crate::test_helpers::serial();
     let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
