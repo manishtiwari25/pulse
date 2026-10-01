@@ -10,7 +10,38 @@ use crate::util::Row;
 
 /// Go: func idleNote(s *store.Store, slug, now string) string
 pub(crate) fn idle_note(s: &pulse_store::Store, slug: String, now: String) -> String {
-    let mut parts = vec![suggestion_idle_part(s, slug.clone(), now.clone())];
+    let suggestions = pulse_tally::compute_light(
+        s,
+        &slug,
+        "",
+        pulse_tally::Thresholds {
+            now: now.clone(),
+            ..Default::default()
+        },
+    )
+    .ok();
+    idle_note_with_tally(s, slug, now, suggestions.as_ref())
+}
+
+pub(crate) fn idle_note_with_tally(
+    s: &pulse_store::Store,
+    slug: String,
+    now: String,
+    tally: Option<&pulse_tally::TallyResult>,
+) -> String {
+    let suggestion_part = suggestion_idle_part_with_tally(s, slug.clone(), now.clone(), tally);
+    let suggestions = tally.map(|r| r.suggestions.clone()).unwrap_or_default();
+    idle_note_from_parts(s, slug, now, suggestion_part, suggestions)
+}
+
+pub(crate) fn idle_note_from_parts(
+    s: &pulse_store::Store,
+    slug: String,
+    now: String,
+    suggestion_part: String,
+    suggestions: Vec<pulse_tally::Suggestion>,
+) -> String {
+    let mut parts = vec![suggestion_part];
     if let Ok(handoffs) = pulse_tally::open_handoffs_for(s, &slug) {
         let part = handoff_idle_part(s, handoffs);
         if !part.is_empty() {
@@ -21,7 +52,6 @@ pub(crate) fn idle_note(s: &pulse_store::Store, slug: String, now: String) -> St
     if !part.is_empty() {
         parts.push(part);
     }
-    let suggestions = crate::tally::suggestion_records(s, slug.clone(), now.clone());
     let part = ballot_idle_part(s, slug.clone(), now.clone(), suggestions);
     if !part.is_empty() {
         parts.push(part);
@@ -50,11 +80,17 @@ pub(crate) fn suggestion_idle_part(s: &pulse_store::Store, slug: String, now: St
         },
     )
     .ok();
-    let suggestions = res
-        .as_ref()
-        .map(|r| r.suggestions.clone())
-        .unwrap_or_default();
-    let plan_ctx = pulse_tally::plan_context_for(s, &slug, &now, res.as_ref());
+    suggestion_idle_part_with_tally(s, slug, now, res.as_ref())
+}
+
+pub(crate) fn suggestion_idle_part_with_tally(
+    s: &pulse_store::Store,
+    slug: String,
+    now: String,
+    res: Option<&pulse_tally::TallyResult>,
+) -> String {
+    let suggestions = res.map(|r| r.suggestions.clone()).unwrap_or_default();
+    let plan_ctx = pulse_tally::plan_context_for(s, &slug, &now, res);
     let mut eligible = 0;
     let mut plannable = 0;
     let mut in_flight = 0;
