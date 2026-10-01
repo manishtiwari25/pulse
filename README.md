@@ -961,7 +961,13 @@ free and names that path in its note; 0 turns the check off. `pulse executor
 probe local` probes this machine the same way (git, free space under
 `~/.pulse/work`), and a passing probe run by the owner clears the projects a
 failed setup marked unfit here, instead of waiting a day for the marks to
-expire. The login check the daemon
+expire. A setup that fails twice the same way marks the project unfit for that
+executor; a failure the machine did not cause - a dead network, a full disk
+(`no space left on device`, `disk quota exceeded`) - never does, and the job
+simply goes back to the queue. While a mark holds queued jobs, the daemon's idle
+line says so (`no queued job; 3 queued wait: 3 for blog (local cannot set up
+Gemfile.lock); …`) with the probe command, instead of a bare `no queued job`
+over a queue nobody can see. The login check the daemon
 runs on an executor is a two-step harness run that must answer `SUMMARY: ok`. While the checkout is
 on another branch the landing does not touch it: the merge is verified in the
 throwaway worktree as always and the default branch then moves by ref (a

@@ -269,9 +269,61 @@ pub(crate) fn take_job(
         if exrow.str("name") != crate::executor::LOCAL_EXECUTOR {
             why.push_str(&format!(" on {}", exrow.str("name")));
         }
+        if project.is_empty() {
+            why.push_str(&held_queue_note(&c, &exrow.str("name"), &unfit));
+        }
         return Ok((Row::new(), exrow, why));
     }
     Ok((job, exrow, String::new()))
+}
+
+/// Names the queued jobs an executor cannot take because their project is
+/// unfit for it, so an idle line never says "no queued job" over a queue the
+/// executor is holding; the hint is the same one the unfit mark posted.
+fn held_queue_note(
+    c: &(impl crate::util::Querier + ?Sized),
+    executor: &str,
+    unfit: &BTreeMap<String, String>,
+) -> String {
+    if unfit.is_empty() {
+        return String::new();
+    }
+    let slugs = sorted_keys(unfit);
+    let marks = vec!["?"; slugs.len()].join(",");
+    let sql = format!(
+        "SELECT j.project, COUNT(*) AS n FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind != ? AND j.project IN ({marks}) GROUP BY j.project ORDER BY j.project"
+    );
+    let lead = crate::lead::LEAD_KIND.to_string();
+    let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&lead];
+    for slug in &slugs {
+        vals.push(slug);
+    }
+    let held = crate::util::query_rows(c, &sql, &vals).unwrap_or_default();
+    if held.is_empty() {
+        return String::new();
+    }
+    let total: i32 = held.iter().map(|r| r.int("n")).sum();
+    let parts = held
+        .iter()
+        .map(|r| {
+            let slug = r.str("project");
+            format!(
+                "{} for {slug} ({executor} {})",
+                r.int("n"),
+                crate::recipe::unfit_phrase(&unfit[&slug])
+            )
+        })
+        .collect::<Vec<_>>();
+    let first = held
+        .first()
+        .map(|r| r.str("project"))
+        .and_then(|slug| unfit.get(&slug).cloned())
+        .unwrap_or_default();
+    format!(
+        "; {total} queued wait: {}; {}",
+        parts.join(", "),
+        crate::recipe::tool_hint(&first)
+    )
 }
 
 /// Go: func workOnce(s *store.Store, agent, project, jobID, now string, o runOpts) (row, string, error)

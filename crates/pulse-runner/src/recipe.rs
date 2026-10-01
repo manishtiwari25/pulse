@@ -809,6 +809,9 @@ pub(crate) fn setup_unfit_commands(tool: &str) -> String {
 pub(crate) fn setup_failure_summary(executor: &str, rc: i32, detail: &str) -> String {
     format!("setup failed on {executor} (exit {rc}): {detail}")
 }
+// A full disk, like a dead network, says nothing about whether the machine can
+// set the project up; marking the executor unfit for a day would hide the
+// project's queue behind "no queued job" long after the space came back.
 static SETUP_TRANSIENT_MARKS: &[&str] = &[
     "failed to fetch",
     "could not resolve",
@@ -818,6 +821,12 @@ static SETUP_TRANSIENT_MARKS: &[&str] = &[
     "network",
     "certificate",
     "proxy",
+    "no space left on device",
+    "enospc",
+    "disk quota exceeded",
+    "not enough space",
+    "insufficient space",
+    "disk full",
 ];
 static TRANSIENT_MARKS: &[&str] = &[
     "the runner stopped while",
@@ -1628,6 +1637,46 @@ mod tests {
     }
 
     #[test]
+    fn setup_repeat_guard_treats_a_full_disk_as_transient() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let s = pulse_store::Store::open(pulse_store::Options {
+            home: dir.path().display().to_string(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let conn = s.conn().unwrap();
+        let full = setup_failure_summary(
+            "local",
+            1,
+            "npm error code ENOSPC npm error syscall write npm error errno -28 npm error nospc ENOSPC: no space left on device, write",
+        );
+        crate::util::exec1(
+            &conn,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, summary, executor) VALUES ('run-full', 'job-full', 'w', 'blog', ?, ?, 'error', ?, 'local')",
+            &[&"2026-09-06T20:30:00Z", &"2026-09-06T20:45:00Z", &full],
+        );
+        assert!(
+            !repeated_setup_failure(&conn, "2026-09-06T21:00:00Z", "blog", "local", &full),
+            "two setup failures caused by a full disk must not mark the executor unfit"
+        );
+        let quota = setup_failure_summary("local", 1, "cargo: Disk quota exceeded (os error 69)");
+        crate::util::exec1(
+            &conn,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, summary, executor) VALUES ('run-quota', 'job-quota', 'w', 'blog', ?, ?, 'error', ?, 'local')",
+            &[&"2026-09-06T20:50:00Z", &"2026-09-06T20:55:00Z", &quota],
+        );
+        assert!(!repeated_setup_failure(
+            &conn,
+            "2026-09-06T21:00:00Z",
+            "blog",
+            "local",
+            &quota
+        ));
+    }
+
+    #[test]
     fn pre_commit_recipe_env_export_shape() {
         let _serial = crate::test_helpers::serial();
         let recipe = Recipe {
@@ -1875,6 +1924,57 @@ mod tests {
         );
         let got = unfit_projects(&s.conn().unwrap(), crate::executor::LOCAL_EXECUTOR, &later);
         assert!(got.is_empty(), "probe clear left unfit marks: {got:?}");
+    }
+
+    #[test]
+    fn idle_reason_names_the_queue_an_unfit_mark_holds() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (proj, _) = crate::test_helpers::new_bare_repo(&s);
+        let conn = s.conn().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        crate::util::exec1(
+            &conn,
+            "INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) SELECT 'other', 'Other', ?, '', 0, '', 'main', 'active', added_at, added_by, last_seen FROM projects WHERE slug = ?",
+            &[&other.path().display().to_string(), &proj.str("slug")],
+        );
+        for n in 0..2 {
+            crate::jobs::add_job(
+                &s,
+                proj.str("slug"),
+                "task".into(),
+                format!("Held job {n}"),
+                format!("Wait behind the mark ({n})."),
+                0,
+                0,
+                "test".into(),
+                crate::util::HUMAN_AGENT.into(),
+                false,
+            )
+            .expect("add job");
+        }
+        let now = crate::util::plus_hours(crate::test_helpers::TEST_NOW, 1.0);
+        let local = crate::executor::LOCAL_EXECUTOR;
+        mark_unfit(
+            &conn,
+            crate::test_helpers::TEST_NOW,
+            local,
+            &proj.str("slug"),
+            "setup:Gemfile.lock",
+        );
+        let (job, _, why) =
+            crate::run::take_job(&s, "aurora", "", "", false, &now, local, 0).unwrap();
+        assert!(job.0.is_empty(), "job = {job:?}");
+        for want in [
+            "no queued job; 2 queued wait: 2 for proj (local cannot set up Gemfile.lock)",
+            "pulse executor probe <executor>",
+        ] {
+            assert!(why.contains(want), "idle reason lacks {want:?}: {why}");
+        }
+        // A request for one particular project keeps its plain reason.
+        let (_, _, why) =
+            crate::run::take_job(&s, "aurora", "other", "", false, &now, local, 0).unwrap();
+        assert_eq!(why, "no queued job for other");
     }
 
     #[test]
