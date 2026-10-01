@@ -389,7 +389,8 @@ pub fn status(s: &pulse_store::Store, project: &str) -> Result<LoopStatus> {
     status.planning = crate::readiness::planning_status(s, &status)?;
     // The ladder says "none" at Level D; a blocked planner that names an owner step is
     // the next human step, otherwise the digest hides the one thing the owner must do.
-    if status.planning.state == "blocked"
+    // A waiting planner names one too when the constitution closed every voted card.
+    if matches!(status.planning.state.as_str(), "blocked" | "waiting")
         && status.next_human_step == "none"
         && let Some((_, step)) = status.planning.reason.split_once("; owner: ")
     {

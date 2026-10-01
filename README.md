@@ -458,7 +458,10 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   however deep, under a tree that exists is fine; then the operating-layer cap
   above. The evolution loop's experiment planner applies the same gates
   before it picks a card, so a voted card the runner holds is never run as
-  an experiment either. Votes
+  an experiment either; it also skips a card whose `File:` the project's
+  constitution closes (an immutable path, or a class the current stage does
+  not open) - that card is a proposal nobody acted on, not a breach, so it
+  never stops the loop for owner review. Votes
   carry no evidence for the card they vote on: a gated card is replaced by a
   corrected one, not voted through. The
   reflect brief asks for one provable Tier 0 *product* defect first (a wrong

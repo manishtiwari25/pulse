@@ -433,12 +433,9 @@ pub(crate) fn editable_path(body: &str, file: &str, product: bool) -> bool {
                 .any(|pattern| matches_scope(file, pattern))
     })
 }
-/// Go: func makeCard(s *store.Store, p *tally.Post, status *LoopStatus) (*ExperimentCard, error)
-pub(crate) fn make_card(
-    s: &pulse_store::Store,
-    p: &pulse_tally::Post,
-    status: &crate::status::LoopStatus,
-) -> Result<ExperimentCard> {
+/// The one file a card names through `File:`, `Path:`, or its files list; empty when it
+/// names none or several.
+pub(crate) fn card_target(p: &pulse_tally::Post) -> String {
     let fields = card_fields(&p.body);
     let mut file = first_text(&[
         fields.get("file").map(String::as_str).unwrap_or(""),
@@ -456,6 +453,77 @@ pub(crate) fn make_card(
             file.clear();
         }
     }
+    file
+}
+
+pub(crate) const SCOPE_IMMUTABLE: &str = "experiment target matches an immutable path";
+pub(crate) const SCOPE_NOT_EDITABLE: &str =
+    "experiment target is outside the constitution's editable scope";
+
+/// Why `file` can never be an experiment target under the project's constitution and
+/// evaluators, or empty when it may be. The constitution's immutable table, the evaluators'
+/// immutable paths, and the loop's own paths are closed to every experiment; the editable
+/// scope then has to open the file's class at the current stage.
+pub(crate) fn scope_gate(
+    constitution: &str,
+    evaluators: &str,
+    file: &str,
+    product: bool,
+) -> String {
+    let mut immutable = immutable_paths(constitution);
+    immutable.extend(immutable_paths(evaluators));
+    immutable.extend([
+        ".pulse/**".into(),
+        ".git/**".into(),
+        "docs/evolution/**".into(),
+    ]);
+    if let Some(pattern) = immutable
+        .iter()
+        .find(|pattern| matches_scope(file, pattern))
+    {
+        return format!("{SCOPE_IMMUTABLE}: {file} matches `{}`", pattern.trim());
+    }
+    if !editable_path(constitution, file, product) {
+        return format!("{SCOPE_NOT_EDITABLE}: {file}");
+    }
+    String::new()
+}
+
+/// The planner's view of `scope_gate` for a stored card: the reason the card's single
+/// repository-relative target is closed to experiments, or empty. Cards without one
+/// resolvable target return empty; `make_card` reports those on its own.
+pub(crate) fn card_scope_gate(s: &pulse_store::Store, p: &pulse_tally::Post) -> Result<String> {
+    let file = card_target(p);
+    if file.is_empty() || file.contains(',') {
+        return Ok(String::new());
+    }
+    let Ok(file) = crate::fixtures::relative_path(&file) else {
+        return Ok(String::new());
+    };
+    let Some((_, constitution)) = crate::status::evolution_record(s, &p.project, "constitution")?
+    else {
+        return Ok(String::new());
+    };
+    let Some((_, evaluators)) = crate::status::evolution_record(s, &p.project, "evaluators")?
+    else {
+        return Ok(String::new());
+    };
+    Ok(scope_gate(
+        &constitution.body,
+        &evaluators.body,
+        &file,
+        product_post(p),
+    ))
+}
+
+/// Go: func makeCard(s *store.Store, p *tally.Post, status *LoopStatus) (*ExperimentCard, error)
+pub(crate) fn make_card(
+    s: &pulse_store::Store,
+    p: &pulse_tally::Post,
+    status: &crate::status::LoopStatus,
+) -> Result<ExperimentCard> {
+    let fields = card_fields(&p.body);
+    let mut file = card_target(p);
     let variable = fields.get("variable").cloned().unwrap_or_default();
     if file.is_empty() || variable.is_empty() || file.contains(',') {
         return Err(crate::fixtures::input_error(
@@ -505,24 +573,9 @@ pub(crate) fn make_card(
             reason: "experiment governance records disappeared".into()
         }));
     };
-    let mut immutable = immutable_paths(&constitution.body);
-    immutable.extend(immutable_paths(&evaluators.body));
-    immutable.extend([
-        ".pulse/**".into(),
-        ".git/**".into(),
-        "docs/evolution/**".into(),
-    ]);
-    for pattern in immutable {
-        if matches_scope(&file, &pattern) {
-            return Err(anyhow!(crate::ViolationError {
-                reason: "experiment target matches an immutable path".into()
-            }));
-        }
-    }
-    if !editable_path(&constitution.body, &file, product) {
-        return Err(anyhow!(crate::ViolationError {
-            reason: "experiment target is outside the constitution's editable scope".into()
-        }));
+    let closed = scope_gate(&constitution.body, &evaluators.body, &file, product);
+    if !closed.is_empty() {
+        return Err(anyhow!(crate::ViolationError { reason: closed }));
     }
     let fixtures = crate::fixtures::list_fixtures(s, &p.project, true)?;
     let names: Vec<String> = fixtures.into_iter().map(|f| f.name).collect();

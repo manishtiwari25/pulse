@@ -2417,11 +2417,7 @@ mod tests {
         set_setting(&s, "parallel_per_project", "2");
         let conn = s.conn().unwrap();
         for (i, project) in ["first", "second", "third"].iter().enumerate() {
-            let dir = std::env::current_dir()
-                .unwrap()
-                .join("target")
-                .join("pulse-runner-f2")
-                .join(format!("fairness-{project}-{}", uuid::Uuid::new_v4()));
+            let dir = crate::test_helpers_f2::f2_temp_dir().join(format!("fairness-{project}"));
             std::fs::create_dir_all(&dir).unwrap();
             crate::util::exec1(
                 &conn,

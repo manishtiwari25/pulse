@@ -123,21 +123,25 @@ pub(crate) fn freeze_tree(
         let ft = file_type(&info);
         if ft.is_symlink() {
             let target = fs::read_link(&path)
-                .map_err(|_| violation("scored tree has an escaping symlink"))?;
+                .map_err(|_| violation(&format!("scored tree has an escaping symlink: {name}")))?;
             if escaping_symlink(root, &name, &target) {
-                return Err(violation("scored tree has an escaping symlink"));
+                return Err(violation(&format!(
+                    "scored tree has an escaping symlink: {name}"
+                )));
             }
             if let Err(e) = fs::metadata(&path)
                 && e.kind() != std::io::ErrorKind::NotFound
             {
-                return Err(violation("scored tree has an unresolvable symlink"));
+                return Err(violation(&format!(
+                    "scored tree has an unresolvable symlink: {name}"
+                )));
             }
             continue;
         }
         if !info.is_dir() && (!info.is_file() || crate::process::multiple_links(&info)) {
-            return Err(violation(
-                "scored tree has a special file or shared hardlink",
-            ));
+            return Err(violation(&format!(
+                "scored tree has a special file or shared hardlink: {name}"
+            )));
         }
         entries.push(TreeEntry {
             name,
@@ -189,7 +193,9 @@ pub(crate) fn tree_fingerprint(root: &TreeRoot) -> Result<String> {
         mode(&info).hash(&mut hasher);
         if info.is_file() {
             if crate::process::multiple_links(&info) {
-                return Err(violation("scorer created a shared hardlink"));
+                return Err(violation(&format!(
+                    "scorer created a shared hardlink: {name}"
+                )));
             }
             let mut f = fs::File::open(path)?;
             let mut buf = [0u8; 8192];
@@ -203,7 +209,9 @@ pub(crate) fn tree_fingerprint(root: &TreeRoot) -> Result<String> {
         } else if info.file_type().is_symlink() {
             fs::read_link(path)?.to_string_lossy().hash(&mut hasher);
         } else if !info.is_dir() {
-            return Err(violation("scored tree contains a special file"));
+            return Err(violation(&format!(
+                "scored tree contains a special file: {name}"
+            )));
         }
     }
     Ok(format!("{:016x}", hasher.finish()))

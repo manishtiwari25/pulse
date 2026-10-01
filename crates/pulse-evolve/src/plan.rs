@@ -129,7 +129,7 @@ pub(crate) fn loop_claims(
         };
         reason = crate::card::first_text(&[&reason, &stop.reason()]);
     }
-    let candidates = experiment_candidates(s, project, &status, &result, agent, true, None)?;
+    let candidates = experiment_candidates(s, project, &status, &result, agent, true, None, None)?;
     let mut has: BTreeMap<String, bool> = claims.iter().map(|id| (id.clone(), true)).collect();
     for candidate in candidates {
         if has.contains_key(&candidate.post.id) {
@@ -292,6 +292,7 @@ pub(crate) fn plan_experiment_locked(
             ..Default::default()
         });
     }
+    let mut closed = Vec::new();
     let candidates = experiment_candidates(
         s,
         project,
@@ -300,6 +301,7 @@ pub(crate) fn plan_experiment_locked(
         &opts.agent,
         opts.require_positive_score,
         seen.as_deref_mut(),
+        Some(&mut closed),
     )?;
     let mut card_job = crate::card_job::open_card_job(s, project)?;
     let mut card_created = false;
@@ -414,6 +416,7 @@ pub(crate) fn plan_experiment_locked(
     if opts.require_positive_score {
         reason.push_str(" with net votes > 0");
     }
+    reason.push_str(&scope_closed_note(&closed));
     if let Some(job) = card_job {
         return Ok(PlanResult {
             reason: card_job_reason(&job),
@@ -517,7 +520,29 @@ pub(crate) struct ExperimentCandidate {
     pub(crate) suggestion: pulse_tally::Suggestion,
 }
 
+/// A voted card the planner passed over because the constitution closes its `File:`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ScopeClosed {
+    pub(crate) suggestion: String,
+    pub(crate) reason: String,
+}
+
+/// The sentence the planner and `pulse evolve status` add when voted cards were passed
+/// over for their target: the count, the top card's reason, and the owner's one move.
+pub(crate) fn scope_closed_note(closed: &[ScopeClosed]) -> String {
+    let Some(first) = closed.first() else {
+        return String::new();
+    };
+    format!(
+        "; {} voted card(s) name a file the constitution closes to experiments ({}: {}); owner: open that class in the constitution's editable scope through an amendment, or vote the card down",
+        closed.len(),
+        first.suggestion,
+        first.reason
+    )
+}
+
 /// Go: func experimentCandidates(s *store.Store, project string, status *LoopStatus, result *tally.Result, agent string, requirePositiveScore bool, seen map[string]bool) ([]experimentCandidate, error) {
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn experiment_candidates(
     s: &pulse_store::Store,
     project: &str,
@@ -526,9 +551,11 @@ pub(crate) fn experiment_candidates(
     agent: &str,
     require_positive_score: bool,
     seen: Option<&mut BTreeMap<String, bool>>,
+    closed: Option<&mut Vec<ScopeClosed>>,
 ) -> Result<Vec<ExperimentCandidate>> {
     let mut out = Vec::new();
     let mut seen = seen;
+    let mut closed = closed;
     let project_path = s.project(project)?.map(|p| p.path).unwrap_or_default();
     for suggestion in crate::card::ordered_suggestions(s, result, status.product_scope.allowed) {
         if seen
@@ -568,6 +595,23 @@ pub(crate) fn experiment_candidates(
         if !pulse_tally::plan_gate(s, &project_path, &ungated, Some(&p)).is_empty() {
             if let Some(m) = seen.as_deref_mut() {
                 m.insert(suggestion.id.clone(), true);
+            }
+            continue;
+        }
+        // A card whose File: the constitution closes - an immutable path, or a class the
+        // current stage does not open - is a proposal nobody acted on, not a breach: it is
+        // skipped like any other gated card instead of stopping the project's loop for the
+        // owner. `make_card` keeps the same check as the violation of last resort.
+        let scope = crate::card::card_scope_gate(s, &p)?;
+        if !scope.is_empty() {
+            if let Some(m) = seen.as_deref_mut() {
+                m.insert(suggestion.id.clone(), true);
+            }
+            if let Some(list) = closed.as_deref_mut() {
+                list.push(ScopeClosed {
+                    suggestion: suggestion.id.clone(),
+                    reason: scope,
+                });
             }
             continue;
         }
@@ -853,6 +897,87 @@ mod tests {
             )
             .unwrap();
         assert_eq!(jobs_for_gone, 0, "sent a worker to a tree that is gone");
+    }
+    #[test]
+    fn plan_experiment_skips_card_whose_target_is_immutable() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e1_test_lock();
+        set_read_plan_preflight(None);
+        let s = cycle_ready();
+        put_record(
+            &s,
+            pulse_store::Record {
+                id: "EVO-constitution-demo".into(),
+                project: "demo".into(),
+                kind: "evolution".into(),
+                slug: "constitution".into(),
+                ..Default::default()
+            },
+            "# Constitution\n\n## Editable scope\n| File class | Paths | Stage | Autonomy |\n| --- | --- | --- | --- |\n| product | `value.txt`, `other.txt` | 4 | standing |\n| operating | `README.md`, `protected.txt` | 2 | standing |\n\n## Immutable paths\n| Path | Why |\n| --- | --- |\n| `protected.txt` | owner-owned |\n",
+        );
+        // The top card proposes a closed file; a worker wrote it, nobody touched the file.
+        let closed = voted_suggestion_with_votes(
+            &s,
+            "closed-target",
+            "operating-layer",
+            "protected.txt",
+            &["up", "up", "up"],
+        );
+        let next = voted_suggestion_with_votes(
+            &s,
+            "open-target",
+            "operating-layer",
+            "README.md",
+            &["up", "up"],
+        );
+        let status = crate::status::status(&s, "demo").unwrap();
+        let closed_post = pulse_tally::load_post(&s, &closed.id).unwrap();
+        let refused = crate::card::make_card(&s, &closed_post, &status)
+            .expect_err("the card builder keeps refusing an immutable target");
+        assert!(
+            refused
+                .downcast_ref::<crate::clones::ViolationError>()
+                .is_some(),
+            "{refused:?}"
+        );
+        assert_eq!(
+            crate::card::card_scope_gate(&s, &closed_post).unwrap(),
+            format!(
+                "{}: protected.txt matches `protected.txt`",
+                crate::card::SCOPE_IMMUTABLE
+            )
+        );
+        assert_eq!(status.planning.state, "ready", "{status:?}");
+        assert_eq!(status.planning.suggestion, next.id, "{status:?}");
+        let result = plan_experiment(
+            &s,
+            "demo",
+            PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            result.created && result.suggestion == next.id,
+            "planned {result:?}; want {} not {}",
+            next.id,
+            closed.id
+        );
+        assert!(result.question.is_empty(), "stopped the loop: {result:?}");
+        let questions: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM posts WHERE kind = 'question' AND on_post = ?",
+                [&closed.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            questions, 0,
+            "asked the owner about a proposal nobody acted on"
+        );
     }
     #[test]
     fn plan_experiment_level_gate_has_no_side_effects() {

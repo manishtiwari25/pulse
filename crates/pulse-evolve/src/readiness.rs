@@ -98,8 +98,17 @@ pub(crate) fn planning_status(
             ..Default::default()
         });
     }
-    let candidates =
-        crate::plan::experiment_candidates(s, project, status, &result, "daemon", true, None)?;
+    let mut closed = Vec::new();
+    let candidates = crate::plan::experiment_candidates(
+        s,
+        project,
+        status,
+        &result,
+        "daemon",
+        true,
+        None,
+        Some(&mut closed),
+    )?;
     let mut cardless = None;
     for candidate in candidates {
         match crate::card::make_card(s, &candidate.post, status) {
@@ -184,6 +193,7 @@ pub(crate) fn planning_status(
         reason.push_str("; ");
         reason.push_str(&status.product_scope.reason);
     }
+    reason.push_str(&crate::plan::scope_closed_note(&closed));
     Ok(PlanningStatus {
         state: "waiting".to_string(),
         reason,

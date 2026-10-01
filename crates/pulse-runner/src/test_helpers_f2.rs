@@ -98,10 +98,12 @@ pub(crate) fn heartbeat_eventually(mut ready: impl FnMut() -> bool) {
     panic!("heartbeat evidence did not arrive");
 }
 
-fn f2_temp_dir() -> PathBuf {
-    let dir = std::env::current_dir()
-        .unwrap()
-        .join("target")
+/// A fresh scratch directory outside any checkout. The FIFOs and fake clones
+/// the heartbeat tests leave behind must never land inside the source tree:
+/// the evolution lane scores a clone after the fixture agent ran the project's
+/// tests there, and a special file in that tree fails the read-only scorer.
+pub(crate) fn f2_temp_dir() -> PathBuf {
+    let dir = std::env::temp_dir()
         .join("pulse-runner-f2")
         .join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&dir).unwrap();
@@ -129,6 +131,10 @@ pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
 
 pub(crate) fn finish_heartbeat_fifo(path: &str) {
     std::fs::write(path, b"finish\n").unwrap();
+    // The reader holds the FIFO open by now; its scratch directory is done.
+    if let Some(dir) = Path::new(path).parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 pub(crate) struct LifecycleGate {

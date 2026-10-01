@@ -1480,11 +1480,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         for timeout in [false, true] {
             let _fake = fake_heartbeat_clock();
-            let workdir = std::env::current_dir()
-                .unwrap()
-                .join("target")
-                .join("pulse-runner-f2")
-                .join(uuid::Uuid::new_v4().to_string());
+            let workdir = crate::test_helpers_f2::f2_temp_dir();
             let dir = workdir.join("job-quiet");
             std::fs::create_dir_all(&dir).unwrap();
             let out = SharedBuf::default();
@@ -1537,11 +1533,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let fake = fake_heartbeat_clock();
-        let workdir = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join("pulse-runner-f2")
-            .join(uuid::Uuid::new_v4().to_string());
+        let workdir = crate::test_helpers_f2::f2_temp_dir();
         let dir = workdir.join("job-quiet");
         let clone = dir.join("clone");
         std::fs::create_dir_all(clone.join(".git")).unwrap();
@@ -1644,12 +1636,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let cancel = pulse_bus::CancellationToken::new();
         let (fifo, _) = heartbeat_fifo();
-        let ready = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join("pulse-runner-f2")
-            .join(uuid::Uuid::new_v4().to_string())
-            .join("ready");
+        let ready = crate::test_helpers_f2::f2_temp_dir().join("ready");
         std::fs::create_dir_all(ready.parent().unwrap()).unwrap();
         let argv = vec![
             "sh".into(),

@@ -626,21 +626,9 @@ mod tests {
     fn cycle_instruction_and_scope_violations_ask_owner() {
         let _serial = crate::test_helpers::serial();
         let _guard = e2_guard();
-        for scenario in [
-            "instruction",
-            "result instruction",
-            "immutable",
-            "outside",
-            "stop",
-            "cap",
-        ] {
+        for scenario in ["instruction", "result instruction", "stop", "cap"] {
             let s = cycle_ready();
-            let file = match scenario {
-                "immutable" => "protected.txt",
-                "outside" => "unlisted.txt",
-                _ => "value.txt",
-            };
-            let p = voted_suggestion(&s, "candidate", "product", file, 2);
+            let p = voted_suggestion(&s, "candidate", "product", "value.txt", 2);
             if scenario == "instruction" || scenario == "result instruction" {
                 pulse_board::create_post(
                     &s,
@@ -710,6 +698,61 @@ mod tests {
                     status.next_human_step
                 );
             }
+        }
+    }
+    #[test]
+    fn cycle_skips_cards_the_constitution_closes_without_stopping() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e2_guard();
+        for (scenario, file) in [("immutable", "protected.txt"), ("outside", "unlisted.txt")] {
+            let s = cycle_ready();
+            // A voted proposal for a closed file is passed over, not a violation: nobody
+            // acted on it, so the loop neither stops nor asks the owner about it.
+            let p = voted_suggestion(&s, "candidate", "product", file, 2);
+            let out = pulse_cli::Buffer::new();
+            let cancel = pulse_bus::CancellationToken::new().with_timeout(Duration::from_secs(2));
+            cycle(
+                &cancel,
+                &s,
+                "demo",
+                CycleOptions {
+                    once: true,
+                    agent: "tester".into(),
+                    out: Some(Box::new(out.clone())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(count_rows(&s, "jobs"), 0, "{scenario}");
+            // Only the seeded baseline row: a passed-over card is not a cycle.
+            assert_eq!(count_rows(&s, "evolution_archive"), 1, "{scenario}");
+            assert_eq!(
+                count_rows(&s, "posts WHERE kind='question'"),
+                0,
+                "{scenario}"
+            );
+            assert!(
+                out.string().contains("closes to experiments") && out.string().contains(&p.id),
+                "{scenario}: {}",
+                out.string()
+            );
+            let status = crate::status::status(&s, "demo").unwrap();
+            assert_eq!(status.planning.state, "waiting", "{scenario}: {status:?}");
+            assert!(
+                status.planning.reason.contains(&p.id)
+                    && status.planning.reason.contains(if scenario == "immutable" {
+                        crate::card::SCOPE_IMMUTABLE
+                    } else {
+                        crate::card::SCOPE_NOT_EDITABLE
+                    }),
+                "{scenario}: {}",
+                status.planning.reason
+            );
+            assert!(
+                status.next_human_step.contains("editable scope"),
+                "{scenario}: {}",
+                status.next_human_step
+            );
         }
     }
     #[test]
