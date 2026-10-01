@@ -528,8 +528,10 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   yours to add with `pulse evolve fixture add`. Every scorer runs against a
   frozen clone: a symlink or hardlink that leaves the clone, a special file,
   or a tree that differs after the scorer ran fails the measurement as a
-  violation; build output the harness left behind, including cargo's
-  hardlinked `target/`, is fine as long as every link stays inside the clone.
+  violation. Build caches are placed under that fixture's isolated measurement
+  home (`build/cargo-target`, `npm-cache`, `go-cache`, `go-mod`, `pip-cache`,
+  `uv-cache`, `yarn-cache`) and the scorer gets the same cache environment, so
+  cargo `target/` and other tool caches are not part of the frozen clone.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 

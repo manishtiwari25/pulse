@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -196,6 +197,9 @@ pub(crate) fn isolated_env(home: &str) -> Vec<String> {
         if key.starts_with("PULSE_") || key.starts_with("GIT_") {
             continue;
         }
+        if MEASUREMENT_CACHE_KEYS.contains(&key.as_str()) {
+            continue;
+        }
         env.push(format!("{key}={value}"));
     }
     env.extend([
@@ -212,7 +216,49 @@ pub(crate) fn isolated_env(home: &str) -> Vec<String> {
             std::path::Path::new("/dev/null").display()
         );
     }
+    env.extend(measurement_cache_env(home));
     env
+}
+
+const MEASUREMENT_CACHE_KEYS: &[&str] = &[
+    "CARGO_TARGET_DIR",
+    "npm_config_cache",
+    "GOCACHE",
+    "GOMODCACHE",
+    "PIP_CACHE_DIR",
+    "UV_CACHE_DIR",
+    "YARN_CACHE_FOLDER",
+];
+
+pub(crate) fn prepare_measurement_caches(home: &str) -> std::io::Result<()> {
+    for (_, dir) in measurement_cache_dirs(home) {
+        std::fs::create_dir_all(dir)?;
+    }
+    Ok(())
+}
+
+fn measurement_cache_env(home: &str) -> Vec<String> {
+    measurement_cache_dirs(home)
+        .into_iter()
+        .map(|(key, dir)| format!("{key}={}", dir.display()))
+        .collect()
+}
+
+fn measurement_cache_dirs(home: &str) -> Vec<(&'static str, std::path::PathBuf)> {
+    let build = Path::new(home).join("build");
+    MEASUREMENT_CACHE_KEYS
+        .iter()
+        .zip([
+            "cargo-target",
+            "npm-cache",
+            "go-cache",
+            "go-mod",
+            "pip-cache",
+            "uv-cache",
+            "yarn-cache",
+        ])
+        .map(|(key, dir)| (*key, build.join(dir)))
+        .collect()
 }
 #[derive(Debug, Default)]
 pub(crate) struct BoundedOutput {
@@ -413,6 +459,30 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn isolated_env_points_build_caches_under_home() {
+        let _serial = crate::test_helpers::serial();
+        let home = crate::test_helpers::temp_path();
+        prepare_measurement_caches(&home.display().to_string()).unwrap();
+        let env = isolated_env(&home.display().to_string());
+        for (key, suffix) in [
+            ("CARGO_TARGET_DIR", "build/cargo-target"),
+            ("npm_config_cache", "build/npm-cache"),
+            ("GOCACHE", "build/go-cache"),
+            ("GOMODCACHE", "build/go-mod"),
+            ("PIP_CACHE_DIR", "build/pip-cache"),
+            ("UV_CACHE_DIR", "build/uv-cache"),
+            ("YARN_CACHE_FOLDER", "build/yarn-cache"),
+        ] {
+            let value = env
+                .iter()
+                .find_map(|entry| entry.strip_prefix(&format!("{key}=")))
+                .unwrap_or_else(|| panic!("missing {key}"));
+            assert!(value.ends_with(suffix), "{key}={value}");
+            assert!(std::path::Path::new(value).is_dir(), "{key}={value}");
+        }
+    }
 
     #[test]
     #[cfg(unix)]

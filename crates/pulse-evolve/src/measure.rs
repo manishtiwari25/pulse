@@ -204,6 +204,7 @@ pub(crate) fn measure(
                 .display()
                 .to_string();
             fs::create_dir_all(&home)?;
+            crate::process::prepare_measurement_caches(&home)?;
             crate::process::seed_provider_logins(&s.home, &home)?;
             let argv = crate::process::measurement_argv(s, &exe, &f.request)?;
             let mut sink = std::io::sink();
@@ -535,6 +536,56 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
             )
             .is_err()
         );
+        assert_no_clones(&s);
+    }
+
+    #[test]
+    fn measure_build_caches_live_outside_clone_and_reach_scorer() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        let log = crate::test_helpers::temp_path().join("cache-log");
+        fixture(
+            &s,
+            "demo",
+            "F01",
+            r#"
+test -f "$CARGO_TARGET_DIR/harness-built"
+test "$(cat "$CARGO_TARGET_DIR/harness-built")" = "$CARGO_TARGET_DIR"
+test ! -e target
+printf 1
+"#,
+            1.0,
+        );
+        fake_harness(
+            &s,
+            &format!(
+                r#"
+for dir in "$CARGO_TARGET_DIR" "$npm_config_cache" "$GOCACHE" "$GOMODCACHE" "$PIP_CACHE_DIR" "$UV_CACHE_DIR" "$YARN_CACHE_FOLDER"; do
+  case "$dir" in "$PULSE_HOME"/build/*) ;; *) exit 4 ;; esac
+  test -d "$dir"
+done
+printf '%s' "$CARGO_TARGET_DIR" > "$CARGO_TARGET_DIR/harness-built"
+printf '%s\n' "$CARGO_TARGET_DIR" >> '{}'
+test ! -e target
+"#,
+                log.display()
+            ),
+        );
+        let cancel = pulse_bus::CancellationToken::new();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(scores.total, 1.0);
+        let target_dir = std::fs::read_to_string(&log).unwrap();
+        assert!(target_dir.contains("/homes/1/build/cargo-target"));
         assert_no_clones(&s);
     }
 
