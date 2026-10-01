@@ -1447,7 +1447,14 @@ source to give a new machine. `compute.self_heal=0` and `compute.self_retire=0`
 switch the two halves off.
 
 What the daemon does on its own when the owner is quiet: a handoff nobody
-claimed becomes one `improve` job, tried once. When a project's loop is at
+claimed becomes one `improve` job, tried once; its first step is to read the
+thread and the default branch, and a handoff that reports work already landed
+or held by another worker ends that job with a summary, not with another
+handoff. Workers are briefed the same way about their own job: overlap with
+work listed in the brief, or a variable another landing already moved, is
+recorded as a `finding` naming the commit or the worker, and the job stops -
+a `handoff` is for work a worker began and leaves unfinished, because the
+daemon gives every unclaimed handoff to another worker. When a project's loop is at
 level D, the daemon queues its experiments itself - one in flight per project,
 only cards with net votes > 0; a result carrying a violation or hard stop posts
 the owner question once and holds that project until it is answered - so

@@ -382,7 +382,7 @@ pub(crate) fn plan_jobs_with_tally(
                 continue;
             }
             let brief = format!(
-                "A worker handed off thread {}/{} and nobody claimed it since (handoff {} by {}, {}).\n\n{}\n\nRead the handoff (`pulse show {}`) and the thread it names (`pulse board --project {}`), post a claim on the thread, then continue exactly the work the handoff states - one variable at a time, proven by the project's own checks. When the handoff says the next step needs the owner, post a question on the thread (a `QUESTION:` line) and stop. End with `SUMMARY:` saying what moved.",
+                "A worker handed off thread {}/{} and nobody claimed it since (handoff {} by {}, {}).\n\n{}\n\nRead the handoff (`pulse show {}`) and the thread it names (`pulse board --project {}`) first, then look at the default branch: when the handoff reports work that already landed, or work another worker holds, nothing remains - say so in SUMMARY: (which commit, or who holds it) and stop; run no checks and post no handoff. Otherwise post a claim on the thread, then continue exactly the work the handoff states - one variable at a time, proven by the project's own checks. When the handoff says the next step needs the owner, post a question on the thread (a `QUESTION:` line) and stop. End with `SUMMARY:` saying what moved.",
                 p.area, p.thread, p.id, p.agent, p.date, p.body, p.id, slug
             );
             let (job, is_new) = crate::jobs::add_job(
@@ -487,7 +487,7 @@ pub(crate) fn plan_jobs_with_tally(
         for sg in candidates {
             let p = crate::board::post_row(&conn, sg.id.clone());
             let brief = format!(
-                "The agents voted this the top eligible suggestion (score {:+}, {} voters). Thread {}.\n\n{}\n\nOne variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:.",
+                "The agents voted this the top eligible suggestion (score {:+}, {} voters). Thread {}.\n\n{}\n\nLook at the default branch first: when another landing already moved this variable, say which commit in SUMMARY: and stop - run no checks and post no handoff. Otherwise: one variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:.",
                 sg.score,
                 sg.voters,
                 sg.key,

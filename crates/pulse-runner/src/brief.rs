@@ -499,7 +499,7 @@ pub(crate) fn write_focus_brief_section(
     if remote {
         b.extend(["".into(), "Do not redo work listed here. This machine has no PULSE store; report any overlap and the narrow help needed through a FINDING: line addressed to your lead.".into(), "".into()]);
     } else {
-        b.extend(["".into(), "Claim your thread before you start (pulse claim --area A --thread T --summary ...; if `pulse` is not on PATH, run the binary named by $PULSE_CLI) and do not redo work listed here; if your job overlaps one of them, post a handoff or a question on that thread instead.".into(), "".into()]);
+        b.extend(["".into(), "Claim your thread before you start (pulse claim --area A --thread T --summary ...; if `pulse` is not on PATH, run the binary named by $PULSE_CLI) and do not redo work listed here. If your job overlaps one of them, or the default branch already holds what it asks for, post a finding on that thread naming the commit or the worker that covers it, say so in SUMMARY: and stop. A handoff is only for work you began and leave unfinished: the daemon gives every unclaimed handoff to another worker, so a handoff that reports work already done or held by someone else costs one more job that finds nothing to do.".into(), "".into()]);
     }
 }
 
