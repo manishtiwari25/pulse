@@ -107,6 +107,28 @@ pub(crate) fn parallel_per_project(s: &pulse_store::Store) -> i32 {
     if n < 1 { 1 } else { n }
 }
 
+pub(crate) fn job_wait_seconds(q: &Querier, job: &Row, now: &str) -> i64 {
+    let since = one_dyn(
+        q,
+        "SELECT COALESCE(MAX(at), '') AS at FROM events WHERE subject = ? AND action IN ('job.add', 'job.queued', 'job.requeue')",
+        &[&job.str("id")],
+    )
+    .str("at");
+    let start = if since.is_empty() {
+        job.str("created_at")
+    } else {
+        since
+    };
+    if start.is_empty() {
+        return 0;
+    }
+    chrono::DateTime::parse_from_rfc3339(now)
+        .ok()
+        .zip(chrono::DateTime::parse_from_rfc3339(&start).ok())
+        .map(|(end, start)| (end - start).num_seconds().max(0))
+        .unwrap_or(0)
+}
+
 /// Go: func leaseJob(s *store.Store, agent, now string, o leaseOpts) (job row, err error)
 pub(crate) fn lease_job(
     s: &pulse_store::Store,
@@ -206,13 +228,14 @@ pub(crate) fn lease_job(
             "UPDATE jobs SET status = 'leased', lease_agent = ?, lease_until = ?, generation = generation + 1, attempts = attempts + 1 WHERE id = ? AND status = 'queued'",
             &[&agent, &until, &r.str("id")],
         );
+        let wait_s = job_wait_seconds(q, &r, &now);
         crate::util::event_at(
             q,
             &now,
             &agent,
             "job.lease",
             &r.str("id"),
-            json!({"until": until}),
+            json!({"until": until, "wait_s": wait_s}),
         );
         // Taking a job is a sign of life; the agent's heartbeat starts with the lease.
         if let Ok(at) = chrono::DateTime::parse_from_rfc3339(&now) {
@@ -292,6 +315,47 @@ mod tests {
     const RECIPE_TEMPLATE: &str = "---\nrecipe: 1\ntools: []\nenv: {}\nservices: []\n---\n\n# Environment\n\nWhat a clone needs.\n";
     static PROBE_REPLY: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
     static PAIR_SCRIPTS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+    #[test]
+    fn lease_event_records_queue_wait_seconds() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "wait".into(),
+            "measure queue wait".into(),
+            1,
+            10,
+            "wait-test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let now = crate::util::plus_minutes(&job.str("created_at"), 2.0);
+        let leased = super::lease_job(
+            &s,
+            "aurora".into(),
+            now,
+            super::LeaseOpts {
+                any_proj: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(leased.str("id"), job.str("id"));
+        let detail = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = 'job.lease' AND subject = ?",
+            &[&job.str("id")],
+        )
+        .str("detail");
+        let parsed: serde_json::Value = serde_json::from_str(&detail).unwrap();
+        assert_eq!(parsed["wait_s"], 120, "lease detail = {detail}");
+    }
 
     fn fake_probe_ssh(
         _: &pulse_bus::CancellationToken,
