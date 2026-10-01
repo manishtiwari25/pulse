@@ -647,7 +647,12 @@ what landed stays landed, the rest waits for it. A pass still running ten
 minutes after that cancellation sits in a call no budget reaches; the daemon
 then logs it and exits with code 3 so the service restarts it (not under
 `--no-restart`, which logs once instead). Without this, one wedged pass once
-held every finished job unlanded for ten hours while dispatch went on.
+held every finished job unlanded for ten hours while dispatch went on. The
+daemon's idle wait wakes when a pass ends and takes the pass's result in
+itself (lines, landing holds, the pass cleared) - the ten-hour stall was a
+pass that had in fact finished, whose result the wait had received and
+dropped, leaving the pass marked running until the next daemon start. A pass
+whose thread ends without a result is cleared the same way.
 
 After a measured experiment is finalized with no pending branch, the daemon
 can queue one durable, result-specific reflection per eligible archive, for

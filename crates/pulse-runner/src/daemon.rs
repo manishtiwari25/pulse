@@ -1263,9 +1263,15 @@ pub(crate) fn daemon(
                     },
                 }
             }
-        } else if let Some(done_rx) = maintenance.done.as_ref() {
+        } else if let Some(done_rx) = maintenance.done.clone() {
+            // The pass channel carries the pass's result; the wake must keep
+            // it, or the pass stays "running" for good and nothing lands
+            // until the next daemon start.
             crossbeam_channel::select! {
-                recv(done_rx) -> _ => { maintenance_wake = true; },
+                recv(done_rx) -> msg => {
+                    maintenance.pass_done(msg);
+                    maintenance_wake = true;
+                },
                 recv(tick) -> _ => {},
                 recv(compute_wake) -> _ => {},
                 recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
@@ -2605,6 +2611,109 @@ mod tests {
         if let Err(panic) = result {
             std::panic::resume_unwind(panic);
         }
+    }
+
+    /// A pass that ends while the daemon sits in its idle wait: the wait
+    /// selects on the pass channel, and before the fix it swallowed the
+    /// result, so the pass stayed "running" for good and no later pass ran
+    /// until the daemon restarted. Stale cards added after the first pass
+    /// must be retired by a second one.
+    #[test]
+    fn daemon_idle_wait_keeps_the_pass_result_so_the_next_pass_runs() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        s.set_setting(pulse_store::HUMAN_AGENT, "jobs_per_day", "1")
+            .unwrap();
+        // Nothing may be planned: the daily reflect is done and a ballot was
+        // just held, so the daemon's only work is the maintenance pass.
+        let reflect = format!("reflect:proj:{}", &TEST_NOW[..10]);
+        let ballot = format!("ballot:proj:{}", crate::util::stamp_of(TEST_NOW));
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "INSERT INTO jobs (id, project, kind, title, status, source, created_at) VALUES ('daily-reflect', 'proj', 'reflect', 'Already reflected', 'done', ?, ?), ('held-ballot', 'proj', 'ballot', 'Already voted', 'done', ?, ?)",
+            &[&reflect, &TEST_NOW, &ballot, &TEST_NOW],
+        );
+        let cancel = pulse_bus::CancellationToken::new();
+        let out = OutBuf::new();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        {
+            let (s, cancel, writer) = (s.clone(), cancel.clone(), out.writer());
+            std::thread::spawn(move || {
+                let result = daemon(
+                    &cancel,
+                    &s,
+                    DaemonOpts {
+                        interval: 1,
+                        worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                        out: Some(writer),
+                        ..Default::default()
+                    },
+                );
+                let _ = done_tx.send(result);
+            });
+        }
+        // The first pass writes the sweep note on its way to the finish; a
+        // moment later it has ended and the daemon is back in its idle wait.
+        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(10));
+        loop {
+            let (_, exists) = s.meta("hygiene").unwrap();
+            if exists {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "initial maintenance did not run"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(test_wait(Duration::from_millis(500)));
+        let old = crate::util::plus_hours(TEST_NOW, -8.0 * 24.0);
+        for n in 0..5 {
+            crate::board::create_post(
+                &s,
+                old.clone(),
+                crate::board::PostOpts {
+                    kind: "suggestion".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: format!("gone-{n}"),
+                    summary: format!("Fix gone tree {n}"),
+                    body: format!(
+                        "Class: product\nFile: internal/gone/file{n}.go\nVariable: x\nHypothesis: y\nSignal: check:z\n"
+                    ),
+                    agent: crate::board::actor_agent(&s, "aurora".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("suggestion");
+        }
+        let dropped =
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result' AND resolution = 'dropped'";
+        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(20));
+        let retired = loop {
+            let n = crate::test_helpers::count(&s, dropped, &[]);
+            if n >= 5 || std::time::Instant::now() > deadline {
+                break n;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        cancel.cancel();
+        let result = done_rx
+            .recv_timeout(test_wait(Duration::from_secs(30)))
+            .expect("the daemon did not stop after cancellation");
+        let out = out.string();
+        let tail: Vec<&str> = out.lines().rev().take(12).collect();
+        assert_eq!(
+            retired, 5,
+            "no second maintenance pass ran while the fleet was idle ({result}); last lines: {tail:#?}"
+        );
+        assert!(
+            out.contains("retired 5 stale suggestion(s) for proj"),
+            "pass lines were lost:\n{out}"
+        );
     }
 
     #[test]

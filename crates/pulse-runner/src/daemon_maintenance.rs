@@ -25,6 +25,10 @@ pub(crate) const PASS_DEADLINE: Duration = Duration::from_secs(60 * 60);
 /// Where the maintenance pass is, for the watchdog's log line.
 pub(crate) type Stage = std::sync::Arc<std::sync::Mutex<String>>;
 
+/// What a pass reports: its log lines and, on the serial landing path, the
+/// landing holds it left behind.
+pub(crate) type PassResult = (Vec<String>, Option<BTreeMap<String, String>>);
+
 /// Notes the pass's current stage.
 pub(crate) fn set_stage(stage: Option<&Stage>, what: impl Into<String>) {
     if let Some(stage) = stage {
@@ -441,6 +445,30 @@ impl DaemonMaintenance {
             Err(_) => Vec::new(),
         }
     }
+    /// Takes the pass's result in and clears the pass so the next one can
+    /// start. Both readers of the pass channel end here: `drain` on its
+    /// tick, and the daemon's idle wait, which selects on the same channel
+    /// to wake when the pass ends - the message it receives is this result,
+    /// and swallowing it left `done` set for good: no pass ran again, the
+    /// pass's lines were lost, and finished jobs landed only at the next
+    /// daemon start. A closed channel (the thread ended without a result)
+    /// clears the pass too, so no pass can wedge the daemon by dying.
+    pub(crate) fn pass_done(&mut self, msg: Result<PassResult, crossbeam_channel::RecvError>) {
+        self.done = None;
+        self.pass_started = None;
+        self.pass_ctx = None;
+        match msg {
+            Ok((pass, held)) => {
+                if let Some(held) = held {
+                    self.held = held;
+                }
+                self.lines.extend(pass);
+            }
+            Err(_) => self.lines.push(
+                "landing maintenance pass ended without a result; the next pass starts".into(),
+            ),
+        }
+    }
     /// Go: func (m *daemonMaintenance) drain() (lines []string)
     pub(crate) fn drain(&mut self, s: &pulse_store::Store) -> Vec<String> {
         let mut lines = std::mem::take(&mut self.lines);
@@ -449,15 +477,14 @@ impl DaemonMaintenance {
         let Some(rx) = &self.done else {
             return lines;
         };
-        if let Ok((pass, held)) = rx.try_recv() {
-            self.done = None;
-            if let Some(held) = held {
-                self.held = held;
+        match rx.try_recv() {
+            Ok(msg) => self.pass_done(Ok(msg)),
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.pass_done(Err(crossbeam_channel::RecvError))
             }
-            self.pass_started = None;
-            self.pass_ctx = None;
-            lines.extend(pass);
+            Err(crossbeam_channel::TryRecvError::Empty) => {}
         }
+        lines.extend(std::mem::take(&mut self.lines));
         lines
     }
     /// The watchdog over the running pass. Past `PASS_DEADLINE` the pass's
@@ -1107,6 +1134,53 @@ mod tests {
             "why = {why}"
         );
         assert_eq!(m.stuck(), Ok(None), "the restart was asked twice");
+    }
+
+    #[test]
+    fn a_pass_result_taken_by_the_idle_wait_ends_the_pass_and_keeps_its_lines() {
+        let (tx, rx) = crossbeam_channel::bounded::<PassResult>(1);
+        let s = new_store();
+        let mut m = DaemonMaintenance {
+            done: Some(rx.clone()),
+            pass_started: Some(Instant::now()),
+            pass_ctx: Some(pulse_bus::CancellationToken::new()),
+            ..DaemonMaintenance::default()
+        };
+        let mut held = BTreeMap::new();
+        held.insert("proj".to_string(), "red default branch".to_string());
+        tx.send((vec!["pruned lantern: silent".into()], Some(held)))
+            .unwrap();
+        // The daemon's idle wait receives on a clone of the same channel.
+        m.pass_done(rx.recv());
+        assert!(
+            m.done.is_none() && m.pass_started.is_none() && m.pass_ctx.is_none(),
+            "the pass is still marked running"
+        );
+        assert_eq!(
+            m.held.get("proj").map(String::as_str),
+            Some("red default branch")
+        );
+        assert_eq!(m.drain(&s), vec!["pruned lantern: silent".to_string()]);
+        assert_eq!(m.stuck(), Ok(None));
+    }
+
+    #[test]
+    fn a_pass_whose_thread_ended_without_a_result_is_cleared_not_stuck() {
+        let (tx, rx) = crossbeam_channel::bounded::<PassResult>(1);
+        let s = new_store();
+        let mut m = DaemonMaintenance {
+            done: Some(rx),
+            pass_started: Some(Instant::now() - PASS_DEADLINE),
+            ..DaemonMaintenance::default()
+        };
+        drop(tx);
+        let lines = m.drain(&s);
+        assert!(
+            lines.len() == 1 && lines[0].contains("ended without a result"),
+            "{lines:?}"
+        );
+        assert!(m.done.is_none() && m.pass_started.is_none());
+        assert_eq!(m.stuck(), Ok(None));
     }
 
     #[test]
