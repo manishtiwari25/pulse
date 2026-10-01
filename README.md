@@ -726,6 +726,7 @@ record, read with `pulse record show WF-evolve`.
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
+| `verify.lock` | `off` | `project`: a project's verifications (worker pre-commit hook, post-run check, landing) take turns on a machine; `machine`: all of them do. For checkouts that share one build cache. |
 | `baseline.retry_hours` | `6` hours | Baseline measurement retry after a non-transient failed baseline job. |
 | `max_ai_credits` | `30` credits (minimum `30`) | Legacy `copilot-cli` harness only: passed to Copilot CLI workers; not automatically applied to measurement harnesses. |
 | `harness` | `native` | Which harness runs the workers: `native` (built in, `pulse harness run`) or `copilot-cli` (the legacy `copilot` binary named by `runner_cmd`). |
@@ -1149,6 +1150,23 @@ retries at once after you fixed it. The hold
 shows in `pulse status` and the hub as `landing` (how many branches wait and
 why), and the daemon logs it and writes `land.held` once per change,
 `land.resumed` when the branches land again.
+The same verification command runs three times per change - in the worker
+clone's pre-commit hook at every commit, once more when the run ends, and in
+the landing worktree - and on one machine those runs overlap across clones.
+When the clones share a build cache (a `CARGO_TARGET_DIR`, a Gradle or Bazel
+cache: the usual way to keep a large build fast and the disk small) two
+overlapping runs rewrite each other's artifacts mid-run and both fail for
+reasons neither branch contains, so a good branch is charged or the default
+branch is judged red. `pulse settings verify.lock project` makes the
+verifications of one project take turns on the machine (`machine`: every
+verification does); the command runs under an atomic lock in
+`$PULSE_HOME/locks/`, a later arrival prints that it is waiting and for whom,
+a lock whose holder has died is removed by the next arrival, and a wait
+longer than `minutes_per_job` gives up with exit 75 without running the
+command. Taking turns does not make a shared cache tell one checkout from
+another: a build system that decides freshness by file times still needs
+the project's own command to refresh what the checkout owns (for Cargo,
+touch the workspace sources before building; the dependency cache stays).
 Landing moves your local default branch; whether it goes further is your
 standing instruction, `landing.push` (ADR-037). `off`, the default: you review
 and push. `pulse settings landing.push main`: after each landing the daemon

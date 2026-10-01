@@ -779,7 +779,9 @@ pub(crate) fn run_job(
             env.insert("PULSE_CLI".into(), remote_pulse_cli(recipe.as_ref()));
         }
         if !custom_worker && !project.str("verify_cmd").is_empty() {
-            ex.install_pre_commit_hook(&project.str("verify_cmd"), recipe.as_ref(), &pins)?;
+            let hook_verify =
+                crate::verify_lock::wrap(s, &project.str("slug"), &project.str("verify_cmd"));
+            ex.install_pre_commit_hook(&hook_verify, recipe.as_ref(), &pins)?;
         }
         let shown = cmd
             .iter()
@@ -1002,6 +1004,7 @@ pub(crate) fn run_job(
                     if !pins.is_empty() {
                         check_cmd = crate::recipe::mise_wrap_shell(&pins, &check_cmd, &clone);
                     }
+                    let check_cmd = crate::verify_lock::wrap(s, &project.str("slug"), &check_cmd);
                     let (rc, vout) = ex.verify(&cancel, &check_cmd, minutes);
                     if let Some(rc) = rc {
                         verify_note = format!("verify exit {rc}");

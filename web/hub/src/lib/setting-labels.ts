@@ -18,6 +18,7 @@ const LABELS: Record<string, string> = {
   "landing.auto_stash": "Stash uncommitted changes before landing",
   "landing.parallel": "Projects landing at once",
   "landing.base_red_retry_minutes": "Re-check landings after a red main (minutes)",
+  "verify.lock": "Verifications take turns",
   "push.credential": "Push key",
   quorum: "Votes to queue a suggestion",
   expiry_days: "A suggestion expires after (days)",
@@ -105,7 +106,7 @@ const LABELS: Record<string, string> = {
   "harness.output_limit": "Output kept per command (characters)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|plan|schedule|heartbeat|records)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|plan|schedule|heartbeat|records|verify)\./;
 
 export function settingLabel(name: string): string {
   const known = LABELS[name];

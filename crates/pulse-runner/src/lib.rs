@@ -66,6 +66,7 @@ pub mod tally;
 pub mod tmpspace;
 pub mod token;
 pub mod util;
+pub mod verify_lock;
 
 pub(crate) use board::*;
 pub use commands::*;

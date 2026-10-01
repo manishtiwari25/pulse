@@ -938,8 +938,13 @@ pub(crate) fn land_branch(
         }
         let budget = Duration::from_secs((minutes as u64) * 60).max(Duration::from_secs(60));
         let verify_started = std::time::Instant::now();
-        let (rc, so, se) =
-            crate::landing_context::sh_with_context(&cancel, worktree.clone(), vc.clone(), budget);
+        let vc_run = crate::verify_lock::wrap(s, &slug, &vc);
+        let (rc, so, se) = crate::landing_context::sh_with_context(
+            &cancel,
+            worktree.clone(),
+            vc_run.clone(),
+            budget,
+        );
         let verify_took = verify_started.elapsed();
         if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
             && !why.is_empty()
@@ -986,7 +991,7 @@ pub(crate) fn land_branch(
             // hold the project's landings and try again later.
             let base_budget = (verify_took * 2).clamp(Duration::from_secs(60), budget);
             let (base_red, base_tail) =
-                base_verify_red(&cancel, &worktree, &before, &vc, base_budget);
+                base_verify_red(&cancel, &worktree, &before, &vc_run, base_budget);
             if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
                 && !why.is_empty()
             {
