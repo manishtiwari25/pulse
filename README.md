@@ -527,11 +527,12 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   the records and at least one enabled fixture exist and `loop: on`, it plans
   a `baseline` job that measures the default branch, archives the score and
   refreshes the experiment-lane baseline cache for that default-branch commit
-  and fixture hash (a failure posts a finding and is retried after 24 hours;
-  `pulse job add --kind baseline` queues it by hand). The cache key is the
-  SHA-256 of the enabled fixture definitions, the held-out fixture marker and
-  harness-affecting settings; `evolve.baseline_ttl_hours` defaults to `24`,
-  and `0` means cached baselines never expire. The job's run log lists every public
+  and fixture hash (a failure posts a finding and is retried after
+  `baseline.retry_hours`, or after `lane.short_retry_minutes` when the failure
+  is transient; `pulse job add --kind baseline` queues it by hand). The cache
+  key is the SHA-256 of the enabled fixture definitions, the held-out fixture
+  marker and harness-affecting settings; `evolve.baseline_ttl_hours` defaults
+  to `24`, and `0` means cached baselines never expire. The job's run log lists every public
   fixture's score and, for a 0, the scorer's one-line reason. The two private
   held-out fixtures - the proof that the loop is not grading itself - are the
   daemon's too by default (`evolve.heldout auto`): it creates
@@ -608,9 +609,11 @@ that already contains the default branch, or one that conflicts with it, is
 measured as it is and landing reports the conflict); a variant measured on
 its stale fork point would miss every fix the default branch gained since,
 and the archive notes `measured as … merged onto …` when that happened. An
-experiment the lane could not land stays queued and is tried again
-after an hour (five minutes after a lock or STOP), recorded as `land.deferred`
-with the reason and `retry_after_min`. The measurement harness the lane starts
+experiment the lane could not land stays queued and is tried again after
+`lane.retry_minutes` (or `lane.short_retry_minutes` after a lock, STOP,
+network/rate-limit/database-lock/full-disk-style transient), recorded as
+`land.deferred` with the reason and `retry_after_min`. The daemon log says
+`retry in 20m` (or the configured value). The measurement harness the lane starts
 is the same `pulse harness run` the workers use, with the same tool denials,
 so it never waits for a permission prompt. When the daemon restarts on a new
 binary it cancels the lane at once (the next daemon measures again) and gives
@@ -671,6 +674,10 @@ record, read with `pulse record show WF-evolve`.
 | --- | --- | --- |
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
 | `evolve.measure_parallel` | `4` fixtures | Fixtures one measurement runs at once; `0` or `1` keeps measurement sequential. Each worker keeps only one clone live and removes it after scoring. |
+| `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
+| `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
+| `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
+| `baseline.retry_hours` | `6` hours | Baseline measurement retry after a non-transient failed baseline job. |
 | `max_ai_credits` | `30` credits (minimum `30`) | Legacy `copilot-cli` harness only: passed to Copilot CLI workers; not automatically applied to measurement harnesses. |
 | `harness` | `native` | Which harness runs the workers: `native` (built in, `pulse harness run`) or `copilot-cli` (the legacy `copilot` binary named by `runner_cmd`). |
 | `provider` | `copilot` | The model provider the built-in harness talks to. GitHub Copilot is the first; more register under `crates/pulse-provider-<name>`. |
@@ -1086,8 +1093,9 @@ failure on the merged result is charged to the branch (patch saved, job
 requeued, branch removed) only when the default branch passes the same command
 in the same worktree; when the default branch is red itself - a tool gone from
 the machine, a broken dependency, a suite that fails on its own - the branch
-is kept, the project's landings wait thirty minutes, the hold names the failing
-line, a `land.base-red` event records the tail, and `pulse land --project X`
+is kept, the project's landings wait `landing.base_red_retry_minutes`
+(default 10 minutes), the hold names the failing line and logs `retry in 10m`,
+a `land.base-red` event records the tail, and `pulse land --project X`
 retries at once after you fixed it. The hold
 shows in `pulse status` and the hub as `landing` (how many branches wait and
 why), and the daemon logs it and writes `land.held` once per change,

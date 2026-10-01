@@ -602,7 +602,7 @@ pub(crate) fn daemon(
         }
         let only_maintenance_wake = maintenance_wake;
         maintenance_wake = false;
-        for line in maintenance.drain() {
+        for line in maintenance.drain(s) {
             say(&o, line);
         }
         match maintenance.stuck() {
@@ -1261,7 +1261,7 @@ pub(crate) fn daemon(
             maintenance.cancel_lane();
             std::time::Instant::now() + drain
         });
-        let (lines, cut) = maintenance.finish(&maintenance_ctx, deadline);
+        let (lines, cut) = maintenance.finish(s, &maintenance_ctx, deadline);
         for line in lines {
             say(&o, line);
         }

@@ -66,15 +66,14 @@ pub(crate) fn baseline_due(s: &pulse_store::Store, slug: String, now: String) ->
     if let Some(job) = status.baseline_job {
         return (false, format!("baseline job {} is {}", job.id, job.status));
     }
-    match pulse_evolve::recent_baseline_failure(s, &slug, &now) {
-        Ok(failed_at) if !failed_at.is_empty() => (
+    match pulse_evolve::recent_baseline_failure_hold(s, &slug, &now) {
+        Ok(Some((failed_at, retry_text))) => (
             false,
             format!(
-                "baseline measurement failed at {failed_at}; the daemon retries after {} hours",
-                pulse_evolve::BASELINE_RETRY_HOURS
+                "baseline measurement failed at {failed_at}; the daemon retries after {retry_text}"
             ),
         ),
-        Ok(_) => (true, String::new()),
+        Ok(None) => (true, String::new()),
         Err(e) => (
             false,
             format!("baseline jobs unreadable: {}", crate::run::err_message(&e)),
@@ -96,9 +95,10 @@ pub(crate) fn plan_baseline(
     let def = default_branch(project);
     let fixtures = enabled_fixtures(s, slug.clone());
     let brief = format!(
-        "Record the baseline of {slug} (ADR-031). The runner measures the default branch `{def}` itself with the {fixtures} enabled public fixture(s) and every private held-out fixture through evolve.Measure, then archives one kept row (hypothesis `{}`) that `pulse evolve status` reads as the baseline. No worker runs, no clone is prepared and nothing lands. A failed measurement posts one finding on evolution/{BASELINE_THREAD} and the daemon plans the job again after {} hours; `pulse job add --project {slug} --kind baseline --title '{BASELINE_TITLE}'` queues it sooner.",
+        "Record the baseline of {slug} (ADR-031). The runner measures the default branch `{def}` itself with the {fixtures} enabled public fixture(s) and every private held-out fixture through evolve.Measure, then archives one kept row (hypothesis `{}`) that `pulse evolve status` reads as the baseline. No worker runs, no clone is prepared and nothing lands. A failed measurement posts one finding on evolution/{BASELINE_THREAD} and the daemon plans the job again after {} hours ({} minutes for transient failures); `pulse job add --project {slug} --kind baseline --title '{BASELINE_TITLE}'` queues it sooner.",
         pulse_evolve::BASELINE_HYPOTHESIS,
-        pulse_evolve::BASELINE_RETRY_HOURS
+        pulse_evolve::baseline_retry_hours(s),
+        pulse_evolve::baseline_short_retry_minutes(s)
     );
     crate::jobs::add_job(
         s,
@@ -496,8 +496,8 @@ pub(crate) fn baseline_finding(
     }
     let body = format!(
         "The daemon could not record the baseline of {slug} (ADR-031).\n\n- Cause: {cause}\n- Measured: `{def}`\n- Run: `{run_id}`\n- Log: {log_path}\n\n\
-         The daemon retries after {} hours; a human may run `pulse job add --project {slug} --kind baseline --title '{BASELINE_TITLE}'` sooner.\n",
-        pulse_evolve::BASELINE_RETRY_HOURS
+         The daemon retries after {}; a human may run `pulse job add --project {slug} --kind baseline --title '{BASELINE_TITLE}'` sooner.\n",
+        pulse_evolve::baseline_retry_text(s, &cause)
     );
     if let Err(err) = crate::board::create_post(
         s,
@@ -528,6 +528,15 @@ mod tests {
     use crate::test_helpers::*;
     use crate::test_helpers_f5::*;
 
+    fn set_retry_setting(s: &pulse_store::Store, key: &str, value: &str) {
+        exec1(
+            s,
+            "INSERT INTO settings (name, value, updated_at, updated_by) VALUES (?, ?, ?, 'test')
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            &[&key, &value, &TEST_NOW],
+        );
+    }
+
     #[test]
     fn baseline_planning() {
         let _serial = crate::test_helpers::serial();
@@ -535,6 +544,8 @@ mod tests {
         pulse_bus::reset_default();
         let s = new_store();
         new_repo(&s);
+        set_retry_setting(&s, "baseline.retry_hours", "2");
+        set_retry_setting(&s, "lane.short_retry_minutes", "3");
         let not_due = |want: &str| {
             let (due, why) = baseline_due(&s, "proj".into(), TEST_NOW.into());
             if due || !why.contains(want) {
@@ -594,7 +605,7 @@ mod tests {
             "6 enabled public fixture(s)",
             "No worker runs",
             "evolve.Measure",
-            "after 24 hours",
+            "after 2 hours",
             "pulse job add --project proj --kind baseline --title 'Record baseline'",
         ] {
             if !job.str("brief").contains(want) {
@@ -606,7 +617,7 @@ mod tests {
         if baseline_jobs(&s, "proj").len() != 1 {
             panic!("baseline jobs: {:?}", baseline_jobs(&s, "proj"));
         }
-        // A failure holds the planner for 24 hours, then the job is planned again.
+        // A failure holds the planner for 2 hours, then the job is planned again.
         crate::jobs::finish_job(
             &s,
             job.str("id"),
@@ -618,15 +629,15 @@ mod tests {
         )
         .unwrap();
         not_due(&format!(
-            "failed at {TEST_NOW}; the daemon retries after 24 hours"
+            "failed at {TEST_NOW}; the daemon retries after 2 hours"
         ));
-        if baseline_due(&s, "proj".into(), crate::util::plus_hours(TEST_NOW, 23.5)).0 {
-            panic!("due before 24 hours passed");
+        if baseline_due(&s, "proj".into(), crate::util::plus_hours(TEST_NOW, 1.5)).0 {
+            panic!("due before 2 hours passed");
         }
-        let later = crate::util::plus_hours(TEST_NOW, 24.0);
+        let later = crate::util::plus_hours(TEST_NOW, 2.0);
         let (due, why) = baseline_due(&s, "proj".into(), later.clone());
         if !due {
-            panic!("not due after 24 hours: {why:?}");
+            panic!("not due after 2 hours: {why:?}");
         }
         let jobs = crate::plan::plan_jobs(&s, "proj".into(), later, "daemon".into());
         if jobs.is_err()
@@ -634,7 +645,7 @@ mod tests {
             || jobs.as_ref().unwrap()[0].str("kind") != "baseline"
             || jobs.as_ref().unwrap()[0].str("id") == job.str("id")
         {
-            panic!("planned after 24 hours: {jobs:?}");
+            panic!("planned after 2 hours: {jobs:?}");
         }
         let jobs = jobs.unwrap();
         if baseline_jobs(&s, "proj").len() != 2 {
@@ -992,6 +1003,8 @@ mod tests {
         new_repo(&s);
         join(&s, "aurora");
         set_setting(&s, "evolve.loop", "1");
+        set_retry_setting(&s, "baseline.retry_hours", "2");
+        set_retry_setting(&s, "lane.short_retry_minutes", "3");
         loop_records(&s, "proj");
         only_baseline(&s);
         let measure = FakeMeasure::new(
@@ -1047,7 +1060,7 @@ mod tests {
         for text in [
             format!("- Cause: {want}"),
             format!("- Log: {}", runs[0].str("log")),
-            "The daemon retries after 24 hours".to_string(),
+            "The daemon retries after 2 hours".to_string(),
             "pulse job add --project proj --kind baseline --title 'Record baseline'".to_string(),
         ] {
             if !findings[0].str("body").contains(&text) {
@@ -1061,15 +1074,15 @@ mod tests {
             || status.as_ref().unwrap().baseline_job.is_some()
             || status.as_ref().unwrap().reason
                 != format!(
-                    "baseline measurement failed at {TEST_NOW}; the daemon retries after 24 hours"
+                    "baseline measurement failed at {TEST_NOW}; the daemon retries after 2 hours"
                 )
         {
             panic!("status after the failure: {status:?}");
         }
-        // The daemon plans nothing for 24 hours; a human queues the job by hand and the same failure adds no finding.
+        // The daemon plans nothing for 2 hours; a human queues the job by hand and the same failure adds no finding.
         let log = once_daemon(&s, crate::daemon::DaemonOpts::default());
         if baseline_jobs(&s, "proj").len() != 1 || !log.contains("idle: no queued job") {
-            panic!("planned again inside 24 hours:\n{log}");
+            panic!("planned again inside 2 hours:\n{log}");
         }
         pulse_board::add_job(
             &s,
@@ -1121,8 +1134,8 @@ mod tests {
         {
             panic!("worker counters after two failed baseline jobs");
         }
-        // A different cause is a new finding.
-        measure.set_err(anyhow::anyhow!("git clone failed"));
+        // A different transient cause is a new finding and uses the short retry.
+        measure.set_err(anyhow::anyhow!("database is locked"));
         pulse_board::add_job(
             &s,
             pulse_board::JobInput {
@@ -1137,7 +1150,7 @@ mod tests {
         once_daemon(&s, crate::daemon::DaemonOpts::default());
         if count(
             &s,
-            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND summary = 'baseline for proj failed: measuring main failed: git clone failed'",
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND summary = 'baseline for proj failed: measuring main failed: database is locked'",
             &[],
         ) != 1
             || count(
@@ -1147,6 +1160,17 @@ mod tests {
             ) != 2
         {
             panic!("a new cause did not post a new finding");
+        }
+        let transient = must_one(
+            &s,
+            "SELECT body FROM posts WHERE kind = 'finding' AND summary = 'baseline for proj failed: measuring main failed: database is locked'",
+            &[],
+        );
+        if !transient
+            .str("body")
+            .contains("The daemon retries after 3 minutes")
+        {
+            panic!("transient finding did not use the short retry: {transient:?}");
         }
     }
 

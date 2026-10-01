@@ -10,12 +10,6 @@ use std::time::{Duration, Instant};
 
 use crate::util::Row;
 
-/// How long a measured experiment that did not land waits before the lane
-/// tries it again - a failed measurement is not retried every tick.
-pub(crate) const EXPERIMENT_RETRY: Duration = Duration::from_secs(60 * 60);
-/// The wait after a transient hold (`locked`, `stopped`) before the lane
-/// tries the same experiment again.
-pub(crate) const EXPERIMENT_RETRY_SHORT: Duration = Duration::from_secs(5 * 60);
 /// How long a restart (the binary changed on disk) gives the plain landings
 /// before it cancels them too; the experiment lane is cancelled at once and
 /// the next daemon measures again.
@@ -108,13 +102,13 @@ pub(crate) fn landing_queue_state(
 }
 
 /// The wait before the lane tries an experiment again after `state`.
-pub(crate) fn experiment_retry(state: &str) -> Duration {
+pub(crate) fn experiment_retry(s: &pulse_store::Store, state: &str, note: &str) -> Duration {
     if TERMINAL_STATES.contains(&state) {
         Duration::ZERO
-    } else if matches!(state, "locked" | "stopped") {
-        EXPERIMENT_RETRY_SHORT
+    } else if matches!(state, "locked" | "stopped") || crate::failure::is_transient_reason(note) {
+        Duration::from_secs(60 * setting_minutes(s, "lane.short_retry_minutes", 2) as u64)
     } else {
-        EXPERIMENT_RETRY
+        Duration::from_secs(60 * setting_minutes(s, "lane.retry_minutes", 20) as u64)
     }
 }
 
@@ -195,6 +189,13 @@ pub(crate) fn tend_unfit_reprobes(
         }
     }
     lines
+}
+
+fn setting_minutes(s: &pulse_store::Store, name: &str, default: i32) -> i32 {
+    s.setting(name, &default.to_string())
+        .parse::<i32>()
+        .unwrap_or(default)
+        .max(1)
 }
 
 fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
@@ -402,7 +403,7 @@ impl DaemonMaintenance {
         }
     }
     /// Collects the lane's result once it is in.
-    fn drain_lane(&mut self) -> Vec<String> {
+    fn drain_lane(&mut self, s: &pulse_store::Store) -> Vec<String> {
         let Some(rx) = &self.lane else {
             return Vec::new();
         };
@@ -411,19 +412,18 @@ impl DaemonMaintenance {
                 self.lane = None;
                 self.lane_ctx = None;
                 self.lane_job.clear();
-                self.lane_tried.insert(
-                    result.job.clone(),
-                    (Instant::now(), experiment_retry(&result.state)),
-                );
-                vec![format!("landing {}: {}", result.state, result.note)]
+                let retry = experiment_retry(s, &result.state, &result.note);
+                self.lane_tried
+                    .insert(result.job.clone(), (Instant::now(), retry));
+                vec![Self::lane_result_line(&result, retry)]
             }
             Err(_) => Vec::new(),
         }
     }
     /// Go: func (m *daemonMaintenance) drain() (lines []string)
-    pub(crate) fn drain(&mut self) -> Vec<String> {
+    pub(crate) fn drain(&mut self, s: &pulse_store::Store) -> Vec<String> {
         let mut lines = std::mem::take(&mut self.lines);
-        lines.extend(self.drain_lane());
+        lines.extend(self.drain_lane(s));
         let Some(rx) = &self.done else {
             return lines;
         };
@@ -481,6 +481,7 @@ impl DaemonMaintenance {
     /// still runs is cancelled through `ctx` and awaited; the flag says so.
     pub(crate) fn finish(
         &mut self,
+        s: &pulse_store::Store,
         ctx: &pulse_bus::CancellationToken,
         deadline: Option<Instant>,
     ) -> (Vec<String>, bool) {
@@ -499,10 +500,26 @@ impl DaemonMaintenance {
             self.lane_ctx = None;
             self.lane_job.clear();
             if let Some(result) = got {
-                lines.push(format!("landing {}: {}", result.state, result.note));
+                lines.push(Self::lane_result_line(
+                    &result,
+                    experiment_retry(s, &result.state, &result.note),
+                ));
             }
         }
         (lines, cut)
+    }
+
+    fn lane_result_line(result: &LaneResult, retry: Duration) -> String {
+        if retry.is_zero() {
+            format!("landing {}: {}", result.state, result.note)
+        } else {
+            format!(
+                "landing {}: {}; retry in {}",
+                result.state,
+                result.note,
+                pulse_cli::format_duration(retry)
+            )
+        }
     }
 }
 
@@ -537,7 +554,7 @@ fn record_lane_outcome(s: &pulse_store::Store, actor: &str, result: &LaneResult)
     let Ok(conn) = s.conn() else {
         return;
     };
-    let wait = experiment_retry(&result.state);
+    let wait = experiment_retry(s, &result.state, &result.note);
     crate::util::event_at(
         &conn,
         &s.now(),
@@ -560,14 +577,46 @@ mod tests {
     use crate::test_helpers::*;
     use crate::test_helpers_f5::*;
 
+    fn set_retry_setting(s: &pulse_store::Store, key: &str, value: &str) {
+        exec1(
+            s,
+            "INSERT INTO settings (name, value, updated_at, updated_by) VALUES (?, ?, ?, 'test')
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            &[&key, &value, &TEST_NOW],
+        );
+    }
+
     #[test]
     fn experiment_retry_by_state() {
-        assert_eq!(experiment_retry("landed"), Duration::ZERO);
-        assert_eq!(experiment_retry("dropped"), Duration::ZERO);
-        assert_eq!(experiment_retry("locked"), EXPERIMENT_RETRY_SHORT);
-        assert_eq!(experiment_retry("stopped"), EXPERIMENT_RETRY_SHORT);
-        assert_eq!(experiment_retry("deferred"), EXPERIMENT_RETRY);
-        assert_eq!(experiment_retry("error"), EXPERIMENT_RETRY);
+        let s = new_store();
+        assert_eq!(experiment_retry(&s, "landed", ""), Duration::ZERO);
+        assert_eq!(experiment_retry(&s, "dropped", ""), Duration::ZERO);
+        assert_eq!(
+            experiment_retry(&s, "locked", ""),
+            Duration::from_secs(2 * 60)
+        );
+        assert_eq!(
+            experiment_retry(&s, "stopped", ""),
+            Duration::from_secs(2 * 60)
+        );
+        assert_eq!(
+            experiment_retry(&s, "deferred", "verify failed"),
+            Duration::from_secs(20 * 60)
+        );
+        assert_eq!(
+            experiment_retry(&s, "error", "database is locked"),
+            Duration::from_secs(2 * 60)
+        );
+        set_retry_setting(&s, "lane.retry_minutes", "7");
+        set_retry_setting(&s, "lane.short_retry_minutes", "3");
+        assert_eq!(
+            experiment_retry(&s, "error", "verify failed"),
+            Duration::from_secs(7 * 60)
+        );
+        assert_eq!(
+            experiment_retry(&s, "error", "rate limit"),
+            Duration::from_secs(3 * 60)
+        );
     }
 
     fn set_unfit_reprobe_minutes(s: &pulse_store::Store, minutes: &str) {
@@ -788,15 +837,19 @@ mod tests {
             .expect("no experiment offered");
         assert_eq!(job.str("id"), "first", "plain job or wrong order");
 
-        m.lane_tried
-            .insert("first".into(), (Instant::now(), EXPERIMENT_RETRY));
+        m.lane_tried.insert(
+            "first".into(),
+            (Instant::now(), Duration::from_secs(20 * 60)),
+        );
         let (_, job) = m
             .next_experiment(&s, &projects, TEST_NOW)
             .expect("second experiment not offered");
         assert_eq!(job.str("id"), "second", "recent attempt was offered again");
 
-        m.lane_tried
-            .insert("second".into(), (Instant::now(), EXPERIMENT_RETRY_SHORT));
+        m.lane_tried.insert(
+            "second".into(),
+            (Instant::now(), Duration::from_secs(2 * 60)),
+        );
         assert!(
             m.next_experiment(&s, &projects, TEST_NOW).is_none(),
             "experiments within their retry wait were offered"
@@ -804,7 +857,10 @@ mod tests {
 
         m.lane_tried.insert(
             "first".into(),
-            (Instant::now() - EXPERIMENT_RETRY, EXPERIMENT_RETRY),
+            (
+                Instant::now() - Duration::from_secs(20 * 60),
+                Duration::from_secs(20 * 60),
+            ),
         );
         let (_, job) = m
             .next_experiment(&s, &projects, TEST_NOW)
@@ -888,9 +944,9 @@ mod tests {
         started_rx
             .recv_timeout(test_wait(Duration::from_secs(10)))
             .expect("lane never measured");
-        assert!(m.drain().is_empty(), "lane reported before it finished");
+        assert!(m.drain(&s).is_empty(), "lane reported before it finished");
         m.cancel_lane();
-        let (lines, cut) = m.finish(&cancel, None);
+        let (lines, cut) = m.finish(&s, &cancel, None);
         assert!(!cut, "finish without a deadline reported a cut");
         assert_eq!(lines.len(), 1, "lines = {lines:?}");
         assert!(
@@ -931,7 +987,7 @@ mod tests {
         started_rx
             .recv_timeout(test_wait(Duration::from_secs(10)))
             .expect("lane never measured");
-        let (lines, cut) = m.finish(&ctx, Some(Instant::now() + Duration::from_millis(50)));
+        let (lines, cut) = m.finish(&s, &ctx, Some(Instant::now() + Duration::from_millis(50)));
         assert!(cut, "deadline passed without a cut: {lines:?}");
         assert!(ctx.is_cancelled(), "the cut did not cancel the context");
         assert!(!cancel.is_cancelled(), "the cut cancelled the parent");
@@ -990,6 +1046,7 @@ mod tests {
 
     #[test]
     fn a_finished_pass_is_never_stuck() {
+        let s = new_store();
         let (tx, rx) = crossbeam_channel::bounded::<(Vec<String>, BTreeMap<String, String>)>(1);
         let mut m = DaemonMaintenance {
             done: Some(rx),
@@ -998,7 +1055,7 @@ mod tests {
         };
         tx.send((vec!["landing landed: x".into()], BTreeMap::new()))
             .unwrap();
-        let lines = m.drain();
+        let lines = m.drain(&s);
         assert_eq!(lines, vec!["landing landed: x".to_string()]);
         assert!(m.done.is_none() && m.pass_started.is_none());
         assert_eq!(m.stuck(), Ok(None));
@@ -1026,7 +1083,7 @@ mod tests {
         assert!(!ctx.is_cancelled() && !cancel.is_cancelled());
         let deadline = Instant::now() + test_wait(Duration::from_secs(10));
         while m.done.is_some() && Instant::now() < deadline {
-            m.drain();
+            m.drain(&s);
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(m.done.is_none(), "the empty pass never finished");
