@@ -577,12 +577,17 @@ and where the vote left them, card jobs, jobs done with and without a change,
 landings, experiments, and the questions still waiting for the owner - so
 "is anything improving" is a table anyone can recompute, not an essay.
 
-Landing and sweeping share one serial maintenance pass outside the supervisor
-tick, so a slow verification does not freeze worker dispatch, heartbeats or
-STOP handling. That pass lands the plain branches of every project first and
-leaves experiments to a second thread, the experiment lane, which measures one
-experiment at a time; a ninety-minute measurement therefore holds no other
-landing. The lane measures the default branch, then the variant as landing
+Landing, sweeping and binary checks share a maintenance pass outside the
+supervisor tick, so a slow verification does not freeze worker dispatch,
+heartbeats or STOP handling. The pass starts per-project landing workers for
+plain branches, up to `landing.parallel` projects at once (default `4`; `1`
+keeps the old serial pass), and then continues with sweep and binary checks
+instead of waiting for another project's verify command. One worker holds a
+project's landing lock and lands that project's ready branches serially; later
+passes skip a project whose worker is still running. Experiments stay on a
+second thread, the experiment lane, which measures one experiment at a time; a
+ninety-minute measurement therefore holds no plain landing. The lane measures
+the default branch, then the variant as landing
 would merge it - the branch merged onto the current default branch, built
 from git objects alone so neither the checkout nor the branch moves (a branch
 that already contains the default branch, or one that conflicts with it, is
@@ -595,7 +600,7 @@ with the reason and `retry_after_min`. The measurement harness the lane starts
 is the same `pulse harness run` the workers use, with the same tool denials,
 so it never waits for a permission prompt. When the daemon restarts on a new
 binary it cancels the lane at once (the next daemon measures again) and gives
-the plain landings ten minutes before cancelling them too; a self-update that
+the per-project landing workers ten minutes before cancelling them too; a self-update that
 is due while the lane measures waits for the lane instead of throwing the
 measurement away, and the lane starts nothing new until that update has
 built. Cancellation reaches the measurement and verification commands; it
@@ -1075,6 +1080,10 @@ credentials, no upstream) never undoes the landing: it is a `landing` note in
 `pulse status` and the hub and a `land.held` event once per change, retried
 every tick until it goes through as `land.pushed`. `pulse land` by hand does
 the same. Workers never push, whatever the setting.
+The daemon can tend multiple projects' finished branches at once with
+`landing.parallel` (default `4`); landings within one project remain serial
+behind that project's landing lock, and `landing.parallel=1` keeps the old
+single-project maintenance-pass behaviour.
 
 ### Credentials
 

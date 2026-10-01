@@ -53,9 +53,11 @@ pub(crate) struct LaneResult {
 
 #[derive(Debug, Default)]
 pub(crate) struct DaemonMaintenance {
-    pub(crate) done: Option<crossbeam_channel::Receiver<(Vec<String>, BTreeMap<String, String>)>>,
+    pub(crate) done:
+        Option<crossbeam_channel::Receiver<(Vec<String>, Option<BTreeMap<String, String>>)>>,
     pub(crate) lines: Vec<String>,
     pub(crate) held: BTreeMap<String, String>,
+    pub(crate) landings: crate::landing_workers::LandingWorkers,
     pub(crate) last_sweep: std::sync::Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
     pub(crate) pending: BTreeMap<String, bool>,
     /// The experiment lane: one measurement at a time, cancelled through
@@ -147,11 +149,25 @@ impl DaemonMaintenance {
         if self.done.is_some() {
             return;
         }
+        let worker_lines = self.drain_landing_workers(s);
+        self.lines.extend(worker_lines);
         self.pending = landing_queue_state(s, projects.clone());
         if let Some(line) = self.start_lane(cancel, s, &projects, &actor, &now, dry) {
             self.lines.push(line);
         }
         binary.measuring = self.lane.is_some();
+        let parallel = crate::landing_workers::landing_parallel(s);
+        if !dry && parallel > 1 {
+            self.lines.extend(self.landings.start_projects(
+                cancel,
+                s,
+                &projects,
+                &actor,
+                &now,
+                &self.held,
+                &self.pass_stage,
+            ));
+        }
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.done = Some(rx);
         let cancel = cancel.with_timeout(PASS_DEADLINE);
@@ -168,16 +184,21 @@ impl DaemonMaintenance {
             .name("landing-maintenance".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let (mut lines, held) = crate::landing_hold::tend_landings_pass(
-                        &cancel,
-                        &s,
-                        projects.clone(),
-                        actor.clone(),
-                        now,
-                        held,
-                        false,
-                        Some(&stage),
-                    );
+                    let (mut lines, held) = if !dry && parallel > 1 {
+                        (Vec::new(), None)
+                    } else {
+                        let (lines, held) = crate::landing_hold::tend_landings_pass(
+                            &cancel,
+                            &s,
+                            projects.clone(),
+                            actor.clone(),
+                            now.clone(),
+                            held,
+                            false,
+                            Some(&stage),
+                        );
+                        (lines, Some(held))
+                    };
                     if !dry && !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                         set_stage(Some(&stage), "sweep");
                         lines.extend(crate::sweep::tend_sweep(
@@ -199,7 +220,7 @@ impl DaemonMaintenance {
                 .unwrap_or_else(|panic| {
                     (
                         vec![format!("daemon maintenance error: {}", panic_text(&panic))],
-                        BTreeMap::new(),
+                        None,
                     )
                 });
                 let _ = tx.send(result);
@@ -319,15 +340,18 @@ impl DaemonMaintenance {
         }
     }
     /// Go: func (m *daemonMaintenance) drain() (lines []string)
-    pub(crate) fn drain(&mut self) -> Vec<String> {
+    pub(crate) fn drain(&mut self, s: &pulse_store::Store) -> Vec<String> {
         let mut lines = std::mem::take(&mut self.lines);
+        lines.extend(self.drain_landing_workers(s));
         lines.extend(self.drain_lane());
         let Some(rx) = &self.done else {
             return lines;
         };
         if let Ok((pass, held)) = rx.try_recv() {
             self.done = None;
-            self.held = held;
+            if let Some(held) = held {
+                self.held = held;
+            }
             self.pass_started = None;
             self.pass_ctx = None;
             lines.extend(pass);
@@ -379,6 +403,7 @@ impl DaemonMaintenance {
     /// still runs is cancelled through `ctx` and awaited; the flag says so.
     pub(crate) fn finish(
         &mut self,
+        s: &pulse_store::Store,
         ctx: &pulse_bus::CancellationToken,
         deadline: Option<Instant>,
     ) -> (Vec<String>, bool) {
@@ -388,9 +413,16 @@ impl DaemonMaintenance {
             self.pass_started = None;
             self.pass_ctx = None;
             if let Some((pass, held)) = recv_by(&rx, ctx, deadline, &mut cut) {
-                self.held = held;
+                if let Some(held) = held {
+                    self.held = held;
+                }
                 lines.extend(pass);
             }
+        }
+        let (worker_results, worker_cut) = self.landings.finish(ctx, deadline);
+        cut |= worker_cut;
+        for result in worker_results {
+            self.apply_landing_worker(s, result, &mut lines);
         }
         if let Some(rx) = self.lane.take() {
             let got = recv_by(&rx, ctx, deadline, &mut cut);
@@ -401,6 +433,39 @@ impl DaemonMaintenance {
             }
         }
         (lines, cut)
+    }
+
+    pub(crate) fn landing_busy(&self) -> usize {
+        self.landings.busy()
+    }
+
+    fn drain_landing_workers(&mut self, s: &pulse_store::Store) -> Vec<String> {
+        let mut lines = Vec::new();
+        for result in self.landings.drain() {
+            self.apply_landing_worker(s, result, &mut lines);
+        }
+        lines
+    }
+
+    fn apply_landing_worker(
+        &mut self,
+        s: &pulse_store::Store,
+        result: crate::landing_workers::LandingWorkerResult,
+        lines: &mut Vec<String>,
+    ) {
+        crate::landing_workers::add_project_seconds(
+            s,
+            &result.slug,
+            result.seconds,
+            result.start_seq,
+        );
+        if let Some(note) = result.hold {
+            self.held.insert(result.slug.clone(), note);
+        } else {
+            self.held.remove(&result.slug);
+        }
+        crate::landing_hold::record_landing_holds(s, self.held.clone(), s.now());
+        lines.extend(result.lines);
     }
 }
 
@@ -605,9 +670,9 @@ mod tests {
         started_rx
             .recv_timeout(test_wait(Duration::from_secs(10)))
             .expect("lane never measured");
-        assert!(m.drain().is_empty(), "lane reported before it finished");
+        assert!(m.drain(&s).is_empty(), "lane reported before it finished");
         m.cancel_lane();
-        let (lines, cut) = m.finish(&cancel, None);
+        let (lines, cut) = m.finish(&s, &cancel, None);
         assert!(!cut, "finish without a deadline reported a cut");
         assert_eq!(lines.len(), 1, "lines = {lines:?}");
         assert!(
@@ -648,7 +713,7 @@ mod tests {
         started_rx
             .recv_timeout(test_wait(Duration::from_secs(10)))
             .expect("lane never measured");
-        let (lines, cut) = m.finish(&ctx, Some(Instant::now() + Duration::from_millis(50)));
+        let (lines, cut) = m.finish(&s, &ctx, Some(Instant::now() + Duration::from_millis(50)));
         assert!(cut, "deadline passed without a cut: {lines:?}");
         assert!(ctx.is_cancelled(), "the cut did not cancel the context");
         assert!(!cancel.is_cancelled(), "the cut cancelled the parent");
@@ -665,7 +730,8 @@ mod tests {
 
     #[test]
     fn stuck_pass_is_cancelled_once_then_restarts_the_daemon() {
-        let (_tx, rx) = crossbeam_channel::bounded::<(Vec<String>, BTreeMap<String, String>)>(1);
+        let (_tx, rx) =
+            crossbeam_channel::bounded::<(Vec<String>, Option<BTreeMap<String, String>>)>(1);
         let parent = pulse_bus::CancellationToken::new();
         let pass = parent.child();
         let mut m = DaemonMaintenance {
@@ -707,15 +773,17 @@ mod tests {
 
     #[test]
     fn a_finished_pass_is_never_stuck() {
-        let (tx, rx) = crossbeam_channel::bounded::<(Vec<String>, BTreeMap<String, String>)>(1);
+        let (tx, rx) =
+            crossbeam_channel::bounded::<(Vec<String>, Option<BTreeMap<String, String>>)>(1);
+        let s = new_store();
         let mut m = DaemonMaintenance {
             done: Some(rx),
             pass_started: Some(Instant::now() - PASS_DEADLINE - RESTART_DRAIN),
             ..DaemonMaintenance::default()
         };
-        tx.send((vec!["landing landed: x".into()], BTreeMap::new()))
+        tx.send((vec!["landing landed: x".into()], Some(BTreeMap::new())))
             .unwrap();
-        let lines = m.drain();
+        let lines = m.drain(&s);
         assert_eq!(lines, vec!["landing landed: x".to_string()]);
         assert!(m.done.is_none() && m.pass_started.is_none());
         assert_eq!(m.stuck(), Ok(None));
@@ -743,7 +811,7 @@ mod tests {
         assert!(!ctx.is_cancelled() && !cancel.is_cancelled());
         let deadline = Instant::now() + test_wait(Duration::from_secs(10));
         while m.done.is_some() && Instant::now() < deadline {
-            m.drain();
+            m.drain(&s);
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(m.done.is_none(), "the empty pass never finished");
