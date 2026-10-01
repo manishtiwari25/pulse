@@ -2,8 +2,10 @@
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
 
@@ -25,6 +27,15 @@ pub(crate) struct MeasuredFixture {
     pub(crate) request: String,
     pub(crate) scorer: Vec<String>,
     pub(crate) weight: f64,
+}
+
+struct FixtureResult {
+    index: usize,
+    score: Option<crate::api::FixtureScore>,
+    value: f64,
+    normalized_weight: f64,
+    output: String,
+    error: Option<anyhow::Error>,
 }
 
 /// Go: func pulseScorer(scorer string) bool {
@@ -177,91 +188,89 @@ pub(crate) fn measure(
     };
     let result = (|| -> Result<()> {
         let max_weight = matrix.iter().map(|f| f.weight).fold(0.0_f64, f64::max);
-        let mut total = 0.0;
-        let mut weights = 0.0;
         let len = matrix.len();
         let mut out = opts.out;
-        for (i, f) in matrix.iter().enumerate() {
-            if let Some(err) = cancel.err() {
-                return Err(err.into());
+        let requested_parallel = s.setting_int("evolve.measure_parallel");
+        let parallel = if requested_parallel <= 1 {
+            1
+        } else {
+            (requested_parallel as usize).min(len)
+        };
+        if let Some(w) = out.as_deref_mut() {
+            writeln!(w, "measuring {len} fixtures with {parallel} in parallel")?;
+        }
+        let next = AtomicUsize::new(0);
+        let failed = AtomicBool::new(false);
+        let mut results = Vec::new();
+        std::thread::scope(|scope| -> Result<()> {
+            let mut handles = Vec::new();
+            for _ in 0..parallel {
+                let store = s.clone();
+                let cancel = cancel.clone();
+                let keys = keys.clone();
+                let repo = repo.clone();
+                let commit = commit.clone();
+                let root = root.clone();
+                let cleanup_id = cleanup_id.clone();
+                let exe = exe.clone();
+                let next = &next;
+                let failed = &failed;
+                let matrix = &matrix;
+                handles.push(scope.spawn(move || {
+                    let mut worker_results = Vec::new();
+                    loop {
+                        if failed.load(Ordering::SeqCst) || cancel.err().is_some() {
+                            break;
+                        }
+                        let i = next.fetch_add(1, Ordering::SeqCst);
+                        if i >= matrix.len() {
+                            break;
+                        }
+                        let result = measure_fixture(
+                            &cancel,
+                            &store,
+                            &repo,
+                            &commit,
+                            &root,
+                            &cleanup_id,
+                            &keys,
+                            &exe,
+                            timeout,
+                            max_weight,
+                            matrix,
+                            i,
+                        );
+                        if result.error.is_some() {
+                            failed.store(true, Ordering::SeqCst);
+                        }
+                        worker_results.push(result);
+                    }
+                    worker_results
+                }));
             }
-            let label = if f.kind == "heldout" {
-                "held-out fixture"
-            } else {
-                &f.name
-            };
-            if let Some(w) = out.as_deref_mut() {
-                writeln!(w, "[{}/{}] {}: isolated measurement", i + 1, len, label)?;
+            for handle in handles {
+                results.extend(
+                    handle
+                        .join()
+                        .map_err(|_| anyhow!("measurement worker panicked"))?,
+                );
             }
-            let clone = Path::new(&root)
-                .join((i + 1).to_string())
-                .display()
-                .to_string();
-            let home = Path::new(&root)
-                .join("homes")
-                .join((i + 1).to_string())
-                .display()
-                .to_string();
-            let fixture_result = (|| -> Result<(f64, String)> {
-                crate::clones::stripped_clone(cancel, &repo, &commit, &clone, &keys)?;
-                fs::create_dir_all(&home)?;
-                crate::process::prepare_measurement_caches(&home)?;
-                crate::process::seed_provider_logins(&s.home, &home)?;
-                let argv = crate::process::measurement_argv(s, &exe, &f.request)?;
-                let mut sink = std::io::sink();
-                let job_cancel = cancel.with_timeout(timeout);
-                crate::process::run_process(
-                    &job_cancel,
-                    &clone,
-                    &crate::process::isolated_env(&home),
-                    &argv,
-                    &mut sink,
-                )
-                .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
-                crate::clones::check_clone(cancel, &clone, &keys)?;
-                let score_cancel = cancel.with_timeout(timeout);
-                score_clone(
-                    &score_cancel,
-                    &clone,
-                    &scorer_env(&home, &commit, &exe),
-                    &f.scorer,
-                )
-                .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))
-            })();
-            let clone_cleanup =
-                crate::clones::remove_measurement_clone(&cleanup_store, &cleanup_id, i + 1);
-            let (value, reason) = match (fixture_result, clone_cleanup) {
-                (Ok(value), Ok(())) => value,
-                (Err(e), Ok(())) => return Err(e),
-                (Ok(_), Err(e)) => return Err(anyhow!("measurement clone cleanup failed: {e}")),
-                (Err(e), Err(clean)) => {
-                    return Err(anyhow!("{e}; measurement clone cleanup failed: {clean}"));
-                }
-            };
-            scores.fixtures.push(crate::api::FixtureScore {
-                name: f.name.clone(),
-                kind: f.kind.clone(),
-                score: value,
-                weight: f.weight,
-                note: String::new(),
-            });
-            total += value * (f.weight / max_weight);
-            weights += f.weight / max_weight;
+            Ok(())
+        })?;
+        results.sort_by_key(|r| r.index);
+        let mut total = 0.0;
+        let mut weights = 0.0;
+        for result in results {
             if let Some(w) = out.as_deref_mut() {
-                if !reason.is_empty() && f.kind != "heldout" && !pulse_store::secret_shaped(&reason)
-                {
-                    writeln!(
-                        w,
-                        "[{}/{}] {}: {:.4} ({})",
-                        i + 1,
-                        len,
-                        label,
-                        value,
-                        reason
-                    )?;
-                } else {
-                    writeln!(w, "[{}/{}] {}: {:.4}", i + 1, len, label, value)?;
-                }
+                write!(w, "{}", result.output)?;
+            }
+            if let Some(err) = result.error {
+                return Err(err);
+            }
+            if let Some(score) = result.score {
+                total += result.value * result.normalized_weight;
+                weights += result.normalized_weight;
+                scores.fixtures.push(score);
             }
         }
         scores.total = total / weights;
@@ -273,6 +282,134 @@ pub(crate) fn measure(
         (Err(e), Ok(())) => Err(e),
         (Ok(()), Err(e)) => Err(anyhow!("measurement cleanup failed: {e}")),
         (Err(e), Err(clean)) => Err(anyhow!("{e}; measurement cleanup failed: {clean}")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn measure_fixture(
+    cancel: &pulse_bus::CancellationToken,
+    s: &pulse_store::Store,
+    repo: &str,
+    commit: &str,
+    root: &str,
+    cleanup_id: &str,
+    keys: &[String],
+    exe: &str,
+    timeout: Duration,
+    max_weight: f64,
+    matrix: &[MeasuredFixture],
+    i: usize,
+) -> FixtureResult {
+    let f = &matrix[i];
+    let len = matrix.len();
+    let label = if f.kind == "heldout" {
+        "held-out fixture"
+    } else {
+        &f.name
+    };
+    let mut output = String::new();
+    let _ = writeln!(
+        &mut output,
+        "[{}/{}] {}: isolated measurement",
+        i + 1,
+        len,
+        label
+    );
+    let clone = Path::new(root)
+        .join((i + 1).to_string())
+        .display()
+        .to_string();
+    let home = Path::new(root)
+        .join("homes")
+        .join((i + 1).to_string())
+        .display()
+        .to_string();
+    let fixture_result = (|| -> Result<(f64, String)> {
+        crate::clones::stripped_clone(cancel, repo, commit, &clone, keys)?;
+        fs::create_dir_all(&home)?;
+        crate::process::prepare_measurement_caches(&home)?;
+        crate::process::seed_provider_logins(&s.home, &home)?;
+        let argv = crate::process::measurement_argv(s, exe, &f.request)?;
+        let mut sink = std::io::sink();
+        let job_cancel = cancel.with_timeout(timeout);
+        crate::process::run_process(
+            &job_cancel,
+            &clone,
+            &crate::process::isolated_env(&home),
+            &argv,
+            &mut sink,
+        )
+        .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
+        crate::clones::check_clone(cancel, &clone, keys)?;
+        let score_cancel = cancel.with_timeout(timeout);
+        score_clone(
+            &score_cancel,
+            &clone,
+            &scorer_env(&home, commit, exe),
+            &f.scorer,
+        )
+        .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))
+    })();
+    let clone_cleanup = crate::clones::remove_measurement_clone(s, cleanup_id, i + 1);
+    let (value, reason) = match (fixture_result, clone_cleanup) {
+        (Ok(value), Ok(())) => value,
+        (Err(e), Ok(())) => {
+            return FixtureResult {
+                index: i,
+                score: None,
+                value: 0.0,
+                normalized_weight: 0.0,
+                output,
+                error: Some(e),
+            };
+        }
+        (Ok(_), Err(e)) => {
+            return FixtureResult {
+                index: i,
+                score: None,
+                value: 0.0,
+                normalized_weight: 0.0,
+                output,
+                error: Some(anyhow!("measurement clone cleanup failed: {e}")),
+            };
+        }
+        (Err(e), Err(clean)) => {
+            return FixtureResult {
+                index: i,
+                score: None,
+                value: 0.0,
+                normalized_weight: 0.0,
+                output,
+                error: Some(anyhow!("{e}; measurement clone cleanup failed: {clean}")),
+            };
+        }
+    };
+    if !reason.is_empty() && f.kind != "heldout" && !pulse_store::secret_shaped(&reason) {
+        let _ = writeln!(
+            &mut output,
+            "[{}/{}] {}: {:.4} ({})",
+            i + 1,
+            len,
+            label,
+            value,
+            reason
+        );
+    } else {
+        let _ = writeln!(&mut output, "[{}/{}] {}: {:.4}", i + 1, len, label, value);
+    }
+    FixtureResult {
+        index: i,
+        score: Some(crate::api::FixtureScore {
+            name: f.name.clone(),
+            kind: f.kind.clone(),
+            score: value,
+            weight: f.weight,
+            note: String::new(),
+        }),
+        value,
+        normalized_weight: f.weight / max_weight,
+        output,
+        error: None,
     }
 }
 
@@ -607,6 +744,8 @@ test ! -e target
         let _guard = e3_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
+        s.set_setting("human", "evolve.measure_parallel", "1")
+            .unwrap();
         fixture(&s, "demo", "F01", "printf 1", 1.0);
         fixture(&s, "demo", "F02", "printf 1", 1.0);
         fake_harness(
@@ -631,6 +770,63 @@ esac
         )
         .unwrap();
         assert_eq!(scores.fixtures.len(), 2);
+        assert_no_clones(&s);
+    }
+
+    #[test]
+    fn measure_parallel_overlaps_and_keeps_output_order() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        s.set_setting("human", "evolve.measure_parallel", "4")
+            .unwrap();
+        for i in 1..=4 {
+            fixture(&s, "demo", &format!("F0{i}"), "printf 1", 1.0);
+        }
+        let marker = crate::test_helpers::temp_path().join("overlap");
+        fake_harness(
+            &s,
+            &format!(
+                r#"
+root=$(dirname "$PWD")
+running="$root/running"
+mkdir -p "$running"
+touch "$running/$(basename "$PWD")"
+count=$(ls "$running" | wc -l | tr -d ' ')
+if [ "$count" -ge 2 ]; then touch '{}'; fi
+sleep 1
+rm -f "$running/$(basename "$PWD")"
+"#,
+                marker.display()
+            ),
+        );
+        let mut out = Vec::new();
+        let cancel = pulse_bus::CancellationToken::new();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions {
+                out: Some(&mut out),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(scores.fixtures.len(), 4);
+        assert!(marker.exists(), "fixtures did not overlap");
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("measuring 4 fixtures with 4 in parallel"));
+        let mut previous = 0;
+        for name in ["F01", "F02", "F03", "F04"] {
+            let pos = out
+                .find(name)
+                .unwrap_or_else(|| panic!("missing {name}: {out}"));
+            assert!(pos >= previous, "output out of order: {out}");
+            previous = pos;
+        }
         assert_no_clones(&s);
     }
 
