@@ -156,7 +156,10 @@ Everything else happens in the console:
   will plan it or which gate holds it back - addressed to the owner, no
   `Signal:` evidence, owner-only paths, or a job already carrying it. Blocked
   jobs never hide the rest of the ballot: the planner skips a card whose job is
-  queued, leased or blocked and takes the next plannable one.
+  queued, leased or blocked and takes the next plannable one. Near-identical
+  ballot cards with the same normalized files and summary appear once, on the
+  oldest card, with the newer ids shown as `dup of <id>` lines so voters put
+  quorum on one thread.
 - **Chat** - a per-project conversation with the lead (`msg`), optionally
   pinned to a task.
 - **Proposals** - suggestions that reached the vote threshold and constitutional
@@ -432,7 +435,14 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   `operating-layer cap: N of M today; product cards go first`. Only `needs
   votes` cards appear on ballots; `pulse ballot`, worker briefs, `pulse queue`
   and planner ballot jobs use that same ballot, ordered closest to quorum then
-  oldest, capped by `lead.ballot_cap` (default 10). A worker votes only with
+  oldest, capped by `lead.ballot_cap` (default 10). The board hygiene pass also
+  retires open suggestions older than `board.stale_days` (default 7) when their
+  non-empty `files` list names only paths absent at the project's HEAD; it posts
+  a daemon result with `resolution: dropped` and logs
+  `retired N stale suggestion(s) for <project>`. Near-identical open cards
+  with the same sorted normalized `files` list and normalized summary are
+  grouped before the brief is written: the oldest card stays voteable and the
+  newer ids trail it as `dup of <oldest>`, not as separate ballot entries. A worker votes only with
   `VOTE:` lines for cards in its Ballot section; a twin vote from the same
   agent is skipped with `vote skipped: <id>: already voted`. When
   `evolve.loop=1` and the project is at Level D, the evolution loop gets first
@@ -670,6 +680,7 @@ record, read with `pulse record show WF-evolve`.
 | `harness.format_retries` | `1` | Prose-only native-harness replies corrected without consuming `harness.max_steps` before later format errors count normally. |
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
+| `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
 
 These are defaults, not the owner's effective values. Read those with

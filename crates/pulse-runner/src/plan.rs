@@ -196,6 +196,55 @@ pub(crate) fn ballot_due(
     pulse_tally::limit_ballot_suggestions(&out, setting_int(s, "quorum"), ballot_cap(s) as usize)
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BallotListing {
+    pub(crate) cards: Vec<pulse_tally::Suggestion>,
+    pub(crate) lines: Vec<String>,
+}
+
+pub(crate) fn ballot_listing(
+    s: &pulse_store::Store,
+    cards: Vec<pulse_tally::Suggestion>,
+) -> BallotListing {
+    let Ok(conn) = s.conn() else {
+        return BallotListing {
+            cards,
+            lines: Vec::new(),
+        };
+    };
+    let mut groups: BTreeMap<(String, String), Vec<pulse_tally::Suggestion>> = BTreeMap::new();
+    for card in cards {
+        let post = crate::board::post_row(&conn, card.id.clone());
+        let key = crate::hygiene::ballot_dedupe_key(&post.str("files"), &card.summary);
+        groups.entry(key).or_default().push(card);
+    }
+    let mut keepers = Vec::new();
+    let mut dup_lines = Vec::new();
+    for (_key, mut group) in groups {
+        group.sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.id.cmp(&b.id)));
+        let keeper = group.remove(0);
+        if !group.is_empty() {
+            let dups = group
+                .iter()
+                .map(|c| format!("`{}`", c.id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            dup_lines.push(format!("  dup of `{}`: {dups}", keeper.id));
+        }
+        keepers.push(keeper);
+    }
+    keepers.sort_by(|a, b| {
+        b.voters
+            .cmp(&a.voters)
+            .then_with(|| a.date.cmp(&b.date))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    BallotListing {
+        cards: keepers,
+        lines: dup_lines,
+    }
+}
+
 /// Go: func canAnyAgentVoteOnSuggestion(s *store.Store, sg tally.Suggestion) bool
 pub(crate) fn can_any_agent_vote_on_suggestion(
     s: &pulse_store::Store,
@@ -494,7 +543,9 @@ pub(crate) fn plan_jobs(
     if created.is_empty() {
         let cards = ballot_due(s, slug.clone(), now.clone(), suggestions);
         if !cards.is_empty() {
-            let listed = cards
+            let listing = ballot_listing(s, cards);
+            let mut lines = listing
+                .cards
                 .iter()
                 .map(|c| {
                     format!(
@@ -506,11 +557,12 @@ pub(crate) fn plan_jobs(
                         trunc(&c.summary, 160)
                     )
                 })
-                .collect::<Vec<_>>()
-                .join("\n");
+                .collect::<Vec<_>>();
+            lines.extend(listing.lines.clone());
+            let listed = lines.join("\n");
             let brief = format!(
                 "{} suggestion(s) on this project's board have waited more than {} hours without quorum deciding, and nothing else is queued. Read each listed card in full (its body is in the Ballot section; check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, down when it is a guess, a duplicate (vote on the older same File+Variable), owner-only, already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week. Never vote on your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n{}",
-                cards.len(),
+                listing.cards.len(),
                 ballot_hours(s),
                 listed
             );
@@ -520,7 +572,7 @@ pub(crate) fn plan_jobs(
                 "ballot".into(),
                 format!(
                     "Vote the ballot: {} card(s) below quorum for {}",
-                    cards.len(),
+                    listing.cards.len(),
                     slug
                 ),
                 brief,
@@ -1364,6 +1416,133 @@ mod tests {
         assert!(
             idx2.is_none(),
             "cap exceeded: card2 should not be in brief:\n{brief}"
+        );
+    }
+
+    #[test]
+    fn ballot_listing_deduplicates_near_identical_cards() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        join(&s, "boris");
+        suppress_planner_reflect(&s);
+        let old = crate::util::plus_minutes(TEST_NOW, -90.0);
+        let first = plan_handoff(
+            &s,
+            &old,
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "docs".into(),
+                thread: "login-copy-old".into(),
+                summary: "Fix login copy!".into(),
+                body: "Signal: README.md".into(),
+                files: "README.md".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        );
+        let second = plan_handoff(
+            &s,
+            &crate::util::plus_minutes(&old, 1.0),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "docs".into(),
+                thread: "login-copy-new".into(),
+                summary: "fix login copy".into(),
+                body: "Signal: README.md".into(),
+                files: "README.md".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        );
+        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        assert_eq!(jobs.len(), 1, "jobs: {jobs:?}");
+        let brief = jobs[0].str("brief");
+        assert!(
+            brief.contains(&first.str("id")),
+            "brief missing oldest:
+{brief}"
+        );
+        assert!(
+            brief.contains(&format!("dup of `{}`", first.str("id"))),
+            "brief missing dup line:
+{brief}"
+        );
+        assert!(
+            brief.contains(&second.str("id")),
+            "brief missing duplicate id:
+{brief}"
+        );
+        assert_eq!(
+            brief.matches("- `").count(),
+            1,
+            "duplicate listed as a card:
+{brief}"
+        );
+    }
+
+    #[test]
+    fn ballot_listing_keeps_same_summary_with_different_files_separate() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        join(&s, "boris");
+        suppress_planner_reflect(&s);
+        let old = crate::util::plus_minutes(TEST_NOW, -90.0);
+        let first = plan_handoff(
+            &s,
+            &old,
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "docs".into(),
+                thread: "readme-copy".into(),
+                summary: "Fix login copy".into(),
+                body: "Signal: README.md".into(),
+                files: "README.md".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        );
+        let second = plan_handoff(
+            &s,
+            &crate::util::plus_minutes(&old, 1.0),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "docs".into(),
+                thread: "other-copy".into(),
+                summary: "Fix login copy".into(),
+                body: "Signal: README.md".into(),
+                files: "docs/other.md".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        );
+        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        assert_eq!(jobs.len(), 1, "jobs: {jobs:?}");
+        let brief = jobs[0].str("brief");
+        assert!(
+            brief.contains(&first.str("id")) && brief.contains(&second.str("id")),
+            "brief missing cards:
+{brief}"
+        );
+        assert_eq!(
+            brief.matches("- `").count(),
+            2,
+            "different files were deduped:
+{brief}"
+        );
+        assert!(
+            !brief.contains("dup of"),
+            "unexpected dup line:
+{brief}"
         );
     }
 

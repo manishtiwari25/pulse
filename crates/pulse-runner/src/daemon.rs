@@ -142,17 +142,6 @@ pub(crate) fn hands_wanted(
         return Row::default();
     }
     let slug = brain.str("slug");
-    let day = format!("{}%", &now[..10.min(now.len())]);
-    if let Ok(conn) = s.conn() {
-        let exists = crate::util::must_one(
-            &conn,
-            "SELECT 1 AS x FROM posts WHERE project = ? AND kind = 'finding' AND area = 'runner' AND thread = 'hands-wanted' AND date LIKE ?",
-            &[&slug, &day],
-        );
-        if !exists.0.is_empty() {
-            return Row::default();
-        }
-    }
     let summary = crate::util::trunc(
         &format!(
             "hands wanted: {queued} job(s) waited {minutes} min with all {slots} slot(s) busy; pairing another machine (pulse pair) or raising workers/parallel_per_project would shorten the queue"
@@ -162,19 +151,17 @@ pub(crate) fn hands_wanted(
     let body = format!(
         "The daemon on this machine found {queued} queued job(s) waiting for {minutes} minutes while every executor slot ({slots}) was busy ({now}). More hands would shorten the queue: pair another machine with `pulse pair` (pulse record show WF-executors), raise `workers` on a machine that has the capacity, or raise `parallel_per_project` when the wait is on one project. The human owns machines and money; this post is a measurement, not a request to act.\n"
     );
-    let Ok(post) = crate::board::create_post(
+    let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
         s,
-        now.clone(),
-        crate::board::PostOpts {
-            kind: "finding".into(),
+        crate::hygiene::DaemonQuestionAsk {
             project: slug.clone(),
+            ask_kind: "hands".into(),
             area: "runner".into(),
             thread: "hands-wanted".into(),
             summary,
             body,
-            agent: crate::board::actor_agent(s, actor.clone()),
-            date: now.clone(),
-            ..Default::default()
+            actor: actor.clone(),
+            now: now.clone(),
         },
     ) else {
         return Row::default();

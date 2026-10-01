@@ -27,6 +27,7 @@ pub mod gcp;
 pub mod hands;
 pub mod heartbeat;
 pub mod heldout;
+pub mod hygiene;
 pub mod idle;
 pub mod jobs;
 pub mod keys;
