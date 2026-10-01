@@ -17,6 +17,17 @@ pub const EVOLVE_DDL: &[&str] = &[
   PRIMARY KEY (id, project)
 )"####,
     r####"CREATE INDEX IF NOT EXISTS evolution_archive_project_at ON evolution_archive (project, at)"####,
+    r####"CREATE TABLE IF NOT EXISTS evolution_baselines (
+  project TEXT NOT NULL,
+  "commit" TEXT NOT NULL,
+  fixture_hash TEXT NOT NULL,
+  score REAL NOT NULL,
+  fixtures_json TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  PRIMARY KEY (project, "commit", fixture_hash)
+)"####,
+    r####"CREATE INDEX IF NOT EXISTS evolution_baselines_project_at ON evolution_baselines (project, at)"####,
     r####"CREATE TRIGGER IF NOT EXISTS evolution_archive_no_update BEFORE UPDATE ON evolution_archive
 BEGIN SELECT RAISE(ABORT, 'archive rows are immutable'); END"####,
     r####"CREATE TRIGGER IF NOT EXISTS evolution_archive_no_delete BEFORE DELETE ON evolution_archive

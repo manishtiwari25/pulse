@@ -513,9 +513,13 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   earlier (`pulse evolve fixture seed` for the fixtures alone); `pulse evolve
   fixture list|disable` manages fixtures. The baseline is the daemon's: once
   the records and at least one enabled fixture exist and `loop: on`, it plans
-  a `baseline` job that measures the default branch and archives the score
-  (a failure posts a finding and is retried after 24 hours; `pulse job add
-  --kind baseline` queues it by hand). The job's run log lists every public
+  a `baseline` job that measures the default branch, archives the score and
+  refreshes the experiment-lane baseline cache for that default-branch commit
+  and fixture hash (a failure posts a finding and is retried after 24 hours;
+  `pulse job add --kind baseline` queues it by hand). The cache key is the
+  SHA-256 of the enabled fixture definitions, the held-out fixture marker and
+  harness-affecting settings; `evolve.baseline_ttl_hours` defaults to `24`,
+  and `0` means cached baselines never expire. The job's run log lists every public
   fixture's score and, for a 0, the scorer's one-line reason. The two private
   held-out fixtures - the proof that the loop is not grading itself - are the
   daemon's too by default (`evolve.heldout auto`): it creates
@@ -574,7 +578,10 @@ tick, so a slow verification does not freeze worker dispatch, heartbeats or
 STOP handling. That pass lands the plain branches of every project first and
 leaves experiments to a second thread, the experiment lane, which measures one
 experiment at a time; a ninety-minute measurement therefore holds no other
-landing. The lane measures the default branch, then the variant as landing
+landing. The lane reuses a cached baseline when the default-branch commit,
+fixture hash and TTL still match, logging `baseline for <commit7> reused from
+<at> (score <x>)`; archive notes say `baseline: reused <at>` or
+`baseline: measured`. It measures the default branch on a cache miss, then the variant as landing
 would merge it - the branch merged onto the current default branch, built
 from git objects alone so neither the checkout nor the branch moves (a branch
 that already contains the default branch, or one that conflicts with it, is

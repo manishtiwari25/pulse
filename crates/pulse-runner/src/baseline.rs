@@ -242,6 +242,22 @@ pub(crate) fn run_baseline(
             }
             Ok(sc) => {
                 scores = Some(sc.clone());
+                let commit = crate::experiment::default_commit(&project.str("path"), &def);
+                if let Ok(fixture_hash) = pulse_evolve::baseline_fixture_hash(s, &slug)
+                    && let Err(err) = pulse_evolve::upsert_baseline(
+                        s,
+                        &slug,
+                        &commit,
+                        &fixture_hash,
+                        &sc,
+                        &run_id,
+                    )
+                {
+                    log.add(format!(
+                        "baseline cache skipped: {}",
+                        crate::run::err_message(&err)
+                    ));
+                }
                 match pulse_evolve::archive_row(
                     s,
                     pulse_evolve::ArchiveRow {

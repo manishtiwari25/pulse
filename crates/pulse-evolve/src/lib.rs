@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod archive;
+pub mod baseline_cache;
 pub mod card;
 pub mod card_job;
 pub mod clones;
@@ -36,6 +37,7 @@ pub mod usage;
 
 pub use api::*;
 pub use archive::*;
+pub use baseline_cache::*;
 pub use card::*;
 pub use card_job::*;
 pub use clones::*;

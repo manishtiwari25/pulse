@@ -110,6 +110,7 @@ pub(crate) fn measured_variant(root: &str, def: &str, branch: &str) -> (String, 
     if crate::util::git_timeout(root, short, &["merge-base", "--is-ancestor", def, branch]).ok() {
         return (branch.to_string(), String::new());
     }
+
     let tree = crate::util::git_timeout(
         root,
         Duration::from_secs(120),
@@ -156,6 +157,19 @@ pub(crate) fn measured_variant(root: &str, def: &str, branch: &str) -> (String, 
         sha.clone(),
         format!("measured as {branch} merged onto {def} ({})", &sha[..12]),
     )
+}
+
+pub(crate) fn default_commit(root: &str, def: &str) -> String {
+    let rev = crate::util::git_timeout(
+        root,
+        Duration::from_secs(30),
+        &["rev-parse", "--verify", &format!("{def}^{{commit}}")],
+    );
+    if rev.ok() {
+        rev.stdout.trim().to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Go: func landExperiment(s *store.Store, project row, job row, actor, now string, verify bool) (state, note string)
@@ -398,27 +412,81 @@ pub(crate) fn land_experiment_context(
             format!("{branch} not landed: measurement unavailable ({what})"),
         )
     };
-    let baseline = match pulse_evolve::measure(
-        &ctx,
-        s,
-        &slug,
-        &root,
-        &def,
-        pulse_evolve::MeasureOptions::default(),
-    ) {
+    let commit = default_commit(&root, &def);
+    let fixture_hash = match pulse_evolve::baseline_fixture_hash(s, &slug) {
         Ok(v) => v,
-        Err(e) if e.to_string() == pulse_evolve::err_not_implemented().to_string() => {
-            return unavailable("evolve.Measure is not implemented".into(), e);
-        }
         Err(e) => {
             return (
                 "deferred".into(),
                 format!(
-                    "{branch} not landed: measuring {def} failed: {}",
+                    "{branch} not landed: baseline cache key failed: {}",
                     crate::run::err_message(&e)
                 ),
             );
         }
+    };
+    let mut baseline_cache_note = "baseline: measured".to_string();
+    let cached = match pulse_evolve::cached_baseline(s, &slug, &commit, &fixture_hash) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "deferred".into(),
+                format!(
+                    "{branch} not landed: reading baseline cache failed: {}",
+                    crate::run::err_message(&e)
+                ),
+            );
+        }
+    };
+    let baseline = if let Some(cached) = cached {
+        let short = commit.get(..7).unwrap_or(&commit);
+        baseline_cache_note = format!("baseline: reused {}", cached.at);
+        if let Ok(conn) = s.conn() {
+            crate::util::event_at(
+                &conn,
+                &now,
+                &actor,
+                "evolution.baseline_cache",
+                &commit,
+                serde_json::json!({"project": slug, "commit": commit, "score": cached.score, "at": cached.at, "line": format!("baseline for {short} reused from {} (score {:.3})", cached.at, cached.score)}),
+            );
+        }
+        cached.scores
+    } else {
+        let baseline = match pulse_evolve::measure(
+            &ctx,
+            s,
+            &slug,
+            &root,
+            &def,
+            pulse_evolve::MeasureOptions::default(),
+        ) {
+            Ok(v) => v,
+            Err(e) if e.to_string() == pulse_evolve::err_not_implemented().to_string() => {
+                return unavailable("evolve.Measure is not implemented".into(), e);
+            }
+            Err(e) => {
+                return (
+                    "deferred".into(),
+                    format!(
+                        "{branch} not landed: measuring {def} failed: {}",
+                        crate::run::err_message(&e)
+                    ),
+                );
+            }
+        };
+        if let Err(e) =
+            pulse_evolve::upsert_baseline(s, &slug, &commit, &fixture_hash, &baseline, &run_id)
+        {
+            return (
+                "deferred".into(),
+                format!(
+                    "{branch} not landed: writing baseline cache failed: {}",
+                    crate::run::err_message(&e)
+                ),
+            );
+        }
+        baseline
     };
     if let why = crate::landing_context::landing_stop(parent, s, root.clone())
         && !why.is_empty()
@@ -449,6 +517,7 @@ pub(crate) fn land_experiment_context(
         }
     };
     let (keep, reason) = pulse_evolve::keep(Some(&baseline), Some(&variant), tol);
+    let archive_note = format!("{baseline_cache_note}; {reason}");
     let sandbox = if variant.sandbox.is_empty() {
         baseline.sandbox.clone()
     } else {
@@ -467,7 +536,7 @@ pub(crate) fn land_experiment_context(
             kept: keep,
             run_id: run_id.clone(),
             sandbox,
-            note: reason.clone(),
+            note: archive_note.clone(),
         },
     ) {
         Ok(v) => v,
@@ -489,7 +558,7 @@ pub(crate) fn land_experiment_context(
         score_line(&baseline),
         score_line(&variant),
         tol,
-        reason
+        archive_note
     );
     if !merged_note.is_empty() {
         measured.push_str("; ");
@@ -942,6 +1011,146 @@ mod tests {
         assert!(
             !exists && why.is_empty(),
             "finalized discard retained the branch: {exists}, {why}"
+        );
+    }
+
+    fn finished_experiment_job(
+        s: &pulse_store::Store,
+        root: &str,
+        source: String,
+        branch: &str,
+        body: &str,
+    ) -> crate::util::Row {
+        run(root, &["git", "switch", "-q", "-c", branch]);
+        std::fs::write(std::path::Path::new(root).join("README.md"), body).unwrap();
+        run(root, &["git", "commit", "-q", "-am", branch]);
+        run(root, &["git", "switch", "-q", "main"]);
+        let (job, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "experiment".into(),
+            "Experiment".into(),
+            "Suggestion: cached\nHypothesis: cache reuse\n".into(),
+            1,
+            0,
+            source,
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        exec1(
+            s,
+            "UPDATE jobs SET status = 'done', branch = ?, finished_at = ? WHERE id = ?",
+            &[&branch, &TEST_NOW, &job.str("id")],
+        );
+        exec1(
+            s,
+            "INSERT INTO runs (id, job_id, project, agent, started_at, status) VALUES (?, ?, 'proj', 'proposer', ?, 'done')",
+            &[&format!("run-{}", job.str("id")), &job.str("id"), &TEST_NOW],
+        );
+        job_row(s, &job.str("id"))
+    }
+
+    #[test]
+    fn experiment_reuses_cached_baseline_for_same_default_commit() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, calls) = measured_keep_fixture();
+        let seen = calls.clone();
+        let _old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, _opts| {
+                *seen.lock().unwrap() += 1;
+                let score = if r#ref == "main" { 0.8 } else { 0.7 };
+                Ok(pulse_evolve::Scores {
+                    project: slug.into(),
+                    total: score,
+                    ..Default::default()
+                })
+            }));
+        let (state, note) = land_experiment(
+            &s,
+            project.clone(),
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "dropped", "first discard: {note}");
+        assert_eq!(*calls.lock().unwrap(), 2);
+        let first_note: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT note FROM evolution_archive WHERE project = 'proj' ORDER BY at DESC, id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            first_note.contains("baseline: measured"),
+            "first archive note: {first_note}"
+        );
+
+        let second = finished_experiment_job(
+            &s,
+            &root,
+            job.str("source"),
+            "pulse/cache-second",
+            "# cached variant\n",
+        );
+        let (state, note) = land_experiment(
+            &s,
+            project.clone(),
+            second.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "dropped", "second discard: {note}");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            3,
+            "second experiment should measure only the variant"
+        );
+        let second_note: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT note FROM evolution_archive WHERE branch = 'pulse/cache-second'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            second_note.contains("baseline: reused"),
+            "second archive note: {second_note}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'evolution.baseline_cache'",
+                &[],
+            ),
+            1
+        );
+
+        std::fs::write(std::path::Path::new(&root).join("new-main.txt"), "new\n").unwrap();
+        run(&root, &["git", "add", "new-main.txt"]);
+        run(&root, &["git", "commit", "-q", "-m", "move main"]);
+        let third = finished_experiment_job(
+            &s,
+            &root,
+            second.str("source"),
+            "pulse/cache-third",
+            "# cache miss variant\n",
+        );
+        let (state, note) =
+            land_experiment(&s, project, third, "daemon".into(), TEST_NOW.into(), true);
+        assert_eq!(state, "dropped", "third discard: {note}");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            5,
+            "new default commit should miss the baseline cache"
         );
     }
 }
