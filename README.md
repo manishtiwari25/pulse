@@ -525,7 +525,11 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   evolve.heldout owner` hands the step back to you: `pulse evolve setup DIR`
   or the console's Held-out fixtures dialog, which also work under `auto` and
   are never overwritten. Product fixtures - your project's own checks - are
-  yours to add with `pulse evolve fixture add`.
+  yours to add with `pulse evolve fixture add`. Every scorer runs against a
+  frozen clone: a symlink or hardlink that leaves the clone, a special file,
+  or a tree that differs after the scorer ran fails the measurement as a
+  violation; build output the harness left behind, including cargo's
+  hardlinked `target/`, is fine as long as every link stays inside the clone.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 
