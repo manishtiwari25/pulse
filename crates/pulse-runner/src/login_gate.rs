@@ -128,23 +128,6 @@ pub(crate) fn login_wanted(
         return crate::util::Row::default();
     }
     let slug = brain.str("slug");
-    let day = format!("{}%", &now[..10.min(now.len())]);
-    let exists = s
-        .conn()
-        .ok()
-        .map(|conn| {
-            !crate::util::must_one(
-                &conn,
-                "SELECT 1 AS x FROM posts WHERE project = ? AND kind = 'finding' AND area = 'runner' AND thread = 'login-wanted' AND date LIKE ?",
-                &[&slug, &day],
-            )
-            .0
-            .is_empty()
-        })
-        .unwrap_or(false);
-    if exists {
-        return crate::util::Row::default();
-    }
     let summary = crate::util::trunc(
         &format!("sign-in wanted: {queued} job(s) wait; {gate}"),
         230,
@@ -155,19 +138,17 @@ here: {gate}. Nothing runs on this machine until someone signs in - Settings -> 
 console, or `pulse harness login` in a terminal; `pulse settings set harness copilot-cli` keeps the legacy copilot \
 CLI path meanwhile. Remote executors keep working. This post is a measurement, not a request to act ({now}).\n"
     );
-    let Ok(post) = crate::board::create_post(
+    let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
         s,
-        now.clone(),
-        crate::board::PostOpts {
-            kind: "finding".into(),
+        crate::hygiene::DaemonQuestionAsk {
             project: slug.clone(),
+            ask_kind: "login".into(),
             area: "runner".into(),
             thread: "login-wanted".into(),
             summary,
             body,
-            agent: crate::board::actor_agent(s, actor.clone()),
-            date: now.clone(),
-            ..Default::default()
+            actor: actor.clone(),
+            now: now.clone(),
         },
     ) else {
         return crate::util::Row::default();
@@ -364,7 +345,7 @@ mod tests {
         crate::test_helpers::new_bare_repo(&s);
         let brain = crate::board::project_by_slug(&*s.conn().unwrap(), "proj".into());
         let post = login_wanted(&s, brain, 1, "workers on this machine wait for a Gate Fake login: sign in with GitHub (Settings -> Harness)".into(), crate::test_helpers::TEST_NOW.into(), "daemon".into());
-        assert_eq!(post.str("kind"), "finding");
+        assert_eq!(post.str("kind"), "question");
     }
     #[test]
     fn daemon_idles_behind_login_gate_and_posts_once() {
@@ -427,7 +408,7 @@ mod tests {
         );
         let posts = crate::util::must_rows(
             &*s.conn().unwrap(),
-            "SELECT * FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'login-wanted'",
+            "SELECT * FROM posts WHERE kind = 'question' AND area = 'runner' AND thread = 'login-wanted'",
             &[],
         );
         assert!(
