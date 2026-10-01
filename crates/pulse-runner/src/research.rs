@@ -63,13 +63,29 @@ pub(crate) struct ResearchFocus {
     pub card: &'static str,
 }
 
+/// True while fewer than half the local worker slots hold a lease, so research
+/// can come more often without taking a slot from decided work.
+pub(crate) fn fleet_idle(s: &pulse_store::Store) -> bool {
+    let workers = setting_int(s, "workers").max(1);
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    let leased = must_one(
+        &conn,
+        "SELECT COUNT(*) AS n FROM jobs WHERE status = 'leased'",
+        &[],
+    )
+    .int("n");
+    leased * 2 < workers
+}
+
 /// Go: func researchDue(s *store.Store, slug, now string) (researchFocus, string, bool)
 pub(crate) fn research_due(
     s: &pulse_store::Store,
     slug: String,
     now: String,
 ) -> (ResearchFocus, String, bool) {
-    let minutes = setting_int(s, "lead.research_minutes");
+    let mut minutes = setting_int(s, "lead.research_minutes");
     if minutes <= 0 {
         return (ResearchFocus::default(), "research off".into(), false);
     }
@@ -77,6 +93,12 @@ pub(crate) fn research_due(
         Ok(c) => c,
         Err(_) => return (ResearchFocus::default(), "research off".into(), false),
     };
+    let factor = setting_int(s, "lead.research_idle_factor").max(1);
+    let idle = factor > 1 && fleet_idle(s);
+    let suffix = if idle { " (fleet idle)" } else { "" };
+    if idle {
+        minutes = (minutes / factor).max(10);
+    }
     if !must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased', 'blocked') LIMIT 1", &[&slug]).0.is_empty() {
         return (ResearchFocus::default(), "a job is open".into(), false);
     }
@@ -87,23 +109,26 @@ pub(crate) fn research_due(
         let ago = (crate::util::must_iso(&now) - crate::util::must_iso(&last)).num_minutes();
         return (
             ResearchFocus::default(),
-            format!("last research {ago}m ago, next after {minutes}m"),
+            format!("last research {ago}m ago, next after {minutes}m{suffix}"),
             false,
         );
     }
     if !must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? AND kind NOT IN ('reflect', 'ballot') LIMIT 1", &[&slug, &since]).0.is_empty() {
-        return (ResearchFocus::default(), format!("a job was created in the last {minutes}m"), false);
+        return (ResearchFocus::default(), format!("a job was created in the last {minutes}m{suffix}"), false);
     }
     let mut per_day = setting_int(s, "lead.research_per_day");
     if per_day < 1 {
         per_day = 1;
+    }
+    if idle {
+        per_day *= factor;
     }
     let day = format!("{}%", &now[..10]);
     let today = must_one(&conn, "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND kind = 'reflect' AND source LIKE ? AND created_at LIKE ?", &[&slug, &format!("{prefix}%"), &day]).int("n");
     if today >= per_day {
         return (
             ResearchFocus::default(),
-            format!("{today} of {per_day} research jobs today"),
+            format!("{today} of {per_day} research jobs today{suffix}"),
             false,
         );
     }

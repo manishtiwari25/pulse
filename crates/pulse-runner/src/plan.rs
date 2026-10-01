@@ -824,6 +824,7 @@ mod tests {
 
     fn research_on(s: &pulse_store::Store, minutes: &str) {
         set_setting(s, "lead.research_minutes", minutes);
+        set_setting(s, "lead.research_idle_factor", "1");
     }
 
     fn age_jobs(s: &pulse_store::Store, created_at: &str) {
@@ -1216,6 +1217,118 @@ mod tests {
             jobs[0].str("brief").contains("files that changed most"),
             "code focus brief:\n{}",
             jobs[0].str("brief")
+        );
+    }
+
+    #[test]
+    fn research_comes_sooner_while_the_fleet_is_idle() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        research_on(&s, "60");
+        set_setting(&s, "lead.research_idle_factor", "3");
+        set_setting(&s, "lead.research_per_day", "2");
+        set_setting(&s, "workers", "4");
+        suppress_planner_reflect(&s);
+        let research = |minutes_ago: f64| {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "reflect".into(),
+                "Research (product): look".into(),
+                "look".into(),
+                0,
+                0,
+                format!(
+                    "research:proj:{}",
+                    crate::util::stamp_of(&crate::util::plus_minutes(TEST_NOW, -minutes_ago))
+                ),
+                "daemon".into(),
+                true,
+            )
+            .expect("research job");
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE jobs SET status = 'done', finished_at = ?, created_at = ? WHERE id = ?",
+                &[
+                    &TEST_NOW,
+                    &crate::util::plus_minutes(TEST_NOW, -minutes_ago),
+                    &job.str("id"),
+                ],
+            );
+        };
+        research(15.0);
+        assert!(crate::research::fleet_idle(&s), "no lease held: fleet idle");
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            !ok && reason == "last research 15m ago, next after 20m (fleet idle)",
+            "idle wait = {ok} {reason:?}"
+        );
+        research(25.0);
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            !ok && reason == "last research 15m ago, next after 20m (fleet idle)",
+            "idle wait with two done = {ok} {reason:?}"
+        );
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET created_at = ? WHERE project = 'proj' AND created_at > ?",
+            &[
+                &crate::util::plus_minutes(TEST_NOW, -21.0),
+                &crate::util::plus_minutes(TEST_NOW, -20.0),
+            ],
+        );
+        let (focus, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            ok && reason.is_empty() && focus.name == crate::research::RESEARCH_FOCUSES[2].name,
+            "idle research due after 21m with 2 of 6 today = {ok} {reason:?} {focus:?}"
+        );
+        for ago in [30.0, 40.0, 50.0, 70.0] {
+            research(ago);
+        }
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            !ok && reason == "6 of 6 research jobs today (fleet idle)",
+            "idle cap = {ok} {reason:?}"
+        );
+
+        // Two leases on four slots: the fleet is busy, the plain cadence holds.
+        join(&s, "boris");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "INSERT INTO projects (slug, name, path, added_at, added_by) VALUES ('other', 'Other', '/tmp/other', ?, 'test')",
+            &[&TEST_NOW],
+        );
+        for n in 0..2 {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "other".into(),
+                "task".into(),
+                format!("busy {n}"),
+                "work".into(),
+                1,
+                0,
+                "test".into(),
+                crate::util::HUMAN_AGENT.into(),
+                false,
+            )
+            .expect("busy job");
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE jobs SET status = 'leased', lease_agent = 'boris' WHERE id = ?",
+                &[&job.str("id")],
+            );
+        }
+        assert!(
+            !crate::research::fleet_idle(&s),
+            "two of four slots leased: busy"
+        );
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            !ok && reason == "last research 21m ago, next after 60m",
+            "busy wait = {ok} {reason:?}"
         );
     }
 
