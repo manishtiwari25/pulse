@@ -929,14 +929,20 @@ pub(crate) fn lead_idle_brief(
             } else {
                 String::new()
             };
+            let held = if it.blocked.is_empty() {
+                String::new()
+            } else {
+                format!(" - held: {}", trunc(&it.blocked, 120))
+            };
             let _ = writeln!(
                 b,
-                "- {} `{}`{} ({}d): {}",
+                "- {} `{}`{} ({}d): {}{}",
                 it.kind,
                 it.id,
                 score,
                 it.age_days,
-                trunc(&it.summary, 160)
+                trunc(&it.summary, 160),
+                held
             );
         }
     }
@@ -966,7 +972,7 @@ pub(crate) fn lead_idle_brief(
     let _ = write!(
         b,
         "\n## What to do\n\n\
-1. Read the queue: a handoff nobody claimed is continued; a question you can answer from the clone is answered (`pulse post answer ...`).\n\
+1. Read the queue: a handoff nobody claimed is continued; a question you can answer from the clone is answered (`pulse post answer ...`). An eligible card `held: without evidence` is work the board voted for that the planner cannot take: read it (`pulse show <id>`), and when the clone holds what it describes, post an `opinion` on its thread (`pulse post opinion --project {slug} --area A --thread T --on <id> ...`) whose `Signal:` line names that repository-relative path, post id or `check:NAME` - the card becomes plannable; when the clone does not, resolve the thread `dropped` with the reason. A card held by the operating-layer cap waits for product cards; do not re-post it.\n\
 2. Read the failed jobs: when several failed on the same environmental cause (a missing fixture, a pre-existing failing test, a missing tool) queue ONE job that fixes that cause first - it blocks every later job.\n\
 3. Then the project's own plans and decisions: `pulse record list plan --project {slug}` for plans with unfinished steps, `pulse record list adr --project {slug}` for accepted decisions without a delivery mark, the project's checks (`pulse env show --project {slug}`), the last landed commits in the clone.\n\
 4. Queue at most {max_jobs} worker jobs: `pulse job add --project {slug} --kind improve --source lead-idle:{slug}:<YYYY-MM-DD>:<n> --title \"...\" --brief \"...\" [--tier 0|1] --priority 5` - one job per independent change, one variable each, the brief says exactly what to change, where, and how the worker proves it with the project's own checks; never queue a Tier 2 change (that needs an ADR and the owner).\n\
@@ -1523,6 +1529,43 @@ mod tests {
                 &failed.str("id"),
             ],
         );
+        // An eligible worker card whose Signal is a log that is gone: the
+        // brief names the gate so the lead can supply the evidence or close it.
+        let held = crate::board::create_post(
+            &s,
+            crate::util::plus_hours(TEST_NOW, -72.0),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "evolution".into(),
+                thread: "held-card".into(),
+                summary: "The retry path gains a test".into(),
+                body: "Signal: /tmp/webtest.log\n".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        )
+        .expect("held card");
+        for voter in ["borealis", "cirrus"] {
+            join(&s, voter);
+            crate::board::create_post(
+                &s,
+                crate::util::plus_hours(TEST_NOW, -70.0),
+                crate::board::PostOpts {
+                    kind: "vote".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: "held-card".into(),
+                    summary: "up".into(),
+                    body: "seen\n".into(),
+                    agent: crate::board::actor_agent(&s, voter.into()),
+                    on: held.str("id"),
+                    vote: "up".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("vote");
+        }
         let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
         let jobs = idle_lead_job_rows(&s.conn().expect("conn"));
         assert_eq!(jobs.len(), 1, "idle jobs: {jobs:?}\n{lines:?}");
@@ -1532,6 +1575,12 @@ mod tests {
             format!("question `{}`", question.str("id")),
             "Broken fixture".into(),
             "sample fixture is missing".into(),
+            format!(
+                "eligible `{}` score 2 (3d): The retry path gains a test - held: {}",
+                held.str("id"),
+                pulse_tally::GATE_NO_EVIDENCE
+            ),
+            "held: without evidence` is work the board voted for".into(),
         ] {
             assert!(brief.contains(&want), "brief lacks {want:?}:\n{brief}");
         }

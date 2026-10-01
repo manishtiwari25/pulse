@@ -88,6 +88,64 @@ fn rel_of_token(tok: &str) -> String {
     rel_and_symbol(tok).0
 }
 
+static CLONE_PATH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|/)job-\d{8}T\d{6}Z-[0-9a-f]{6}/(.+)$").unwrap());
+
+/// The repository-relative part of an absolute path into a worker clone
+/// (`.../job-<stamp>-<hash>/<rel>`). Briefs said "a path in the clone" and
+/// workers wrote the clone's absolute path, which the gate could only skip
+/// once the clone was gone; the file it names is checked at the project's
+/// checkout instead. A path to the clone's root or outside one is not evidence.
+fn clone_relative(path: &str) -> Option<String> {
+    CLONE_PATH_RE
+        .captures(path)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// The clean repository-relative path a Signal token names, if it names one
+/// the project's checkout could hold.
+fn signal_rel(project_path: &str, tok: &str) -> Option<String> {
+    let mut rel = rel_of_token(tok);
+    if Path::new(&rel).is_absolute() {
+        rel = clone_relative(&rel)?;
+    }
+    if project_path.is_empty() || rel.is_empty() {
+        return None;
+    }
+    let clean = clean_rel(&rel);
+    if clean.is_empty() || clean == "." || clean.split('/').any(|p| p == "..") {
+        return None;
+    }
+    Some(clean)
+}
+
+/// Whether a later post on the card's thread - an opinion, finding, answer or
+/// vote - carries a Signal that resolves. A card whose own Signal named a log
+/// or a clone can be given its evidence by the board instead of staying
+/// eligible and unplannable for good.
+pub fn thread_signal_resolves(s: &pulse_store::Store, project_path: &str, post: &Post) -> bool {
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(summary, ''), COALESCE(body, '') FROM posts WHERE project = ? AND area = ? AND thread = ? \
+         AND id != ? AND kind IN ('opinion', 'finding', 'answer', 'vote') AND date >= ? ORDER BY date",
+    ) else {
+        return false;
+    };
+    let rows = stmt.query_map(
+        rusqlite::params![post.project, post.area, post.thread, post.id, post.date],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    );
+    match rows {
+        Ok(rows) => rows
+            .flatten()
+            .any(|(summary, body)| signal_resolves(s, project_path, &summary, &body)),
+        Err(_) => false,
+    }
+}
+
 pub fn signal_resolves(
     s: &pulse_store::Store,
     project_path: &str,
@@ -102,14 +160,9 @@ pub fn signal_resolves(
         if store_evidence(s, &tok) {
             return true;
         }
-        let rel = rel_of_token(&tok);
-        if project_path.is_empty() || rel.is_empty() || Path::new(&rel).is_absolute() {
+        let Some(clean) = signal_rel(project_path, &tok) else {
             continue;
-        }
-        let clean = clean_rel(&rel);
-        if clean.is_empty() || clean == "." || clean.split('/').any(|p| p == "..") {
-            continue;
-        }
+        };
         if Path::new(project_path).join(&clean).exists() {
             return true;
         }
@@ -120,14 +173,9 @@ pub fn signal_resolves(
 fn signal_paths(project_path: &str, summary: &str, body: &str) -> Vec<String> {
     let mut out = Vec::new();
     for tok in signal_tokens(&format!("{summary}\n{body}")) {
-        let rel = rel_of_token(&tok);
-        if project_path.is_empty() || rel.is_empty() || Path::new(&rel).is_absolute() {
+        let Some(clean) = signal_rel(project_path, &tok) else {
             continue;
-        }
-        let clean = clean_rel(&rel);
-        if clean.is_empty() || clean == "." || clean.split('/').any(|p| p == "..") {
-            continue;
-        }
+        };
         if Path::new(project_path).join(&clean).exists() {
             out.push(clean);
         }
@@ -464,8 +512,12 @@ pub fn plan_gate_with(
     if card_file_gone(project_path, body) {
         return GATE_FILE_GONE.into();
     }
-    if post.is_some() && is_worker_post(s, agent) {
-        if !signal_resolves(s, project_path, summary, body) {
+    if let Some(post) = post
+        && is_worker_post(s, agent)
+    {
+        if !signal_resolves(s, project_path, summary, body)
+            && !thread_signal_resolves(s, project_path, post)
+        {
             return GATE_NO_EVIDENCE.into();
         }
         if owner_targeted(summary, body) {

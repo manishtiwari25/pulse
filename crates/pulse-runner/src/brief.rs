@@ -371,12 +371,18 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
     w!(
         "     the check that should move (optional, repeatable; omit the line when you saw none - a `none` answer is"
     );
-    w!("     dropped, not posted), ending in `Signal: <path in the clone | post id |");
+    w!("     dropped, not posted), ending in `Signal: <repository-relative path | post id |");
     w!(
-        "     check:NAME>` naming the evidence; a card whose Signal does not resolve is listed for votes but never"
+        "     check:NAME>` naming the evidence as it exists at the project's HEAD - not a log under /tmp, not the"
     );
     w!(
-        "     planned into a job. Write it as an experiment card when you can, the fields on the one line separated"
+        "     clone's absolute path, not a file the card would create; a card whose Signal does not resolve is"
+    );
+    w!(
+        "     listed for votes but never planned into a job until an opinion or vote on its thread carries a"
+    );
+    w!(
+        "     Signal that does. Write it as an experiment card when you can, the fields on the one line separated"
     );
     w!(
         "     by `;`: `Class: operating-layer|product; File: <one repository-relative file>; Variable: <the one change>;"

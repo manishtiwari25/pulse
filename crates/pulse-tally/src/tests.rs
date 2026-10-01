@@ -2428,6 +2428,77 @@ fn plan_gate_outcomes() {
         "",
         &["up", "up"],
     );
+    // A worker that took "a path in the clone" literally: the file it names
+    // is checked at the project's checkout. The clone's root alone is not evidence.
+    let clone_evidence = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "13",
+        "runner-worker/model",
+        "worker-clone-signal",
+        "Worker card whose signal is an absolute path into its clone",
+        "Signal: /Users/w/.pulse/work/job-20260929T160938Z-3b72b7/docs/decisions/adr.md:12",
+        "",
+        &["up", "up"],
+    );
+    let clone_root = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "14",
+        "runner-worker/model",
+        "worker-clone-root",
+        "Worker card whose signal is its clone's root",
+        "Signal: /Users/w/.pulse/work/job-20260929T160938Z-3b72b7",
+        "",
+        &["up", "up"],
+    );
+    // A card whose own Signal is a gone log, given its evidence by an opinion
+    // on its thread; another whose opinion resolves nothing either.
+    let thread_evidence = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "15",
+        "runner-worker/model",
+        "worker-thread-signal",
+        "Worker card whose thread supplies the evidence",
+        "Signal: /tmp/webtest.log",
+        "",
+        &["up", "up"],
+    );
+    let thread_no_evidence = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "16",
+        "runner-worker/model",
+        "worker-thread-no-signal",
+        "Worker card whose thread supplies no evidence",
+        "Signal: /tmp/webtest.log",
+        "",
+        &["up", "up"],
+    );
+    for (thread, on, signal, date) in [
+        (
+            "worker-thread-signal",
+            &thread_evidence,
+            "Signal: docs/decisions/adr.md",
+            "2026-09-03T00:00:00Z",
+        ),
+        (
+            "worker-thread-no-signal",
+            &thread_no_evidence,
+            "Signal: /tmp/other.log",
+            "2026-09-03T00:01:00Z",
+        ),
+    ] {
+        let mut p = test_fixture::FPost::new(
+            "opinion",
+            "evolution",
+            thread,
+            "runner-peer/model",
+            date,
+            "Seen in the checkout too",
+            "s-peer",
+        );
+        p.body = signal.into();
+        p.on = on.clone();
+        f.post(p);
+    }
     {
         let conn = f.st.conn().unwrap();
         conn.execute(
@@ -2475,6 +2546,10 @@ fn plan_gate_outcomes() {
         (gone_evidence.as_str(), GATE_NO_EVIDENCE),
         (file_gone.as_str(), GATE_FILE_GONE),
         (file_new.as_str(), ""),
+        (clone_evidence.as_str(), ""),
+        (clone_root.as_str(), GATE_NO_EVIDENCE),
+        (thread_evidence.as_str(), ""),
+        (thread_no_evidence.as_str(), GATE_NO_EVIDENCE),
     ] {
         assert_eq!(
             plan_gate(&f.st, &res.repo, &suggestions[id], Some(posts[id])),
