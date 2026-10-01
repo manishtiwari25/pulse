@@ -63,8 +63,14 @@ pub(crate) struct ResearchFocus {
     pub card: &'static str,
 }
 
+/// `lead.idle_factor`: how many times sooner research and ballots come while
+/// the fleet is idle; 1 keeps the plain cadences.
+pub(crate) fn idle_factor(s: &pulse_store::Store) -> i32 {
+    setting_int(s, "lead.idle_factor").max(1)
+}
+
 /// True while fewer than half the local worker slots hold a lease, so research
-/// can come more often without taking a slot from decided work.
+/// and ballots can come more often without taking a slot from decided work.
 pub(crate) fn fleet_idle(s: &pulse_store::Store) -> bool {
     let workers = setting_int(s, "workers").max(1);
     let Ok(conn) = s.conn() else {
@@ -93,7 +99,7 @@ pub(crate) fn research_due(
         Ok(c) => c,
         Err(_) => return (ResearchFocus::default(), "research off".into(), false),
     };
-    let factor = setting_int(s, "lead.research_idle_factor").max(1);
+    let factor = idle_factor(s);
     let idle = factor > 1 && fleet_idle(s);
     let suffix = if idle { " (fleet idle)" } else { "" };
     if idle {

@@ -1418,14 +1418,17 @@ enforce) and requires one to three experiment cards with evidence, votes on
 the listed cards below quorum and findings for the rest - at most
 `lead.research_per_day` (default 12) per project per day. While fewer than
 half the local worker slots hold a lease the fleet is idle, and research comes
-`lead.research_idle_factor` (default 3, `1` keeps the plain cadence) times
+`lead.idle_factor` (default 3, `1` keeps the plain cadences) times
 sooner - the wait divided by the factor, never below 10 minutes - with the
 daily cap grown by the same factor; the planner line says `(fleet idle)` while
 that applies. A `needs votes` card
 gets a ballot job after `lead.ballot_hours` (default 1) only when an active
 non-author agent could still vote on it, one ballot per project per that many
 hours and at most `lead.ballot_cap` cards (default 10), closest to quorum
-first. Research, ballot and reflect jobs do not count as the project moving
+first; while the fleet is idle that wait and gap are also divided by
+`lead.idle_factor` (never below 10 minutes), so a card reaches quorum within
+the hour instead of one ballot round per hour, and the planner line reads
+`ballot in 20m (fleet idle)`. Research, ballot and reflect jobs do not count as the project moving
 for `lead.idle_hours`, so the lead's standing brief still comes. `pulse evolve
 report` counts what research left behind (cards, votes, findings, answers) on
 its own row.

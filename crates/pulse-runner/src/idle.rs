@@ -260,15 +260,12 @@ pub(crate) fn ballot_idle_part(
     if created_at.is_empty() {
         return String::new();
     }
-    let due =
-        crate::util::must_iso(&created_at) + TimeDelta::hours(crate::plan::ballot_hours(s) as i64);
+    let (wait, idle) = crate::plan::ballot_wait_minutes(s);
+    let due = crate::util::must_iso(&created_at) + TimeDelta::minutes(wait);
     let left = due.signed_duration_since(crate::util::must_iso(&now));
-    let mut hours =
-        ((left.num_nanoseconds().unwrap_or(0) + 3_600_000_000_000 - 1) / 3_600_000_000_000) as i32;
-    if hours < 1 {
-        hours = 1;
-    }
-    format!("ballot in {hours}h")
+    let minutes = ((left.num_seconds() + 59) / 60).max(1);
+    let suffix = if idle { " (fleet idle)" } else { "" };
+    format!("ballot in {}{suffix}", crate::util::format_minutes(minutes))
 }
 
 /// Go: func reflectIdlePart(s *store.Store, slug, now string) string

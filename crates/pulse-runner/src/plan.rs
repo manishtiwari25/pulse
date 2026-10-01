@@ -10,8 +10,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use crate::util::{
-    Querier, Row, day_number, event_at, must_one, must_rows, plus_hours, setting_int, stamp_of,
-    trunc,
+    Querier, Row, day_number, event_at, must_one, must_rows, setting_int, stamp_of, trunc,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -21,6 +20,20 @@ use std::sync::LazyLock;
 pub(crate) fn ballot_hours(s: &pulse_store::Store) -> i32 {
     let h = setting_int(s, "lead.ballot_hours");
     if h >= 1 { h } else { 1 }
+}
+
+/// Minutes a card waits below quorum before a ballot job may come, and the
+/// least gap between two ballot jobs of one project: `lead.ballot_hours`,
+/// divided by `lead.idle_factor` (never below 10 minutes) while the fleet is
+/// idle. The second value says whether the idle cadence applied.
+pub(crate) fn ballot_wait_minutes(s: &pulse_store::Store) -> (i64, bool) {
+    let plain = ballot_hours(s) as i64 * 60;
+    let factor = crate::research::idle_factor(s) as i64;
+    if factor > 1 && crate::research::fleet_idle(s) {
+        ((plain / factor).max(10), true)
+    } else {
+        (plain, false)
+    }
 }
 
 /// Go: func recordPlanDeferred(s *store.Store, slug, now, actor, suggestionID string)
@@ -175,7 +188,8 @@ pub(crate) fn ballot_due(
     now: String,
     suggestions: Vec<pulse_tally::Suggestion>,
 ) -> Vec<pulse_tally::Suggestion> {
-    let since = plus_hours(&now, -(ballot_hours(s) as f64));
+    let (wait, _) = ballot_wait_minutes(s);
+    let since = crate::util::plus_minutes(&now, -(wait as f64));
     let prefix = format!("ballot:{slug}:");
     let Ok(conn) = s.conn() else {
         return Vec::new();
@@ -575,10 +589,11 @@ pub(crate) fn plan_jobs_with_tally(
                 .collect::<Vec<_>>();
             lines.extend(listing.lines.clone());
             let listed = lines.join("\n");
+            let (wait, _) = ballot_wait_minutes(s);
             let brief = format!(
-                "{} suggestion(s) on this project's board have waited more than {} hours without quorum deciding, and nothing else is queued. Read each listed card in full (its body is in the Ballot section; check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, down when it is a guess, a duplicate (vote on the older same File+Variable), owner-only, already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week. Never vote on your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n{}",
+                "{} suggestion(s) on this project's board have waited more than {} without quorum deciding, and nothing else is queued. Read each listed card in full (its body is in the Ballot section; check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, down when it is a guess, a duplicate (vote on the older same File+Variable), owner-only, already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week. Never vote on your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n{}",
                 listing.cards.len(),
-                ballot_hours(s),
+                crate::util::format_minutes(wait),
                 listed
             );
             let (job, is_new) = crate::jobs::add_job(
@@ -824,7 +839,7 @@ mod tests {
 
     fn research_on(s: &pulse_store::Store, minutes: &str) {
         set_setting(s, "lead.research_minutes", minutes);
-        set_setting(s, "lead.research_idle_factor", "1");
+        set_setting(s, "lead.idle_factor", "1");
     }
 
     fn age_jobs(s: &pulse_store::Store, created_at: &str) {
@@ -1228,7 +1243,7 @@ mod tests {
         new_repo(&s);
         join(&s, "aurora");
         research_on(&s, "60");
-        set_setting(&s, "lead.research_idle_factor", "3");
+        set_setting(&s, "lead.idle_factor", "3");
         set_setting(&s, "lead.research_per_day", "2");
         set_setting(&s, "workers", "4");
         suppress_planner_reflect(&s);
@@ -1431,7 +1446,7 @@ mod tests {
         assert!(
             jobs[0]
                 .str("brief")
-                .contains("waited more than 1 hours without quorum deciding"),
+                .contains("waited more than 1h without quorum deciding"),
             "ballot brief:\n{}",
             jobs[0].str("brief")
         );
@@ -1453,6 +1468,104 @@ mod tests {
             crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into()),
         );
         assert_eq!(part, "");
+    }
+
+    #[test]
+    fn ballot_comes_sooner_while_the_fleet_is_idle() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        join(&s, "boris");
+        set_setting(&s, "lead.idle_factor", "3");
+        set_setting(&s, "workers", "4");
+        suppress_planner_reflect(&s);
+        // A card 25 minutes old: too young for the plain hour, old enough for
+        // the idle third of it.
+        plan_handoff(
+            &s,
+            &crate::util::plus_minutes(TEST_NOW, -25.0),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "docs".into(),
+                thread: "readme".into(),
+                summary: "Shorten the install section".into(),
+                body: "The install section repeats the README's first paragraph.".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(crate::plan::ballot_wait_minutes(&s), (20, true));
+        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        assert!(
+            jobs.len() == 1 && jobs[0].str("kind") == "ballot",
+            "idle ballot after 25 minutes: {jobs:?}"
+        );
+        assert!(
+            jobs[0]
+                .str("brief")
+                .contains("waited more than 20m without quorum deciding"),
+            "ballot brief:\n{}",
+            jobs[0].str("brief")
+        );
+        let part = crate::idle::ballot_idle_part(
+            &s,
+            "proj".into(),
+            TEST_NOW.into(),
+            crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into()),
+        );
+        assert_eq!(part, "ballot in 20m (fleet idle)");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE kind = 'ballot'",
+            &[&TEST_NOW],
+        );
+        let later = crate::util::plus_minutes(TEST_NOW, 21.0);
+        let jobs = plan_jobs(&s, "proj".into(), later.clone(), "daemon".into()).expect("plan");
+        assert!(
+            jobs.len() == 1 && jobs[0].str("kind") == "ballot",
+            "second idle ballot after 21 more minutes: {jobs:?}"
+        );
+
+        // Two leases on four slots: the plain hour is back.
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "INSERT INTO projects (slug, name, path, added_at, added_by) VALUES ('other', 'Other', '/tmp/other', ?, 'test')",
+            &[&TEST_NOW],
+        );
+        for n in 0..2 {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "other".into(),
+                "task".into(),
+                format!("busy {n}"),
+                "work".into(),
+                1,
+                0,
+                "test".into(),
+                crate::util::HUMAN_AGENT.into(),
+                false,
+            )
+            .expect("busy job");
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE jobs SET status = 'leased', lease_agent = 'boris' WHERE id = ?",
+                &[&job.str("id")],
+            );
+        }
+        assert_eq!(crate::plan::ballot_wait_minutes(&s), (60, false));
+        let part = crate::idle::ballot_idle_part(
+            &s,
+            "proj".into(),
+            later.clone(),
+            crate::tally::suggestion_records(&s, "proj".into(), later.clone()),
+        );
+        assert!(
+            part.starts_with("ballot in ") && !part.contains("fleet idle"),
+            "busy fleet shows the plain wait: {part:?}"
+        );
     }
 
     #[test]

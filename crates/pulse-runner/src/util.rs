@@ -65,6 +65,16 @@ pub(crate) fn plus_minutes(iso: &str, minutes: impl Into<f64>) -> String {
     format_iso(must_iso(iso) + chrono::Duration::milliseconds((minutes * 60_000.0) as i64))
 }
 
+/// Whole minutes as `2h`, `1h05m` or `20m`, the shape the idle lines use.
+pub(crate) fn format_minutes(minutes: i64) -> String {
+    let minutes = minutes.max(0);
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h{m:02}m"),
+    }
+}
+
 /// Go: func dayNumber(value string) int
 pub(crate) fn day_number(value: &str) -> i32 {
     if value.len() < 10 {

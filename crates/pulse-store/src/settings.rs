@@ -179,7 +179,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static LEAD_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"lead.idle_hours"=>"6","lead.idle_max_jobs"=>"3","lead.stuck_thread_jobs"=>"3","lead.research_minutes"=>"60","lead.research_per_day"=>"12","lead.research_idle_factor"=>"3","lead.ballot_hours"=>"1","lead.ballot_cap"=>"10","plan.operating_layer_per_day"=>"3","schedule.min_minutes"=>"30","schedule.max_per_project"=>"10",},
+    || map! {"lead.idle_hours"=>"6","lead.idle_max_jobs"=>"3","lead.stuck_thread_jobs"=>"3","lead.research_minutes"=>"60","lead.research_per_day"=>"12","lead.idle_factor"=>"3","lead.ballot_hours"=>"1","lead.ballot_cap"=>"10","plan.operating_layer_per_day"=>"3","schedule.min_minutes"=>"30","schedule.max_per_project"=>"10",},
 );
 pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -188,7 +188,7 @@ pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|
         "lead.stuck_thread_jobs"=>("count",Some(0),[],None,"finished worker jobs one board thread may seed in a row (from its suggestions, handoffs and questions) that commit nothing - read-only triage, claims, questions - before the planner stops seeding that thread and asks the lead to decide it; a job from the thread that commits resets the count; 0 turns the cap off"),
         "lead.research_minutes"=>("count",Some(0),[],None,"minutes a project must sit with nothing queued or leased, no research job and no job that decided work (ballots and reflects do not count) created, before the planner seeds one research job: a worker investigates one focus in turn (the product as its user sees it, the code that changes most, the checks, the loop's report, the docs, the dependencies, the board, the memory) and ends with one to three experiment cards and a vote on every card below quorum; 0 turns research off (ADR-045)"),
         "lead.research_per_day"=>("count",Some(1),[],None,"research jobs one project may receive per UTC day"),
-        "lead.research_idle_factor"=>("count",Some(1),[],None,"while fewer than half the local worker slots hold a lease, research comes this many times sooner (lead.research_minutes divided by it, never below 10 minutes) and lead.research_per_day grows by the same factor, so idle slots turn into experiment cards instead of waiting; 1 keeps the plain cadence"),
+        "lead.idle_factor"=>("count",Some(1),[],None,"while fewer than half the local worker slots hold a lease the fleet is idle: research waits lead.research_minutes divided by this (never below 10 minutes) with lead.research_per_day grown by it, and a ballot job may come every lead.ballot_hours divided by this (never below 10 minutes), so idle slots turn into cards and votes instead of waiting; 1 keeps the plain cadences"),
         "lead.ballot_hours"=>("count",Some(1),[],None,"hours a card may wait below the vote quorum before the planner seeds a ballot job, at most one per project per that many hours, and only when nothing else is queued"),
         "lead.ballot_cap"=>("count",Some(1),[],None,"maximum number of below-quorum cards a single ballot job asks a worker to vote on; closest-to-quorum cards are listed first"),
         "plan.operating_layer_per_day"=>("count",Some(0),[],None,"operating-layer improve jobs the planner may create from suggestion cards for one project per UTC day; product cards are unaffected and are planned first; 0 turns this cap off"),
@@ -931,8 +931,13 @@ mod go_settings_tests {
         let names = extra_setting_names();
         let lead_start = names.len() - OWNER_SETTINGS.len() - LEAD_SETTINGS.len();
         assert_eq!(
-            &names[lead_start..lead_start + 3],
-            ["lead.ballot_cap", "lead.ballot_hours", "lead.idle_hours"]
+            &names[lead_start..lead_start + 4],
+            [
+                "lead.ballot_cap",
+                "lead.ballot_hours",
+                "lead.idle_factor",
+                "lead.idle_hours"
+            ]
         );
         assert_eq!(s.setting("baseline.retry_hours", ""), "6");
         assert_eq!(s.setting("lane.retry_minutes", ""), "20");

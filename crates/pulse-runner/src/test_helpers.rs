@@ -180,6 +180,7 @@ pub(crate) fn new_store() -> TestStore {
     let _ = s.set_setting(util::HUMAN_AGENT, "daemon.self_update", "off");
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.idle_hours", "0");
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.research_minutes", "0");
+    let _ = s.set_setting(util::HUMAN_AGENT, "lead.idle_factor", "1");
     let _ = s.set_setting(util::HUMAN_AGENT, "evolve.draft_hours", "0");
     TestStore {
         store: s,
