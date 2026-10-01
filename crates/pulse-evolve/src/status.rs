@@ -165,8 +165,59 @@ pub struct JobRef {
     #[serde(rename = "status")]
     pub status: String,
 }
-/// Go: const BaselineRetryHours = 24
-pub const BASELINE_RETRY_HOURS: i64 = 24;
+pub const BASELINE_RETRY_HOURS: i64 = 6;
+pub fn baseline_retry_hours(s: &pulse_store::Store) -> i64 {
+    s.setting("baseline.retry_hours", "6")
+        .parse::<i64>()
+        .unwrap_or(6)
+        .max(1)
+}
+pub fn baseline_short_retry_minutes(s: &pulse_store::Store) -> i64 {
+    s.setting("lane.short_retry_minutes", "2")
+        .parse::<i64>()
+        .unwrap_or(2)
+        .max(1)
+}
+pub fn baseline_retry_text(s: &pulse_store::Store, reason: &str) -> String {
+    if baseline_failure_transient(reason) {
+        format!("{} minutes", baseline_short_retry_minutes(s))
+    } else {
+        format!("{} hours", baseline_retry_hours(s))
+    }
+}
+fn baseline_failure_transient(reason: &str) -> bool {
+    let text = reason.to_lowercase();
+    [
+        "runner error",
+        "daemon error",
+        "unreachable",
+        "timed out",
+        "provider_error",
+        "interrupted",
+        "rate limit",
+        "too many requests",
+        "429",
+        "temporarily unavailable",
+        "connection reset",
+        "connection refused",
+        "context canceled",
+        "context deadline exceeded",
+        "i/o timeout",
+        "no such host",
+        "network is unreachable",
+        "resource temporarily",
+        "database is locked",
+        "unexpected eof",
+        "no space left on device",
+        "enospc",
+        "disk quota exceeded",
+        "not enough space",
+        "insufficient space",
+        "disk full",
+    ]
+    .iter()
+    .any(|mark| text.contains(mark))
+}
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LoopStatus {
     #[serde(rename = "project")]
@@ -356,32 +407,46 @@ pub fn open_baseline_job(s: &pulse_store::Store, project: &str) -> Result<Option
 }
 /// Go: func RecentBaselineFailure(s *store.Store, project, now string) (string, error)
 pub fn recent_baseline_failure(s: &pulse_store::Store, project: &str, now: &str) -> Result<String> {
+    Ok(recent_baseline_failure_hold(s, project, now)?
+        .map(|(failed_at, _)| failed_at)
+        .unwrap_or_default())
+}
+
+pub fn recent_baseline_failure_hold(
+    s: &pulse_store::Store,
+    project: &str,
+    now: &str,
+) -> Result<Option<(String, String)>> {
     let conn = s.conn()?;
-    let row: Option<(String, String)> = conn
+    let row: Option<(String, String, String)> = conn
         .query_row(
-            "SELECT status, finished_at FROM jobs WHERE project = ? AND kind = 'baseline'
+            "SELECT status, finished_at, result FROM jobs WHERE project = ? AND kind = 'baseline'
 		AND finished_at != '' AND status IN ('done', 'failed', 'cancelled')
 		ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1",
             params![project],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let Some((status, finished)) = row else {
-        return Ok(String::new());
+    let Some((status, finished, result)) = row else {
+        return Ok(None);
     };
     if status != "failed" {
-        return Ok(String::new());
+        return Ok(None);
     }
     let failed_at = DateTime::parse_from_rfc3339(&finished);
     let at = DateTime::parse_from_rfc3339(now);
+    let retry = if baseline_failure_transient(&result) {
+        chrono::Duration::minutes(baseline_short_retry_minutes(s))
+    } else {
+        chrono::Duration::hours(baseline_retry_hours(s))
+    };
     if failed_at.is_err()
         || at.is_err()
-        || at.unwrap().signed_duration_since(failed_at.unwrap())
-            < chrono::Duration::hours(BASELINE_RETRY_HOURS)
+        || at.unwrap().signed_duration_since(failed_at.unwrap()) < retry
     {
-        return Ok(finished);
+        return Ok(Some((finished, baseline_retry_text(s, &result))));
     }
-    Ok(String::new())
+    Ok(None)
 }
 /// Go: func Status(s *store.Store, project string) (*LoopStatus, error)
 pub fn status(s: &pulse_store::Store, project: &str) -> Result<LoopStatus> {
@@ -474,7 +539,11 @@ pub(crate) fn loop_status(s: &pulse_store::Store, project: &str) -> Result<LoopS
         status.baseline = Some(score);
     }
     status.baseline_job = open_baseline_job(s, project)?;
-    status.baseline_failed_at = recent_baseline_failure(s, project, &s.now())?;
+    let baseline_hold = recent_baseline_failure_hold(s, project, &s.now())?;
+    status.baseline_failed_at = baseline_hold
+        .as_ref()
+        .map(|(failed_at, _)| failed_at.clone())
+        .unwrap_or_default();
     let mut stmt = conn.prepare(&format!(
         "SELECT a.kept,
 		CASE WHEN p.kind = 'suggestion' AND EXISTS (
@@ -640,8 +709,13 @@ fn set_ladder(s: &pulse_store::Store, status: &mut LoopStatus, project: &str) {
                     "none - the daemon records the baseline (pulse jobs --project {project})"
                 );
             } else if !status.baseline_failed_at.is_empty() {
+                let retry_text = recent_baseline_failure_hold(s, project, &s.now())
+                    .ok()
+                    .flatten()
+                    .map(|(_, retry_text)| retry_text)
+                    .unwrap_or_else(|| format!("{} hours", baseline_retry_hours(s)));
                 status.reason = format!(
-                    "baseline measurement failed at {}; the daemon retries after {BASELINE_RETRY_HOURS} hours",
+                    "baseline measurement failed at {}; the daemon retries after {retry_text}",
                     status.baseline_failed_at
                 );
                 status.next_human_step = format!(
@@ -985,11 +1059,11 @@ mod tests {
         assert_eq!(st.baseline_failed_at, "2026-09-06T11:00:00Z");
         assert_eq!(
             st.reason,
-            "baseline measurement failed at 2026-09-06T11:00:00Z; the daemon retries after 24 hours"
+            "baseline measurement failed at 2026-09-06T11:00:00Z; the daemon retries after 6 hours"
         );
-        unsafe { std::env::set_var("PULSE_NOW", "2026-09-07T10:59:59Z") };
+        unsafe { std::env::set_var("PULSE_NOW", "2026-09-06T16:59:59Z") };
         assert!(!status(&s, "demo").unwrap().baseline_failed_at.is_empty());
-        unsafe { std::env::set_var("PULSE_NOW", "2026-09-07T11:00:00Z") };
+        unsafe { std::env::set_var("PULSE_NOW", "2026-09-06T17:00:00Z") };
         st = status(&s, "demo").unwrap();
         assert!(st.baseline_failed_at.is_empty());
         assert_eq!(st.reason, "no baseline measured yet");

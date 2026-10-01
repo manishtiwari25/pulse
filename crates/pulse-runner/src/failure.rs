@@ -68,6 +68,12 @@ static TRANSIENT_MARKS: &[&str] = &[
     "resource temporarily",
     "database is locked",
     "unexpected eof",
+    "no space left on device",
+    "enospc",
+    "disk quota exceeded",
+    "not enough space",
+    "insufficient space",
+    "disk full",
 ];
 
 static OWNER_BLOCKED_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -177,6 +183,16 @@ pub(crate) fn classify_failure(
         reason,
         signature,
     }
+}
+
+pub(crate) fn is_transient_reason(reason: &str) -> bool {
+    let f = classify_failure(
+        reason.to_string(),
+        "failed".into(),
+        reason.to_string(),
+        false,
+    );
+    f.class.0 == FAILURE_TRANSIENT
 }
 
 /// Go: func containsAny(text string, marks []string) bool

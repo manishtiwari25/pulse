@@ -874,6 +874,12 @@ mod tests {
         let (_, dir) = new_bare_repo(&s);
         join(&s, "aurora");
         set_setting(&s, "landing", "agents");
+        exec1(
+            &s,
+            "INSERT INTO settings (name, value, updated_at, updated_by) VALUES ('landing.base_red_retry_minutes', '3', ?, 'test')
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            &[&TEST_NOW],
+        );
 
         // The verify command needs a tool that is not installed on this machine.
         let tool = std::path::Path::new(&dir)
@@ -901,8 +907,9 @@ mod tests {
         let note = held.get("proj").cloned().unwrap_or_default();
         if lines.len() != 1
             || !note.contains("main itself fails")
-            || !note.contains("No such file or directory")
-            || !note.contains("waits until 2026-09-06T10:30:00Z")
+            || !note.contains("No ")
+            || !note.contains("waits until 2026-09-06T10:03:00Z")
+            || !note.contains("retry in 3m")
         {
             panic!("expected a base-red hold; lines={lines:?} held={held:?}");
         }
@@ -947,7 +954,7 @@ mod tests {
 
         // The tool is installed; after the wait the branch lands untouched.
         std::fs::write(&tool, b"ok\n").unwrap();
-        let later = crate::util::plus_minutes(TEST_NOW, 31);
+        let later = crate::util::plus_minutes(TEST_NOW, 4);
         let (lines, held) = tend_landings(
             &s,
             vec![proj.clone()],

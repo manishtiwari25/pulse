@@ -18,9 +18,6 @@ use std::time::Duration;
 
 pub(crate) const LAND_LOCK_MINUTES: i32 = 30;
 pub(crate) const LAND_REQUEUE_LIMIT: i32 = 2;
-/// How long a project's landings wait after its default branch itself failed the verify
-/// command, before the daemon tries again on its own (`pulse land` retries at once).
-pub(crate) const LAND_BASE_RED_RETRY_MINUTES: i32 = 30;
 const LAND_RETRY_META_PREFIX: &str = "landing-retry:";
 pub(crate) const RESULT_FILE: &str = "PULSE_RESULT.md";
 pub(crate) static LANDED_BRANCH_PREFIXES: &[&str] = &["pulse/", "evolve/"];
@@ -1001,14 +998,19 @@ pub(crate) fn land_branch(
                 } else {
                     &tail_text
                 });
-                let retry_at = crate::util::plus_minutes(&now, LAND_BASE_RED_RETRY_MINUTES as f64);
+                let retry_minutes = s
+                    .setting("landing.base_red_retry_minutes", "10")
+                    .parse::<i32>()
+                    .unwrap_or(10)
+                    .max(1);
+                let retry_at = crate::util::plus_minutes(&now, retry_minutes as f64);
                 let base_note = if base_red.is_some() {
                     format!("{def} itself fails `{vc}` ({hint})")
                 } else {
                     format!("`{vc}` on {def} itself gave no answer in time ({hint})")
                 };
                 let note = format!(
-                    "{base_note}; {verify_note} on the merged result is not the branch's fault, so it is kept and the landing waits until {retry_at} (`pulse land --project {slug}` retries now)"
+                    "{base_note}; {verify_note} on the merged result is not the branch's fault, so it is kept and the landing waits until {retry_at} (retry in {retry_minutes}m; `pulse land --project {slug}` retries now)"
                 );
                 if let Ok(conn) = s.conn() {
                     crate::util::event_at(
