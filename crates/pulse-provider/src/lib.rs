@@ -1,15 +1,19 @@
 //! PULSE: the model-provider contract and registry (port of Go package internal/provider).
 
 use anyhow::{Result, anyhow};
+use chrono::DateTime;
+use rand::RngExt;
 use regex::Regex;
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 /// The provider a fresh install uses.
@@ -419,6 +423,160 @@ pub fn is_retryable(err: &anyhow::Error) -> bool {
     provider_error(err).is_some_and(|e| e.retryable)
 }
 
+pub const DEFAULT_RETRY_AFTER_CAP_S: u64 = 60;
+pub const DEFAULT_MAX_BODY_MB: usize = 8;
+pub const ERROR_BODY_LIMIT_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetryWait {
+    pub duration: Duration,
+    pub from_header: bool,
+}
+
+pub fn provider_retry_after_cap(settings: &BTreeMap<String, String>) -> Duration {
+    Duration::from_secs(
+        settings
+            .get("provider.retry_after_cap_s")
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_RETRY_AFTER_CAP_S),
+    )
+}
+
+pub fn provider_max_body_bytes(settings: &BTreeMap<String, String>) -> usize {
+    settings
+        .get("provider.max_body_mb")
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|mb| *mb > 0)
+        .unwrap_or(DEFAULT_MAX_BODY_MB)
+        .saturating_mul(1024 * 1024)
+}
+
+pub fn retry_after_hint(headers: &HeaderMap, cap: Duration) -> Option<Duration> {
+    let cap_s = cap.as_secs();
+    let mut best: Option<Duration> = None;
+    if let Some(value) = headers.get("retry-after").and_then(|v| v.to_str().ok()) {
+        best = parse_retry_after(value).map(|d| d.min(cap));
+    }
+    for name in ["x-ratelimit-reset", "x-ratelimit-reset-requests"] {
+        if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok())
+            && let Some(delay) = parse_reset_after(value)
+        {
+            let delay = delay.min(Duration::from_secs(cap_s));
+            best = Some(match best {
+                Some(current) => current.max(delay),
+                None => delay,
+            });
+        }
+    }
+    best
+}
+
+pub fn retry_wait(err: &anyhow::Error, fallback: Duration) -> RetryWait {
+    let header = provider_error(err).and_then(|perr| {
+        if !matches!(perr.status, 429 | 503) {
+            return None;
+        }
+        perr.code.split_whitespace().find_map(|part| {
+            part.strip_prefix("retry_after_s=")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .map(Duration::from_secs)
+        })
+    });
+    let base = header.map_or(fallback, |h| h.max(fallback));
+    RetryWait {
+        duration: jitter_duration(base),
+        from_header: header.is_some(),
+    }
+}
+
+fn parse_retry_after(raw: &str) -> Option<Duration> {
+    let raw = raw.trim();
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let at = DateTime::parse_from_rfc2822(raw).ok()?.timestamp();
+    let now = unix_now_s() as i64;
+    Some(Duration::from_secs(at.saturating_sub(now) as u64))
+}
+
+fn parse_reset_after(raw: &str) -> Option<Duration> {
+    let value = raw.trim().parse::<u64>().ok()?;
+    if value >= 1_000_000_000 {
+        Some(Duration::from_secs(value.saturating_sub(unix_now_s())))
+    } else {
+        Some(Duration::from_secs(value))
+    }
+}
+
+fn unix_now_s() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn jitter_duration(base: Duration) -> Duration {
+    if base.is_zero() {
+        return base;
+    }
+    let factor = next_jitter_factor();
+    Duration::from_secs_f64(base.as_secs_f64() * factor)
+}
+
+fn next_jitter_factor() -> f64 {
+    #[cfg(test)]
+    if let Some(factor) = TEST_JITTER
+        .lock()
+        .expect("provider jitter hook poisoned")
+        .as_mut()
+        .and_then(|values| values.pop_front())
+    {
+        return factor;
+    }
+    let mut bytes = [0u8; 8];
+    rand::rng().fill(&mut bytes);
+    let unit = u64::from_le_bytes(bytes) as f64 / u64::MAX as f64;
+    0.8 + (unit * 0.4)
+}
+
+#[cfg(test)]
+static TEST_JITTER: LazyLock<Mutex<Option<std::collections::VecDeque<f64>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+pub fn set_retry_jitter_for_tests(values: Vec<f64>) {
+    *TEST_JITTER.lock().expect("provider jitter hook poisoned") =
+        Some(values.into_iter().collect());
+}
+
+#[derive(Debug, Error)]
+pub enum BodyReadError {
+    #[error("response exceeded {limit_bytes} bytes")]
+    TooLarge { limit_bytes: usize },
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+pub fn read_body_capped(
+    mut res: reqwest::blocking::Response,
+    limit_bytes: usize,
+) -> std::result::Result<Vec<u8>, BodyReadError> {
+    let mut data = Vec::new();
+    (&mut res)
+        .take(limit_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut data)?;
+    if data.len() > limit_bytes {
+        return Err(BodyReadError::TooLarge { limit_bytes });
+    }
+    Ok(data)
+}
+
+pub fn read_body_up_to(mut res: reqwest::blocking::Response, limit_bytes: usize) -> Vec<u8> {
+    let mut data = Vec::new();
+    let _ = (&mut res).take(limit_bytes as u64).read_to_end(&mut data);
+    data
+}
+
 /// Function used to read an environment variable.
 pub type EnvFn = Arc<dyn Fn(&str) -> String + Send + Sync>;
 /// Redacted log sink.
@@ -645,6 +803,7 @@ pub fn squeeze(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
 
     struct TestProvider;
@@ -670,6 +829,65 @@ mod tests {
 
     fn new_unit(_options: Options) -> Result<Box<dyn Provider>> {
         Ok(Box::new(TestProvider))
+    }
+
+    #[test]
+    fn retry_wait_jitters_within_bounds_and_uses_deterministic_hook() {
+        set_retry_jitter_for_tests(vec![1.2]);
+        let err = anyhow!(ProviderError::new(
+            "unit",
+            429,
+            "rate_limit retry_after_s=10",
+            "slow down",
+            true
+        ));
+        let wait = retry_wait(&err, Duration::from_secs(5));
+        assert!(wait.from_header);
+        assert_eq!(wait.duration, Duration::from_secs(12));
+
+        let err = anyhow!(ProviderError::new("unit", 500, "server", "boom", true));
+        for _ in 0..32 {
+            let wait = retry_wait(&err, Duration::from_secs(10));
+            assert!(!wait.from_header);
+            assert!(wait.duration >= Duration::from_secs(8), "{wait:?}");
+            assert!(wait.duration <= Duration::from_secs(12), "{wait:?}");
+        }
+        set_retry_jitter_for_tests(Vec::new());
+    }
+
+    #[test]
+    fn retry_after_and_reset_headers_parse_and_cap() {
+        let mut h = HeaderMap::new();
+        h.insert("retry-after", HeaderValue::from_static("90"));
+        assert_eq!(
+            retry_after_hint(&h, Duration::from_secs(60)),
+            Some(Duration::from_secs(60))
+        );
+
+        h.clear();
+        h.insert(
+            "retry-after",
+            HeaderValue::from_static("Wed, 21 Oct 2099 07:28:00 GMT"),
+        );
+        assert_eq!(
+            retry_after_hint(&h, Duration::from_secs(60)),
+            Some(Duration::from_secs(60))
+        );
+
+        h.clear();
+        h.insert("x-ratelimit-reset-requests", HeaderValue::from_static("17"));
+        assert_eq!(
+            retry_after_hint(&h, Duration::from_secs(60)),
+            Some(Duration::from_secs(17))
+        );
+
+        h.clear();
+        h.insert(
+            "x-ratelimit-reset",
+            HeaderValue::from_str(&(unix_now_s() + 30).to_string()).unwrap(),
+        );
+        let got = retry_after_hint(&h, Duration::from_secs(60)).unwrap();
+        assert!(got <= Duration::from_secs(30));
     }
 
     #[test]

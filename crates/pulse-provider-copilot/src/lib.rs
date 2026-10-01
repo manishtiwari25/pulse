@@ -3,12 +3,14 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use pulse_provider::{
-    CancelToken, DEVICE_COMPLETE, DEVICE_DENIED, DEVICE_EXPIRED, DEVICE_PENDING, DEVICE_SLOW_DOWN,
-    DeviceFlow, DeviceLogin, Login, LoginExporter, Logouter, Message, Model, Options, Provider,
-    ProviderError, Request, Response, Role, TokenLogin, Usage, default_http_client,
-    err_not_logged_in, is_not_logged_in, is_retryable, private_provider_path, provider_error,
-    read_private_json, redact as provider_redact, register as register_provider, remember_secret,
-    squeeze, write_private_json,
+    BodyReadError, CancelToken, DEVICE_COMPLETE, DEVICE_DENIED, DEVICE_EXPIRED, DEVICE_PENDING,
+    DEVICE_SLOW_DOWN, DeviceFlow, DeviceLogin, ERROR_BODY_LIMIT_BYTES, Login, LoginExporter,
+    Logouter, Message, Model, Options, Provider, ProviderError, Request, Response, Role,
+    TokenLogin, Usage, default_http_client, err_not_logged_in, is_not_logged_in, is_retryable,
+    private_provider_path, provider_error, provider_max_body_bytes, provider_retry_after_cap,
+    read_body_capped, read_body_up_to, read_private_json, redact as provider_redact,
+    register as register_provider, remember_secret, retry_after_hint, retry_wait, squeeze,
+    write_private_json,
 };
 use rand::RngExt;
 use regex::Regex;
@@ -106,6 +108,8 @@ pub struct Copilot {
     home: String,
     http: Client,
     options: Options,
+    max_body_bytes: usize,
+    retry_after_cap: Duration,
     inner: Mutex<Inner>,
 }
 
@@ -169,10 +173,14 @@ impl Copilot {
                 return Err(anyhow!("could not determine user home directory"));
             }
         };
+        let max_body_bytes = provider_max_body_bytes(&options.settings);
+        let retry_after_cap = provider_retry_after_cap(&options.settings);
         Ok(Self {
             home,
             http,
             options,
+            max_body_bytes,
+            retry_after_cap,
             inner: Mutex::new(Inner::default()),
         })
     }
@@ -428,13 +436,20 @@ impl Copilot {
                     if is_not_logged_in(&err) || !is_retryable(&err) || attempt == backoffs.len() {
                         return Err(err);
                     }
-                    let wait = retry_delay(&err, backoffs[attempt]);
-                    self.log_redacted(&format!(
-                        "copilot session token retry in {} after {}",
-                        format_duration(wait),
-                        err
-                    ));
-                    sleep(cancel, wait)?;
+                    let wait = retry_wait(&err, backoffs[attempt]);
+                    if wait.from_header {
+                        self.log_redacted(&format!(
+                            "rate limited by copilot; waiting {} (header)",
+                            format_duration(wait.duration)
+                        ));
+                    } else {
+                        self.log_redacted(&format!(
+                            "copilot session token retry in {} after {}",
+                            format_duration(wait.duration),
+                            err
+                        ));
+                    }
+                    sleep(cancel, wait.duration)?;
                     attempt += 1;
                     continue;
                 }
@@ -455,13 +470,20 @@ impl Copilot {
                     if !is_retryable(&err) || attempt == backoffs.len() {
                         return Err(err);
                     }
-                    let wait = retry_delay(&err, backoffs[attempt]);
-                    self.log_redacted(&format!(
-                        "copilot chat retry in {} after {}",
-                        format_duration(wait),
-                        err
-                    ));
-                    sleep(cancel, wait)?;
+                    let wait = retry_wait(&err, backoffs[attempt]);
+                    if wait.from_header {
+                        self.log_redacted(&format!(
+                            "rate limited by copilot; waiting {} (header)",
+                            format_duration(wait.duration)
+                        ));
+                    } else {
+                        self.log_redacted(&format!(
+                            "copilot chat retry in {} after {}",
+                            format_duration(wait.duration),
+                            err
+                        ));
+                    }
+                    sleep(cancel, wait.duration)?;
                     attempt += 1;
                 }
             }
@@ -493,10 +515,10 @@ impl Copilot {
             .send()
             .map_err(|err| provider_error_new(0, "network", &err.to_string(), true))?;
         if !res.status().is_success() {
-            return Err(http_provider_error(res, true).into());
+            return Err(self.http_provider_error(res, true).into());
         }
-        let body: ModelsResponse = res
-            .json()
+        let data = self.read_success_body(res)?;
+        let body: ModelsResponse = serde_json::from_slice(&data)
             .map_err(|err| provider_error_new(0, "decode", &err.to_string(), false))?;
         let models = map_models(body);
         let mut inner = self.inner.lock().expect("copilot provider poisoned");
@@ -543,10 +565,10 @@ impl Copilot {
             .send()
             .map_err(|err| provider_error_new(0, "network", &err.to_string(), true))?;
         if !res.status().is_success() {
-            return Err(http_provider_error(res, false).into());
+            return Err(self.http_provider_error(res, false).into());
         }
-        let out: ChatResponse = res
-            .json()
+        let data = self.read_success_body(res)?;
+        let out: ChatResponse = serde_json::from_slice(&data)
             .map_err(|err| provider_error_new(0, "decode", &err.to_string(), false))?;
         Ok(out.provider_response())
     }
@@ -601,10 +623,10 @@ impl Copilot {
             return Err(NotLoggedInDetail::new(msg).into());
         }
         if !res.status().is_success() {
-            return Err(http_provider_error(res, true).into());
+            return Err(self.http_provider_error(res, true).into());
         }
-        let out: SessionTokenResponse = res
-            .json()
+        let data = self.read_success_body(res)?;
+        let out: SessionTokenResponse = serde_json::from_slice(&data)
             .map_err(|err| provider_error_new(0, "decode", &err.to_string(), false))?;
         let base = out
             .endpoints
@@ -785,10 +807,10 @@ impl Copilot {
             .send()
             .map_err(|err| provider_error_new(0, "network", &err.to_string(), true))?;
         if !res.status().is_success() {
-            return Err(http_provider_error(res, false).into());
+            return Err(self.http_provider_error(res, false).into());
         }
-        let out: GitHubUserResponse = res
-            .json()
+        let data = self.read_success_body(res)?;
+        let out: GitHubUserResponse = serde_json::from_slice(&data)
             .map_err(|err| provider_error_new(0, "decode", &err.to_string(), false))?;
         Ok(out.login)
     }
@@ -867,14 +889,40 @@ impl Copilot {
             .send()
             .map_err(|err| provider_error_new(0, "network", &err.to_string(), true))?;
         if !res.status().is_success() {
-            return Err(http_provider_error(res, false).into());
+            return Err(self.http_provider_error(res, false).into());
         }
-        res.json()
+        let data = self.read_success_body(res)?;
+        serde_json::from_slice(&data)
             .map_err(|err| provider_error_new(0, "decode", &err.to_string(), false).into())
     }
 
     fn log_redacted(&self, line: &str) {
         self.options.log(&redact(line));
+    }
+
+    fn read_success_body(&self, res: reqwest::blocking::Response) -> Result<Vec<u8>> {
+        read_body_capped(res, self.max_body_bytes)
+            .map_err(|err| match err {
+                BodyReadError::TooLarge { .. } => provider_error_new(
+                    0,
+                    "body_too_large",
+                    &format!(
+                        "response exceeded {} MiB",
+                        self.max_body_bytes / (1024 * 1024)
+                    ),
+                    false,
+                ),
+                BodyReadError::Io(err) => provider_error_new(0, "network", &err.to_string(), true),
+            })
+            .map_err(Into::into)
+    }
+
+    fn http_provider_error(
+        &self,
+        res: reqwest::blocking::Response,
+        default_retryable: bool,
+    ) -> ProviderError {
+        http_provider_error(res, default_retryable, self.retry_after_cap)
     }
 }
 
@@ -1335,34 +1383,29 @@ fn map_models(body: ModelsResponse) -> Vec<Model> {
     out
 }
 
-fn http_provider_error(res: reqwest::blocking::Response, default_retryable: bool) -> ProviderError {
+fn http_provider_error(
+    res: reqwest::blocking::Response,
+    default_retryable: bool,
+    retry_after_cap: Duration,
+) -> ProviderError {
     let status = res.status().as_u16() as i32;
     let status_text = res
         .status()
         .canonical_reason()
         .map(|reason| format!("{status} {reason}"))
         .unwrap_or_else(|| status.to_string());
-    let retry_after = res
-        .headers()
-        .get("Retry-After")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let data = res.bytes().map(|b| b.to_vec()).unwrap_or_default();
-    let data = if data.len() > 4096 {
-        &data[..4096]
-    } else {
-        &data[..]
-    };
-    let (mut code, mut msg) = parse_error_body(data);
+    let retry_after = retry_after_hint(res.headers(), retry_after_cap);
+    let data = read_body_up_to(res, ERROR_BODY_LIMIT_BYTES);
+    let (mut code, mut msg) = parse_error_body(&data);
     if msg.is_empty() {
-        msg = String::from_utf8_lossy(data).trim().to_string();
+        msg = String::from_utf8_lossy(&data).trim().to_string();
     }
     if msg.is_empty() {
         msg = status_text;
     }
     let retryable = default_retryable || matches!(status, 429 | 500 | 502 | 503 | 504);
     if let Some(ra) = retry_after {
-        code = [code.trim(), &format!("retry_after={}", ra.trim())]
+        code = [code.trim(), &format!("retry_after_s={}", ra.as_secs())]
             .into_iter()
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
@@ -1433,19 +1476,6 @@ fn no_stored_login_error() -> ProviderError {
         "no stored GitHub Copilot login; sign in with GitHub in Settings -> Harness or run pulse harness login",
         false,
     )
-}
-
-fn retry_delay(err: &anyhow::Error, fallback: Duration) -> Duration {
-    if let Some(perr) = provider_error(err) {
-        for part in perr.code.split_whitespace() {
-            if let Some(raw) = part.strip_prefix("retry_after=")
-                && let Ok(sec) = raw.parse::<u64>()
-            {
-                return Duration::from_secs(sec).min(Duration::from_secs(30));
-            }
-        }
-    }
-    fallback
 }
 
 fn initiator(req: &Request) -> String {

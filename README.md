@@ -646,6 +646,8 @@ record, read with `pulse record show WF-evolve`.
 | `max_ai_credits` | `30` credits (minimum `30`) | Legacy `copilot-cli` harness only: passed to Copilot CLI workers; not automatically applied to measurement harnesses. |
 | `harness` | `native` | Which harness runs the workers: `native` (built in, `pulse harness run`) or `copilot-cli` (the legacy `copilot` binary named by `runner_cmd`). |
 | `provider` | `copilot` | The model provider the built-in harness talks to. GitHub Copilot is the first; more register under `crates/pulse-provider-<name>`. |
+| `provider.retry_after_cap_s` | `60` seconds | Maximum provider rate-limit header wait before jitter; the retry backoff still floors the wait. |
+| `provider.max_body_mb` | `8` MiB | Successful provider response body cap; exceeding it fails the call as non-retryable. |
 | `harness.max_steps` | `60` | Model calls one worker run may make before the harness stops it. |
 | `harness.step_timeout` | `300` seconds | Wall-clock cap on one command the model runs. |
 | `harness.output_limit` | `20000` characters | Command output kept per step; longer output is cut in the middle. |
@@ -816,12 +818,14 @@ target does not exist. Absolute paths, `..`, symlinks that escape the clone,
 and paths denied by the harness policy are refused.
 
 The trajectory JSON under `~/.pulse/harness/<session>.json` is rewritten
-atomically after every step, so a run that was killed still leaves a readable
-file for replay. Every stored step also emits a `harness.step` event on the
-bus (session, step number, kind, exit code, job) - the console's Harness page
-refreshes on it, `GET /api/v1/harness/sessions/ID?after=N` returns only the
-steps after `N`, and `/api/v1/events?kind=harness.step&subject=ID` (or the
-`…/events/stream` SSE endpoint with the same filters) follows one session
+atomically every five steps and again at session end, on harness errors and on
+cancellation. A crash between flushes may lose up to four steps from the JSON
+file; the durable record is the per-step `harness_steps` store rows. Every
+stored step also emits a `harness.step` event on the bus (session, step number,
+kind, exit code, job) - the console's Harness page refreshes on it, `GET
+/api/v1/harness/sessions/ID?after=N` returns only the steps after `N`, and
+`/api/v1/events?kind=harness.step&subject=ID` (or the `…/events/stream` SSE
+endpoint with the same filters) follows one session
 cheaply. The dashboard's Live panel leaves step events out; they belong on
 the Harness page.
 
@@ -933,8 +937,12 @@ CLI's config. It does not borrow `gh auth token`: the gh OAuth app is not
 Copilot-enabled, so GitHub refuses those tokens at Copilot's door - the status
 card says exactly that rather than "signed in". The GitHub token is exchanged
 for a short-lived Copilot session token on each run and refreshed before it
-expires; a `401` mid-run refreshes once, `429`/`5xx` retry with backoff and
-`Retry-After`, and every log line and error is redacted of token shapes.
+expires; a `401` mid-run refreshes once, `429`/`5xx` retry with ±20% jittered
+backoff. On `429`/`503`, `Retry-After` and `x-ratelimit-reset*` headers are
+honored up to `provider.retry_after_cap_s`, logging `rate limited by <provider>;
+waiting <n>s (header)`. Error bodies are capped for logs, and oversized success
+bodies fail clearly (`response exceeded 8 MiB`). Every log line and error is
+redacted of token shapes.
 
 **Models.** `worker_model` and `light_model` (Settings → Harness, or `pulse
 settings set`) choose among the models the provider lists for the signed-in

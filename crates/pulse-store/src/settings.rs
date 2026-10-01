@@ -75,13 +75,15 @@ pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
     }
 });
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"harness"=>"native","provider"=>"copilot","provider.openai.base_url"=>"https://api.openai.com/v1","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.output_limit"=>"20000","harness.format_retries"=>"1",},
+    || map! {"harness"=>"native","provider"=>"copilot","provider.openai.base_url"=>"https://api.openai.com/v1","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.output_limit"=>"20000","harness.format_retries"=>"1",},
 );
 pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
         "harness"=>("choice",None,["native","copilot-cli"],None,"native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone"),
         "provider"=>("choice",None,["copilot","openai"],None,"the model provider of the native harness; copilot signs in with GitHub; openai takes an API key and a base URL; the login lives on this machine, never in the store"),
         "provider.openai.base_url"=>("text",None,[],None,"the OpenAI-compatible endpoint the openai provider calls: OpenAI, Azure OpenAI, Ollama (http://127.0.0.1:11434/v1), LM Studio, OpenRouter"),
+        "provider.retry_after_cap_s"=>("count",Some(0),[],None,"maximum seconds a provider Retry-After or rate-limit reset header may hold one retry before jitter; the backoff still floors the wait"),
+        "provider.max_body_mb"=>("count",Some(1),[],None,"maximum MiB read from a successful provider response body before the call fails as non-retryable"),
         "harness.max_steps"=>("count",Some(1),[],None,"model calls one native-harness run may make before it stops"),
         "harness.max_cost"=>("number",Some(0),[],None,"provider-reported cost one native-harness run may spend before it stops (0 = no cap); the unit is the provider's - Copilot reports usage.cost only when the vendor sends it"),
         "harness.keep_observations"=>("count",Some(1),[],None,"observations kept verbatim in the model's context; older ones collapse to their first and last lines"),

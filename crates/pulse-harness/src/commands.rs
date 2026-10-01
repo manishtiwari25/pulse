@@ -371,11 +371,25 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
             .push(Box::new(ts.with_agent(shared.clone())));
     }
     let cancel = CancelToken::new();
-    let stop_watch = st
+    let mut stop_watch = st
         .as_ref()
         .map(|s| watch_harness_cancel(s.clone(), session_id.clone(), cancel.clone()));
-    let result = shared.lock().unwrap().run_with_cancel(&cancel)?;
-    if let Some(stop) = stop_watch {
+    let result = match shared.lock().unwrap().run_with_cancel(&cancel) {
+        Ok(result) => result,
+        Err(err) => {
+            if let Some(stop) = stop_watch.take() {
+                stop();
+            }
+            if !trajectory_path.is_empty() {
+                let traj = shared.lock().unwrap().trajectory();
+                if let Err(e) = write_trajectory(&trajectory_path, &traj) {
+                    writeln!(c.err, "pulse harness: trajectory warning: {e}")?;
+                }
+            }
+            return Err(err);
+        }
+    };
+    if let Some(stop) = stop_watch.take() {
         stop();
     }
     let trajectory_steps = shared.lock().unwrap().trajectory().steps;
@@ -1433,6 +1447,9 @@ impl Sink for TrajectorySink {
             return;
         }
         self.steps.push(step);
+        if !self.steps.len().is_multiple_of(5) {
+            return;
+        }
         let traj = Trajectory {
             trajectory_format: "pulse-harness-1".into(),
             info: TrajectoryInfo {
@@ -2393,6 +2410,89 @@ mod tests {
         let data = fs::read_to_string(trajectory).unwrap();
         let traj: Trajectory = serde_json::from_str(&data).unwrap();
         assert_eq!(traj.info.exit_status, EXIT_SUBMITTED);
+    }
+
+    #[test]
+    fn trajectory_sink_flushes_every_five_steps_and_final_run_writes_exit() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider::default());
+        let dir = tempfile::tempdir().unwrap();
+        let traj_dir = tempfile::tempdir().unwrap();
+        let trajectory = traj_dir.path().join("trajectory.json");
+
+        let ctx = Context {
+            store: None,
+            home: s.home.clone(),
+            out: Box::new(io::sink()),
+            err: Box::new(io::sink()),
+            json: false,
+            quiet: false,
+            color: false,
+            agent: String::new(),
+            project: String::new(),
+            session: String::new(),
+            now: String::new(),
+            args: Vec::new(),
+        };
+        let mut sink = TrajectorySink::new(&ctx, trajectory.to_str().unwrap());
+        for n in 0..4 {
+            sink.step(Step {
+                n,
+                kind: StepKind::Assistant,
+                content: format!("step {n}"),
+                ..Step::default()
+            });
+        }
+        assert!(!trajectory.exists(), "four steps should not flush yet");
+        sink.step(Step {
+            n: 4,
+            kind: StepKind::Assistant,
+            content: "step 4".into(),
+            ..Step::default()
+        });
+        let data = fs::read_to_string(&trajectory).unwrap();
+        let traj: Trajectory = serde_json::from_str(&data).unwrap();
+        assert_eq!(traj.steps.len(), 5);
+
+        for n in 5..10 {
+            sink.step(Step {
+                n,
+                kind: StepKind::Assistant,
+                content: format!("step {n}"),
+                ..Step::default()
+            });
+        }
+        let data = fs::read_to_string(&trajectory).unwrap();
+        let traj: Trajectory = serde_json::from_str(&data).unwrap();
+        assert_eq!(traj.steps.len(), 10);
+
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-cadence",
+                "--trajectory",
+                trajectory.to_str().unwrap(),
+                "--quiet",
+            ],
+        );
+        assert!(
+            code == 0 && out.contains("SUMMARY: fake complete"),
+            "run = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let data = fs::read_to_string(trajectory).unwrap();
+        let traj: Trajectory = serde_json::from_str(&data).unwrap();
+        assert_eq!(traj.info.exit_status, EXIT_SUBMITTED);
+        assert!(traj.steps.last().is_some_and(|s| s.kind == StepKind::Exit));
     }
 
     #[test]

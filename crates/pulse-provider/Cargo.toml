@@ -17,6 +17,8 @@ serde_json.workspace = true
 reqwest.workspace = true
 url.workspace = true
 regex.workspace = true
+chrono.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
