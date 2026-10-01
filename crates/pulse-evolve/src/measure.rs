@@ -197,35 +197,47 @@ pub(crate) fn measure(
                 .join((i + 1).to_string())
                 .display()
                 .to_string();
-            crate::clones::stripped_clone(cancel, &repo, &commit, &clone, &keys)?;
             let home = Path::new(&root)
                 .join("homes")
                 .join((i + 1).to_string())
                 .display()
                 .to_string();
-            fs::create_dir_all(&home)?;
-            crate::process::prepare_measurement_caches(&home)?;
-            crate::process::seed_provider_logins(&s.home, &home)?;
-            let argv = crate::process::measurement_argv(s, &exe, &f.request)?;
-            let mut sink = std::io::sink();
-            let job_cancel = cancel.with_timeout(timeout);
-            crate::process::run_process(
-                &job_cancel,
-                &clone,
-                &crate::process::isolated_env(&home),
-                &argv,
-                &mut sink,
-            )
-            .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
-            crate::clones::check_clone(cancel, &clone, &keys)?;
-            let score_cancel = cancel.with_timeout(timeout);
-            let (value, reason) = score_clone(
-                &score_cancel,
-                &clone,
-                &scorer_env(&home, &commit, &exe),
-                &f.scorer,
-            )
-            .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))?;
+            let fixture_result = (|| -> Result<(f64, String)> {
+                crate::clones::stripped_clone(cancel, &repo, &commit, &clone, &keys)?;
+                fs::create_dir_all(&home)?;
+                crate::process::prepare_measurement_caches(&home)?;
+                crate::process::seed_provider_logins(&s.home, &home)?;
+                let argv = crate::process::measurement_argv(s, &exe, &f.request)?;
+                let mut sink = std::io::sink();
+                let job_cancel = cancel.with_timeout(timeout);
+                crate::process::run_process(
+                    &job_cancel,
+                    &clone,
+                    &crate::process::isolated_env(&home),
+                    &argv,
+                    &mut sink,
+                )
+                .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
+                crate::clones::check_clone(cancel, &clone, &keys)?;
+                let score_cancel = cancel.with_timeout(timeout);
+                score_clone(
+                    &score_cancel,
+                    &clone,
+                    &scorer_env(&home, &commit, &exe),
+                    &f.scorer,
+                )
+                .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))
+            })();
+            let clone_cleanup =
+                crate::clones::remove_measurement_clone(&cleanup_store, &cleanup_id, i + 1);
+            let (value, reason) = match (fixture_result, clone_cleanup) {
+                (Ok(value), Ok(())) => value,
+                (Err(e), Ok(())) => return Err(e),
+                (Ok(_), Err(e)) => return Err(anyhow!("measurement clone cleanup failed: {e}")),
+                (Err(e), Err(clean)) => {
+                    return Err(anyhow!("{e}; measurement clone cleanup failed: {clean}"));
+                }
+            };
             scores.fixtures.push(crate::api::FixtureScore {
                 name: f.name.clone(),
                 kind: f.kind.clone(),
@@ -586,6 +598,39 @@ test ! -e target
         assert_eq!(scores.total, 1.0);
         let target_dir = std::fs::read_to_string(&log).unwrap();
         assert!(target_dir.contains("/homes/1/build/cargo-target"));
+        assert_no_clones(&s);
+    }
+
+    #[test]
+    fn measure_removes_each_clone_before_next_fixture() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        fixture(&s, "demo", "F01", "printf 1", 1.0);
+        fixture(&s, "demo", "F02", "printf 1", 1.0);
+        fake_harness(
+            &s,
+            r#"
+root=$(dirname "$PWD")
+case "$(basename "$PWD")" in
+  1) test ! -e "$root/2" ;;
+  2) test ! -e "$root/1"; test -d "$root/homes/1" ;;
+  *) exit 5 ;;
+esac
+"#,
+        );
+        let cancel = pulse_bus::CancellationToken::new();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(scores.fixtures.len(), 2);
         assert_no_clones(&s);
     }
 

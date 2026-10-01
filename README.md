@@ -531,7 +531,9 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   violation. Build caches are placed under that fixture's isolated measurement
   home (`build/cargo-target`, `npm-cache`, `go-cache`, `go-mod`, `pip-cache`,
   `uv-cache`, `yarn-cache`) and the scorer gets the same cache environment, so
-  cargo `target/` and other tool caches are not part of the frozen clone.
+  cargo `target/` and other tool caches are not part of the frozen clone. Each
+  fixture clone is removed as soon as its scorer finishes; the isolated homes
+  stay until the measurement root's final cleanup.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 

@@ -437,7 +437,28 @@ pub(crate) fn remove_managed(s: &pulse_store::Store, id: &str) -> Result<()> {
         return Ok(());
     }
     let target = root.join(id);
-    let info = match fs::symlink_metadata(&target) {
+    remove_tree(&target)
+}
+
+pub(crate) fn remove_measurement_clone(
+    s: &pulse_store::Store,
+    id: &str,
+    ordinal: usize,
+) -> Result<()> {
+    if !crate::fleet::MANAGED_ID.is_match(id) || ordinal == 0 {
+        return Err(crate::fixtures::input_error(
+            "Cannot clean measurement clone",
+            "expected a measurement id and fixture number, not a path",
+            "pulse fleet list",
+        ));
+    }
+    let base = fleet_root(s, false)?;
+    let target = Path::new(&base).join(id).join(ordinal.to_string());
+    remove_tree(&target)
+}
+
+fn remove_tree(target: &Path) -> Result<()> {
+    let info = match fs::symlink_metadata(target) {
         Ok(i) => i,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e.into()),
@@ -454,8 +475,8 @@ pub(crate) fn remove_managed(s: &pulse_store::Store, id: &str) -> Result<()> {
             }
             Ok(())
         }
-        chmod_dirs(&target).map_err(|e| anyhow!("cannot make managed clone removable: {e}"))?;
+        chmod_dirs(target).map_err(|e| anyhow!("cannot make managed clone removable: {e}"))?;
     }
-    fs::remove_dir_all(&target).or_else(|_| fs::remove_file(&target))?;
+    fs::remove_dir_all(target).or_else(|_| fs::remove_file(target))?;
     Ok(())
 }
