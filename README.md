@@ -528,8 +528,16 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   yours to add with `pulse evolve fixture add`. Every scorer runs against a
   frozen clone: a symlink or hardlink that leaves the clone, a special file,
   or a tree that differs after the scorer ran fails the measurement as a
-  violation; build output the harness left behind, including cargo's
-  hardlinked `target/`, is fine as long as every link stays inside the clone.
+  violation. Fixtures run in a bounded pool (`evolve.measure_parallel`,
+  default `4`; `0` or `1` keeps them sequential), and the log starts with
+  `measuring <k> fixtures with <p> in parallel`; rows and scores are still
+  reported in fixture order. Build caches are placed under that fixture's
+  isolated measurement home (`build/cargo-target`, `npm-cache`, `go-cache`,
+  `go-mod`, `pip-cache`, `uv-cache`, `yarn-cache`) and the scorer gets the
+  same cache environment, so cargo `target/` and other tool caches are not
+  part of the frozen clone. Each worker has at most one fixture clone at a
+  time, and removes that clone as soon as its scorer finishes; the isolated
+  homes stay until the measurement root's final cleanup.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 
@@ -643,6 +651,7 @@ record, read with `pulse record show WF-evolve`.
 | Setting | Built-in default | Scope |
 | --- | --- | --- |
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
+| `evolve.measure_parallel` | `4` fixtures | Fixtures one measurement runs at once; `0` or `1` keeps measurement sequential. Each worker keeps only one clone live and removes it after scoring. |
 | `max_ai_credits` | `30` credits (minimum `30`) | Legacy `copilot-cli` harness only: passed to Copilot CLI workers; not automatically applied to measurement harnesses. |
 | `harness` | `native` | Which harness runs the workers: `native` (built in, `pulse harness run`) or `copilot-cli` (the legacy `copilot` binary named by `runner_cmd`). |
 | `provider` | `copilot` | The model provider the built-in harness talks to. GitHub Copilot is the first; more register under `crates/pulse-provider-<name>`. |
