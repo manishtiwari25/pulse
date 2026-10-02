@@ -526,7 +526,8 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   message, a wrong default, a broken user path, a swallowed error) and only
   then a flaky test, broken link, stale doc or lint finding; research jobs
   rotate through their focuses starting with the product as its user sees
-  it. The console's Votes page, `pulse queue`
+  it, and keep to the product focuses while the day's operating-layer cap is
+  reached. The console's Votes page, `pulse queue`
   (`not planned: <gate>`) and `pulse status` (`planner <slug>: N eligible, M
   plannable (...)`) show the same gate for the same card, so a ballot that
   "does nothing" always says why. A job that ran marks the suggestion `built`
@@ -1476,11 +1477,21 @@ nothing queued, and no research job or job that decided work created for
 `lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do
 not count), the planner seeds one research job - a `reflect` job whose
 brief points a worker at one focus in turn (the product as its user sees it,
-the code that changes most, the project's checks, the loop's report, the docs
-against the code, the dependencies, the board, the lessons the code could
-enforce) and requires one to three experiment cards with evidence, votes on
-the listed cards below quorum and findings for the rest - at most
-`lead.research_per_day` (default 12) per project per day. While fewer than
+the code that changes most, the next step toward the project's goal, the
+project's checks, the loop's report, the docs against the code, the
+dependencies, the board, the lessons the code could enforce) and requires one
+to three experiment cards with evidence, votes on the listed cards below
+quorum and findings for the rest - at most `lead.research_per_day` (default
+12) per project per day. The goal focus is the fleet's own source of new
+work: it reads `pulse goal`, holds it against what the product does today
+(the README's promises, roadmap or TODO lists, empty states, steps the user
+does by hand, the last ten landed commits) and cards the smallest slice a
+worker could ship in one job that the user would use the day it lands -
+building toward the purpose rather than hunting a defect. While the day's
+operating-layer improve jobs have already reached
+`plan.operating_layer_per_day`, the rotation keeps to the product focuses
+(product, code, goal, docs): cards from the others would join a pile the cap
+holds until tomorrow while the slots stand idle for want of a product card. While fewer than
 half the local worker slots hold a lease the fleet is idle, and research comes
 `lead.idle_factor` (default 3, `1` keeps the plain cadences) times
 sooner - the wait divided by the factor, never below 10 minutes - with the
