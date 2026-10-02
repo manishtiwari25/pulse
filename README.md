@@ -1329,10 +1329,17 @@ that fail the check - becomes one corrected job whose brief carries the failure
 and the run log's tail; a task's job instead goes back to the lead to re-plan
 as before, and the lead waits for a transient failure the daemon will run
 again. A structural failure - a login, a missing tool, an invalid recipe,
-the owner's paths, an identity refusal, a hard stop, an owner question or a
-worker's own SUMMARY that it stopped blocked - is held with its reason because
-another path fixes it; so is a failure whose work a later job with the same
-source already carries. An `answer` job is never recovered: a question is
+the owner's paths, an identity refusal, a hard stop, an owner question, a
+worker's own SUMMARY that opens with "blocked" or names Tier 2 - is held with
+its reason because another path fixes it; so is a failure whose work a later
+job with the same source already carries. When the held job came from a board
+card (a suggestion, handoff or question) the daemon asks the owner once on the
+card's own thread (`Needs the owner: ...`, a question marked for the owner):
+what the worker found, that no more jobs are queued for the card, and the two
+ways to close it - land the change by hand or through an ADR and answer with
+the commit, or decline the card with a `--resolution declined` answer. In the
+week before this landed, 48 of 140 corrected jobs (34%) re-ran a verdict a
+Tier 1 run could only repeat. An `answer` job is never recovered: a question is
 tried once, and a failed answer leaves the thread to a human or a new post.
 Recovery adds to a project's queue only while fewer
 than five jobs wait there, so recovered work interleaves with fresh work

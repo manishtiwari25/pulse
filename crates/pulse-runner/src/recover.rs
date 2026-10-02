@@ -603,6 +603,9 @@ pub(crate) fn recover_one(
     let mut line = String::new();
     let mut acted = false;
     let mut capped = false;
+    // A card job held for a reason only the owner can lift asks the owner on
+    // the card's thread once the transaction is over.
+    let mut owner_question: Option<(Row, String, String)> = None;
     let err = crate::db::immediate(s, |q| {
         let current = current_recovery_failure(q, job.clone())?;
         job = current;
@@ -725,6 +728,13 @@ pub(crate) fn recover_one(
             )?;
             line = format!("held {} (structural): {}", job.str("id"), f.reason);
             acted = true;
+            if hold_asks_owner(&job, &f.reason) {
+                owner_question = Some((
+                    job.clone(),
+                    row_str(run.clone(), "agent".into()),
+                    f.reason.clone(),
+                ));
+            }
             return Ok(());
         }
         if now < crate::failure::recover_due(job.str("finished_at"), n) {
@@ -783,11 +793,127 @@ pub(crate) fn recover_one(
             false,
         );
     }
-    if capped && let Err(err) = post_recovery_finding(s, project.str("slug"), root, n, now, actor) {
+    if capped
+        && let Err(err) =
+            post_recovery_finding(s, project.str("slug"), root, n, now.clone(), actor.clone())
+    {
         line.push_str("; recovery finding deferred: ");
         line.push_str(&err_message(&err));
     }
+    if let Some((held, agent, reason)) = owner_question {
+        match post_hold_question(s, &held, &agent, &reason, &now, &actor) {
+            Ok(true) => line.push_str("; asked the owner on the card's thread"),
+            Ok(false) => {}
+            Err(err) => {
+                line.push_str("; owner question deferred: ");
+                line.push_str(&err_message(&err));
+            }
+        }
+    }
     (line, acted)
+}
+
+/// The summary prefix of the question a structural hold leaves for the owner.
+pub(crate) const HOLD_QUESTION_SUMMARY: &str = "Needs the owner:";
+
+/// A job seeded from a board card (suggestion, handoff, question) whose worker
+/// stopped for a reason no Tier 1 re-run lifts - Tier 2 scope, an owner-only
+/// path, a decision - and who did not already ask the owner itself.
+pub(crate) fn hold_asks_owner(job: &Row, reason: &str) -> bool {
+    let source = job.str("source");
+    (source.starts_with("suggestion:")
+        || source.starts_with("handoff:")
+        || source.starts_with("question:"))
+        && !reason.starts_with("the worker asked the owner")
+}
+
+/// Posts one `question` for the owner on the card's own thread: what the
+/// worker found, why the daemon queues no more jobs for it, and the two ways
+/// the owner closes it. One per card until the lead or the owner answers.
+pub(crate) fn post_hold_question(
+    s: &pulse_store::Store,
+    job: &Row,
+    agent: &str,
+    reason: &str,
+    now: &str,
+    actor: &str,
+) -> anyhow::Result<bool> {
+    let conn = s.conn()?;
+    let slug = job.str("project");
+    let card_id = job
+        .str("source")
+        .split_once(':')
+        .map(|(_, id)| id.to_string())
+        .unwrap_or_default();
+    let card = crate::board::post_row(&conn, card_id.clone());
+    if card.0.is_empty() {
+        return Ok(false);
+    }
+    let (area, thread) = (card.str("area"), card.str("thread"));
+    let reset = query_one(
+        &conn,
+        "SELECT COALESCE(MAX(date), '') AS d FROM posts WHERE project = ? AND area = ? AND thread = ? AND kind = 'answer' AND agent IN (?, ?)",
+        &[
+            &slug,
+            &area,
+            &thread,
+            &crate::lead::lead_name(slug.clone()),
+            &pulse_store::HUMAN_AGENT,
+        ],
+    )
+    .map_err(|e| anyhow!("read thread answers: {e}"))?
+    .str("d");
+    let existing = query_one(
+        &conn,
+        "SELECT 1 AS x FROM posts WHERE project = ? AND area = ? AND thread = ? AND kind = 'question' AND summary LIKE ? AND date > ? LIMIT 1",
+        &[
+            &slug,
+            &area,
+            &thread,
+            &format!("{HOLD_QUESTION_SUMMARY}%"),
+            &reset,
+        ],
+    )
+    .map_err(|e| anyhow!("look up hold question: {e}"))?;
+    if !existing.0.is_empty() {
+        return Ok(false);
+    }
+    let who = if agent.is_empty() {
+        "The worker".to_string()
+    } else {
+        format!("Worker {agent}")
+    };
+    let body = format!(
+        "{who} stopped `{}` ({}) for a reason no Tier 1 run lifts, and the daemon queues no more jobs for card `{card_id}`:
+
+{}
+
+The runner takes Tier 0 and Tier 1 jobs only; Tier 2 needs an ADR and the human. Land the change by hand or through an ADR and answer on this thread naming the commit, or decline the card with an answer carrying `--resolution declined`. `pulse job retry {} --as-new` runs the job again once the rules allow it.",
+        job.str("id"),
+        crate::util::trunc(&job.str("title"), 160),
+        crate::util::trunc(&crate::compute::redact_secrets(reason), 1200),
+        job.str("id"),
+    );
+    crate::board::create_post(
+        s,
+        now.to_string(),
+        crate::board::PostOpts {
+            kind: "question".into(),
+            project: slug,
+            area,
+            thread,
+            for_owner: true,
+            summary: format!(
+                "{HOLD_QUESTION_SUMMARY} {}",
+                crate::util::trunc(&card.str("summary"), 120)
+            ),
+            body,
+            links: card_id,
+            agent: crate::board::actor_agent(s, actor.to_string()),
+            ..Default::default()
+        },
+    )?;
+    Ok(true)
 }
 
 /// Go: func queueRecovery(...)
@@ -2099,10 +2225,105 @@ mod tests {
         assert_eq!(
             count(
                 &s,
-                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding'",
+                "SELECT COUNT(*) AS n FROM posts WHERE kind IN ('finding', 'question')",
                 &[]
             ),
-            0
+            0,
+            "a job without a card behind it asks nobody"
+        );
+    }
+
+    #[test]
+    fn recover_structural_hold_of_a_card_job_asks_the_owner_once() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (p, _) = new_bare_repo(&s);
+        join(&s, "aurora");
+        let card = crate::board::create_post(
+            &s,
+            crate::util::plus_hours(TEST_NOW, -3.0),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "evolution".into(),
+                thread: "deps".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                session: "s".into(),
+                summary: "`npm audit` in the root workspace drops from 11 findings to 0".into(),
+                body: "File: package-lock.json\nVariable: next 16.2.10 -> 16.3.7\nHypothesis: `npm audit` reports 0".into(),
+                ..Default::default()
+            },
+        )
+        .expect("card");
+        let verdict = "blocked: the only fix rewrites package-lock.json, which rule 3 forbids as Tier 2; no files changed, no commit";
+        let job = insert_recover_failed_job(
+            &s,
+            "job-tier2",
+            "improve",
+            &format!("suggestion:{}", card.str("id")),
+            verdict,
+            &crate::util::plus_minutes(TEST_NOW, -1.0),
+        );
+        insert_recover_run(&s, "job-tier2", "run-tier2", "failed", verdict, "", "");
+        let lines = super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("held job-tier2 (structural)") && l.contains("asked the owner")),
+            "lines: {lines:?}"
+        );
+        let detail = recover_detail(&s, &job.str("id"));
+        assert_eq!(detail.get("class"), Some(&json!("structural")));
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source = ? AND status = 'queued'",
+                &[&job.str("source")],
+            ),
+            0,
+            "no Tier 1 re-run is queued for a Tier 2 verdict"
+        );
+        let questions: Vec<Row> = crate::plan::project_posts(&conn(&s), "proj".into())
+            .into_iter()
+            .filter(|r| r.str("kind") == "question")
+            .collect();
+        assert_eq!(questions.len(), 1, "questions: {questions:?}");
+        let q = &questions[0];
+        assert_eq!(q.str("area"), "evolution");
+        assert_eq!(q.str("thread"), "deps");
+        assert!(
+            q.str("summary").starts_with(super::HOLD_QUESTION_SUMMARY),
+            "{}",
+            q.str("summary")
+        );
+        assert_eq!(q.get("for_owner"), Some(&Value::Bool(true)), "{q:?}");
+        let body = q.str("body");
+        for want in [
+            "Worker w1 stopped `job-tier2`",
+            "rule 3 forbids as Tier 2",
+            "queues no more jobs for card",
+            "Tier 2 needs an ADR and the human",
+            "--resolution declined",
+            "pulse job retry job-tier2 --as-new",
+        ] {
+            assert!(body.contains(want), "missing {want:?} in {body}");
+        }
+
+        // Another tick holds the same job again and asks nothing more.
+        super::recover_failed_jobs(
+            &s,
+            p.clone(),
+            crate::util::plus_minutes(TEST_NOW, 30.0),
+            "daemon".into(),
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question'",
+                &[]
+            ),
+            1
         );
     }
 

@@ -79,8 +79,15 @@ static TRANSIENT_MARKS: &[&str] = &[
 static OWNER_BLOCKED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(owner|human)[- ](only|authori[sz]ation|decision|blocked|prepared|landing|approval)\b|\bpending (an? |the )?(owner|human)\b|\brequires? (an? |the )?(owner|human)\b|\bblocked (by|pending|on) (the |an? )?(owner|human)\b").unwrap()
 });
+/// A verdict that opens with "blocked" - the stored result carries no
+/// `SUMMARY:` prefix, so the prefix is optional.
 static SUMMARY_BLOCKED_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^summary:\s*[^;.\n]*\bblocked\b").unwrap());
+    LazyLock::new(|| Regex::new(r"(?i)^(summary:\s*)?[^;.\n]*\bblocked\b").unwrap());
+/// The worker names Tier 2: the change needs an ADR and the human, so no
+/// Tier 1 re-run can finish it.
+static TIER2_VERDICT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\btier[ -]?2\b|\bcannot be done at tier[ -]?[01]\b").unwrap()
+});
 static CHECK_MISSING_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(verify|check|setup) exit 12[67]\b").unwrap());
 static RUNNER_WORDS_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -165,6 +172,7 @@ pub(crate) fn classify_failure(
     } else if hard_stop_text(&text)
         || OWNER_BLOCKED_RE.is_match(&text)
         || SUMMARY_BLOCKED_RE.is_match(&text)
+        || TIER2_VERDICT_RE.is_match(&text)
         || CHECK_MISSING_RE.is_match(&text)
         || STRUCTURAL_MARKS.iter().any(|m| text.contains(m))
         || (RUNNER_WORDS_RE.is_match(&text) && crate::executor::login_fault(&text))
@@ -547,6 +555,30 @@ mod tests {
             (
                 "blocked later in the summary is the work",
                 "SUMMARY: Fixed the parser; one test still fails because the mock blocked the retry path.",
+                "failed",
+                "",
+                false,
+                FAILURE_DETERMINISTIC,
+            ),
+            (
+                "blocked verdict stored without the summary prefix",
+                "blocked: fixing `npm audit` requires changing package-lock.json (next 16.2.10→16.3.7 plus sharp, undici), which is a Tier 2 dependency change that rule 3 forbids in this run; no files changed, no commit.",
+                "failed",
+                "",
+                false,
+                FAILURE_STRUCTURAL,
+            ),
+            (
+                "tier 2 named mid-sentence",
+                "the task's single variable (bump `next` ^16.2.10→^16.3.7 via `npm audit fix`) cannot be done at Tier 1 — the lockfile change is Tier 2 under rule 3.",
+                "failed",
+                "",
+                false,
+                FAILURE_STRUCTURAL,
+            ),
+            (
+                "blocked after the first clause without a prefix stays the work",
+                "Fixed the parser; one test still fails because the mock blocked the retry path.",
                 "failed",
                 "",
                 false,
