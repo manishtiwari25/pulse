@@ -24,12 +24,19 @@ static COUNTDOWN: LazyLock<regex::Regex> = LazyLock::new(|| {
         .expect("countdown regex")
 });
 
-/// The reason with its countdowns replaced by `#`, so two notes that differ
-/// only by the minutes left compare equal.
+/// The reason with each countdown replaced by one `#`, so two notes that
+/// differ only by the time left compare equal - also across a unit boundary
+/// (`1h05m` then `59m`, `10m0s` then `56s`), where a per-digit replacement
+/// kept re-logging the same hold as its countdown ran down.
 pub(crate) fn normalize_countdowns(reason: &str) -> String {
     COUNTDOWN
         .replace_all(reason, |caps: &regex::Captures| {
-            DIGITS.replace_all(&caps[0], "#").into_owned()
+            if caps.get(5).is_some() {
+                // `3 minutes` keeps its word; only the number goes.
+                DIGITS.replace_all(&caps[0], "#").into_owned()
+            } else {
+                "#".to_string()
+            }
         })
         .into_owned()
 }
@@ -100,7 +107,7 @@ mod tests {
             normalize_countdowns(
                 "3 eligible suggestions, 0 plannable; ballot in 2h; research: last research 47m ago, next after 13m; retry in 1h05m; wait 40s"
             ),
-            "3 eligible suggestions, 0 plannable; ballot in #h; research: last research #m ago, next after #m; retry in #h#m; wait #s"
+            "3 eligible suggestions, 0 plannable; ballot in #; research: last research # ago, next after #; retry in #; wait #"
         );
         assert_eq!(
             normalize_countdowns("job-20261001T1200Z-ab12 waits 3 minutes"),
@@ -109,16 +116,22 @@ mod tests {
         assert_eq!(normalize_countdowns("no queued job"), "no queued job");
         // format_duration writes minutes and seconds together; the restart
         // hold line once re-logged every tick because `23m16s` was no
-        // countdown to this regex.
+        // countdown to this regex, and again when `10m0s` ran down to `56s`.
         assert_eq!(
             normalize_countdowns(
                 "restarting: no new runs with 23m16s left of the drain; 1 in flight"
             ),
-            "restarting: no new runs with #m#s left of the drain; 1 in flight"
+            "restarting: no new runs with # left of the drain; 1 in flight"
+        );
+        assert_eq!(
+            normalize_countdowns("restarting: no new runs with 56s left of the drain; 1 in flight"),
+            normalize_countdowns(
+                "restarting: no new runs with 10m0s left of the drain; 1 in flight"
+            )
         );
         assert_eq!(
             normalize_countdowns("one may take up to 1h2m3s"),
-            "one may take up to #h#m#s"
+            "one may take up to #"
         );
     }
 

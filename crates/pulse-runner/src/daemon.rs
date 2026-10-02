@@ -51,6 +51,9 @@ pub(crate) struct Dispatch {
     pub(crate) job: Row,
     pub(crate) run: Row,
     pub(crate) reason: String,
+    /// The tick that started it, ISO; the restart window counts the budget
+    /// of the runs in flight from here.
+    pub(crate) started_at: String,
 }
 
 /// Go: daemonOpts.Out (io.Writer) - shared with worker/maintenance threads, so it sits behind a
@@ -278,6 +281,37 @@ pub(crate) fn restart_drain(s: &pulse_store::Store) -> Duration {
     Duration::from_secs((s.setting_int("daemon.restart_drain_minutes").max(0) as u64) * 60)
 }
 
+/// How long new runs may still start while a restart is pending: the drain
+/// that is left, or the time until the last of the runs this daemon had in
+/// flight when the restart was armed reaches its budget (minutes_per_job
+/// from its start, `anchors` being their start times), whichever is longer.
+/// The restart waits for those runs in any case, so a new run that ends
+/// before their budget does delays nothing, while a daemon that stops
+/// dispatching the moment the drain is over idles every project for as long
+/// as that one run takes - up to the whole budget at each release. Runs
+/// started inside the window are not anchors: each would open a fresh budget
+/// and the restart would never come while the queue had work.
+pub(crate) fn restart_window<'a>(
+    s: &pulse_store::Store,
+    drain_left: Duration,
+    now: &str,
+    anchors: impl IntoIterator<Item = &'a str>,
+) -> Duration {
+    let budget = chrono::Duration::seconds(s.setting_int("minutes_per_job").max(0) * 60);
+    let now = crate::util::must_iso(now);
+    let slowest = anchors
+        .into_iter()
+        .filter(|started| !started.is_empty())
+        .map(|started| {
+            (crate::util::must_iso(started) + budget - now)
+                .num_seconds()
+                .max(0) as u64
+        })
+        .max()
+        .unwrap_or(0);
+    drain_left.max(Duration::from_secs(slowest))
+}
+
 /// Finished runs a measured `run_fits` needs before it trusts the measurement.
 const RUN_FITS_MIN_SAMPLES: usize = 10;
 /// Finished runs the measurement looks back over.
@@ -309,6 +343,17 @@ fn run_fits(s: &pulse_store::Store) -> Duration {
     seconds.sort_by(f64::total_cmp);
     let p90 = seconds[(seconds.len() * 9 / 10).min(seconds.len() - 1)];
     Duration::from_secs(p90.ceil() as u64 + 5 * 60).min(cap)
+}
+
+/// Start times of the anchor runs still in flight.
+fn anchor_starts<'a>(
+    inflight: &'a BTreeMap<String, Dispatch>,
+    anchors: &'a std::collections::BTreeSet<String>,
+) -> impl Iterator<Item = &'a str> + 'a {
+    inflight
+        .iter()
+        .filter(move |(key, _)| anchors.contains(*key))
+        .map(|(_, d)| d.started_at.as_str())
 }
 
 fn active_queued_count(s: &pulse_store::Store) -> i32 {
@@ -390,6 +435,8 @@ pub(crate) fn daemon(
     // daemon keeps dispatching and landing for up to daemon.restart_drain_minutes
     // and exits with code 3 as soon as nothing is in flight (restart handover).
     let mut restart_pending: Option<std::time::Instant> = None;
+    // The runs in flight when the restart was armed: the window follows them.
+    let mut restart_anchors: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut maintenance = crate::daemon_maintenance::DaemonMaintenance::default();
     let mut maintenance_wake = false;
     let mut probes = crate::checkout::CheckoutProbes::default();
@@ -707,12 +754,24 @@ pub(crate) fn daemon(
                     break;
                 }
                 None => {
+                    restart_anchors = inflight.keys().cloned().collect();
                     let fits = run_fits(s);
-                    let starts = if fits > drain {
+                    let window = restart_window(
+                        s,
+                        drain,
+                        &s.now(),
+                        anchor_starts(&inflight, &restart_anchors),
+                    );
+                    let starts = if fits > window {
                         format!(
                             "no new run starts (one may take up to {} and would not fit the {} drain)",
                             pulse_cli::format_duration(fits),
                             pulse_cli::format_duration(drain)
+                        )
+                    } else if window > drain {
+                        format!(
+                            "new runs may start for up to {} while the slowest run in flight has budget left",
+                            pulse_cli::format_duration(window)
                         )
                     } else {
                         format!(
@@ -737,11 +796,19 @@ pub(crate) fn daemon(
                     leave = ("restart", "restarting");
                     break;
                 }
-                Some(since) if since.elapsed() >= drain => {
+                Some(since)
+                    if since.elapsed() >= drain
+                        && restart_window(
+                            s,
+                            Duration::ZERO,
+                            &s.now(),
+                            anchor_starts(&inflight, &restart_anchors),
+                        ) < run_fits(s) =>
+                {
                     say(
                         &o,
                         format!(
-                            "restart drain of {} over with {} run(s) still in flight; exiting with code 3 after they finish",
+                            "restart drain of {} over and no new run fits before the slowest of {} run(s) in flight ends; exiting with code 3 after they finish",
                             pulse_cli::format_duration(drain),
                             inflight.len()
                         ),
@@ -754,6 +821,7 @@ pub(crate) fn daemon(
         } else if restart_pending.is_some() {
             // The binary was changed back: the handover is off.
             restart_pending = None;
+            restart_anchors.clear();
         }
         let now = s.now();
         let restart_note = restart_pending
@@ -970,13 +1038,19 @@ pub(crate) fn daemon(
                 .expect("login gate poisoned"))(s);
             slots = crate::run::executor_slots(s, &now, &busy, !gate.is_empty());
             let restart_hold = restart_pending.and_then(|since| {
-                let left = restart_drain(s).saturating_sub(since.elapsed());
+                let drain_left = restart_drain(s).saturating_sub(since.elapsed());
+                let left = restart_window(
+                    s,
+                    drain_left,
+                    &now,
+                    anchor_starts(&inflight, &restart_anchors),
+                );
                 // Whole seconds, so the idle log sees one line as the countdown moves.
                 let left = Duration::from_secs(left.as_secs());
                 let fits = run_fits(s);
                 (left < fits).then(|| {
                     format!(
-                        "restarting: no new runs with {} left of the drain; {} in flight",
+                        "restarting: no new runs with {} left of the restart window; {} in flight",
                         pulse_cli::format_duration(left),
                         inflight.len()
                     )
@@ -1088,6 +1162,7 @@ pub(crate) fn daemon(
                             slot: slot.clone(),
                             worker,
                             job,
+                            started_at: now.clone(),
                             ..Default::default()
                         };
                         inflight.insert(dispatch_key(&d.slot, &d.worker, &d.job), d.clone());
@@ -1574,6 +1649,7 @@ mod tests {
     fn restart_with_run_in_flight(
         drain_minutes: &str,
         queue_after_flip: bool,
+        fast_history: bool,
     ) -> (crate::test_helpers::TestStore, String, String, String) {
         pulse_bus::reset_default();
         let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
@@ -1581,6 +1657,15 @@ mod tests {
         new_bare_repo(&s);
         join(&s, "aurora");
         join(&s, "borealis");
+        if fast_history {
+            s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "2")
+                .unwrap();
+            // Ten real runs of ten seconds, two days ago so the daily job cap
+            // does not count them: run_fits measures 10s + 5m.
+            for n in 0..10 {
+                finished_run(&s, n, 2.0 * 24.0 * 60.0 + n as f64, "done", "real", 10.0);
+            }
+        }
         s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
             .unwrap();
         s.set_setting(
@@ -1665,7 +1750,7 @@ mod tests {
     #[test]
     fn restart_hands_over_once_the_runs_in_flight_finish() {
         let _serial = crate::test_helpers::serial();
-        let (s, out, result, slow_id) = restart_with_run_in_flight("30", false);
+        let (s, out, result, slow_id) = restart_with_run_in_flight("30", false, false);
         assert_eq!(result, "restart", "{out}");
         assert!(
             out.contains("1 run(s) in flight finish first and new runs may start for up to 30m"),
@@ -1770,7 +1855,7 @@ mod tests {
     #[test]
     fn restart_drain_zero_stops_dispatch_at_once() {
         let _serial = crate::test_helpers::serial();
-        let (_s, out, result, _) = restart_with_run_in_flight("0", false);
+        let (_s, out, result, _) = restart_with_run_in_flight("0", false, false);
         assert_eq!(result, "restart", "{out}");
         assert!(
             out.contains("pulse changed on disk; exiting with code 3 so the service restarts it")
@@ -1788,7 +1873,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         // One minute of drain is less than minutes_per_job + 5: the job queued
         // after the binary changed waits for the next daemon.
-        let (s, out, result, slow_id) = restart_with_run_in_flight("1", true);
+        let (s, out, result, slow_id) = restart_with_run_in_flight("1", true, false);
         assert_eq!(result, "restart", "{out}");
         assert!(
             out.contains(
@@ -1819,6 +1904,81 @@ mod tests {
             ),
             0,
             "a run started inside the last minute of the drain:\n{out}"
+        );
+    }
+
+    #[test]
+    fn restart_keeps_dispatching_runs_that_end_before_the_slowest_run_must() {
+        let _serial = crate::test_helpers::serial();
+        // The same one-minute drain, but the fleet's runs take seconds and the
+        // run in flight has ten minutes of budget: the job queued after the
+        // binary changed runs now, inside the time the restart waits anyway,
+        // instead of idling until the next daemon.
+        let (s, out, result, _) = restart_with_run_in_flight("1", true, true);
+        assert_eq!(result, "restart", "{out}");
+        assert!(
+            out.contains(
+                "new runs may start for up to 10m0s while the slowest run in flight has budget left"
+            ),
+            "{out}"
+        );
+        // A hold may follow once the slow run is done and only the drain is
+        // left, never before the queued job was leased.
+        let leased_twice = out.match_indices("leased job-").nth(1).map(|(i, _)| i);
+        assert!(
+            leased_twice.is_some(),
+            "the queued job was never leased:\n{out}"
+        );
+        if let Some(hold) = out.find("restarting: no new runs with") {
+            assert!(hold > leased_twice.unwrap(), "{out}");
+        }
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs r JOIN jobs j ON j.id = r.job_id WHERE j.title = 'Queued after the binary changed' AND r.status = 'done'",
+                &[]
+            ),
+            1,
+            "the queued job did not run before the handover:\n{out}"
+        );
+        assert!(
+            out.contains("nothing is in flight; exiting with code 3"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn restart_window_follows_the_slowest_run_in_flight() {
+        let s = new_store();
+        let now = TEST_NOW;
+        let ago = |minutes: f64| crate::util::plus_minutes(now, -minutes);
+        // Nothing anchored: the drain alone.
+        assert_eq!(
+            restart_window(&s, Duration::from_secs(90), now, []),
+            Duration::from_secs(90)
+        );
+        // A run three minutes in, with a ten-minute budget: seven minutes left
+        // beats a ninety-second drain; a longer drain still wins.
+        let three = ago(3.0);
+        assert_eq!(
+            restart_window(&s, Duration::from_secs(90), now, [three.as_str()]),
+            Duration::from_secs(7 * 60)
+        );
+        assert_eq!(
+            restart_window(&s, Duration::from_secs(30 * 60), now, [three.as_str()]),
+            Duration::from_secs(30 * 60)
+        );
+        // Several anchors: the one that may end last sets the window.
+        let eight = ago(8.0);
+        assert_eq!(
+            restart_window(&s, Duration::ZERO, now, [eight.as_str(), three.as_str()]),
+            Duration::from_secs(7 * 60)
+        );
+        // Past its budget: the run is waited for, but opens no window.
+        let eleven = ago(11.0);
+        assert_eq!(
+            restart_window(&s, Duration::ZERO, now, [eleven.as_str()]),
+            Duration::ZERO
         );
     }
 
