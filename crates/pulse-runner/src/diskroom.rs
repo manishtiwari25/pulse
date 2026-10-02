@@ -450,7 +450,12 @@ mod tests {
         let held_room = local_headroom(&s, &inflight).unwrap();
         assert!(!held_room.first_free);
         assert_eq!(held_room.setting_up, 1);
-        assert_eq!(held_room.budget_mb, room.budget_mb - 100_000_000);
+        // Each reading is measured against its own free space: the disk moves
+        // under the test suite between the two calls.
+        assert_eq!(
+            held_room.budget_mb,
+            i64::from(held_room.free_mb) - i64::from(held_room.floor_mb) - 100_000_000
+        );
         let a = Admission::new(held_room);
         assert_eq!(held(&a), ["<waits>"]);
         assert_eq!(

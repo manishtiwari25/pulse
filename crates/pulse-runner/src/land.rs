@@ -2298,6 +2298,7 @@ mod tests {
             crate::executor::LOCAL_EXECUTOR,
             0,
             &Default::default(),
+            &[],
         )
         .unwrap();
         assert!(

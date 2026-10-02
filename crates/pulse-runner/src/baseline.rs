@@ -1202,6 +1202,7 @@ mod tests {
                 "",
                 0,
                 &Default::default(),
+                &[],
             );
             match leased {
                 Ok((job, _, _)) if !job.0.is_empty() => job,

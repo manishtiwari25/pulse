@@ -1164,6 +1164,9 @@ pub(crate) fn tend_tasks(
 /// Go: func leadJobFor(s *store.Store, busy []string, dryRun bool, now, slot string, taken int) (lead string, job row, why string)
 ///
 /// `held` is passed on to `take_job`: projects the slot may not take now.
+/// `kinds` names the kinds of job the slot may lease (empty: any); a window
+/// with no room for a lead run leases none.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn lead_job_for(
     s: &pulse_store::Store,
     busy: &[String],
@@ -1172,7 +1175,11 @@ pub(crate) fn lead_job_for(
     slot: String,
     taken: i32,
     held: &std::collections::BTreeMap<String, String>,
+    kinds: &[String],
 ) -> (String, Row, String) {
+    if !kinds.is_empty() && !kinds.iter().any(|k| k == LEAD_KIND) {
+        return (String::new(), Row::new(), String::new());
+    }
     let Ok(conn) = s.conn() else {
         return (String::new(), Row::new(), String::new());
     };
@@ -1205,6 +1212,7 @@ pub(crate) fn lead_job_for(
             &slot,
             taken,
             held,
+            kinds,
         ) {
             Ok((job, _, why)) => {
                 if !job.0.is_empty() {

@@ -1937,6 +1937,7 @@ mod tests {
             crate::executor::LOCAL_EXECUTOR,
             0,
             &Default::default(),
+            &[],
         )
         .unwrap();
         assert!(job.0.is_empty(), "job = {job:?}");
@@ -2051,6 +2052,7 @@ mod tests {
             local,
             0,
             &Default::default(),
+            &[],
         )
         .unwrap();
         assert!(job.0.is_empty(), "job = {job:?}");
@@ -2071,6 +2073,7 @@ mod tests {
             local,
             0,
             &Default::default(),
+            &[],
         )
         .unwrap();
         assert_eq!(why, "no queued job for other");

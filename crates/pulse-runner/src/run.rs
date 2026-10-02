@@ -102,7 +102,9 @@ pub(crate) fn daily_cap(s: &pulse_store::Store) -> i32 {
 ///
 /// `held` names projects this call may not lease, with the unfit reason each
 /// carries - the daemon's disk headroom for the local executor (diskroom.rs);
-/// a project's own marks and blocks come first.
+/// a project's own marks and blocks come first. `kinds` names the kinds of
+/// job the call may lease - the daemon's restart window, which short runs
+/// still fit when long ones do not; empty leases any kind.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn take_job(
     s: &pulse_store::Store,
@@ -114,6 +116,7 @@ pub(crate) fn take_job(
     executor: &str,
     taken: i32,
     held: &BTreeMap<String, String>,
+    kinds: &[String],
 ) -> Result<(Row, Row, String)> {
     if let why = runner_stopped(s)
         && !why.is_empty()
@@ -266,6 +269,7 @@ pub(crate) fn take_job(
             job_id: job_id.to_string(),
             projects,
             any_proj,
+            kinds: kinds.to_vec(),
             ..Default::default()
         },
     )?;
@@ -353,6 +357,7 @@ pub(crate) fn work_once(
         &o.executor,
         0,
         &BTreeMap::new(),
+        &[],
     )?;
     if is_nil(&job) {
         return Ok((Row::new(), reason));
