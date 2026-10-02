@@ -23,14 +23,27 @@ static COUNTDOWN: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"\b(\d+h(\d+m)?(\d+s)?|\d+m(\d+s)?|\d+s|\d+ (minute|hour|second)s?)\b")
         .expect("countdown regex")
 });
+static GAUGE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    // A measured amount that drifts while a hold stands - `4594 MB free`,
+    // `118 MB` - not a count of things.
+    regex::Regex::new(r"\b\d+(\.\d+)? ?(MB|GB|MiB|GiB|KB|KiB)\b").expect("gauge regex")
+});
 
 /// The reason with each countdown replaced by one `#`, so two notes that
 /// differ only by the time left compare equal - also across a unit boundary
 /// (`1h05m` then `59m`, `10m0s` then `56s`), where a per-digit replacement
-/// kept re-logging the same hold as its countdown ran down.
+/// kept re-logging the same hold as its countdown ran down. A gauge in
+/// megabytes or gigabytes is normalised the same way: the disk-floor hold
+/// once re-logged every tick because the free megabytes moved with each
+/// install.
 pub(crate) fn normalize_countdowns(reason: &str) -> String {
-    COUNTDOWN
+    let reason = GAUGE
         .replace_all(reason, |caps: &regex::Captures| {
+            DIGITS.replace_all(&caps[0], "#").into_owned()
+        })
+        .into_owned();
+    COUNTDOWN
+        .replace_all(&reason, |caps: &regex::Captures| {
             if caps.get(5).is_some() {
                 // `3 minutes` keeps its word; only the number goes.
                 DIGITS.replace_all(&caps[0], "#").into_owned()
@@ -132,6 +145,30 @@ mod tests {
         assert_eq!(
             normalize_countdowns("one may take up to 1h2m3s"),
             "one may take up to #"
+        );
+        // The disk-floor hold re-logged every tick while installs moved the
+        // free megabytes; the floor itself and the counts stay.
+        assert_eq!(
+            normalize_countdowns(
+                "disk under floor: 4594 MB free on /Users/w/.pulse/work (daemon.min_free_mb 8192)"
+            ),
+            normalize_countdowns(
+                "disk under floor: 4603 MB free on /Users/w/.pulse/work (daemon.min_free_mb 8192)"
+            )
+        );
+        assert_eq!(
+            normalize_countdowns(
+                "disk headroom: room for 2 more local run(s) of up to 1600 MB above daemon.min_free_mb 1024; 1 setting up"
+            ),
+            "disk headroom: room for 2 more local run(s) of up to # MB above daemon.min_free_mb 1024; 1 setting up"
+        );
+        assert_ne!(
+            normalize_countdowns(
+                "disk headroom: room for 2 more local run(s) of up to 1600 MB above daemon.min_free_mb 1024; 1 setting up"
+            ),
+            normalize_countdowns(
+                "disk headroom: room for 0 more local run(s) of up to 1600 MB above daemon.min_free_mb 1024; 2 setting up"
+            )
         );
     }
 
