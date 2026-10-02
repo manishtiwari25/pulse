@@ -321,21 +321,34 @@ const RUN_FITS_WINDOW: usize = 50;
 /// Setup and report around the measured worker time of a run.
 const RUN_FITS_MARGIN: Duration = Duration::from_secs(5 * 60);
 
-/// How long a new run of `kind` is expected to take, used to decide whether
-/// one still fits inside a restart window: the 90th percentile of the last
-/// fifty real runs of that kind that ran a worker to an end plus five minutes
-/// of setup and report. A kind with fewer than ten such runs borrows the
-/// measure of all kinds together; the budget plus five minutes caps it and
-/// stands in while fewer than ten runs exist at all. Kinds differ by an
-/// order of magnitude - a ballot takes a minute, an improve run half an
-/// hour - so one measure for all either held the ballots for every window
-/// or let the long runs overrun it. Runs the window outlives are waited for
-/// anyway, so a low estimate costs one run's overrun before the restart.
-fn run_fits(s: &pulse_store::Store, kind: &str) -> Duration {
+/// The expected length of a run, by the project and the kind of its job.
+type Fits = BTreeMap<(String, String), Duration>;
+
+/// How long a new run of `kind` on `project` is expected to take, used to
+/// decide whether one still fits inside a restart window: the 90th percentile
+/// of the last fifty real runs of that kind on that project that ran a worker
+/// to an end plus five minutes of setup and report. Under ten such runs the
+/// project borrows the measure of the kind over every project, under ten of
+/// those the measure of all runs together; the budget plus five minutes caps
+/// it and stands in while fewer than ten runs exist at all. Kinds differ by an
+/// order of magnitude - a ballot takes a minute, an improve run half an hour -
+/// and so do projects: an improve run on the brain takes an hour where one on
+/// a blog takes five minutes, so one measure per kind held the blog's runs for
+/// every window and let the brain's overrun it. Runs the window outlives are
+/// waited for anyway, so a low estimate costs one run's overrun before the
+/// restart.
+fn run_fits(s: &pulse_store::Store, project: &str, kind: &str) -> Duration {
     let cap = run_fits_cap(s);
     let Ok(conn) = s.conn() else { return cap };
-    run_fits_p90(&conn, kind)
-        .or_else(|| run_fits_p90(&conn, ""))
+    (!project.is_empty())
+        .then(|| run_fits_p90(&conn, project, kind))
+        .flatten()
+        .or_else(|| {
+            (!kind.is_empty())
+                .then(|| run_fits_p90(&conn, "", kind))
+                .flatten()
+        })
+        .or_else(|| run_fits_p90(&conn, "", ""))
         .map(|p90| (p90 + RUN_FITS_MARGIN).min(cap))
         .unwrap_or(cap)
 }
@@ -346,27 +359,33 @@ fn run_fits_cap(s: &pulse_store::Store) -> Duration {
 }
 
 /// The 90th percentile of the worker time of the last fifty real runs of
-/// `kind` (every kind when empty) that ran to an end, once ten exist.
-fn run_fits_p90(conn: &(impl crate::util::Querier + ?Sized), kind: &str) -> Option<Duration> {
-    let mut seconds: Vec<f64> = if kind.is_empty() {
-        crate::util::must_rows(
-            conn,
-            "SELECT seconds FROM runs WHERE finished_at != '' AND mode = 'real' AND seconds > 0
-             AND status IN ('done', 'failed', 'timeout') ORDER BY finished_at DESC LIMIT ?",
-            &[&(RUN_FITS_WINDOW as i64)],
-        )
-    } else {
-        crate::util::must_rows(
-            conn,
-            "SELECT r.seconds FROM runs r JOIN jobs j ON j.id = r.job_id WHERE r.finished_at != ''
-             AND r.mode = 'real' AND r.seconds > 0 AND r.status IN ('done', 'failed', 'timeout')
-             AND j.kind = ? ORDER BY r.finished_at DESC LIMIT ?",
-            &[&kind, &(RUN_FITS_WINDOW as i64)],
-        )
+/// `kind` on `project` (every kind, every project when empty) that ran to an
+/// end, once ten exist.
+fn run_fits_p90(
+    conn: &(impl crate::util::Querier + ?Sized),
+    project: &str,
+    kind: &str,
+) -> Option<Duration> {
+    let mut sql = String::from(
+        "SELECT r.seconds FROM runs r LEFT JOIN jobs j ON j.id = r.job_id WHERE r.finished_at != ''
+         AND r.mode = 'real' AND r.seconds > 0 AND r.status IN ('done', 'failed', 'timeout')",
+    );
+    let limit = RUN_FITS_WINDOW as i64;
+    let mut args: Vec<&dyn rusqlite::ToSql> = Vec::new();
+    if !project.is_empty() {
+        sql.push_str(" AND j.project = ?");
+        args.push(&project);
     }
-    .iter()
-    .map(|r| r.float("seconds"))
-    .collect();
+    if !kind.is_empty() {
+        sql.push_str(" AND j.kind = ?");
+        args.push(&kind);
+    }
+    sql.push_str(" ORDER BY r.finished_at DESC LIMIT ?");
+    args.push(&limit);
+    let mut seconds: Vec<f64> = crate::util::must_rows(conn, &sql, &args)
+        .iter()
+        .map(|r| r.float("seconds"))
+        .collect();
     if seconds.len() < RUN_FITS_MIN_SAMPLES {
         return None;
     }
@@ -375,42 +394,81 @@ fn run_fits_p90(conn: &(impl crate::util::Querier + ?Sized), kind: &str) -> Opti
     Some(Duration::from_secs(p90.ceil() as u64))
 }
 
-/// The expected length of a run of each kind of job, measured once per tick.
-fn kind_fits(s: &pulse_store::Store) -> BTreeMap<String, Duration> {
-    pulse_board::JOB_KINDS
+/// The expected length of a run of each kind of job on each active project,
+/// measured once per tick.
+fn kind_fits(s: &pulse_store::Store) -> Fits {
+    let projects = s.projects(true).unwrap_or_default();
+    projects
         .iter()
-        .map(|kind| (kind.to_string(), run_fits(s, kind)))
-        .collect()
-}
-
-/// The kinds whose run fits a restart window with `left` to go: their
-/// worker is expected to be done before then, their setup and report running
-/// into the margin the window already holds for the runs in flight; a kind
-/// without a measure needs more than a whole budget of window. In the order
-/// of `pulse_board::JOB_KINDS`; all of them means no hold.
-fn kinds_within(fits: &BTreeMap<String, Duration>, left: Duration) -> Vec<String> {
-    pulse_board::JOB_KINDS
-        .iter()
-        .filter(|kind| {
-            fits.get(**kind)
-                .is_some_and(|fit| *fit < left + RUN_FITS_MARGIN)
+        .flat_map(|p| {
+            pulse_board::JOB_KINDS
+                .iter()
+                .map(move |kind| (p.slug.clone(), kind.to_string()))
         })
-        .map(|kind| kind.to_string())
+        .map(|(project, kind)| {
+            let fit = run_fits(s, &project, &kind);
+            ((project, kind), fit)
+        })
         .collect()
 }
 
-/// The shortest expected run among the kinds: the window nothing fits.
-fn shortest_fit(fits: &BTreeMap<String, Duration>) -> Duration {
+/// The project and kind pairs whose run fits a restart window with `left`
+/// to go: their worker is expected to be done before then, their setup and
+/// report running into the margin the window already holds for the runs in
+/// flight; a pair without a measure needs more than a whole budget of
+/// window. All of them means no hold.
+fn kinds_within(fits: &Fits, left: Duration) -> Vec<(String, String)> {
+    fits.iter()
+        .filter(|(_, fit)| **fit < left + RUN_FITS_MARGIN)
+        .map(|(pair, _)| pair.clone())
+        .collect()
+}
+
+/// The shortest expected run among the pairs: the window nothing fits.
+fn shortest_fit(fits: &Fits) -> Duration {
     fits.values().copied().min().unwrap_or_default()
 }
 
-/// Start time and expected length of the anchor runs still in flight: their
-/// kind's measure, never past the budget that ends them.
+/// The runs that still fit, said by project: "any run on blog, lamplitlabs;
+/// ballot, lead, reflect runs on amistio-template". Projects with the same
+/// fitting kinds share a clause, kinds in the order of
+/// `pulse_board::JOB_KINDS`.
+fn fits_phrase(pairs: &[(String, String)]) -> String {
+    let mut by_project: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (project, kind) in pairs {
+        by_project.entry(project).or_default().push(kind);
+    }
+    let mut groups: BTreeMap<Vec<&str>, Vec<&str>> = BTreeMap::new();
+    for (project, kinds) in by_project {
+        let ordered = pulse_board::JOB_KINDS
+            .iter()
+            .copied()
+            .filter(|kind| kinds.contains(kind))
+            .collect::<Vec<_>>();
+        groups.entry(ordered).or_default().push(project);
+    }
+    let mut clauses = groups
+        .into_iter()
+        .map(|(kinds, projects)| {
+            if kinds.len() == pulse_board::JOB_KINDS.len() {
+                format!("any run on {}", projects.join(", "))
+            } else {
+                format!("{} runs on {}", kinds.join(", "), projects.join(", "))
+            }
+        })
+        .collect::<Vec<_>>();
+    // The broadest clause first.
+    clauses.sort_by_key(|c| !c.starts_with("any run on "));
+    clauses.join("; ")
+}
+
+/// Start time and expected length of the anchor runs still in flight: the
+/// measure of their project and kind, never past the budget that ends them.
 fn anchor_ends(
     s: &pulse_store::Store,
     inflight: &BTreeMap<String, Dispatch>,
     anchors: &std::collections::BTreeSet<String>,
-    fits: &BTreeMap<String, Duration>,
+    fits: &Fits,
 ) -> Vec<(String, Duration)> {
     let budget = Duration::from_secs((s.setting_int("minutes_per_job").max(0) as u64) * 60);
     let cap = run_fits_cap(s);
@@ -418,32 +476,35 @@ fn anchor_ends(
         .iter()
         .filter(|(key, _)| anchors.contains(*key))
         .map(|(_, d)| {
-            let fit = fits.get(&d.job.str("kind")).copied().unwrap_or(cap);
+            let fit = fits
+                .get(&(d.job.str("project"), d.job.str("kind")))
+                .copied()
+                .unwrap_or(cap);
             (d.started_at.clone(), fit.min(budget))
         })
         .collect()
 }
 
 /// What the first restart notice says about new runs: none fits the window,
-/// some kinds do (named), or all of them.
+/// some do (named by project and kind), or all of them.
 fn restart_starts_phrase(
-    kinds: &[String],
+    pairs: &[(String, String)],
     all: usize,
-    fits: &BTreeMap<String, Duration>,
+    fits: &Fits,
     window: Duration,
     drain: Duration,
 ) -> String {
-    if kinds.is_empty() {
+    if pairs.is_empty() {
         return format!(
             "no new run starts (one may take up to {} and would not fit the {} drain)",
             pulse_cli::format_duration(shortest_fit(fits)),
             pulse_cli::format_duration(drain)
         );
     }
-    let who = if kinds.len() == all {
+    let who = if pairs.len() == all {
         "new runs".to_string()
     } else {
-        format!("{} runs", kinds.join(", "))
+        fits_phrase(pairs)
     };
     if window > drain {
         format!(
@@ -1127,7 +1188,7 @@ pub(crate) fn daemon(
             // The restart window: all kinds of run still fit it (no hold),
             // only the short ones do (the line names them and the slots
             // lease nothing else), or none (the slots close).
-            let mut restart_kinds: Vec<String> = Vec::new();
+            let mut restart_kinds: Vec<(String, String)> = Vec::new();
             let restart_hold = restart_pending.and_then(|since| {
                 let drain_left = restart_drain(s).saturating_sub(since.elapsed());
                 let fits = kind_fits(s);
@@ -1150,8 +1211,8 @@ pub(crate) fn daemon(
                     )
                 } else {
                     format!(
-                        "restarting: only {} runs start with {} left of the restart window; {} in flight",
-                        kinds.join(", "),
+                        "restarting: only {} start with {} left of the restart window; {} in flight",
+                        fits_phrase(&kinds),
                         pulse_cli::format_duration(left),
                         inflight.len()
                     )
@@ -2193,32 +2254,65 @@ mod tests {
             finished_run(&s, n, n as f64, "done", "real", 60.0);
         }
         // minutes_per_job is 10 in the test store: the budget plus five.
-        assert_eq!(run_fits(&s, "task"), Duration::from_secs(15 * 60));
+        assert_eq!(run_fits(&s, "proj", "task"), Duration::from_secs(15 * 60));
         finished_run(&s, 9, 9.0, "done", "real", 60.0);
-        // The history names no job kinds: every kind borrows the one measure.
-        assert_eq!(run_fits(&s, "task"), Duration::from_secs(60 + 5 * 60));
-        assert_eq!(run_fits(&s, "ballot"), Duration::from_secs(60 + 5 * 60));
-    }
-
-    /// The finished job `job-{n}` of `kind`, so `run_fits` can tell the
-    /// kinds of the runs `finished_run` seeds apart.
-    fn finished_job_of_kind(s: &pulse_store::Store, n: usize, kind: &str) {
-        crate::util::exec1(
-            &*s.conn().unwrap(),
-            "INSERT INTO jobs (id, project, kind, title, brief, status, created_at) VALUES (?, 'proj', ?, 'a job', '', 'done', ?)",
-            &[&format!("job-{n}"), &kind, &TEST_NOW],
+        // The history names no jobs: every project and kind borrows the one measure.
+        assert_eq!(
+            run_fits(&s, "proj", "task"),
+            Duration::from_secs(60 + 5 * 60)
+        );
+        assert_eq!(
+            run_fits(&s, "other", "ballot"),
+            Duration::from_secs(60 + 5 * 60)
         );
     }
 
-    /// A finished real run of a job of `kind`.
+    /// The finished job `job-{n}` of `kind` on `proj`, so `run_fits` can
+    /// tell the kinds of the runs `finished_run` seeds apart.
+    fn finished_job_of_kind(s: &pulse_store::Store, n: usize, kind: &str) {
+        finished_job_on(s, n, "proj", kind);
+    }
+
+    /// The finished job `job-{n}` of `kind` on `project`.
+    fn finished_job_on(s: &pulse_store::Store, n: usize, project: &str, kind: &str) {
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "INSERT INTO jobs (id, project, kind, title, brief, status, created_at) VALUES (?, ?, ?, 'a job', '', 'done', ?)",
+            &[&format!("job-{n}"), &project, &kind, &TEST_NOW],
+        );
+    }
+
+    /// A finished real run of a job of `kind` on `proj`.
     fn finished_run_of_kind(s: &pulse_store::Store, n: usize, kind: &str, seconds: f64) {
         finished_job_of_kind(s, n, kind);
         finished_run(s, n, 10.0 + n as f64, "done", "real", seconds);
     }
 
+    /// The pairs of `project` and each kind in `kinds`.
+    fn pairs(project: &str, kinds: &[&str]) -> Vec<(String, String)> {
+        kinds
+            .iter()
+            .map(|kind| (project.to_string(), kind.to_string()))
+            .collect()
+    }
+
+    /// A store with `projects` registered and active, so `kind_fits` measures them.
+    fn store_with_projects(projects: &[&str]) -> crate::test_helpers::TestStore {
+        let s = new_store();
+        let c = s.conn().unwrap();
+        for p in projects {
+            crate::util::exec1(
+                &*c,
+                "INSERT OR IGNORE INTO projects (slug, name, path, added_at, added_by) VALUES (?, ?, ?, '2026-01-01T00:00:00Z', 'owner')",
+                &[p, p, &format!("/tmp/{p}")],
+            );
+        }
+        s
+    }
+
     #[test]
     fn run_fits_measures_each_kind_of_job_on_its_own() {
-        let s = new_store();
+        let s = store_with_projects(&["proj"]);
         crate::test_helpers_f5::set_setting(&s, "minutes_per_job", "120");
         // Ten ballots of a minute, ten improve runs of half an hour, and one
         // lead run of a minute: too few leads to measure, so they borrow the
@@ -2230,9 +2324,18 @@ mod tests {
             finished_run_of_kind(&s, n, "improve", 1800.0);
         }
         finished_run_of_kind(&s, 20, "lead", 60.0);
-        assert_eq!(run_fits(&s, "ballot"), Duration::from_secs(60 + 5 * 60));
-        assert_eq!(run_fits(&s, "improve"), Duration::from_secs(1800 + 5 * 60));
-        assert_eq!(run_fits(&s, "lead"), Duration::from_secs(1800 + 5 * 60));
+        assert_eq!(
+            run_fits(&s, "proj", "ballot"),
+            Duration::from_secs(60 + 5 * 60)
+        );
+        assert_eq!(
+            run_fits(&s, "proj", "improve"),
+            Duration::from_secs(1800 + 5 * 60)
+        );
+        assert_eq!(
+            run_fits(&s, "proj", "lead"),
+            Duration::from_secs(1800 + 5 * 60)
+        );
         let fits = kind_fits(&s);
         assert_eq!(fits.len(), pulse_board::JOB_KINDS.len());
         assert_eq!(shortest_fit(&fits), Duration::from_secs(60 + 5 * 60));
@@ -2240,7 +2343,7 @@ mod tests {
         // improve run's is not; nothing fits half a minute.
         assert_eq!(
             kinds_within(&fits, Duration::from_secs(12 * 60)),
-            ["ballot"]
+            pairs("proj", &["ballot"])
         );
         assert!(kinds_within(&fits, Duration::from_secs(30)).is_empty());
         // Forty minutes: every kind fits.
@@ -2269,7 +2372,10 @@ mod tests {
         finished_run(&s, 51, 2.0, "error", "real", 50_000.0);
         finished_run(&s, 52, 3.0, "done", "dry-run", 50_000.0);
         finished_run(&s, 53, 100.0, "done", "real", 50_000.0);
-        assert_eq!(run_fits(&s, "task"), Duration::from_secs(600 + 5 * 60));
+        assert_eq!(
+            run_fits(&s, "proj", "task"),
+            Duration::from_secs(600 + 5 * 60)
+        );
     }
 
     #[test]
@@ -2278,7 +2384,50 @@ mod tests {
         for n in 0..10 {
             finished_run(&s, n, n as f64, "done", "real", 10_000.0);
         }
-        assert_eq!(run_fits(&s, "task"), Duration::from_secs(15 * 60));
+        assert_eq!(run_fits(&s, "proj", "task"), Duration::from_secs(15 * 60));
+    }
+
+    #[test]
+    fn run_fits_measures_a_project_s_own_runs_before_its_kind_s() {
+        let s = store_with_projects(&["brain", "blog", "fresh"]);
+        crate::test_helpers_f5::set_setting(&s, "minutes_per_job", "120");
+        // Ten improve runs of an hour on the brain, ten of a minute on the
+        // blog, and a project with no history of its own.
+        for n in 0..10 {
+            finished_job_on(&s, n, "brain", "improve");
+            finished_run(&s, n, 10.0 + n as f64, "done", "real", 3600.0);
+        }
+        for n in 10..20 {
+            finished_job_on(&s, n, "blog", "improve");
+            finished_run(&s, n, 10.0 + n as f64, "done", "real", 60.0);
+        }
+        let hour = Duration::from_secs(3600 + 5 * 60);
+        let minute = Duration::from_secs(60 + 5 * 60);
+        assert_eq!(run_fits(&s, "brain", "improve"), hour);
+        assert_eq!(run_fits(&s, "blog", "improve"), minute);
+        // No history of its own: the kind over every project, whose 90th
+        // percentile is the brain's hour; a kind nobody ran borrows all runs.
+        assert_eq!(run_fits(&s, "fresh", "improve"), hour);
+        assert_eq!(run_fits(&s, "blog", "ballot"), hour);
+        let fits = kind_fits(&s);
+        assert_eq!(fits.len(), 3 * pulse_board::JOB_KINDS.len());
+        // Ten minutes left: only the blog's improve runs fit.
+        let within = kinds_within(&fits, Duration::from_secs(10 * 60));
+        assert_eq!(within, pairs("blog", &["improve"]));
+        assert_eq!(fits_phrase(&within), "improve runs on blog");
+        // Two hours: everything.
+        assert_eq!(
+            kinds_within(&fits, Duration::from_secs(120 * 60)).len(),
+            fits.len()
+        );
+        // The phrase groups projects by what fits and says the broadest first.
+        let mut mixed = pairs("blog", pulse_board::JOB_KINDS);
+        mixed.extend(pairs("fresh", pulse_board::JOB_KINDS));
+        mixed.extend(pairs("brain", &["ballot", "lead", "reflect"]));
+        assert_eq!(
+            fits_phrase(&mixed),
+            "any run on blog, fresh; ballot, reflect, lead runs on brain"
+        );
     }
 
     #[test]
@@ -2385,12 +2534,12 @@ mod tests {
         let (s, out, result, _) = restart_with_run_in_flight("1", true, "kinds");
         assert_eq!(result, "restart", "{out}");
         assert!(
-            out.contains("task runs may start for up to ")
+            out.contains("task runs on proj may start for up to ")
                 && out.contains(" while the slowest run in flight is expected to go on"),
             "{out}"
         );
         assert!(
-            out.contains("restarting: only task runs start with "),
+            out.contains("restarting: only task runs on proj start with "),
             "{out}"
         );
         assert_eq!(
@@ -2465,6 +2614,7 @@ mod tests {
         let job = |kind: &str| {
             let mut r = Row::new();
             r.0.insert("kind".into(), serde_json::Value::String(kind.into()));
+            r.0.insert("project".into(), serde_json::Value::String("proj".into()));
             r
         };
         let dispatch = |slot: &str, kind: &str, started: &str| Dispatch {
@@ -2488,9 +2638,15 @@ mod tests {
             dispatch("c", "task", "2026-01-01T00:02:00Z"),
         );
         let anchors: BTreeSet<String> = ["a", "b"].into_iter().map(String::from).collect();
-        let fits: BTreeMap<String, Duration> = [
-            ("ballot".to_string(), Duration::from_secs(6 * 60)),
-            ("improve".to_string(), Duration::from_secs(40 * 60)),
+        let fits: Fits = [
+            (
+                ("proj".to_string(), "ballot".to_string()),
+                Duration::from_secs(6 * 60),
+            ),
+            (
+                ("proj".to_string(), "improve".to_string()),
+                Duration::from_secs(40 * 60),
+            ),
         ]
         .into_iter()
         .collect();

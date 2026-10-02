@@ -50,8 +50,8 @@ pub(crate) struct LeaseOpts {
     pub minutes: i32,
     pub projects: Vec<String>,
     pub any_proj: bool,
-    /// The kinds of job the lease may take; empty takes any.
-    pub kinds: Vec<String>,
+    /// The project and kind pairs the lease may take; empty takes any.
+    pub fits: Vec<(String, String)>,
 }
 
 /// Go: func queueOnboardingJob(s *store.Store, slug, createdBy string) (row, bool, error)
@@ -191,11 +191,11 @@ pub(crate) fn lease_job(
             sql.push_str(" AND j.id = ?");
             vals.push(Box::new(o.job_id.clone()));
         }
-        if !o.kinds.is_empty() {
-            let marks = vec!["?"; o.kinds.len()].join(",");
-            sql.push_str(&format!(" AND j.kind IN ({marks})"));
-            for kind in &o.kinds {
-                vals.push(Box::new(kind.clone()));
+        if !o.fits.is_empty() {
+            let marks = vec!["?"; o.fits.len()].join(",");
+            sql.push_str(&format!(" AND (j.project || '/' || j.kind) IN ({marks})"));
+            for (project, kind) in &o.fits {
+                vals.push(Box::new(format!("{project}/{kind}")));
             }
         }
         if is_lead {

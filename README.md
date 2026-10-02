@@ -96,11 +96,12 @@ a minute and shows the build it runs beside the daemon's under **Settings →
 Running**. The restart is a handover, not a pause: a daemon whose binary
 changed on disk while runs are in flight keeps dispatching, planning and
 landing for up to `daemon.restart_drain_minutes` (default 30), stops starting
-runs of a kind once less of that window is left than a run of that kind is
-expected to take (log line `restarting: only ballot, lead runs start with
-<left> left of the restart window; N in flight` while the short kinds still
-fit, then `restarting: no new runs with <left> left of the restart window; N
-in flight`, each said once per change rather than per countdown tick; when
+runs of a kind on a project once less of that window is left than such a run
+is expected to take (log line `restarting: only any run on blog, lamplitlabs;
+ballot, reflect, lead runs on amistio-template start with <left> left of the
+restart window; N in flight` while the short runs still fit, then
+`restarting: no new runs with <left> left of the restart window; N in
+flight`, each said once per change rather than per countdown tick; when
 no run could fit the whole window the first notice already says `no new run
 starts`), and exits with code 3 the moment nothing is in flight; its
 heartbeat says `restarting: N in flight` meanwhile. The window is the drain
@@ -111,12 +112,14 @@ expected to delays nothing, while stopping at the end of the drain idled
 every project for as long as that one run took (the first notice then says
 `new runs may start for up to <window> while the slowest run in flight is
 expected to go on`). Runs started inside the window do not extend it. The
-expectation is measured per kind of job: the 90th percentile of the last
-fifty real runs of that kind that ran a worker to an end, plus five minutes
-of setup and report, capped at `minutes_per_job + 5`, which also stands in
-until ten such runs exist (a kind with fewer borrows the measure of all kinds
-together). A ballot takes a minute and an improve run half an hour, so one
-measure for all either held the ballots for every window or admitted long
+expectation is measured per project and kind of job: the 90th percentile of
+the last fifty real runs of that kind on that project that ran a worker to an
+end, plus five minutes of setup and report, capped at `minutes_per_job + 5`,
+which also stands in until ten such runs exist (a project with fewer borrows
+the measure of the kind over every project, a kind with fewer the measure of
+all runs together). A ballot takes a minute and an improve run half an hour,
+an improve run on the brain an hour and one on a blog five minutes, so one
+measure for all either held the short runs for every window or admitted long
 runs against the runs in flight's two-hour budget while those ended within
 the half hour - one such run held nine idle slots for forty minutes at each
 release. A run the window outlives is waited for, never cut. `0` stops
