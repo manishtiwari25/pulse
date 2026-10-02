@@ -668,6 +668,12 @@ pub(crate) fn land_branch(
             ));
         }
     }
+    // Holds the owner's uncommitted work while the landing runs. Any exit before the
+    // fast-forward lands - an error, a hold, a deferral, a panic - pops the stash back
+    // onto the checkout so a failed landing never leaves that work buried in `git
+    // stash list`. A landed branch keeps the stash: the checkout then holds new
+    // commits and popping onto them is the owner's call.
+    let mut auto_stash: Option<AutoStash> = None;
     if !by_ref && !clean {
         if s.setting("landing.auto_stash", "on") == "off" {
             return Ok((
@@ -694,6 +700,10 @@ pub(crate) fn land_branch(
                 ),
             ));
         }
+        auto_stash = Some(AutoStash {
+            root: root.clone(),
+            armed: true,
+        });
         clean = checkout_state_pair(&root, &def).1;
         if !clean {
             return Ok((
@@ -1140,6 +1150,9 @@ pub(crate) fn land_branch(
                     "{def} moved while the merge was verified; nothing landed, try again ({why})"
                 ),
             ));
+        }
+        if let Some(stash) = auto_stash.as_mut() {
+            stash.disarm();
         }
     }
     let (effective_before, effective_after) = crate::landing_evidence::landing_ref_transition(
@@ -1837,6 +1850,31 @@ struct LandingCleanup {
     lock: String,
 }
 
+/// The owner's uncommitted work, auto-stashed for the length of a landing. Dropped
+/// while still armed - the landing failed, held, deferred or panicked - it pops the
+/// stash so the work is back in the checkout; `disarm` keeps it once the branch landed.
+struct AutoStash {
+    root: String,
+    armed: bool,
+}
+
+impl AutoStash {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AutoStash {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // A pop that conflicts leaves the stash entry in place, so the work is never
+        // lost either way; nothing here can usefully fail louder.
+        let _ = crate::util::git_timeout(&self.root, Duration::from_secs(60), &["stash", "pop"]);
+    }
+}
+
 impl Drop for LandingCleanup {
     fn drop(&mut self) {
         crate::util::git_timeout(
@@ -2511,5 +2549,100 @@ mod tests {
         assert_eq!(worker.model, "m");
         assert_eq!(worker.run_id, "run-code-delivery");
         assert_eq!(worker.executor, "local");
+    }
+}
+
+#[cfg(test)]
+mod auto_stash_tests {
+    use crate::test_helpers::*;
+    use crate::test_helpers_f5::{exec1, set_setting};
+    use std::collections::BTreeMap;
+
+    /// A landing that fails after the owner's uncommitted work was auto-stashed pops
+    /// the stash again: the work is back in the checkout and `git stash list` is
+    /// empty, so a red branch never buries the owner's edits.
+    #[test]
+    fn failed_landing_restores_the_auto_stash() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (_, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+        // Green on main (no feature.txt), red once the branch is merged in.
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&"test ! -e feature.txt"],
+        );
+        let proj = crate::board::project_by_slug(&s.conn().expect("conn"), "proj".into());
+
+        let branch = "pulse/aurora/red";
+        run(&dir, &["git", "checkout", "-q", "-b", branch, "main"]);
+        std::fs::write(std::path::Path::new(&dir).join("feature.txt"), b"feature\n").unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "add feature"]);
+        run(&dir, &["git", "checkout", "-q", "main"]);
+        let (j, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "proj".into(),
+                kind: "task".into(),
+                title: "red branch".into(),
+                brief: "b".into(),
+                tier: 1,
+                created_by: "aurora".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &j.id],
+        );
+
+        let owner_work = b"# proj\n\nowner's work\n";
+        let readme = std::path::Path::new(&dir).join("README.md");
+        std::fs::write(&readme, owner_work).unwrap();
+
+        let (lines, _held) = crate::landing_hold::tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        let joined = lines.join("\n");
+        if joined.contains("landing landed") {
+            panic!("expected the landing to fail verify; lines={lines:?}");
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'land.failed-verify' AND subject = ?",
+            &[&branch],
+        );
+        if n != 1 {
+            panic!("land.failed-verify events: {n}; lines={lines:?}");
+        }
+
+        let stash_list = run(&dir, &["git", "stash", "list"]);
+        if stash_list.trim() != "" {
+            panic!("auto-stash left behind after a failed landing: {stash_list:?}");
+        }
+        let restored = std::fs::read(&readme).unwrap();
+        if restored != owner_work {
+            panic!(
+                "owner's uncommitted work not restored: {:?}",
+                String::from_utf8_lossy(&restored)
+            );
+        }
+        let status = run(
+            &dir,
+            &["git", "status", "--porcelain", "--untracked-files=no"],
+        );
+        if status.trim() != "M README.md" {
+            panic!("checkout should show the owner's edit again: {status:?}");
+        }
     }
 }
