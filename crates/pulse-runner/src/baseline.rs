@@ -1192,7 +1192,17 @@ mod tests {
         }
         let id = planned.unwrap()[0].str("id");
         let lease = |dry_run: bool| -> crate::util::Row {
-            let leased = crate::run::take_job(&s, "aurora", "proj", &id, dry_run, TEST_NOW, "", 0);
+            let leased = crate::run::take_job(
+                &s,
+                "aurora",
+                "proj",
+                &id,
+                dry_run,
+                TEST_NOW,
+                "",
+                0,
+                &Default::default(),
+            );
             match leased {
                 Ok((job, _, _)) if !job.0.is_empty() => job,
                 Ok((_, _, why)) => panic!("lease: None {why:?}"),

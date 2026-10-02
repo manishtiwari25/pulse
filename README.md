@@ -1127,15 +1127,21 @@ cannot see that the ten setups one tick is about to start each need a gigabyte
 headroom: every clone and `npm install` ended in ENOSPC, the failures counted as
 transient, and the same jobs failed the same way after each five-minute pause,
 fifty-four times in an hour), so the daemon also measures the work directory of
-every local run as it ends (`runs.work_mb`) and, each tick, offers no more local
-slots than the free space above the floor pays for at the largest footprint an
-active project has shown - `daemon.setup_mb` (default 1024) until a project's
-runs have measured it; a run still in setup (no brief written yet) holds one
-footprint until its brief exists, one run is always admitted while none is in
-flight so a small disk still measures itself, and slots held back this way are
-not counted as hands wanted. The idle line says `disk headroom: room for N more
-local run(s) of up to M MB above daemon.min_free_mb F; K setting up`; 0 turns
-the admission off. Hands keep their own disks. `pulse executor
+every local run as it ends (`runs.work_mb`) and, each tick, lets a local slot
+take only a project whose footprint the free space above the floor still pays
+for - the largest of the project's last ten measured local runs, or
+`daemon.setup_mb` (default 1024) until a project's runs have measured it. Each
+start claims its project's footprint, a run still in setup (no brief written
+yet) holds its footprint until its brief exists, and a project the rest no
+longer pays for waits while a smaller one starts (the first hour of the
+admission held every slot behind the fleet's largest footprint: 1455 MB of room
+and nothing started, while four of five projects took under 900 MB). One run is
+always admitted while none is in flight so a small disk still measures itself,
+and slots held back this way are not counted as hands wanted. A held project
+shows in the idle reason as `N queued wait: N for <project> (local needs M MB of
+disk)`, and a slot no project fits says `disk headroom: R MB above
+daemon.min_free_mb F with K run(s) setting up; waits: <project> (M MB), ...`;
+`daemon.setup_mb` 0 turns the admission off. Hands keep their own disks. `pulse executor
 probe local` probes this machine the same way (git, free space under
 `~/.pulse/work`), and a passing probe run by the owner clears the projects a
 failed setup marked unfit here, instead of waiting a day for the marks to

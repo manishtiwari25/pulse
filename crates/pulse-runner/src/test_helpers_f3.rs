@@ -384,6 +384,7 @@ mod tests {
             TEST_NOW,
             crate::executor::LOCAL_EXECUTOR,
             0,
+            &Default::default(),
         )
         .unwrap();
         assert!(
@@ -419,6 +420,7 @@ mod tests {
             TEST_NOW,
             crate::executor::LOCAL_EXECUTOR,
             0,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(job.str("id"), "job-next");

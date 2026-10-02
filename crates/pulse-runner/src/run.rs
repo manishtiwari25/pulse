@@ -99,6 +99,10 @@ pub(crate) fn daily_cap(s: &pulse_store::Store) -> i32 {
 }
 
 /// Go: func takeJob(s *store.Store, agent, project, jobID string, dryRun bool, now, executor string, taken int) (row, row, string, error)
+///
+/// `held` names projects this call may not lease, with the unfit reason each
+/// carries - the daemon's disk headroom for the local executor (diskroom.rs);
+/// a project's own marks and blocks come first.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn take_job(
     s: &pulse_store::Store,
@@ -109,6 +113,7 @@ pub(crate) fn take_job(
     now: &str,
     executor: &str,
     taken: i32,
+    held: &BTreeMap<String, String>,
 ) -> Result<(Row, Row, String)> {
     if let why = runner_stopped(s)
         && !why.is_empty()
@@ -180,6 +185,9 @@ pub(crate) fn take_job(
             slug.clone(),
             crate::recipe::RECIPE_UNFIT_CHECKOUT.to_string(),
         );
+    }
+    for (slug, why) in held {
+        unfit.entry(slug.clone()).or_insert_with(|| why.clone());
     }
     let check_projects = if !project.is_empty() {
         vec![project.to_string()]
@@ -335,7 +343,17 @@ pub(crate) fn work_once(
     now: &str,
     mut o: RunOpts,
 ) -> Result<(Row, String)> {
-    let (job, exrow, reason) = take_job(s, agent, project, job_id, o.dry_run, now, &o.executor, 0)?;
+    let (job, exrow, reason) = take_job(
+        s,
+        agent,
+        project,
+        job_id,
+        o.dry_run,
+        now,
+        &o.executor,
+        0,
+        &BTreeMap::new(),
+    )?;
     if is_nil(&job) {
         return Ok((Row::new(), reason));
     }

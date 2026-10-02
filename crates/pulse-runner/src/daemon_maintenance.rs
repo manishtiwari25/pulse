@@ -780,6 +780,7 @@ mod tests {
             &now,
             crate::executor::LOCAL_EXECUTOR,
             0,
+            &Default::default(),
         )
         .unwrap();
         assert!(!job.0.is_empty(), "why = {why}");

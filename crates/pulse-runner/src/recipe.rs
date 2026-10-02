@@ -1001,6 +1001,9 @@ pub(crate) fn unfit_phrase(tool: &str) -> String {
     if let Some(x) = tool.strip_prefix("environment:") {
         return format!("has environment issue {x}");
     }
+    if let Some(mb) = tool.strip_prefix(crate::diskroom::DISK_UNFIT_PREFIX) {
+        return format!("needs {mb} MB of disk");
+    }
     match tool {
         RECIPE_UNFIT_SERVICES => "needs services".to_string(),
         RECIPE_UNFIT_HANDS => RECIPE_UNFIT_HANDS.to_string(),
@@ -1056,6 +1059,11 @@ pub(crate) fn tool_hint(tool: &str) -> String {
     if let Some(x) = tool.strip_prefix("environment:") {
         return format!(
             "fix the environment issue (environment:{x}) and unblock the job, or wait 1h for the block to age out"
+        );
+    }
+    if let Some(mb) = tool.strip_prefix(crate::diskroom::DISK_UNFIT_PREFIX) {
+        return format!(
+            "one run of the project takes {mb} MB (runs.work_mb), more than the work volume has free above daemon.min_free_mb; free disk on this machine, or lower the floor"
         );
     }
     if let Some(x) = tool.strip_prefix("tool:") {
@@ -1928,6 +1936,7 @@ mod tests {
             &crate::util::plus_hours(crate::test_helpers::TEST_NOW, 1.0),
             crate::executor::LOCAL_EXECUTOR,
             0,
+            &Default::default(),
         )
         .unwrap();
         assert!(job.0.is_empty(), "job = {job:?}");
@@ -2032,8 +2041,18 @@ mod tests {
             &proj.str("slug"),
             "setup:Gemfile.lock",
         );
-        let (job, _, why) =
-            crate::run::take_job(&s, "aurora", "", "", false, &now, local, 0).unwrap();
+        let (job, _, why) = crate::run::take_job(
+            &s,
+            "aurora",
+            "",
+            "",
+            false,
+            &now,
+            local,
+            0,
+            &Default::default(),
+        )
+        .unwrap();
         assert!(job.0.is_empty(), "job = {job:?}");
         for want in [
             "no queued job; 2 queued wait: 2 for proj (local cannot set up Gemfile.lock)",
@@ -2042,8 +2061,18 @@ mod tests {
             assert!(why.contains(want), "idle reason lacks {want:?}: {why}");
         }
         // A request for one particular project keeps its plain reason.
-        let (_, _, why) =
-            crate::run::take_job(&s, "aurora", "other", "", false, &now, local, 0).unwrap();
+        let (_, _, why) = crate::run::take_job(
+            &s,
+            "aurora",
+            "other",
+            "",
+            false,
+            &now,
+            local,
+            0,
+            &Default::default(),
+        )
+        .unwrap();
         assert_eq!(why, "no queued job for other");
     }
 

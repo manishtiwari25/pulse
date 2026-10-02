@@ -1162,6 +1162,8 @@ pub(crate) fn tend_tasks(
 }
 
 /// Go: func leadJobFor(s *store.Store, busy []string, dryRun bool, now, slot string, taken int) (lead string, job row, why string)
+///
+/// `held` is passed on to `take_job`: projects the slot may not take now.
 pub(crate) fn lead_job_for(
     s: &pulse_store::Store,
     busy: &[String],
@@ -1169,6 +1171,7 @@ pub(crate) fn lead_job_for(
     now: String,
     slot: String,
     taken: i32,
+    held: &std::collections::BTreeMap<String, String>,
 ) -> (String, Row, String) {
     let Ok(conn) = s.conn() else {
         return (String::new(), Row::new(), String::new());
@@ -1201,6 +1204,7 @@ pub(crate) fn lead_job_for(
             &now,
             &slot,
             taken,
+            held,
         ) {
             Ok((job, _, why)) => {
                 if !job.0.is_empty() {

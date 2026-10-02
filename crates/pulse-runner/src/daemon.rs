@@ -1082,36 +1082,21 @@ pub(crate) fn daemon(
                 disk_floor_since.clear();
                 disk_floor_posted = false;
                 // The floor alone cannot see that ten setups about to start
-                // each need a gigabyte: this tick offers no more local slots
-                // than the headroom pays for (diskroom.rs).
-                let mut disk_room_note = String::new();
+                // each need a gigabyte: a local slot takes only a project
+                // whose footprint the headroom still pays for (diskroom.rs).
+                let mut admission = None;
                 if slots.iter().any(|n| n == crate::executor::LOCAL_EXECUTOR) {
                     let inflight_local = inflight
                         .values()
                         .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
-                        .map(|d| (d.job.str("id"), d.started_at.clone()))
+                        .map(|d| (d.job.str("id"), d.job.str("project"), d.started_at.clone()))
                         .collect::<Vec<_>>();
-                    if let Some(room) = crate::diskroom::local_headroom(s, &inflight_local) {
-                        disk_trimmed = crate::diskroom::trim_local_slots(&mut slots, room.admits);
-                        if disk_trimmed > 0 {
-                            disk_room_note = room.note();
-                            if let Some(line) = idle_log.line(
-                                "diskroom",
-                                &disk_room_note,
-                                std::time::Instant::now(),
-                            ) {
-                                say(&o, line);
-                            }
-                        }
-                    }
+                    admission = crate::diskroom::local_headroom(s, &inflight_local)
+                        .map(crate::diskroom::Admission::new);
                 }
-                if disk_trimmed == 0 {
-                    idle_log.clear("diskroom");
-                }
+                let mut disk_room_note = String::new();
                 reason = if slots.is_empty() {
-                    if !disk_room_note.is_empty() {
-                        disk_room_note
-                    } else if gate.is_empty() {
+                    if gate.is_empty() {
                         "every executor slot is busy".to_string()
                     } else {
                         gate.clone()
@@ -1136,6 +1121,20 @@ pub(crate) fn daemon(
                     });
                     for i in order {
                         let slot = &slots[i];
+                        let mut held = BTreeMap::new();
+                        if slot == crate::executor::LOCAL_EXECUTOR
+                            && let Some(adm) = admission.as_ref()
+                        {
+                            match adm.offer() {
+                                Some(h) => held = h,
+                                None => {
+                                    disk_trimmed += 1;
+                                    disk_room_note = adm.note();
+                                    reasons.insert(disk_room_note.clone(), true);
+                                    continue;
+                                }
+                            }
+                        }
                         let (lead, job, why) = crate::lead::lead_job_for(
                             s,
                             &names,
@@ -1143,6 +1142,7 @@ pub(crate) fn daemon(
                             now.clone(),
                             slot.clone(),
                             started.len() as i32,
+                            &held,
                         );
                         let (worker, job) = if !job.0.is_empty() {
                             (lead, job)
@@ -1166,6 +1166,7 @@ pub(crate) fn daemon(
                                 &now,
                                 slot,
                                 started.len() as i32,
+                                &held,
                             ) {
                                 Ok(v) => v,
                                 Err(e) => {
@@ -1181,6 +1182,11 @@ pub(crate) fn daemon(
                             }
                             (worker, job)
                         };
+                        if slot == crate::executor::LOCAL_EXECUTOR
+                            && let Some(adm) = admission.as_mut()
+                        {
+                            adm.claim(&job.str("project"));
+                        }
                         names.push(worker.clone());
                         let wait_s = crate::jobs::job_wait_seconds(
                             &*s.conn().expect("lease wait connection"),
@@ -1251,12 +1257,23 @@ pub(crate) fn daemon(
                     }
                     reason
                 };
+                if disk_trimmed > 0 {
+                    if let Some(line) =
+                        idle_log.line("diskroom", &disk_room_note, std::time::Instant::now())
+                    {
+                        say(&o, line);
+                    }
+                } else {
+                    idle_log.clear("diskroom");
+                }
             }
             let queued = active_queued_count(s);
-            let total_slots = inflight.len() as i32 + slots.len() as i32 - started.len() as i32;
-            // Slots the disk headroom held back are not hands wanted.
+            // Slots the disk headroom held back were not offered this tick
+            // and are not hands wanted.
+            let offered = slots.len() - disk_trimmed;
+            let total_slots = inflight.len() as i32 + offered as i32 - started.len() as i32;
             let starved = queued > 0
-                && slots.len() - started.len() == 0
+                && offered - started.len() == 0
                 && !inflight.is_empty()
                 && disk_trimmed == 0;
             if starved {
@@ -1710,7 +1727,7 @@ mod tests {
         );
         assert!(
             out.contains(
-                "disk headroom: room for 1 more local run(s) of up to 2000000000 MB above daemon.min_free_mb 0; 0 setting up"
+                "disk headroom: 0 MB above daemon.min_free_mb 0 with 1 run(s) setting up; waits: proj (2000000000 MB)"
             ),
             "{out}"
         );
@@ -1750,6 +1767,97 @@ mod tests {
             crate::diskroom::footprint_mb(&*s.conn().unwrap(), "proj", 2_000_000_000) < 1000,
             "{out}"
         );
+    }
+
+    #[test]
+    fn daemon_disk_headroom_starts_the_project_that_fits_while_the_larger_one_waits() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        let small = std::path::Path::new(&s.home).join("small");
+        crate::test_helpers_selfupdate::copy_dir(std::path::Path::new(&template_repo()), &small);
+        crate::board::add_project(
+            &s,
+            small.display().to_string(),
+            "Small".into(),
+            String::new(),
+            false,
+            String::new(),
+            pulse_store::HUMAN_AGENT.into(),
+            "small".into(),
+        )
+        .unwrap();
+        join(&s, "aurora");
+        join(&s, "borealis");
+        // The large project's job is older: first in the queue, yet it waits.
+        for (slug, title) in [("proj", "Large setup"), ("small", "Small setup")] {
+            crate::jobs::add_job(
+                &s,
+                slug.into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "test".into(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+        }
+        // Measured footprints from yesterday (outside today's cap): one no
+        // disk pays for, one of a megabyte.
+        let yesterday = crate::util::plus_hours(TEST_NOW, -24.0);
+        for (id, slug, mb) in [("r-large", "proj", 2_000_000_000), ("r-small", "small", 1)] {
+            exec1(
+                &s,
+                "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, executor, work_mb)
+                 VALUES (?, 'j-old', 'aurora', ?, ?, ?, 'done', 'local', ?)",
+                &[&id, &slug, &yesterday, &yesterday, &mb],
+            );
+            exec1(
+                &s,
+                "INSERT INTO briefs (run_id, job_id, agent, text, at) VALUES (?, 'j-old', 'aurora', 'b', ?)",
+                &[&id, &yesterday],
+            );
+        }
+        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.setup_mb", "1")
+            .unwrap();
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE project = 'small' AND job_id != 'j-old'",
+                &[]
+            ),
+            1,
+            "the project that fits starts: {out}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE project = 'proj' AND status = 'queued'",
+                &[]
+            ),
+            1,
+            "the project no disk pays for waits: {out}"
+        );
+        assert!(
+            out.contains("1 for proj (local needs 2000000000 MB of disk)"),
+            "the idle reason names the held project: {out}"
+        );
+        assert!(!out.contains("hands wanted"), "{out}");
     }
 
     struct SignalWriter {
