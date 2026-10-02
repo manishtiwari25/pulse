@@ -1121,7 +1121,21 @@ free and names that path in its note; 0 turns the check off. The daemon checks
 the same floor before it leases new work or starts an experiment measurement,
 so a full work filesystem pauses dispatch with `disk under floor: <free> MB
 free on <path> (daemon.min_free_mb <floor>)`; after fifteen minutes it writes
-one runner finding that says to free space or adjust the floor. `pulse executor
+one runner finding that says to free space or adjust the floor. The floor alone
+cannot see that the ten setups one tick is about to start each need a gigabyte
+(on 2026-10-02 a restart with a ten-job backlog did exactly that on 1.1 GB of
+headroom: every clone and `npm install` ended in ENOSPC, the failures counted as
+transient, and the same jobs failed the same way after each five-minute pause,
+fifty-four times in an hour), so the daemon also measures the work directory of
+every local run as it ends (`runs.work_mb`) and, each tick, offers no more local
+slots than the free space above the floor pays for at the largest footprint an
+active project has shown - `daemon.setup_mb` (default 1024) until a project's
+runs have measured it; a run still in setup (no brief written yet) holds one
+footprint until its brief exists, one run is always admitted while none is in
+flight so a small disk still measures itself, and slots held back this way are
+not counted as hands wanted. The idle line says `disk headroom: room for N more
+local run(s) of up to M MB above daemon.min_free_mb F; K setting up`; 0 turns
+the admission off. Hands keep their own disks. `pulse executor
 probe local` probes this machine the same way (git, free space under
 `~/.pulse/work`), and a passing probe run by the owner clears the projects a
 failed setup marked unfit here, instead of waiting a day for the marks to

@@ -831,6 +831,7 @@ pub(crate) fn daemon(
         let mut started: Vec<Dispatch> = Vec::new();
         let mut reason = String::new();
         let mut slots: Vec<String> = Vec::new();
+        let mut disk_trimmed = 0usize;
         // Go: the tick body runs under recover(); a panic becomes the idle reason, not the daemon's end.
         let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if now[..10.min(now.len())] != last_prune_day {
@@ -1080,8 +1081,37 @@ pub(crate) fn daemon(
                 disk_floor_was_under = false;
                 disk_floor_since.clear();
                 disk_floor_posted = false;
+                // The floor alone cannot see that ten setups about to start
+                // each need a gigabyte: this tick offers no more local slots
+                // than the headroom pays for (diskroom.rs).
+                let mut disk_room_note = String::new();
+                if slots.iter().any(|n| n == crate::executor::LOCAL_EXECUTOR) {
+                    let inflight_local = inflight
+                        .values()
+                        .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
+                        .map(|d| (d.job.str("id"), d.started_at.clone()))
+                        .collect::<Vec<_>>();
+                    if let Some(room) = crate::diskroom::local_headroom(s, &inflight_local) {
+                        disk_trimmed = crate::diskroom::trim_local_slots(&mut slots, room.admits);
+                        if disk_trimmed > 0 {
+                            disk_room_note = room.note();
+                            if let Some(line) = idle_log.line(
+                                "diskroom",
+                                &disk_room_note,
+                                std::time::Instant::now(),
+                            ) {
+                                say(&o, line);
+                            }
+                        }
+                    }
+                }
+                if disk_trimmed == 0 {
+                    idle_log.clear("diskroom");
+                }
                 reason = if slots.is_empty() {
-                    if gate.is_empty() {
+                    if !disk_room_note.is_empty() {
+                        disk_room_note
+                    } else if gate.is_empty() {
                         "every executor slot is busy".to_string()
                     } else {
                         gate.clone()
@@ -1224,7 +1254,11 @@ pub(crate) fn daemon(
             }
             let queued = active_queued_count(s);
             let total_slots = inflight.len() as i32 + slots.len() as i32 - started.len() as i32;
-            let starved = queued > 0 && slots.len() - started.len() == 0 && !inflight.is_empty();
+            // Slots the disk headroom held back are not hands wanted.
+            let starved = queued > 0
+                && slots.len() - started.len() == 0
+                && !inflight.is_empty()
+                && disk_trimmed == 0;
             if starved {
                 if starved_since.is_empty() {
                     starved_since = now.clone();
@@ -1633,6 +1667,88 @@ mod tests {
                 &[]
             ),
             1
+        );
+    }
+
+    #[test]
+    fn daemon_disk_headroom_admits_one_local_run_and_measures_its_work_dir() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "borealis");
+        for title in ["First setup", "Second setup"] {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "test".into(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+        }
+        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        // A footprint no disk pays for twice: the first run starts because
+        // nothing is in flight; the second local slot waits for headroom.
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.setup_mb", "2000000000")
+            .unwrap();
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            out.contains(
+                "disk headroom: room for 1 more local run(s) of up to 2000000000 MB above daemon.min_free_mb 0; 0 setting up"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("hands wanted"), "{out}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE project = 'proj'",
+                &[]
+            ),
+            1,
+            "{out}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE project = 'proj' AND status = 'queued'",
+                &[]
+            ),
+            1,
+            "{out}"
+        );
+        // The clone was measured before it was removed: the next admission
+        // of this project uses the real footprint instead of the setting.
+        let row = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT work_mb, status FROM runs WHERE project = 'proj'",
+            &[],
+        );
+        assert_eq!(row.str("status"), "done", "{out}");
+        assert!(
+            row.int("work_mb") >= 1,
+            "work_mb = {}; {out}",
+            row.int("work_mb")
+        );
+        assert!(
+            crate::diskroom::footprint_mb(&*s.conn().unwrap(), "proj", 2_000_000_000) < 1000,
+            "{out}"
         );
     }
 

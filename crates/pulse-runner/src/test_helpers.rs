@@ -182,6 +182,9 @@ pub(crate) fn new_store() -> TestStore {
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.research_minutes", "0");
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.idle_factor", "1");
     let _ = s.set_setting(util::HUMAN_AGENT, "evolve.draft_hours", "0");
+    // The disk admission reads this machine's real free space; tests that
+    // want it turn it on themselves.
+    let _ = s.set_setting(util::HUMAN_AGENT, "daemon.setup_mb", "0");
     TestStore {
         store: s,
         _dir: std::sync::Arc::new(dir),

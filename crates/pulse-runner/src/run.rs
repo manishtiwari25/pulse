@@ -1186,6 +1186,13 @@ pub(crate) fn run_job(
         branch.clear();
     }
     let seconds = (since_seconds(started) * 10.0).round() / 10.0;
+    // The work directory's size before it goes: the footprint the daemon's
+    // disk admission counts for the next runs of this project (diskroom.rs).
+    let work_mb = if ex.remote() {
+        0
+    } else {
+        crate::diskroom::dir_mb(Path::new(&ex.clone()))
+    };
     ex.cleanup();
     std::fs::write(&log_path, log.text()).ok();
     let exit_val: Option<i32> = exit_code;
@@ -1196,7 +1203,7 @@ pub(crate) fn run_job(
                       verify_note: &str| {
         crate::util::exec1(
             &c,
-            "UPDATE runs SET finished_at = ?, status = ?, exit_code = ?, seconds = ?, branch = ?, commits = ?, summary = ?, verify = ? WHERE id = ?",
+            "UPDATE runs SET finished_at = ?, status = ?, exit_code = ?, seconds = ?, branch = ?, commits = ?, summary = ?, verify = ?, work_mb = ? WHERE id = ?",
             &[
                 &s.now(),
                 &status,
@@ -1206,6 +1213,7 @@ pub(crate) fn run_job(
                 &commits,
                 &summary,
                 &verify_note,
+                &work_mb,
                 &run_id,
             ],
         );

@@ -17,6 +17,7 @@ pub mod daemon;
 pub mod daemon_maintenance;
 pub mod daemon_watchdog;
 pub mod db;
+pub mod diskroom;
 pub mod env;
 pub mod evolve_plan;
 pub mod exec;

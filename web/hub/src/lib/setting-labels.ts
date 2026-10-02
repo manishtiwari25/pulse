@@ -91,6 +91,7 @@ const LABELS: Record<string, string> = {
   "daemon.sweep_grace_minutes": "Sweep grace (minutes)",
   "daemon.sweep_keep_days": "Keep logs and patches (days)",
   "daemon.min_free_mb": "Minimum free disk (MB)",
+  "daemon.setup_mb": "Setup footprint per run (MB)",
   "heartbeat.dead_after": "An agent is dead after (seconds)",
   "provider.openai.base_url": "OpenAI-compatible endpoint",
   "provider.retry_after_cap_s": "Longest Retry-After honoured (seconds)",

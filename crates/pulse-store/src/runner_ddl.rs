@@ -64,4 +64,9 @@ pub const RUNNER_COLUMNS: &[Column] = &[
         name: r####"detail"####,
         ddl: r####"TEXT NOT NULL DEFAULT '{}'"####,
     },
+    Column {
+        table: r####"runs"####,
+        name: r####"work_mb"####,
+        ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
+    },
 ];
