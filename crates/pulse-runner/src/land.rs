@@ -671,9 +671,11 @@ pub(crate) fn land_branch(
     // Holds the owner's uncommitted work while the landing runs. Any exit before the
     // fast-forward lands - an error, a hold, a deferral, a panic - pops the stash back
     // onto the checkout so a failed landing never leaves that work buried in `git
-    // stash list`. A landed branch keeps the stash: the checkout then holds new
-    // commits and popping onto them is the owner's call.
+    // stash list`. A landed branch pops it too, so the owner's edits are back on
+    // the new commits; a pop that conflicts keeps the stash entry and the landing
+    // note says so.
     let mut auto_stash: Option<AutoStash> = None;
+    let mut stash_note: Option<String> = None;
     if !by_ref && !clean {
         if s.setting("landing.auto_stash", "on") == "off" {
             return Ok((
@@ -1152,7 +1154,7 @@ pub(crate) fn land_branch(
             ));
         }
         if let Some(stash) = auto_stash.as_mut() {
-            stash.disarm();
+            stash_note = stash.pop();
         }
     }
     let (effective_before, effective_after) = crate::landing_evidence::landing_ref_transition(
@@ -1196,6 +1198,9 @@ pub(crate) fn land_branch(
             serde_json::to_value(evidence).unwrap_or(Value::Null),
         ),
     ]);
+    if let Some(note) = stash_note.as_ref() {
+        detail.insert("auto_stash".into(), serde_json::json!(note));
+    }
     if let Some(m) = moved_lock {
         detail.insert(
             "stale_lock".into(),
@@ -1216,7 +1221,14 @@ pub(crate) fn land_branch(
         branch.clone(),
         actor.clone(),
         "land.landed".into(),
-        format!(" | landed {} from {branch}", crate::recipe::short(&sha, 12)),
+        format!(
+            " | landed {} from {branch}{}",
+            crate::recipe::short(&sha, 12),
+            stash_note
+                .as_ref()
+                .map(|n| format!(" | {n}"))
+                .unwrap_or_default()
+        ),
         o,
         detail,
     )?;
@@ -1859,8 +1871,21 @@ struct AutoStash {
 }
 
 impl AutoStash {
-    fn disarm(&mut self) {
+    /// Pops the stash back onto the checkout once the branch landed and disarms the
+    /// guard. A pop that conflicts leaves the stash entry in place; the returned note
+    /// tells the owner where the work is instead of letting it sit unmentioned in
+    /// `git stash list`.
+    fn pop(&mut self) -> Option<String> {
         self.armed = false;
+        let pop = crate::util::git_timeout(&self.root, Duration::from_secs(60), &["stash", "pop"]);
+        if pop.ok() {
+            return None;
+        }
+        let why = crate::util::trunc(pop.stderr.trim(), 200);
+        Some(format!(
+            "the owner's uncommitted work stayed in `git stash list` because `git stash pop` failed on the landed commits ({why}); run `git stash pop` in {} to recover it",
+            self.root
+        ))
     }
 }
 

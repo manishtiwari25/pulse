@@ -733,16 +733,24 @@ mod tests {
             panic!("job not finished: {:?}", job_row(&s, &j.id));
         }
 
+        // The owner's edits are back in the checkout, not buried in `git stash list`.
         let stash_list = run(&dir, &["git", "stash", "list"]);
-        if !stash_list.contains(&format!("pulse auto-stash before landing {}", j.id)) {
-            panic!("stash list missing expected message: {stash_list:?}");
+        if stash_list.trim() != "" {
+            panic!("auto-stash left behind after a green landing: {stash_list:?}");
         }
         let status = run(
             &dir,
             &["git", "status", "--porcelain", "--untracked-files=no"],
         );
-        if status.trim() != "" {
-            panic!("checkout not clean after landing: {status:?}");
+        if status.trim_end() != " M README.md" {
+            panic!("owner's README.md edit not restored after landing: {status:?}");
+        }
+        let readme = std::fs::read_to_string(std::path::Path::new(&dir).join("README.md")).unwrap();
+        if !readme.contains("owner's work") {
+            panic!("README.md lost the owner's edit: {readme:?}");
+        }
+        if !std::path::Path::new(&dir).join("feature.txt").exists() {
+            panic!("landed commit missing from the checkout");
         }
     }
 
