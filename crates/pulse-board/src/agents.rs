@@ -392,6 +392,8 @@ mod tests {
     #[test]
     fn session_resolution() {
         let _serial = crate::test_helpers::serial();
+        // A runner job exports PULSE_SESSION; this test asserts the agent-row fallback.
+        let _session = pulse_testutil::unsetenv("PULSE_SESSION");
         let a = pulse_store::Agent {
             sessions: vec!["s1".into(), "s2".into()],
             ..Default::default()

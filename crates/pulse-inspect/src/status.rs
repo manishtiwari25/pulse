@@ -629,13 +629,28 @@ impl StatusReport {
             &self
                 .settings
                 .iter()
-                .map(|s| format!("{}={}", s.name, s.value))
+                .map(|s| format!("{}={}", s.name, setting_text_value(&s.name, &s.value)))
                 .collect::<Vec<_>>()
                 .join(", "),
         );
         out.push('\n');
         out
     }
+}
+
+/// The value a setting shows on the one-line `settings` row of the text
+/// status. A project goal is a paragraph (or several) stored as JSON; printed
+/// inline it swamps the row, so the text view names its source and points at
+/// `pulse goal --project <slug>`. The JSON report keeps the full value.
+fn setting_text_value(name: &str, value: &str) -> String {
+    let Some(slug) = name.strip_prefix("project.goal.") else {
+        return value.to_string();
+    };
+    let source = serde_json::from_str::<serde_json::Value>(value)
+        .ok()
+        .and_then(|v| v.get("source").and_then(|s| s.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "unknown".into());
+    format!("<{source} goal; pulse goal --project {slug}>")
 }
 
 pub fn status_text(s: &pulse_store::Store) -> Result<String> {
@@ -988,6 +1003,36 @@ mod tests {
                 .unwrap()
                 .contains("\"recovery\":[]")
         );
+    }
+
+    #[test]
+    fn status_text_elides_project_goals() {
+        let (_dir, s) = temporary_store();
+        let goal = "{\"text\":\"Make zeta useful.\\n\\nSecond paragraph.\",\"source\":\"owner\"}";
+        exec_sql(
+            &s,
+            &format!(
+                "INSERT INTO settings(name,value,updated_at,updated_by) VALUES ('project.goal.zeta','{}','2026-09-06T18:59:00Z','owner')",
+                goal.replace('\'', "''")
+            ),
+        );
+        let report = status(&s).unwrap();
+        let text = report.text();
+        assert!(
+            text.contains("project.goal.zeta=<owner goal; pulse goal --project zeta>"),
+            "goal should be elided on the settings row:\n{text}"
+        );
+        assert!(!text.contains("Second paragraph"), "{text}");
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(
+            json.contains("Second paragraph"),
+            "json keeps the full goal:\n{json}"
+        );
+        assert_eq!(
+            setting_text_value("project.goal.q", "not json"),
+            "<unknown goal; pulse goal --project q>"
+        );
+        assert_eq!(setting_text_value("quorum", "2"), "2");
     }
 
     #[test]
