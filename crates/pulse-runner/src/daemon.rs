@@ -600,7 +600,10 @@ pub(crate) fn daemon(
     let mut restart_pending: Option<std::time::Instant> = None;
     // The runs in flight when the restart was armed: the window follows them.
     let mut restart_anchors: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut maintenance = crate::daemon_maintenance::DaemonMaintenance::default();
+    let mut maintenance = crate::daemon_maintenance::DaemonMaintenance {
+        held: crate::landing_hold::load_landing_holds(s),
+        ..Default::default()
+    };
     let mut maintenance_wake = false;
     let mut probes = crate::checkout::CheckoutProbes::default();
     let mut refused = crate::amend::AmendRefusals::new();

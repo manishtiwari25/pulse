@@ -221,6 +221,29 @@ pub(crate) fn record_landing_holds(
     }
 }
 
+/// The hold notes `record_landing_holds` last wrote, keyed by project slug,
+/// so a daemon restart does not repeat an unchanged `land.held` event.
+pub(crate) fn load_landing_holds(s: &pulse_store::Store) -> BTreeMap<String, String> {
+    let Ok(conn) = s.conn() else {
+        return BTreeMap::new();
+    };
+    let r = crate::util::must_one(&conn, "SELECT value FROM meta WHERE key = 'landing'", &[]);
+    if r.0.is_empty() {
+        return BTreeMap::new();
+    }
+    let Ok(data) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&r.str("value"))
+    else {
+        return BTreeMap::new();
+    };
+    data.into_iter()
+        .filter_map(|(slug, v)| {
+            v.get("note")
+                .and_then(|n| n.as_str())
+                .map(|n| (slug, n.to_string()))
+        })
+        .collect()
+}
+
 /// Go: func pushOn(s *store.Store) bool
 pub(crate) fn push_on(s: &pulse_store::Store) -> bool {
     s.setting("landing.push", "off") == "main"
@@ -431,6 +454,17 @@ mod tests {
     use crate::test_helpers::*;
     use crate::test_helpers_f5::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn landing_holds_survive_reload() {
+        let s = new_store();
+        let mut holds = BTreeMap::new();
+        holds.insert("proj".to_string(), "push failed: x".to_string());
+        record_landing_holds(&s, holds.clone(), "2026-01-01T00:00:00Z".to_string());
+        assert_eq!(load_landing_holds(&s), holds);
+        record_landing_holds(&s, BTreeMap::new(), "2026-01-01T00:00:00Z".to_string());
+        assert!(load_landing_holds(&s).is_empty());
+    }
 
     #[test]
     fn landing_pushes_main_when_asked() {
