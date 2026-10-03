@@ -551,7 +551,12 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   an experiment either; it also skips a card whose `File:` the project's
   constitution closes (an immutable path, or a class the current stage does
   not open) - that card is a proposal nobody acted on, not a breach, so it
-  never stops the loop for owner review. Votes
+  never stops the loop for owner review. A card with a credential-shaped
+  value in one of its fields is passed over the same way (no stop, no card
+  job; the planning status names it once and moves to the next candidate)
+  until a corrected card lands on its thread; a long repository path in a
+  field (`src/web-app/lib/use-context-intake`) is a path, not a credential,
+  wherever it sits in the sentence. Votes
   carry no evidence for the card they vote on: a gated card is replaced by a
   corrected one, not voted through. The
   reflect brief asks for one provable Tier 0 *product* defect first (a wrong

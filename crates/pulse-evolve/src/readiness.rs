@@ -111,6 +111,7 @@ pub(crate) fn planning_status(
         Some(&mut closed),
     )?;
     let mut cardless = None;
+    let mut refused = None;
     for candidate in candidates {
         match crate::card::make_card(s, &candidate.post, status) {
             Ok(_) => {
@@ -141,6 +142,19 @@ pub(crate) fn planning_status(
                         ..Default::default()
                     });
                 }
+                if let Some(r) = e.downcast_ref::<crate::card::RefusedCardError>() {
+                    // The planner passes this card over; the status says so
+                    // once, for the first such card, and keeps looking.
+                    if refused.is_none() {
+                        refused = Some(PlanningStatus {
+                            state: "waiting".to_string(),
+                            suggestion: candidate.post.id.clone(),
+                            reason: r.to_string(),
+                            ..Default::default()
+                        });
+                    }
+                    continue;
+                }
                 if e.downcast_ref::<pulse_cli::Error>().is_none() {
                     return Err(e);
                 }
@@ -169,6 +183,9 @@ pub(crate) fn planning_status(
     }
     if let Some(cardless) = cardless {
         return Ok(cardless);
+    }
+    if let Some(refused) = refused {
+        return Ok(refused);
     }
     // A stop question waits for the owner until an answer follows it in its
     // thread, the owner decides it, or a closing post dated after it resolves
@@ -497,6 +514,69 @@ mod tests {
             asked,
             "the planner re-asked a decided question"
         );
+    }
+
+    #[test]
+    fn refused_card_is_passed_over_not_fatal() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = cycle_ready();
+        // The top voted card carries a credential-shaped token: the loop
+        // refuses it as written, without a stop or a card job, and neither
+        // the status nor the planner falls over on it.
+        let refused = voted_post_with_votes(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "leaky".into(),
+                kind: "suggestion".into(),
+                agent: "proposer".into(),
+                summary: "Improve one operating-layer variable".into(),
+                files: "README.md".into(),
+                body: "Class: operating-layer\nFile: README.md\nVariable: one constant\nHypothesis: set it to AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh= and the score rises\nTier: 1\n".into(),
+                ..Default::default()
+            },
+            &["up", "up", "up"],
+        );
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(status.planning.state, "waiting", "{status:?}");
+        assert_eq!(status.planning.suggestion, refused.id);
+        assert!(
+            status.planning.reason.contains("credentials")
+                && status.planning.reason.contains("corrected card"),
+            "{}",
+            status.planning.reason
+        );
+        let planned = crate::plan::plan_experiment(
+            &s,
+            "demo",
+            crate::plan::PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !planned.created && planned.question.is_empty() && planned.card_job.is_empty(),
+            "a refused card must not start anything: {planned:?}"
+        );
+        // A clean card lower in the vote still gets its turn.
+        let clean = voted_suggestion(&s, "next", "operating-layer", "README.md", 2);
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(status.planning.state, "ready", "{status:?}");
+        assert_eq!(status.planning.suggestion, clean.id);
+        let planned = crate::plan::plan_experiment(
+            &s,
+            "demo",
+            crate::plan::PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(planned.created, "{planned:?}");
+        assert_eq!(planned.suggestion, clean.id);
     }
 
     #[test]

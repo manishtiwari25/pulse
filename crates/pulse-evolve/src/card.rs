@@ -229,6 +229,28 @@ pub struct ExperimentCard {
 }
 /// Go: const cardNeeded = "Suggestion needs an experiment card"
 pub const CARD_NEEDED: &str = "Suggestion needs an experiment card";
+
+/// A card the loop refuses to act on as written - a credential-shaped value in
+/// one of its fields. Not a constitution violation (no stop, no owner review)
+/// and not a missing card (no card job): the planner skips the suggestion and
+/// says why; a corrected card on the thread is a new candidate.
+#[derive(Debug, Clone)]
+pub struct RefusedCardError {
+    pub suggestion: String,
+    pub reason: String,
+}
+
+impl std::fmt::Display for RefusedCardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "suggestion {} is skipped: {}; post a corrected card on its thread",
+            self.suggestion, self.reason
+        )
+    }
+}
+
+impl std::error::Error for RefusedCardError {}
 /// Go: func cardFields(body string) map[string]string
 pub(crate) fn card_fields(body: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
@@ -618,7 +640,10 @@ pub(crate) fn make_card(
         &card.file,
     ] {
         if pulse_store::secret_shaped(value) {
-            return Err(anyhow!("experiment card must not contain credentials"));
+            return Err(anyhow!(RefusedCardError {
+                suggestion: p.id.clone(),
+                reason: "experiment card must not contain credentials".into(),
+            }));
         }
     }
     let target = status.tolerance + status.baseline.unwrap_or(0.0);

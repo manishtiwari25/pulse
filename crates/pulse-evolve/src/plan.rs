@@ -336,6 +336,14 @@ pub(crate) fn plan_experiment_locked(
                         ..Default::default()
                     });
                 }
+                if e.downcast_ref::<crate::card::RefusedCardError>().is_some() {
+                    // Refused as written: no stop, no card job, just not this
+                    // card - the next candidate gets its turn.
+                    if let Some(seen) = seen.as_deref_mut() {
+                        seen.insert(p.id, true);
+                    }
+                    continue;
+                }
                 if e.downcast_ref::<pulse_cli::Error>().is_none() {
                     return Err(e);
                 }

@@ -317,12 +317,49 @@ pub fn secret_shaped(value: &str) -> bool {
     if RES.iter().any(|r| r.is_match(value)) {
         return true;
     }
-    Regex::new(r"[A-Za-z0-9+/_=-]{40,}")
-        .unwrap()
-        .is_match(value)
-        && !Regex::new(r"^(/|\./|\.\./|~|\$|[A-Za-z][A-Za-z0-9+.-]*://[^@\s]*$)")
-            .unwrap()
-            .is_match(value.trim())
+    // A long run of token characters is a credential unless the word it sits
+    // in is a path or a URL. The board's daily vocabulary is full of long
+    // repository-relative paths (`src/web-app/lib/use-context-intake`), so
+    // the word is judged, not the whole sentence, and a word made of
+    // slash-separated segments is a path wherever it starts - provided it
+    // has three or more segments or a `-`, `_` or `.` in it, which a base64
+    // string never has next to a `/`.
+    static LONG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/_=-]{40,}").unwrap());
+    static PATH_OR_URL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(/|\./|\.\./|~|\$|[A-Za-z][A-Za-z0-9+.-]*://[^@\s]*$)").unwrap()
+    });
+    static SEGMENTS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_.@-]+(/[A-Za-z0-9_.@-]+)+/?$").unwrap());
+    if !LONG.is_match(value) {
+        return false;
+    }
+    let path_like = |word: &str| {
+        PATH_OR_URL.is_match(word)
+            || (SEGMENTS.is_match(word)
+                && (word.matches('/').count() >= 2 || word.contains(['-', '_', '.'])))
+    };
+    value.split_whitespace().any(|word| {
+        let word = word.trim_matches(|c: char| {
+            matches!(
+                c,
+                '`' | '\''
+                    | '"'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '<'
+                    | '>'
+                    | ','
+                    | ';'
+                    | ':'
+                    | '.'
+            )
+        });
+        LONG.is_match(word) && !path_like(word)
+    })
 }
 fn py_repr(s: &str) -> String {
     if s.contains('\'') && !s.contains('"') {
@@ -651,6 +688,32 @@ mod tests {
         assert!(!s.owner_away());
         assert_eq!(compute_size_setting("moon"), "compute.azure.vm_size");
         assert!(secret_shaped("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn secret_shape_spares_paths_and_keeps_tokens() {
+        // Repository-relative paths, alone or inside a sentence, are the
+        // board's vocabulary, not credentials - however long they run.
+        for text in [
+            "src/web-fachsprachtrainer/lib/use-context-intake",
+            "Infrastructure/Voice/Realtime/AzureRealtimeApiClient",
+            "File: src/web-fachsprachtrainer/components/user-menu.tsx (the menu)",
+            "parity of `regions/redemittel/minutes/dashboard/recall-cards` with the FSP shim",
+            "/usr/local/bin:/opt/homebrew/bin/some/very/long/path/that/keeps/going/on",
+            "https://example.test/a/very/long/path/that/keeps/going/on/and/on?x=1",
+        ] {
+            assert!(!secret_shaped(text), "{text}");
+        }
+        // Long opaque tokens stay credentials, in a sentence or next to a slash.
+        for text in [
+            "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh",
+            "token AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh= set",
+            "AbCdEfGhIjKlMnOpQrSt/UvWxYz0123456789AbCdEfGh",
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "https://user:pass@example.test/",
+        ] {
+            assert!(secret_shaped(text), "{text}");
+        }
     }
 }
 
