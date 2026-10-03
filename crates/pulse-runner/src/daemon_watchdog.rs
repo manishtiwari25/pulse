@@ -153,7 +153,7 @@ impl DaemonWatchdog {
         };
         let rounded = pulse_cli::format_duration(round_seconds(since));
         let line = format!(
-            "watchdog: the loop has not beaten for {rounded} (bound {}); goroutines at {where_}; cancelling runs and exiting 3 so the service restarts the daemon",
+            "watchdog: the loop has not beaten for {rounded} (bound {}); stack dump at {where_}; cancelling runs and exiting 3 so the service restarts the daemon",
             pulse_cli::format_duration(self.bound)
         );
         (self.say)(line);
