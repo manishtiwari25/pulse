@@ -34,7 +34,7 @@ pub fn register_commands() {
         cli_register(Command { name:"agent".into(), group:"agents".into(), summary:"join with a unique name, spawn a worker, list, beat, or prune".into(), usage:"pulse agent join --name NAME [--runner R] [--model M] [--session S] [--display D] [--kind session|worker]\n       pulse agent spawn [--runner R] [--model M]\n       pulse agent list [--all] [--json]\n       pulse agent beat [--name NAME] [--json]        (a sign of life; silent agents are dead after heartbeat.dead_after)\n       pulse agent prune [--days N] [--dry-run] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_agent, flags:Some(agent_flags) });
         cli_register(Command { name:"post".into(), group:"agents".into(), summary:"write one immutable post".into(), usage:format!("pulse post KIND --area A --thread T --summary S [--body TEXT | --body-file F | < stdin] [--on POST] [--vote up|down]\n       [--expires T] [--resolution R] [--links L] [--files F] [--text-hash H] [--origin-project P] [--claim-hours H] [--for-owner] [--project SLUG]\n       kinds: {}", KINDS.join(", ")), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_post, flags:Some(post_flags) });
         cli_register(Command { name:"claim".into(), group:"agents".into(), summary:"shortcut: post a claim that expires after claim_hours".into(), usage:"pulse claim --area A --thread T --summary S [--hours H] [--project SLUG]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_claim, flags:Some(claim_flags) });
-        cli_register(Command { name:"vote".into(), group:"agents".into(), summary:"shortcut: vote up or down on a suggestion or amendment".into(), usage:"pulse vote POST_ID up|down --summary REASON [--body TEXT] [--text-hash H]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_vote, flags:Some(vote_flags) });
+        cli_register(Command { name:"vote".into(), group:"agents".into(), summary:"shortcut: vote up or down on a suggestion or amendment".into(), usage:"pulse vote POST_ID up|down --summary REASON [--body TEXT | --body-file F | < stdin] [--text-hash H]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_vote, flags:Some(vote_flags) });
         cli_register(Command { name:"thread".into(), group:"agents".into(), summary:"list, show, or resolve board threads".into(), usage:"pulse thread list --project SLUG [--status open|stale|closed] [--area A] [--json]\n       pulse thread show AREA/THREAD --project SLUG [--bodies]\n       pulse thread resolve AREA/THREAD --project SLUG --as RESOLUTION --summary TEXT [--body TEXT|--body-file PATH]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_thread, flags:Some(thread_flags) });
         cli_register(Command { name:"decide".into(), group:"human".into(), summary:"the human records yes or no on a proposal (a yes queues one job, WU-022)".into(), usage:"pulse decide POST_ID yes|no [--words '...']".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_decide, flags:Some(decide_flags) });
         cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, or retry a job by hand".into(), usage:"pulse job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--project SLUG]\n       pulse job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       pulse job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
@@ -108,6 +108,11 @@ fn vote_flags(fs: &mut FlagSet) {
         "body",
         "",
         "the body (an amendment vote carries a `Read:` line)",
+    );
+    fs.string_var(
+        "body-file",
+        "",
+        "read the body from a file (or stdin when piped), like pulse post",
     );
     fs.string_var(
         "text-hash",
@@ -564,7 +569,7 @@ fn run_vote(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             area: target.area,
             thread: target.thread,
             summary: fs.get_string("summary"),
-            body: fs.get_string("body"),
+            body: read_body(fs)?,
             agent: c.agent.clone(),
             session: c.session.clone(),
             on: args[0].clone(),
@@ -1188,6 +1193,57 @@ mod tests {
         assert_eq!(
             help,
             format!("one line, at most {} characters", MAX_SUMMARY_CHARS)
+        );
+    }
+
+    #[test]
+    fn vote_body_file_reads_body_like_post() {
+        let _serial = crate::test_helpers::serial();
+        let (home_dir, _home, s, _p, _repo) = fixture();
+        let (suggestion, _, _) = seed_posts(&s);
+        let body_path = home_dir.path().join("reason.md");
+        std::fs::write(&body_path, "Read: the evidence\nmore detail\n").expect("write body");
+        let (out, err) = run_cmd(
+            &s,
+            Some(Context {
+                agent: "bob".into(),
+                ..test_context()
+            }),
+            &[
+                "vote",
+                &suggestion.id,
+                "up",
+                "--summary",
+                "yes",
+                "--body-file",
+                body_path.to_str().expect("utf8 path"),
+            ],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        let id = out.lines().next().expect("vote id").trim().to_string();
+        let vote = post_by_id(&s, &id).expect("lookup").expect("vote post");
+        assert_eq!(vote.body, "Read: the evidence\nmore detail\n");
+
+        let (_, err) = run_cmd(
+            &s,
+            Some(Context {
+                agent: "carol".into(),
+                ..test_context()
+            }),
+            &[
+                "vote",
+                &suggestion.id,
+                "up",
+                "--summary",
+                "yes",
+                "--body-file",
+                "/nonexistent/reason.md",
+            ],
+        );
+        let err = err.expect_err("missing body file refuses");
+        assert!(
+            what_any(&err).contains("Cannot read --body-file"),
+            "{err:?}"
         );
     }
 
