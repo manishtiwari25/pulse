@@ -12,17 +12,18 @@ export function FailedJobsSection({ project }: { project?: string }) {
   const summary = useApi<FailedJobsPage>(project === "commons" ? null : failedJobsPath(project, "", 1), { refresh: 30000 });
   const count = summary.error ? undefined : summary.data?.historical_total;
   if (project === "commons") return null;
+  if (summary.data && count === 0) return null;
 
   return (
-    <section id={project ? undefined : "failed-jobs"} aria-label="Failed job repair" className="scroll-mt-32">
+    <section id={project ? undefined : "failed-jobs"} aria-label="Jobs that need a hand" className="scroll-mt-32">
       <details className="group" onToggle={(event) => { if (event.currentTarget.open) setOpened(true); }}>
-        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 rounded-xl border bg-card px-4 py-3 text-sm shadow-card [&::-webkit-details-marker]:hidden">
+        <summary className="surface-glass flex cursor-pointer list-none flex-wrap items-center gap-2 rounded-xl border px-4 py-3 text-sm shadow-card [&::-webkit-details-marker]:hidden">
           <ChevronRightIcon className="size-4 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
           <WrenchIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="font-medium">Failed job repair</span>
-          {count !== undefined ? <span className="text-xs text-muted-foreground">{num(count)} historical failures</span> : null}
+          <span className="font-medium">Jobs that need a hand</span>
+          {count !== undefined ? <span className="text-xs text-muted-foreground">{num(count)} past failures</span> : null}
           {summary.error ? <span className="text-xs text-warn">Count unavailable - expand for details</span> : null}
-          <span className="ml-auto text-xs text-muted-foreground">Review causes and queue selected repairs</span>
+          <span className="ml-auto text-xs text-muted-foreground">Review what happened and retry selected work</span>
         </summary>
         {opened ? <div className="mt-3"><FailedJobsPanel project={project} /></div> : null}
       </details>

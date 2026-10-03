@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 // open in the same tab when relative (the hub serves them) and in a new tab
 // when absolute; raw HTML is never rendered.
 export function Markdown({ source, className }: { source: string; className?: string }) {
-  if (!source?.trim()) return <p className={cn("text-sm text-muted-foreground", className)}>(empty)</p>;
+  if (!source?.trim()) return <p className={cn("text-sm text-muted-foreground", className)}>No text yet.</p>;
   return (
     <div className={cn("prose-pulse", className)}>
       <ReactMarkdown

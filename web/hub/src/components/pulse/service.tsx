@@ -57,7 +57,7 @@ export function ServiceControl({ payload, disabled = false, blockedReason = "" }
   const action = serviceSetupAction(payload);
   return (
     <>
-      {action ? <Button size="sm" variant="outline" disabled={disabled} onClick={() => setIntent(action)}><PowerIcon /> {action === "finish" ? "Finish service setup" : action === "start" ? "Start daemon" : "Keep running"}</Button> : null}
+      {action ? <Button size="sm" variant="outline" disabled={disabled} onClick={() => setIntent(action)}><PowerIcon /> {action === "finish" ? "Finish service setup" : action === "start" ? "Start" : "Keep running at login"}</Button> : null}
       <ServiceDialog open={intent !== null} onOpenChange={(o) => !o && setIntent(null)} payload={payload} action={intent ?? "install"} disabled={disabled} blockedReason={blockedReason} />
     </>
   );

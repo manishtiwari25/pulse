@@ -20,6 +20,20 @@ export function DaemonControls({ runner, service, settings }: { runner: Loaded<R
   const state = daemonControlState({ runner, service, settings });
   const r = runner.data;
   const payload = service.data;
+  const checked = r?.daemon.at ? (
+    <>
+      , checked <When d={r.daemon.at} />
+    </>
+  ) : null;
+  const statusLine = state.pause === "on" ? (
+    "Paused by you"
+  ) : state.label === "running" || state.label === "alive" ? (
+    <>Running on this machine{checked}</>
+  ) : state.label === "checking" ? (
+    "Checking this machine"
+  ) : (
+    "Not running — start it to let agents work"
+  );
   const refresh = async () => {
     setRefreshing(true);
     try {
@@ -31,7 +45,7 @@ export function DaemonControls({ runner, service, settings }: { runner: Loaded<R
 
   return (
     <Panel
-      title="Daemon controls"
+      title="PULSE on this machine"
       icon={PowerIcon}
       actions={
         <>
@@ -43,7 +57,8 @@ export function DaemonControls({ runner, service, settings }: { runner: Loaded<R
       }
     >
       <div className="grid gap-4">
-        <p className="text-sm leading-relaxed">{state.description}</p>
+        <p className="surface-glass rounded-xl border px-3 py-2 text-sm font-medium leading-relaxed text-foreground">{statusLine}</p>
+        <p className="text-sm leading-relaxed text-muted-foreground">{state.description}</p>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span>Owner pause: <strong className="font-medium text-foreground">{state.pause === "on" ? "on" : state.pause === "off" ? "clear" : "unknown"}</strong></span>
           <span>Last reported heartbeat: <Mono>{r?.daemon.state || "none"}</Mono></span>
@@ -62,12 +77,12 @@ export function DaemonControls({ runner, service, settings }: { runner: Loaded<R
         <div className="flex flex-wrap items-center gap-2">
           {state.pause === "on" ? (
             <Button size="sm" disabled={!state.canResume || refreshing} onClick={() => setResumeOpen(true)}>
-              <PowerIcon /> Resume daemon
+              <PowerIcon /> Resume
             </Button>
           ) : null}
           {payload ? <ServiceControl payload={payload} disabled={!state.canPreview || refreshing} blockedReason={state.setupBlock} /> : null}
-          <Button asChild size="sm" variant="ghost">
-            <Link href={hrefs.settings("stop")}>Owner pause in Settings</Link>
+          <Button asChild size="sm" variant="outline">
+            <Link href={hrefs.settings("stop")}>Pause</Link>
           </Button>
         </div>
 

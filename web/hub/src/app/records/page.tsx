@@ -10,7 +10,6 @@ import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/pulse/data-table";
 import { Count, EmptyState, ErrorNotice, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
-import { Mono } from "@/components/pulse/who";
 import { RECORD_COLUMNS, RecordCards, RecordSheet, kindLabel } from "@/components/records/records";
 import { registeredProjects, RECORD_KINDS, type Org, type RecordsPayload } from "@/lib/api";
 import { plural } from "@/lib/format";
@@ -100,16 +99,16 @@ function RecordsScreen() {
     <>
       <PageTitle
         icon={BookOpenIcon}
-        sub="The decisions, plans, work units, features, memory and evolution records of your projects, with their revision history. The framework's own docs (workflows, skills, guides, templates…) are one toggle away."
+        sub="The decisions, rules and evaluators that shape each project."
         actions={
           <>
-            <Input aria-label="Search records" placeholder="id, title or tag…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-36 sm:w-56" />
+            <Input aria-label="Search records" placeholder="Find a record…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-36 sm:w-56" />
             <ViewToggle value={view} onChange={setView} />
           </>
         }
         bar={
           <div className="grid gap-1">
-            <BarRow ref={chipsRef} role="group" aria-label="Kind" className="w-fit gap-0.5 rounded-lg border bg-muted/40 p-0.5">
+            <BarRow ref={chipsRef} role="group" aria-label="Kind" className="surface-glass w-fit gap-0.5 rounded-xl border p-0.5">
               <KindChip active={!kind} n={q.data ? base.length : undefined} onClick={() => setParams({ kind: null })}>
                 All
               </KindChip>
@@ -124,10 +123,10 @@ function RecordsScreen() {
                   <KindChip
                     active={showFramework}
                     n={q.data ? frameworkCount : undefined}
-                    title={showFramework ? "Hide the framework's own docs" : "Show the framework's own docs: workflows, skills, guides, templates, prompts…"}
+                    title={showFramework ? "Hide built-in docs" : "Show built-in docs: workflows, skills, guides, templates, prompts…"}
                     onClick={() => setParams(showFramework ? { fw: null, kind: kind && !OWNER_KINDS.includes(kind) ? null : kind } : { fw: "1" })}
                   >
-                    Framework docs
+                    Built-in docs
                   </KindChip>
                   {showFramework
                     ? frameworkKinds.map((k) => (
@@ -205,7 +204,7 @@ function RecordsScreen() {
         Records
       </PageTitle>
       {waiting && !showingWaiting ? (
-        <div className="surface-tint mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 px-3.5 py-2.5 text-sm">
+        <div className="surface-glass mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-primary/30 px-3.5 py-2.5 text-sm shadow-card">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden>
             <InboxIcon className="size-4" />
           </span>
@@ -224,7 +223,7 @@ function RecordsScreen() {
         <SkeletonRows n={10} />
       ) : !rows.length ? (
         <EmptyState
-          title={all.length ? "No matching records" : "No records indexed yet"}
+          title={all.length ? "No matching records" : "No records yet"}
           action={
             filtered ? (
               <Button
@@ -236,15 +235,15 @@ function RecordsScreen() {
                   setParams({ kind: null, status: null, project: null, fw: null });
                 }}
               >
-                clear filters
+                Clear filters
               </Button>
             ) : undefined
           }
         >
-          {all.length ? "Nothing matches these filters." : <>Run <Mono>pulse init</Mono> to index docs/ (ADRs, plans, work units, memory…); agents add records as they work.</>}
+          {all.length ? "Nothing matches these filters." : <>Records appear here after a project is set up and agents start writing down decisions, plans and notes.</>}
         </EmptyState>
       ) : view === "table" ? (
-        <div className="overflow-hidden rounded-lg border bg-card">
+        <div className="surface-raised overflow-hidden rounded-2xl border">
           <DataTable columns={RECORD_COLUMNS(!project)} rows={rows} rowKey={(r) => r.id} onRow={(r) => setParams({ id: r.id })} initialSort="updated" caption="Records" />
         </div>
       ) : (
@@ -280,7 +279,7 @@ function KindChip({ active, n, title, onClick, children }: { active: boolean; n?
       title={title}
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
         active ? "bg-card text-foreground shadow-card" : "text-muted-foreground hover:text-foreground",
         !active && n === 0 && "opacity-50",
       )}

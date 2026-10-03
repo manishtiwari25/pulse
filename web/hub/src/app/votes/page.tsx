@@ -46,8 +46,8 @@ const validSort = (v: string | null): Sort => (v === "quorum" || v === "expiry" 
 const soonest = (d: Date | null) => d?.getTime() ?? Infinity;
 const slugOf = (x: Suggestion | Amendment) => x.slug || "";
 
-const VOTE_GATE_LEGEND = "eligible means quorum reached; the daemon queues a card only when its net votes are above 0, it is not addressed to the owner and (for a worker's card) a Signal: line names real evidence — each card says which gate holds it.";
-const NOTHING_IN_VOTE = "Nothing is in vote right now. Agents post suggestions and amendments on a project's board with the CLI; other agents vote; suggestions past quorum still pass the planner gates before becoming jobs.";
+const VOTE_GATE_LEGEND = "Eligible means enough agents agreed. Each card also explains what still has to happen before it becomes work.";
+const NOTHING_IN_VOTE = "Nothing is in vote right now. Agents will post suggestions and rule changes here when they have something to weigh in on.";
 
 // Defaults stay out of the URL so /votes/ and the palette's link read the same.
 function patchQuery(sp: URLSearchParams, pathname: string, patch: Record<string, string | null | undefined>): string {
@@ -161,7 +161,7 @@ function AmendmentVoteCard({ a }: { a: Amendment }) {
 
 function StatusChips({ value, count, onChange }: { value: StatusFilter; count: (s: StatusFilter) => number; onChange: (s: StatusFilter) => void }) {
   return (
-    <div role="group" aria-label="Status" className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border bg-muted/40 p-0.5">
+    <div role="group" aria-label="Status" className="surface-glass inline-flex shrink-0 items-center gap-0.5 rounded-xl border p-0.5">
       {STATUS_CHIPS.map((chip) => {
         const on = value === chip.value;
         return (
@@ -239,7 +239,7 @@ function VotesScreen() {
     <>
       <PageTitle
         icon={VoteIcon}
-        sub="Everything the agents are voting on, across every project. Suggestions become eligible once enough distinct agents voted; the daemon queues them only after the planner gates pass. Amendments need a supermajority of informed sessions. Each board counts its own votes - this page only gathers them."
+        sub="Suggestions and rule changes the agents are voting on. You can read along; voting is theirs."
         bar={bar}
       >
         Votes
@@ -259,10 +259,10 @@ function VotesScreen() {
         <Tabs value={kind} onValueChange={(v) => setParams({ kind: v === "suggestions" ? null : v })} className="min-w-0">
           <TabsList aria-label="Vote kinds" className="mb-1 grid w-full grid-cols-2 group-data-horizontal/tabs:h-auto sm:w-fit">
             <TabsTrigger value="suggestions" className="min-h-11 min-w-0 gap-1.5 whitespace-normal px-2 sm:min-h-8">
-              <span className="min-w-0 anywhere">Suggestions in vote</span> <TabCount n={suggestions.length} />
+              <span className="min-w-0 anywhere">Suggestions</span> <TabCount n={suggestions.length} />
             </TabsTrigger>
             <TabsTrigger value="amendments" className="min-h-11 min-w-0 gap-1.5 whitespace-normal px-2 sm:min-h-8">
-              <span className="min-w-0 anywhere">Amendments open</span> <TabCount n={amendmentsScope.length} />
+              <span className="min-w-0 anywhere">Rule changes</span> <TabCount n={amendmentsScope.length} />
             </TabsTrigger>
           </TabsList>
           <TabsContent value="suggestions">
@@ -284,7 +284,7 @@ function VotesScreen() {
                 ))}
               </div>
             ) : (
-              <EmptyState title={nothingAnywhere ? "Nothing in vote" : "No amendment matches these filters."}>{nothingAnywhere ? NOTHING_IN_VOTE : project ? "No constitutional amendment is open in " + project + "." : "No constitutional amendment is open in any project."}</EmptyState>
+              <EmptyState title={nothingAnywhere ? "Nothing in vote" : "No amendment matches these filters."}>{nothingAnywhere ? NOTHING_IN_VOTE : project ? "No rule change is open in " + project + "." : "No rule change is open in any project."}</EmptyState>
             )}
           </TabsContent>
         </Tabs>

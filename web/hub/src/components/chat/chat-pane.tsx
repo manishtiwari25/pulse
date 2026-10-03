@@ -131,11 +131,11 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
           <EmptyState className="mx-auto mt-6 max-w-lg border-0">
             {taskId ? (
               <>
-                No message on {taskId} yet. Write below - the runner wakes <b>{lead || project + "-lead"}</b> when you send, and its reply lands here.
+                No message on {taskId} yet. Write below; the lead replies here.
               </>
             ) : (
               <>
-                No lead has answered yet - the runner wakes <b>{lead || project + "-lead"}</b> when you send a message. Ask for a status, give a direction, or open a task and the lead breaks it into jobs.
+                No lead has answered yet. Ask for a status, give a direction, or open a task and the lead will break it into work.
               </>
             )}
           </EmptyState>

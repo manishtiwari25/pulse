@@ -378,7 +378,7 @@ function PromptEditor() {
       .finally(() => setSaving(false));
   };
   return (
-    <section className="grid gap-3 rounded-lg border bg-muted/20 p-3">
+    <section className="surface-glass grid gap-3 rounded-2xl border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold">System prompt</h3>
@@ -414,8 +414,8 @@ function PromptEditor() {
             ) : null}
           </div>
           {d.error || error ? <Notice tone="bad">{error || d.error}</Notice> : null}
-          <details className="rounded-lg border bg-card px-3 py-2 text-sm">
-            <summary className="cursor-pointer font-medium">Preview</summary>
+          <details className="surface-glass rounded-xl border px-3 py-2 text-sm">
+            <summary className="cursor-pointer font-medium">Learn more: preview the rendered prompt</summary>
             <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs leading-relaxed">{d.rendered || "(empty)"}</pre>
           </details>
         </>
@@ -450,15 +450,15 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   };
 
   return (
-    <Card id="harness" className={cn("scroll-mt-32", className)}>
+    <Card id="harness" className={cn("surface-raised scroll-mt-32 overflow-hidden rounded-2xl", className)}>
       <CardHeader className="border-b">
         <div className="flex items-start gap-3">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden>
             <TerminalIcon className="size-4" />
           </span>
           <div className="min-w-0">
-            <CardTitle>Harness</CardTitle>
-            <p className="mt-0.5 text-[13px] leading-snug text-muted-foreground">The built-in harness runs every job through the model provider below. Nothing else to install.</p>
+            <CardTitle>How agents run</CardTitle>
+            <p className="mt-0.5 text-[13px] leading-snug text-muted-foreground">Choose the harness, sign in and set model limits for runs on this machine.</p>
           </div>
         </div>
       </CardHeader>
@@ -468,7 +468,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
         {d ? (
           <>
             <section className="grid gap-2">
-              <h3 className="text-sm font-semibold">Mode</h3>
+              <h3 className="text-sm font-semibold">Run mode</h3>
               <div className="flex flex-wrap items-center gap-2">
                 <Select value={mode?.value || d.harness} onValueChange={(v) => saveChoice("harness", v)}>
                   <SelectTrigger className="w-56">
@@ -485,7 +485,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
             </section>
 
             <section className="grid gap-2">
-              <h3 className="text-sm font-semibold">Provider</h3>
+              <h3 className="text-sm font-semibold">Model sign-in</h3>
               <div className="flex flex-wrap items-center gap-2">
                 <span>{d.provider.label}</span>
                 {signedIn ? (
@@ -548,22 +548,22 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
 
             <section className="grid gap-3">
               <div>
-                <h3 className="text-sm font-semibold">Budgets</h3>
+                <h3 className="text-sm font-semibold">Safety limits</h3>
                 <p className="text-xs text-muted-foreground">Steps cap model/tool turns, minutes cap wall-clock time per job, and cost caps provider units with 0 meaning no cap.</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-3">{budgets.map((s) => <LimitInput key={s.name} s={s} />)}</div>
             </section>
 
             <section className="grid gap-3">
-              <h3 className="text-sm font-semibold">Transcript limits</h3>
+              <h3 className="text-sm font-semibold">Transcript size</h3>
               <div className="grid gap-3 sm:grid-cols-3">{limits.map((s) => <LimitInput key={s.name} s={s} />)}</div>
             </section>
 
             <PromptEditor />
 
-            <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2">
+            <section className="surface-glass flex flex-wrap items-center justify-between gap-3 rounded-xl border px-3 py-2">
               <div>
-                <h3 className="text-sm font-semibold">Activity</h3>
+                <h3 className="text-sm font-semibold">Recent runs</h3>
                 <p className="text-xs text-muted-foreground">
                   {num(d.sessions.running)} running · {num(d.sessions.today)} today · {num(d.sessions.failed_today)} failed today
                   {" · "}
@@ -572,7 +572,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
               </div>
               <Button asChild size="sm" variant="outline">
                 <Link href={hrefs.harness()}>
-                  Open Harness <CheckIcon />
+                  Open harness <CheckIcon />
                 </Link>
               </Button>
             </section>

@@ -11,12 +11,13 @@
   a mint -> sky -> violet gradient on deep navy. The primary accent is the
   blue-violet end of that gradient; status tones (ok / warn / bad / info /
   accent-2) stay semantic and are never used for decoration. Surfaces are
-  layered (background < card < popover) with low-contrast borders, soft
-  theme-aware shadows (shadow-card, shadow-pop) and a 12px base radius.
+  layered (background < glass < raised < popover) with low-contrast borders,
+  soft theme-aware shadows (shadow-card, shadow-pop) and a 12px base radius.
   Every colour is oklch so light and dark stay perceptually matched.
 
   Utilities added here: tnum, anywhere, bg-brand, text-brand, shadow-card,
-  shadow-pop, surface-tint, surface-glass, surface-hero.
+  shadow-pop, shadow-glow, surface-tint, surface-glass, surface-hero,
+  surface-raised, glossy, lift, ambient-bg, ring-soft.
   Everything else is stock Tailwind v4 + shadcn.
 */
 
@@ -108,6 +109,7 @@
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.2 0.02 262);
   --primary: oklch(0.53 0.2 275);
+  --primary-strong: oklch(0.46 0.22 282);
   --primary-foreground: oklch(0.99 0 0);
   --secondary: oklch(0.955 0.006 260);
   --secondary-foreground: oklch(0.25 0.02 262);
@@ -120,7 +122,11 @@
   --input: oklch(0.86 0.015 260);
   --ring: oklch(0.53 0.2 275);
   --radius: 0.75rem;
-  --glass-surface: color-mix(in oklch, var(--card) 88%, transparent);
+  --glass-surface: color-mix(in oklch, var(--card) 84%, transparent);
+  --glass-highlight: oklch(1 0 0 / 0.72);
+  --raised-surface: color-mix(in oklch, var(--card) 82%, transparent);
+  --raised-border: color-mix(in oklch, var(--foreground) 10%, transparent);
+  --raised-highlight: oklch(1 0 0 / 0.84);
 
   /* semantic tones */
   --ok: oklch(0.6 0.16 155);
@@ -145,8 +151,10 @@
 
   /* shadows */
   --sh-card: 0 1px 2px 0 oklch(0.2 0.03 262 / 0.04), 0 4px 14px -6px oklch(0.2 0.03 262 / 0.08);
+  --sh-raised: 0 1px 1px oklch(1 0 0 / 0.62) inset, 0 1px 2px oklch(0.2 0.03 262 / 0.05), 0 14px 36px -24px oklch(0.2 0.03 262 / 0.28), 0 3px 12px -8px oklch(0.2 0.03 262 / 0.12);
+  --sh-raised-hover: 0 1px 1px oklch(1 0 0 / 0.72) inset, 0 22px 52px -26px oklch(0.2 0.03 262 / 0.36), 0 8px 20px -14px oklch(0.2 0.03 262 / 0.2);
   --sh-pop: 0 18px 42px -16px oklch(0.2 0.03 262 / 0.23), 0 3px 10px -4px oklch(0.2 0.03 262 / 0.1);
-  --sh-glow: 0 0 0 4px oklch(0.53 0.2 275 / 0.12);
+  --sh-glow: 0 0 0 4px oklch(0.53 0.2 275 / 0.12), 0 18px 44px -24px oklch(0.53 0.2 275 / 0.35);
 }
 
 .dark {
@@ -158,6 +166,7 @@
   --popover: oklch(0.24 0.027 262);
   --popover-foreground: oklch(0.96 0.005 260);
   --primary: oklch(0.78 0.13 275);
+  --primary-strong: oklch(0.56 0.19 286);
   --primary-foreground: oklch(0.18 0.03 265);
   --secondary: oklch(0.265 0.02 262);
   --secondary-foreground: oklch(0.96 0.005 260);
@@ -169,7 +178,11 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 16%);
   --ring: oklch(0.7 0.13 275);
-  --glass-surface: color-mix(in oklch, var(--card) 92%, transparent);
+  --glass-surface: color-mix(in oklch, var(--card) 82%, transparent);
+  --glass-highlight: oklch(1 0 0 / 0.16);
+  --raised-surface: color-mix(in oklch, var(--card) 78%, transparent);
+  --raised-border: color-mix(in oklch, var(--foreground) 14%, transparent);
+  --raised-highlight: oklch(1 0 0 / 0.22);
 
   --ok: oklch(0.74 0.15 155);
   --warn: oklch(0.8 0.14 78);
@@ -191,9 +204,11 @@
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.7 0.13 275);
 
-  --sh-card: 0 1px 2px 0 oklch(0 0 0 / 0.32), 0 6px 18px -8px oklch(0 0 0 / 0.24), inset 0 1px 0 oklch(1 0 0 / 0.025);
-  --sh-pop: 0 14px 36px -12px oklch(0 0 0 / 0.6), 0 2px 8px -2px oklch(0 0 0 / 0.4);
-  --sh-glow: 0 0 0 4px oklch(0.78 0.13 275 / 0.16);
+  --sh-card: 0 1px 2px 0 oklch(0 0 0 / 0.32), 0 6px 18px -8px oklch(0 0 0 / 0.24), inset 0 1px 0 oklch(1 0 0 / 0.05);
+  --sh-raised: 0 1px 0 var(--raised-highlight) inset, 0 22px 48px -30px oklch(0 0 0 / 0.82), 0 8px 18px -12px oklch(0 0 0 / 0.5);
+  --sh-raised-hover: 0 1px 0 oklch(1 0 0 / 0.28) inset, 0 30px 62px -30px oklch(0 0 0 / 0.9), 0 12px 28px -16px oklch(0 0 0 / 0.62);
+  --sh-pop: 0 14px 36px -12px oklch(0 0 0 / 0.6), 0 2px 8px -2px oklch(0 0 0 / 0.4), inset 0 1px 0 oklch(1 0 0 / 0.12);
+  --sh-glow: 0 0 0 4px oklch(0.78 0.13 275 / 0.16), 0 18px 46px -24px oklch(0.7 0.13 275 / 0.34);
 }
 
 @layer base {
@@ -214,6 +229,8 @@
   }
   body {
     @apply bg-background text-foreground;
+    min-height: 100dvh;
+    isolation: isolate;
     background-image:
       radial-gradient(ellipse 70rem 30rem at 5% 0%, color-mix(in oklch, var(--brand-sky) 5%, transparent), transparent 72%),
       radial-gradient(ellipse 56rem 26rem at 100% 0%, color-mix(in oklch, var(--brand-violet) 4%, transparent), transparent 72%);
@@ -267,10 +284,12 @@
 /* Glass stays opaque when blur is unavailable or transparency is reduced. */
 @utility surface-glass {
   background-color: var(--card);
+  border-color: color-mix(in oklch, var(--foreground) 9%, transparent);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
   @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
     background-color: var(--glass-surface);
-    -webkit-backdrop-filter: blur(12px);
-    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(16px) saturate(1.18);
+    backdrop-filter: blur(16px) saturate(1.18);
   }
   @media (prefers-reduced-transparency: reduce) {
     background-color: var(--card);
@@ -282,9 +301,104 @@
 @utility surface-hero {
   background-color: var(--card);
   background-image:
-    radial-gradient(ellipse at 0% 0%, color-mix(in oklch, var(--brand-mint) 12%, transparent), transparent 55%),
-    radial-gradient(ellipse at 100% 0%, color-mix(in oklch, var(--brand-violet) 10%, transparent), transparent 60%),
-    linear-gradient(120deg, color-mix(in oklch, var(--brand-sky) 4%, transparent), transparent);
+    radial-gradient(ellipse at 0% 0%, color-mix(in oklch, var(--brand-mint) 22%, transparent), transparent 58%),
+    radial-gradient(ellipse at 100% 0%, color-mix(in oklch, var(--brand-violet) 18%, transparent), transparent 62%),
+    linear-gradient(120deg, color-mix(in oklch, var(--brand-sky) 10%, var(--card)), color-mix(in oklch, var(--brand-violet) 5%, var(--card)));
+  border-color: color-mix(in oklch, var(--primary) 18%, transparent);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), var(--sh-card);
+}
+
+@utility ring-soft {
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+
+/* Raised surfaces expose a shadow variable so .lift can deepen them without fighting box-shadow. */
+.surface-raised {
+  --card-shadow: var(--sh-raised);
+  background-color: var(--card);
+  border-color: var(--raised-border);
+  box-shadow: var(--card-shadow);
+}
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .surface-raised {
+    background-color: var(--raised-surface);
+    -webkit-backdrop-filter: blur(16px) saturate(1.16);
+    backdrop-filter: blur(16px) saturate(1.16);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .surface-raised {
+    background-color: var(--card);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+.glossy {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+.glossy::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0 0 45%;
+  border-radius: inherit;
+  background: linear-gradient(180deg, oklch(1 0 0 / 0.42), oklch(1 0 0 / 0.12) 48%, transparent);
+  pointer-events: none;
+}
+.dark .glossy::before {
+  background: linear-gradient(180deg, oklch(1 0 0 / 0.22), oklch(1 0 0 / 0.08) 52%, transparent);
+}
+
+.lift {
+  transition: transform 0.25s var(--ease-out-soft), box-shadow 0.25s var(--ease-out-soft), border-color 0.25s var(--ease-out-soft), background-color 0.25s var(--ease-out-soft);
+}
+.lift:hover {
+  --card-shadow: var(--sh-raised-hover);
+  transform: translateY(-2px);
+}
+.lift:active {
+  transform: translateY(0) scale(0.995);
+}
+@media (prefers-reduced-motion: reduce) {
+  .lift,
+  .lift:hover,
+  .lift:active {
+    transform: none;
+  }
+}
+
+.ambient-bg {
+  position: fixed;
+  inset: -3rem;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 8% 12%, color-mix(in oklch, var(--brand-mint) 18%, transparent) 0 16rem, transparent 30rem),
+    radial-gradient(circle at 86% 8%, color-mix(in oklch, var(--brand-violet) 16%, transparent) 0 18rem, transparent 34rem),
+    radial-gradient(circle at 74% 80%, color-mix(in oklch, var(--brand-sky) 14%, transparent) 0 20rem, transparent 36rem),
+    radial-gradient(circle at 20% 88%, color-mix(in oklch, var(--brand-mint) 10%, transparent) 0 14rem, transparent 30rem);
+  filter: blur(10px) saturate(1.1);
+  animation: ambient-drift 42s ease-in-out infinite alternate;
+}
+.dark .ambient-bg {
+  background:
+    radial-gradient(circle at 8% 12%, color-mix(in oklch, var(--brand-mint) 10%, transparent) 0 16rem, transparent 32rem),
+    radial-gradient(circle at 86% 8%, color-mix(in oklch, var(--brand-violet) 16%, transparent) 0 18rem, transparent 36rem),
+    radial-gradient(circle at 74% 80%, color-mix(in oklch, var(--brand-sky) 11%, transparent) 0 20rem, transparent 38rem),
+    radial-gradient(circle at 20% 88%, color-mix(in oklch, var(--primary) 8%, transparent) 0 14rem, transparent 32rem);
+}
+@keyframes ambient-drift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(0, -1.5rem, 0) scale(1.035); }
+}
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ambient-bg { animation: none; }
 }
 
 /* Markdown bodies (records, briefs, chat). Dense but readable. */

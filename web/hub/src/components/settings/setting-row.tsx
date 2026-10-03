@@ -11,7 +11,7 @@ import { ConfirmDialog } from "@/components/pulse/confirm";
 import { Mono, ToneBadge, When } from "@/components/pulse/who";
 import { cn } from "@/lib/utils";
 import { writes, type Setting } from "@/lib/api";
-import { settingLabel } from "@/lib/setting-labels";
+import { settingHelp, settingLabel } from "@/lib/setting-labels";
 
 export function hint(s: Setting): string {
   if (s.secret) return "owner-private: stored, but never shown here, to agents or in events";
@@ -68,7 +68,7 @@ export function RowHead({ s, title, badge, children }: { s: Setting; title?: Rea
           </span>
         ) : null}
       </div>
-      {children ?? <Clamp>{s.description}</Clamp>}
+      {children ?? <Clamp>{settingHelp(s.name) || s.description}</Clamp>}
     </div>
   );
 }

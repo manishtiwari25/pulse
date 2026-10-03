@@ -6,7 +6,7 @@ import { AlertTriangleIcon, ArrowUpRightIcon, BotIcon, BriefcaseBusinessIcon, Ch
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { CardGrid, Fact, ItemCard, ItemCardActions, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { EmptyState, ErrorNotice, Kpi, Notice, Panel, SkeletonRows, Stack } from "@/components/pulse/panel";
+import { EmptyState, ErrorNotice, Kpi, Panel, SkeletonRows, Stack } from "@/components/pulse/panel";
 import { Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
 import { codeDeliveryCommitURL, codeDeliveryCoverageText, codeDeliveryCoverageTone, codeDeliveryIncompleteWindow, codeDeliveryKpiState, codeDeliveryWindowLabel, shortCommit } from "@/lib/code-deliveries";
 import { codeDeliveriesPath, type CodeDeliveriesPayload, type CodeDelivery, type CodeDeliveryJob, type CodeDeliverySuggestion, type CodeDeliveryTask, type CodeDeliveryWorker, type ProjectsPayload } from "@/lib/api";
@@ -35,6 +35,7 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
   const coverage = d ? codeDeliveryCoverageText(d) : "";
   const coverageTone = incomplete ? "warn" : d ? codeDeliveryCoverageTone(d.summary) : "neutral";
   const canOlder = !!d?.scope.has_more && d.scope.next_before !== null;
+  const projectCount = d ? new Set(d.deliveries.map((row) => row.project)).size : 0;
 
   return (
     <section id="code-deliveries" aria-label="Code deliveries" className="scroll-mt-32">
@@ -58,7 +59,16 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
           <Stack gap={4}>
             {q.error ? <ErrorNotice error={q.error} onRetry={() => void q.reload()}>Showing cached code-delivery data; refresh failed ({q.error}).</ErrorNotice> : null}
             {registry.error ? <ErrorNotice error={registry.error} onRetry={() => void registry.reload()}>Commit links unavailable: repository details could not be loaded ({registry.error}).</ErrorNotice> : null}
-            <Notice tone={coverageTone}>{coverage}</Notice>
+            <div className="surface-hero glossy rounded-3xl border px-5 py-4 shadow-card">
+              <h2 className="text-2xl font-semibold tracking-tight">
+                {num(d.summary.code_deliveries)} {d.summary.code_deliveries === 1 ? "change" : "changes"} landed in this window
+                {projectCount ? " across " + plural(projectCount, "project") : ""}
+              </h2>
+              <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <ToneBadge tone={coverageTone}>Evidence</ToneBadge>
+                <span>{coverage}</span>
+              </p>
+            </div>
             <CardGrid cols={3}>
               <Fact n={num(d.summary.code_deliveries)} label="code deliveries" tone={d.summary.code_deliveries ? "ok" : undefined} />
               <Fact n={num(d.summary.code_files)} label="source-file changes" tone={d.summary.code_files ? "accent" : undefined} />

@@ -21,7 +21,6 @@ import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Check, Mono, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
 import { THREAD_COLUMNS, ThreadCards, ThreadLastBy, ThreadParticipants, ThreadSignals } from "@/components/board/sheets";
 import { ChatPane } from "@/components/chat/chat-pane";
-import { ProjectGoalPanel } from "@/components/project/goal";
 import { SectionHeading } from "@/components/pulse/item-card";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
@@ -101,16 +100,15 @@ export function OverviewTab({ slug }: { slug: string }) {
         return (
           <div className="grid gap-4">
             <ProjectBranchLine info={i} />
-            <ProjectGoalPanel key={slug} slug={slug} />
             <FailedJobsSection key={"repairs-" + slug} project={slug} />
             <KpiGrid>
-              <Kpi icon={InboxIcon} n={o.proposals_awaiting} label="for you" sub="proposals waiting" tone={o.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "proposals")} />
-              <Kpi icon={ListTodoIcon} n={open.length} label="open tasks" sub={tasks.data ? plural(open.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.project(slug, "tasks")} />
+              <Kpi icon={InboxIcon} n={o.proposals_awaiting} label="for you" sub="proposals waiting" tone={o.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "for-you")} />
+              <Kpi icon={ListTodoIcon} n={open.length} label="open tasks" sub={tasks.data ? plural(open.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.project(slug, "work")} />
               <Kpi icon={ActivityIcon} n={o.claims_active} label="working now" sub="active claims" tone={o.claims_active ? "ok" : "neutral"} />
-              <Kpi icon={MessagesSquareIcon} n={o.threads_open} label="open threads" sub={num(o.threads_stale) + " stale"} tone={o.threads_stale ? "warn" : "neutral"} href={hrefs.project(slug, "threads")} />
-              <Kpi icon={CheckCircle2Icon} n={o.suggestions_eligible} label="eligible" sub={o.suggestions_plannable === undefined ? "suggestions past quorum" : num(o.suggestions_plannable) + " plannable"} tone={o.suggestions_eligible ? "accent" : "neutral"} href={hrefs.project(slug, "suggestions")} />
-              <Kpi icon={VoteIcon} n={o.suggestions_needing_votes} label="need votes" sub={"quorum " + num(o.quorum)} tone={o.suggestions_needing_votes ? "warn" : "neutral"} href={hrefs.project(slug, "suggestions")} />
-              <Kpi icon={FileDiffIcon} n={o.amendments_open} label="amendments" sub={num(o.amendments_passed) + " passed"} href={hrefs.project(slug, "amendments")} />
+              <Kpi icon={MessagesSquareIcon} n={o.threads_open} label="open threads" sub={num(o.threads_stale) + " stale"} tone={o.threads_stale ? "warn" : "neutral"} href={hrefs.project(slug, "board", { sub: "threads" })} />
+              <Kpi icon={CheckCircle2Icon} n={o.suggestions_eligible} label="eligible" sub={o.suggestions_plannable === undefined ? "suggestions past quorum" : num(o.suggestions_plannable) + " plannable"} tone={o.suggestions_eligible ? "accent" : "neutral"} href={hrefs.project(slug, "board", { sub: "suggestions" })} />
+              <Kpi icon={VoteIcon} n={o.suggestions_needing_votes} label="need votes" sub={"quorum " + num(o.quorum)} tone={o.suggestions_needing_votes ? "warn" : "neutral"} href={hrefs.project(slug, "board", { sub: "suggestions" })} />
+              <Kpi icon={FileDiffIcon} n={o.amendments_open} label="amendments" sub={num(o.amendments_passed) + " passed"} href={hrefs.project(slug, "board", { sub: "amendments" })} />
               <CodeDeliveredKpi project={slug} />
               <Kpi icon={MessageSquareIcon} n={o.posts} label="posts" sub={num(o.posts_without_provenance) + " without provenance"} tone={o.posts_without_provenance ? "warn" : "neutral"} />
             </KpiGrid>
@@ -122,10 +120,10 @@ export function OverviewTab({ slug }: { slug: string }) {
             <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
               <div className="grid gap-4 content-start">
                 {tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={180} /> : null}
-                <Panel title={o.open_threads.length ? "Open threads (" + num(o.threads_open) + ")" : "Open threads"} icon={MessagesSquareIcon} actions={<Link href={hrefs.project(slug, "threads")} className="hover:underline">all</Link>} dense>
+                <Panel title={o.open_threads.length ? "Open threads (" + num(o.threads_open) + ")" : "Open threads"} icon={MessagesSquareIcon} actions={<Link href={hrefs.project(slug, "board", { sub: "threads" })} className="hover:underline">all</Link>} dense>
                   {o.open_threads.length ? <OpenThreads rows={o.open_threads} slug={slug} limit={6} /> : <p className="px-4 py-3 text-[12.5px] text-muted-foreground">No open thread. Threads open when an agent posts a claim, question or suggestion.</p>}
                 </Panel>
-                <Panel title="Recent posts" icon={MessageSquareIcon} actions={<Link href={hrefs.project(slug, "timeline")} className="hover:underline">all</Link>}>
+                <Panel title="Recent posts" icon={MessageSquareIcon} actions={<Link href={hrefs.project(slug, "history", { sub: "timeline" })} className="hover:underline">all</Link>}>
                   <FeedList rows={o.recent_posts} slug={slug} limit={8} />
                 </Panel>
               </div>
@@ -256,7 +254,7 @@ export function TasksTab({ slug, onOpen, activeId }: { slug: string; onOpen: (id
           const empty =
             status === "active" && !text ? (
               <>
-                No open task for <b>{slug}</b>. Click <b>New task</b>, write what you want in Markdown, and the runner wakes <Mono>{slug}-lead</Mono> to plan it into jobs. Its questions and progress land in the Chat tab.
+                No open task for <b>{slug}</b>. Click <b>New task</b>, write what you want, and the lead starts the work. Questions and progress land in chat.
               </>
             ) : (
               "Nothing matches this filter."
@@ -267,7 +265,7 @@ export function TasksTab({ slug, onOpen, activeId }: { slug: string; onOpen: (id
                 <DataTable columns={TASK_COLUMNS(false)} rows={rows} rowKey={(t) => t.id} onRow={(t) => onOpen(t.id)} initialSort="updated" />
               </div>
             ) : (
-              <EmptyState title="No task" action={status === "active" && !text ? <NewTaskButton project={slug} onCreated={(t: Task) => onOpen(t.id)} /> : undefined}>{empty}</EmptyState>
+              <EmptyState title="No tasks" action={status === "active" && !text ? <NewTaskButton project={slug} onCreated={(t: Task) => onOpen(t.id)} /> : undefined}>{empty}</EmptyState>
             );
           return <TaskCards tasks={rows} onOpen={(t) => onOpen(t.id)} activeId={activeId} empty={empty} emptyTitle={status === "active" && !text ? "No open task" : undefined} emptyAction={status === "active" && !text ? <NewTaskButton project={slug} onCreated={(t: Task) => onOpen(t.id)} /> : undefined} />;
         }}
@@ -413,7 +411,7 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
                 ))}
               </div>
             ) : (
-              <EmptyState title={show === "awaiting" ? "Nothing waits for you" : "No proposals"}>{show === "awaiting" ? "Nothing waits for your decision. Agents raise a proposal when a suggestion passes quorum and needs a human yes or no, and they mark a question for you when only you can answer it; both show here and on the hub." : "No proposal has been raised on this board yet."}</EmptyState>
+              <EmptyState title={show === "awaiting" ? "Nothing waits for you" : "No proposals"}>{show === "awaiting" ? "No proposal waits for you here. Agents post one when they need your yes." : "No proposal has been raised on this board yet. Agents post one when they need a human decision."}</EmptyState>
             )}
           </div>
         );
@@ -678,9 +676,9 @@ export function NoticesTab({ slug }: { slug: string }) {
         <div className="grid gap-4">
           <KpiGrid>
             <Kpi icon={VoteIcon} n={n.votes_open} label="votes open" tone={n.votes_open ? "warn" : "neutral"} />
-            <Kpi icon={InboxIcon} n={n.proposals_awaiting} label="proposals for you" tone={n.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "proposals")} />
+            <Kpi icon={InboxIcon} n={n.proposals_awaiting} label="proposals for you" tone={n.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "for-you")} />
             <Kpi icon={MessageSquareIcon} n={n.commons_questions ?? 0} label="commons questions" sub={n.commons_present ? "commons present" : "no commons"} />
-            <Kpi icon={BotIcon} n={n.brain || "—"} label="framework brain" />
+            <Kpi icon={BotIcon} n={n.brain || "—"} label="PULSE framework" />
           </KpiGrid>
           <Panel title="Ballot - what agents are asked to vote on next" icon={BellIcon} dense>
             {n.ballot.length ? (

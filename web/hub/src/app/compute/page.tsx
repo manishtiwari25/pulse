@@ -9,7 +9,6 @@ import { HygienePanel } from "@/components/pulse/hygiene";
 import { CapsPanel, ComputeRequestCard } from "@/components/compute/compute";
 import { CardGrid, SectionHeading } from "@/components/pulse/item-card";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
-import { Mono } from "@/components/pulse/who";
 import { RemoveMenuButton } from "@/components/project/project-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num } from "@/lib/format";
@@ -29,7 +28,7 @@ export default function ComputePage() {
   if (q.error && !q.data)
     return (
       <>
-        <PageTitle icon={CpuIcon}>Compute</PageTitle>
+        <PageTitle icon={CpuIcon} sub="Extra machines agents asked for. Approve or deny them here.">Machines</PageTitle>
         <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
       </>
     );
@@ -50,9 +49,9 @@ export default function ComputePage() {
     <>
       <PageTitle
         icon={CpuIcon}
-        sub="Agents ask for machines; you approve or deny within the caps. Approved requests become executors the daemon runs jobs on."
+        sub="Extra machines agents asked for. Approve or deny them here."
         bar={
-          <div role="group" aria-label="Which requests" className="inline-flex rounded-lg border bg-muted/40 p-0.5">
+          <div role="group" aria-label="Which requests" className="surface-glass inline-flex rounded-xl border p-0.5">
             {chips.map((ch) => (
               <Button key={ch.id} size="xs" variant="ghost" aria-pressed={show === ch.id} className={show === ch.id ? "bg-card text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:text-foreground"} onClick={() => setShow(ch.id)}>
                 {ch.label} <span className={show === ch.id ? "tnum rounded-full bg-primary/10 px-1.5 text-[10.5px] text-primary" : "tnum rounded-full bg-muted px-1.5 text-[10.5px] text-muted-foreground"}>{num(ch.n)}</span>
@@ -61,21 +60,21 @@ export default function ComputePage() {
           </div>
         }
       >
-        Compute
+        Machines
       </PageTitle>
       <KpiGrid>
         <Kpi n={pending.length} label="to decide" tone={pending.length ? "warn" : "neutral"} sub="pending requests" icon={InboxIcon} />
-        <Kpi n={live.length} label="live" sub="approved / provisioning / ready" tone={live.length ? "ok" : "neutral"} icon={CpuIcon} />
+        <Kpi n={live.length} label="approved" sub="starting or ready" tone={live.length ? "ok" : "neutral"} icon={CpuIcon} />
         <Kpi n={num(c.caps.vms_now) + " / " + num(c.caps.max_vms)} label="machines" sub="now / cap" icon={ServerIcon} />
         <Kpi n={num(c.caps.hours_today) + " / " + num(c.caps.max_hours_per_day)} label="hours today" sub="used / cap" tone={c.caps.hours_today >= c.caps.max_hours_per_day && c.caps.max_hours_per_day > 0 ? "bad" : "neutral"} icon={ClockIcon} />
         <Kpi n={c.caps.budget_credits} label="budget" sub="credits" icon={CoinsIcon} />
         <Kpi n={c.caps.provider || "none"} label="provider" sub={c.caps.auto_approve === true || c.caps.auto_approve === 1 ? "auto-approve on" : "manual approval"} href={hrefs.settings("compute")} icon={CloudIcon} />
-        <Kpi n={executors.length} label="executors" sub={num(active) + " active"} tone={active ? "ok" : "neutral"} icon={ServerIcon} />
+        <Kpi n={executors.length} label="work machines" sub={num(active) + " active"} tone={active ? "ok" : "neutral"} icon={ServerIcon} />
         <Kpi n={c.requests.length} label="requests" sub="all time" />
       </KpiGrid>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <section aria-label="Requests">
-          <SectionHeading count={rows.length} icon={show === "pending" ? InboxIcon : HistoryIcon}>{show === "pending" ? "Pending requests" : "Request history"}</SectionHeading>
+          <SectionHeading count={rows.length} icon={show === "pending" ? InboxIcon : HistoryIcon}>{show === "pending" ? "Requests to decide" : "Past requests"}</SectionHeading>
           {rows.length ? (
             <CardGrid cols={2}>
               {rows.map((r) => (
@@ -83,22 +82,22 @@ export default function ComputePage() {
               ))}
             </CardGrid>
           ) : (
-            <EmptyState title="No compute request">
+            <EmptyState title="No machine request">
               {show === "pending" ? (
                 <>
-                  Nothing to decide. When an agent runs <Mono>pulse compute request</Mono> the request shows here and on the hub with Approve / Deny.
+                  Nothing to decide. When an agent asks for another machine, the request shows here with Approve and Deny.
                 </>
               ) : (
-                "No compute request has been made yet."
+                "No machine request has been made yet."
               )}
             </EmptyState>
           )}
         </section>
         <div className="grid gap-4 content-start">
-          <Panel title="Caps" actions={<Link href={hrefs.settings("compute")} className="hover:underline">edit</Link>}>
+          <Panel title="Safety limits" actions={<Link href={hrefs.settings("compute")} className="hover:underline">edit</Link>}>
             <CapsPanel caps={c.caps} />
           </Panel>
-          <Panel title="Executors" dense>
+          <Panel title="Machines ready to work" dense>
             {executors.length ? (
               <ul className="grid gap-1.5 p-3">
                 {executors.map((e) => (
@@ -108,7 +107,7 @@ export default function ComputePage() {
               </ul>
             ) : (
               <EmptyState className="m-3">
-                No executor registered. Approve a request or add one with <Mono>pulse executor add</Mono>; the daemon probes it and runs jobs there.
+                No extra machine is ready yet. Approve a request or add a machine; agents will use it after it checks in.
               </EmptyState>
             )}
           </Panel>

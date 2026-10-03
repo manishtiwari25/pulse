@@ -5,12 +5,13 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { BanIcon, MessagesSquareIcon, MoreHorizontalIcon, PencilIcon, PanelRightOpenIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ConfirmDialog } from "@/components/pulse/confirm";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardTitle, excerpt } from "@/components/pulse/item-card";
 import { EmptyState } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
-import { prioLabel } from "@/lib/format";
+import { plural, prioLabel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { taskProgress, writes, type Task } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -101,6 +102,7 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
   const body = excerpt(t.brief, compact ? 120 : 220);
   return (
     <ItemCard onOpen={open} active={active} highlight={t.status === "review"} ariaLabel={t.id + " " + t.title} className={cn("border-l-2", STATUS_CUE[t.status])}>
+      <ItemCardTitle chevron className="text-base">{t.title}</ItemCardTitle>
       <ItemCardHeader
         right={
           <>
@@ -109,12 +111,20 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
           </>
         }
       >
-        <Mono className="font-semibold">{t.id}</Mono>
         <StatusBadge status={t.status} />
+        <Mono className="font-semibold">{t.id}</Mono>
         {prio === "urgent" || prio === "high" ? <ToneBadge tone={prio === "urgent" ? "bad" : "warn"}>{prio}</ToneBadge> : null}
         {showProject ? <ProjectLink slug={t.project} className="text-xs" /> : null}
       </ItemCardHeader>
-      <ItemCardTitle chevron>{t.title}</ItemCardTitle>
+      {progress.total ? (
+        <div className="grid gap-1.5">
+          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+            <span className="tnum">{progress.done + " of " + progress.total + " steps done"}</span>
+            {progress.running ? <span className="text-info">{plural(progress.running, "running")}</span> : null}
+          </div>
+          <Progress value={Math.min(100, (100 * progress.done) / Math.max(1, progress.total))} className="h-1.5" />
+        </div>
+      ) : null}
       <TaskWorkingLine t={t} compact={compact} />
       {body && !compact ? <ItemCardBody>{body}</ItemCardBody> : null}
       <ItemCardActions>

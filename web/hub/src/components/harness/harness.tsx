@@ -657,10 +657,10 @@ export function HarnessPageClient() {
     <>
       <PageTitle
         icon={TerminalIcon}
-        sub="Every native harness run is recorded here: model calls, commands, observations, policy errors and the final submission."
+        sub="How agents run on this machine: the CLI they use and its hooks."
         actions={
           <Button asChild variant="outline" size="sm">
-            <Link href={hrefs.settings("harness")}>Settings → Harness</Link>
+            <Link href={hrefs.settings("harness")}>Harness settings</Link>
           </Button>
         }
         bar={
@@ -695,7 +695,7 @@ export function HarnessPageClient() {
             </Button>
           }
         >
-          The harness records every run here once an agent works. Sign in with GitHub, choose models, and the first job will leave a transcript.
+          Harness runs appear here after agents start work. Sign in, choose models, and each run will leave a transcript.
         </EmptyState>
       ) : (
         <div className="grid gap-4">
@@ -721,7 +721,7 @@ export function HarnessPageClient() {
           </KpiGrid>
           <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(420px,1.05fr)]">
             <Panel
-              title="Sessions"
+              title="Runs"
               icon={BotIcon}
               actions={
                 eventKinds.length ? (
@@ -753,7 +753,7 @@ export function HarnessPageClient() {
               <Transcript id={selected} models={modelRows} />
             ) : (
               <Panel title="Transcript" icon={FileTextIcon}>
-                <EmptyState>Select a session to read its transcript</EmptyState>
+                <EmptyState>Select a run to read its transcript.</EmptyState>
               </Panel>
             )}
           </div>

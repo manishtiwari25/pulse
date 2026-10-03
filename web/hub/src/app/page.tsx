@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { ActivityIcon, AlertTriangleIcon, ArrowUpRightIcon, BotIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon, ExternalLinkIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ActivityIcon, ArrowUpRightIcon, BotIcon, ChevronDownIcon, ChevronRightIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
+import { HomeHero } from "@/components/home/hero";
 import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, QuestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { ComputeDecide } from "@/components/compute/compute";
 import { daemonControlState } from "@/components/pulse/daemon-control-state";
@@ -15,7 +16,7 @@ import { GateCard, foldSteps, gateStep, type GateStep } from "@/components/pulse
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { FailedJobsSection } from "@/components/pulse/job-repair-section";
-import { EmptyState, ErrorNotice, Kpi, KpiGrid, Notice, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { AddProjectButton } from "@/components/project/project-dialogs";
 import { awaitsDecision, ProposedRecordCard } from "@/components/records/decide-record";
@@ -46,11 +47,27 @@ export default function HubPage() {
   const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
   // Boards can hold many old owner questions; the inbox shows the first few and unfolds on request.
   const [allQuestions, setAllQuestions] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  useEffect(() => {
+    const openFromHash = () => {
+      if (window.location.hash === "#daemon-controls") {
+        setDetailsOpen(true);
+        window.localStorage.setItem("pulse.home.details", "open");
+        window.requestAnimationFrame(() => document.getElementById("daemon-controls")?.scrollIntoView());
+      }
+    };
+    if (window.localStorage.getItem("pulse.home.details") === "open") window.requestAnimationFrame(() => setDetailsOpen(true));
+    openFromHash();
+    window.addEventListener("hashchange", openFromHash);
+    return () => window.removeEventListener("hashchange", openFromHash);
+  }, []);
+
 
   if (org.error && !org.data)
     return (
       <>
-        <PageTitle>Hub</PageTitle>
+        <PageTitle>Home</PageTitle>
         <ErrorNotice error={org.error} onRetry={() => void org.reload()}>
           The hub API did not answer ({org.error}). Start it with <Mono>pulse hub</Mono> and reload.
         </ErrorNotice>
@@ -95,65 +112,32 @@ export default function HubPage() {
     const s = tl.data?.series?.find((x) => x.slug === slug);
     return s ? lastDays(s, 14) : undefined;
   };
-  const metaChipBase = "min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border/60 bg-card/70 px-2 py-1 text-[11px] leading-4 text-muted-foreground";
-  const metaChip = "inline-flex " + metaChipBase;
+  const runnerChecking = !runner.data && !runner.error;
+  const fallbackWorkingAgents = new Set(o.active_claims.map((c) => c.agent || c.name || c.session || c.id).filter(Boolean)).size;
+  const setDetails = (open: boolean) => {
+    setDetailsOpen(open);
+    window.localStorage.setItem("pulse.home.details", open ? "open" : "closed");
+  };
 
   return (
     <>
-      <PageTitle
-        icon={HomeIcon}
-        badge={
-          inbox > 0 ? (
-            <a href="#for-you" className="inline-flex min-h-7 items-center rounded-full bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground shadow-card transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none">
-              {num(inbox) + " for you"}
-            </a>
-          ) : null
-        }
-        sub={
-          <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <span className={metaChip}>{plural(o.totals.projects, "project")}</span>
-            {o.totals.brain ? (
-              <span className={metaChip} title={"brain " + o.totals.brain}>
-                brain <Mono className="min-w-0 truncate">{o.totals.brain}</Mono>
-              </span>
-            ) : null}
-            <span className={metaChip} title={"tally " + o.tally_mode}>
-              tally <Mono className="min-w-0 truncate">{o.tally_mode}</Mono>
-            </span>
-            {o.binary_version ? (
-              <span className={metaChip} title={"pulse " + o.binary_version}>
-                pulse <Mono className="min-w-0 truncate">{o.binary_version}</Mono>
-              </span>
-            ) : null}
-            <span title={o.store || o.registry} className={"hidden sm:inline-flex sm:max-w-[min(42vw,28rem)] " + metaChipBase}>
-              store <Mono className="min-w-0 truncate text-muted-foreground">{o.store || o.registry}</Mono>
-            </span>
-          </span>
-        }
-        actions={
-          <>
-            <NewTaskButton />
-            <Button asChild variant="outline" size="sm">
-              <Link href={hrefs.tasks()}>All tasks</Link>
-            </Button>
-          </>
-        }
-      >
-        Your workspace
-      </PageTitle>
-      {o.owner_presence === "away" ? (
-        <Notice tone="warn" className="mb-5">
-          You&apos;re marked away — each project&apos;s lead decides proposals on your behalf. Hard stops, ADRs and compute requests still wait for you.{" "}
-          <Link href={hrefs.settings("owner")} className="font-medium underline underline-offset-2">
-            Settings
-          </Link>
-        </Notice>
-      ) : null}
+      <HomeHero
+        inbox={inbox}
+        daemon={daemon}
+        daemonDown={!!runner.error && !runner.data}
+        runnerChecking={runnerChecking}
+        inboxChecking={checking.length > 0}
+        runningJobs={r?.jobs.running}
+        fallbackWorkingAgents={fallbackWorkingAgents}
+        activeAgents={o.totals.agents_active}
+        projects={projects.length}
+        ownerAway={o.owner_presence === "away"}
+        actions={<NewTaskButton />}
+      />
 
-      {/* The inbox: everything that waits for the owner's yes or no, buttons in reach, before anything else. Decisions first, then proposals, then compute, then the steps only the owner can take. */}
       {inbox ? (
-        <section id="for-you" className="mb-7 scroll-mt-32 rounded-2xl border border-primary/20 surface-hero p-4 shadow-card sm:p-5" aria-label="For you">
-          <SectionHeading icon={InboxIcon} count={inbox} action={down.length ? <span className="text-warn">{down.join(" · ")}</span> : <span>{decisions && steps.length + machineSteps ? "Your decisions and next steps" : steps.length + machineSteps ? "The steps only you can take" : "Waiting for your yes or no"}</span>}>
+        <section id="for-you" className="mb-8 scroll-mt-32 rounded-2xl surface-raised glossy p-4 shadow-card sm:p-5" aria-label="For you">
+          <SectionHeading icon={InboxIcon} count={inbox} action={down.length ? <span className="text-warn">{down.join(" · ")}</span> : <span>Your yes or no — nothing happens without it.</span>}>
             For you
           </SectionHeading>
           <CardGrid cols={2}>
@@ -191,106 +175,136 @@ export default function HubPage() {
           </CardGrid>
         </section>
       ) : (
-        <p id="for-you" className="mb-7 flex scroll-mt-32 items-center gap-3 rounded-xl border surface-glass px-4 py-3 text-sm leading-relaxed text-muted-foreground">
+        <p id="for-you" className="mb-8 flex scroll-mt-32 items-center gap-3 rounded-xl surface-glass px-4 py-3 text-sm leading-relaxed text-muted-foreground">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground" aria-hidden>
             <InboxIcon className="size-4" />
           </span>
-          <span className="min-w-0 anywhere">{downWhy.length ? "No proposal waits for you - " + downWhy.join("; ") + "." : checking.length ? "No proposal waits for you - checking " + checking.join(" and ") + "…" : "Nothing waits for you right now."}</span>
+          <span className="min-w-0 anywhere">{downWhy.length ? "Nothing waits for you — " + downWhy.join("; ") + "." : checking.length ? "Nothing waits for you — checking " + checking.join(" and ") + "…" : "Nothing waits for you right now."}</span>
         </p>
       )}
 
-      <section aria-label="Workspace overview" className="mb-7">
-        <SectionHeading>At a glance</SectionHeading>
-        <KpiGrid className="mb-0">
-          <Kpi icon={InboxIcon} n={inbox} label="For you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", questions.length ? plural(questions.length, "question") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length + machineSteps ? plural(steps.length + machineSteps, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
-          <Kpi icon={ListTodoIcon} n={openTasks.length} label="Open tasks" sub={tasks.data ? `${num(openTasks.filter((t) => t.status === "in_progress").length)} in progress` : "loading"} href={hrefs.tasks()} />
-          <Kpi icon={CpuIcon} n={pendingCompute.length} label="Compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
-          <Kpi icon={BotIcon} n={o.totals.agents_active} label="Agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
-          <Kpi icon={VoteIcon} n={o.totals.votes_open} label="In vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} href={hrefs.votes()} />
-          <CodeDeliveredKpi />
-          <Kpi icon={MessageCircleQuestionIcon} n={o.totals.questions_open} label="Open questions" sub="across the boards" />
-          <Kpi icon={MessageSquareIcon} n={o.totals.posts_24h} label="Posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
-          <Kpi icon={daemon.tone === "ok" ? PowerIcon : ActivityIcon} n={daemon.label} label="Daemon" sub={runner.error ? "status unavailable · controls below" : r ? (r.runner?.allowed === false ? r.runner.reason : num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued · controls below") : "checking heartbeat"} tone={daemon.tone} href="#daemon-controls" />
-        </KpiGrid>
+      <section aria-label="Your projects" className="mb-8">
+        <SectionHeading icon={FolderIcon} count={projects.length} action={<AddProjectButton size="sm" variant="outline" onRegistered={(r) => router.push(hrefs.project(r.project.slug))} />}>
+          Your projects
+        </SectionHeading>
+        {projects.length ? (
+          <CardGrid cols={2}>
+            {projects.map((p) => (
+              <ProjectCard key={p.slug} p={p} spark={sparkFor(p.slug)} gate={gateOf(p)} />
+            ))}
+          </CardGrid>
+        ) : (
+          <EmptyState icon={<FolderIcon className="size-[18px]" />} title="A place for your projects">
+            No project registered yet. Add one with the button above or run <Mono>pulse init</Mono> in a checkout.
+          </EmptyState>
+        )}
+        {attention.length ? (
+          <div className="mt-4 grid gap-2" aria-label="Needs attention">
+            {attention.map((p) => (
+              <Notice key={p.slug} tone="warn">
+                <ProjectLink slug={p.slug} />{" "}
+                <span className="text-muted-foreground">{p.stop_present ? "STOP is set - the evolution loop halts until it is removed." : p.missing || !p.present ? "is registered but missing on disk - re-clone it at " + p.path + " or unregister." : !p.board_present ? "has no board yet - run pulse init in its checkout." : p.error}</span>
+              </Notice>
+            ))}
+          </div>
+        ) : null}
+        {commons ? (
+          <div className="mt-8">
+            <SectionHeading icon={UsersIcon} action={<span>The shared board for things that affect more than one project.</span>}>Shared board</SectionHeading>
+            <CommonsCard c={commons} spark={sparkFor(commons.slug)} />
+          </div>
+        ) : null}
       </section>
 
-      <section id="daemon-controls" aria-label="Daemon controls" className="mb-7 scroll-mt-32">
-        <DaemonControls runner={runner} service={service} settings={settings} />
-      </section>
-
-      <div className="mb-7">
-        <FailedJobsSection />
-      </div>
-
-      <div className="grid min-w-0 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_20rem] 2xl:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="grid min-w-0 grid-cols-1 content-start gap-7">
-          <section aria-label="Projects">
-            <SectionHeading icon={FolderIcon} count={projects.length} action={<AddProjectButton size="sm" variant="outline" onRegistered={(r) => router.push(hrefs.project(r.project.slug))} />}>
-              Projects
-            </SectionHeading>
-            {projects.length ? (
-              <CardGrid cols={2}>
-                {projects.map((p) => (
-                  <ProjectCard key={p.slug} p={p} spark={sparkFor(p.slug)} gate={gateOf(p)} />
-                ))}
-              </CardGrid>
-            ) : (
-              <EmptyState icon={<FolderIcon className="size-[18px]" />} title="A place for your projects">
-                No project registered yet. Add one with the button above or run <Mono>pulse init</Mono> in a checkout.
-              </EmptyState>
-            )}
-          </section>
-          {commons ? (
-            <section aria-label="Commons">
-              <SectionHeading icon={UsersIcon} action={<span>not a project - the board every project shares</span>}>Commons</SectionHeading>
-              <CommonsCard c={commons} spark={sparkFor(commons.slug)} />
-            </section>
-          ) : null}
-          <section aria-label="Open tasks">
-            <SectionHeading
-              icon={ListTodoIcon}
-              count={tasks.data ? openTasks.length : undefined}
-              action={
-                <Button asChild variant="ghost" size="sm">
-                  <Link href={hrefs.tasks()}>
-                    View all <ArrowUpRightIcon />
-                  </Link>
-                </Button>
-              }
-            >
-              Open tasks
-            </SectionHeading>
+      <section aria-label="What's happening" className="mb-8">
+        <SectionHeading icon={ActivityIcon}>What&apos;s happening</SectionHeading>
+        <div className="grid min-w-0 gap-5 xl:grid-cols-2">
+          <Panel title="Working now" icon={ActivityIcon} actions={<span className="tnum">{workingSummary(working, o.active_claims.length)}</span>} className="surface-raised">
+            <WorkingNow claims={o.active_claims} tasks={openTasks} />
+          </Panel>
+          <Panel
+            title="Recent open tasks"
+            icon={ListTodoIcon}
+            actions={
+              <Button asChild variant="ghost" size="sm">
+                <Link href={hrefs.tasks()}>
+                  View all <ArrowUpRightIcon />
+                </Link>
+              </Button>
+            }
+            className="surface-raised"
+          >
             {tasks.data ? (
-              // onOpen (not href): the card carries a project link and quick actions, which must not sit inside an anchor.
               <TaskCards tasks={recent} showProject compact cols={2} empty="No open tasks. Give the first one with New task - the project's lead breaks it into jobs and reports back in its chat." />
             ) : tasks.error ? (
               <ErrorNotice error={tasks.error} onRetry={() => void tasks.reload()} />
             ) : (
               <SkeletonRows n={2} />
             )}
-          </section>
-          {tl.data ? <ActivityChart tl={tl.data} bys={["total", "project", "kind"]} height={200} /> : null}
-        </div>
-        <aside aria-label="Workspace activity and runtime" className="grid min-w-0 grid-cols-1 content-start gap-5 sm:grid-cols-2 xl:grid-cols-1">
-          <LiveFeed limit={40} height={320} />
-          <MachinePanel r={r} />
-          <Panel title="Working now" icon={ActivityIcon} actions={<span className="tnum">{workingSummary(working, o.active_claims.length)}</span>}>
-            <WorkingNow claims={o.active_claims} tasks={openTasks} />
           </Panel>
-          {attention.length ? (
-            <Panel title="Needs attention" icon={AlertTriangleIcon}>
-              <ul className="grid gap-3 text-[13px] leading-relaxed">
-                {attention.map((p) => (
-                  <li key={p.slug} className="min-w-0 anywhere">
-                    <ProjectLink slug={p.slug} />{" "}
-                    <span className="text-muted-foreground">{p.stop_present ? "STOP is set - the evolution loop halts until it is removed." : p.missing || !p.present ? "is registered but missing on disk - re-clone it at " + p.path + " or unregister." : !p.board_present ? "has no board yet - run pulse init in its checkout." : p.error}</span>
-                  </li>
-                ))}
-              </ul>
-            </Panel>
+        </div>
+        <div className="mt-5">{tl.data ? <ActivityChart tl={tl.data} bys={["total", "project", "kind"]} height={180} /> : null}</div>
+      </section>
+
+      <section aria-label="Details for this machine" className="mb-8">
+        <div className="rounded-2xl surface-raised glossy p-4 shadow-card sm:p-5">
+          <button
+            type="button"
+            className="flex w-full min-w-0 items-center justify-between gap-3 text-left text-sm font-semibold"
+            aria-expanded={detailsOpen}
+            aria-controls="pulse-home-details"
+            onClick={() => setDetails(!detailsOpen)}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {detailsOpen ? <ChevronDownIcon className="size-4 text-muted-foreground" aria-hidden /> : <ChevronRightIcon className="size-4 text-muted-foreground" aria-hidden />}
+              Details for this machine
+            </span>
+            <span className="text-xs font-normal text-muted-foreground">{detailsOpen ? "Hide details" : "Show details"}</span>
+          </button>
+          {detailsOpen ? (
+            <div id="pulse-home-details" className="mt-5 grid gap-6">
+              <section aria-label="Full status">
+                <SectionHeading>At a glance</SectionHeading>
+                <KpiGrid className="mb-0">
+                  <Kpi icon={InboxIcon} n={inbox} label="For you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", questions.length ? plural(questions.length, "question") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length + machineSteps ? plural(steps.length + machineSteps, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
+                  <Kpi icon={ListTodoIcon} n={openTasks.length} label="Open tasks" sub={tasks.data ? `${num(openTasks.filter((t) => t.status === "in_progress").length)} in progress` : "loading"} href={hrefs.tasks()} />
+                  <Kpi icon={CpuIcon} n={pendingCompute.length} label="Compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
+                  <Kpi icon={BotIcon} n={o.totals.agents_active} label="Agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
+                  <Kpi icon={VoteIcon} n={o.totals.votes_open} label="In vote" sub="suggestions + amendments" tone={o.totals.votes_open ? "warn" : "neutral"} href={hrefs.votes()} />
+                  <CodeDeliveredKpi />
+                  <Kpi icon={MessageCircleQuestionIcon} n={o.totals.questions_open} label="Open questions" sub="across the boards" />
+                  <Kpi icon={MessageSquareIcon} n={o.totals.posts_24h} label="Posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
+                  <Kpi icon={daemon.tone === "ok" ? PowerIcon : ActivityIcon} n={daemon.label} label="Daemon" sub={runner.error ? "status unavailable · controls below" : r ? (r.runner?.allowed === false ? r.runner.reason : num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued · controls below") : "checking heartbeat"} tone={daemon.tone} href="#daemon-controls" />
+                </KpiGrid>
+              </section>
+
+              <section id="daemon-controls" aria-label="Daemon controls" className="scroll-mt-32">
+                <DaemonControls runner={runner} service={service} settings={settings} />
+              </section>
+
+              <FailedJobsSection />
+
+              <div className="grid min-w-0 gap-5 xl:grid-cols-2">
+                <MachinePanel r={r} />
+                <LiveFeed limit={40} height={320} />
+              </div>
+
+              <Panel title="About this hub" icon={HomeIcon}>
+                <Kv
+                  rows={[
+                    ["projects", plural(o.totals.projects, "project")],
+                    ["brain", o.totals.brain ? <Mono key="brain">{o.totals.brain}</Mono> : "not set"],
+                    ["tally", <Mono key="tally">{o.tally_mode}</Mono>],
+                    ["pulse", o.binary_version ? <Mono key="pulse">{o.binary_version}</Mono> : "unknown"],
+                    ["store", <Mono key="store">{o.store || o.registry}</Mono>],
+                  ]}
+                />
+              </Panel>
+            </div>
           ) : null}
-        </aside>
-      </div>
+        </div>
+      </section>
+
       {/* Read on an inbox card opens the record here; its header carries the same three answers. */}
       <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />
     </>
@@ -335,7 +349,7 @@ function ComputeInboxCard({ r, caps }: { r: ComputeRequest; caps?: ComputeCaps }
             all requests <ExternalLinkIcon />
           </Link>
         </Button>
-        <span className="ml-auto shrink-0">
+        <span className="flex w-full justify-start sm:ml-auto sm:w-auto sm:justify-end">
           <ComputeDecide r={r} />
         </span>
       </ItemCardActions>

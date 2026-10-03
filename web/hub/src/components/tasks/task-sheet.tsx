@@ -129,7 +129,7 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
         </div>
       </SheetHeader>
       <Tabs defaultValue="brief" className="flex min-h-0 flex-1 flex-col gap-0">
-        <TabsList variant="line" className="mx-4 mt-2 w-fit">
+        <TabsList className="mx-4 mt-2 w-fit rounded-full">
           <TabsTrigger value="brief">Brief</TabsTrigger>
           <TabsTrigger value="chat">
             Conversation <span className="tnum text-muted-foreground">{data.messages.length}</span>
@@ -187,7 +187,7 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
               })}
             </ul>
           ) : (
-            <EmptyState title="No job yet">No job yet. The lead breaks the task into jobs with the CLI (pulse job add --source task:{t.id}); they appear here with their branch and status.</EmptyState>
+            <EmptyState title="No job yet">No job yet. When the lead splits the task into work, each job appears here with its branch and status.</EmptyState>
           )}
         </TabsContent>
         <TabsContent value="history" className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">

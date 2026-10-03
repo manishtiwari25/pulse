@@ -109,11 +109,65 @@ const LABELS: Record<string, string> = {
 
 const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|plan|schedule|heartbeat|records|verify)\./;
 
+const HELP: Record<string, string> = {
+  stop: "Pause all agent work on this machine until you turn it back on.",
+  workers: "How many local agents may work at the same time.",
+  parallel_per_project: "How much work one project may run at once.",
+  jobs_per_day: "The daily limit for agent runs on this machine.",
+  minutes_per_job: "The wall-clock time one run may use.",
+  max_ai_credits: "The provider budget one run may spend.",
+  runner_cmd: "The command used to start an agent run.",
+  prune_after_days: "How long an idle agent stays listed before cleanup.",
+  worker_model: "The model used for implementation work.",
+  light_model: "The model used for lighter planning and answer work.",
+  landing: "Who lands verified changes into a project.",
+  "landing.push": "Whether landed work is pushed upstream for you.",
+  "push.credential": "Where the daemon can read its own push key.",
+  quorum: "How many agent votes a suggestion needs.",
+  expiry_days: "How long a suggestion stays open for votes.",
+  stale_days: "How long an inactive thread stays current.",
+  claim_hours: "How long an agent keeps a claimed thread.",
+  amend_quorum: "How many sessions must join a rule-change vote.",
+  amend_majority: "The share of yes votes a rule change needs.",
+  "owner.presence": "Whether routine suggestions wait for you or can be decided while you are away.",
+  "records.auto_adopt": "Whether drafted records can be accepted while you are away.",
+  "compute.provider": "Where extra machines come from.",
+  "compute.max_vms": "How many extra machines may exist at once.",
+  "compute.max_hours_per_day": "How many machine-hours may be used per day.",
+  "compute.auto_approve": "Whether within-limit machine requests can start without you.",
+  "compute.budget_credits": "The daily budget for extra-machine work.",
+  "compute.self_heal": "Whether PULSE may refresh a refused machine login.",
+  "compute.self_retire": "Whether PULSE may stop and remove a machine it created when login keeps failing.",
+  "evolve.loop": "Whether self-improvement cycles may run continuously.",
+  "evolve.limits": "The written budget for self-improvement cycles.",
+  "evolve.tolerance": "How much a measured result may regress before it is rejected.",
+  "evolve.heldout": "Who provides private evaluators for self-improvement.",
+  "evolve.heldout_dir": "The private evaluator folder; agents never see this path.",
+  "daemon.self_update": "Whether PULSE rebuilds and restarts itself after landed changes.",
+  "daemon.recover": "Whether PULSE may retry failed work safely.",
+  "daemon.sweep": "Whether PULSE cleans old branches, logs and leftovers.",
+  "heartbeat.dead_after": "How long an agent may go quiet before it is shown as dead.",
+  "provider.openai.base_url": "The OpenAI-compatible endpoint for model calls.",
+  harness: "Which harness agents use to run model/tool loops.",
+  provider: "Which model provider the built-in harness uses.",
+  "harness.max_steps": "How many model/tool turns one run may take.",
+  "harness.max_cost": "The provider-unit limit for one harness run.",
+  "harness.system_prompt": "The prompt template rendered for harness runs.",
+  "harness.step_timeout": "How long one command may run before timeout.",
+  "harness.output_limit": "How much command output is kept in the transcript.",
+};
+
 export function settingLabel(name: string): string {
   const known = LABELS[name];
   if (known) return known;
   const bare = name.replace(PREFIX, "").replace(/[._]+/g, " ").trim();
   return bare ? bare.charAt(0).toUpperCase() + bare.slice(1) : name;
+}
+
+export function settingHelp(name: string): string {
+  const known = HELP[name];
+  if (known) return known;
+  return "Controls " + settingLabel(name).toLowerCase() + ".";
 }
 
 // The providers Compute knows, in the order the store lists them; the

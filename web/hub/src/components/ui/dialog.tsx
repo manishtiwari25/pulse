@@ -73,7 +73,7 @@ function DialogContent({
           }}
           className={cn(
             panelFrame,
-            "scroll-thin grid gap-4 overflow-y-auto rounded-xl p-4",
+            "scroll-thin grid gap-4 overflow-y-auto rounded-2xl p-4",
             placement === "panel" &&
               cn(panelTop, "inset-x-2 max-h-[calc(100dvh-4rem-1px-1rem)] sm:inset-x-auto sm:right-3 sm:w-full sm:max-w-md"),
             placement === "float" &&
@@ -124,7 +124,7 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 p-4 sm:flex-row sm:justify-end",
+        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-2xl border-t bg-muted/45 p-4 sm:flex-row sm:justify-end",
         className
       )}
       {...props}
@@ -147,7 +147,7 @@ function DialogTitle({
     <DialogPrimitive.Title
       data-slot="dialog-title"
       className={cn(
-        "font-heading text-base leading-none font-medium",
+        "font-heading text-base leading-none font-semibold tracking-tight",
         className
       )}
       {...props}

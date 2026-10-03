@@ -59,6 +59,19 @@ export function initials(seed: string): string {
   return (parts.length > 1 && b ? a[0]! + b[0]! : a.slice(0, 2)).toUpperCase();
 }
 
+export function sentence(s: string): string {
+  const t = (s || "").replace(/\s+/g, " ").trim().replace(/[ \t]+([?.!])$/g, "$1");
+  if (!t) return "";
+  return t.charAt(0).toLocaleUpperCase("en-US") + t.slice(1);
+}
+
+export function firstSentence(s: string): string {
+  const t = sentence(s);
+  if (!t) return "";
+  const m = /^([\s\S]+?[.!?])(?:\s|$)/.exec(t);
+  return m ? m[1].trim() : t;
+}
+
 export function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "\u2026" : s;
 }

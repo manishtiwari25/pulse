@@ -42,11 +42,11 @@ const OpenContext = createContext<{ open: () => void; label?: string } | null>(n
 
 export function ItemCard({ children, href, onOpen, active, highlight, className, ariaLabel }: { children: React.ReactNode; href?: string; onOpen?: () => void; active?: boolean; highlight?: boolean; className?: string; ariaLabel?: string }) {
   const cls = cn(
-    "group/item relative flex min-w-0 flex-col gap-2.5 rounded-xl border bg-card p-4 text-left shadow-card",
-    (href || onOpen) && "cursor-pointer transition-[border-color,box-shadow,background-color] duration-200 hover:border-primary/30 hover:shadow-pop motion-reduce:transition-none",
+    "group/item surface-raised relative flex min-w-0 flex-col gap-3 rounded-2xl border p-5 text-left",
+    (href || onOpen) && "lift cursor-pointer hover:border-primary/30 motion-reduce:transition-none",
     href && !onOpen && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
     onOpen && "has-[[data-open]:focus-visible]:ring-2 has-[[data-open]:focus-visible]:ring-ring",
-    highlight && "border-primary/40 surface-tint",
+    highlight && "glossy border-primary/35 bg-[linear-gradient(180deg,color-mix(in_oklch,var(--primary)_8%,var(--card)),color-mix(in_oklch,var(--brand-sky)_4%,var(--card)))] after:absolute after:inset-y-0 after:left-0 after:w-1 after:bg-[linear-gradient(180deg,var(--brand-mint),var(--brand-sky),var(--brand-violet))] after:content-['']",
     active && "ring-2 ring-ring",
     className,
   );
@@ -144,7 +144,7 @@ export function ItemCardActions({ children, className }: { children: React.React
 // A compact fact tile for the inside of a card (used by project cards).
 export function Fact({ n, label, tone, className }: { n: React.ReactNode; label: string; tone?: "ok" | "warn" | "bad" | "accent" | "info"; className?: string }) {
   return (
-    <div className={cn("min-w-0 rounded-lg border border-border/50 bg-muted/35 px-2 py-2.5 text-center", className)}>
+    <div className={cn("surface-glass min-w-0 rounded-xl border border-border/50 bg-muted/35 px-2 py-2.5 text-center", className)}>
       <div className={cn("tnum text-base font-semibold leading-tight tracking-tight anywhere", tone === "ok" && "text-ok", tone === "warn" && "text-warn", tone === "bad" && "text-bad", tone === "accent" && "text-accent-2", tone === "info" && "text-info")}>{n}</div>
       <div className="mt-1 text-[11px] leading-tight text-muted-foreground anywhere">{label}</div>
     </div>
@@ -155,10 +155,10 @@ export function Fact({ n, label, tone, className }: { n: React.ReactNode; label:
 export function SectionHeading({ children, count, action, className, icon: Icon }: { children: React.ReactNode; count?: number | string; action?: React.ReactNode; className?: string; icon?: React.ComponentType<{ className?: string }> }) {
   return (
     <div className={cn("mb-3 flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2", className)}>
-      <h2 className="flex min-w-0 items-center gap-2 text-[15px] font-semibold leading-snug tracking-tight anywhere">
-        {Icon ? <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden /> : null}
+      <h2 className="flex min-w-0 items-center gap-2 text-lg font-semibold leading-snug tracking-tight anywhere">
+        {Icon ? <Icon className="size-4 shrink-0 text-primary" aria-hidden /> : null}
         {children}
-        {count !== undefined && count !== "" ? <span className="tnum rounded-full border border-border/70 bg-card/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{count}</span> : null}
+        {count !== undefined && count !== "" ? <span className="ring-soft tnum rounded-full bg-muted/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{count}</span> : null}
       </h2>
       {action ? <div className="min-w-0 max-w-full text-xs leading-relaxed text-muted-foreground anywhere">{action}</div> : null}
     </div>

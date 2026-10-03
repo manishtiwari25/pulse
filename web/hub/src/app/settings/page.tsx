@@ -5,13 +5,12 @@ import { ActivityIcon, CloudIcon, GaugeIcon, PlugIcon, PowerIcon, RefreshCwIcon,
 import { Input } from "@/components/ui/input";
 import { Clamp } from "@/components/pulse/clamp";
 import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonPage } from "@/components/pulse/panel";
-import { Mono } from "@/components/pulse/who";
 import { RunningStrip } from "@/components/settings/running";
 import { CredentialRow } from "@/components/settings/credential";
 import { HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
 import { SettingRow } from "@/components/settings/setting-row";
 import type { Setting, SettingsPayload } from "@/lib/api";
-import { COMPUTE_PROVIDERS, settingLabel } from "@/lib/setting-labels";
+import { COMPUTE_PROVIDERS, settingHelp, settingLabel } from "@/lib/setting-labels";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
@@ -34,44 +33,44 @@ interface Group {
 // "Other" so a new cap the daemon learns never disappears from the owner's
 // view.
 const RUNNER_CLUSTERS = [
-  { title: "The machine", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "max_ai_credits", "runner_cmd", "prune_after_days"] },
-  { title: "The worker", keys: ["worker_model", "light_model", "landing", "landing.push", "push.credential"] },
-  { title: "The board", keys: ["quorum", "expiry_days", "stale_days", "claim_hours", "lead.ballot_hours", "lead.ballot_cap"] },
-  { title: "The lead", keys: ["lead.idle_hours", "lead.idle_max_jobs", "lead.stuck_thread_jobs", "lead.research_minutes", "lead.research_per_day", "plan.operating_layer_per_day"] },
-  { title: "Amendments", keys: ["amend_quorum", "amend_majority"] },
+  { title: "Work on this machine", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "max_ai_credits", "runner_cmd", "prune_after_days"] },
+  { title: "Agent model and landing", keys: ["worker_model", "light_model", "landing", "landing.push", "push.credential"] },
+  { title: "Suggestions", keys: ["quorum", "expiry_days", "stale_days", "claim_hours", "lead.ballot_hours", "lead.ballot_cap"] },
+  { title: "Project lead", keys: ["lead.idle_hours", "lead.idle_max_jobs", "lead.stuck_thread_jobs", "lead.research_minutes", "lead.research_per_day", "plan.operating_layer_per_day"] },
+  { title: "Rule changes", keys: ["amend_quorum", "amend_majority"] },
 ];
 const GROUPS: Group[] = [
   {
     id: "provider",
-    title: "Model provider",
-    blurb: "Where the native harness sends its model calls when the provider above is openai: OpenAI itself, Azure OpenAI, Ollama, LM Studio or OpenRouter. The API key lives on this machine, never in the store.",
+    title: "Advanced: model provider",
+    blurb: "Where model calls go when you use an OpenAI-compatible provider. The API key stays on this machine.",
     keys: ["provider.openai.base_url"],
     match: (n) => n.startsWith("provider."),
   },
   {
     id: "owner",
-    title: "You",
-    blurb: "Whether you are there to answer. On away, each project's lead decides the board's proposals on your behalf with its best judgement and the decision is recorded as the lead's, never as yours; hard stops, money (compute requests), Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch still wait for you. Flip it back to present when you return.",
+    title: "Your presence",
+    blurb: "Tell PULSE whether you are here to answer. When you are away, routine agent suggestions can be decided for you; money, hard stops and protected decisions still wait for you.",
     keys: ["owner.presence"],
     match: (n) => n.startsWith("owner."),
   },
   {
     id: "runner",
-    title: "Runner caps",
-    blurb: "How hard the daemon may work, what each job runs with, and the board's thresholds. stop halts everything at once. Two models: worker_model runs the work that changes code (task, improve and experiment jobs); light_model runs the rest - the lead, answers, ballots, reflects, onboarding - and means worker_model while empty, so a cheaper model can take the routine.",
+    title: "Safety limits",
+    blurb: "How much work agents may do on this machine, how long a run may take, and when suggestions have enough support.",
     keys: RUNNER_CLUSTERS.flatMap((c) => c.keys),
     match: (n) => n.startsWith("lead."),
     clusters: RUNNER_CLUSTERS,
   },
   {
     id: "compute",
-    title: "Compute",
-    blurb: "Caps for machines agents may ask for, the provider that makes them (Azure, AWS, GCP, or Multipass for VMs on the hub machine itself) and the target it makes them in; only the chosen provider's settings matter. Credentials never live here: the hub machine's az login, aws configure, gcloud auth login or running multipassd is the auth. A machine whose Copilot login is refused is the daemon's to mend or retire (ADR-034): it places the executor token you put on file with pulse executor token, else stops the machine PULSE created, retires it and deletes it after the grace hours - a finding each time, never a question.",
+    title: "Machines",
+    blurb: "Limits for extra machines agents may ask for, plus the cloud or local provider that creates them. Credentials stay on this machine.",
     keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits", "compute.self_heal", "compute.self_retire", "compute.retire_grace_hours", "compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image", "compute.aws.profile", "compute.aws.region", "compute.aws.instance_type", "compute.aws.image", "compute.aws.subnet", "compute.aws.security_group", "compute.gcp.project", "compute.gcp.zone", "compute.gcp.machine_type", "compute.gcp.image", "compute.gcp.network", "compute.multipass.size", "compute.multipass.image"],
     match: (n) => n.startsWith("compute."),
     clusters: [
-      { title: "Caps", keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"] },
-      { title: "Refused logins", keys: ["compute.self_heal", "compute.self_retire", "compute.retire_grace_hours"] },
+      { title: "Safety limits", keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"] },
+      { title: "Login problems", keys: ["compute.self_heal", "compute.self_retire", "compute.retire_grace_hours"] },
       { title: "Azure target", provider: "azure", keys: ["compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"] },
       { title: "AWS target", provider: "aws", keys: ["compute.aws.profile", "compute.aws.region", "compute.aws.instance_type", "compute.aws.image", "compute.aws.subnet", "compute.aws.security_group"] },
       { title: "GCP target", provider: "gcp", keys: ["compute.gcp.project", "compute.gcp.zone", "compute.gcp.machine_type", "compute.gcp.image", "compute.gcp.network"] },
@@ -80,22 +79,22 @@ const GROUPS: Group[] = [
   },
   {
     id: "evolve",
-    title: "Self-improvement loop",
-    blurb: "Bounds on pulse-evolve. The held-out directory is yours alone: agents never see its path. With evolve.heldout on auto the daemon creates the set itself - a private folder under the store and two fixtures written by a sealed model call that sees no repository, board or store - and labels them generated (ADR-033). On owner, you write them from the Held-out fixtures dialog on a project's Self-improvement panel, or with pulse evolve setup DIR; a fixture you write is never overwritten either way.",
+    title: "Advanced: self-improvement",
+    blurb: "Limits for automatic improvement experiments. Private evaluator paths stay hidden from agents.",
     keys: ["evolve.loop", "evolve.limits", "evolve.tolerance", "evolve.heldout", "evolve.heldout_dir", "evolve.draft_hours"],
     match: (n) => n.startsWith("evolve."),
   },
   {
     id: "daemon",
-    title: "Running",
-    blurb: "Which pulse runs where, and how it keeps itself current. After a landing in the brain the daemon rebuilds pulse from the checkout, smoke-tests the new binary, installs it in place and restarts once its runs finish; the hub follows within a minute; three early exits in a row put the previous build back and turn this off with a finding (ADR-035). The install line is for the first install only.",
+    title: "This machine",
+    blurb: "How PULSE starts, updates itself, recovers failed work and keeps enough disk space free on this machine.",
     keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.recover", "daemon.recover_days", "daemon.recover_limit", "daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb", "heartbeat.dead_after"],
     match: (n) => n.startsWith("daemon.") || n.startsWith("heartbeat."),
     clusters: [
-      { title: "Self-update", keys: ["daemon.self_update", "daemon.self_update_retry_minutes"] },
-      { title: "Failed jobs", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
-      { title: "Housekeeping", keys: ["daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb"] },
-      { title: "Heartbeat", keys: ["heartbeat.dead_after"] },
+      { title: "Updates", keys: ["daemon.self_update", "daemon.self_update_retry_minutes"] },
+      { title: "Work that failed", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
+      { title: "Cleanup", keys: ["daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb"] },
+      { title: "Agent check-ins", keys: ["heartbeat.dead_after"] },
     ],
     strip: () => <RunningStrip />,
   },
@@ -166,7 +165,7 @@ const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Reco
 // Section margins complement the shell's scroll padding so headings clear
 // the sticky page title and section pills.
 const ANCHOR = "scroll-mt-32";
-const PILL = "inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-xs hover:bg-muted";
+const PILL = "surface-glass inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-xs hover:bg-muted";
 const SECTION_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   stop: PowerIcon,
   provider: PlugIcon,
@@ -232,7 +231,7 @@ function GroupRows({ g, rows, canEdit, provider, searching }: { g: Group; rows: 
 function SectionCard({ id, title, blurb, count, children, alert }: { id: string; title: React.ReactNode; blurb: React.ReactNode; count?: React.ReactNode; children: React.ReactNode; alert?: boolean }) {
   const Icon = SECTION_ICONS[id] ?? RefreshCwIcon;
   return (
-    <div className={cn("overflow-hidden rounded-xl border bg-card shadow-card", alert && "bg-bad/5 ring-1 ring-bad/40")}>
+    <div className={cn("surface-raised overflow-hidden rounded-2xl border shadow-card", alert && "bg-bad/5 ring-1 ring-bad/40")}>
       <header className="flex items-start gap-3 border-b px-4 py-3">
         <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-md", SECTION_TONES[id] ?? SECTION_TONES.other)} aria-hidden>
           <Icon className="size-4" />
@@ -286,7 +285,7 @@ export default function SettingsPage() {
   if (q.error && !q.data)
     return (
       <>
-        <PageTitle icon={SettingsIcon}>Settings</PageTitle>
+        <PageTitle icon={SettingsIcon} sub="How PULSE behaves on this machine. Each change is previewed before it applies.">Settings</PageTitle>
         <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
       </>
     );
@@ -295,7 +294,7 @@ export default function SettingsPage() {
   const stop = d.settings.find((s) => s.name === "stop");
   const stopped = stop?.value === "1";
   const needle = find.trim().toLowerCase();
-  const match = (s: Setting) => !needle || s.name.toLowerCase().includes(needle) || settingLabel(s.name).toLowerCase().includes(needle) || s.description.toLowerCase().includes(needle);
+  const match = (s: Setting) => !needle || s.name.toLowerCase().includes(needle) || settingLabel(s.name).toLowerCase().includes(needle) || settingHelp(s.name).toLowerCase().includes(needle) || s.description.toLowerCase().includes(needle);
   const provider = d.settings.find((s) => s.name === "compute.provider")?.value || "azure";
   // Sleeping provider rows leave the count too, unless a search wakes them.
   const awake = (s: Setting) => !!needle || !GROUPS.some((g) => g.clusters?.some((c) => c.provider && c.provider !== provider && c.keys.includes(s.name)));
@@ -311,7 +310,7 @@ export default function SettingsPage() {
     <>
       <PageTitle
         icon={SettingsIcon}
-        sub={<>What the daemon may do, in your words. Every change is recorded with who made it and read on the daemon&apos;s next loop; the small key under each name is what <Mono>pulse setting set</Mono> takes.</>}
+        sub="How PULSE behaves on this machine. Each change is previewed before it applies."
         actions={
           <>
             {needle ? <span className="tnum whitespace-nowrap text-xs text-muted-foreground">{matched} of {total}</span> : null}
@@ -332,7 +331,7 @@ export default function SettingsPage() {
             {stop ? (
               <a href="#stop" className={cn(PILL, stopped && "border-bad/40 text-bad", !killShown && "pointer-events-none opacity-40")} aria-disabled={!killShown || undefined}>
                 <span className={cn("size-1.5 rounded-full", stopped ? "bg-bad" : "bg-ok")} aria-hidden />
-                Kill switch
+                Pause all work
               </a>
             ) : null}
             {groups.map(({ g }) => (
@@ -341,21 +340,21 @@ export default function SettingsPage() {
               </a>
             ))}
             <a href="#harness" className={cn(PILL, !harnessShown && "pointer-events-none opacity-40")} aria-disabled={!harnessShown || undefined}>
-              Harness
+              How agents run
             </a>
           </nav>
         }
       >
         Settings
       </PageTitle>
-      {!d.available ? <Notice tone="warn" className="mb-3">The settings store is not available on this hub - it runs read-only.</Notice> : null}
-      {d.available && !d.can_edit ? <Notice tone="info" className="mb-3">This hub is read-only for settings. Change them on the owner&apos;s machine.</Notice> : null}
-      {stopped ? <Notice tone="bad" className="mb-3">STOP is on: the daemon runs nothing until you turn it off below.</Notice> : null}
+      {!d.available ? <Notice tone="warn" className="mb-3">Settings are not available on this console — it is read-only.</Notice> : null}
+      {d.available && !d.can_edit ? <Notice tone="info" className="mb-3">This console cannot change settings. Use the owner machine.</Notice> : null}
+      {stopped ? <Notice tone="bad" className="mb-3">Pause is on: agents will not start more work until you turn it off below.</Notice> : null}
       <div className="grid gap-3">
         {killShown && stop ? (
           <section id="stop" className={ANCHOR}>
-            <SectionCard id="stop" title="Kill switch" blurb="Stop or resume the daemon immediately. This row stays separate because it is the owner's emergency brake." alert={stopped}>
-              <SettingRow s={stop} canEdit={d.can_edit} labels={SETTING_LABELS.stop} title="Kill switch" />
+            <SectionCard id="stop" title="Pause all work" blurb="Stop or resume agent work immediately. This stays separate because it is your emergency brake." alert={stopped}>
+              <SettingRow s={stop} canEdit={d.can_edit} labels={SETTING_LABELS.stop} title="Pause all work" />
             </SectionCard>
           </section>
         ) : null}
@@ -372,7 +371,7 @@ export default function SettingsPage() {
             </SectionCard>
           </section>
         ))}
-        {needle && !matched ? <EmptyState>No setting matches &ldquo;{find.trim()}&rdquo; - try a word from its name such as push, model or region.</EmptyState> : null}
+        {needle && !matched ? <EmptyState>No setting matches &ldquo;{find.trim()}&rdquo;. Try words like push, model or region.</EmptyState> : null}
       </div>
     </>
   );

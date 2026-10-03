@@ -44,5 +44,5 @@ export function usePanelSlot(close: (() => void) | null, nested: boolean) {
 // its own scrollbar, no overlay.
 export const panelTop = "top-[calc(4rem+1px)]"
 export const panelFrame =
-  "fixed z-50 border bg-popover bg-clip-padding text-sm text-popover-foreground shadow-pop outline-none " +
+  "fixed z-50 surface-glass border bg-popover bg-clip-padding text-sm text-popover-foreground shadow-pop outline-none " +
   "data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-right-4 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-right-4 duration-150"

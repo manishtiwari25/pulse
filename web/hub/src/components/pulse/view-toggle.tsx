@@ -52,10 +52,10 @@ export function useViewMode(key: string, initial: ViewMode = "cards"): [ViewMode
 
 export function ViewToggle({ value, onChange, className }: { value: ViewMode; onChange: (v: ViewMode) => void; className?: string }) {
   return (
-    <div role="group" aria-label="View" className={cn("inline-flex rounded-lg border bg-muted/40 p-0.5", className)}>
+    <div role="group" aria-label="View" className={cn("surface-glass ring-soft inline-flex rounded-full border border-transparent bg-muted/35 p-1", className)}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button size="icon-xs" variant="ghost" aria-pressed={value === "cards"} aria-label="Cards" onClick={() => onChange("cards")} className={cn(value === "cards" ? "bg-card text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
+          <Button size="icon-xs" variant="ghost" aria-pressed={value === "cards"} aria-label="Cards" onClick={() => onChange("cards")} className={cn("rounded-full", value === "cards" ? "bg-card/90 text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
             <LayoutGridIcon />
           </Button>
         </TooltipTrigger>
@@ -63,7 +63,7 @@ export function ViewToggle({ value, onChange, className }: { value: ViewMode; on
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button size="icon-xs" variant="ghost" aria-pressed={value === "table"} aria-label="Table" onClick={() => onChange("table")} className={cn(value === "table" ? "bg-card text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
+          <Button size="icon-xs" variant="ghost" aria-pressed={value === "table"} aria-label="Table" onClick={() => onChange("table")} className={cn("rounded-full", value === "table" ? "bg-card/90 text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
             <TableIcon />
           </Button>
         </TooltipTrigger>

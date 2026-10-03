@@ -7,7 +7,6 @@ import { FileDiffIcon } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CodeDeliveriesReport } from "@/components/code-delivery/report";
 import { PageTitle, SkeletonPage } from "@/components/pulse/panel";
-import { Mono } from "@/components/pulse/who";
 import { hrefs } from "@/lib/nav";
 import { registeredProjects, type Org } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -44,16 +43,12 @@ function CodeDeliveriesScreen() {
         crumb={
           <>
             <Link href={hrefs.home()} className="hover:underline">
-              Hub
+              Home
             </Link>{" "}
             / code delivered
           </>
         }
-        sub={
-          <>
-            Recent <Mono>land.landed</Mono> evidence only. Source-code deliveries are separated from docs-only, non-code, duplicate and unavailable landing evidence.
-          </>
-        }
+        sub="What the agents shipped to your projects, week by week."
         bar={
           <div className="flex w-max items-center gap-2 md:w-auto md:flex-wrap">
             <Select value={project || "__all"} onValueChange={(v) => setProject(v === "__all" ? "" : v)}>

@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
 import { amendCommand, CommandBox, seedName } from "@/components/pulse/evolve";
-import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardTitle } from "@/components/pulse/item-card";
+import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
 import { Markdown } from "@/components/pulse/markdown";
 import { Notice } from "@/components/pulse/panel";
 import { Mono, ProjectLink, ToneBadge, When, Who } from "@/components/pulse/who";
@@ -216,25 +216,27 @@ export function DraftCard({ slug, r }: { slug: string; r: DraftState }) {
   if (!draft) return null;
   const what = kindOf(r.id);
   return (
-    <ItemCard highlight ariaLabel={"Adopt the drafted " + what + " of " + slug}>
+    <ItemCard highlight ariaLabel={"Read the drafted " + what + " for " + slug}>
       <ItemCardHeader>
-        <ToneBadge tone="accent">self-improvement</ToneBadge>
-        <ToneBadge tone="info">draft ready</ToneBadge>
         <ProjectLink slug={slug} className="text-xs" />
       </ItemCardHeader>
-      <ItemCardTitle>{"Adopt the drafted " + what + " of " + slug}</ItemCardTitle>
-      <ItemCardBody clamp={3}>
-        {draft.author + " read the repository and wrote the " + what + " with every placeholder filled in" + (draft.note ? " - " + draft.note : "") + ". Read it and adopt it as r" + (r.rev + 1) + " in your name, or discard it. The record keeps the template's text until you do."}
+      <ItemCardTitle>{draft.author + " drafted a new " + what + " for " + slug}</ItemCardTitle>
+      <ItemCardBody clamp={2}>
+        {"Read it before adopting it as r" + (r.rev + 1) + " in your name" + (draft.note ? " — " + draft.note : "") + "."}
       </ItemCardBody>
+      <ItemCardMeta>
+        <ToneBadge tone="accent">self-improvement</ToneBadge>
+        <ToneBadge tone="info">draft ready</ToneBadge>
+        <Mono>{r.id}</Mono>
+        <DraftLine draft={draft} rev={r.rev} />
+      </ItemCardMeta>
       <ItemCardActions>
-        <span className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
-          <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
-            <Link href={hrefs.project(slug, "evolution")} title={"self-improvement for " + slug}>
-              self-improvement <ExternalLinkIcon />
-            </Link>
-          </Button>
-        </span>
-        <DraftActions r={r} size="xs" className="ml-auto shrink-0" />
+        <Button asChild variant="outline" size="default" className="text-muted-foreground">
+          <Link href={hrefs.project(slug, "evolution")} title={"self-improvement for " + slug}>
+            Read it <ExternalLinkIcon />
+          </Link>
+        </Button>
+        <DraftActions r={r} className="w-full justify-start sm:ml-auto sm:w-auto sm:justify-end" />
       </ItemCardActions>
     </ItemCard>
   );

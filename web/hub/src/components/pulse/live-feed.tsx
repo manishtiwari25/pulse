@@ -87,7 +87,7 @@ export function LiveFeed({ project, limit = 40, title = "Live", height }: { proj
         <div className="p-3 text-xs text-muted-foreground">{"The events route is not available yet (" + error + "). The board views still refresh on their own."}</div>
       ) : rows.length === 0 ? (
         <div className="p-3">
-          <EmptyState>{project ? "No events for " + project + " yet. Every CLI write and every hub write on this project appears here the moment it lands in the store." : "No events yet. Every CLI write and every hub write appears here the moment it lands in the store."}</EmptyState>
+          <EmptyState>{project ? "No activity for " + project + " yet. New posts, decisions and task updates will appear here." : "No activity yet. New posts, decisions and task updates will appear here."}</EmptyState>
         </div>
       ) : (
         <ul className="scroll-thin divide-y overflow-y-auto" style={height ? { maxHeight: height } : undefined}>

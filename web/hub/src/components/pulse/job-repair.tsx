@@ -97,7 +97,7 @@ function FailedJobsContent({ project, projectFilter }: { project: string; projec
 
   return (
     <Panel
-      title="Historical failed jobs"
+      title="Jobs that need a hand"
       icon={WrenchIcon}
       actions={
         <Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}>
@@ -108,9 +108,8 @@ function FailedJobsContent({ project, projectFilter }: { project: string; projec
     >
       <Stack gap={4}>
         <p className="text-sm text-muted-foreground">
-          {page ? <><strong className="text-foreground">{num(page.historical_total)}</strong> historical failed jobs{project ? " in " + project : " across projects"}. </> : null}
-          This is all-age history of jobs still marked failed, not a count of work that needs retrying. A newer carrier may already have completed it.
-          Transient retries reuse a job; their earlier runs and recovery events remain recorded.
+          {page ? <><strong className="text-foreground">{num(page.historical_total)}</strong> past failed jobs{project ? " in " + project : " across projects"}. </> : null}
+          Pick the ones that still look useful to retry. PULSE rechecks each one before queueing new work.
         </p>
         <Toolbar>
           {projectFilter?.(busy)}
@@ -168,7 +167,7 @@ function FailedJobsContent({ project, projectFilter }: { project: string; projec
               </div>
             ) : !view.error ? (
               <EmptyState>
-                {jobs.length ? "No entries in this category on this page. Choose another category or page." : "No historical failed jobs on this page."}
+                {jobs.length ? "No entries in this category on this page. Choose another category or page." : "No failed jobs on this page."}
               </EmptyState>
             ) : null}
           </>

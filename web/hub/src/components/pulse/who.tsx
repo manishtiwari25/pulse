@@ -11,17 +11,17 @@ import { useNow } from "@/lib/use-api";
 import type { Who as WhoRow } from "@/lib/api";
 
 const TONE_BADGE: Record<Tone, string> = {
-  neutral: "border-border bg-muted text-foreground",
-  ok: "border-ok/20 bg-ok/10 text-ok",
-  warn: "border-warn/20 bg-warn/10 text-[color-mix(in_oklch,var(--warn),black_28%)] dark:text-warn",
-  bad: "border-bad/20 bg-bad/10 text-bad",
-  info: "border-info/20 bg-info/10 text-info",
-  accent: "border-accent-2/20 bg-accent-2/10 text-accent-2",
+  neutral: "border-transparent bg-muted/55 text-foreground",
+  ok: "border-transparent bg-ok/10 text-ok",
+  warn: "border-transparent bg-warn/10 text-[color-mix(in_oklch,var(--warn),black_28%)] dark:text-warn",
+  bad: "border-transparent bg-bad/10 text-bad",
+  info: "border-transparent bg-info/10 text-info",
+  accent: "border-transparent bg-accent-2/10 text-accent-2",
 };
 
 export function ToneBadge({ tone = "neutral", children, className, dot, title }: { tone?: Tone; children: React.ReactNode; className?: string; dot?: boolean; title?: string }) {
   return (
-    <Badge variant="outline" title={title} className={cn("h-5 gap-1 rounded-full px-2 text-[11.5px] font-medium", TONE_BADGE[tone], className)}>
+    <Badge variant="outline" title={title} className={cn("h-5 gap-1 rounded-full px-2 text-[11.5px] font-medium shadow-xs", TONE_BADGE[tone], className)}>
       {dot ? <span className="size-1.5 rounded-full bg-current" aria-hidden /> : null}
       {children}
     </Badge>
@@ -71,7 +71,7 @@ export function Provenance({ ok, missing }: { ok?: number; missing?: string[] })
 }
 
 export function Mono({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <span className={cn("font-mono text-[12px] anywhere", className)}>{children}</span>;
+  return <span className={cn("ring-soft rounded-md bg-muted/45 px-1.5 py-0.5 font-mono text-[12px] anywhere", className)}>{children}</span>;
 }
 
 export function When({ d, className, exact }: { d?: string | null; className?: string; exact?: boolean }) {
@@ -89,8 +89,8 @@ export function Avatar({ seed, size = 22, human, className }: { seed: string; si
   return (
     <span
       aria-hidden
-      className={cn("inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white ring-1 ring-background", human && "bg-primary text-primary-foreground", className)}
-      style={{ width: size, height: size, fontSize: Math.max(9, size * 0.42), background: human ? undefined : `oklch(0.62 0.14 ${hue})`, color: human ? undefined : "white" }}
+      className={cn("inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white shadow-[inset_0_1px_0_oklch(1_0_0/.28),0_1px_4px_oklch(0_0_0/.16)] ring-2 ring-background outline outline-1 outline-primary/15", human && "bg-primary text-primary-foreground", className)}
+      style={{ width: size, height: size, fontSize: Math.max(9, size * 0.42), background: human ? undefined : `linear-gradient(135deg, oklch(0.72 0.13 ${hue}), oklch(0.52 0.16 ${hue + 24}))`, color: human ? undefined : "white" }}
     >
       {human ? <UserIcon style={{ width: size * 0.55, height: size * 0.55 }} /> : initials(seed || "?")}
     </span>

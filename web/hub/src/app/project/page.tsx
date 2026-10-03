@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useCallback } from "react";
+import { Suspense, useCallback, useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -14,11 +14,30 @@ import { TaskSheet } from "@/components/tasks/task-sheet";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { AddProjectButton, RemoveMenuButton, RestoreButton } from "@/components/project/project-dialogs";
 import { AmendmentsTab, ChatTab, EnvTab, EvolutionTab, NoticesTab, OverviewTab, ProposalsTab, SuggestionsTab, TasksTab, ThreadsTab, TimelineTab } from "@/components/project/tabs";
-import { hrefs, isProjectTab, PROJECT_TABS, type ProjectTab } from "@/lib/nav";
-import { allProjects, COMMONS_HINT, registeredProjects, type Org, type ProjectCardData, type ProjectsPayload, type RegisteredProject } from "@/lib/api";
+import { hrefs, PROJECT_TABS, resolveProjectTab, type ProjectCanonicalTab } from "@/lib/nav";
+import { allProjects, projectPath, registeredProjects, type Org, type ProjectCardData, type ProjectGoalPayload, type ProjectsPayload, type RegisteredProject, type TasksPayload } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { hashHue, initials, num, plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { ActivityIcon, BookOpenIcon, ClockIcon, InboxIcon, ListTodoIcon, MessagesSquareIcon, SparklesIcon } from "lucide-react";
+
+type BoardSub = "threads" | "suggestions" | "amendments" | "notices";
+type HistorySub = "timeline" | "env";
+
+const BOARD_SUBS: { id: BoardSub; label: string }[] = [
+  { id: "threads", label: "Threads" },
+  { id: "suggestions", label: "Suggestions" },
+  { id: "amendments", label: "Amendments" },
+  { id: "notices", label: "Notices" },
+];
+
+const HISTORY_SUBS: { id: HistorySub; label: string }[] = [
+  { id: "timeline", label: "Timeline" },
+  { id: "env", label: "Environment" },
+];
+
+const boardSub = (v: string | null | undefined): BoardSub => (v === "suggestions" || v === "amendments" || v === "notices" ? v : "threads");
+const historySub = (v: string | null | undefined): HistorySub => (v === "env" ? "env" : "timeline");
 
 export default function ProjectPage() {
   return (
@@ -34,11 +53,17 @@ function ProjectScreen() {
   const pathname = usePathname();
   const slug = sp.get("slug") || "";
   const tabParam = sp.get("tab");
-  const tab: ProjectTab = isProjectTab(tabParam) ? tabParam : "overview";
+  const resolved = resolveProjectTab(tabParam);
+  const tab: ProjectCanonicalTab = resolved.tab;
+  const subParam = sp.get("sub") || resolved.sub;
+  const board = boardSub(subParam);
+  const history = historySub(subParam);
   const thread = sp.get("thread");
   const post = sp.get("post");
   const task = sp.get("task");
   const org = useApi<Org>("org");
+  const goal = useApi<ProjectGoalPayload>(slug && slug !== "commons" ? projectPath(slug, "goal") : null, { refresh: 60000 });
+  const taskSummary = useApi<TasksPayload>(slug ? "tasks?project=" + encodeURIComponent(slug) : null, { refresh: 30000 });
   // The registry (inactive rows included) only matters on the picker.
   const reg = useApi<ProjectsPayload>(!slug ? "projects" : null, { refresh: false });
 
@@ -55,6 +80,19 @@ function ProjectScreen() {
     [sp, router, pathname],
   );
 
+  useEffect(() => {
+    if (!slug) return;
+    const wanted = tab === "overview" ? null : tab;
+    const wantedSub = tab === "board" ? board : tab === "history" ? history : null;
+    if ((tabParam || null) === wanted && (sp.get("sub") || null) === wantedSub) return;
+    const q = new URLSearchParams(sp.toString());
+    if (wanted) q.set("tab", wanted);
+    else q.delete("tab");
+    if (wantedSub) q.set("sub", wantedSub);
+    else q.delete("sub");
+    router.replace(pathname + (q.toString() ? "?" + q.toString() : ""), { scroll: false });
+  }, [slug, tab, board, history, tabParam, sp, router, pathname]);
+
   if (!slug) {
     const projects = registeredProjects(org.data);
     const commons = org.data?.commons;
@@ -65,7 +103,7 @@ function ProjectScreen() {
           crumb={
             <>
               <Link href={hrefs.home()} className="hover:underline">
-                Hub
+                Home
               </Link>{" "}
               / project
             </>
@@ -117,97 +155,149 @@ function ProjectScreen() {
   const card = allProjects(org.data).find((p) => p.slug === slug);
   const isCommons = card?.kind === "commons";
   const canDecide = org.data?.can_decide ?? true;
-  const counts: Partial<Record<ProjectTab, number>> = card
+  const forYou = card ? card.proposals_awaiting + (card.owner_questions ?? 0) : 0;
+  const loopLabel = card ? (card.stop_present ? "Loop stopped" : card.loop === "1" ? "Loop running" : "Loop waiting") : "";
+  const goalLine = isCommons ? "The shared board across all projects." : card?.brain ? "The PULSE framework itself." : goal.data?.goal?.text || (card?.name && card.name !== card.slug ? card.name : "Agents work toward the goal you set for this project.");
+  const openTasks = (taskSummary.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled").length;
+  const counts: Partial<Record<ProjectCanonicalTab, number>> = card
     ? {
-        proposals: card.proposals_awaiting + (card.owner_questions ?? 0),
-        suggestions: card.suggestions_needing_votes + card.suggestions_eligible,
-        amendments: card.amendments_open,
-        threads: card.threads_open,
+        "for-you": forYou,
+        work: openTasks,
+        board: card.threads_open,
       }
     : {};
 
   return (
-    // The Tabs root wraps the sticky title so the tab strip can live in its
-    // `bar` row: tabs and New task stay in reach however far the owner scrolls.
-    <Tabs value={tab} onValueChange={(v) => setParams({ tab: v === "overview" ? null : v, thread: null, post: null })} className="gap-0">
-      <PageTitle
-        crumb={
-          <>
-            <Link href={hrefs.home()} className="hover:underline">
-              Hub
-            </Link>{" "}
-            / project
-          </>
-        }
-        sub={
-          card ? (
-            isCommons ? (
-              COMMONS_HINT
-            ) : card.name && card.name !== card.slug ? (
-              card.name
-            ) : (
-              "Board, tasks and lead conversation for this checkout."
-            )
-          ) : (
-            org.error || "…"
-          )
-        }
-        // The commons has no checkout and no lead, so no task can be given
-        // there and nothing to remove; the brain is refused by the hub, so it
-        // gets no Remove control either.
-        actions={
-          isCommons ? undefined : (
-            <div className="flex items-center gap-2">
-              {card?.brain ? null : <RemoveMenuButton kind="project" name={slug} onApplied={() => setParams({ slug: null, tab: null, thread: null, post: null, task: null })} />}
-              <NewTaskButton project={slug} onCreated={(t) => setParams({ tab: "tasks", task: t.id })} />
+    <Tabs value={tab} onValueChange={(v) => setParams({ tab: v === "overview" ? null : v, sub: null, thread: null, post: null })} className="gap-0">
+      <section className="surface-hero glossy ring-soft mb-6 rounded-3xl p-4 shadow-pop sm:p-5" aria-labelledby="project-title">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="mb-2 text-xs text-muted-foreground">
+              <Link href={hrefs.home()} className="hover:underline">Home</Link> / project
             </div>
-          )
-        }
-        bar={
-          // Real tabs (roving focus, arrow keys) whose change handler keeps the
-          // other params, so an open task follows the owner into the Chat tab.
-          <TabsList variant="line" className="h-9 w-max gap-0 p-0" aria-label="Project sections">
-            {PROJECT_TABS.map((t) => (
-              <TabsTrigger key={t.id} value={t.id} className="h-9 flex-none gap-1.5 rounded-none px-3 text-muted-foreground after:hidden hover:text-foreground data-active:bg-transparent data-active:font-medium data-active:text-foreground">
+            <div className="flex min-w-0 items-center gap-3">
+              <ProjectAvatar slug={isCommons ? "Commons" : slug} />
+              <h1 id="project-title" className="min-w-0 truncate text-3xl font-semibold tracking-tight sm:text-4xl" title={isCommons ? "Commons" : slug}>
+                {isCommons ? "Commons" : slug}
+              </h1>
+              <span className="inline-flex flex-wrap items-center gap-1.5">
+                {card?.brain ? <Badge variant="secondary" className="rounded-full">Framework</Badge> : null}
+                {isCommons ? <Badge variant="outline" className="rounded-full">Shared board</Badge> : null}
+                {card?.stop_present ? <ToneBadge tone="bad">Stop</ToneBadge> : null}
+                {card && !card.present ? <Badge variant="destructive" className="rounded-full">Missing on disk</Badge> : null}
+              </span>
+            </div>
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground anywhere">{card ? goalLine : org.error || "Loading project..."}</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <ToneBadge tone={forYou ? "warn" : "neutral"} className="h-7 px-3" title={num(forYou) + " for you"}>
+                <InboxIcon className="size-3.5" aria-hidden /> {num(forYou)} for you
+              </ToneBadge>
+              {loopLabel ? (
+                <ToneBadge tone={card?.stop_present ? "bad" : card?.loop === "1" ? "ok" : "neutral"} className="h-7 px-3">
+                  <ActivityIcon className="size-3.5" aria-hidden /> {loopLabel}
+                </ToneBadge>
+              ) : null}
+              <ToneBadge tone="neutral" className="h-7 px-3">
+                <ListTodoIcon className="size-3.5" aria-hidden /> {plural(openTasks, "open task")}
+              </ToneBadge>
+            </div>
+          </div>
+          {isCommons ? null : (
+            <div className="flex items-center gap-2">
+              {card?.brain ? null : <RemoveMenuButton kind="project" name={slug} onApplied={() => setParams({ slug: null, tab: null, sub: null, thread: null, post: null, task: null })} />}
+              <NewTaskButton project={slug} onCreated={(t) => setParams({ tab: "work", task: t.id })} />
+            </div>
+          )}
+        </div>
+        <TabsList className="mt-5 w-full justify-start overflow-x-auto rounded-full p-1 sm:w-fit" aria-label="Project sections">
+          {PROJECT_TABS.map((t) => {
+            const active = tab === t.id;
+            return (
+              <TabsTrigger key={t.id} value={t.id} className="h-9 flex-none rounded-full px-3">
+                <ProjectTabIcon id={t.id as ProjectCanonicalTab} />
                 {t.label}
-                {counts[t.id] ? <span className={cn("tnum rounded-full bg-muted px-1.5 text-[10.5px]", tab === t.id ? "bg-primary/10 text-primary" : "text-muted-foreground")}>{counts[t.id]}</span> : null}
-                {tab === t.id ? <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-primary" aria-hidden /> : null}
+                {counts[t.id as ProjectCanonicalTab] ? (
+                  <span aria-label={num(counts[t.id as ProjectCanonicalTab] || 0) + " " + t.label.toLowerCase()} className={cn("tnum rounded-full px-1.5 text-[10.5px]", active ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground")}>
+                    {counts[t.id as ProjectCanonicalTab]}
+                  </span>
+                ) : null}
               </TabsTrigger>
-            ))}
-          </TabsList>
-        }
-        badge={
-          <span className="inline-flex flex-wrap items-center gap-1.5">
-            {card?.brain ? <Badge variant="secondary">framework</Badge> : null}
-            {isCommons ? <Badge variant="outline">shared board</Badge> : null}
-            {card?.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
-            {card && !card.present ? <Badge variant="destructive">missing on disk</Badge> : null}
-          </span>
-        }
-      >
-        <span className="flex min-w-0 items-center gap-2.5">
-          <ProjectAvatar slug={isCommons ? "Commons" : slug} />
-          <span className="truncate font-semibold tracking-tight">{isCommons ? "Commons" : slug}</span>
-        </span>
-      </PageTitle>
+            );
+          })}
+        </TabsList>
+      </section>
 
       <div role="tabpanel" aria-label={tab}>
         {tab === "overview" ? <OverviewTab slug={slug} /> : null}
-        {tab === "tasks" ? <TasksTab slug={slug} onOpen={(id) => setParams({ task: id })} activeId={task} /> : null}
-        {tab === "chat" ? <ChatTab slug={slug} taskId={task} onPickTask={(id) => setParams({ task: id })} /> : null}
-        {tab === "threads" ? <ThreadsTab slug={slug} onOpen={(k) => setParams({ thread: k })} activeKey={thread} /> : null}
-        {tab === "proposals" ? <ProposalsTab slug={slug} canDecide={canDecide} /> : null}
-        {tab === "suggestions" ? <SuggestionsTab slug={slug} /> : null}
-        {tab === "amendments" ? <AmendmentsTab slug={slug} /> : null}
+        {tab === "for-you" ? <ProposalsTab slug={slug} canDecide={canDecide} /> : null}
+        {tab === "work" ? <WorkTab slug={slug} task={task} setParams={setParams} /> : null}
+        {tab === "board" ? <BoardTab slug={slug} value={board} onValueChange={(next) => setParams({ tab: "board", sub: next, thread: null, post: null })} thread={thread} setParams={setParams} /> : null}
         {tab === "evolution" ? <EvolutionTab slug={slug} canDecide={canDecide} /> : null}
-        {tab === "timeline" ? <TimelineTab slug={slug} /> : null}
-        {tab === "notices" ? <NoticesTab slug={slug} /> : null}
-        {tab === "env" ? <EnvTab slug={slug} /> : null}
+        {tab === "history" ? <HistoryTab slug={slug} value={history} onValueChange={(next) => setParams({ tab: "history", sub: next })} /> : null}
       </div>
 
       <ThreadSheet slug={slug} threadKey={thread} onClose={() => setParams({ thread: null })} />
       <PostSheet slug={slug} postId={post} onClose={() => setParams({ post: null })} />
-      <TaskSheet id={tab === "chat" ? null : task} slug={slug} onClose={() => setParams({ task: null })} />
+      <TaskSheet id={tab === "work" ? null : task} slug={slug} onClose={() => setParams({ task: null })} />
+    </Tabs>
+  );
+}
+
+function ProjectTabIcon({ id }: { id: ProjectCanonicalTab }) {
+  const cls = "size-4";
+  if (id === "for-you") return <InboxIcon className={cls} aria-hidden />;
+  if (id === "work") return <ListTodoIcon className={cls} aria-hidden />;
+  if (id === "board") return <MessagesSquareIcon className={cls} aria-hidden />;
+  if (id === "evolution") return <SparklesIcon className={cls} aria-hidden />;
+  if (id === "history") return <ClockIcon className={cls} aria-hidden />;
+  return <BookOpenIcon className={cls} aria-hidden />;
+}
+
+function WorkTab({ slug, task, setParams }: { slug: string; task: string | null; setParams: (patch: Record<string, string | null | undefined>) => void }) {
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(360px,1.05fr)]">
+      <section className="surface-raised glossy rounded-2xl p-3">
+        <SectionHeading icon={ListTodoIcon}>Tasks</SectionHeading>
+        <TasksTab slug={slug} onOpen={(id) => setParams({ task: id })} activeId={task} />
+      </section>
+      <section className="surface-raised glossy min-h-[520px] rounded-2xl p-3">
+        <SectionHeading icon={MessagesSquareIcon}>Chat</SectionHeading>
+        <ChatTab slug={slug} taskId={task} onPickTask={(id) => setParams({ task: id })} />
+      </section>
+    </div>
+  );
+}
+
+function BoardTab({ slug, value, onValueChange, thread, setParams }: { slug: string; value: BoardSub; onValueChange: (next: BoardSub) => void; thread: string | null; setParams: (patch: Record<string, string | null | undefined>) => void }) {
+  return (
+    <Tabs value={value} onValueChange={(next) => onValueChange(boardSub(next))} className="gap-4">
+      <TabsList className="rounded-full" aria-label="Board sections">
+        {BOARD_SUBS.map((s) => (
+          <TabsTrigger key={s.id} value={s.id} className="rounded-full">
+            {s.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      {value === "threads" ? <ThreadsTab slug={slug} onOpen={(k) => setParams({ thread: k })} activeKey={thread} /> : null}
+      {value === "suggestions" ? <SuggestionsTab slug={slug} /> : null}
+      {value === "amendments" ? <AmendmentsTab slug={slug} /> : null}
+      {value === "notices" ? <NoticesTab slug={slug} /> : null}
+    </Tabs>
+  );
+}
+
+function HistoryTab({ slug, value, onValueChange }: { slug: string; value: HistorySub; onValueChange: (next: HistorySub) => void }) {
+  return (
+    <Tabs value={value} onValueChange={(next) => onValueChange(historySub(next))} className="gap-4">
+      <TabsList className="rounded-full" aria-label="History sections">
+        {HISTORY_SUBS.map((s) => (
+          <TabsTrigger key={s.id} value={s.id} className="rounded-full">
+            {s.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      {value === "timeline" ? <TimelineTab slug={slug} /> : null}
+      {value === "env" ? <EnvTab slug={slug} /> : null}
     </Tabs>
   );
 }

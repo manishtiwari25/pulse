@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { CheckIcon, ChevronRightIcon, ExternalLinkIcon, ServerIcon, UsersIcon, XIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon, ServerIcon, UsersIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -10,24 +10,16 @@ import { ConfirmDialog } from "./confirm";
 import { DecideButtons } from "./decide-buttons";
 import { Sparkline } from "./charts";
 import { EmptyState, Kv, Panel } from "./panel";
-import { Fact, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
-import { KindBadge, Mono, PostLink, ProjectLink, Provenance, StatusBadge, ThreadLink, ToneBadge, VoteBadge, When, Who } from "./who";
+import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
+import { Avatar, KindBadge, Mono, PostLink, ProjectLink, Provenance, StatusBadge, ThreadLink, ToneBadge, VoteBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
-import { expiresAt, hashHue, initials, num, plural, statusTone, truncate, untilText } from "@/lib/format";
+import { expiresAt, firstSentence, hashHue, initials, num, plural, rel, sentence, statusTone, truncate, untilText } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { COMMONS_HINT, evolveGate, taskProgress, writes, type Amendment, type Claim, type EvolveGate, type Executor, type LandingHold, type OwnerQuestion, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion, type Task, type TaskWorker } from "@/lib/api";
 import { useNow } from "@/lib/use-api";
-import { EvolveBadges, gateStep } from "./evolve";
+import { gateStep, type GateStep } from "./evolve";
 
 // ----- project card ------------------------------------------------------
-
-type FactTone = "ok" | "warn" | "accent";
-const FACT_TONE: Record<FactTone, string> = { ok: "text-ok", warn: "text-warn", accent: "text-accent-2" };
-const FOOTER_TONE = {
-  neutral: "border-border bg-muted/40 text-muted-foreground",
-  warn: "border-warn/30 bg-warn/10 text-warn",
-  bad: "border-bad/30 bg-bad/10 text-bad",
-} as const;
 
 function ProjectAvatar({ slug }: { slug: string }) {
   return (
@@ -37,90 +29,49 @@ function ProjectAvatar({ slug }: { slug: string }) {
   );
 }
 
-function AttentionLine({ tone = "neutral", children }: { tone?: keyof typeof FOOTER_TONE; children: React.ReactNode }) {
-  return <p className={cn("rounded-lg border px-3 py-2 text-xs leading-relaxed anywhere", FOOTER_TONE[tone])}>{children}</p>;
-}
-
 // `gate` overrides what the org row says about the self-improvement gates
 // (the hub page merges in the registry row); undefined reads the row itself.
 export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: number[]; gate?: EvolveGate | null }) {
-  const inVote = p.suggestions_needing_votes + p.amendments_open;
   const g = gate === undefined ? evolveGate(p) : gate;
-  // A self-improvement step only the owner can take counts as "for you" like an awaiting proposal (ADR-029).
   const step = gateStep(p.slug, g);
-  // Questions addressed to the owner (and the loop's stop questions) wait for a yes or no too.
-  const forYou = p.proposals_awaiting + (step ? 1 : 0) + (p.owner_questions ?? 0);
-  const attention = forYou > 0;
-  const facts: { n: number; label: string; tone?: FactTone }[] = [
-    { n: forYou, label: "for you", tone: forYou ? "ok" : undefined },
-    { n: p.claims_active, label: "working", tone: p.claims_active ? "ok" : undefined },
-    { n: p.threads_open, label: "threads" },
-    { n: p.suggestions_eligible, label: "eligible", tone: p.suggestions_eligible ? "accent" : undefined },
-    { n: inVote, label: "in vote", tone: inVote ? "warn" : undefined },
-    { n: p.posts_24h, label: "posts/24h" },
-  ];
-  const footer = p.error
-    ? { tone: "bad" as const, text: p.error }
-    : p.stop_present
-      ? { tone: "bad" as const, text: "STOP is set - the evolution loop halts until it is removed." }
-      : p.missing || !p.present
-        ? { tone: "warn" as const, text: "Registered but missing on disk." }
-        : !p.board_present
-          ? { tone: "warn" as const, text: "No board yet - pulse init registers this checkout." }
-          : null;
+  const forYou = p.proposals_awaiting + (p.owner_questions ?? 0);
+  const attention = forYou + (step ? 1 : 0);
+  const last = p.last_post?.date || p.built_at;
+  const status = projectStatus(p, step, forYou);
+  const footerFacts = [plural(p.agents, "agent"), plural(p.threads_open, "open thread"), last ? "last post " + rel(last) : "no activity yet"];
   return (
-    <ItemCard href={hrefs.project(p.slug)} highlight={attention} ariaLabel={"Project " + p.slug} className="@container/project gap-3.5">
+    <ItemCard href={hrefs.project(p.slug)} highlight={attention > 0} ariaLabel={"Project " + p.slug} className="@container/project gap-4 surface-raised">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-3">
           <ProjectAvatar slug={p.slug} />
           <div className="min-w-0 flex-1">
-            <h3 title={p.slug} className="line-clamp-2 text-base font-semibold leading-snug tracking-tight anywhere">{p.slug}</h3>
-            {p.brain || !p.present || p.stop_present ? (
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                {p.brain ? <Badge variant="secondary">framework</Badge> : null}
-                {!p.present ? <Badge variant="destructive">missing on disk</Badge> : null}
-                {p.stop_present ? <ToneBadge tone="bad">STOP</ToneBadge> : null}
-              </div>
-            ) : null}
+            <h3 title={p.slug} className="line-clamp-2 text-xl font-semibold leading-tight tracking-tight anywhere">{p.slug}</h3>
+            <p className="mt-1 text-sm text-muted-foreground anywhere">{p.brain ? "Framework project" : p.name && p.name !== p.slug ? p.name : "Software project"}</p>
           </div>
         </div>
         <ChevronRightIcon className="mt-1 size-4 shrink-0 text-muted-foreground opacity-50 transition-[transform,opacity] group-hover/item:opacity-100 group-focus-visible/item:opacity-100 motion-safe:group-hover/item:translate-x-0.5 motion-reduce:transition-none" aria-hidden />
       </div>
       <div className="flex min-w-0 items-center justify-between gap-3">
-        <div title={[p.branch, p.head, p.dirty ? "dirty" : ""].filter(Boolean).join(" · ")} className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-          {p.branch ? <Mono>{p.branch}</Mono> : null}
-          {p.head ? <Mono className="ml-1.5 text-muted-foreground">{p.head}</Mono> : null}
-          {p.dirty ? <span className="ml-1.5 text-warn">dirty</span> : null}
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={cn("size-2.5 shrink-0 rounded-full", status.dot)} aria-label={status.aria} role="img" />
+          <p className={cn("text-sm font-medium leading-snug anywhere", status.text)}>{status.line}</p>
         </div>
-        {spark?.length ? <Sparkline values={spark} w={72} h={20} className="shrink-0" /> : null}
+        {spark?.length ? <Sparkline values={spark} w={86} h={24} className="shrink-0" /> : null}
       </div>
-      {/* Tiles from sm up; one quiet line on phones so four cards fit a screen. */}
-      <div className="hidden grid-cols-3 gap-2 sm:grid @lg/project:grid-cols-6">
-        {facts.map((f) => (
-          <Fact key={f.label} n={num(f.n)} label={f.label} tone={f.tone} />
-        ))}
-      </div>
-      <ItemCardMeta className="sm:hidden">
-        {facts.map((f) => (
-          <span key={f.label}>
-            <b className={cn("tnum font-semibold text-foreground", f.tone && FACT_TONE[f.tone])}>{num(f.n)}</b> {f.label}
-          </span>
-        ))}
+      <ItemCardMeta>
+        {footerFacts.map((f) => <span key={f} title={[p.branch, p.head, p.dirty ? "dirty" : "", g ? "level " + g.evolve_level : ""].filter(Boolean).join(" · ") || undefined}>{f}</span>)}
       </ItemCardMeta>
-      {/* The self-improvement gates (ADR-029): why the loop runs or waits, in a few chips - the baseline one reports the daemon's progress (ADR-031). Hidden when the hub does not report them. */}
-      {g ? <EvolveBadges g={g} /> : null}
-      {p.last_post ? (
-        <ItemCardBody clamp={1} className="text-xs">
-          <KindBadge kind={p.last_post.kind} /> <span className="ml-1">{p.last_post.summary}</span>
-        </ItemCardBody>
-      ) : footer ? (
-        <AttentionLine tone={footer.tone}>{footer.text}</AttentionLine>
-      ) : (
-        <AttentionLine>No posts yet.</AttentionLine>
-      )}
-      {p.last_post && footer ? <AttentionLine tone={footer.tone}>{footer.text}</AttentionLine> : null}
     </ItemCard>
   );
+}
+
+function projectStatus(p: ProjectCardData, step: GateStep | null, forYou: number): { line: string; dot: string; text: string; aria: string } {
+  if (p.error || p.missing || !p.present) return { line: "Missing on disk", dot: "bg-bad", text: "text-bad", aria: "bad status" };
+  if (p.stop_present) return { line: "Self-improvement stopped", dot: "bg-warn", text: "text-warn", aria: "warning status" };
+  if (forYou > 0) return { line: plural(forYou, "thing") + (forYou === 1 ? " needs you" : " need you"), dot: "bg-primary", text: "text-brand", aria: "needs owner attention" };
+  if (p.claims_active > 0) return { line: "An experiment is running", dot: "bg-info", text: "text-info", aria: "running status" };
+  if (step) return { line: "Next step: " + sentence(step.label), dot: "bg-warn", text: "text-warn", aria: "next step status" };
+  return { line: "Quiet — " + plural(p.agents, "agent") + (p.last_post?.date ? ", last post " + rel(p.last_post.date) : ", no posts yet"), dot: "bg-ok", text: "text-foreground", aria: "quiet status" };
 }
 
 // ----- commons card -------------------------------------------------------
@@ -128,54 +79,34 @@ export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: nu
 // The shared board, kept out of the project grid: it is not a checkout, so it
 // gets its own card that says what it is and what waits on it.
 export function CommonsCard({ c, spark }: { c: ProjectCardData; spark?: number[] }) {
-  const facts: { n: number; label: string; tone?: FactTone }[] = [
-    { n: c.questions_open, label: "open questions", tone: c.questions_open ? "warn" : undefined },
-    { n: c.threads_open, label: "threads" },
-    { n: c.posts_24h, label: "posts/24h" },
-    { n: c.agents, label: "agents" },
-  ];
+  const status = c.present ? (c.questions_open + (c.owner_questions ?? 0) > 0 ? plural(c.questions_open + (c.owner_questions ?? 0), "question") + " need attention" : "Quiet — shared notes are up to date") : "Not created yet";
   return (
-    <ItemCard href={hrefs.project(c.slug)} ariaLabel="Commons - the board every project shares" className="@container/commons gap-3.5">
+    <ItemCard href={hrefs.project(c.slug)} highlight={(c.questions_open + (c.owner_questions ?? 0)) > 0} ariaLabel="Commons - the board every project shares" className="@container/commons gap-4 surface-raised">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-3">
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-primary/10 bg-primary/8 text-primary" aria-hidden>
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-primary/10 bg-primary/8 text-primary shadow-card" aria-hidden>
             <UsersIcon className="size-[18px]" />
           </span>
           <div className="min-w-0 flex-1">
-            <h3 className="text-base font-semibold leading-snug tracking-tight">Commons</h3>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              <Badge variant="outline">shared board</Badge>
-              {!c.present ? <Badge variant="secondary">not created yet</Badge> : null}
-            </div>
+            <h3 className="text-xl font-semibold leading-tight tracking-tight">Commons</h3>
+            <p className="mt-1 text-sm text-muted-foreground">Shared by every project</p>
           </div>
         </div>
         <ChevronRightIcon className="mt-1 size-4 shrink-0 text-muted-foreground opacity-50 transition-[transform,opacity] group-hover/item:opacity-100 group-focus-visible/item:opacity-100 motion-safe:group-hover/item:translate-x-0.5 motion-reduce:transition-none" aria-hidden />
       </div>
       <div className="flex min-w-0 items-center justify-between gap-3">
-        <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground anywhere">{COMMONS_HINT}</p>
-        {spark?.length ? <Sparkline values={spark} w={72} h={20} className="shrink-0" /> : null}
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={cn("size-2.5 shrink-0 rounded-full", c.present ? "bg-ok" : "bg-warn")} aria-label={c.present ? "ok status" : "warning status"} role="img" />
+          <p className="text-sm font-medium leading-snug anywhere">{status}</p>
+        </div>
+        {spark?.length ? <Sparkline values={spark} w={86} h={24} className="shrink-0" /> : null}
       </div>
-      {c.present && c.error ? <p className="text-xs text-bad anywhere">{c.error}</p> : null}
-      <div className="hidden grid-cols-2 gap-2 sm:grid @md/commons:grid-cols-4">
-        {facts.map((f) => (
-          <Fact key={f.label} n={num(f.n)} label={f.label} tone={f.tone} />
-        ))}
-      </div>
-      <ItemCardMeta className="sm:hidden">
-        {facts.map((f) => (
-          <span key={f.label}>
-            <b className={cn("tnum font-semibold text-foreground", f.tone && FACT_TONE[f.tone])}>{num(f.n)}</b> {f.label}
-          </span>
-        ))}
+      <ItemCardBody clamp={2}>{COMMONS_HINT}</ItemCardBody>
+      <ItemCardMeta>
+        <span title={[c.path, c.last_post?.summary].filter(Boolean).join(" · ") || undefined}>{plural(c.agents, "agent")}</span>
+        <span>{plural(c.threads_open, "open thread")}</span>
+        <span>{c.last_post?.date ? "last post " + rel(c.last_post.date) : "no posts yet"}</span>
       </ItemCardMeta>
-      {c.last_post ? (
-        // line-clamp, not truncate: this card sits outside a CardGrid, and a nowrap line would widen the column to the summary's length.
-        <ItemCardBody clamp={1} className="text-xs">
-          <KindBadge kind={c.last_post.kind} /> <span className="ml-1">{c.last_post.summary}</span>
-        </ItemCardBody>
-      ) : (
-        <p className="text-xs leading-relaxed text-muted-foreground anywhere">{c.present ? "No posts yet." : "The first post that concerns more than one project creates it" + (c.path ? " at " + c.path : "") + "."}</p>
-      )}
     </ItemCard>
   );
 }
@@ -188,52 +119,36 @@ export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug:
   const [expanded, setExpanded] = useState(false);
   const long = (r.proposal_text || "").length > 420;
   const s = r.slug || slug;
+  const who = r.agent || r.name || r.session || "An agent";
   return (
     <ItemCard highlight={awaiting} ariaLabel={"Proposal: " + r.summary}>
-      <ItemCardHeader
-        right={
-          <>
-            <Who row={r} compact />
-            <When d={r.date} />
-          </>
-        }
-      >
-        <StatusBadge status={r.status} />
+      <ItemCardHeader right={<><Who row={r} compact /><When d={r.date} /></>}>
         {r.slug && r.slug !== slug ? <ProjectLink slug={r.slug} /> : null}
-        <ThreadLink slug={s} k={r.thread_key} />
       </ItemCardHeader>
-      <ItemCardTitle>{r.summary}</ItemCardTitle>
+      <ItemCardTitle>{sentence(who) + " proposes: " + sentence(r.summary)}</ItemCardTitle>
       {r.proposal_text ? (
         <ItemCardBody clamp={0}>
-          <p className={cn(!expanded && long && "line-clamp-5")}>{r.proposal_text}</p>
+          <p className={cn(!expanded && long && "line-clamp-3")}>{firstSentence(r.proposal_text)}</p>
           {long ? (
-            <button type="button" className="mt-1 text-xs underline underline-offset-2 hover:text-foreground" onClick={() => setExpanded((e) => !e)}>
-              {expanded ? "less" : "read the whole proposal"}
+            <button type="button" aria-expanded={expanded} className="mt-1 text-xs underline underline-offset-2 hover:text-foreground" onClick={() => setExpanded((e) => !e)}>
+              {expanded ? "Show less" : "Read more"}
             </button>
           ) : null}
+          {expanded ? <p className="mt-2 whitespace-pre-line">{r.proposal_text}</p> : null}
         </ItemCardBody>
       ) : null}
-      {!awaiting && r.decided_id ? (
-        <ItemCardMeta>
-          <span>
-            decided <When d={r.decided_date} /> {r.decided_agent ? "by " + r.decided_agent : ""} {"·"} <PostLink slug={s} id={r.decided_id} label={r.decided_summary || "the decision post"} />
-          </span>
-        </ItemCardMeta>
-      ) : null}
+      <ItemCardMeta>
+        <StatusBadge status={r.status} />
+        <Mono>{r.id}</Mono>
+        <ThreadLink slug={s} k={r.thread_key} />
+        <Link href={hrefs.post(s, r.id)} className="hover:underline">open the post</Link>
+        {!awaiting && r.decided_id ? <span>decided <When d={r.decided_date} /> {r.decided_agent ? "by " + r.decided_agent : ""}</span> : null}
+      </ItemCardMeta>
       <ItemCardActions>
-        <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
-          <Link href={hrefs.post(s, r.id)}>
-            open the post <ExternalLinkIcon />
-          </Link>
-        </Button>
         {awaiting && canDecide && r.can_decide !== false ? (
-          <span className="ml-auto flex shrink-0 gap-2">
-            <Button size="sm" variant="outline" className="text-bad" onClick={() => setOpen("no")} aria-label={"No to: " + r.summary}>
-              <XIcon /> No
-            </Button>
-            <Button size="sm" onClick={() => setOpen("yes")} aria-label={"Yes to: " + r.summary}>
-              <CheckIcon /> Yes
-            </Button>
+          <span className="flex w-full flex-wrap justify-start gap-2 sm:ml-auto sm:w-auto sm:justify-end">
+            <Button variant="outline" onClick={() => setOpen("no")} aria-label={"No, decline: " + r.summary}><XIcon /> No, decline</Button>
+            <Button className="glossy" onClick={() => setOpen("yes")} aria-label={"Yes, accept: " + r.summary}><CheckIcon /> Yes, accept</Button>
           </span>
         ) : awaiting ? (
           <span className="ml-auto text-xs text-muted-foreground">read-only: open the hub on the machine that runs it to decide</span>
@@ -242,11 +157,11 @@ export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug:
       <ConfirmDialog
         open={open !== null}
         onOpenChange={(o) => !o && setOpen(null)}
-        title={open === "yes" ? "Say yes to this proposal?" : "Say no to this proposal?"}
-        description={r.summary}
-        action={open === "yes" ? "Yes, proceed" : "No, decline"}
+        title={open === "yes" ? "Say yes to this?" : "Say no to this?"}
+        description={open === "yes" ? "The agents may proceed with this proposal." : "The proposal is declined and the agents will not pursue it as written."}
+        action={open === "yes" ? "Yes, accept" : "No, decline"}
         destructive={open === "no"}
-        words={{ label: "Your words", placeholder: open === "yes" ? "e.g. approved - keep the scope as written" : "e.g. not now - revisit after the next release", required: true }}
+        words={{ label: "A note for the agents (optional)", placeholder: open === "yes" ? "Approved - keep the scope as written." : "Not now because …" }}
         success={open === "yes" ? "Decided yes - the board records your answer; a job is queued when the proposal asks for work." : "Decided no - the board records your answer."}
         onConfirm={(words) => writes.decide(r.id, open === "yes" ? "yes" : "no", words)}
       />
@@ -264,49 +179,46 @@ export function QuestionCard({ q, slug, canDecide = true }: { q: OwnerQuestion; 
   const body = (q.body || "").trim();
   const long = body.length > 420 || body.split("\n").length > 5;
   const s = q.slug || slug;
+  const stop = isStopQuestion(q);
+  const title = stop ? <>The self-improvement loop on <b>{s}</b> stopped — may it continue?</> : sentence(q.summary).replace(/[.!]*$/, q.summary.trim().endsWith("?") ? "?" : ".");
+  const askLine = stop ? firstSentence(body) : "asked by " + (q.agent || q.name || q.session || "an agent") + " · ";
   return (
     <ItemCard highlight={!q.stale} ariaLabel={"Question for you: " + q.summary}>
-      <ItemCardHeader
-        right={
-          <>
-            <Who row={q} compact />
-            <When d={q.date} />
-          </>
-        }
-      >
-        {q.stop ? <ToneBadge tone="bad">evolution stop</ToneBadge> : <ToneBadge tone="warn">question for you</ToneBadge>}
-        {q.stale ? <Badge variant="outline">stale thread</Badge> : null}
+      <ItemCardHeader right={stop ? <When d={q.date} /> : undefined}>
         {q.slug && q.slug !== slug ? <ProjectLink slug={q.slug} /> : null}
-        <ThreadLink slug={s} k={q.thread_key} />
       </ItemCardHeader>
-      <ItemCardTitle>{q.summary}</ItemCardTitle>
+      <ItemCardTitle>{title}</ItemCardTitle>
+      <ItemCardBody clamp={2}>
+        {stop ? askLine : <>{askLine}<When d={q.date} /></>}
+      </ItemCardBody>
       {body ? (
         <ItemCardBody clamp={0}>
-          <p className={cn("whitespace-pre-line", !expanded && long && "line-clamp-5")}>{body}</p>
-          {long ? (
-            <button type="button" className="mt-1 text-xs underline underline-offset-2 hover:text-foreground" onClick={() => setExpanded((e) => !e)}>
-              {expanded ? "less" : "read the whole question"}
+          {expanded ? <p className="whitespace-pre-line">{body}</p> : null}
+          {long || !stop ? (
+            <button type="button" aria-expanded={expanded} className="mt-1 text-xs underline underline-offset-2 hover:text-foreground" onClick={() => setExpanded((e) => !e)}>
+              {expanded ? "Show less" : "Read more"}
             </button>
           ) : null}
         </ItemCardBody>
       ) : null}
-      {q.on_post ? (
-        <ItemCardMeta>
-          <span>
-            about <PostLink slug={s} id={q.on_post} label={q.on_post} />
-          </span>
-        </ItemCardMeta>
-      ) : null}
+      <ItemCardMeta>
+        {stop ? <ToneBadge tone="bad">evolution stop</ToneBadge> : <ToneBadge tone="warn">question for you</ToneBadge>}
+        {q.stale ? <Badge variant="outline">older thread</Badge> : null}
+        <Mono>{q.id}</Mono>
+        <ThreadLink slug={s} k={q.thread_key} />
+        {q.on_post ? <span>about <PostLink slug={s} id={q.on_post} label={q.on_post} /></span> : null}
+        <Link href={hrefs.post(s, q.id)} className="hover:underline">open the post</Link>
+      </ItemCardMeta>
       <ItemCardActions>
-        <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
-          <Link href={hrefs.post(s, q.id)}>
-            open the post <ExternalLinkIcon />
-          </Link>
-        </Button>
-        <DecideButtons id={q.id} summary={q.summary} stop={q.stop} canDecide={canDecide} />
+        <DecideButtons id={q.id} summary={typeof title === "string" ? title : q.summary} stop={stop} canDecide={canDecide} yesLabel={stop ? "Yes, continue" : "Yes"} noLabel={stop ? "No, keep it stopped" : "No"} />
       </ItemCardActions>
     </ItemCard>
   );
+}
+
+function isStopQuestion(q: OwnerQuestion): boolean {
+  // Older hubs may miss q.stop; the daemon's stop marker is stable in the body/summary.
+  return q.stop === true || /Evolution stopped; owner review needed|evolution constraint violation/i.test((q.summary || "") + "\n" + (q.body || ""));
 }
 
 // ----- suggestion / amendment ---------------------------------------------
@@ -477,7 +389,7 @@ export function WorkingNow({ claims, slug, tasks, limit = 6 }: { claims: Claim[]
     <div>
       <ul className="divide-y">
         {shown.map((r) => (
-          <WorkingRowItem key={r.key} r={r} slug={slug} />
+          <WorkingRowItem key={r.key} r={r} />
         ))}
       </ul>
       {rows.length > limit ? (
@@ -489,59 +401,39 @@ export function WorkingNow({ claims, slug, tasks, limit = 6 }: { claims: Claim[]
   );
 }
 
-function WorkingRowItem({ r, slug }: { r: WorkingRow; slug?: string }) {
+function WorkingRowItem({ r }: { r: WorkingRow }) {
   const [open, setOpen] = useState(false);
   const s = r.slug;
   const latest = r.claims[0];
-  // With a task the whole claim list folds; without one the newest claim is the headline and the rest fold.
   const folded = r.task ? r.claims.length : r.claims.length - 1;
   const threads = new Set(r.claims.map((c) => c.thread_key)).size;
-  const when = r.task ? (
-    r.task.w.since ? <span className="ml-auto shrink-0 text-xs text-muted-foreground">since <When d={r.task.w.since} /></span> : null
-  ) : latest?.expires ? (
-    <When d={latest.expires} className="ml-auto shrink-0 text-xs text-muted-foreground" />
-  ) : (
-    <span className="ml-auto shrink-0 text-xs text-muted-foreground tnum">no expiry</span>
-  );
-  // The panel lives in a narrow column: the agent leads the header line instead of taking a side column, so
-  // the summary - the answer to "on what?" - gets the full width.
+  const when = r.task?.w.since || latest?.expires || "";
+  const work = r.task
+    ? plainWork(r.task.w.title || r.task.t.title || r.task.w.kind)
+    : latest
+      ? plainWork(latest.summary)
+      : "is working";
   return (
     <li className="min-w-0 py-3 text-[13px] first:pt-0 last:pb-0">
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
-        <Who row={{ agent: r.agent }} compact className="max-w-[45%] font-medium" />
-        {r.task ? (
-          <>
-            <span className="text-muted-foreground">on</span>
-            <Link href={hrefs.task(r.task.t.project, r.task.t.id)} className="hover:underline">
-              <Mono>{r.task.t.id}</Mono>
-            </Link>
-            <ToneBadge tone="info">{r.task.w.kind}</ToneBadge>
-          </>
-        ) : latest ? (
-          <>
-            {s && !slug ? <ProjectLink slug={s} /> : null}
-            <ThreadLink slug={s} k={latest.thread_key} className="text-muted-foreground" />
-          </>
-        ) : null}
-        {when}
+      <div className="flex min-w-0 items-start gap-2.5">
+        <Avatar seed={r.agent} size={28} />
+        <div className="min-w-0 flex-1">
+          <p className="line-clamp-2 leading-relaxed anywhere">
+            <span className="font-medium">{r.agent}</span>{" "}{work}{s ? <> on <ProjectLink slug={s} className="font-normal" /></> : null}
+            {when ? <span className="text-muted-foreground">{" · " + rel(when)}</span> : null}
+          </p>
+          <ItemCardMeta className="mt-1">
+            {r.task ? <Link href={hrefs.task(r.task.t.project, r.task.t.id)} className="hover:underline"><Mono>{r.task.t.id}</Mono></Link> : latest ? <><ThreadLink slug={s} k={latest.thread_key} /><PostLink slug={s} id={latest.id} label="post" /></> : null}
+          </ItemCardMeta>
+        </div>
       </div>
-      {r.task ? (
-        <p className="mt-1.5 line-clamp-2 leading-relaxed anywhere">
-          <Link href={hrefs.task(r.task.t.project, r.task.t.id)} className="hover:underline">{truncate(r.task.t.title, 90)}</Link>
-          <span className="text-muted-foreground"> - {r.task.w.title ? truncate(r.task.w.title, 96) : r.task.w.job}</span>
-        </p>
-      ) : latest ? (
-        <p className="mt-1.5 line-clamp-2 leading-relaxed anywhere">
-          <PostLink slug={s} id={latest.id} label={latest.summary} />
-        </p>
-      ) : null}
       {folded > 0 ? (
-        <button type="button" aria-expanded={open} className="mt-0.5 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline tnum" onClick={() => setOpen((v) => !v)}>
+        <button type="button" aria-expanded={open} className="mt-1 ml-10 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline tnum" onClick={() => setOpen((v) => !v)}>
           {open ? "hide claims" : (r.task ? "also holds " : "+ ") + plural(folded, r.task ? "claim" : "more claim") + (threads > 1 ? " across " + plural(threads, "thread") : "")}
         </button>
       ) : null}
       {open ? (
-        <ul className="mt-1.5 ml-1 grid gap-1 border-l pl-2.5 text-[12.5px]">
+        <ul className="mt-1.5 ml-10 grid gap-1 border-l pl-2.5 text-[12.5px]">
           {(r.task ? r.claims : r.claims.slice(1)).map((c) => (
             <li key={c.id} className="flex items-start gap-2">
               <div className="min-w-0 flex-1 anywhere">
@@ -556,53 +448,86 @@ function WorkingRowItem({ r, slug }: { r: WorkingRow; slug?: string }) {
   );
 }
 
+function plainWork(s: string): string {
+  const t = sentence(s).replace(/[.!?]$/, "");
+  if (!t) return "is working";
+  return /^(is|are|has|have)\b/i.test(t) ? t.charAt(0).toLowerCase() + t.slice(1) : "is " + t.charAt(0).toLowerCase() + t.slice(1);
+}
+
 // ----- the machine ---------------------------------------------------------
 
 export function MachinePanel({ r }: { r: Runner | undefined | null }) {
+  const [details, setDetails] = useState(false);
   if (!r) return <Panel title="The machine" icon={ServerIcon}>{<EmptyState>The runner state is not available.</EmptyState>}</Panel>;
   if (!r.available) return <Panel title="The machine" icon={ServerIcon}>{<EmptyState hint="pulse daemon">No store yet, or no daemon has run. Start one with the CLI.</EmptyState>}</Panel>;
   const d = r.daemon;
   const stopped = r.runner && !r.runner.allowed;
+  const daemonOk = !stopped && (d.state === "running" || d.state === "alive");
+  const leftovers = hygieneLeftovers(r.hygiene);
   return (
     <Panel
       title="The machine"
       icon={ServerIcon}
       actions={
-        <span className="flex items-center gap-1.5">
-          <ToneBadge tone={stopped ? "bad" : d.state === "running" || d.state === "alive" ? "ok" : statusTone(d.state)} dot>
-            {stopped ? "STOP" : d.state}
-          </ToneBadge>
-          <Link href={hrefs.settings("runner")} className="hover:underline">
-            caps
-          </Link>
-        </span>
+        <Link href={hrefs.settings("runner")} className="text-xs text-muted-foreground hover:underline">
+          caps
+        </Link>
       }
     >
-      <Kv
-        rows={[
-          ["daemon", (d.text || d.state) + (d.pid ? "" : "")],
-          ["last loop", <When key="at" d={d.at} />],
-          ["slots", r.hands.free + " free of " + r.hands.slots + " on " + plural(r.hands.executors_active, "active executor")],
-          ["workers", r.workers.busy + " busy · " + r.workers.idle + " idle" + (r.workers.idle_names.length ? " (" + r.workers.idle_names.join(", ") + ")" : "") + " · target " + r.workers.target],
-          ["jobs", r.jobs.queued + " queued · " + r.jobs.leased + " leased · " + r.jobs.running + " running" + (r.jobs.blocked ? " · " + r.jobs.blocked + " blocked" : "")],
-          ...(r.capacity ? [["capacity", r.capacity] as [React.ReactNode, React.ReactNode]] : []),
-          ["runs today", r.jobs.runs_today + (r.jobs.cap ? " of " + r.jobs.cap : " (no daily cap)")],
-          ...(r.hygiene ? [["hygiene", r.hygiene] as [React.ReactNode, React.ReactNode]] : []),
-        ]}
-      />
+      <div className="grid gap-2 text-sm">
+        <HumanMachineLine tone={stopped ? "bad" : daemonOk ? "ok" : "warn"} label="Daemon" text={(stopped ? "stopped" : d.state || d.text || "unknown") + (d.at ? ", checked " + rel(d.at) : "")} />
+        <HumanMachineLine tone={r.workers.busy ? "info" : "neutral"} label="Agents" text={plural(r.workers.busy, "working") + ", " + plural(r.workers.idle, "resting")} />
+        <HumanMachineLine tone={r.jobs.blocked ? "bad" : r.jobs.running || r.jobs.leased ? "info" : r.jobs.queued ? "warn" : "ok"} label="Work" text={r.jobs.blocked ? plural(r.jobs.blocked, "blocked") + " — see failed jobs" : plural(r.jobs.queued, "waiting") + ", " + plural(r.jobs.running + r.jobs.leased, "running")} />
+        <HumanMachineLine tone={leftovers.count ? "warn" : "ok"} label="Cleanup" text={leftovers.text} />
+      </div>
       {stopped ? <p className="mt-2 text-xs text-bad">{"The runner is stopped: " + (r.runner?.reason || "the stop switch is on") + "."}</p> : null}
-      <WorkerHold hold={r.hold} />
-      <LandingHolds holds={r.landing} />
-      {r.executors.length ? (
-        <ul className="mt-3 grid gap-1.5">
-          {r.executors.map((e) => (
-            <ExecutorRow key={e.name} e={e} />
-          ))}
-        </ul>
-      ) : null}
+      <details className="mt-3" open={details} onToggle={(e) => setDetails(e.currentTarget.open)}>
+        <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground hover:text-foreground" aria-expanded={details}>Show details</summary>
+        <div className="mt-2 grid gap-2">
+          <Kv
+            rows={[
+              ["daemon", (d.text || d.state) + (d.loops !== undefined ? " · loop " + num(d.loops) : "")],
+              ["interval", d.interval ? spanSeconds(d.interval) : "—"],
+              ["last loop", <When key="at" d={d.at} />],
+              ["slots", r.hands.free + " free of " + r.hands.slots + " on " + plural(r.hands.executors_active, "active executor")],
+              ["workers", r.workers.busy + " busy · " + r.workers.idle + " idle" + (r.workers.idle_names.length ? " (" + r.workers.idle_names.join(", ") + ")" : "") + " · target " + r.workers.target],
+              ["jobs", r.jobs.queued + " queued · " + r.jobs.leased + " leased · " + r.jobs.running + " running" + (r.jobs.blocked ? " · " + r.jobs.blocked + " blocked" : "")],
+              ...(r.capacity ? [["capacity", r.capacity] as [React.ReactNode, React.ReactNode]] : []),
+              ["runs today", r.jobs.runs_today + (r.jobs.cap ? " of " + r.jobs.cap : " (no daily cap)")],
+              ...(r.hygiene ? [["hygiene", r.hygiene] as [React.ReactNode, React.ReactNode]] : []),
+            ]}
+          />
+          <WorkerHold hold={r.hold} />
+          <LandingHolds holds={r.landing} />
+          {r.executors.length ? (
+            <ul className="grid gap-1.5">
+              {r.executors.map((e) => <ExecutorRow key={e.name} e={e} />)}
+            </ul>
+          ) : null}
+        </div>
+      </details>
     </Panel>
   );
 }
+
+function HumanMachineLine({ tone, label, text }: { tone: "ok" | "warn" | "bad" | "info" | "neutral"; label: string; text: string }) {
+  const dot = tone === "ok" ? "bg-ok" : tone === "warn" ? "bg-warn" : tone === "bad" ? "bg-bad" : tone === "info" ? "bg-info" : "bg-muted-foreground";
+  return (
+    <div className="flex min-w-0 items-start gap-2 rounded-lg border bg-muted/20 px-3 py-2">
+      <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", dot)} aria-label={tone + " status"} role="img" />
+      <p className="min-w-0 leading-snug anywhere"><b>{label}:</b> {text}</p>
+    </div>
+  );
+}
+
+function hygieneLeftovers(h?: string): { count: number; text: string } {
+  if (!h) return { count: 0, text: "nothing left behind" };
+  const held = [...h.matchAll(/held\s+([a-z]+)\s+(\d+)/gi)].reduce((n, m) => n + Number(m[2] || 0), 0);
+  const swept = /last sweep\s+([^:]+):/i.exec(h)?.[1];
+  return held ? { count: held, text: plural(held, "leftover") + (swept ? ", swept " + rel(swept) : "") } : { count: 0, text: "nothing left behind" };
+}
+
+const spanSeconds = (sec: number) => sec < 60 ? plural(sec, "second") : sec < 3600 ? plural(Math.round(sec / 60), "minute") : plural(Math.round(sec / 3600), "hour");
 
 function WorkerHold({ hold }: { hold: string | undefined }) {
   if (!hold) return null;

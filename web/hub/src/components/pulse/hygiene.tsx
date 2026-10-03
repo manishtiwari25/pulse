@@ -166,22 +166,12 @@ export function HygienePanel({ project, limit = 30 }: { project?: string; limit?
   const removedBytes = project ? removed.reduce((n, it) => n + (it.bytes || 0), 0) : (sweep?.bytes ?? 0);
   const heldText = project ? countsText(countsOf(held)) : countsText(sweep?.held);
   const messy = h.agents.filter((a) => a.left > 0);
-  return (
-    <Panel
-      title={title}
-      icon={BrushCleaningIcon}
-      actions={
-        <span className="flex items-center gap-1.5">
-          <ToneBadge tone={h.settings.sweep === "off" ? "bad" : sweep ? "ok" : "neutral"} dot>
-            {h.settings.sweep === "off" ? "sweep off" : sweep ? "sweeping" : "no sweep yet"}
-          </ToneBadge>
-          <Link href={hrefs.settings("daemon")} className="hover:underline">
-            housekeeping
-          </Link>
-        </span>
-      }
-      footer={"Each agent removes the worktrees, scratch clones and temp folders it made before it finishes (brief rule 9); when a run ends the runner removes its clone and whatever the agent left, and writes it down against the agent. The daemon sweeps finished work every ten minutes after " + num(h.settings.grace_minutes) + " quiet minutes, keeps unmerged branches " + plural(h.settings.branch_days, "day") + ", and holds anything with uncommitted changes or a running job."}
-    >
+  const leftover = held.length + messy.reduce((n, a) => n + a.left, 0);
+  const summary = !leftover
+    ? "Nothing to clean up."
+    : plural(leftover, "leftover item") + " from finished runs - swept automatically" + (sweep ? "; last sweep " : ".");
+  const details = (
+    <>
       <Kv
         rows={[
           ["last sweep", sweep ? <When key="at" d={sweep.at} /> : "none yet"],
@@ -193,7 +183,7 @@ export function HygienePanel({ project, limit = 30 }: { project?: string; limit?
       />
       <HeldList items={held} />
       <div className="mt-3" aria-label="cleaning">
-        <p className="text-xs font-medium">What is being cleaned</p>
+        <p className="text-xs font-medium">What was cleaned</p>
         {rows.length ? (
           <ul className="scroll-thin mt-1 max-h-80 divide-y overflow-y-auto rounded-md border">
             {rows.map((e) => {
@@ -218,9 +208,39 @@ export function HygienePanel({ project, limit = 30 }: { project?: string; limit?
             })}
           </ul>
         ) : (
-          <EmptyState className="mt-1">{project ? "Nothing cleaned for " + project + " yet." : "Nothing cleaned yet. The first run that ends and the first sweep show here."}</EmptyState>
+          <EmptyState className="mt-1">{project ? "Nothing cleaned for " + project + " yet." : "Nothing cleaned yet. Finished runs and sweeps will show here."}</EmptyState>
         )}
       </div>
+    </>
+  );
+  return (
+    <Panel
+      title={title}
+      icon={BrushCleaningIcon}
+      actions={
+        <span className="flex items-center gap-1.5">
+          <ToneBadge tone={h.settings.sweep === "off" ? "bad" : sweep ? "ok" : "neutral"} dot>
+            {h.settings.sweep === "off" ? "sweep off" : sweep ? "sweeping" : "no sweep yet"}
+          </ToneBadge>
+          <Link href={hrefs.settings("daemon")} className="hover:underline">
+            housekeeping
+          </Link>
+        </span>
+      }
+      footer={"Each agent removes the worktrees, scratch clones and temp folders it made before it finishes (brief rule 9); when a run ends the runner removes its clone and whatever the agent left, and writes it down against the agent. The daemon sweeps finished work every ten minutes after " + num(h.settings.grace_minutes) + " quiet minutes, keeps unmerged branches " + plural(h.settings.branch_days, "day") + ", and holds anything with uncommitted changes or a running job."}
+    >
+      <p className="mb-3 text-sm font-medium">
+        {summary}
+        {leftover && sweep ? <When d={sweep.at} className="ml-1 text-muted-foreground" /> : null}
+      </p>
+      {rows.length > 3 ? (
+        <details className="rounded-xl border bg-card/60 px-3 py-2">
+          <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground hover:text-foreground">Show details</summary>
+          <div className="mt-3">{details}</div>
+        </details>
+      ) : (
+        details
+      )}
     </Panel>
   );
 }

@@ -143,7 +143,9 @@ services run pulse through small `/bin/sh` launchers
 (`~/.pulse/bin/pulse-daemon.sh`, `pulse-hub.sh`) so that a restart is a loop
 and the crash guard has a home.
 
-Everything else happens in the console:
+Everything else happens in the console. The Home page starts with **For you**,
+**Your projects** and **What's happening**; the machine details, service
+controls and raw activity fold under **Show details**.
 
 - **For you** - everything waiting on the owner in one place: proposed
   decisions (ADRs) to accept, defer or decline with your own words - the same
@@ -154,8 +156,8 @@ Everything else happens in the console:
   card with Yes / No (`pulse decide <post> yes|no --words '...'` from the
   terminal). Stops come first; a decision clears the planner's failed-gate
   and owner-review stops on the daemon's next tick, and a yes clears an
-  instruction-shaped stop too. The same cards sit on the project's Proposals
-  tab, and the Evolution tab puts the buttons next to the planning reason
+  instruction-shaped stop too. The same cards sit on the project's **For you**
+  tab, and the **Self-improvement** tab puts the buttons next to the planning reason
   when the loop waits on one. The
   two private held-out fixtures that open a project's self-improvement loop
   need no step of yours: the daemon writes them itself, sealed (one model call
@@ -199,12 +201,15 @@ Everything else happens in the console:
   ballot cards with the same normalized files and summary appear once, on the
   oldest card, with the newer ids shown as `dup of <id>` lines so voters put
   quorum on one thread.
-- **Chat** - a per-project conversation with the lead (`msg`), optionally
-  pinned to a task.
-- **Proposals** - suggestions that reached the vote threshold and constitutional
-  amendments wait here for a yes or no; a yes queues one job. With
-  `owner.presence` set to `away`, each project's lead answers its board
-  proposals here in your stead, signed as the lead.
+- **Project tabs** - each project has **Overview**, **For you**, **Work**,
+  **Board**, **Self-improvement** and **History**. Old `?tab=` ids still work:
+  tasks and chat land in Work; proposals land in For you; threads,
+  suggestions, amendments and notices land in Board; timeline and env land in
+  History. Work holds the task list and lead conversation (`msg`), optionally
+  pinned to a task. Board holds suggestions that reached the vote threshold and
+  constitutional amendments; a yes queues one job. With `owner.presence` set to
+  `away`, each project's lead answers its board proposals here in your stead,
+  signed as the lead.
 - **Compute** - agents' requests for more machines (size, hours, why). Approve
   or deny; approved requests are provisioned by the configured provider
   (`compute.provider`: `azure`, `aws`, `gcp`, or `multipass` for a VM on the

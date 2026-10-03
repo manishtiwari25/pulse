@@ -36,7 +36,7 @@ const STATUS_CHIPS: [string, string][] = [["active", "active"], ["all", "all"], 
 // pipeline and its counts are visible at a glance and one tap switches.
 function StatusChips({ value, count, onChange }: { value: string; count: (s: string) => number; onChange: (s: string) => void }) {
   return (
-    <div role="group" aria-label="Status" className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border bg-muted/40 p-0.5">
+    <div role="group" aria-label="Status" className="surface-glass inline-flex shrink-0 items-center gap-0.5 rounded-xl border p-0.5">
       {STATUS_CHIPS.map(([v, label]) => {
         const on = value === v;
         return (
@@ -88,7 +88,7 @@ function TasksScreen() {
     "Nothing matches these filters."
   ) : (
     <>
-      No task yet. Click <b>New task</b>, pick the project, write the brief in Markdown - the runner wakes that project&apos;s lead, which plans jobs and answers in the task&apos;s conversation.
+      No task yet. Click <b>New task</b>, pick the project, and tell the agents what you want done.
     </>
   );
   const emptyTitle = all.length ? "Nothing matches these filters." : "No task yet";
@@ -97,7 +97,7 @@ function TasksScreen() {
     <>
       <PageTitle
         icon={ListTodoIcon}
-        sub="What you asked for, across every project. The project's lead plans each task into jobs and talks with you in its conversation."
+        sub="What you asked the agents to do, and how far along it is."
         actions={<NewTaskButton project={project || undefined} onCreated={(t) => setParams({ task: t.id })} />}
         bar={
           <div className="flex w-max items-center gap-2 md:w-auto md:flex-wrap">
@@ -115,7 +115,7 @@ function TasksScreen() {
               </SelectContent>
             </Select>
             <StatusChips value={status} count={by} onChange={(v) => setParams({ status: v === "active" ? null : v })} />
-            <Input aria-label="Filter tasks" placeholder="filter…" value={text} onChange={(e) => setText(e.target.value)} className="h-7 w-32 xl:w-40" />
+            <Input aria-label="Filter tasks" placeholder="Find a task…" value={text} onChange={(e) => setText(e.target.value)} className="h-7 w-32 xl:w-40" />
             <span className="ml-auto flex shrink-0 items-center gap-2">
               <Count>{q.data ? plural(rows.length, "task") : ""}</Count>
               <ViewToggle value={view} onChange={setView} />
@@ -126,13 +126,13 @@ function TasksScreen() {
         Tasks
       </PageTitle>
       <KpiGrid>
-        <Kpi icon={CircleDashedIcon} n={by("open")} label="open" sub="waiting for a lead" tone={by("open") ? "info" : "neutral"} href={link("open")} />
-        <Kpi icon={ListChecksIcon} n={by("planned")} label="planned" sub="jobs written" href={link("planned")} />
-        <Kpi icon={LoaderIcon} n={by("in_progress")} label="in progress" tone={by("in_progress") ? "ok" : "neutral"} sub="jobs running" href={link("in_progress")} />
-        <Kpi icon={EyeIcon} n={by("review")} label="review" tone={by("review") ? "warn" : "neutral"} sub="the lead needs you" href={link("review")} />
+        <Kpi icon={CircleDashedIcon} n={by("open")} label="open" sub="waiting to start" tone={by("open") ? "info" : "neutral"} href={link("open")} />
+        <Kpi icon={ListChecksIcon} n={by("planned")} label="planned" sub="work planned" href={link("planned")} />
+        <Kpi icon={LoaderIcon} n={by("in_progress")} label="in progress" tone={by("in_progress") ? "ok" : "neutral"} sub="agents working" href={link("in_progress")} />
+        <Kpi icon={EyeIcon} n={by("review")} label="review" tone={by("review") ? "warn" : "neutral"} sub="needs your eyes" href={link("review")} />
         <Kpi icon={CheckCircle2Icon} n={by("done")} label="done" href={link("done")} />
         <Kpi icon={BanIcon} n={by("cancelled")} label="cancelled" href={link("cancelled")} />
-        <Kpi icon={BotOffIcon} n={scope.filter((x) => !x.lead && isActive(x)).length} label="no lead yet" sub="runner wakes one" />
+        <Kpi icon={BotOffIcon} n={scope.filter((x) => !x.lead && isActive(x)).length} label="waiting for an agent" sub="starts soon" />
         <Kpi icon={LayersIcon} n={scope.length} label="all time" href={link("all")} />
       </KpiGrid>
       {q.error && !q.data ? (
@@ -141,7 +141,7 @@ function TasksScreen() {
         <SkeletonRows n={8} />
       ) : view === "table" ? (
         rows.length ? (
-          <div className="overflow-hidden rounded-lg border bg-card">
+          <div className="surface-raised overflow-hidden rounded-2xl border">
             <DataTable columns={TASK_COLUMNS(true)} rows={rows} rowKey={(t) => t.id} onRow={(t) => setParams({ task: t.id })} initialSort="updated" caption="Tasks" />
           </div>
         ) : (

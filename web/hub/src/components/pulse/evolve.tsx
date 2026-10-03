@@ -13,7 +13,7 @@ import { evolvePlanningView } from "./evolve-planning";
 import { Notice, Panel } from "./panel";
 import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
-import { andList, fmtDate, num, parseDate, plural, rel } from "@/lib/format";
+import { andList, fmtDate, num, parseDate, plural, rel, sentence } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { useApi, useNow } from "@/lib/use-api";
 import { projectPath, type EvolutionDoc, type EvolveFixture, type EvolveGate, type EvolveGates, type EvolveLevel, type EvolveRecordRef, type OwnerQuestion } from "@/lib/api";
@@ -397,16 +397,19 @@ export function foldSteps(steps: GateStep[]): GateStep[] {
 export function GateCard({ step }: { step: GateStep }) {
   const heldout = step.kind === "heldout";
   const slugs = step.slugs && step.slugs.length > 1 ? step.slugs : [step.slug];
+  const title = (slugs.length > 1 ? "Several projects" : step.slug) + " needs you to " + plainGateStep(step);
   return (
-    <ItemCard highlight ariaLabel={step.title}>
+    <ItemCard highlight ariaLabel={title}>
       <ItemCardHeader right={<LevelBadge level={step.level} />}>
-        <ToneBadge tone="accent">self-improvement</ToneBadge>
-        <ToneBadge tone="warn">{step.label}</ToneBadge>
         {slugs.length > 1 ? <span className="text-xs text-muted-foreground">{plural(slugs.length, "project")}</span> : <ProjectLink slug={step.slug} className="text-xs" />}
       </ItemCardHeader>
-      <ItemCardTitle>{step.title}</ItemCardTitle>
+      <ItemCardTitle>{title}</ItemCardTitle>
       <ItemCardBody clamp={3}>{step.body}</ItemCardBody>
-      {heldout ? <TerminalAlternative command={step.command} /> : <CommandBox command={step.command} />}
+      <CommandBox command={step.command} />
+      <ItemCardMeta>
+        <ToneBadge tone="accent">self-improvement</ToneBadge>
+        <ToneBadge tone="warn">{step.label}</ToneBadge>
+      </ItemCardMeta>
       <ItemCardActions>
         <span className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
           {slugs.map((slug) => (
@@ -421,6 +424,13 @@ export function GateCard({ step }: { step: GateStep }) {
       </ItemCardActions>
     </ItemCard>
   );
+}
+
+function plainGateStep(step: GateStep): string {
+  if (step.kind === "heldout") return "add two private held-out fixtures";
+  if (step.kind === "seed") return "seed starter fixtures";
+  if (step.kind === "records") return "seed the loop records";
+  return "write a constitution";
 }
 
 // ----- the project's panel -----------------------------------------------------
@@ -475,6 +485,7 @@ export function heldoutTitle(h: HeldoutCounts): string {
 // evolution payload carries them) lets the record flags show revision and seed state.
 export function SelfImprovementPanel({ gates, error, fixtures, docs, className, canDecide = true }: { gates: EvolveGates | null | undefined; error?: string; fixtures: EvolveFixture[]; docs?: { constitution: EvolutionDoc | null; evaluators: EvolutionDoc | null }; className?: string; canDecide?: boolean }) {
   const now = useNow();
+  const [details, setDetails] = useState(false);
   // Planning stopped at a question for the owner: the Yes / No belong right here, next to the reason. Only an open question gets the buttons - one already decided clears on the daemon's next tick.
   const questionId = gates?.planning?.question ?? "";
   const questions = useApi<OwnerQuestion[]>(questionId && gates?.project ? projectPath(gates.project, "questions") : null, { refresh: 60000 });
@@ -499,10 +510,21 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className, 
     if (gates?.level === "D") return planning.next;
     return "Nothing waits for you - every gate is open" + (gates?.loop ? " and the loop is on." : "; cycles run once evolve.loop is on in Settings.");
   };
+  const stateLine = gates ? selfImprovementState(gates, planning, step, openQuestion?.summary) : "Self-improvement status is unavailable.";
   return (
     <Panel title="Self-improvement" actions={gates ? <LevelBadge level={gates.level} /> : undefined} className={className}>
       {gates && g ? (
         <div className="grid gap-3">
+          <p className="text-base font-semibold leading-snug anywhere">{stateLine}</p>
+          {openQuestion ? (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-warn/40 bg-warn/5 px-3 py-2 text-sm">
+              <span className="min-w-0 flex-1 anywhere">{sentence(openQuestion.summary)}</span>
+              <DecideButtons id={openQuestion.id} summary={openQuestion.summary} stop={openQuestion.stop} canDecide={canDecide} yesLabel={openQuestion.stop ? "Yes, continue" : "Yes"} noLabel={openQuestion.stop ? "No, keep it stopped" : "No"} />
+            </div>
+          ) : null}
+          <details open={details} onToggle={(e) => setDetails(e.currentTarget.open)} className="grid gap-3">
+            <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground hover:text-foreground" aria-expanded={details}>Show details</summary>
+            <div className="mt-3 grid gap-3">
           <p className="text-[13px] leading-snug anywhere">
             <b>{"Level " + (gates.level || "?")}</b>
             {gates.reason ? <span className="text-muted-foreground">{" · " + gates.reason}</span> : null}
@@ -605,6 +627,8 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className, 
               </>
             )}
           </div>
+            </div>
+          </details>
         </div>
       ) : (
         <Notice tone="warn" className="text-[13px]">
@@ -615,6 +639,16 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className, 
       <FixtureList fixtures={fixtures} className="mt-4" />
     </Panel>
   );
+}
+
+function selfImprovementState(gates: EvolveGates, planning: ReturnType<typeof evolvePlanningView>, step: GateStep | null, question?: string): string {
+  if (question) return "Stopped — waiting for your yes";
+  if (step) return "Needs a step only you can take: " + plainGateStep(step);
+  if (gates.stop) return "Stopped — waiting for your yes";
+  if (planning.label === "Waiting for suggestions") return "Waiting for a voted suggestion";
+  if (planning.label === "Experiment in flight") return "Running — " + num(gates.kept) + " experiments kept, " + num(gates.kept + gates.discarded) + " tried";
+  if (gates.loop) return "Running — " + num(gates.kept) + " experiments kept, " + num(gates.kept + gates.discarded) + " tried";
+  return planning.label + " — " + planning.next;
 }
 
 // ----- the record's provenance (ADR-030) --------------------------------------

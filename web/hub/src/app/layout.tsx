@@ -21,12 +21,13 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning className="h-full antialiased">
+    <html lang="en" suppressHydrationWarning className="h-full scroll-smooth antialiased">
       <head>
         {/* Inter is vendored in public/fonts (OFL) so the export needs no network at build or run time. */}
         <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossOrigin="anonymous" />
       </head>
       <body className="flex min-h-full flex-col bg-background text-foreground">
+        <div className="ambient-bg" aria-hidden="true" />
         <Providers>
           <AppShell>{children}</AppShell>
         </Providers>

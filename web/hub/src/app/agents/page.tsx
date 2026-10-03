@@ -322,7 +322,7 @@ export default function AgentsPage() {
   if (q.error)
     return (
       <>
-        <PageTitle icon={BotIcon}>Agents</PageTitle>
+        <PageTitle icon={BotIcon} sub="Who is working, who is resting, and what each one did.">Agents</PageTitle>
         <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
       </>
     );
@@ -333,7 +333,7 @@ export default function AgentsPage() {
   const cards = [...rows].sort((a, b) => Number(b.active > 0) - Number(a.active > 0));
   const filters = (
     <div className="flex flex-wrap items-center gap-2 py-0.5">
-      <div role="group" aria-label="Roster scope" className="inline-flex shrink-0 rounded-lg border bg-muted/40 p-0.5">
+      <div role="group" aria-label="Roster scope" className="surface-glass inline-flex shrink-0 rounded-xl border p-0.5">
         {(["live", "history", "all"] as const).map((s) => (
           <button
             key={s}
@@ -372,25 +372,25 @@ export default function AgentsPage() {
   );
   return (
     <>
-      <PageTitle icon={BotIcon} sub={"Live shows online agents (a heartbeat within the last " + deadAfterText + ": a command, a hook, a lease or a supervised run) and idle reusable workers/leads. History keeps dead, unknown, legacy and pruned identities; a dead worker's run is closed as lost and its job queued again, a dead session comes back with its next heartbeat."} bar={filters}>
+      <PageTitle icon={BotIcon} sub="Who is working, who is resting, and what each one did." bar={filters}>
         Agents
       </PageTitle>
-      <Lead>One roster for who is live, who has history and how much work the machine can take right now.</Lead>
+      <Lead>Use the filters to see active agents now or older agents from past work.</Lead>
       <KpiGrid>
         <Kpi icon={BotIcon} n={rows.length} label="agents shown" sub={plural(matching.length, "matching agent")} />
         <Kpi icon={WifiIcon} n={rows.filter((g) => g.presence === "online").length} label="online shown" tone={rows.some((g) => g.presence === "online") ? "ok" : "neutral"} sub={"heartbeat within " + deadAfterText} />
-        <Kpi icon={HeartOffIcon} n={rows.filter((g) => g.presence === "dead").length} label="dead shown" tone={rows.some((g) => g.presence === "dead") ? "bad" : "neutral"} sub={"silent for " + deadAfterText + " or more"} />
-        <Kpi icon={CrownIcon} n={rows.filter((g) => isLead(g.agent)).length} label="leads shown" sub="reusable project identities" />
-        <Kpi icon={LayersIcon} n={r ? r.workers.pool : "…"} label="worker pool" sub={r ? num(r.workers.idle) + " idle · " + num(r.workers.busy) + " busy · target " + num(r.workers.target) : "loading"} />
+        <Kpi icon={HeartOffIcon} n={rows.filter((g) => g.presence === "dead").length} label="quiet shown" tone={rows.some((g) => g.presence === "dead") ? "bad" : "neutral"} sub={"no check-in for " + deadAfterText} />
+        <Kpi icon={CrownIcon} n={rows.filter((g) => isLead(g.agent)).length} label="project leads" sub="guide project work" />
+        <Kpi icon={LayersIcon} n={r ? r.workers.pool : "…"} label="agent pool" sub={r ? num(r.workers.idle) + " idle · " + num(r.workers.busy) + " busy · target " + num(r.workers.target) : "loading"} />
         <Kpi icon={LoaderIcon} n={r ? r.jobs.running : "…"} label="jobs running" sub={r ? num(r.jobs.queued) + " queued · " + num(r.jobs.blocked) + " blocked" : ""} />
         <Kpi icon={GaugeIcon} n={r ? r.jobs.runs_today + " / " + (r.jobs.cap || "∞") : "…"} label="runs today" sub="used / cap" />
-        <Kpi icon={CircleDotIcon} n={r ? r.hands.free + " / " + r.hands.slots : "…"} label="free slots" sub={r ? plural(r.hands.executors_active, "executor") + " active" : ""} />
+        <Kpi icon={CircleDotIcon} n={r ? r.hands.free + " / " + r.hands.slots : "…"} label="open places" sub={r ? plural(r.hands.executors_active, "machine") + " active" : ""} />
         <Kpi icon={TriangleAlertIcon} n={rows.reduce((a, g) => a + g.jobs_failed, 0)} label="jobs failed" tone={rows.some((g) => g.jobs_failed) ? "bad" : "neutral"} sub="shown agents" />
       </KpiGrid>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <div className="grid min-w-0 content-start gap-4">
           {!rows.length ? (
-            <EmptyState title="No agents in this view" action={groups.length ? <Button size="sm" variant="outline" onClick={() => { setScope("all"); setStatus("all"); setText(""); }}>Show all agents</Button> : null}>{groups.length ? "Nothing matches this view. History or All keeps older identities available." : <>No agent yet. The first appears when the runner wakes a lead for a task or a worker for a job - or when someone posts with <Mono>pulse post</Mono>.</>}</EmptyState>
+            <EmptyState title="No agents in this view" action={groups.length ? <Button size="sm" variant="outline" onClick={() => { setScope("all"); setStatus("all"); setText(""); }}>Show all agents</Button> : null}>{groups.length ? "Nothing matches this view. Try History or All to see older agents." : <>No agent yet. Agents appear here when work starts or someone posts from the CLI.</>}</EmptyState>
           ) : mode === "cards" ? (
             <CardGrid cols={3}>
               {cards.map((g) => (
@@ -398,7 +398,7 @@ export default function AgentsPage() {
               ))}
             </CardGrid>
           ) : (
-            <div className="min-w-0 overflow-hidden rounded-lg border bg-card">
+            <div className="surface-raised min-w-0 overflow-hidden rounded-2xl border">
               <DataTable columns={COLUMNS} rows={rows} rowKey={(g) => g.agent} initialSort="last" caption="Agent scorecards" />
             </div>
           )}
@@ -420,7 +420,7 @@ export default function AgentsPage() {
         </div>
         <div className="grid gap-4 content-start">
           <AgentMachinePanel r={r} />
-          <Panel title="Executors" icon={HardDriveIcon} dense>
+          <Panel title="Machines ready to work" icon={HardDriveIcon} dense>
             {r?.executors?.length ? (
               <ul className="grid gap-1.5 p-3">
                 {r.executors.map((e) => (
@@ -428,7 +428,7 @@ export default function AgentsPage() {
                 ))}
               </ul>
             ) : (
-              <EmptyState className="m-3">No executor yet - the daemon runs on this machine only.</EmptyState>
+              <EmptyState className="m-3">No extra machine yet — agents are using this machine only.</EmptyState>
             )}
           </Panel>
         </div>

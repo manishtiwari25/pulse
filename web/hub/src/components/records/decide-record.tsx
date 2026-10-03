@@ -13,6 +13,7 @@ import { Mono, ProjectLink, StatusBadge, ToneBadge, When } from "@/components/pu
 import { RecordKindBadge } from "@/components/records/records";
 import { writes, type RecordDecision, type RecordRow } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
+import { sentence } from "@/lib/format";
 
 // The human gates in the console (ADR-028). A Proposed ADR waits for the
 // owner's yes, defer or no; each answer needs their words, which the hub
@@ -179,23 +180,23 @@ export function ProposedRecordCard({ r, onOpen }: { r: RecordRow; onOpen: (r: Re
   return (
     <ItemCard highlight onOpen={() => onOpen(r)} ariaLabel={r.id + " " + r.title}>
       <ItemCardHeader>
-        <RecordKindBadge kind={r.kind} />
-        <Mono className="font-semibold">{r.id}</Mono>
-        <StatusBadge status={r.status} />
-      </ItemCardHeader>
-      <ItemCardTitle chevron>{r.title}</ItemCardTitle>
-      <ItemCardMeta>
         <ProjectLink slug={r.project} />
+      </ItemCardHeader>
+      <ItemCardTitle chevron>{"A decision record waits for your read: " + sentence(r.title)}</ItemCardTitle>
+      <ItemCardBody clamp={2}>Read the decision, then accept it, defer it, or decline it for the agents.</ItemCardBody>
+      <ItemCardMeta>
+        <RecordKindBadge kind={r.kind} />
+        <Mono>{r.id}</Mono>
+        <StatusBadge status={r.status} />
         {r.tier !== null && r.tier !== undefined ? <ToneBadge tone="neutral">{"Tier " + r.tier}</ToneBadge> : null}
         {areas.length ? <span>{areas.join(", ")}</span> : null}
         <When d={r.updated_at || r.date} />
       </ItemCardMeta>
-      <ItemCardBody clamp={1}>Waiting for your yes, defer or no</ItemCardBody>
       <ItemCardActions>
-        <Button variant="ghost" size="xs" className="text-muted-foreground" onClick={() => onOpen(r)} aria-label={"Read " + r.id}>
-          <BookOpenIcon /> Read
+        <Button variant="outline" size="default" onClick={() => onOpen(r)} aria-label={"Read " + r.id}>
+          <BookOpenIcon /> Read it
         </Button>
-        <span className="ml-auto shrink-0">
+        <span className="flex w-full justify-start sm:ml-auto sm:w-auto sm:justify-end">
           <RecordDecisionButtons record={r} />
         </span>
       </ItemCardActions>

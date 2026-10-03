@@ -23,25 +23,24 @@ export function ComputeDecide({ r, size = "sm" }: { r: ComputeRequest; size?: "x
   if (r.status !== "pending") return null;
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
-      <Button size={size} onClick={() => setWhich("approve")} aria-label={"Approve " + r.id}>
+      <Button size={size} className="glossy" onClick={() => setWhich("approve")} aria-label={"Approve " + r.id}>
         <CheckIcon /> Approve
       </Button>
-      <Button size={size} variant="ghost" className="text-bad hover:text-bad" onClick={() => setWhich("deny")} aria-label={"Deny " + r.id}>
+      <Button size={size} variant="outline" onClick={() => setWhich("deny")} aria-label={"Deny " + r.id}>
         <XIcon /> Deny
       </Button>
       <ConfirmDialog
         open={which !== null}
         onOpenChange={(o) => !o && setWhich(null)}
-        title={(which === "approve" ? "Approve " : "Deny ") + r.id + "?"}
+        title={which === "approve" ? "Approve this machine?" : "Deny this machine?"}
         description={
           <span>
-            <Mono>{r.requested_by}</Mono> in <Mono>{r.project}</Mono> asks for <Mono>{r.size}</Mono> for {num(r.hours)} h: {r.reason}
-            {which === "approve" ? " Approving lets the daemon provision the machine within the caps and charges the budget." : " Denying records your reason on the request; the agent sees it on its next loop."}
+            <Mono>{r.requested_by}</Mono> asks for a <Mono>{r.size}</Mono> machine for {num(r.hours)} h. {which === "approve" ? "The daemon may provision it within the caps." : "The agent sees your denial on its next loop."}
           </span>
         }
         action={which === "approve" ? "Approve" : "Deny"}
         destructive={which === "deny"}
-        words={{ label: "Your words (recorded on the request)", placeholder: which === "approve" ? "approved - needed for the load test" : "not now - use the shared executor", required: which === "deny" }}
+        words={{ label: "A note for the agents (optional)", placeholder: which === "approve" ? "Approved - needed for the load test." : "Not now - use the shared executor.", required: which === "deny" }}
         success={r.id + (which === "approve" ? " approved." : " denied.")}
         onConfirm={(w) => (which === "approve" ? writes.approveCompute(r.id, w) : writes.denyCompute(r.id, w))}
         invalidates={CHANGES}
@@ -58,26 +57,20 @@ export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; co
   const decider = r.decided_by === "human" || r.decided_by === "owner" ? "you" : r.decided_by;
   return (
     <ItemCard highlight={pending} ariaLabel={r.id + " " + r.status.replace(/_/g, " ")}>
-      <ItemCardHeader
-        right={
-          <>
-            <Who row={{ agent: r.requested_by }} compact />
-            <When d={r.at} />
-          </>
-        }
-      >
-        <Mono className="font-semibold">{r.id}</Mono>
-        <StatusBadge status={r.status} />
-        <ToneBadge tone="info">compute</ToneBadge>
+      <ItemCardHeader right={<When d={r.at} />}>
         <ProjectLink slug={r.project} className="text-xs" />
       </ItemCardHeader>
       <ItemCardTitle>
-        {r.requested_by + " asks for "}
+        {r.requested_by + " asks for a "}
         <Mono>{r.size}</Mono>
-        {" for " + plural(r.hours, "hour")}
+        {" machine for " + plural(r.hours, "hour")}
       </ItemCardTitle>
       {r.reason ? <ItemCardBody clamp={compact ? 3 : 0}>{r.reason}</ItemCardBody> : null}
       <ItemCardMeta>
+        <ToneBadge tone="info">compute</ToneBadge>
+        <StatusBadge status={r.status} />
+        <Mono>{r.id}</Mono>
+        <Who row={{ agent: r.requested_by }} compact />
         {caps ? (
           <>
             <span className="tnum">{num(caps.vms_now) + " of " + num(caps.max_vms) + " VMs up"}</span>

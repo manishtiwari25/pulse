@@ -77,7 +77,7 @@ export function CredentialRow({ s, canEdit }: { s: Setting; canEdit: boolean }) 
           </div>
         ) : (
           <p className="text-[13px] leading-snug text-muted-foreground anywhere">
-            Not set - the daemon pushes with the git credentials this machine already has{pushOff ? "" : " (and pushes after every landing)"}. Choose a key of its own so a push never needs you.
+            Not set - PULSE pushes with the git credentials this machine already has{pushOff ? "" : " (and pushes after every landing)"}. Choose a separate key so a push never needs you.
           </p>
         )}
       </RowHead>
@@ -182,7 +182,7 @@ function PickerBody({ payload, close }: { payload: CredPayload; close: () => voi
     setReference("");
     setStep({ kind: "provider" });
   };
-  const title = step.kind === "done" ? "Push key saved" : step.kind === "provider" ? "Choose the daemon's push key" : step.kind === "op" ? "1Password" : step.kind === "manual" ? "A reference by hand" : step.provider.title;
+  const title = step.kind === "done" ? "Push key saved" : step.kind === "provider" ? "Choose the push key" : step.kind === "op" ? "1Password" : step.kind === "manual" ? "A reference by hand" : step.provider.title;
 
   return (
     <>
@@ -198,7 +198,7 @@ function PickerBody({ payload, close }: { payload: CredPayload; close: () => voi
         <DialogDescription>
           {step.kind === "done"
             ? "The reference is in the store; the key itself stays where it lives and exists on disk only for the seconds of a push."
-            : "A reference to where the key lives - never the key. Before saving, the hub reads it once and asks every project's remote whether it may push."}
+            : "A reference to where the key lives — never the key itself. Before saving, the console checks every project remote."}
         </DialogDescription>
       </DialogHeader>
       <div className="grid gap-4 px-5 py-4">
@@ -252,7 +252,7 @@ function ProviderStep({ payload, onPick, onManual }: { payload: CredPayload; onP
             disabled={!p.available}
             onClick={() => onPick(p)}
             className={cn(
-              "flex items-start gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors",
+              "surface-glass flex items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition-colors",
               p.available ? "hover:border-primary/50 hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" : "opacity-60",
             )}
           >
@@ -500,9 +500,9 @@ function FieldsStep({ provider, reference, onReference }: { provider: CredProvid
         </p>
       ) : null}
       {provider.generate ? (
-        <div className="grid gap-2 rounded-lg border bg-muted/30 px-3.5 py-3">
+        <div className="surface-glass grid gap-2 rounded-xl border px-3.5 py-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-medium">No key yet? Let PULSE make one for the daemon.</span>
+            <span className="text-sm font-medium">No key yet? Let PULSE make one.</span>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void generate(false)}>
               {busy ? <Loader2Icon className="animate-spin" /> : <KeyRoundIcon />} {generated ? "Show it again" : "Generate a key"}
             </Button>

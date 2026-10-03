@@ -27,7 +27,7 @@ export function Clamp({ children, lines = 1, className }: { children: React.Reac
         {children}
       </p>
       {overflows || open ? (
-        <button type="button" onClick={() => setOpen((v) => !v)} className="mt-0.5 text-xs font-medium text-primary hover:underline" aria-expanded={open}>
+        <button type="button" onClick={() => setOpen((v) => !v)} className="mt-1 rounded-full px-1.5 text-xs font-medium text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-expanded={open}>
           {open ? "less" : "more"}
         </button>
       ) : null}
