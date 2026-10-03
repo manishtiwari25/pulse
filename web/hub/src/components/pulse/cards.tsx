@@ -31,11 +31,13 @@ function ProjectAvatar({ slug }: { slug: string }) {
 
 // `gate` overrides what the org row says about the self-improvement gates
 // (the hub page merges in the registry row); undefined reads the row itself.
-export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: number[]; gate?: EvolveGate | null }) {
+// `forYou` is the project's share of the one inbox count (useInbox); without
+// it the card falls back to what the org row alone can tell.
+export function ProjectCard({ p, spark, gate, forYou: forYouCount }: { p: ProjectCardData; spark?: number[]; gate?: EvolveGate | null; forYou?: number }) {
   const g = gate === undefined ? evolveGate(p) : gate;
   const step = gateStep(p.slug, g);
-  const forYou = p.proposals_awaiting + (p.owner_questions ?? 0);
-  const attention = forYou + (step ? 1 : 0);
+  const forYou = forYouCount ?? p.proposals_awaiting + (p.owner_questions ?? 0) + (step ? 1 : 0);
+  const attention = forYou;
   const last = p.last_post?.date || p.built_at;
   const status = projectStatus(p, step, forYou);
   const footerFacts = [plural(p.agents, "agent"), plural(p.threads_open, "open thread"), last ? "last post " + rel(last) : "no activity yet"];

@@ -3,31 +3,30 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ActivityIcon, ArrowUpRightIcon, BotIcon, ChevronDownIcon, ChevronRightIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon, ExternalLinkIcon } from "lucide-react";
+import { ActivityIcon, ArrowUpRightIcon, BotIcon, ChevronDownIcon, ChevronRightIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
 import { HomeHero } from "@/components/home/hero";
 import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, QuestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
-import { ComputeDecide } from "@/components/compute/compute";
-import { daemonControlState } from "@/components/pulse/daemon-control-state";
+import { ComputeInboxCard } from "@/components/compute/compute";
 import { DaemonControls } from "@/components/pulse/daemon-controls";
-import { GateCard, foldSteps, gateStep, type GateStep } from "@/components/pulse/evolve";
-import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
+import { GateCard } from "@/components/pulse/evolve";
+import { inboxBreakdown, useInbox } from "@/components/pulse/inbox";
+import { CardGrid, ItemCard, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { FailedJobsSection } from "@/components/pulse/job-repair-section";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, PageTitle, Panel, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
-import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
+import { Mono, ProjectLink, ToneBadge } from "@/components/pulse/who";
 import { AddProjectButton } from "@/components/project/project-dialogs";
-import { awaitsDecision, ProposedRecordCard } from "@/components/records/decide-record";
-import { DraftCard, draftState, type DraftState } from "@/components/records/draft-panel";
+import { ProposedRecordCard } from "@/components/records/decide-record";
+import { DraftCard } from "@/components/records/draft-panel";
 import { RecordSheet } from "@/components/records/records";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num, plural } from "@/lib/format";
-import { evolveGate, registeredProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type OwnerQuestion, type ProjectCardData, type ProjectsPayload, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type SettingsPayload, type TasksPayload, type Timeline } from "@/lib/api";
-import { sortOwnerQuestions } from "@/lib/owner-questions";
+import { registeredProjects, type Compute, type Org, type RecordRow, type Runner, type ServicePayload, type SettingsPayload, type TasksPayload, type Timeline } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 export default function HubPage() {
@@ -36,16 +35,13 @@ export default function HubPage() {
   const tl = useApi<Timeline>("timeline", { refresh: 60000 });
   const runner = useApi<Runner>("runner");
   const tasks = useApi<TasksPayload>("tasks");
-  const compute = useApi<Compute>("compute", { refresh: 30000 });
-  // Proposed ADRs across every project: the decisions that wait for the owner (ADR-028).
-  const proposed = useApi<RecordsPayload>("records?kind=adr&status=Proposed", { refresh: 60000 });
-  // The registry rows carry the self-improvement gates when the org rows do not (ADR-029).
-  const reg = useApi<ProjectsPayload>("projects", { refresh: 60000 });
+  const compute = useApi<Compute>("compute");
   // Whether this machine keeps PULSE alive yet (ADR-038): the one step a shared copy asks for.
   const service = useApi<ServicePayload>("service", { refresh: 60000 });
   const settings = useApi<SettingsPayload>("settings");
+  // Everything that waits for the owner's yes or no - the same count the sidebar and the project pages show.
+  const forYou = useInbox();
   const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
-  // Boards can hold many old owner questions; the inbox shows the first few and unfolds on request.
   const [allQuestions, setAllQuestions] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -79,33 +75,13 @@ export default function HubPage() {
   // The commons is not a project: it gets its own card below the grid.
   const projects = registeredProjects(o);
   const commons = o.commons;
-  const awaiting = o.proposals.filter((p) => p.status === "awaiting");
-  // Questions addressed to the owner and the evolution loop's stop questions (stops first, stale threads last); absent on an older hub.
-  const questions: OwnerQuestion[] = sortOwnerQuestions(o.questions ?? []);
+  const { decisions: adrs, proposals: awaiting, questions, compute: pendingCompute, drafts, steps, machine: machineStep, total: inbox, daemon, checking, down, downWhy, gateOf } = forYou;
+  // Boards can hold many old owner questions; the inbox shows the first few and unfolds on request.
   const QUESTIONS_SHOWN = 6;
   const shownQuestions = allQuestions ? questions : questions.slice(0, QUESTIONS_SHOWN);
   const openTasks = (tasks.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled");
   const working = workingRows(o.active_claims, openTasks);
   const recent = [...openTasks].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, 6);
-  const pendingCompute = (compute.data?.requests ?? []).filter((r) => r.status === "pending");
-  const adrs = (proposed.data?.records ?? []).filter(awaitsDecision);
-  // The gate a project waits at (records, fixtures, the owner's held-out fixtures) is a human step too - it sits in the inbox with a command to copy (ADR-029). The baseline is the daemon's (ADR-031) and never a card.
-  const gateOf = (p: ProjectCardData) => evolveGate(p, (reg.data?.projects ?? []).find((r) => r.slug === p.slug));
-  const steps = foldSteps(projects.map((p) => gateStep(p.slug, gateOf(p))).filter((s): s is GateStep => s !== null));
-  // ADR-046: a constitution or evaluators an agent drafted waits for the owner's read and yes or no - a card with the buttons on it.
-  const drafts = projects.flatMap((p) => {
-    const g = gateOf(p);
-    return [draftState(g?.constitution), draftState(g?.evaluators)].filter((r): r is DraftState => !!r?.draft).map((r) => ({ slug: p.slug, r }));
-  });
-  const daemon = daemonControlState({ runner, service, settings });
-  const decisions = adrs.length + awaiting.length + questions.length + pendingCompute.length + drafts.length;
-  const machineSteps = daemon.pause === "on" || daemon.setup ? 1 : 0;
-  const inbox = decisions + steps.length + machineSteps;
-  const computeDown = !!compute.error && !compute.data;
-  const decisionsDown = !!proposed.error && !proposed.data;
-  const down = [decisionsDown ? "decisions could not be loaded" : "", computeDown ? "compute requests could not be loaded" : ""].filter(Boolean);
-  const downWhy = [decisionsDown ? "decisions could not be loaded (" + proposed.error + ")" : "", computeDown ? "compute requests could not be loaded (" + compute.error + ")" : ""].filter(Boolean);
-  const checking = [!proposed.data && !decisionsDown ? "decisions" : "", !compute.data && !computeDown ? "compute requests" : ""].filter(Boolean);
   const attention = projects.filter((p) => p.error || p.missing || p.stop_present || !p.board_present);
   const r = runner.data;
   const sparkFor = (slug: string): number[] | undefined => {
@@ -161,7 +137,7 @@ export default function HubPage() {
             {drafts.map(({ slug, r }) => (
               <DraftCard key={slug + "/" + r.id} slug={slug} r={r} />
             ))}
-            {machineSteps ? (
+            {machineStep ? (
               <ItemCard href="#daemon-controls" highlight ariaLabel="Review daemon controls">
                 <ItemCardHeader><ToneBadge tone={daemon.tone}>{daemon.label}</ToneBadge><ToneBadge tone="neutral">this machine</ToneBadge></ItemCardHeader>
                 <ItemCardTitle chevron>{daemon.pause === "on" ? "Resume daemon" : daemon.setup === "start" ? "Start daemon" : "Keep PULSE running"}</ItemCardTitle>
@@ -190,7 +166,7 @@ export default function HubPage() {
         {projects.length ? (
           <CardGrid cols={2}>
             {projects.map((p) => (
-              <ProjectCard key={p.slug} p={p} spark={sparkFor(p.slug)} gate={gateOf(p)} />
+              <ProjectCard key={p.slug} p={p} spark={sparkFor(p.slug)} gate={gateOf(p)} forYou={forYou.forProject(p.slug).total} />
             ))}
           </CardGrid>
         ) : (
@@ -266,7 +242,7 @@ export default function HubPage() {
               <section aria-label="Full status">
                 <SectionHeading>At a glance</SectionHeading>
                 <KpiGrid className="mb-0">
-                  <Kpi icon={InboxIcon} n={inbox} label="For you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", questions.length ? plural(questions.length, "question") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length + machineSteps ? plural(steps.length + machineSteps, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
+                  <Kpi icon={InboxIcon} n={inbox} label="For you" sub={inboxBreakdown(forYou)} tone={inbox ? "ok" : "neutral"} href="#for-you" />
                   <Kpi icon={ListTodoIcon} n={openTasks.length} label="Open tasks" sub={tasks.data ? `${num(openTasks.filter((t) => t.status === "in_progress").length)} in progress` : "loading"} href={hrefs.tasks()} />
                   <Kpi icon={CpuIcon} n={pendingCompute.length} label="Compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
                   <Kpi icon={BotIcon} n={o.totals.agents_active} label="Agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />
@@ -308,51 +284,5 @@ export default function HubPage() {
       {/* Read on an inbox card opens the record here; its header carries the same three answers. */}
       <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />
     </>
-  );
-}
-
-// One pending compute request as an inbox card: who asks for what, for how
-// long and why, with Approve / Deny in reach (ComputeDecide confirms each).
-function ComputeInboxCard({ r, caps }: { r: ComputeRequest; caps?: ComputeCaps }) {
-  return (
-    <ItemCard highlight ariaLabel={"Compute request " + r.id}>
-      <ItemCardHeader
-        right={
-          <>
-            <Who row={{ agent: r.requested_by }} compact />
-            <When d={r.at} />
-          </>
-        }
-      >
-        <Mono className="font-semibold">{r.id}</Mono>
-        <StatusBadge status={r.status} />
-        <ToneBadge tone="info">compute</ToneBadge>
-        <ProjectLink slug={r.project} className="text-xs" />
-      </ItemCardHeader>
-      <ItemCardTitle>
-        {r.requested_by + " asks for "}
-        <Mono>{r.size}</Mono>
-        {" for " + plural(r.hours, "hour")}
-      </ItemCardTitle>
-      <ItemCardBody clamp={3}>{r.reason}</ItemCardBody>
-      {caps ? (
-        <ItemCardMeta>
-          <span className="tnum">{num(caps.vms_now) + " of " + num(caps.max_vms) + " VMs up"}</span>
-          <span className="tnum">{num(caps.hours_today) + " of " + num(caps.max_hours_per_day) + " h today"}</span>
-          <span className="tnum">{"budget " + num(caps.budget_credits) + " credits"}</span>
-          {caps.provider ? <Mono>{caps.provider}</Mono> : null}
-        </ItemCardMeta>
-      ) : null}
-      <ItemCardActions>
-        <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
-          <Link href={hrefs.compute()}>
-            all requests <ExternalLinkIcon />
-          </Link>
-        </Button>
-        <span className="flex w-full justify-start sm:ml-auto sm:w-auto sm:justify-end">
-          <ComputeDecide r={r} />
-        </span>
-      </ItemCardActions>
-    </ItemCard>
   );
 }

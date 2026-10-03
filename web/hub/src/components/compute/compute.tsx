@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { CheckIcon, XIcon } from "lucide-react";
+import { CheckIcon, ExternalLinkIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { ConfirmDialog } from "@/components/pulse/confirm";
@@ -134,5 +134,51 @@ function CapMeter({ label, value, max, percent }: { label: string; value: number
       </div>
       <Progress value={percent} aria-label={label + " cap"} />
     </div>
+  );
+}
+
+// One pending compute request as an inbox card: who asks for what, for how
+// long and why, with Approve / Deny in reach (ComputeDecide confirms each).
+export function ComputeInboxCard({ r, caps }: { r: ComputeRequest; caps?: ComputeCaps }) {
+  return (
+    <ItemCard highlight ariaLabel={"Compute request " + r.id}>
+      <ItemCardHeader
+        right={
+          <>
+            <Who row={{ agent: r.requested_by }} compact />
+            <When d={r.at} />
+          </>
+        }
+      >
+        <Mono className="font-semibold">{r.id}</Mono>
+        <StatusBadge status={r.status} />
+        <ToneBadge tone="info">compute</ToneBadge>
+        <ProjectLink slug={r.project} className="text-xs" />
+      </ItemCardHeader>
+      <ItemCardTitle>
+        {r.requested_by + " asks for "}
+        <Mono>{r.size}</Mono>
+        {" for " + plural(r.hours, "hour")}
+      </ItemCardTitle>
+      <ItemCardBody clamp={3}>{r.reason}</ItemCardBody>
+      {caps ? (
+        <ItemCardMeta>
+          <span className="tnum">{num(caps.vms_now) + " of " + num(caps.max_vms) + " VMs up"}</span>
+          <span className="tnum">{num(caps.hours_today) + " of " + num(caps.max_hours_per_day) + " h today"}</span>
+          <span className="tnum">{"budget " + num(caps.budget_credits) + " credits"}</span>
+          {caps.provider ? <Mono>{caps.provider}</Mono> : null}
+        </ItemCardMeta>
+      ) : null}
+      <ItemCardActions>
+        <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
+          <Link href={hrefs.compute()}>
+            all requests <ExternalLinkIcon />
+          </Link>
+        </Button>
+        <span className="flex w-full justify-start sm:ml-auto sm:w-auto sm:justify-end">
+          <ComputeDecide r={r} />
+        </span>
+      </ItemCardActions>
+    </ItemCard>
   );
 }

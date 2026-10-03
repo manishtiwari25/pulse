@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ActivityIcon, BellIcon, BotIcon, CheckCircle2Icon, FileDiffIcon, FolderIcon, GitBranchIcon, InboxIcon, ListTodoIcon, MessageSquareIcon, MessagesSquareIcon, RadioIcon, ServerIcon, SettingsIcon, VoteIcon } from "lucide-react";
+import { ActivityIcon, BellIcon, BotIcon, CheckCircle2Icon, FileDiffIcon, FolderIcon, InboxIcon, ListTodoIcon, MessageSquareIcon, MessagesSquareIcon, RadioIcon, ServerIcon, SettingsIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -11,8 +11,11 @@ import { ActivityChart } from "@/components/pulse/charts";
 import { AmendmentCard, FeedList, ProposalCard, QuestionCard, SuggestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { HygienePanel } from "@/components/pulse/hygiene";
 import { DataTable } from "@/components/pulse/data-table";
-import { DocRev, SelfImprovementPanel } from "@/components/pulse/evolve";
-import { RecordDraftPanel } from "@/components/records/draft-panel";
+import { DocRev, GateCard, SelfImprovementPanel } from "@/components/pulse/evolve";
+import { inboxBreakdown, useInbox } from "@/components/pulse/inbox";
+import { ComputeInboxCard } from "@/components/compute/compute";
+import { ProposedRecordCard } from "@/components/records/decide-record";
+import { DraftCard, RecordDraftPanel } from "@/components/records/draft-panel";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { FailedJobsSection } from "@/components/pulse/job-repair-section";
 import { Markdown } from "@/components/pulse/markdown";
@@ -29,37 +32,13 @@ import { kindLabel, RECORD_COLUMNS, RecordCards, RecordSheet } from "@/component
 import { hrefs } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { num, plural, statusTone, type Tone } from "@/lib/format";
-import { isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectInfo, type Proposal, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
+import { isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Compute, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectInfo, type Proposal, type RecordRow, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
 
 function Wait<T>({ q, rows = 5, children }: { q: Loaded<T>; rows?: number; children: (d: T) => React.ReactNode }) {
   if (q.error && !q.data) return <ErrorNotice error={q.error} onRetry={() => void q.reload()} />;
   if (q.data === undefined) return <SkeletonRows n={rows} />;
   return <>{children(q.data)}</>;
-}
-
-function ProjectBranchLine({ info }: { info?: ProjectInfo }) {
-  if (!info) return null;
-  return (
-    <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[12.5px]">
-      <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 shadow-card">
-        <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <Mono className="font-semibold">{info.branch || "—"}</Mono>
-      </span>
-      {info.head ? (
-        <span className="inline-flex items-center rounded-full border bg-muted/40 px-2.5 py-1">
-          <Mono className="text-muted-foreground">{info.head.slice(0, 7)}</Mono>
-        </span>
-      ) : null}
-      {info.dirty === "1" ? <ToneBadge tone="warn">dirty</ToneBadge> : null}
-      {info.repo ? (
-        <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 shadow-card sm:max-w-[34rem]" title={info.repo}>
-          <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          <Mono className="truncate text-muted-foreground">{info.repo}</Mono>
-        </span>
-      ) : null}
-    </div>
-  );
 }
 
 // A one-of filter as a row of chips: every choice is visible and one tap
@@ -91,26 +70,27 @@ export function OverviewTab({ slug }: { slug: string }) {
   const info = useApi<ProjectInfo>(projectPath(slug, "project"), { refresh: 60000 });
   const tasks = useApi<TasksPayload>("tasks?project=" + encodeURIComponent(slug));
   const tl = useApi<Timeline>(projectPath(slug, "timeline"), { refresh: 60000 });
+  const inbox = useInbox();
   return (
     <Wait q={ov} rows={8}>
       {(o) => {
         const open = (tasks.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled");
         const i = info.data;
         const bp = i?.board_params;
+        // The same number the hero and the sidebar show, with the breakdown as its sub line.
+        const mine = inbox.forProject(slug);
+        const inVote = o.suggestions_needing_votes + o.amendments_open;
+        const inVoteSub = [o.suggestions_needing_votes ? plural(o.suggestions_needing_votes, "suggestion") : "", o.amendments_open ? plural(o.amendments_open, "amendment") : ""].filter(Boolean).join(" · ") || "nothing to vote on";
         return (
           <div className="grid gap-4">
-            <ProjectBranchLine info={i} />
             <FailedJobsSection key={"repairs-" + slug} project={slug} />
-            <KpiGrid>
-              <Kpi icon={InboxIcon} n={o.proposals_awaiting} label="for you" sub="proposals waiting" tone={o.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "for-you")} />
-              <Kpi icon={ListTodoIcon} n={open.length} label="open tasks" sub={tasks.data ? plural(open.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.project(slug, "work")} />
-              <Kpi icon={ActivityIcon} n={o.claims_active} label="working now" sub="active claims" tone={o.claims_active ? "ok" : "neutral"} />
-              <Kpi icon={MessagesSquareIcon} n={o.threads_open} label="open threads" sub={num(o.threads_stale) + " stale"} tone={o.threads_stale ? "warn" : "neutral"} href={hrefs.project(slug, "board", { sub: "threads" })} />
-              <Kpi icon={CheckCircle2Icon} n={o.suggestions_eligible} label="eligible" sub={o.suggestions_plannable === undefined ? "suggestions past quorum" : num(o.suggestions_plannable) + " plannable"} tone={o.suggestions_eligible ? "accent" : "neutral"} href={hrefs.project(slug, "board", { sub: "suggestions" })} />
-              <Kpi icon={VoteIcon} n={o.suggestions_needing_votes} label="need votes" sub={"quorum " + num(o.quorum)} tone={o.suggestions_needing_votes ? "warn" : "neutral"} href={hrefs.project(slug, "board", { sub: "suggestions" })} />
-              <Kpi icon={FileDiffIcon} n={o.amendments_open} label="amendments" sub={num(o.amendments_passed) + " passed"} href={hrefs.project(slug, "board", { sub: "amendments" })} />
+            <KpiGrid className="md:grid-cols-3">
+              <Kpi icon={InboxIcon} n={mine.total} label="For you" sub={inbox.ready ? inboxBreakdown(mine) : "checking"} tone={mine.total ? "ok" : "neutral"} href={hrefs.project(slug, "for-you")} />
+              <Kpi icon={ListTodoIcon} n={open.length} label="Open tasks" sub={tasks.data ? plural(open.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.project(slug, "work")} />
+              <Kpi icon={ActivityIcon} n={o.claims_active} label="Working now" sub={o.claims_active ? "agents on a thread" : "nobody right now"} tone={o.claims_active ? "ok" : "neutral"} />
+              <Kpi icon={MessagesSquareIcon} n={o.threads_open} label="Open threads" sub={o.threads_stale ? num(o.threads_stale) + " gone quiet" : "all moving"} tone={o.threads_stale ? "warn" : "neutral"} href={hrefs.project(slug, "board", { sub: "threads" })} />
+              <Kpi icon={VoteIcon} n={inVote} label="In vote" sub={inVoteSub} tone={inVote ? "warn" : "neutral"} href={hrefs.project(slug, "board", { sub: o.amendments_open && !o.suggestions_needing_votes ? "amendments" : "suggestions" })} />
               <CodeDeliveredKpi project={slug} />
-              <Kpi icon={MessageSquareIcon} n={o.posts} label="posts" sub={num(o.posts_without_provenance) + " without provenance"} tone={o.posts_without_provenance ? "warn" : "neutral"} />
             </KpiGrid>
             {!o.board_present ? (
               <Notice tone="warn">
@@ -376,17 +356,28 @@ export function ThreadsTab({ slug, onOpen, activeKey }: { slug: string; onOpen: 
 
 // ----- proposals ------------------------------------------------------------
 
+// The project's inbox: every card the "N for you" count counts - proposed
+// decisions, proposals, questions, compute requests, drafts and the gate
+// step - each with its yes or no on it. "All" adds the proposals already
+// decided, for the record.
 export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boolean }) {
   const q = useApi<Proposal[]>(projectPath(slug, "proposals"));
   // Questions addressed to the owner and the evolution loop's stop questions wait for a yes or no like a proposal does; an older hub has no such route.
   const qs = useApi<OwnerQuestion[]>(projectPath(slug, "questions"), { refresh: 60000 });
-  const questions = qs.data ?? [];
+  const compute = useApi<Compute>("compute");
+  const inbox = useInbox();
   const [show, setShow] = useState<"awaiting" | "all">("awaiting");
+  const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
   return (
     <Wait q={q}>
       {(all) => {
-        const rows = show === "awaiting" ? all.filter((p) => p.status === "awaiting") : all;
-        const awaiting = all.filter((p) => p.status === "awaiting").length + questions.length;
+        const mine = inbox.forProject(slug);
+        // The project's own routes are the source for proposals and questions; the shared inbox adds the rest.
+        const questions = qs.data ?? mine.questions;
+        const awaiting = all.filter((p) => p.status === "awaiting");
+        const decided = all.filter((p) => p.status !== "awaiting");
+        const waiting = mine.decisions.length + awaiting.length + questions.length + mine.compute.length + mine.drafts.length + mine.steps.length;
+        const rows = show === "awaiting" ? awaiting : all;
         return (
           <div>
             <Toolbar>
@@ -395,24 +386,37 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
                 value={show}
                 onChange={(v) => setShow(v === "all" ? "all" : "awaiting")}
                 options={[
-                  { id: "awaiting", label: "awaiting you", n: awaiting },
-                  { id: "all", label: "all", n: all.length + questions.length },
+                  { id: "awaiting", label: "waiting for you", n: waiting },
+                  { id: "all", label: "all", n: waiting + decided.length },
                 ]}
               />
               {!canDecide ? <ToneBadge tone="warn">deciding is off on this hub</ToneBadge> : null}
             </Toolbar>
-            {rows.length || questions.length ? (
+            {waiting || rows.length ? (
               <div className="grid gap-3 lg:grid-cols-2">
+                {mine.decisions.map((r) => (
+                  <ProposedRecordCard key={r.id} r={r} onOpen={setOpenRecord} />
+                ))}
                 {rows.map((p) => (
                   <ProposalCard key={p.id} r={p} slug={slug} canDecide={canDecide} />
                 ))}
                 {questions.map((x) => (
                   <QuestionCard key={x.id} q={x} slug={slug} canDecide={canDecide} />
                 ))}
+                {mine.compute.map((cr) => (
+                  <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
+                ))}
+                {mine.drafts.map(({ r }) => (
+                  <DraftCard key={r.id} slug={slug} r={r} />
+                ))}
+                {mine.steps.map((st) => (
+                  <GateCard key={st.kind} step={st} />
+                ))}
               </div>
             ) : (
-              <EmptyState title={show === "awaiting" ? "Nothing waits for you" : "No proposals"}>{show === "awaiting" ? "No proposal waits for you here. Agents post one when they need your yes." : "No proposal has been raised on this board yet. Agents post one when they need a human decision."}</EmptyState>
+              <EmptyState title={show === "awaiting" ? "Nothing waits for you" : "No proposals"}>{show === "awaiting" ? "Nothing here needs your yes or no right now. Agents post a card when they do." : "No proposal has been raised on this board yet. Agents post one when they need a human decision."}</EmptyState>
             )}
+            <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />
           </div>
         );
       }}

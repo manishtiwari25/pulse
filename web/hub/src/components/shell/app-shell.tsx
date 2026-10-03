@@ -11,8 +11,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { hrefs } from "@/lib/nav";
 import { useApi, useEventStream } from "@/lib/use-api";
-import { COMMONS_HINT, evolveGate, type Org, type ProjectCardData, type ProjectsPayload, type RecordsPayload } from "@/lib/api";
-import { gateStep } from "@/components/pulse/evolve";
+import { COMMONS_HINT, type Org } from "@/lib/api";
+import { useInbox } from "@/components/pulse/inbox";
 import { CommandPalette } from "./command-palette";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -46,12 +46,6 @@ function ProjectAvatar({ slug }: { slug: string }) {
   return <span aria-hidden="true" className="inline-flex size-6 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-xs font-semibold text-primary">{initial}</span>;
 }
 
-function ownerQuestionCount(rows: ProjectCardData[], org?: Org | null) {
-  const rowQuestions = rows.reduce((sum, p) => sum + (p.owner_questions ?? 0), 0);
-  const rowsCarryQuestions = rows.some((p) => p.owner_questions !== undefined);
-  return rowsCarryQuestions ? rowQuestions : (org?.totals.owner_questions ?? 0);
-}
-
 function LiveDot() {
   const { state } = useEventStream();
   const live = state === "live";
@@ -73,29 +67,22 @@ function HeaderCrumb() {
   const pathname = usePathname();
   const params = useSearchParams();
   const slug = pathname.startsWith("/project") ? params.get("slug") || "" : "";
-  const { data } = useApi<Org>(slug ? "org" : null, { refresh: 30000 });
+  const { data } = useApi<Org>(slug ? "org" : null);
   const currentPage = NAV.find((n) => n.match(pathname))?.label ?? (slug ? `Project · ${slug === data?.commons?.slug ? "Commons" : slug}` : "Workspace");
   return <p className="hidden min-w-0 shrink-0 truncate text-sm font-semibold tracking-tight text-foreground lg:block">{currentPage}</p>;
 }
 
+// The same count as the home hero, from the same hook (useInbox), so the tile never says 5 while the hero says 8.
 function NeedsYouTile() {
-  const { data } = useApi<Org>("org", { refresh: 30000 });
-  const proposed = useApi<RecordsPayload>("records?kind=adr&status=Proposed", { refresh: 60000 });
-  const reg = useApi<ProjectsPayload>("projects", { refresh: 60000 });
-  const decisions = new Map<string, number>();
-  for (const r of proposed.data?.records ?? []) if (r.kind === "adr" && r.status === "Proposed") decisions.set(r.project, (decisions.get(r.project) || 0) + 1);
-  const rows = [...(data?.projects ?? []), ...(data?.commons ? [data.commons] : [])];
-  const proposals = rows.length ? rows.reduce((sum, p) => sum + p.proposals_awaiting, 0) : (data?.totals.proposals_awaiting ?? 0);
-  const gateSteps = rows.reduce((sum, p) => sum + (gateStep(p.slug, evolveGate(p, reg.data?.projects?.find((r) => r.slug === p.slug))) ? 1 : 0), 0);
-  const count = proposals + ownerQuestionCount(rows, data) + [...decisions.values()].reduce((sum, n) => sum + n, 0) + gateSteps;
+  const { total, ready } = useInbox();
   return (
     <Link href="/#for-you" className={cn("surface-raised lift block rounded-2xl border p-4 outline-none", focusRing)}>
       <p className="flex items-center justify-between gap-3 text-xs font-semibold text-muted-foreground">
         <span>Needs you</span>
-        <Badge className="tnum">{count || "0"}</Badge>
+        <Badge className="tnum">{ready ? total : "…"}</Badge>
       </p>
-      <p className="mt-2 text-sm font-semibold tracking-tight">{count ? `${count} item${count === 1 ? "" : "s"} waiting` : "All clear"}</p>
-      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Owner decisions, questions and gates in one place.</p>
+      <p className="mt-2 text-sm font-semibold tracking-tight">{!ready ? "Checking…" : total ? `${total} thing${total === 1 ? "" : "s"} waiting` : "All clear"}</p>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Your yes or no, all in one place.</p>
     </Link>
   );
 }
@@ -104,11 +91,8 @@ function ProjectSwitcher() {
   const params = useSearchParams();
   const pathname = usePathname();
   const current = pathname.startsWith("/project") ? params.get("slug") || "" : "";
-  const { data, error, loading } = useApi<Org>("org", { refresh: 30000 });
-  const proposed = useApi<RecordsPayload>("records?kind=adr&status=Proposed", { refresh: 60000 });
-  const reg = useApi<ProjectsPayload>("projects", { refresh: 60000 });
-  const decisions = new Map<string, number>();
-  for (const r of proposed.data?.records ?? []) if (r.kind === "adr" && r.status === "Proposed") decisions.set(r.project, (decisions.get(r.project) || 0) + 1);
+  const { data, error, loading } = useApi<Org>("org");
+  const inbox = useInbox();
   const projects = data?.projects ?? [];
   const commons = data?.commons;
   const currentLabel = current && current === commons?.slug ? "Commons" : current || "All projects";
@@ -127,8 +111,7 @@ function ProjectSwitcher() {
         {loading ? <div role="status" className="px-3 py-2 text-xs text-muted-foreground">Loading projects...</div> : null}
         {!loading && !error && projects.length === 0 ? <div className="px-3 py-2 text-xs text-muted-foreground">No project is registered yet: run pulse init in a checkout.</div> : null}
         {projects.map((p) => {
-          const step = gateStep(p.slug, evolveGate(p, reg.data?.projects?.find((r) => r.slug === p.slug)));
-          const forYou = p.proposals_awaiting + (p.owner_questions ?? 0) + (decisions.get(p.slug) || 0) + (step ? 1 : 0);
+          const forYou = inbox.forProject(p.slug).total;
           return (
             <DropdownMenuItem key={p.slug} asChild className={cn("min-h-11 rounded-xl px-3 py-2", current === p.slug && "bg-primary/10 text-primary")}>
               <Link href={hrefs.project(p.slug)} aria-current={current === p.slug ? "true" : undefined} className="flex items-center justify-between gap-2">

@@ -17,6 +17,7 @@ import { AmendmentsTab, ChatTab, EnvTab, EvolutionTab, NoticesTab, OverviewTab, 
 import { hrefs, PROJECT_TABS, resolveProjectTab, type ProjectCanonicalTab } from "@/lib/nav";
 import { allProjects, projectPath, registeredProjects, type Org, type ProjectCardData, type ProjectGoalPayload, type ProjectsPayload, type RegisteredProject, type TasksPayload } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { useInbox } from "@/components/pulse/inbox";
 import { hashHue, initials, num, plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { ActivityIcon, BookOpenIcon, ClockIcon, InboxIcon, ListTodoIcon, MessagesSquareIcon, SparklesIcon } from "lucide-react";
@@ -66,6 +67,8 @@ function ProjectScreen() {
   const taskSummary = useApi<TasksPayload>(slug ? "tasks?project=" + encodeURIComponent(slug) : null, { refresh: 30000 });
   // The registry (inactive rows included) only matters on the picker.
   const reg = useApi<ProjectsPayload>(!slug ? "projects" : null, { refresh: false });
+  // The one "for you" count, shared with the home page and the sidebar.
+  const inbox = useInbox();
 
   const setParams = useCallback(
     (patch: Record<string, string | null | undefined>) => {
@@ -120,7 +123,7 @@ function ProjectScreen() {
             {projects.length ? (
               <CardGrid cols={3}>
                 {projects.map((p) => (
-                  <ProjectPick key={p.slug} p={p} />
+                  <ProjectPick key={p.slug} p={p} forYou={inbox.forProject(p.slug).total} />
                 ))}
               </CardGrid>
             ) : (
@@ -155,7 +158,7 @@ function ProjectScreen() {
   const card = allProjects(org.data).find((p) => p.slug === slug);
   const isCommons = card?.kind === "commons";
   const canDecide = org.data?.can_decide ?? true;
-  const forYou = card ? card.proposals_awaiting + (card.owner_questions ?? 0) : 0;
+  const forYou = card ? inbox.forProject(card.slug).total : 0;
   const loopLabel = card ? (card.stop_present ? "Loop stopped" : card.loop === "1" ? "Loop running" : "Loop waiting") : "";
   const goalLine = isCommons ? "The shared board across all projects." : card?.brain ? "The PULSE framework itself." : goal.data?.goal?.text || (card?.name && card.name !== card.slug ? card.name : "Agents work toward the goal you set for this project.");
   const openTasks = (taskSummary.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled").length;
@@ -334,8 +337,7 @@ function InactivePick({ p, onRestored }: { p: RegisteredProject; onRestored: (sl
 }
 
 // One registered checkout on the picker: what it is, what waits in it.
-function ProjectPick({ p }: { p: ProjectCardData }) {
-  const forYou = p.proposals_awaiting + (p.owner_questions ?? 0);
+function ProjectPick({ p, forYou }: { p: ProjectCardData; forYou: number }) {
   const attention = forYou > 0;
   return (
     <ItemCard href={hrefs.project(p.slug)} highlight={attention} ariaLabel={p.slug}>
