@@ -255,7 +255,15 @@ impl Handler {
             "proposals" => json!(d.proposals),
             "questions" => json!(d.questions),
             "notices" => json!(d.notices()),
-            "timeline" => json!(timeline(&d.posts, str_map(&d.params, "now"))),
+            "timeline" => {
+                let now = str_map(&d.params, "now");
+                if r.query("provenance") == "missing" {
+                    let posts = provenance_missing_posts(&d.posts);
+                    json!(timeline(&posts, now))
+                } else {
+                    json!(timeline(&d.posts, now))
+                }
+            }
             "evolution" => json!(d.evolution),
             _ => Value::Null,
         };
@@ -966,6 +974,15 @@ pub(crate) fn org_activity(views: &[ProjectView], limit: usize) -> Vec<JsonMap> 
     out
 }
 
+/// Posts whose `provenance_ok` is not 1, matching `posts_without_provenance`
+/// in the overview stats so the KPI tile can link to the same set.
+pub(crate) fn provenance_missing_posts(posts: &[JsonMap]) -> Vec<&JsonMap> {
+    posts
+        .iter()
+        .filter(|p| crate::board::num_value(p.get("provenance_ok").unwrap_or(&Value::Null)) != 1)
+        .collect()
+}
+
 pub(crate) fn timeline<R: std::borrow::Borrow<JsonMap>>(posts: &[R], now: String) -> JsonMap {
     let end = parse_dt(&now).unwrap_or_else(chrono::Utc::now);
     let mut hours = Vec::new();
@@ -1142,6 +1159,24 @@ mod tests {
     use std::process::Command;
     use std::sync::Arc;
     use std::time::Instant;
+
+    #[test]
+    fn timeline_provenance_missing_filter_matches_overview_count() {
+        let posts: Vec<JsonMap> = [
+            json!({"id": "a", "date": "2026-01-01T00:00:00Z", "kind": "finding", "provenance_ok": 1}),
+            json!({"id": "b", "date": "2026-01-01T01:00:00Z", "kind": "finding", "provenance_ok": 0}),
+            json!({"id": "c", "date": "2026-01-01T02:00:00Z", "kind": "finding"}),
+        ]
+        .into_iter()
+        .map(|v| v.as_object().unwrap().clone().into_iter().collect())
+        .collect();
+        let missing = provenance_missing_posts(&posts);
+        let ids: Vec<String> = missing.iter().map(|p| str_map(p, "id")).collect();
+        assert_eq!(ids, vec!["b", "c"]);
+        let tl = timeline(&missing, "2026-01-01T03:00:00Z".into());
+        assert_eq!(tl["total"], 2);
+        assert_eq!(timeline(&posts, "2026-01-01T03:00:00Z".into())["total"], 3);
+    }
 
     fn lifecycle_repo() -> String {
         let dir = crate::test_helpers::hold_tempdir(tempfile::tempdir().expect("temp repo"));
