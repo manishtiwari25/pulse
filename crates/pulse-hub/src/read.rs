@@ -198,6 +198,7 @@ impl Handler {
             && route != "timeline"
             && route != "notices"
             && route != "proposals"
+            && route != "questions"
             && !route.starts_with("threads/")
             && !route.starts_with("posts/")
         {
@@ -252,6 +253,7 @@ impl Handler {
             "suggestions" => json!(d.suggestions),
             "amendments" => json!(d.amendments),
             "proposals" => json!(d.proposals),
+            "questions" => json!(d.questions),
             "notices" => json!(d.notices()),
             "timeline" => json!(timeline(&d.posts, str_map(&d.params, "now"))),
             "evolution" => json!(d.evolution),
@@ -342,8 +344,8 @@ impl Handler {
             return;
         }
         match route.as_str() {
-            "health" | "org" | "notices" | "proposals" | "roster" | "votes" | "activity"
-            | "timeline" => {}
+            "health" | "org" | "notices" | "proposals" | "questions" | "roster" | "votes"
+            | "activity" | "timeline" => {}
             _ => {
                 crate::server::write_error(
                     w,
@@ -459,6 +461,7 @@ impl Handler {
                 .cloned()
                 .unwrap_or(Value::Null),
             "proposals" => json!(org_proposals(&views)),
+            "questions" => json!(org_questions(&views)),
             "votes" => json!(org_votes(&views)),
             "activity" => json!(org_activity(&views, 150)),
             "timeline" => json!(org_timeline(&views, store_now(self))),
@@ -563,7 +566,7 @@ impl Handler {
             })
             .collect::<Vec<_>>();
         object(
-            "slug kind brain base path remote name branch head dirty built_at board_present claims_active threads_open questions_open suggestions_eligible suggestions_plannable suggestions_needing_votes suggestions_rejected amendments_open proposals_awaiting posts posts_24h tally_mode can_decide agents identities evolution_present loop stop_present baseline last_post active_claims proposals present missing error",
+            "slug kind brain base path remote name branch head dirty built_at board_present claims_active threads_open questions_open owner_questions suggestions_eligible suggestions_plannable suggestions_needing_votes suggestions_rejected amendments_open proposals_awaiting posts posts_24h tally_mode can_decide agents identities evolution_present loop stop_present baseline last_post active_claims proposals questions present missing error",
             vec![
                 json!(p.slug),
                 json!(kind),
@@ -583,6 +586,7 @@ impl Handler {
                     .unwrap_or(Value::Null),
                 overview.get("threads_open").cloned().unwrap_or(Value::Null),
                 json!(questions_open),
+                json!(d.questions.len()),
                 overview
                     .get("suggestions_eligible")
                     .cloned()
@@ -620,6 +624,7 @@ impl Handler {
                 last,
                 json!(claims),
                 json!(proposals),
+                json!(d.questions),
                 json!(true),
                 json!(false),
                 json!(view.error),
@@ -659,6 +664,7 @@ impl Handler {
         let mut active_agents = BTreeMap::new();
         let mut claims = Vec::new();
         let mut proposals = Vec::new();
+        let mut questions = Vec::new();
         let mut ballot = Vec::new();
         let (mut votes_open, mut votes_plannable, mut posts24, mut posts, mut present_count) =
             (0, 0, 0, 0, 0);
@@ -726,9 +732,23 @@ impl Handler {
                 proposals.push(proposal);
             }
             p.remove("proposals");
+            for row in p
+                .get("questions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                let mut question = as_map(row);
+                question.insert("slug".into(), p.get("slug").cloned().unwrap_or(Value::Null));
+                question.insert("base".into(), p.get("base").cloned().unwrap_or(Value::Null));
+                questions.push(question);
+            }
+            p.remove("questions");
         }
         order(&mut claims, &["expires"]);
         order(&mut proposals, &["-date", "-slug"]);
+        order(&mut questions, &["-date", "-slug"]);
+        questions.sort_by_key(|r| !r.get("stop").and_then(Value::as_bool).unwrap_or(false));
         let projects: Vec<Value> = project_idx.iter().map(|&i| json!(all[i])).collect();
         let commons = commons_idx.map_or(Value::Null, |i| json!(all[i]));
         let commons_ok = commons.get("present").and_then(Value::as_bool) == Some(true);
@@ -762,7 +782,7 @@ impl Handler {
             .sum();
         let ballot_proposals: i64 = ballot.iter().map(|r| num(r, "proposals")).sum();
         object(
-            "generated_at registry tally_mode can_decide commons_dir projects commons stamp notices totals active_claims proposals owner_presence",
+            "generated_at registry tally_mode can_decide commons_dir projects commons stamp notices totals active_claims proposals questions owner_presence",
             vec![
                 json!(store_now(self)),
                 json!(
@@ -791,7 +811,7 @@ impl Handler {
                     ]
                 )),
                 json!(object(
-                    "projects projects_present agents agents_active votes_open votes_plannable proposals_awaiting questions_open posts_24h posts brain brains",
+                    "projects projects_present agents agents_active votes_open votes_plannable proposals_awaiting owner_questions questions_open posts_24h posts brain brains",
                     vec![
                         json!(projects.len()),
                         json!(present_count),
@@ -800,6 +820,7 @@ impl Handler {
                         json!(votes_open),
                         json!(votes_plannable),
                         json!(proposals.len()),
+                        json!(questions.len()),
                         questions_open,
                         json!(posts24),
                         json!(posts),
@@ -809,6 +830,7 @@ impl Handler {
                 )),
                 json!(claims),
                 json!(proposals),
+                json!(questions),
                 json!(
                     self.store
                         .as_ref()
@@ -849,6 +871,27 @@ pub(crate) fn org_proposals(views: &[ProjectView]) -> Vec<JsonMap> {
         let bb = str_map(b, "status") == "awaiting";
         bb.cmp(&aa)
     });
+    out
+}
+
+/// Open owner questions across the org, newest first with evolution stops on
+/// top; the body stays so the console can show the ask without a second fetch.
+pub(crate) fn org_questions(views: &[ProjectView]) -> Vec<JsonMap> {
+    let mut out = Vec::new();
+    for view in views {
+        let Some(d) = &view.data else { continue };
+        if view.project.slug == pulse_store::COMMONS_SLUG {
+            continue;
+        }
+        for q in &d.questions {
+            let mut row = q.clone();
+            row.insert("slug".into(), json!(view.project.slug));
+            row.insert("base".into(), json!(base_for(&view.project.slug)));
+            out.push(row);
+        }
+    }
+    order(&mut out, &["-date", "-slug"]);
+    out.sort_by_key(|r| !r.get("stop").and_then(Value::as_bool).unwrap_or(false));
     out
 }
 

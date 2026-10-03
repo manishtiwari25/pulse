@@ -50,6 +50,10 @@ pub(crate) struct BoardData {
     pub(crate) claims: Vec<JsonMap>,
     pub(crate) threads: Vec<JsonMap>,
     pub(crate) proposals: Vec<JsonMap>,
+    /// Open questions addressed to the owner (`for_owner`, and the evolution
+    /// loop's stop questions by construction): what waits for a yes or no
+    /// that no worker may give.
+    pub(crate) questions: Vec<JsonMap>,
     pub(crate) suggestions: Vec<JsonMap>,
     pub(crate) amendments: Vec<JsonMap>,
     pub(crate) evolution: JsonMap,
@@ -221,6 +225,7 @@ impl crate::server::Handler {
         .ok();
         let plan_ctx = pulse_tally::plan_context_for(store, project, &now, plan_res.as_ref());
         d.enrich_threads();
+        d.collect_owner_questions(&decided_posts(store, project)?);
         for row in &mut d.proposals {
             let post = post_at(&d.by_id, &d.posts, &str_key(row, "id")).unwrap_or(&EMPTY_ROW);
             let decided =
@@ -481,6 +486,100 @@ impl BoardData {
                 }
             }
         }
+    }
+
+    /// Questions that wait for the owner: posts marked `for_owner` and the
+    /// evolution loop's stop questions (asks for the owner by construction).
+    /// A question is open until the owner decides it, an answer lands on it or
+    /// later in its thread, or its thread closes. A stop question ignores a
+    /// closure dated before it: decisions close the loop-gate thread, and the
+    /// loop keeps posting new stops into it. Card-needed asks are the
+    /// planner's own work since ADR-044 and never wait for the owner.
+    pub(crate) fn collect_owner_questions(&mut self, decided: &BTreeSet<String>) {
+        let threads = self
+            .threads
+            .iter()
+            .map(|t| {
+                (
+                    str_key(t, "key"),
+                    (str_key(t, "status"), str_key(t, "last")),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut posts = self.posts.iter().collect::<Vec<_>>();
+        order(&mut posts, &["date", "id"]);
+        let answered = posts
+            .iter()
+            .filter(|p| str_key(p, "kind") == "answer" && !str_key(p, "on_post").is_empty())
+            .map(|p| str_key(p, "on_post"))
+            .collect::<BTreeSet<_>>();
+        let mut by_thread = BTreeMap::<String, Vec<&JsonMap>>::new();
+        for &post in &posts {
+            by_thread
+                .entry(str_key(post, "thread_key"))
+                .or_default()
+                .push(post);
+        }
+        let mut rows = Vec::new();
+        for (key, thread_posts) in &by_thread {
+            let (status, last) = threads.get(key).cloned().unwrap_or_default();
+            for (i, post) in thread_posts.iter().enumerate() {
+                if str_key(post, "kind") != "question" || str_key(post, "area") == "jobs" {
+                    continue;
+                }
+                let stop = str_key(post, "summary") == pulse_store::EVOLUTION_STOP_SUMMARY;
+                let for_owner = post
+                    .get("frontmatter")
+                    .and_then(|fm| fm.get("for_owner"))
+                    .is_some_and(|v| str_value(v) == "true");
+                if !(stop || for_owner) {
+                    continue;
+                }
+                let id = str_key(post, "id");
+                if decided.contains(&id)
+                    || answered.contains(&id)
+                    || later_hub_answer_date(thread_posts, i)
+                {
+                    continue;
+                }
+                if stop && str_key(post, "body").contains(pulse_evolve::CARD_NEEDED) {
+                    continue;
+                }
+                let resolved = if stop {
+                    thread_posts[i + 1..]
+                        .iter()
+                        .any(|p| !str_key(p, "resolution").is_empty())
+                } else {
+                    status == "closed"
+                };
+                if resolved {
+                    continue;
+                }
+                rows.push(object(
+                    "id thread_key area thread kind agent name session date summary body on_post stop stale thread_last",
+                    vec![
+                        json!(id),
+                        json!(key),
+                        json!(str_key(post, "area")),
+                        json!(str_key(post, "thread")),
+                        json!("question"),
+                        json!(str_key(post, "agent")),
+                        json!(str_key(post, "name")),
+                        json!(str_key(post, "session")),
+                        json!(str_key(post, "date")),
+                        json!(str_key(post, "summary")),
+                        json!(str_key(post, "body")),
+                        json!(str_key(post, "on_post")),
+                        json!(stop),
+                        json!(status == "stale"),
+                        json!(last),
+                    ],
+                ));
+            }
+        }
+        order(&mut rows, &["-date", "id"]);
+        rows.sort_by_key(|r| !r.get("stop").and_then(Value::as_bool).unwrap_or(false));
+        self.questions = rows;
     }
 
     /// Go: d.ByID[id]
@@ -914,6 +1013,15 @@ pub(crate) fn later_hub_answer_date(posts: &[&JsonMap], index: usize) -> bool {
         .any(|post| str_key(post, "kind") == "answer" && str_key(post, "date") > date)
 }
 
+/// The posts of a project the owner (or the lead on the owner's behalf) has
+/// already decided; a decided question no longer waits for anyone.
+pub(crate) fn decided_posts(store: &pulse_store::Store, project: &str) -> Result<BTreeSet<String>> {
+    let conn = store.conn()?;
+    let mut stmt = conn.prepare("SELECT post_id FROM decisions WHERE project = ?")?;
+    let rows = stmt.query_map([project], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<std::result::Result<BTreeSet<_>, _>>()?)
+}
+
 pub(crate) fn count_status(rows: &[JsonMap], statuses: &[&str]) -> i64 {
     rows.iter()
         .filter(|row| {
@@ -1342,6 +1450,216 @@ mod tests {
         );
         assert_eq!(by_id[&owner.id]["gate"], pulse_tally::GATE_OWNER);
         assert_eq!(data.overview()["suggestions_plannable"], 1);
+    }
+
+    #[test]
+    fn owner_questions_wait_until_decided_answered_or_resolved() {
+        let _serial = crate::test_helpers::serial();
+        let s = f2::additions_store(false);
+        let repo = repo();
+        pulse_board::add_project(
+            &s,
+            repo.path().to_str().unwrap(),
+            "One",
+            "",
+            false,
+            "",
+            "human",
+            "one",
+        )
+        .unwrap();
+        join(&s, "alpha");
+        join(&s, "daemon");
+        let post = |kind: &str,
+                    thread: &str,
+                    for_owner: bool,
+                    summary: &str,
+                    body: &str,
+                    on: &str,
+                    resolution: &str,
+                    date: &str| {
+            pulse_board::create_post(
+                &s,
+                pulse_board::PostInput {
+                    kind: kind.into(),
+                    project: "one".into(),
+                    area: if thread == "loop-gate" || thread.starts_with("job-") {
+                        "evolution".into()
+                    } else {
+                        "api".into()
+                    },
+                    thread: thread.into(),
+                    agent: if summary == pulse_store::EVOLUTION_STOP_SUMMARY {
+                        "daemon".into()
+                    } else {
+                        "alpha".into()
+                    },
+                    for_owner,
+                    summary: summary.into(),
+                    body: body.into(),
+                    on: on.into(),
+                    resolution: resolution.into(),
+                    date: date.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let stop = pulse_store::EVOLUTION_STOP_SUMMARY;
+        // A worker question is not the owner's.
+        post(
+            "question",
+            "plain",
+            false,
+            "Why 429?",
+            "",
+            "",
+            "",
+            "2026-09-06T08:00:00Z",
+        );
+        // A marked question waits for the owner.
+        let ask = post(
+            "question",
+            "owner",
+            true,
+            "Which provider pays?",
+            "Pick one.",
+            "",
+            "",
+            "2026-09-06T08:01:00Z",
+        );
+        // A marked question that got its answer does not.
+        let done = post(
+            "question",
+            "settled",
+            true,
+            "Keep the old name?",
+            "",
+            "",
+            "",
+            "2026-09-06T08:02:00Z",
+        );
+        post(
+            "answer",
+            "settled",
+            false,
+            "Yes, keep it",
+            "",
+            &done.id,
+            "",
+            "2026-09-06T08:03:00Z",
+        );
+        // The loop-gate thread: an old decided stop closed it; the new stop still waits.
+        let old = post(
+            "question",
+            "loop-gate",
+            true,
+            stop,
+            "an instruction-shaped post was detected",
+            "",
+            "",
+            "2026-09-06T08:04:00Z",
+        );
+        pulse_board::decide(&s, &old.id, "yes", "not a command", "human").unwrap();
+        // The decision's result post is dated now; the new stop comes after it.
+        let after = (chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap()
+            + chrono::Duration::seconds(60))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let gate = post(
+            "question",
+            "loop-gate",
+            true,
+            stop,
+            "experiment job-1 failed with a hard-stop marker\nThe workflow was not bypassed.",
+            "",
+            "",
+            &after,
+        );
+        // A stop on a suggestion whose thread closed afterwards is moot.
+        post(
+            "question",
+            "job-closed",
+            true,
+            stop,
+            "evolution constraint violation: immutable path",
+            "",
+            "",
+            "2026-09-06T08:07:00Z",
+        );
+        post(
+            "result",
+            "job-closed",
+            false,
+            "Closed",
+            "",
+            "",
+            "dropped",
+            "2026-09-06T08:08:00Z",
+        );
+        // Card-needed asks are the planner's own work since ADR-044.
+        post(
+            "question",
+            "job-card",
+            true,
+            stop,
+            &format!("{}; name exactly one File:", pulse_evolve::CARD_NEEDED),
+            "",
+            "",
+            "2026-09-06T08:09:00Z",
+        );
+
+        let h = f2::handler(&s);
+        let data = h.snapshot("one", "").unwrap();
+        let ids = data
+            .questions
+            .iter()
+            .map(|q| str_key(q, "id"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![gate.id.clone(), ask.id.clone()],
+            "{:#?}",
+            data.questions
+        );
+        assert_eq!(data.questions[0]["stop"], true);
+        assert_eq!(data.questions[0]["thread_key"], "evolution/loop-gate");
+        assert_eq!(data.questions[1]["stop"], false);
+        assert_eq!(data.questions[1]["body"], "Pick one.");
+
+        let view = crate::read::ProjectView {
+            project: s.project("one").unwrap().unwrap(),
+            data: Some(data),
+            error: String::new(),
+            present: true,
+        };
+        let summary = h.summary(&view);
+        assert_eq!(summary["owner_questions"], 2);
+        let org = h.org(std::slice::from_ref(&view));
+        assert_eq!(org["totals"]["owner_questions"], 2);
+        let rows = org["questions"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["slug"], "one");
+        assert_eq!(rows[0]["base"], "/p/one");
+        assert!(org["projects"][0].get("questions").is_none());
+        let flat = crate::read::org_questions(std::slice::from_ref(&view));
+        assert_eq!(flat.len(), 2);
+        assert_eq!(str_key(&flat[0], "id"), gate.id);
+
+        let (status, _, raw) = crate::test_helpers_f3::request(
+            h.clone_for_test(),
+            "GET",
+            "/api/v1/projects/one/questions",
+            "",
+            &[],
+        );
+        assert_eq!(status, 200, "{raw}");
+        let listed: Vec<JsonMap> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(listed.len(), 2);
+
+        pulse_board::decide(&s, &ask.id, "yes", "the first one", "human").unwrap();
+        pulse_board::decide(&s, &gate.id, "yes", "reviewed", "human").unwrap();
+        let data = h.snapshot("one", "").unwrap();
+        assert!(data.questions.is_empty(), "{:#?}", data.questions);
     }
 
     #[test]

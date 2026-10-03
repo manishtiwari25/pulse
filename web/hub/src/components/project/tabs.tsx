@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart } from "@/components/pulse/charts";
-import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
+import { AmendmentCard, FeedList, ProposalCard, QuestionCard, SuggestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { HygienePanel } from "@/components/pulse/hygiene";
 import { DataTable } from "@/components/pulse/data-table";
 import { DocRev, SelfImprovementPanel } from "@/components/pulse/evolve";
@@ -30,7 +30,7 @@ import { kindLabel, RECORD_COLUMNS, RecordCards, RecordSheet } from "@/component
 import { hrefs } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { num, plural, statusTone, type Tone } from "@/lib/format";
-import { isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type ProjectInfo, type Proposal, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
+import { isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectInfo, type Proposal, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
 
 function Wait<T>({ q, rows = 5, children }: { q: Loaded<T>; rows?: number; children: (d: T) => React.ReactNode }) {
@@ -380,12 +380,15 @@ export function ThreadsTab({ slug, onOpen, activeKey }: { slug: string; onOpen: 
 
 export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boolean }) {
   const q = useApi<Proposal[]>(projectPath(slug, "proposals"));
+  // Questions addressed to the owner and the evolution loop's stop questions wait for a yes or no like a proposal does; an older hub has no such route.
+  const qs = useApi<OwnerQuestion[]>(projectPath(slug, "questions"), { refresh: 60000 });
+  const questions = qs.data ?? [];
   const [show, setShow] = useState<"awaiting" | "all">("awaiting");
   return (
     <Wait q={q}>
       {(all) => {
         const rows = show === "awaiting" ? all.filter((p) => p.status === "awaiting") : all;
-        const awaiting = all.filter((p) => p.status === "awaiting").length;
+        const awaiting = all.filter((p) => p.status === "awaiting").length + questions.length;
         return (
           <div>
             <Toolbar>
@@ -395,19 +398,22 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
                 onChange={(v) => setShow(v === "all" ? "all" : "awaiting")}
                 options={[
                   { id: "awaiting", label: "awaiting you", n: awaiting },
-                  { id: "all", label: "all", n: all.length },
+                  { id: "all", label: "all", n: all.length + questions.length },
                 ]}
               />
               {!canDecide ? <ToneBadge tone="warn">deciding is off on this hub</ToneBadge> : null}
             </Toolbar>
-            {rows.length ? (
+            {rows.length || questions.length ? (
               <div className="grid gap-3 lg:grid-cols-2">
                 {rows.map((p) => (
                   <ProposalCard key={p.id} r={p} slug={slug} canDecide={canDecide} />
                 ))}
+                {questions.map((x) => (
+                  <QuestionCard key={x.id} q={x} slug={slug} canDecide={canDecide} />
+                ))}
               </div>
             ) : (
-              <EmptyState title={show === "awaiting" ? "Nothing waits for you" : "No proposals"}>{show === "awaiting" ? "Nothing waits for your decision. Agents raise a proposal when a suggestion passes quorum and needs a human yes or no; it shows here and on the hub." : "No proposal has been raised on this board yet."}</EmptyState>
+              <EmptyState title={show === "awaiting" ? "Nothing waits for you" : "No proposals"}>{show === "awaiting" ? "Nothing waits for your decision. Agents raise a proposal when a suggestion passes quorum and needs a human yes or no, and they mark a question for you when only you can answer it; both show here and on the hub." : "No proposal has been raised on this board yet."}</EmptyState>
             )}
           </div>
         );
@@ -502,7 +508,7 @@ function noRecord(err: string): boolean {
 const kept = (r: EvolutionArchiveRow) => r.kept === 1 || r.kept === true;
 const score = (n: number) => (Number.isFinite(n) ? n.toFixed(3).replace(/\.?0+$/, "") : "—");
 
-export function EvolutionTab({ slug }: { slug: string }) {
+export function EvolutionTab({ slug, canDecide = true }: { slug: string; canDecide?: boolean }) {
   const q = useApi<Evolution>(projectPath(slug, "evolution"), { refresh: 60000 });
   return (
     <Wait q={q} rows={8}>
@@ -551,7 +557,7 @@ export function EvolutionTab({ slug }: { slug: string }) {
         if (!present && !gated) return empty;
         return (
           <div className="grid gap-4">
-            {gated ? <SelfImprovementPanel gates={e.gates} error={e.gates_error} fixtures={fixtures} docs={docs} /> : null}
+            {gated ? <SelfImprovementPanel gates={e.gates} error={e.gates_error} fixtures={fixtures} docs={docs} canDecide={canDecide} /> : null}
             {!present ? (
               empty
             ) : (

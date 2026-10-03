@@ -222,6 +222,27 @@ export interface Proposal extends Who {
   decided_name?: string;
 }
 
+// A question that waits for the owner: a post marked for_owner, or one of the
+// evolution loop's "Evolution stopped; owner review needed" gates (stop). The
+// hub lists it until the owner decides it, an answer lands on it, or its
+// thread resolves. Absent on hubs that predate the route.
+export interface OwnerQuestion extends Who {
+  id: string;
+  thread_key: string;
+  area: string;
+  thread: string;
+  kind: string;
+  date: string;
+  summary: string;
+  body: string;
+  on_post: string;
+  stop: boolean;
+  stale: boolean;
+  thread_last: string;
+  slug?: string;
+  base?: string;
+}
+
 export interface Bucket {
   t: string;
   n: number;
@@ -327,6 +348,7 @@ export interface ProjectCardData extends Partial<EvolveGate> {
   suggestions_rejected?: number;
   amendments_open: number;
   proposals_awaiting: number;
+  owner_questions?: number;
   posts: number;
   posts_24h: number;
   agents: number;
@@ -413,6 +435,7 @@ export interface Totals {
   agents_active: number;
   votes_open: number;
   proposals_awaiting: number;
+  owner_questions?: number;
   questions_open: number;
   posts_24h: number;
   posts: number;
@@ -455,6 +478,7 @@ export interface Org {
   totals: Totals;
   active_claims: Claim[];
   proposals: Proposal[];
+  questions?: OwnerQuestion[];
   // pulse hub metadata (absent on the Python server).
   store?: string;
   schema_version?: string;
@@ -1255,6 +1279,8 @@ export interface EvolvePlanning {
   reason: string;
   job?: string;
   suggestion?: string;
+  // The owner question this block waits on (a stop the owner decides).
+  question?: string;
 }
 
 export interface EvolveGates {

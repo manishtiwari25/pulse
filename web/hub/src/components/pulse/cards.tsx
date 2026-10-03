@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { ConfirmDialog } from "./confirm";
+import { DecideButtons } from "./decide-buttons";
 import { Sparkline } from "./charts";
 import { EmptyState, Kv, Panel } from "./panel";
 import { Fact, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
@@ -14,7 +15,7 @@ import { KindBadge, Mono, PostLink, ProjectLink, Provenance, StatusBadge, Thread
 import { cn } from "@/lib/utils";
 import { expiresAt, hashHue, initials, num, plural, statusTone, truncate, untilText } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { COMMONS_HINT, evolveGate, taskProgress, writes, type Amendment, type Claim, type EvolveGate, type Executor, type LandingHold, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion, type Task, type TaskWorker } from "@/lib/api";
+import { COMMONS_HINT, evolveGate, taskProgress, writes, type Amendment, type Claim, type EvolveGate, type Executor, type LandingHold, type OwnerQuestion, type PostRef, type ProjectCardData, type Proposal, type Runner, type Suggestion, type Task, type TaskWorker } from "@/lib/api";
 import { useNow } from "@/lib/use-api";
 import { EvolveBadges, gateStep } from "./evolve";
 
@@ -47,7 +48,8 @@ export function ProjectCard({ p, spark, gate }: { p: ProjectCardData; spark?: nu
   const g = gate === undefined ? evolveGate(p) : gate;
   // A self-improvement step only the owner can take counts as "for you" like an awaiting proposal (ADR-029).
   const step = gateStep(p.slug, g);
-  const forYou = p.proposals_awaiting + (step ? 1 : 0);
+  // Questions addressed to the owner (and the loop's stop questions) wait for a yes or no too.
+  const forYou = p.proposals_awaiting + (step ? 1 : 0) + (p.owner_questions ?? 0);
   const attention = forYou > 0;
   const facts: { n: number; label: string; tone?: FactTone }[] = [
     { n: forYou, label: "for you", tone: forYou ? "ok" : undefined },
@@ -248,6 +250,61 @@ export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug:
         success={open === "yes" ? "Decided yes - the board records your answer; a job is queued when the proposal asks for work." : "Decided no - the board records your answer."}
         onConfirm={(words) => writes.decide(r.id, open === "yes" ? "yes" : "no", words)}
       />
+    </ItemCard>
+  );
+}
+
+// ----- owner question --------------------------------------------------------
+
+// A question that waits for the owner (ADR: for_owner posts and the evolution
+// loop's stop questions). Modelled on the proposal card: who asked, where,
+// the ask, and Yes / No that record the owner's decision on the board.
+export function QuestionCard({ q, slug, canDecide = true }: { q: OwnerQuestion; slug: string; canDecide?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const body = (q.body || "").trim();
+  const long = body.length > 420 || body.split("\n").length > 5;
+  const s = q.slug || slug;
+  return (
+    <ItemCard highlight={!q.stale} ariaLabel={"Question for you: " + q.summary}>
+      <ItemCardHeader
+        right={
+          <>
+            <Who row={q} compact />
+            <When d={q.date} />
+          </>
+        }
+      >
+        {q.stop ? <ToneBadge tone="bad">evolution stop</ToneBadge> : <ToneBadge tone="warn">question for you</ToneBadge>}
+        {q.stale ? <Badge variant="outline">stale thread</Badge> : null}
+        {q.slug && q.slug !== slug ? <ProjectLink slug={q.slug} /> : null}
+        <ThreadLink slug={s} k={q.thread_key} />
+      </ItemCardHeader>
+      <ItemCardTitle>{q.summary}</ItemCardTitle>
+      {body ? (
+        <ItemCardBody clamp={0}>
+          <p className={cn("whitespace-pre-line", !expanded && long && "line-clamp-5")}>{body}</p>
+          {long ? (
+            <button type="button" className="mt-1 text-xs underline underline-offset-2 hover:text-foreground" onClick={() => setExpanded((e) => !e)}>
+              {expanded ? "less" : "read the whole question"}
+            </button>
+          ) : null}
+        </ItemCardBody>
+      ) : null}
+      {q.on_post ? (
+        <ItemCardMeta>
+          <span>
+            about <PostLink slug={s} id={q.on_post} label={q.on_post} />
+          </span>
+        </ItemCardMeta>
+      ) : null}
+      <ItemCardActions>
+        <Button asChild variant="ghost" size="xs" className="text-muted-foreground">
+          <Link href={hrefs.post(s, q.id)}>
+            open the post <ExternalLinkIcon />
+          </Link>
+        </Button>
+        <DecideButtons id={q.id} summary={q.summary} stop={q.stop} canDecide={canDecide} />
+      </ItemCardActions>
     </ItemCard>
   );
 }

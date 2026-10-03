@@ -7,7 +7,7 @@ import { ActivityIcon, AlertTriangleIcon, ArrowUpRightIcon, BotIcon, CpuIcon, Fo
 import { Button } from "@/components/ui/button";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
-import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
+import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, QuestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { ComputeDecide } from "@/components/compute/compute";
 import { daemonControlState } from "@/components/pulse/daemon-control-state";
 import { DaemonControls } from "@/components/pulse/daemon-controls";
@@ -25,7 +25,8 @@ import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { hrefs } from "@/lib/nav";
 import { num, plural } from "@/lib/format";
-import { evolveGate, registeredProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type ProjectCardData, type ProjectsPayload, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type SettingsPayload, type TasksPayload, type Timeline } from "@/lib/api";
+import { evolveGate, registeredProjects, type Compute, type ComputeCaps, type ComputeRequest, type Org, type OwnerQuestion, type ProjectCardData, type ProjectsPayload, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type SettingsPayload, type TasksPayload, type Timeline } from "@/lib/api";
+import { sortOwnerQuestions } from "@/lib/owner-questions";
 import { useApi } from "@/lib/use-api";
 
 export default function HubPage() {
@@ -43,6 +44,8 @@ export default function HubPage() {
   const service = useApi<ServicePayload>("service", { refresh: 60000 });
   const settings = useApi<SettingsPayload>("settings");
   const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
+  // Boards can hold many old owner questions; the inbox shows the first few and unfolds on request.
+  const [allQuestions, setAllQuestions] = useState(false);
 
   if (org.error && !org.data)
     return (
@@ -60,6 +63,10 @@ export default function HubPage() {
   const projects = registeredProjects(o);
   const commons = o.commons;
   const awaiting = o.proposals.filter((p) => p.status === "awaiting");
+  // Questions addressed to the owner and the evolution loop's stop questions (stops first, stale threads last); absent on an older hub.
+  const questions: OwnerQuestion[] = sortOwnerQuestions(o.questions ?? []);
+  const QUESTIONS_SHOWN = 6;
+  const shownQuestions = allQuestions ? questions : questions.slice(0, QUESTIONS_SHOWN);
   const openTasks = (tasks.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled");
   const working = workingRows(o.active_claims, openTasks);
   const recent = [...openTasks].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, 6);
@@ -74,7 +81,7 @@ export default function HubPage() {
     return [draftState(g?.constitution), draftState(g?.evaluators)].filter((r): r is DraftState => !!r?.draft).map((r) => ({ slug: p.slug, r }));
   });
   const daemon = daemonControlState({ runner, service, settings });
-  const decisions = adrs.length + awaiting.length + pendingCompute.length + drafts.length;
+  const decisions = adrs.length + awaiting.length + questions.length + pendingCompute.length + drafts.length;
   const machineSteps = daemon.pause === "on" || daemon.setup ? 1 : 0;
   const inbox = decisions + steps.length + machineSteps;
   const computeDown = !!compute.error && !compute.data;
@@ -156,6 +163,14 @@ export default function HubPage() {
             {awaiting.map((p) => (
               <ProposalCard key={p.id} r={p} slug={p.slug || o.totals.brain} canDecide={o.can_decide} />
             ))}
+            {shownQuestions.map((q) => (
+              <QuestionCard key={(q.slug || "") + "/" + q.id} q={q} slug={q.slug || o.totals.brain} canDecide={o.can_decide} />
+            ))}
+            {questions.length > QUESTIONS_SHOWN ? (
+              <button type="button" className="flex min-h-11 items-center justify-center rounded-xl border border-dashed border-border/80 px-4 text-sm text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none" onClick={() => setAllQuestions((v) => !v)} aria-expanded={allQuestions}>
+                {allQuestions ? "show fewer questions" : "show all " + plural(questions.length, "question") + " for you"}
+              </button>
+            ) : null}
             {pendingCompute.map((cr) => (
               <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
             ))}
@@ -187,7 +202,7 @@ export default function HubPage() {
       <section aria-label="Workspace overview" className="mb-7">
         <SectionHeading>At a glance</SectionHeading>
         <KpiGrid className="mb-0">
-          <Kpi icon={InboxIcon} n={inbox} label="For you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length + machineSteps ? plural(steps.length + machineSteps, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
+          <Kpi icon={InboxIcon} n={inbox} label="For you" sub={inbox ? [adrs.length ? plural(adrs.length, "decision") : "", awaiting.length ? plural(awaiting.length, "proposal") : "", questions.length ? plural(questions.length, "question") : "", pendingCompute.length ? plural(pendingCompute.length, "request") : "", steps.length + machineSteps ? plural(steps.length + machineSteps, "step") : ""].filter(Boolean).join(" · ") : "nothing waits"} tone={inbox ? "ok" : "neutral"} href="#for-you" />
           <Kpi icon={ListTodoIcon} n={openTasks.length} label="Open tasks" sub={tasks.data ? `${num(openTasks.filter((t) => t.status === "in_progress").length)} in progress` : "loading"} href={hrefs.tasks()} />
           <Kpi icon={CpuIcon} n={pendingCompute.length} label="Compute" sub={pendingCompute.length ? "requests to decide" : compute.data ? num(compute.data.caps.vms_now) + " VMs up" : "loading"} tone={pendingCompute.length ? "warn" : "neutral"} href={hrefs.compute()} />
           <Kpi icon={BotIcon} n={o.totals.agents_active} label="Agents active" sub={num(o.totals.agents) + " known"} href={hrefs.agents()} />

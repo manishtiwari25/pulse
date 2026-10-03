@@ -313,7 +313,7 @@ async function capture() {
     const task002Focus = await get("tasks/TASK-002");
     write("roster", rosterScenarios(await get("roster"), frozen, true, taskWorkFocus(task002Focus, frozen)));
     if (rosterOnly) return;
-    for (const route of ["activity", "compute", "events", "executors", "health", "hygiene", "messages", "notices", "org", "proposals", "runner", "running", "settings", "timeline", "votes"]) write(route, await get(route));
+    for (const route of ["activity", "compute", "events", "executors", "health", "hygiene", "messages", "notices", "org", "proposals", "questions", "runner", "running", "settings", "timeline", "votes"]) write(route, await get(route));
     write("constitution", await get("constitution?project=pulse"));
     const records = write("records", await get("records"));
     for (const r of records.records) write("records/" + r.id, await get("records/" + encodeURIComponent(r.id)));
@@ -323,7 +323,7 @@ async function capture() {
     const tasks = write("tasks", taskScenarios(taskRows, frozen, taskDetails));
     for (const t of tasks.tasks) write("tasks/" + t.id, taskDetails[t.id]);
     for (const slug of ["pulse", "demo-app", "demo-lib", "commons"]) {
-      for (const route of ["amendments", "evolution", "notices", "overview", "project", "proposals", "suggestions", "timeline"]) write(`projects/${slug}/${route}`, await get(`projects/${slug}/${route}`));
+      for (const route of ["amendments", "evolution", "notices", "overview", "project", "proposals", "questions", "suggestions", "timeline"]) write(`projects/${slug}/${route}`, await get(`projects/${slug}/${route}`));
       const threads = write(`projects/${slug}/threads`, await get(`projects/${slug}/threads`));
       const posts = [];
       for (const t of threads) {

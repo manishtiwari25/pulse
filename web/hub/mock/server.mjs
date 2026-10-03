@@ -27,7 +27,7 @@ let agentReturnStarted = false;
 
 // ----- in-memory state for writes ----------------------------------------
 
-const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, events: null, projects: null, goals: new Map(), jobRepairs: null, codeDeliveries: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessPrompt: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {}, serviceInstalled: false, cred: { reference: "", fingerprint: "", set_at: "", set_by: "", token: "none", generated: false } };
+const state = { tasks: null, messages: null, compute: null, settings: null, proposals: null, questions: null, events: null, projects: null, goals: new Map(), jobRepairs: null, codeDeliveries: null, records: {}, seq: 5000, heldout: null, harness: null, harnessModels: null, harnessPrompt: null, harnessSessions: null, harnessDetails: {}, harnessPolls: {}, serviceInstalled: false, cred: { reference: "", fingerprint: "", set_at: "", set_by: "", token: "none", generated: false } };
 const privateGoalComponent = "(?:private|heldout|held-out|\\.ssh|\\.aws|\\.azure|\\.pulse)";
 const privateGoalPath = new RegExp("(?:^|[\\s\"'`(\\[<{=:,;])" +
   "(?:file:(?://[^/\\\\\\s\"'`<>]*)?)?" +
@@ -75,6 +75,8 @@ async function init() {
     }
   }
   state.proposals = await loadJson("proposals.json");
+  // Questions for the owner (for_owner posts and the evolution loop's stop questions): a decision removes them like the hub does.
+  state.questions = await loadJson("questions.json");
   state.events = (await loadJson("events.json")).events;
   const org = await loadJson("org.json");
   // The registry rows mirror the org rows' self-improvement gates (ADR-029), the loop's record refs (ADR-030) and the daemon's baseline job (ADR-031) so either payload can feed the console.
@@ -459,7 +461,13 @@ async function handle(req, res) {
     // decide
     if (segs[0] === "decide") {
       const p = state.proposals.find((x) => x.id === body.id);
-      if (!p) return fail(res, 404, "no such proposal", String(body.id) + " is not awaiting", "reload the page");
+      if (!p) {
+        const i = state.questions.findIndex((x) => x.id === body.id);
+        if (i < 0) return fail(res, 404, "no such proposal", String(body.id) + " is not awaiting", "reload the page");
+        const [qn] = state.questions.splice(i, 1);
+        emit("human", "question.decided", qn.id, { project: qn.slug, answer: body.answer, words: body.words || "", stop: qn.stop });
+        return send(res, 200, { ok: true, decided: { ...qn, answer: body.answer, words: body.words || "", decided_date: now() } });
+      }
       if (p.status !== "awaiting") return fail(res, 409, "already decided", "this proposal is " + p.status, "nothing to do");
       p.status = body.answer === "yes" ? "proceeded" : "declined";
       p.decided_date = now();
@@ -988,6 +996,12 @@ async function handle(req, res) {
   }
   if (segs[0] === "settings" && segs.length === 1) return send(res, 200, { ...state.settings, settings: state.settings.settings.map(maskSetting) });
   if (segs[0] === "proposals" && segs.length === 1) return send(res, 200, state.proposals);
+  if (segs[0] === "questions" && segs.length === 1) return send(res, 200, state.questions);
+  if (segs[0] === "projects" && segs.length === 3 && segs[2] === "questions") {
+    const slug = decodeURIComponent(segs[1]);
+    if (!state.projects.some((x) => x.slug === slug) && slug !== "commons") return fail(res, 404, "no such project", slug + " is not registered", "add it from the hub");
+    return send(res, 200, state.questions.filter((x) => x.slug === slug).map((x) => Object.fromEntries(Object.entries(x).filter(([k]) => k !== "slug" && k !== "base"))));
+  }
   if (segs[0] === "org") {
     const org = await fixture("org");
     // The real hub lists active projects only; mirror removals made in memory.
@@ -996,8 +1010,9 @@ async function handle(req, res) {
     const GATE_FIELDS = ["fixtures_enabled", "baseline", "evolve_level", "evolve_next", "constitution", "evaluators", "baseline_job", "baseline_failed_at"];
     const projects = org.projects
       .filter((p) => p.kind === "commons" || state.projects.some((x) => x.slug === p.slug && x.status === "active"))
-      .map((p) => Object.fromEntries(Object.entries(p).filter(([k]) => !GATE_FIELDS.includes(k))));
-    return send(res, 200, { ...org, projects, proposals: state.proposals, generated_at: now() });
+      .map((p) => Object.fromEntries(Object.entries(p).filter(([k]) => !GATE_FIELDS.includes(k))))
+      .map((p) => (p.kind === "commons" ? p : { ...p, owner_questions: state.questions.filter((x) => x.slug === p.slug).length }));
+    return send(res, 200, { ...org, projects, proposals: state.proposals, questions: state.questions, totals: { ...org.totals, owner_questions: state.questions.length }, generated_at: now() });
   }
   if (segs[0] === "events" && segs.length === 1) {
     const p = q.get("project");

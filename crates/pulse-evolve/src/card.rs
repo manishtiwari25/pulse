@@ -228,7 +228,7 @@ pub struct ExperimentCard {
     pub body: String,
 }
 /// Go: const cardNeeded = "Suggestion needs an experiment card"
-pub(crate) const CARD_NEEDED: &str = "Suggestion needs an experiment card";
+pub const CARD_NEEDED: &str = "Suggestion needs an experiment card";
 /// Go: func cardFields(body string) map[string]string
 pub(crate) fn card_fields(body: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();

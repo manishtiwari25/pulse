@@ -28,12 +28,15 @@ pub fn failed_experiment_gate(
     {
         return Ok((String::new(), String::new(), String::new()));
     }
+    // The owner's decision on the gate question (`pulse decide`, or the
+    // console) is the review the gate waits for, like an answer in the thread.
     let question: String = conn
         .query_row(
             r#"SELECT q.id FROM posts q WHERE q.project = ? AND q.kind = 'question'
 		AND q.area = 'evolution' AND q.thread = 'loop-gate' AND q.summary = ?
 		AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
 			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date)
+		AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id)
 		ORDER BY q.date DESC, q.id DESC LIMIT 1"#,
             params![project, crate::cycle::STOP_SUMMARY],
             |r| r.get(0),
@@ -45,8 +48,9 @@ pub fn failed_experiment_gate(
             r#"SELECT EXISTS (
 			SELECT 1 FROM posts q WHERE q.project = ? AND q.kind = 'question'
 			AND q.area = 'evolution' AND q.thread = 'loop-gate' AND q.summary = ? AND q.body LIKE ?
-			AND EXISTS (SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
-				AND a.area = q.area AND a.thread = q.thread AND a.date > q.date))"#,
+			AND (EXISTS (SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
+				AND a.area = q.area AND a.thread = q.thread AND a.date > q.date)
+				OR EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id)))"#,
             params![project, crate::cycle::STOP_SUMMARY, format!("%{job}%")],
             |r| r.get(0),
         )?;

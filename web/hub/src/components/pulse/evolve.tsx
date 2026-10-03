@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
+import { DecideButtons } from "./decide-buttons";
 import { HeldoutButton } from "./heldout";
 import { evolvePlanningView } from "./evolve-planning";
 import { Notice, Panel } from "./panel";
@@ -14,8 +15,8 @@ import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
 import { andList, fmtDate, num, parseDate, plural, rel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { useNow } from "@/lib/use-api";
-import type { EvolutionDoc, EvolveFixture, EvolveGate, EvolveGates, EvolveLevel, EvolveRecordRef } from "@/lib/api";
+import { useApi, useNow } from "@/lib/use-api";
+import { projectPath, type EvolutionDoc, type EvolveFixture, type EvolveGate, type EvolveGates, type EvolveLevel, type EvolveRecordRef, type OwnerQuestion } from "@/lib/api";
 
 // The self-improvement surfaces (ADR-029, ADR-030, ADR-031, ADR-032). A
 // project's loop opens with enabled public fixtures and a recorded baseline;
@@ -472,8 +473,12 @@ export function heldoutTitle(h: HeldoutCounts): string {
 // `gates` null means the hub could not evaluate them: the error shows, the
 // fixtures still list. `docs` (the constitution and evaluators as the
 // evolution payload carries them) lets the record flags show revision and seed state.
-export function SelfImprovementPanel({ gates, error, fixtures, docs, className }: { gates: EvolveGates | null | undefined; error?: string; fixtures: EvolveFixture[]; docs?: { constitution: EvolutionDoc | null; evaluators: EvolutionDoc | null }; className?: string }) {
+export function SelfImprovementPanel({ gates, error, fixtures, docs, className, canDecide = true }: { gates: EvolveGates | null | undefined; error?: string; fixtures: EvolveFixture[]; docs?: { constitution: EvolutionDoc | null; evaluators: EvolutionDoc | null }; className?: string; canDecide?: boolean }) {
   const now = useNow();
+  // Planning stopped at a question for the owner: the Yes / No belong right here, next to the reason. Only an open question gets the buttons - one already decided clears on the daemon's next tick.
+  const questionId = gates?.planning?.question ?? "";
+  const questions = useApi<OwnerQuestion[]>(questionId && gates?.project ? projectPath(gates.project, "questions") : null, { refresh: 60000 });
+  const openQuestion = questionId ? (questions.data ?? []).find((q) => q.id === questionId) : undefined;
   const next = (gates?.next_human_step ?? "").trim();
   const none = noneStep(next);
   const waits = !!next && !none.none;
@@ -556,6 +561,19 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className }
               <ToneBadge tone={planning.tone}>{planning.label}</ToneBadge>
             </div>
             <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground anywhere">{planning.reason}</p>
+            {openQuestion ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/5 px-2.5 py-2 text-xs">
+                <span className="min-w-0 flex-1 anywhere">
+                  <b>Waiting for your yes or no:</b> {openQuestion.summary}{" "}
+                  <Link href={hrefs.post(gates.project, openQuestion.id)} className="underline underline-offset-2">
+                    open the post
+                  </Link>
+                </span>
+                <DecideButtons id={openQuestion.id} summary={openQuestion.summary} stop={openQuestion.stop} canDecide={canDecide} size="xs" />
+              </div>
+            ) : questionId && questions.data && !openQuestion ? (
+              <p className="text-[11.5px] text-muted-foreground">Question {questionId} is already decided or closed; the loop plans past it on the daemon&apos;s next tick.</p>
+            ) : null}
             {gates.planning?.job || gates.planning?.suggestion ? (
               <ItemCardMeta>
                 {gates.planning.job ? <Mono>{gates.planning.job}</Mono> : null}

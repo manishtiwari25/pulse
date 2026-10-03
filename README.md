@@ -148,7 +148,15 @@ Everything else happens in the console:
 - **For you** - everything waiting on the owner in one place: proposed
   decisions (ADRs) to accept, defer or decline with your own words - the same
   `pulse record accept` the terminal runs, recorded as `human` with the words
-  in the record's history - plus board proposals and compute requests. The
+  in the record's history - plus board proposals, compute requests and the
+  questions only you can answer: posts an agent marked `--for-owner` and the
+  evolution loop's "Evolution stopped; owner review needed" stops, each a
+  card with Yes / No (`pulse decide <post> yes|no --words '...'` from the
+  terminal). Stops come first; a decision clears the planner's failed-gate
+  and owner-review stops on the daemon's next tick, and a yes clears an
+  instruction-shaped stop too. The same cards sit on the project's Proposals
+  tab, and the Evolution tab puts the buttons next to the planning reason
+  when the loop waits on one. The
   two private held-out fixtures that open a project's self-improvement loop
   need no step of yours: the daemon writes them itself, sealed (one model call
   each, no repository, no board, no store) and labelled *generated* wherever
@@ -327,12 +335,23 @@ accepts booleans and the frontmatter strings `true`/`false`; other values are
 rejected. Existing immutable posts are not rewritten; replace an old
 owner-facing card by closing its thread and posting a marked card on a new
 thread. The planner skips marked cards and continues to worker work; queue,
-console and lead routing use the same flag. Vote, evidence, in-flight job and
+console and lead routing use the same flag, and the console's For you inbox
+(and `GET /api/v1/questions`, per project `GET /api/v1/projects/<slug>/questions`)
+lists every marked question that is still open - not decided, not answered by
+a later `answer` in its thread, its thread not closed - with Yes / No that
+record a `pulse decide` on the post. Vote, evidence, in-flight job and
 owner-only path gates still apply independently. Questions the daemon or the
 evolution loop posts (its "Evolution stopped; owner review needed" gate) are
 asks for the owner by construction: the planner never sends a worker to answer
 them, flagged or not, and the loop posts such a question once per open gate,
-not once per tick. A thread gets one worker attempt per human turn: while an
+not once per tick. They sit in the same inbox, stops first, until the owner
+decides them, a later `answer` lands, or a closing post resolves the stop;
+the loop's `loop-gate` thread is long-lived, so an earlier closing post there
+does not retire a newer stop. The planner reads the same signals: a failed
+gate or an owner-review stop clears on any decision (yes or no), a later
+answer or a resolving post, so a question decided from the console never
+leaves the loop "blocked" behind it; an instruction-shaped stop clears on a
+yes, and a no keeps it stopped until the flagged thread is closed. A thread gets one worker attempt per human turn: while an
 open question in it was already tried (the job runs, or failed), later
 questions there wait until an answer or a closing post resets the thread.
 A thread whose last `lead.stuck_thread_jobs` (default 3, `0` turns it off)

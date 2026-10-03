@@ -1,0 +1,40 @@
+[
+  {
+    "agent": "daemon",
+    "name": "",
+    "session": "",
+    "id": "20260902T071500Z-daemon",
+    "thread_key": "evolution/loop-gate",
+    "area": "evolution",
+    "thread": "loop-gate",
+    "kind": "question",
+    "date": "2026-09-02T07:15:00Z",
+    "summary": "Evolution stopped; owner review needed",
+    "body": "evolution constraint violation: experiment target matches an immutable path (src/billing/ledger.rs)\nThe workflow was not bypassed. Resolve the gate or close the unsafe thread before resuming.",
+    "on_post": "",
+    "stop": true,
+    "stale": false,
+    "thread_last": "2026-09-02T07:15:00Z",
+    "slug": "demo-app",
+    "base": "/p/demo-app"
+  },
+  {
+    "agent": "cinder",
+    "name": "",
+    "session": "s-cinder",
+    "id": "20260901T183000Z-cinder",
+    "thread_key": "payments/sandbox",
+    "area": "payments",
+    "thread": "sandbox",
+    "kind": "question",
+    "date": "2026-09-01T18:30:00Z",
+    "summary": "Which payment sandbox should the checkout fixtures hit?",
+    "body": "The checkout fixtures need a sandbox account. Two exist in the vault: `stripe-test-eu` (used by the old suite) and `stripe-test-us` (the one billing uses today). Only you know which one stays. Yes = keep `stripe-test-us` and retire the EU one; no = keep both and I pin the fixtures to EU.",
+    "on_post": "",
+    "stop": false,
+    "stale": false,
+    "thread_last": "2026-09-01T18:30:00Z",
+    "slug": "demo-app",
+    "base": "/p/demo-app"
+  }
+]

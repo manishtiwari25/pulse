@@ -119,7 +119,7 @@ function ProjectScreen() {
   const canDecide = org.data?.can_decide ?? true;
   const counts: Partial<Record<ProjectTab, number>> = card
     ? {
-        proposals: card.proposals_awaiting,
+        proposals: card.proposals_awaiting + (card.owner_questions ?? 0),
         suggestions: card.suggestions_needing_votes + card.suggestions_eligible,
         amendments: card.amendments_open,
         threads: card.threads_open,
@@ -199,7 +199,7 @@ function ProjectScreen() {
         {tab === "proposals" ? <ProposalsTab slug={slug} canDecide={canDecide} /> : null}
         {tab === "suggestions" ? <SuggestionsTab slug={slug} /> : null}
         {tab === "amendments" ? <AmendmentsTab slug={slug} /> : null}
-        {tab === "evolution" ? <EvolutionTab slug={slug} /> : null}
+        {tab === "evolution" ? <EvolutionTab slug={slug} canDecide={canDecide} /> : null}
         {tab === "timeline" ? <TimelineTab slug={slug} /> : null}
         {tab === "notices" ? <NoticesTab slug={slug} /> : null}
         {tab === "env" ? <EnvTab slug={slug} /> : null}
@@ -245,7 +245,8 @@ function InactivePick({ p, onRestored }: { p: RegisteredProject; onRestored: (sl
 
 // One registered checkout on the picker: what it is, what waits in it.
 function ProjectPick({ p }: { p: ProjectCardData }) {
-  const attention = p.proposals_awaiting > 0;
+  const forYou = p.proposals_awaiting + (p.owner_questions ?? 0);
+  const attention = forYou > 0;
   return (
     <ItemCard href={hrefs.project(p.slug)} highlight={attention} ariaLabel={p.slug}>
       <ItemCardHeader right={p.last_post ? <When d={p.last_post.date} /> : null}>
@@ -258,7 +259,7 @@ function ProjectPick({ p }: { p: ProjectCardData }) {
       <ItemCardTitle chevron>{p.slug}</ItemCardTitle>
       {p.name && p.name !== p.slug ? <ItemCardBody clamp={1}>{p.name}</ItemCardBody> : null}
       <ItemCardMeta>
-        <span className={attention ? "font-medium text-ok" : undefined}>{num(p.proposals_awaiting) + " for you"}</span>
+        <span className={attention ? "font-medium text-ok" : undefined}>{num(forYou) + " for you"}</span>
         <span>{plural(p.claims_active, "claim")}</span>
         <span>{plural(p.threads_open, "open thread")}</span>
         <span>{num(p.posts_24h) + " posts/24h"}</span>
