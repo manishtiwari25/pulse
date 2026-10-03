@@ -644,6 +644,9 @@ export interface Runner {
   // the checkout is dirty or off its default branch, a lock, an unreadable
   // folder). Written by the daemon once per change; empty when everything lands.
   landing?: LandingHold[];
+  // The `pulse status` hygiene line: when the daemon last swept, what went and
+  // what it holds (omitted by an older hub; empty before the first sweep).
+  hygiene?: string;
 }
 
 export interface LandingHold {
@@ -651,6 +654,80 @@ export interface LandingHold {
   at: string;
   note: string;
   stale: boolean;
+}
+
+// ----- hygiene: who cleans up, and what the daemon still holds ------------
+
+// One thing the daemon's sweep removed or holds: a finished job's clone, a
+// worktree left in a project checkout, a merged branch, a stray patch; `why`
+// is the rule that decided (and, when held, what the owner can do about it).
+export interface SweptItem {
+  kind: string;
+  path: string;
+  project?: string;
+  why: string;
+  bytes?: number;
+  patch?: string;
+}
+
+// What the last real sweep did (sweep.rs record_sweep): counts per kind, the
+// bytes freed, and the items themselves, capped. Null until the first sweep.
+export interface SweepNote {
+  at: string;
+  removed: Record<string, number>;
+  held: Record<string, number>;
+  bytes: number;
+  errors: number;
+  items?: { removed: SweptItem[]; held: SweptItem[]; errors: string[] };
+}
+
+// A worktree the agent added and did not remove before it finished (brief
+// rule 9); the runner removed it when the run ended, or says why it could not.
+export interface Leftover {
+  kind: string;
+  path: string;
+  branch?: string;
+  bytes: number;
+  removed: boolean;
+  note?: string;
+}
+
+// The detail of an `agent.cleanup` event: one per run that started a worker,
+// written against the agent when the run ends and its clone goes.
+export interface AgentCleanup {
+  job: string;
+  project: string;
+  executor: string;
+  status: string;
+  clone_mb: number;
+  left: Leftover[];
+  text: string;
+}
+
+// Per agent over the last `agent_days`: runs that ended, worktrees left behind,
+// how many the runner removed and the bytes that freed.
+export interface AgentHygiene {
+  agent: string;
+  runs: number;
+  last_at: string;
+  left: number;
+  removed: number;
+  bytes: number;
+}
+
+// GET /hygiene: the last sweep, the per-agent tally and the cleaning events
+// (daemon.sweep, worktree.swept, land.swept, agent.cleanup), newest first.
+// `?project=` narrows the events and the tally; `?action=` narrows within the
+// cleaning actions; `?limit=` caps the events (default 50, at most 500).
+export interface Hygiene {
+  available: boolean;
+  now: string;
+  sweep: SweepNote | null;
+  text: string;
+  settings: { sweep: string; grace_minutes: number; branch_days: number; keep_days: number };
+  agents: AgentHygiene[];
+  agent_days: number;
+  events: StoreEvent[];
 }
 
 export type SettingKind = "count" | "count-or-none" | "credits" | "number" | "fraction" | "switch" | "choice" | "command" | "text" | "identifier" | "reference";

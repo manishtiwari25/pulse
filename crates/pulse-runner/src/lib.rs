@@ -64,6 +64,7 @@ pub mod sign;
 pub mod steps_mirror;
 pub mod sweep;
 pub mod tally;
+pub mod tidy;
 pub mod tmpspace;
 pub mod token;
 pub mod util;

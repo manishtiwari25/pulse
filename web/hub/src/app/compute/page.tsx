@@ -5,6 +5,7 @@ import { useState } from "react";
 import { ClockIcon, CloudIcon, CoinsIcon, CpuIcon, HistoryIcon, InboxIcon, ServerIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExecutorRow, MachinePanel } from "@/components/pulse/cards";
+import { HygienePanel } from "@/components/pulse/hygiene";
 import { CapsPanel, ComputeRequestCard } from "@/components/compute/compute";
 import { CardGrid, SectionHeading } from "@/components/pulse/item-card";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
@@ -112,6 +113,7 @@ export default function ComputePage() {
             )}
           </Panel>
           <MachinePanel r={runner.data} />
+          <HygienePanel />
         </div>
       </div>
     </>

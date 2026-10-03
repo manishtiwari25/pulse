@@ -13,6 +13,8 @@ function actionTone(a: string): Tone {
   if (a === "hook.failed") return "bad";
   if (a === "land.pushed" || a === "land.landed") return "ok";
   if (a === "land.held") return "warn";
+  // Housekeeping: a run's own cleanup and the daemon's sweep are routine, not failures.
+  if (a === "agent.cleanup" || a === "daemon.sweep" || a.endsWith(".swept")) return "neutral";
   if (a === "post" || a.startsWith("post.")) return "neutral";
   if (/\.(fail|failed|stop|stopped|deny|denied|cancelled|removed|pruned)$/.test(a)) return "bad";
   if (/\.(add|added|create|created)$/.test(a)) return "ok";
@@ -34,7 +36,7 @@ function detailText(d: unknown): string {
   if (typeof d === "string") return d;
   try {
     const o = d as Record<string, unknown>;
-    const keys = ["summary", "title", "reason", "words", "note", "status", "value", "kind"];
+    const keys = ["summary", "title", "reason", "words", "note", "text", "status", "value", "kind"];
     for (const k of keys) if (typeof o[k] === "string" && o[k]) return String(o[k]);
     // Plain key/value details read as "project demo-app · task TASK-001".
     const parts = Object.entries(o)

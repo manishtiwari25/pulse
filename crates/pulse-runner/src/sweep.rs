@@ -386,6 +386,9 @@ pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
     lines
 }
 
+/// How many swept and held items the hygiene note keeps for the hub.
+pub(crate) const HYGIENE_ITEMS_CAP: usize = 100;
+
 /// Go: func recordSweep(s *store.Store, rep *sweepReport, now, actor string)
 pub(crate) fn record_sweep(
     s: &pulse_store::Store,
@@ -394,12 +397,19 @@ pub(crate) fn record_sweep(
     actor: String,
 ) {
     let Some(mut rep) = rep else { return };
+    // Counts for `pulse status`; the items themselves (capped) for the hub's
+    // Hygiene panel, which shows what went and what is held and why.
     let note = serde_json::json!({
         "at": now,
         "removed": rep.counts(rep.removed.clone()),
         "held": rep.counts(rep.held.clone()),
         "bytes": rep.bytes(),
         "errors": rep.errors.len(),
+        "items": {
+            "removed": rep.removed.iter().take(HYGIENE_ITEMS_CAP).collect::<Vec<_>>(),
+            "held": rep.held.iter().take(HYGIENE_ITEMS_CAP).collect::<Vec<_>>(),
+            "errors": rep.errors.iter().take(HYGIENE_ITEMS_CAP).collect::<Vec<_>>(),
+        },
     });
     if let Ok(conn) = s.conn()
         && let Ok(text) = pulse_store::gojson::to_string(&note)
@@ -2706,6 +2716,7 @@ mod tests {
             at: String,
             removed: BTreeMap<String, i64>,
             bytes: i64,
+            items: serde_json::Value,
         }
         let note: Result<Note, _> = serde_json::from_str(&raw);
         assert!(
@@ -2715,6 +2726,19 @@ mod tests {
                     && !note.at.is_empty()),
             "hygiene = {raw} ({:?})",
             note.as_ref().err()
+        );
+        // The items themselves are kept for the hub's Hygiene panel.
+        let items = note.unwrap_or_default().items;
+        let removed_items = items["removed"].as_array().cloned().unwrap_or_default();
+        assert!(
+            removed_items.iter().any(|x| x["kind"] == "clone"
+                && x["path"] == clone.display().to_string()
+                && !x["why"].as_str().unwrap_or("").is_empty()),
+            "hygiene items = {items}"
+        );
+        assert!(
+            items["held"].is_array() && items["errors"].is_array(),
+            "{items}"
         );
         let n = crate::test_helpers::count(
             &s,

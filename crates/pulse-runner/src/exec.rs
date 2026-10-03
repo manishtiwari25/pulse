@@ -43,7 +43,9 @@ pub(crate) trait Executor {
     ) -> Result<()>;
     fn fetch_source(&self) -> String;
     fn fetch_env(&self) -> Vec<String>;
-    fn cleanup(&self);
+    /// Removes the run's clone and whatever the agent left registered on it;
+    /// returns the leftovers so the run can write them down against the agent.
+    fn cleanup(&self) -> Vec<crate::tidy::Leftover>;
 }
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RunLog(Arc<Mutex<Vec<String>>>);
@@ -351,9 +353,11 @@ impl Executor for LocalExec {
     fn fetch_env(&self) -> Vec<String> {
         crate::util::git_env(&[])
     }
-    fn cleanup(&self) {
+    fn cleanup(&self) -> Vec<crate::tidy::Leftover> {
+        let left = crate::tidy::clear_leftovers(&self.clone_dir);
         let _ = std::fs::remove_dir_all(&self.clone_dir);
         crate::keys::remove_run_key(&self.key);
+        left
     }
 }
 /// Go: func preflightRunKey(path string) error
@@ -785,17 +789,21 @@ impl Executor for SshExec {
             )]),
         )
     }
-    fn cleanup(&self) {
+    fn cleanup(&self) -> Vec<crate::tidy::Leftover> {
         let _ = std::fs::remove_file(&self.bundle);
         crate::keys::remove_run_key(&self.local.key);
-        if let Err(err) = self.call(
+        match self.call(
             &["clean".into(), self.local.job.str("id")],
             &[],
             Duration::from_secs(120),
         ) {
-            self.local.log.add(format!(
-                "remote clean skipped: {err} (the next probe reports leftovers)"
-            ));
+            Ok((_, out, _)) => crate::tidy::parse_leftover_lines(&out),
+            Err(err) => {
+                self.local.log.add(format!(
+                    "remote clean skipped: {err} (the next probe reports leftovers)"
+                ));
+                Vec::new()
+            }
         }
     }
 }

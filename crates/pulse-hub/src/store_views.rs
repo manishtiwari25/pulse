@@ -427,6 +427,7 @@ impl Handler {
         let capacity = pulse_inspect::capacity_status(store)?;
         let hold = pulse_inspect::capacity_hold(store)?;
         let landing = pulse_inspect::landing_notes(store)?;
+        let hygiene = pulse_inspect::hygiene_status(store).unwrap_or_default();
         Ok(map_from_pairs(vec![
             ("available", json!(true)),
             ("now", json!(store.now())),
@@ -470,6 +471,7 @@ impl Handler {
             ("capacity", json!(capacity)),
             ("hold", json!(hold)),
             ("landing", go_value(&landing)),
+            ("hygiene", json!(hygiene)),
         ]))
     }
     /// Go: func (h *Handler) roster(views []projectView) ([]map[string]any, error)

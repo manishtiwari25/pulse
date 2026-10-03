@@ -58,6 +58,7 @@ impl Handler {
             "heldout" => self.addition_heldout(w, r, parts),
             "cred" => self.addition_cred(w, r, parts),
             "harness" => self.addition_harness(w, r, parts),
+            "hygiene" => self.addition_hygiene(w, r, parts),
             "service" => self.addition_service(w, r, parts),
             _ => return false,
         }

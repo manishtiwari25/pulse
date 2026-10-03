@@ -47,6 +47,7 @@ pub mod folders;
 pub mod harness;
 pub mod heldout;
 pub mod httpx;
+pub mod hygiene;
 pub mod job_repair;
 pub mod lifecycle;
 pub mod privacy;

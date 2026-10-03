@@ -1216,7 +1216,34 @@ pub(crate) fn run_job(
     } else {
         crate::diskroom::dir_mb(Path::new(&ex.clone()))
     };
-    ex.cleanup();
+    // The agent was told to remove what it added (brief rule 9); whatever is
+    // still registered on the clone goes now and is written down against it.
+    let left = ex.cleanup();
+    if ex.started() {
+        let clone_text = if ex.remote() {
+            format!("clone removed on {}", ex.name())
+        } else {
+            format!("clone removed ({work_mb} MB)")
+        };
+        let text = format!("{clone_text}; {}", crate::tidy::leftover_summary(&left));
+        log.put(&format!("cleanup: {text}"));
+        let mut d = serde_json::Map::new();
+        d.insert("job".into(), json!(job.str("id")));
+        d.insert("project".into(), json!(project.str("slug")));
+        d.insert("executor".into(), json!(ex.name()));
+        d.insert("status".into(), json!(status));
+        d.insert("clone_mb".into(), json!(work_mb));
+        d.insert("left".into(), json!(left));
+        d.insert("text".into(), json!(text));
+        crate::util::event_at(
+            &c,
+            &s.now(),
+            agent,
+            "agent.cleanup",
+            &run_id,
+            Value::Object(d),
+        );
+    }
     std::fs::write(&log_path, log.text()).ok();
     let exit_val: Option<i32> = exit_code;
     let record_run = |status: &str,
@@ -2198,6 +2225,149 @@ mod tests {
         assert_eq!(r.str("verify"), "verify exit 0", "run: {r:?}");
         let got = std::fs::read_to_string(marker_path).unwrap();
         assert_eq!(got, "setup\nworker\nverify\n");
+    }
+
+    #[test]
+    fn run_job_removes_what_the_agent_left_and_writes_it_down() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "leave a worktree".into(),
+            "forget to clean up".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let job_id = job.str("id");
+        let left_dir = std::path::Path::new(&s.home).join("left-behind");
+        let left = crate::util::shell_quote(&left_dir.display().to_string());
+        // The worker adds a worktree outside the clone and never removes it (rule 9).
+        let worker = format!(
+            "git worktree add -q --detach {left} && echo junk > {left}/junk.txt && echo 'SUMMARY: forgot the worktree'"
+        );
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        assert!(!left_dir.exists(), "the leftover worktree stayed");
+        assert!(
+            !std::path::Path::new(&r.str("clone")).exists(),
+            "the clone stayed"
+        );
+        let conn = s.conn().unwrap();
+        let events = crate::util::must_rows(
+            &conn,
+            "SELECT actor, subject, detail FROM events WHERE action = 'agent.cleanup'",
+            &[],
+        );
+        assert_eq!(events.len(), 1, "agent.cleanup events: {events:?}");
+        assert_eq!(events[0].str("actor"), "aurora");
+        assert_eq!(events[0].str("subject"), r.str("id"));
+        let detail: serde_json::Value = serde_json::from_str(&events[0].str("detail")).unwrap();
+        assert_eq!(detail["job"], job_id);
+        assert_eq!(detail["project"], "proj");
+        assert_eq!(detail["executor"], "local");
+        assert_eq!(detail["status"], "done");
+        let left_items = detail["left"].as_array().cloned().unwrap_or_default();
+        assert_eq!(left_items.len(), 1, "{detail}");
+        assert_eq!(left_items[0]["kind"], "worktree");
+        assert_eq!(left_items[0]["removed"], true);
+        assert!(
+            left_items[0]["path"]
+                .as_str()
+                .unwrap_or("")
+                .ends_with("left-behind"),
+            "{detail}"
+        );
+        assert!(left_items[0]["bytes"].as_i64().unwrap_or(0) > 0, "{detail}");
+        let text = detail["text"].as_str().unwrap_or("");
+        assert!(
+            text.starts_with("clone removed (")
+                && text.contains("left 1 worktree behind; removed 1"),
+            "{text}"
+        );
+        let log = std::fs::read_to_string(r.str("log")).unwrap();
+        assert!(log.contains("cleanup: clone removed"), "{log}");
+
+        // A run whose agent cleaned up writes down a clean finish.
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "tidy".into(),
+            "clean up".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: tidy'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let row = crate::util::must_one(
+            &conn,
+            "SELECT detail FROM events WHERE action = 'agent.cleanup' AND subject = ?",
+            &[&r.str("id")],
+        );
+        let detail: serde_json::Value = serde_json::from_str(&row.str("detail")).unwrap();
+        assert_eq!(detail["left"].as_array().map(Vec::len), Some(0), "{detail}");
+        assert!(
+            detail["text"]
+                .as_str()
+                .unwrap_or("")
+                .ends_with("nothing left behind"),
+            "{detail}"
+        );
     }
 
     #[test]

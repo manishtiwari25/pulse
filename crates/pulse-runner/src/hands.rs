@@ -621,7 +621,13 @@ impl Hands {
         }))
     }
     pub(crate) fn clean(&mut self, job: &str) -> Result<()> {
-        std::fs::remove_dir_all(self.job_dir(job)?)?;
+        let dir = self.job_dir(job)?;
+        // What the agent left registered on the clone goes first and is
+        // reported line by line; the runner writes it down against the agent.
+        for left in crate::tidy::clear_leftovers(&format!("{dir}/clone")) {
+            writeln!(self.stdout, "{}", crate::tidy::leftover_line(&left))?;
+        }
+        std::fs::remove_dir_all(dir)?;
         Ok(())
     }
     pub(crate) fn upload_pack(&mut self, path: &str) -> Result<()> {

@@ -530,6 +530,7 @@ export function MachinePanel({ r }: { r: Runner | undefined | null }) {
           ["jobs", r.jobs.queued + " queued · " + r.jobs.leased + " leased · " + r.jobs.running + " running" + (r.jobs.blocked ? " · " + r.jobs.blocked + " blocked" : "")],
           ...(r.capacity ? [["capacity", r.capacity] as [React.ReactNode, React.ReactNode]] : []),
           ["runs today", r.jobs.runs_today + (r.jobs.cap ? " of " + r.jobs.cap : " (no daily cap)")],
+          ...(r.hygiene ? [["hygiene", r.hygiene] as [React.ReactNode, React.ReactNode]] : []),
         ]}
       />
       {stopped ? <p className="mt-2 text-xs text-bad">{"The runner is stopped: " + (r.runner?.reason || "the stop switch is on") + "."}</p> : null}

@@ -451,6 +451,19 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         pulse_store::OWNER_PATHS.join(", ")
     );
     w!("   SUGGESTION line instead; a branch that touches them is not landed.");
+    w!(
+        "9. Clean up after yourself before you finish: remove every worktree you added (`git worktree remove <path>`,"
+    );
+    w!(
+        "   then `git worktree prune`) and every scratch clone or temporary directory you created outside this clone."
+    );
+    w!(
+        "   Never remove the clone itself or anything you did not create. When the run ends the runner removes the"
+    );
+    w!(
+        "   clone, removes whatever you left behind, and writes it down against your name (`agent.cleanup` on the"
+    );
+    w!("   hub's Hygiene panel) - a clean finish leaves nothing to write down.");
     if o.has_ball {
         w!("");
         w!("## Ballot (cards still needing votes; answer with `VOTE:` lines in your report)");

@@ -2,6 +2,7 @@
   "available": true,
   "capacity": "2 job(s) queued, 0 slot(s), 0 in flight; workers on this machine wait for a GitHub Copilot login: Sign in with GitHub (Settings -> Harness) or run pulse harness login",
   "hold": "workers on this machine wait for a GitHub Copilot login: Sign in with GitHub (Settings -> Harness) or run pulse harness login",
+  "hygiene": "last sweep 2026-09-11T08:50:00Z: removed clone 2, scratch 5, worktree 1 (176.0 MB freed); held branch 3, worktree 1",
   "daemon": {
     "state": "never started",
     "text": "never started"

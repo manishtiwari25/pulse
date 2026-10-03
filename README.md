@@ -1485,6 +1485,27 @@ last pass ran, what it removed and freed, and what it held. `pulse sweep
 what would go and removes nothing, `--held` also says what stays and why;
 `daemon.sweep off` leaves it to you.
 
+Each agent cleans up after itself first, and the record says whether it did.
+The brief's rule 9 tells a worker to remove every worktree it added
+(`git worktree remove`, then `git worktree prune`) and every scratch clone or
+temporary folder it made outside its clone before it finishes, and never the
+clone itself or anything it did not create. When the run ends the runner
+removes the clone (on an executor, `pulse hands clean` does and reports what
+it found), removes any worktree the agent still left in it, and writes one
+`agent.cleanup` event against the agent for every run whose worker started:
+the clone's size, and each leftover's kind, path, branch, bytes and whether
+it went - a clean finish reads `nothing left behind`. The hub shows all of it:
+`GET /api/v1/hygiene` returns the last sweep with its items (what went and
+what is held, each with its reason), a per-agent tally over the last 30 days
+(runs ended, worktrees left, how many the runner removed and the bytes that
+freed) and the cleaning events newest first (`daemon.sweep`,
+`worktree.swept`, `land.swept`, `agent.cleanup`; `?project=` narrows,
+`?action=` picks one, `?limit=` caps at 500); `/api/v1/runner` carries the
+`hygiene` status line; the Compute page's **Hygiene** panel renders it next to
+the machine and refreshes the moment a cleaning event lands, a project's
+Overview shows the same panel narrowed to that checkout, and the home feed
+lists the events as housekeeping.
+
 What the daemon does on its own when an executor's Copilot login is refused
 (ADR-034): with a fine-grained token that reaches no repository placed by
 `pulse executor token --with-token` (stdin; `pulse executor token` reports

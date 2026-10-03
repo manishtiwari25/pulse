@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart } from "@/components/pulse/charts";
 import { AmendmentCard, FeedList, ProposalCard, SuggestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
+import { HygienePanel } from "@/components/pulse/hygiene";
 import { DataTable } from "@/components/pulse/data-table";
 import { DocRev, SelfImprovementPanel } from "@/components/pulse/evolve";
 import { RecordDraftPanel } from "@/components/records/draft-panel";
@@ -178,6 +179,7 @@ export function OverviewTab({ slug }: { slug: string }) {
                     <p className="px-4 py-2.5 text-[12.5px] text-muted-foreground">No agent has posted here yet.</p>
                   )}
                 </Panel>
+                <HygienePanel project={slug} limit={15} />
               </div>
             </div>
           </div>
