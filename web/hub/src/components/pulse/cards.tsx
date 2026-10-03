@@ -76,40 +76,38 @@ function projectStatus(p: ProjectCardData, step: GateStep | null, forYou: number
   return { line: "Quiet — " + plural(p.agents, "agent") + (p.last_post?.date ? ", last post " + rel(p.last_post.date) : ", no posts yet"), dot: "bg-ok", text: "text-foreground", aria: "quiet status" };
 }
 
-// ----- commons card -------------------------------------------------------
+// ----- shared board ------------------------------------------------------
 
-// The shared board, kept out of the project grid: it is not a checkout, so it
-// gets its own card that says what it is and what waits on it.
-export function CommonsCard({ c, spark }: { c: ProjectCardData; spark?: number[] }) {
-  const status = c.present ? (c.questions_open + (c.owner_questions ?? 0) > 0 ? plural(c.questions_open + (c.owner_questions ?? 0), "question") + " need attention" : "Quiet — shared notes are up to date") : "Not created yet";
+// Whether the shared board has anything the owner should see right now: an
+// open question or a post today. A quiet board stays off the home page; the
+// project switcher, the command palette and the project picker still reach it.
+export function commonsLive(c: ProjectCardData): boolean {
+  return c.present && (c.questions_open + (c.owner_questions ?? 0) > 0 || c.posts_24h > 0);
+}
+
+// One row, not a card: the shared board is not a checkout, so all it has to
+// say is what waits on it and where to open it.
+export function CommonsLine({ c, className }: { c: ProjectCardData; className?: string }) {
+  const questions = c.questions_open + (c.owner_questions ?? 0);
+  const facts = c.present
+    ? [questions ? plural(questions, "open question") : "", c.posts_24h ? plural(c.posts_24h, "post") + " today" : "", c.last_post?.date ? "last post " + rel(c.last_post.date) : "no posts yet"].filter(Boolean)
+    : ["not created yet"];
   return (
-    <ItemCard href={hrefs.project(c.slug)} highlight={(c.questions_open + (c.owner_questions ?? 0)) > 0} ariaLabel="Commons - the board every project shares" className="@container/commons gap-4 surface-raised">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-primary/10 bg-primary/8 text-primary shadow-card" aria-hidden>
-            <UsersIcon className="size-[18px]" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <h3 className="text-xl font-semibold leading-tight tracking-tight">Commons</h3>
-            <p className="mt-1 text-sm text-muted-foreground">Shared by every project</p>
-          </div>
-        </div>
-        <ChevronRightIcon className="mt-1 size-4 shrink-0 text-muted-foreground opacity-50 transition-[transform,opacity] group-hover/item:opacity-100 group-focus-visible/item:opacity-100 motion-safe:group-hover/item:translate-x-0.5 motion-reduce:transition-none" aria-hidden />
-      </div>
-      <div className="flex min-w-0 items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className={cn("size-2.5 shrink-0 rounded-full", c.present ? "bg-ok" : "bg-warn")} aria-label={c.present ? "ok status" : "warning status"} role="img" />
-          <p className="text-sm font-medium leading-snug anywhere">{status}</p>
-        </div>
-        {spark?.length ? <Sparkline values={spark} w={86} h={24} className="shrink-0" /> : null}
-      </div>
-      <ItemCardBody clamp={2}>{COMMONS_HINT}</ItemCardBody>
-      <ItemCardMeta>
-        <span title={[c.path, c.last_post?.summary].filter(Boolean).join(" · ") || undefined}>{plural(c.agents, "agent")}</span>
-        <span>{plural(c.threads_open, "open thread")}</span>
-        <span>{c.last_post?.date ? "last post " + rel(c.last_post.date) : "no posts yet"}</span>
-      </ItemCardMeta>
-    </ItemCard>
+    <Link
+      href={hrefs.project(c.slug)}
+      title={COMMONS_HINT}
+      aria-label="Shared board - the board every project shares"
+      className={cn("group/commons flex min-w-0 items-center gap-3 rounded-xl surface-glass px-4 py-3 text-sm leading-relaxed transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", className)}
+    >
+      <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", questions ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground")} aria-hidden>
+        <UsersIcon className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1 anywhere">
+        <span className="font-medium text-foreground">Shared board</span>
+        <span className="text-muted-foreground"> · for things that touch more than one project · {facts.join(" · ")}</span>
+      </span>
+      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground opacity-50 transition-[transform,opacity] group-hover/commons:opacity-100 group-focus-visible/commons:opacity-100 motion-safe:group-hover/commons:translate-x-0.5 motion-reduce:transition-none" aria-hidden />
+    </Link>
   );
 }
 

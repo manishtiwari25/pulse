@@ -8,7 +8,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageTitle, EmptyState, SkeletonPage } from "@/components/pulse/panel";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { KindBadge, Mono, ToneBadge, When } from "@/components/pulse/who";
-import { CommonsCard } from "@/components/pulse/cards";
+import { CommonsLine } from "@/components/pulse/cards";
 import { PostSheet, ThreadSheet } from "@/components/board/sheets";
 import { TaskSheet } from "@/components/tasks/task-sheet";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
@@ -143,12 +143,7 @@ function ProjectScreen() {
                 </CardGrid>
               </section>
             ) : null}
-            {commons ? (
-              <section aria-label="Commons" className="mt-4">
-                <SectionHeading action={<span>not a project - the board every project shares</span>}>Commons</SectionHeading>
-                <CommonsCard c={commons} />
-              </section>
-            ) : null}
+            {commons ? <CommonsLine c={commons} className="mt-6" /> : null}
           </>
         )}
       </>

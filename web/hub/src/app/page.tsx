@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ActivityIcon, ArrowUpRightIcon, BotIcon, ChevronDownIcon, ChevronRightIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, UsersIcon, VoteIcon } from "lucide-react";
+import { ActivityIcon, ArrowUpRightIcon, BotIcon, ChevronDownIcon, ChevronRightIcon, CpuIcon, FolderIcon, HomeIcon, InboxIcon, ListTodoIcon, MessageCircleQuestionIcon, MessageSquareIcon, PowerIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
 import { HomeHero } from "@/components/home/hero";
-import { CommonsCard, MachinePanel, ProjectCard, ProposalCard, QuestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
+import { CommonsLine, commonsLive, MachinePanel, ProjectCard, ProposalCard, QuestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { ComputeInboxCard } from "@/components/compute/compute";
 import { DaemonControls } from "@/components/pulse/daemon-controls";
 import { GateCard } from "@/components/pulse/evolve";
@@ -72,7 +72,8 @@ export default function HubPage() {
   if (!org.data) return <SkeletonPage rows={4} />;
 
   const o = org.data;
-  // The commons is not a project: it gets its own card below the grid.
+  // The shared board is not a project: it gets one row under the grid, and
+  // only while something is live on it.
   const projects = registeredProjects(o);
   const commons = o.commons;
   const { decisions: adrs, proposals: awaiting, questions, compute: pendingCompute, drafts, steps, machine: machineStep, total: inbox, daemon, checking, down, downWhy, gateOf } = forYou;
@@ -184,12 +185,7 @@ export default function HubPage() {
             ))}
           </div>
         ) : null}
-        {commons ? (
-          <div className="mt-8">
-            <SectionHeading icon={UsersIcon} action={<span>The shared board for things that affect more than one project.</span>}>Shared board</SectionHeading>
-            <CommonsCard c={commons} spark={sparkFor(commons.slug)} />
-          </div>
-        ) : null}
+        {commons && commonsLive(commons) ? <CommonsLine c={commons} className="mt-4" /> : null}
       </section>
 
       <section aria-label="What's happening" className="mb-8">
