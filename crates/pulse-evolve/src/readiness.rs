@@ -187,23 +187,7 @@ pub(crate) fn planning_status(
     if let Some(refused) = refused {
         return Ok(refused);
     }
-    // A stop question waits for the owner until an answer follows it in its
-    // thread, the owner decides it, or a closing post dated after it resolves
-    // the thread (a closed suggestion thread is no candidate any more).
-    let conn = s.conn()?;
-    let row: Option<(String, String)> = conn.query_row(
-        r#"SELECT q.id, q.body FROM posts q WHERE q.project = ? AND q.kind = 'question' AND q.summary = ?
-		AND q.body NOT LIKE ? AND q.body NOT LIKE ?
-		AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
-			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date)
-		AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id)
-		AND NOT EXISTS (SELECT 1 FROM posts c WHERE c.project = q.project AND c.area = q.area
-			AND c.thread = q.thread AND c.resolution != '' AND c.date > q.date)
-		ORDER BY q.date DESC, q.id DESC LIMIT 1"#,
-        params![project, crate::cycle::STOP_SUMMARY, format!("{}%", crate::card::INSTRUCTION_REASON), format!("%{}%", crate::card::CARD_NEEDED)],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).optional()?;
-    if let Some((question, body)) = row {
+    if let Some((question, body)) = stop_question_open(s, project, "", "", "")? {
         return Ok(PlanningStatus {
             state: "blocked".to_string(),
             reason: format!(
@@ -228,6 +212,50 @@ pub(crate) fn planning_status(
     })
 }
 
+/// The one "is this stop question still open" verdict (ADR-036 follow-up to
+/// the 2026-10-03 drift where the console said blocked while the planner
+/// dispatched). A stop question waits for the owner until an answer follows
+/// it in its thread, the owner decides it, or a closing post dated after it
+/// resolves the thread (a closed suggestion thread is no candidate any more).
+/// Card-needed questions (ADR-044) are never open: the planner answers them
+/// with a card job. `area`, `thread` and `on` narrow the search when
+/// non-empty; empty means any. Returns the newest open question's id and body.
+pub(crate) fn stop_question_open(
+    s: &pulse_store::Store,
+    project: &str,
+    area: &str,
+    thread: &str,
+    on: &str,
+) -> Result<Option<(String, String)>> {
+    let conn = s.conn()?;
+    Ok(conn
+        .query_row(
+            r#"SELECT q.id, q.body FROM posts q WHERE q.project = ? AND q.kind = 'question' AND q.summary = ?
+		AND q.body NOT LIKE ? AND q.body NOT LIKE ?
+		AND (? = '' OR q.area = ?) AND (? = '' OR q.thread = ?) AND (? = '' OR q.on_post = ?)
+		AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
+			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date)
+		AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id)
+		AND NOT EXISTS (SELECT 1 FROM posts c WHERE c.project = q.project AND c.area = q.area
+			AND c.thread = q.thread AND c.resolution != '' AND c.date > q.date)
+		ORDER BY q.date DESC, q.id DESC LIMIT 1"#,
+            params![
+                project,
+                crate::cycle::STOP_SUMMARY,
+                format!("{}%", crate::card::INSTRUCTION_REASON),
+                format!("%{}%", crate::card::CARD_NEEDED),
+                area,
+                area,
+                thread,
+                thread,
+                on,
+                on
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
 /// Go: func experimentFinalizing(s *store.Store, job *board.Job) (bool, error) {
 pub(crate) fn experiment_finalizing(
     s: &pulse_store::Store,
@@ -246,6 +274,7 @@ pub(crate) fn experiment_finalizing(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_e3::*;
     use std::time::Duration;
@@ -435,6 +464,75 @@ mod tests {
                 r.next_commands
             );
         }
+    }
+
+    #[test]
+    fn stop_question_open_verdicts_match_planning_status() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = cycle_ready();
+        let ask = |thread: &str| {
+            pulse_board::create_post(
+                &s,
+                pulse_board::PostInput {
+                    project: "demo".into(),
+                    kind: "question".into(),
+                    area: "evolution".into(),
+                    thread: thread.into(),
+                    agent: "tester".into(),
+                    summary: crate::cycle::STOP_SUMMARY.into(),
+                    body: "hard stop".into(),
+                    for_owner: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let decided = ask("decided");
+        let answered = ask("answered");
+        let unresolved = ask("unresolved");
+        pulse_board::decide(&s, &decided.id, "yes", "reviewed", "human").unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap();
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                kind: "answer".into(),
+                area: "evolution".into(),
+                thread: "answered".into(),
+                on: answered.id.clone(),
+                agent: "tester".into(),
+                summary: "proceed".into(),
+                date: (now + chrono::Duration::seconds(1))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let open = |thread: &str| {
+            stop_question_open(&s, "demo", "evolution", thread, "")
+                .unwrap()
+                .map(|(id, _)| id)
+        };
+        assert_eq!(open("decided"), None, "a decided stop question is closed");
+        assert_eq!(
+            open("answered"),
+            None,
+            "an answered stop question is closed"
+        );
+        assert_eq!(
+            open("unresolved"),
+            Some(unresolved.id.clone()),
+            "an unresolved stop question stays open"
+        );
+        let any = stop_question_open(&s, "demo", "", "", "").unwrap();
+        assert_eq!(any.map(|(id, _)| id), Some(unresolved.id.clone()));
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(status.planning.state, "blocked");
+        assert_eq!(
+            status.planning.question, unresolved.id,
+            "planning_status reads the same verdict: {status:?}"
+        );
     }
 
     #[test]
