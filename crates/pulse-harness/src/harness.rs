@@ -1515,11 +1515,15 @@ pub fn truncate(s: &str, limit: usize) -> String {
         return s.to_string();
     }
     let half = limit / 2;
-    let omitted = s.len() - half - half;
+    // Byte offsets clamped to char boundaries: tool output with multi-byte
+    // text (box drawing, Arabic, emoji) at the cut used to panic the worker.
+    let head_end = s.floor_char_boundary(half);
+    let tail_start = s.ceil_char_boundary(s.len() - half);
+    let omitted = tail_start - head_end;
     format!(
         "{}\n[... {omitted} characters omitted ...]\n{}",
-        &s[..half],
-        &s[s.len() - half..]
+        &s[..head_end],
+        &s[tail_start..]
     )
 }
 
@@ -1539,7 +1543,7 @@ pub fn clone_messages(input: &[Message]) -> Vec<Message> {
 pub fn one_line(s: &str, limit: usize) -> String {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.len() > limit {
-        s[..limit].to_string()
+        s[..s.floor_char_boundary(limit)].to_string()
     } else {
         s
     }
@@ -1718,6 +1722,48 @@ mod tests {
     use pulse_provider::{Login, Model};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Condvar, Mutex};
+
+    #[test]
+    fn truncate_cuts_on_char_boundaries() {
+        assert_eq!(truncate("abcdef", 0), "abcdef");
+        assert_eq!(truncate("abcdef", 6), "abcdef");
+        assert_eq!(
+            truncate("abcdefghij", 4),
+            "ab\n[... 6 characters omitted ...]\nij"
+        );
+        // Multi-byte chars at either cut (the shapes seen in run logs: a
+        // box-drawing table and Arabic JSON) are dropped whole, not split.
+        let table = format!("{}─{}", "x".repeat(4), "y".repeat(4));
+        // limit 10 puts both cuts inside the 3-byte '─'; limit 8 lands on
+        // its edges. Either way the char is dropped whole.
+        for limit in [8, 10] {
+            assert_eq!(
+                truncate(&table, limit),
+                "xxxx\n[... 3 characters omitted ...]\nyyyy",
+                "limit {limit}"
+            );
+        }
+        let arabic = format!("{}ب{}ب{}", "a".repeat(3), "b".repeat(3), "c".repeat(3));
+        let got = truncate(&arabic, 8);
+        assert!(got.starts_with("aaa\n"), "{got:?}");
+        assert!(got.ends_with("\nccc"), "{got:?}");
+        for s in ["─".repeat(20), "عميل ".repeat(10), "a😀".repeat(10)] {
+            for limit in 1..=12 {
+                let out = truncate(&s, limit);
+                assert!(out.contains("characters omitted"), "{s:?} {limit}");
+            }
+        }
+    }
+
+    #[test]
+    fn one_line_cuts_on_char_boundaries() {
+        assert_eq!(one_line(" a \n b  c ", 80), "a b c");
+        assert_eq!(one_line("abcdef", 3), "abc");
+        assert_eq!(one_line("ab—cd", 3), "ab");
+        assert_eq!(one_line("ab—cd", 4), "ab");
+        assert_eq!(one_line("ab—cd", 5), "ab—");
+        assert_eq!(one_line("تغيّر هذا العميل", 5), "تغ");
+    }
 
     struct FakeProvider {
         responses: Mutex<Vec<pulse_provider::Response>>,

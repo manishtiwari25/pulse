@@ -204,7 +204,7 @@ pub fn harness_line(s: &pulse_store::Store) -> String {
 pub fn one_status_line(s: &str, limit: usize) -> String {
     let text = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.len() > limit {
-        text[..limit].to_string()
+        text[..text.floor_char_boundary(limit)].to_string()
     } else {
         text
     }
@@ -671,6 +671,18 @@ pub fn run_status(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()>
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+
+    #[test]
+    fn one_status_line_cuts_on_char_boundaries() {
+        assert_eq!(one_status_line("a \n b", 80), "a b");
+        assert_eq!(one_status_line("abcdef", 3), "abc");
+        // A multi-byte char straddling the byte limit is dropped, not split.
+        let s = "ab—cd";
+        assert_eq!(one_status_line(s, 3), "ab");
+        assert_eq!(one_status_line(s, 4), "ab");
+        assert_eq!(one_status_line(s, 5), "ab—");
+        assert_eq!(one_status_line("عميل عميل", 3), "ع");
+    }
 
     #[test]
     fn daemon_interval_fallback() {

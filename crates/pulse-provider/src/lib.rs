@@ -795,9 +795,9 @@ pub fn squeeze(s: &str, n: usize) -> String {
         return s;
     }
     if n <= 3 {
-        return s[..n].to_string();
+        return s[..s.floor_char_boundary(n)].to_string();
     }
-    format!("{}...", &s[..n - 3])
+    format!("{}...", &s[..s.floor_char_boundary(n - 3)])
 }
 
 #[cfg(test)]
@@ -805,6 +805,20 @@ mod tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
+
+    #[test]
+    fn squeeze_cuts_on_char_boundaries() {
+        assert_eq!(squeeze("a \n b", 80), "a b");
+        assert_eq!(squeeze("abcdefgh", 6), "abc...");
+        assert_eq!(squeeze("abcdef", 2), "ab");
+        // The provider's error text may carry curly quotes or non-Latin
+        // script; a char straddling the cut is dropped rather than split.
+        assert_eq!(squeeze("ab’cdefgh", 6), "ab...");
+        assert_eq!(squeeze("ab’cdefgh", 7), "ab...");
+        assert_eq!(squeeze("ab’cdefgh", 8), "ab’...");
+        assert_eq!(squeeze("—abc", 2), "");
+        assert_eq!(squeeze("—abc", 3), "—");
+    }
 
     struct TestProvider;
 
