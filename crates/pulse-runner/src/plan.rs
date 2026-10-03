@@ -1236,6 +1236,49 @@ mod tests {
     }
 
     #[test]
+    fn research_ignores_blocked_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        research_on(&s, "60");
+        suppress_planner_reflect(&s);
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "improve".into(),
+            "Implement suggestion".into(),
+            "one variable".into(),
+            1,
+            10,
+            "suggestion:x".into(),
+            "daemon".into(),
+            true,
+        )
+        .expect("add worker");
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            !ok && reason == "a job is open",
+            "queued job holds research = {ok} {reason:?}"
+        );
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'blocked', result = 'environment: ssh-signing', finished_at = ?, created_at = ? WHERE id = ?",
+            &[
+                &crate::util::plus_hours(TEST_NOW, -48.0),
+                &crate::util::plus_hours(TEST_NOW, -48.0),
+                &job.str("id"),
+            ],
+        );
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            ok && reason.is_empty(),
+            "a blocked job is not open work: research_due = {ok} {reason:?}"
+        );
+    }
+
+    #[test]
     fn research_comes_sooner_while_the_fleet_is_idle() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();

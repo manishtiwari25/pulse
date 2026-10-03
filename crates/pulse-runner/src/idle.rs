@@ -59,10 +59,15 @@ pub(crate) fn idle_note_from_parts(
     parts.push(reflect_idle_part(s, slug.clone(), now.clone()));
     parts.push(research_idle_part(s, slug.clone(), now));
     if let Ok(st) = pulse_evolve::status(s, &slug) {
-        if st.level == "D" {
-            parts.push("evolve: level D".into());
-        } else {
+        if st.level != "D" {
             parts.push(format!("evolve: {}", crate::util::trunc(&st.reason, 120)));
+        } else if st.planning.state == "blocked" {
+            parts.push(format!(
+                "evolve: level D, planning blocked: {}",
+                crate::util::trunc(&st.planning.reason, 200)
+            ));
+        } else {
+            parts.push("evolve: level D".into());
         }
     }
     parts.join("; ")

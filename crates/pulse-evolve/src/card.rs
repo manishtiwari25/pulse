@@ -38,6 +38,12 @@ pub(crate) static NEGATED_INSTRUCTION: LazyLock<regex::Regex> = LazyLock::new(||
     regex::Regex::new(r"(?i)^(do not|don't|never|must not|cannot|won't|refuse|not authorized)\b")
         .unwrap()
 });
+/// "skip check(s)" and "skip guard(s)" with nothing between the words is the vocabulary
+/// of test suites, not a command: "the plan_jobs skip check", "a Docker-availability skip
+/// guard", "removes the skip guards", "skip guards hide a missing export". A command puts
+/// a word between them: "skip the checks", "skip all guards", "skip verification checks".
+static SKIP_NOUN: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)^skip (checks?|guards?)$").unwrap());
 /// Go: var instructionCache sync.Map
 pub(crate) static INSTRUCTION_CACHE: LazyLock<Mutex<BTreeMap<String, bool>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
@@ -63,6 +69,9 @@ pub(crate) fn instruction_shaped_slow(text: &str) -> bool {
         let trimmed = line.trim();
         let line = trimmed.trim_start_matches(['-', '*', '>']).trim();
         for m in INSTRUCTION_PATTERN.find_iter(line) {
+            if SKIP_NOUN.is_match(m.as_str()) {
+                continue;
+            }
             let prefix = line[..m.start()].trim();
             if !NEGATED_INSTRUCTION.is_match(prefix) || prefix.contains([';', '.', '!', '?']) {
                 return true;

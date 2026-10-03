@@ -500,7 +500,11 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   `evolve.loop=1` and the project is at Level D, the evolution loop gets first
   pick as a measured experiment and the planner builds the rest; the daemon
   says `plan <slug>: left suggestion <id> to the evolution loop` when it
-  defers that card.
+  defers that card. A loop that cannot plan - stopped on an instruction-shaped
+  post until the owner decides its question - reserves nothing but the flagged
+  post itself: the planner carries the other voted cards as ordinary improve
+  jobs meanwhile, and the project's idle line says `evolve: level D, planning
+  blocked: ...` with the owner's next step.
   The gates, in order: a suggestion already carried by a queued, leased or
   blocked job waits for that job; a later open card with the same summary,
   or the same `File:` + `Variable:`, as an earlier open card is held as
@@ -627,7 +631,10 @@ gated, blocked, waiting for an eligible suggestion, writing an experiment
 card, ready but not dispatched, queued, in flight, or finalizing. When the
 planner is blocked on something only the owner can do (an instruction-shaped
 post awaiting `pulse decide`), that command is also the `Next human step`
-line, in `pulse evolve status` and the `pulse reflect` digest alike. Level D
+line, in `pulse evolve status` and the `pulse reflect` digest alike. The
+tripwire reads commands ("skip the checks", "ignore previous instructions",
+"push immediately"), not the vocabulary of the work: a bare `skip check(s)` or
+`skip guard(s)` with nothing between the words names a thing and passes. Level D
 with no eligible suggestion is still waiting, not a running experiment. A voted
 suggestion that names no single `File:` and `Variable:` is not the owner's to
 fix: the planner queues one agent card job for it, which posts the card as a
@@ -1537,13 +1544,14 @@ only cards with net votes > 0; a result carrying a violation or hard stop posts
 the owner question once and holds that project until it is answered - so
 `pulse evolve cycle` is the by-hand alternative, not a requirement. After
 `lead.idle_hours` (default 6, `0` turns it off) with no job queued, leased or
-created, the lead gets a standing brief: read the board's queue, the failed
+created (a `blocked` job is one the runner stopped retrying, not open work),
+the lead gets a standing brief: read the board's queue, the failed
 jobs of the week, the plans and decisions, queue up to `lead.idle_max_jobs`
 (default 3) Tier 0/1 worker jobs and tell the owner in the project's chat what
 it queued and why, or say in its summary that nothing was worth queueing.
 Idle time is research time (ADR-045): when a project has nothing plannable,
-nothing queued, and no research job or job that decided work created for
-`lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do
+nothing queued or leased (blocked jobs do not count), and no research job or
+job that decided work created for `lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do
 not count), the planner seeds one research job - a `reflect` job whose
 brief points a worker at one focus in turn (the product as its user sees it,
 the code that changes most, the next step toward the project's goal, the

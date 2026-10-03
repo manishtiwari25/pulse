@@ -669,7 +669,14 @@ pub(crate) fn tend_lead(
         lines.push(format!("lead {} joined for {}", lead.name, slug));
     }
     let Ok(conn) = s.conn() else { return lines };
-    if !must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND kind = ? AND status IN ('queued', 'leased', 'blocked')", &[&slug, &LEAD_KIND]).0.is_empty() {
+    if !must_one(
+        &conn,
+        "SELECT 1 AS x FROM jobs WHERE project = ? AND kind = ? AND status IN ('queued', 'leased')",
+        &[&slug, &LEAD_KIND],
+    )
+    .0
+    .is_empty()
+    {
         return lines;
     }
     let (msgs, due, away) = match lead_due(s, slug.clone(), lead.name.clone(), now.clone()) {
@@ -829,7 +836,7 @@ pub(crate) fn tend_idle_lead(
     let Ok(conn) = s.conn() else {
         return Vec::new();
     };
-    let quiet = must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased', 'blocked') LIMIT 1", &[&slug]).0.is_empty()
+    let quiet = must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased') LIMIT 1", &[&slug]).0.is_empty()
         && must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? AND kind NOT IN ('reflect', 'ballot') LIMIT 1", &[&slug, &plus_hours(&now, -(hours as f64))]).0.is_empty();
     if !quiet {
         return Vec::new();
@@ -1372,6 +1379,46 @@ mod tests {
             idle_lead_job_rows(&s.conn().expect("conn")).is_empty()
                 && !lines.join("\n").contains("owner idle"),
             "queued job did not suppress idle: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn idle_lead_ignores_blocked_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "lead.idle_hours", "6");
+        for kind in ["improve", LEAD_KIND] {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                kind.into(),
+                format!("blocked {kind}"),
+                "do it".into(),
+                1,
+                5,
+                format!("test:blocked-{kind}"),
+                crate::util::HUMAN_AGENT.into(),
+                false,
+            )
+            .expect("add job");
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE jobs SET status = 'blocked', result = 'environment: ssh-signing', finished_at = ?, created_at = ? WHERE id = ?",
+                &[
+                    &crate::util::plus_hours(TEST_NOW, -48.0),
+                    &crate::util::plus_hours(TEST_NOW, -48.0),
+                    &job.str("id"),
+                ],
+            );
+        }
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            idle_lead_job_rows(&s.conn().expect("conn")).len() == 1
+                && lines.join("\n").contains("owner idle"),
+            "blocked jobs held the idle lead: {lines:?}"
         );
     }
 

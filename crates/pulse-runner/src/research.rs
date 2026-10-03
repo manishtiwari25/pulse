@@ -154,7 +154,15 @@ pub(crate) fn research_due(
     if idle {
         minutes = (minutes / factor).max(10);
     }
-    if !must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased', 'blocked') LIMIT 1", &[&slug]).0.is_empty() {
+    // A blocked job is one the runner stopped retrying, not work in progress.
+    if !must_one(
+        &conn,
+        "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased') LIMIT 1",
+        &[&slug],
+    )
+    .0
+    .is_empty()
+    {
         return (ResearchFocus::default(), "a job is open".into(), false);
     }
     let prefix = format!("{RESEARCH_SOURCE_PREFIX}{slug}:");
