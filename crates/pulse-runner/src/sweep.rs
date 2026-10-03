@@ -88,6 +88,8 @@ pub(crate) struct Sweeper {
     pub(crate) keep: std::time::Duration,
     pub(crate) rep: SweepReport,
     pub(crate) projects: Vec<Row>,
+    /// Every project checkout the store knows, active or not: never a sweep target.
+    pub(crate) checkouts: Vec<String>,
     pub(crate) prune: BTreeMap<String, bool>,
     pub(crate) running: BTreeMap<String, bool>,
 }
@@ -99,6 +101,15 @@ pub(crate) fn sweep(
     now: String,
     o: SweepOpts,
 ) -> Option<SweepReport> {
+    let checkouts = s
+        .conn()
+        .map(|conn| {
+            crate::util::must_rows(&conn, "SELECT path FROM projects", &[])
+                .into_iter()
+                .map(|r| r.str("path"))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut w = Sweeper {
         s: s.clone(),
         now: now.clone(),
@@ -111,6 +122,7 @@ pub(crate) fn sweep(
         keep: Duration::from_secs((s.setting_int("daemon.sweep_keep_days") as u64) * 24 * 3600),
         o,
         projects,
+        checkouts,
         prune: BTreeMap::new(),
         running: BTreeMap::new(),
         rep: SweepReport {
@@ -188,6 +200,77 @@ pub(crate) fn live_worktree(path: String) -> (String, bool) {
         }
     }
     (String::new(), false)
+}
+
+/// One entry of `git worktree list --porcelain`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WorktreeEntry {
+    pub path: String,
+    pub head: String,
+    /// Short branch name; empty when the worktree is detached or bare.
+    pub branch: String,
+    pub detached: bool,
+    pub bare: bool,
+    /// `Some(reason)` when locked; the reason may be empty.
+    pub locked: Option<String>,
+    pub prunable: bool,
+}
+
+/// Parses `git worktree list --porcelain`; the first entry is the main worktree.
+pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
+    let mut out: Vec<WorktreeEntry> = Vec::new();
+    let mut cur: Option<WorktreeEntry> = None;
+    for line in porcelain.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            out.extend(cur.take());
+            cur = Some(WorktreeEntry {
+                path: path.to_string(),
+                ..Default::default()
+            });
+            continue;
+        }
+        let Some(e) = cur.as_mut() else { continue };
+        if let Some(head) = line.strip_prefix("HEAD ") {
+            e.head = head.trim().to_string();
+        } else if let Some(branch) = line.strip_prefix("branch ") {
+            e.branch = branch
+                .trim()
+                .strip_prefix("refs/heads/")
+                .unwrap_or(branch.trim())
+                .to_string();
+        } else if line == "detached" {
+            e.detached = true;
+        } else if line == "bare" {
+            e.bare = true;
+        } else if line == "locked" {
+            e.locked = Some(String::new());
+        } else if let Some(reason) = line.strip_prefix("locked ") {
+            e.locked = Some(reason.trim().to_string());
+        } else if line == "prunable" || line.starts_with("prunable ") {
+            e.prunable = true;
+        }
+    }
+    out.extend(cur);
+    out
+}
+
+/// True when both paths name the same place on disk.
+pub(crate) fn same_path(a: &str, b: &str) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+fn first_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Go: func processAlive(pid int) bool
@@ -1022,6 +1105,11 @@ impl Sweeper {
             Duration::from_secs(30),
             &["worktree", "list", "--porcelain"],
         );
+        if list.ok() {
+            for wt in parse_worktrees(&list.stdout).into_iter().skip(1) {
+                self.sweep_project_worktree(&root, &slug, &def, &head, wt);
+            }
+        }
         if (self.prune.get(&root).copied().unwrap_or(false)
             || (list.ok() && list.stdout.contains("\nprunable")))
             && !self.o.dry_run
@@ -1029,6 +1117,339 @@ impl Sweeper {
             let _ =
                 crate::util::git_timeout(&root, Duration::from_secs(30), &["worktree", "prune"]);
         }
+    }
+    /// True under the folders whose worktrees and clones have passes of their own
+    /// (landing worktrees under work/, worktrees/, fleet and measurement clones).
+    pub(crate) fn runner_owned(&self, path: &str) -> bool {
+        ["work", "worktrees", "fleet"].iter().any(|sub| {
+            crate::util::is_inside(path, &Path::new(&self.home).join(sub).display().to_string())
+        })
+    }
+    /// When a worktree was last touched: its folder, its `.git` file and the HEAD, index
+    /// and reflog of its admin directory - a checkout, commit, add or status moves one of
+    /// them; edits deep in the tree show up as uncommitted changes instead.
+    pub(crate) fn worktree_age(&mut self, path: &str) -> (std::time::Duration, bool) {
+        let mut newest: Option<std::time::SystemTime> = None;
+        let mut consider = |p: PathBuf| {
+            if let Ok(meta) = std::fs::symlink_metadata(&p)
+                && let Ok(modified) = meta.modified()
+            {
+                newest = Some(newest.map_or(modified, |n: std::time::SystemTime| n.max(modified)));
+            }
+        };
+        let dir = PathBuf::from(path);
+        consider(dir.clone());
+        let dotgit = dir.join(".git");
+        consider(dotgit.clone());
+        if let Ok(data) = std::fs::read_to_string(&dotgit)
+            && let Some(gitdir) = data.trim().strip_prefix("gitdir: ")
+        {
+            let gitdir = if Path::new(gitdir).is_absolute() {
+                PathBuf::from(gitdir)
+            } else {
+                dir.join(gitdir)
+            };
+            for f in ["HEAD", "ORIG_HEAD", "index", "logs/HEAD"] {
+                consider(gitdir.join(f));
+            }
+        }
+        match newest {
+            Some(t) => (
+                (self.clock - chrono::DateTime::<chrono::Utc>::from(t))
+                    .to_std()
+                    .unwrap_or_default(),
+                true,
+            ),
+            None => (Duration::ZERO, false),
+        }
+    }
+    /// True when every commit at `tip` is on the default branch or on its upstream.
+    pub(crate) fn on_default(&mut self, root: &str, tip: &str, def: &str) -> bool {
+        if tip.is_empty() {
+            return false;
+        }
+        let ancestor = |of: &str| {
+            crate::util::git_timeout(
+                root,
+                Duration::from_secs(30),
+                &["merge-base", "--is-ancestor", tip, of],
+            )
+            .ok()
+        };
+        if ancestor(def) {
+            return true;
+        }
+        let upstream = crate::util::git_timeout(
+            root,
+            Duration::from_secs(10),
+            &[
+                "rev-parse",
+                "--symbolic-full-name",
+                &format!("{def}@{{upstream}}"),
+            ],
+        );
+        upstream.ok() && {
+            let up = upstream.stdout.trim().to_string();
+            !up.is_empty() && ancestor(&up)
+        }
+    }
+    /// A worktree the project checkout lists outside the runner's own folders: an agent
+    /// or the owner made it for one piece of work and left it. Once every commit in it
+    /// is on the default branch it goes after `daemon.sweep_grace_minutes` untouched, and
+    /// a merged branch of its own goes with it; work not on the default branch keeps it
+    /// for `daemon.sweep_branch_days` untouched, then only the worktree goes - its branch
+    /// stays, and a detached HEAD is saved as a patch first. Never touched: a locked
+    /// worktree, one with uncommitted changes, one on a branch a job still holds, a
+    /// project checkout of its own, and whatever git will not remove.
+    pub(crate) fn sweep_project_worktree(
+        &mut self,
+        root: &str,
+        slug: &str,
+        def: &str,
+        head: &str,
+        wt: WorktreeEntry,
+    ) {
+        let path = wt.path.clone();
+        if path.is_empty()
+            || wt.bare
+            || wt.prunable
+            || same_path(&path, root)
+            || self.runner_owned(&path)
+            || !Path::new(&path).is_dir()
+        {
+            return;
+        }
+        if self.checkouts.iter().any(|p| same_path(p, &path)) {
+            return;
+        }
+        let project = slug.to_string();
+        if let Some(reason) = wt.locked {
+            let reason = if reason.is_empty() {
+                String::new()
+            } else {
+                format!(" ({reason})")
+            };
+            self.held(
+                "worktree".into(),
+                path,
+                project,
+                format!("locked{reason}; `git worktree unlock` it to let the sweep take it"),
+            );
+            return;
+        }
+        if !wt.branch.is_empty()
+            && let Some(why) = nonempty(self.branch_hold(wt.branch.clone(), head.to_string()))
+        {
+            self.held(
+                "worktree".into(),
+                path,
+                project,
+                format!("branch {} {why}", wt.branch),
+            );
+            return;
+        }
+        let (age, ok) = self.worktree_age(&path);
+        if !ok {
+            return;
+        }
+        let merged = self.on_default(root, &wt.head, def);
+        let ahead = if merged {
+            0
+        } else {
+            crate::util::git_timeout(
+                root,
+                Duration::from_secs(30),
+                &["rev-list", "--count", &format!("{def}..{}", wt.head)],
+            )
+            .stdout
+            .trim()
+            .parse::<i32>()
+            .unwrap_or(0)
+        };
+        let commits = format!("{ahead} {}", crate::util::plural(ahead, "commit"));
+        let what = if wt.branch.is_empty() {
+            format!("detached HEAD has {commits}")
+        } else {
+            format!("branch {} has {commits}", wt.branch)
+        };
+        let wait = if merged { self.grace } else { self.branches };
+        if age < wait {
+            let why = if merged {
+                format!(
+                    "every commit is on {def}; removed after {} untouched",
+                    round_duration(wait)
+                )
+            } else {
+                format!(
+                    "{what} not on {def}; removed after {} untouched",
+                    round_duration(wait)
+                )
+            };
+            self.held("worktree".into(), path, project, why);
+            return;
+        }
+        let status =
+            crate::util::git_timeout(&path, Duration::from_secs(120), &["status", "--porcelain"]);
+        if !status.ok() {
+            self.held(
+                "worktree".into(),
+                path,
+                project,
+                format!(
+                    "git cannot read it ({}); remove it by hand",
+                    first_line(&status.stderr)
+                ),
+            );
+            return;
+        }
+        let changes = status
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count() as i32;
+        if changes > 0 {
+            self.held(
+                "worktree".into(),
+                path,
+                project,
+                format!(
+                    "{changes} uncommitted {}; commit or discard them by hand",
+                    crate::util::plural(changes, "change")
+                ),
+            );
+            return;
+        }
+        let mut item = Swept {
+            kind: "worktree".into(),
+            path: path.clone(),
+            project: project.clone(),
+            why: String::new(),
+            bytes: disk_usage(path.clone()),
+            patch: String::new(),
+        };
+        if merged {
+            item.why = format!(
+                "every commit is on {def}, untouched for {}",
+                round_duration(age)
+            );
+        } else {
+            item.why = format!("untouched for {}; ", round_duration(age));
+            if !wt.branch.is_empty() {
+                item.why.push_str(&format!(
+                    "branch {} keeps its {commits} not on {def}",
+                    wt.branch
+                ));
+            } else if self.o.dry_run {
+                item.why.push_str(&format!(
+                    "its {commits} not on {def} would be saved as a patch first"
+                ));
+            } else {
+                let base = crate::util::git_timeout(
+                    root,
+                    Duration::from_secs(30),
+                    &["merge-base", def, &wt.head],
+                )
+                .stdout
+                .trim()
+                .to_string();
+                if base.is_empty() {
+                    self.failed(
+                        format!("cannot find where {path} left {def} in {root}; worktree kept"),
+                        vec![],
+                    );
+                    return;
+                }
+                item.patch = crate::land::save_branch_patch(
+                    root.to_string(),
+                    base,
+                    wt.head.clone(),
+                    self.home.clone(),
+                    slug.to_string(),
+                );
+                if std::fs::metadata(&item.patch).map_or(0, |m| m.len()) == 0 {
+                    let _ = std::fs::remove_file(&item.patch);
+                    self.held(
+                        "worktree".into(),
+                        path,
+                        project,
+                        format!(
+                            "{what} not on {def} that do not fit a patch; remove it by hand once they are safe"
+                        ),
+                    );
+                    return;
+                }
+                item.why.push_str(&format!(
+                    "its {commits} not on {def} saved at {}",
+                    item.patch
+                ));
+            }
+        }
+        let drop_branch = merged && !wt.branch.is_empty() && wt.branch != def && wt.branch != head;
+        if drop_branch {
+            item.why
+                .push_str(&format!("; branch {} goes with it", wt.branch));
+        }
+        if self.o.dry_run {
+            self.rep.removed.push(item);
+            return;
+        }
+        // Without --force git checks again that nothing uncommitted is in it.
+        let rm = crate::util::git_timeout(
+            root,
+            Duration::from_secs(120),
+            &["worktree", "remove", &path],
+        );
+        if !rm.ok() {
+            self.held(
+                "worktree".into(),
+                path,
+                project,
+                format!(
+                    "git would not remove it ({}); remove it by hand",
+                    first_line(&rm.stderr)
+                ),
+            );
+            return;
+        }
+        self.prune.insert(root.to_string(), true);
+        let conn = self.s.conn().ok();
+        if let Some(conn) = conn.as_ref() {
+            crate::util::event_at(
+                conn,
+                &self.now,
+                &self.o.actor,
+                "worktree.swept",
+                &path,
+                serde_json::json!({"project": slug, "branch": wt.branch, "tip": wt.head, "merged": merged, "patch": item.patch, "why": item.why}),
+            );
+        }
+        if drop_branch {
+            let del = crate::util::git_timeout(
+                root,
+                Duration::from_secs(30),
+                &["branch", "-D", &wt.branch],
+            );
+            if !del.ok() {
+                self.failed(
+                    format!(
+                        "cannot delete {} in {root}: {}",
+                        wt.branch,
+                        del.stderr.trim()
+                    ),
+                    vec![],
+                );
+            } else if let Some(conn) = conn.as_ref() {
+                crate::util::event_at(
+                    conn,
+                    &self.now,
+                    &self.o.actor,
+                    "land.swept",
+                    &wt.branch,
+                    serde_json::json!({"project": slug, "tip": wt.head, "patch": "", "merged": true, "why": format!("its worktree {path} went; every commit is on {def}")}),
+                );
+            }
+        }
+        self.rep.removed.push(item);
     }
     /// Go: func (w *sweeper) branchHold(branch, head string) string
     pub(crate) fn branch_hold(&mut self, branch: String, head: String) -> String {
@@ -1635,6 +2056,303 @@ mod tests {
         assert!(held_why(&rep.held, &live).contains("git still lists"));
         assert!(held_why(&rep.held, &nested).contains("git still lists"));
         assert!(held_why(&rep.held, &repo).contains("repository of its own"));
+    }
+
+    #[test]
+    fn parse_worktree_porcelain() {
+        let text = "worktree /repo\nHEAD 1111\nbranch refs/heads/main\n\nworktree /wt/a\nHEAD 2222\nbranch refs/heads/fleet/a\nlocked busy\n\nworktree /wt/b\nHEAD 3333\ndetached\nprunable gitdir file points to non-existent location\n\nworktree /wt/c\nHEAD 4444\nbranch refs/heads/c\nlocked\n";
+        let got = parse_worktrees(text);
+        assert_eq!(got.len(), 4);
+        assert_eq!(
+            (got[0].path.as_str(), got[0].branch.as_str()),
+            ("/repo", "main")
+        );
+        assert_eq!(got[1].locked.as_deref(), Some("busy"));
+        assert_eq!(got[1].branch, "fleet/a");
+        assert!(got[2].detached && got[2].prunable && got[2].branch.is_empty());
+        assert_eq!(got[2].head, "3333");
+        assert_eq!(got[3].locked.as_deref(), Some(""));
+        assert!(parse_worktrees("").is_empty());
+    }
+
+    #[test]
+    fn sweep_project_worktrees() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let (_, root) = new_bare_repo(&s);
+        let wt = Path::new(&root).parent().unwrap().join("wt");
+        let add = |name: &str, branch: Option<&str>| -> String {
+            let path = wt.join(name).display().to_string();
+            let mut argv = vec!["git", "worktree", "add", "-q"];
+            match branch {
+                Some(b) => argv.extend(["-b", b]),
+                None => argv.push("--detach"),
+            }
+            argv.extend([path.as_str(), "main"]);
+            run(&root, &argv);
+            path
+        };
+        let commit = |path: &str, name: &str| {
+            mkdir_file(Path::new(path).join(format!("{name}.txt")), name);
+            run(path, &["git", "add", "-A"]);
+            run(
+                path,
+                &["git", "commit", "-q", "-m", &format!("work on {name}")],
+            );
+        };
+        let merged = add("merged", Some("agent/merged"));
+        let ahead = add("ahead", Some("agent/ahead"));
+        commit(&ahead, "ahead");
+        let dirty = add("dirty", Some("agent/dirty"));
+        mkdir_file(Path::new(&dirty).join("notes.md"), "not committed");
+        let locked = add("locked", Some("agent/locked"));
+        run(
+            &root,
+            &["git", "worktree", "lock", "--reason", "busy", &locked],
+        );
+        let detached = add("detached", None);
+        commit(&detached, "detached");
+        let detached_tip = run(&detached, &["git", "rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        let pending = sweep_job(&s, "done", "");
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET branch = ? WHERE id = ?",
+                params![format!("pulse/w/{pending}"), pending],
+            )
+            .unwrap();
+        let waiting = add("waiting", Some(&format!("pulse/w/{pending}")));
+        let other = add("other", Some("other"));
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, status, added_at, added_by, last_seen, default_branch) VALUES ('other', 'Other', ?, 'inactive', ?, 'human', ?, 'main')",
+                params![other, TEST_NOW, TEST_NOW],
+            )
+            .unwrap();
+        let land = Path::new(&s.home)
+            .join("work")
+            .join(format!("land-proj-{}", std::process::id()));
+        std::fs::create_dir_all(land.parent().unwrap()).unwrap();
+        run(
+            &root,
+            &[
+                "git",
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                land.to_str().unwrap(),
+                "main",
+            ],
+        );
+
+        let rep = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                actor: "daemon".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        for gone in [&merged, &ahead, &detached] {
+            assert!(!crate::util::file_exists(gone), "{gone} still there");
+        }
+        for kept in [&dirty, &locked, &waiting, &other] {
+            assert!(crate::util::file_exists(kept), "{kept} removed");
+        }
+        assert!(crate::util::file_exists(&land.display().to_string()));
+        let mut removed = swept_paths(&rep.removed, "worktree");
+        removed.sort();
+        let mut want = vec![merged.clone(), ahead.clone(), detached.clone()];
+        want.sort();
+        assert_eq!(removed, want);
+        let why = |path: &str| {
+            rep.removed
+                .iter()
+                .find(|x| x.path == path)
+                .map(|x| x.why.clone())
+                .unwrap_or_default()
+        };
+        assert!(
+            why(&merged).contains("every commit is on main")
+                && why(&merged).contains("branch agent/merged goes with it"),
+            "{}",
+            why(&merged)
+        );
+        assert!(
+            why(&ahead).contains("branch agent/ahead keeps its 1 commit not on main"),
+            "{}",
+            why(&ahead)
+        );
+        let patch = Path::new(&s.home)
+            .join("patches/proj")
+            .join(format!("{detached_tip}.patch"));
+        assert!(
+            why(&detached).contains(&format!("saved at {}", patch.display())),
+            "{}",
+            why(&detached)
+        );
+        assert!(
+            std::fs::read_to_string(&patch)
+                .unwrap()
+                .contains("work on detached")
+        );
+        assert!(
+            rep.removed
+                .iter()
+                .all(|x| x.kind != "worktree" || x.bytes > 0)
+        );
+        assert!(held_why(&rep.held, &dirty).contains("1 uncommitted change"));
+        assert!(held_why(&rep.held, &locked).contains("locked (busy)"));
+        assert!(held_why(&rep.held, &waiting).contains("waiting to land"));
+        assert!(held_why(&rep.held, &land).contains("still running"));
+        assert!(
+            !rep.held.iter().any(|x| x.path == other),
+            "a project checkout was considered: {:?}",
+            rep.held
+        );
+        let branches = run(
+            &root,
+            &[
+                "git",
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/",
+            ],
+        );
+        assert!(
+            !branches.contains("agent/merged\n"),
+            "merged branch kept: {branches}"
+        );
+        for kept in [
+            "agent/ahead",
+            "agent/dirty",
+            "agent/locked",
+            "other",
+            "main",
+        ] {
+            assert!(
+                branches.contains(&format!("{kept}\n")),
+                "{kept} lost: {branches}"
+            );
+        }
+        assert_eq!(
+            run(&root, &["git", "rev-list", "--count", "main..agent/ahead"]).trim(),
+            "1"
+        );
+        let list = run(&root, &["git", "worktree", "list", "--porcelain"]);
+        assert!(
+            !list.contains(&merged) && !list.contains(&ahead) && !list.contains("prunable"),
+            "{list}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT count(*) AS n FROM events WHERE action = 'worktree.swept'",
+                &[]
+            ),
+            3
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT count(*) AS n FROM events WHERE action = 'land.swept' AND subject = 'agent/merged'",
+                &[]
+            ),
+            1
+        );
+        let lines = sweep_lines(Some(rep));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("swept worktree ") && l.contains("every commit is on main")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn sweep_project_worktrees_wait_and_dry_run() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (_, root) = new_bare_repo(&s);
+        let wt = Path::new(&root).parent().unwrap().join("wt");
+        let merged = wt.join("merged").display().to_string();
+        run(
+            &root,
+            &[
+                "git",
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "agent/merged",
+                &merged,
+                "main",
+            ],
+        );
+        let ahead = wt.join("ahead").display().to_string();
+        run(
+            &root,
+            &[
+                "git",
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "agent/ahead",
+                &ahead,
+                "main",
+            ],
+        );
+        mkdir_file(Path::new(&ahead).join("ahead.txt"), "ahead");
+        run(&ahead, &["git", "add", "-A"]);
+        run(&ahead, &["git", "commit", "-q", "-m", "work on ahead"]);
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert!(swept_paths(&rep.removed, "worktree").is_empty());
+        assert_eq!(
+            held_why(&rep.held, &merged),
+            "every commit is on main; removed after 30m untouched"
+        );
+        assert_eq!(
+            held_why(&rep.held, &ahead),
+            "branch agent/ahead has 1 commit not on main; removed after 7d untouched"
+        );
+        set_setting(&s, "daemon.sweep_grace_minutes", "0");
+        set_setting(&s, "daemon.sweep_branch_days", "0");
+        let rep = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut would = swept_paths(&rep.removed, "worktree");
+        would.sort();
+        assert_eq!(would, vec![ahead.clone(), merged.clone()]);
+        assert!(crate::util::file_exists(&merged) && crate::util::file_exists(&ahead));
+        let branches = run(&root, &["git", "branch", "--list", "agent/*"]);
+        assert!(
+            branches.contains("agent/merged") && branches.contains("agent/ahead"),
+            "{branches}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT count(*) AS n FROM events WHERE action IN ('worktree.swept', 'land.swept')",
+                &[]
+            ),
+            0
+        );
     }
 
     #[test]

@@ -814,7 +814,7 @@
         "off"
       ],
       "default": "on",
-      "description": "on: every ten minutes the daemon removes what its runs and landings left on this machine and nothing holds any more - clones, keys and bundles of finished jobs under PULSE_HOME/work, landing worktrees whose process is gone, holding refs, run logs and patches past daemon.sweep_keep_days, and pulse/* or evolve/* branches no job will land (saved as a patch first); a run in flight, a branch waiting to land and the owner's own files are never touched. off: `pulse sweep` by hand",
+      "description": "on: every ten minutes the daemon removes what runs, landings and agents left on this machine and nothing holds any more - clones, keys and bundles of finished jobs under PULSE_HOME/work, landing worktrees whose process is gone, holding refs, run logs and patches past daemon.sweep_keep_days, pulse/* or evolve/* branches no job will land (saved as a patch first), and worktrees a project checkout lists whose work is on the default branch (its merged branch goes with it) or that sat untouched for daemon.sweep_branch_days (the branch stays); a run in flight, a branch waiting to land, a locked worktree, uncommitted changes and the owner's own files are never touched. off: `pulse sweep` by hand",
       "kind": "choice",
       "min": null,
       "name": "daemon.sweep",
@@ -826,7 +826,7 @@
     {
       "choices": null,
       "default": "7",
-      "description": "days since its last commit before a pulse/* or evolve/* branch that no job will land is removed; its commits are saved under PULSE_HOME/patches first unless they are already on the default branch",
+      "description": "days since its last commit before a pulse/* or evolve/* branch that no job will land is removed, its commits saved under PULSE_HOME/patches first unless they are already on the default branch; also the days a clean worktree of a project with commits not on the default branch sits untouched before the worktree alone goes (its branch stays; a detached HEAD is saved as a patch first)",
       "kind": "count",
       "min": 0,
       "name": "daemon.sweep_branch_days",
@@ -838,7 +838,7 @@
     {
       "choices": null,
       "default": "30",
-      "description": "minutes a finished job's clone, key or bundle and a dead landing's worktree must sit untouched before the sweep removes them; a lost run's leftovers go at once",
+      "description": "minutes a finished job's clone, key or bundle, a dead landing's worktree and a clean project worktree whose every commit is on the default branch must sit untouched before the sweep removes them; a lost run's leftovers go at once",
       "kind": "count",
       "min": 0,
       "name": "daemon.sweep_grace_minutes",

@@ -1460,12 +1460,24 @@ than `daemon.sweep_keep_days` (default 30; a session keeps its counts, tokens,
 cost and submission), and `pulse/*` or `evolve/*` branches that no job will land whose last commit
 is older than `daemon.sweep_branch_days` (default 7) - their commits are saved
 under `~/.pulse/patches/<slug>/` first unless they are already on the default
-branch (`land.swept`). Never touched: a run in flight (this daemon's
+branch (`land.swept`). The same pass takes the worktrees agents leave behind:
+every worktree a project checkout lists (`git worktree list`) outside the
+runner's own folders under `~/.pulse` - the `../wt/<task>` an agent or a skill made for one piece of
+work and never removed - goes once it is clean and every commit in it is on
+the default branch (or its upstream) and it has sat untouched for the grace
+period; a merged branch of its own goes with it. One whose commits are not on
+the default branch waits `daemon.sweep_branch_days` untouched, then only the
+worktree goes - its branch stays with its commits, and a detached HEAD is
+saved as a patch first (`worktree.swept` carries the tip). Untouched means
+nothing moved its folder, its `.git` file, HEAD, index or reflog; a
+`git worktree lock` keeps one for good. Never touched: a run in flight (this daemon's
 dispatches and every `running` run in the store), a branch a `done` job waits
-to land, the checked-out branch, a worktree git still lists, a repository of
+to land, the checked-out branch, a locked worktree, a worktree with uncommitted
+changes or on a branch a job holds, a project checkout of its own, a folder under
+`~/.pulse/worktrees` git still lists, a repository of
 its own, anything under `~/.pulse` the runner did not make, and prepared
 fleet clones (`pulse fleet clean` is their lifecycle). Each pass logs what went (`swept
-clone …`, `swept 12 run logs (3.1 MB)`, and a finished-work count with the
+clone …`, `swept worktree …`, `swept 12 run logs (3.1 MB)`, and a finished-work count with the
 bytes freed when job work was removed), writes one `daemon.sweep` event when
 something went or failed, and a `hygiene` line in `pulse status` says when the
 last pass ran, what it removed and freed, and what it held. `pulse sweep
