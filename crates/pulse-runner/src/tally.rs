@@ -58,19 +58,44 @@ pub(crate) fn ballot_items_for(
         pulse_tally::ballot_cap(s),
     )
     .into_iter()
-    .filter_map(|it| {
-        let sg = it.suggestion?;
-        if it.kind != "suggestion" {
-            return None;
+    .filter_map(|it| match it.kind.as_str() {
+        "suggestion" => {
+            let sg = it.suggestion?;
+            Some(json!({
+                "id": sg.id,
+                "key": sg.key,
+                "summary": sg.summary,
+                "body": "",
+                "up": sg.up,
+                "down": sg.down,
+                "kind": "suggestion",
+                "hash": ""
+            }))
         }
-        Some(json!({
-            "id": sg.id,
-            "key": sg.key,
-            "summary": sg.summary,
-            "body": "",
-            "up": sg.up,
-            "down": sg.down
-        }))
+        "amendment" => {
+            let a = it.amendment?;
+            if !amendment_votable(&a) {
+                return None;
+            }
+            Some(json!({
+                "id": a.id,
+                "key": a.key,
+                "summary": a.summary,
+                "body": "",
+                "up": a.up,
+                "down": a.down,
+                "kind": "amendment",
+                "hash": a.hash
+            }))
+        }
+        _ => None,
     })
     .collect()
+}
+
+/// An amendment belongs on a ballot only while more votes can still change
+/// its outcome; stale, ambiguous, malformed, blocked, passed, and closed
+/// proposals are decided by a re-proposal, a ratification, or a human.
+pub(crate) fn amendment_votable(a: &pulse_tally::Amendment) -> bool {
+    a.open && (a.status == "needs votes" || a.status == "short of the supermajority")
 }

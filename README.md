@@ -520,7 +520,12 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   grouped before the brief is written: the oldest card stays voteable and the
   newer ids trail it as `dup of <oldest>`, not as separate ballot entries. A worker votes only with
   `VOTE:` lines for cards in its Ballot section; a twin vote from the same
-  agent is skipped with `vote skipped: <id>: already voted`. When
+  agent is skipped with `vote skipped: <id>: already voted`. The ballot also
+  lists the project's open amendments while votes can still decide them
+  (`needs votes`, `short of the supermajority`); a `ballot` job shows their
+  full Current and Proposed text, and the runner casts a `VOTE:` line on one as
+  an informed vote - the proposal's `text_hash` plus a `Read:` line holding the
+  worker's reason - so it counts toward the amendment quorum. When
   `evolve.loop=1` and the project is at Level D, the evolution loop gets first
   pick as a measured experiment and the planner builds the rest; the daemon
   says `plan <slug>: left suggestion <id> to the evolution loop` when it

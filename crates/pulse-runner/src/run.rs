@@ -401,6 +401,16 @@ fn row_to_ballot(v: Value) -> BallotItem {
             .to_string(),
         up: v.get("up").and_then(Value::as_i64).unwrap_or(0) as i32,
         down: v.get("down").and_then(Value::as_i64).unwrap_or(0) as i32,
+        kind: v
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        hash: v
+            .get("hash")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
     }
 }
 
@@ -1530,7 +1540,7 @@ pub(crate) fn run_job(
 }
 
 fn ballot_items_to_values(items: &[BallotItem]) -> Vec<Value> {
-    items.iter().map(|it| json!({"id": it.id, "key": it.key, "summary": it.summary, "body": it.body, "up": it.up, "down": it.down})).collect()
+    items.iter().map(|it| json!({"id": it.id, "key": it.key, "summary": it.summary, "body": it.body, "up": it.up, "down": it.down, "kind": it.kind, "hash": it.hash})).collect()
 }
 
 /// Go: func postResultAnswer(s *store.Store, job row, agent, now, runID, branch string, rep report) error
@@ -1849,6 +1859,14 @@ pub(crate) fn cast_result_votes(
         } else {
             thread
         };
+        // An amendment vote counts only when it carries the proposal hash and
+        // a `Read:` line; the agent's reason is its restatement of the change.
+        let mut body = format!("Cast by the hub from a `VOTE:` line in run `{run_id}`.\n");
+        let mut text_hash = String::new();
+        if item.is_amendment() {
+            body.push_str(&format!("\nRead: {}\n", v.reason.trim()));
+            text_hash = item.hash.clone();
+        }
         let res = crate::board::create_post(
             s,
             now.to_string(),
@@ -1858,11 +1876,12 @@ pub(crate) fn cast_result_votes(
                 area: area.into(),
                 thread: thread.into(),
                 summary: crate::util::trunc(&v.reason, 230),
-                body: format!("Cast by the hub from a `VOTE:` line in run `{run_id}`.\n"),
+                body,
                 agent: arow.clone().map(Box::new),
                 session: run_id.to_string(),
                 on: v.on.clone(),
                 vote: v.vote.clone(),
+                text_hash,
                 extra: BTreeMap::from([
                     ("cast_by".into(), json!("hub-from-result")),
                     ("run".into(), json!(run_id)),
@@ -2472,6 +2491,153 @@ mod tests {
             String::new(),
         );
         assert!(after.is_empty(), "a voted card is still on aurora's ballot");
+    }
+
+    #[test]
+    fn run_job_casts_informed_votes_on_amendments_from_its_ballot() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "alice");
+        s.put_record(
+            pulse_store::Record {
+                id: "EVO-constitution-proj".into(),
+                project: "proj".into(),
+                kind: "evolution".into(),
+                slug: "constitution".into(),
+                title: "Constitution".into(),
+                status: "active".into(),
+                date: "2026-09-01".into(),
+                path: "docs/evolution/constitution.md".into(),
+                ..Default::default()
+            },
+            std::collections::BTreeMap::from([
+                ("loop".to_string(), json!("off")),
+                ("limits".to_string(), json!("none")),
+            ]),
+            crate::test_helpers_f1b::TEST_CONSTITUTION,
+            crate::util::HUMAN_AGENT,
+            "proj",
+        )
+        .unwrap();
+        let am = crate::board::create_post(
+            &s,
+            "2026-09-02T08:00:00Z".into(),
+            crate::board::PostOpts {
+                kind: "amendment".into(),
+                project: "proj".into(),
+                area: "governance".into(),
+                thread: "fleet-votes".into(),
+                summary: "Count a fleet as one voter".into(),
+                body: crate::test_helpers_f1b::TEST_AMENDMENT.into(),
+                agent: crate::board::actor_agent(&s, "alice".into()),
+                session: "alice-session".into(),
+                ..Default::default()
+            },
+        )
+        .expect("amendment post");
+        let am_id = am.str("id");
+        let on_ballot = crate::tally::ballot_items_for(
+            &s,
+            "proj".into(),
+            "aurora".into(),
+            TEST_NOW.into(),
+            String::new(),
+        );
+        assert_eq!(
+            on_ballot.len(),
+            1,
+            "the amendment is not on aurora's ballot"
+        );
+        assert_eq!(on_ballot[0]["kind"], "amendment");
+        assert_eq!(on_ballot[0]["hash"], am.str("text_hash"));
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "ballot".into(),
+            "vote on the open cards".into(),
+            "read the ballot and vote".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!job.0.is_empty(), "lease returned no job");
+        let worker = format!(
+            "echo 'SUMMARY: voted on the ballot' && echo 'VOTE: {am_id} up a fleet becomes one voter instead of one per worker'"
+        );
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        let vote = crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT text_hash, has_read_line, body FROM posts WHERE kind = 'vote' AND agent = 'aurora' AND on_post = ?",
+            &[&am_id],
+        );
+        assert!(
+            !vote.0.is_empty(),
+            "the VOTE line for the amendment was not cast"
+        );
+        assert_eq!(vote.str("text_hash"), am.str("text_hash"));
+        assert!(
+            vote.str("body").contains("Read: a fleet becomes one voter"),
+            "the vote body lacks the Read line: {}",
+            vote.str("body")
+        );
+        let res = pulse_tally::compute_light(
+            &s,
+            "proj",
+            "",
+            pulse_tally::Thresholds {
+                now: TEST_NOW.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let tallied = res
+            .amendments
+            .iter()
+            .find(|a| a.id == am_id)
+            .expect("amendment in the tally");
+        assert_eq!(
+            (tallied.voters, tallied.badhash, tallied.noread),
+            (1, 0, 0),
+            "the hub's vote did not count as informed: {tallied:?}"
+        );
+        let after = crate::tally::ballot_items_for(
+            &s,
+            "proj".into(),
+            "aurora".into(),
+            TEST_NOW.into(),
+            String::new(),
+        );
+        assert!(
+            after.is_empty(),
+            "a voted amendment is still on aurora's ballot"
+        );
     }
 
     #[test]

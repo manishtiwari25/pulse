@@ -43,6 +43,16 @@ pub(crate) struct BallotItem {
     pub body: String,
     pub up: i32,
     pub down: i32,
+    /// `suggestion` or `amendment`; empty means suggestion.
+    pub kind: String,
+    /// The proposal hash of an amendment, attached to the vote the runner casts.
+    pub hash: String,
+}
+
+impl BallotItem {
+    pub(crate) fn is_amendment(&self) -> bool {
+        self.kind == "amendment"
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -417,6 +427,13 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
     w!(
         "     test/lint/format-only cards unless they unblock landing or fix a flake that failed a job this week."
     );
+    w!(
+        "     A ballot item marked `amendment` changes the constitution: read its Proposed text and make your reason"
+    );
+    w!(
+        "     restate the change in your own words; the runner records it as the vote's `Read:` line with the"
+    );
+    w!("     proposal's hash, and only such informed votes count toward the amendment quorum.");
     w!("   Never write a PULSE_RESULT.md or any other report file into the clone.");
     if o.remote {
         w!(
@@ -472,17 +489,26 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
             w!("Nothing awaits your vote right now.");
         }
         for item in &o.ballot {
+            let label = if item.is_amendment() {
+                "amendment, "
+            } else {
+                ""
+            };
             w!(
-                "- `{}` {} (up {}, down {}): {}",
+                "- `{}` {} ({}up {}, down {}): {}",
                 item.id,
                 item.key,
+                label,
                 item.up,
                 item.down,
                 trunc(&item.summary, 160)
             );
             if job.str("kind") == "ballot" && !item.body.is_empty() {
+                // An amendment quotes the current and proposed text in full; a
+                // voter who cannot see both cannot cast an informed vote.
+                let cap = if item.is_amendment() { 6000 } else { 1500 };
                 w!("");
-                for line in trunc(&item.body, 1500).trim_end_matches('\n').split('\n') {
+                for line in trunc(&item.body, cap).trim_end_matches('\n').split('\n') {
                     w!("  > {}", line);
                 }
                 w!("");
