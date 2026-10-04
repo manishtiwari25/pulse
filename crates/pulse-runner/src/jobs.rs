@@ -4668,6 +4668,130 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         );
     }
     #[test]
+    fn worker_brief_names_the_earlier_attempt_after_a_requeue() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (project, _) = crate::test_helpers::new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "fjord");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "improve".into(),
+            "Overview shows disk headroom".into(),
+            "do it".into(),
+            1,
+            0,
+            "task:disk".into(),
+            "human".into(),
+            false,
+        )
+        .unwrap();
+        let jid = job.str("id");
+        let conn = s.conn().unwrap();
+        crate::util::exec1(
+            &*conn,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status) VALUES ('run-fjord', ?, 'fjord', 'proj', '2026-09-06T08:00:00Z', '2026-09-06T09:00:00Z', 'done')",
+            &[&jid],
+        );
+        let patch = "/home/.pulse/patches/proj/pulse__fjord__job.patch";
+        crate::util::event_at(
+            &conn,
+            "2026-09-06T09:05:00Z",
+            "daemon",
+            "job.requeue",
+            &jid,
+            serde_json::json!({"why": format!("pulse/fjord/{jid} conflicts with main"), "patch": patch}),
+        );
+        drop(conn);
+        post_runner_focus(
+            &s,
+            "claim-fjord",
+            "proj",
+            "claim",
+            "hub",
+            "disk-headroom",
+            "fjord",
+            "fjord: Overview shows disk headroom",
+            "2026-09-06T13:00:00Z",
+        );
+        post_runner_focus(
+            &s,
+            "claim-borealis",
+            "proj",
+            "claim",
+            "runner",
+            "other",
+            "borealis",
+            "borealis: something else",
+            "2026-09-06T13:00:00Z",
+        );
+
+        let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+            job,
+            project,
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: crate::test_helpers::TEST_NOW.into(),
+            ..Default::default()
+        });
+        for want in [
+            "## Earlier attempt of this job".to_string(),
+            format!("requeued this job after pulse/fjord/{jid} conflicts with main"),
+            "That attempt was made by fjord on this very job".to_string(),
+            format!("`git apply -3 {patch}` onto the current main"),
+            format!(
+                "- fjord claims hub/disk-headroom until 2026-09-06T13:00:00Z: fjord: Overview shows disk headroom{}",
+                crate::brief::EARLIER_ATTEMPT_MARK
+            ),
+            "- borealis claims runner/other until 2026-09-06T13:00:00Z: borealis: something else\n"
+                .to_string(),
+        ] {
+            assert!(brief.contains(&want), "brief lacks {want:?}:\n{brief}");
+        }
+        assert!(
+            brief.find("## Earlier attempt of this job")
+                < brief.find("## Who else is working on proj"),
+            "the earlier-attempt section must come before the focus list:\n{brief}"
+        );
+    }
+    #[test]
+    fn worker_brief_without_requeue_has_no_earlier_attempt_section() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (project, _) = crate::test_helpers::new_bare_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Self job".into(),
+            "do self".into(),
+            1,
+            0,
+            "task:self".into(),
+            "human".into(),
+            false,
+        )
+        .unwrap();
+        let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+            job,
+            project,
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: crate::test_helpers::TEST_NOW.into(),
+            ..Default::default()
+        });
+        assert!(
+            !brief.contains("## Earlier attempt of this job"),
+            "a fresh job must not read as a retry:\n{brief}"
+        );
+    }
+    #[test]
     fn lead_brief_lists_agents_and_owner_questions() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();

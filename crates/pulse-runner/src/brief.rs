@@ -183,11 +183,16 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         w!("{}", job.str("brief"));
         w!("");
     }
+    let earlier = earlier_attempt(store, &jid, agent);
+    if let Some(e) = &earlier {
+        write_earlier_attempt_section(&mut b, e, &project.str("default_branch"), o.remote);
+    }
     write_focus_brief_section(
         &mut b,
         store,
         project.str("slug"),
         agent.clone(),
+        earlier.map(|e| e.agents).unwrap_or_default(),
         o.now.clone(),
         o.remote,
     );
@@ -518,18 +523,111 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
     Ok(b.join("\n") + "\n")
 }
 
+/// The earlier attempt of a job the daemon requeued after its branch
+/// conflicted with the default branch: who ran it, why it was requeued and
+/// where its patch is kept.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct EarlierAttempt {
+    pub why: String,
+    pub patch: String,
+    pub agents: Vec<String>,
+}
+
+/// Looks up the latest `job.requeue` event of `job_id` and the agents whose
+/// runs made the earlier attempts; `None` when the job was never requeued.
+pub(crate) fn earlier_attempt(
+    s: &pulse_store::Store,
+    job_id: &str,
+    agent: &str,
+) -> Option<EarlierAttempt> {
+    let conn = s.conn().ok()?;
+    let ev = crate::util::query_one(
+        &conn,
+        "SELECT detail FROM events WHERE action = 'job.requeue' AND subject = ? ORDER BY at DESC, rowid DESC LIMIT 1",
+        &[&job_id],
+    )
+    .ok()??;
+    let detail = crate::util::json_map(&ev.str("detail"));
+    let text = |k: &str| {
+        detail
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let agents = crate::util::query_rows(
+        &conn,
+        "SELECT DISTINCT agent FROM runs WHERE job_id = ? AND agent != '' AND agent != ? AND status != 'running' ORDER BY agent",
+        &[&job_id, &agent],
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| r.str("agent"))
+    .collect();
+    Some(EarlierAttempt {
+        why: text("why"),
+        patch: text("patch"),
+        agents,
+    })
+}
+
+/// Tells a worker that the job in its hands is a retry after a landing
+/// conflict, so the earlier attempt's claim and branch read as its own
+/// unfinished work and the kept patch as its starting point.
+pub(crate) fn write_earlier_attempt_section(
+    b: &mut Vec<String>,
+    e: &EarlierAttempt,
+    default_branch: &str,
+    remote: bool,
+) {
+    let def = if default_branch.is_empty() {
+        "the default branch"
+    } else {
+        default_branch
+    };
+    b.push("## Earlier attempt of this job".into());
+    b.push(String::new());
+    let mut why = e.why.trim().to_string();
+    if why.is_empty() {
+        why = format!("its branch conflicted with {def}");
+    }
+    let who = if e.agents.is_empty() {
+        "another worker".to_string()
+    } else {
+        e.agents.join(", ")
+    };
+    b.push(format!(
+        "The daemon requeued this job after {why}. That attempt was made by {who} on this very job: a claim, branch or post of theirs on this project is unfinished work of yours to continue, not a reason to stop or to report the job as already covered."
+    ));
+    if !e.patch.is_empty() && !remote {
+        b.push(format!(
+            "The earlier attempt's commits are kept as a patch at `{}`. Start from it: `git apply -3 {}` onto the current {def}, keep {def}'s version of every line the task did not mean to change, rerun the project's checks, then commit. Redo the change by hand only when the patch no longer applies at all.",
+            e.patch, e.patch
+        ));
+    } else {
+        b.push(format!(
+            "Redo the change on the current {def}; the earlier attempt's commits are kept by the daemon but not reachable from this machine."
+        ));
+    }
+    b.push(format!(
+        "Compare the intended change against {def} first: when a different landing already holds it, name that commit in SUMMARY: and stop."
+    ));
+    b.push(String::new());
+}
+
 /// Go: func writeFocusBriefSection(b *[]string, s *store.Store, project, agent, now string, remote bool)
 pub(crate) fn write_focus_brief_section(
     b: &mut Vec<String>,
     s: &pulse_store::Store,
     project: String,
     agent: String,
+    earlier: Vec<String>,
     now: String,
     remote: bool,
 ) {
     b.push(format!("## Who else is working on {project}"));
     b.push(String::new());
-    let lines = focus_lines(s, project.clone(), agent, now);
+    let lines = focus_lines_marking(s, project.clone(), agent, &earlier, now);
     if lines.is_empty() {
         b.push("Nobody else holds a job or a claim on this project right now.".into());
     } else {
@@ -622,6 +720,22 @@ pub(crate) fn focus_lines(
     exclude: String,
     now: String,
 ) -> Vec<String> {
+    focus_lines_marking(s, project, exclude, &[], now)
+}
+
+/// Marker appended to the focus line of an agent whose work on this project
+/// is the earlier attempt of the job being briefed.
+pub(crate) const EARLIER_ATTEMPT_MARK: &str =
+    " (earlier attempt of your job: continue it, do not stop for it)";
+
+/// `focus_lines` with the agents of the job's earlier attempts marked.
+pub(crate) fn focus_lines_marking(
+    s: &pulse_store::Store,
+    project: String,
+    exclude: String,
+    earlier: &[String],
+    now: String,
+) -> Vec<String> {
     let (store, close_store) = brief_store(s, now.clone());
     let mut lines = Vec::new();
     if let Some(store) = store.as_ref()
@@ -631,6 +745,11 @@ pub(crate) fn focus_lines(
             if f.agent == exclude {
                 continue;
             }
+            let mark = if earlier.contains(&f.agent) {
+                EARLIER_ATTEMPT_MARK
+            } else {
+                ""
+            };
             if !f.job_id.is_empty() {
                 let mut line = format!(
                     "- {}: {} ({}) {:?}",
@@ -646,8 +765,8 @@ pub(crate) fn focus_lines(
             }
             for c in f.claims {
                 lines.push(format!(
-                    "- {} claims {} until {}: {}",
-                    f.agent, c.thread, c.expires, c.summary
+                    "- {} claims {} until {}: {}{}",
+                    f.agent, c.thread, c.expires, c.summary, mark
                 ));
             }
         }
