@@ -338,9 +338,14 @@ pub(crate) fn plan_jobs_with_tally(
 ) -> anyhow::Result<Vec<Row>> {
     let conn = s.conn()?;
     let waiting = must_one(&conn, "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND kind != 'experiment' AND status IN ('queued', 'leased')", &[&slug]).int("n");
-    if waiting >= crate::jobs::parallel_per_project(s) {
+    let parallel = crate::jobs::parallel_per_project(s);
+    if waiting >= parallel {
         return Ok(Vec::new());
     }
+    // Every free lane is filled with voted work this loop, not one lane per
+    // loop: with the daemon's 300 s interval, one job per loop left most
+    // slots idle however many cards the board had decided.
+    let allowance = (parallel - waiting).max(1) as usize;
     let project = crate::board::project_by_slug(&conn, slug.clone());
     let (job, is_new) = crate::baseline::plan_baseline(
         s,
@@ -426,7 +431,7 @@ pub(crate) fn plan_jobs_with_tally(
     };
     let plan_ctx = pulse_tally::plan_context_for(s, &slug, &now, plan_res.as_ref());
     let (claims, _) = pulse_evolve::loop_claims_public(s, &slug, &created_by)?;
-    if created.is_empty() {
+    if created.len() < allowance {
         let mut eligible = Vec::new();
         for sg in &suggestions {
             if sg.status != "eligible" {
@@ -479,12 +484,24 @@ pub(crate) fn plan_jobs_with_tally(
         };
         sort_plan_candidates(&mut product);
         sort_plan_candidates(&mut operating);
-        let candidates = if product.is_empty() {
-            operating
-        } else {
-            product
-        };
-        for sg in candidates {
+        // Product cards first; operating-layer cards take the lanes left,
+        // still under the day's cap unless the gate lifted it.
+        let mut operating_today = plan_ctx.operating_layer_today;
+        let candidates = product
+            .into_iter()
+            .map(|sg| (sg, false))
+            .chain(operating.into_iter().map(|sg| (sg, true)));
+        for (sg, is_operating) in candidates {
+            if created.len() >= allowance {
+                break;
+            }
+            if is_operating
+                && plan_ctx.operating_layer_cap_set
+                && !plan_ctx.operating_layer_filled
+                && operating_today >= plan_ctx.operating_layer_cap
+            {
+                continue;
+            }
             let p = crate::board::post_row(&conn, sg.id.clone());
             let brief = format!(
                 "The agents voted this the top eligible suggestion (score {:+}, {} voters). Thread {}.\n\n{}\n\nLook at the default branch first: when another landing already moved this variable, say which commit in SUMMARY: and stop - run no checks and post no handoff. Otherwise: one variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:.",
@@ -507,7 +524,9 @@ pub(crate) fn plan_jobs_with_tally(
             )?;
             if is_new {
                 created.push(job);
-                break;
+                if is_operating {
+                    operating_today += 1;
+                }
             }
         }
     }
@@ -1275,6 +1294,135 @@ mod tests {
         assert!(
             ok && reason.is_empty(),
             "a blocked job is not open work: research_due = {ok} {reason:?}"
+        );
+    }
+
+    #[test]
+    fn plan_jobs_fills_every_free_lane_with_voted_cards() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        std::fs::create_dir_all(std::path::Path::new(&root).join("src")).unwrap();
+        set_setting(&s, "quorum", "1");
+        set_setting(&s, "evolve.draft_hours", "0");
+        set_setting(&s, "parallel_per_project", "3");
+        for agent in ["alice", "bob", "carol"] {
+            join(&s, agent);
+        }
+        let mut cards = Vec::new();
+        for (i, file) in ["login", "signup", "reset", "logout"].iter().enumerate() {
+            let card = crate::board::create_post(&s, TEST_NOW.into(), crate::board::PostOpts { kind: "suggestion".into(), project: "proj".into(), area: "evolution".into(), thread: format!("card-{file}"), agent: crate::board::actor_agent(&s, "alice".into()), session: "s".into(), summary: format!("{file} page shows the server error to the user"), body: format!("Class: product\nFile: src/{file}.go\nVariable: error copy\nHypothesis: the user sees the failure message\nSignal: check:product"), ..Default::default() }).expect("card");
+            // Distinct scores so the order the lanes fill in is testable.
+            for voter in ["bob", "carol"].iter().take(if i < 2 { 2 } else { 1 }) {
+                crate::board::create_post(
+                    &s,
+                    TEST_NOW.into(),
+                    crate::board::PostOpts {
+                        kind: "vote".into(),
+                        project: "proj".into(),
+                        area: "evolution".into(),
+                        thread: card.str("thread"),
+                        agent: crate::board::actor_agent(&s, (*voter).into()),
+                        session: format!("v-{voter}"),
+                        on: card.str("id"),
+                        vote: "up".into(),
+                        summary: "yes".into(),
+                        ..Default::default()
+                    },
+                )
+                .expect("vote");
+            }
+            cards.push(card.str("id"));
+        }
+        let jobs =
+            plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan jobs");
+        assert_eq!(
+            jobs.len(),
+            3,
+            "every free lane takes one voted card: {:?}",
+            jobs.iter().map(|j| j.str("title")).collect::<Vec<_>>()
+        );
+        let sources = jobs.iter().map(|j| j.str("source")).collect::<Vec<_>>();
+        assert!(
+            sources[0].contains(&cards[0]) && sources[1].contains(&cards[1]),
+            "highest-scored cards first: {sources:?}"
+        );
+        assert!(
+            jobs.iter().all(|j| j.str("kind") == "improve"),
+            "kinds: {jobs:?}"
+        );
+        let again =
+            plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan again");
+        assert!(again.is_empty(), "lanes full, nothing more: {again:?}");
+        // One lane frees up: exactly one more card is planned.
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            &[&TEST_NOW, &jobs[2].str("id")],
+        );
+        let more =
+            plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan more");
+        assert_eq!(more.len(), 1, "one freed lane: {more:?}");
+        assert!(
+            more[0].str("source").contains(&cards[3]),
+            "the fourth card takes the freed lane: {}",
+            more[0].str("source")
+        );
+    }
+
+    #[test]
+    fn research_runs_beside_in_flight_work_while_the_fleet_is_idle() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "lead.research_minutes", "60");
+        set_setting(&s, "lead.idle_factor", "3");
+        set_setting(&s, "workers", "4");
+        set_setting(&s, "parallel_per_project", "2");
+        suppress_planner_reflect(&s);
+        let improve = |n: i32| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "improve".into(),
+                "Implement suggestion".into(),
+                "one variable".into(),
+                1,
+                10,
+                format!("suggestion:x{n}"),
+                "daemon".into(),
+                true,
+            )
+            .expect("add worker")
+            .0
+        };
+        let first = improve(1);
+        assert!(crate::research::fleet_idle(&s), "no lease held: fleet idle");
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            ok && reason.is_empty(),
+            "a free lane lets research run beside a queued job: {ok} {reason:?}"
+        );
+        improve(2);
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            !ok && reason == "2 of 2 lanes are open (fleet idle)",
+            "full lanes hold research = {ok} {reason:?}"
+        );
+        // A busy fleet keeps the strict rule: any open job holds research.
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id != ? AND kind = 'improve'",
+            &[&TEST_NOW, &first.str("id")],
+        );
+        set_setting(&s, "lead.idle_factor", "1");
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            !ok && reason == "a job is open",
+            "plain cadence holds research while a job is open = {ok} {reason:?}"
         );
     }
 

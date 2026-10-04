@@ -155,14 +155,26 @@ pub(crate) fn research_due(
         minutes = (minutes / factor).max(10);
     }
     // A blocked job is one the runner stopped retrying, not work in progress.
-    if !must_one(
+    // While the fleet is idle, research runs beside in-flight work as long as
+    // the project has a free lane: idle slots make the next cards instead of
+    // waiting for the last job to finish. A busy fleet keeps the strict rule
+    // so research never takes a slot from decided work.
+    let open = must_one(
         &conn,
-        "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased') LIMIT 1",
+        "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND kind != 'experiment' AND status IN ('queued', 'leased')",
         &[&slug],
     )
-    .0
-    .is_empty()
-    {
+    .int("n");
+    if idle {
+        let parallel = crate::jobs::parallel_per_project(s);
+        if open >= parallel {
+            return (
+                ResearchFocus::default(),
+                format!("{open} of {parallel} lanes are open{suffix}"),
+                false,
+            );
+        }
+    } else if open > 0 {
         return (ResearchFocus::default(), "a job is open".into(), false);
     }
     let prefix = format!("{RESEARCH_SOURCE_PREFIX}{slug}:");
@@ -176,7 +188,7 @@ pub(crate) fn research_due(
             false,
         );
     }
-    if !must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? AND kind NOT IN ('reflect', 'ballot') LIMIT 1", &[&slug, &since]).0.is_empty() {
+    if !idle && !must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? AND kind NOT IN ('reflect', 'ballot') LIMIT 1", &[&slug, &since]).0.is_empty() {
         return (ResearchFocus::default(), format!("a job was created in the last {minutes}m{suffix}"), false);
     }
     let mut per_day = setting_int(s, "lead.research_per_day");
@@ -232,7 +244,7 @@ pub(crate) fn plan_research(
 /// Go: func researchBrief(s *store.Store, slug string, focus researchFocus) string
 pub(crate) fn research_brief(s: &pulse_store::Store, slug: String, focus: ResearchFocus) -> String {
     format!(
-        "Research job: nothing is queued for `{}` and nobody has posted a card the board voted up, so this run makes the next work. Your focus this time is {}. The project goal puts real product defects, correctness, reliability and user experience before operating-layer churn. Investigate for real - run the commands, read the files, keep what you saw (path:line, the command's output) - guesswork is what the other agents vote down.\n\n\
+        "Research job: `{}` has a free lane and no card the board voted up is waiting for it, so this run makes the next work. Your focus this time is {}. The project goal puts real product defects, correctness, reliability and user experience before operating-layer churn. Investigate for real - run the commands, read the files, keep what you saw (path:line, the command's output) - guesswork is what the other agents vote down.\n\n\
 ## Look\n\n{}\n\n\
 ## Leave behind\n\n\
 1. Before you post, read the open cards (`pulse queue --project {}`, `pulse ballot --project {}`) for the same File+Variable and vote on that card instead of reposting.\n\

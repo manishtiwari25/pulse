@@ -478,12 +478,15 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   and same-session votes do not count) decide a suggestion: more ups than downs
   makes it *eligible*, more downs than ups makes it terminal `rejected`, and a
   tie stays `needs votes` until one more voter decides. Eligible is a ballot
-  state, not a job: every tick the daemon takes each project's top eligible
-  suggestion that passes the gates and queues one worker job for it (source
-  `suggestion:<id>`), reusing an in-memory planner snapshot while the project's
-  board/job/event/settings watermark is unchanged (default safety TTL:
-  `daemon.planner_cache_ttl_seconds=600`), one new job per project per tick and only while fewer
-  than `parallel_per_project` ordinary jobs wait. **Product cards go first**:
+  state, not a job: every tick the daemon takes each project's eligible
+  suggestions that pass the gates, best first, and queues one worker job per
+  card (source `suggestion:<id>`), reusing an in-memory planner snapshot while
+  the project's board/job/event/settings watermark is unchanged (default
+  safety TTL: `daemon.planner_cache_ttl_seconds=600`). It fills every free
+  lane: as many new jobs per tick as `parallel_per_project` leaves beside the
+  project's queued and leased ordinary jobs (experiments aside), so a project
+  with three lanes and five voted cards works three at once instead of one
+  every five minutes. **Product cards go first**:
   the planner classes every card as *product* (the thing the project ships)
   or *operating-layer* (tests, fixtures, CI, tooling, formatting, PULSE
   control-plane docs) and builds every product card before any
@@ -710,7 +713,14 @@ from git objects alone so neither the checkout nor the branch moves (a branch
 that already contains the default branch, or one that conflicts with it, is
 measured as it is and landing reports the conflict); a variant measured on
 its stale fork point would miss every fix the default branch gained since,
-and the archive notes `measured as … merged onto …` when that happened. An
+and the archive notes `measured as … merged onto …` when that happened. The
+keep rule is *no regression*: a variant whose total score is not more than
+`evolve.tolerance` below the baseline is kept - an improvement as `kept`, a
+tie as `kept (no regression)` - and goes to the same landing as any branch,
+where the project's own check decides it; only a larger regression is
+`discarded` and loses its branch. Held-out fixtures are mostly pass/fail, so a
+voted change that keeps every fixture green measures as an exact tie; before
+this rule such ties were discarded and no voted experiment ever landed. An
 experiment the lane could not land stays queued and is tried again after
 `lane.retry_minutes` (or `lane.short_retry_minutes` after a lock, STOP,
 network/rate-limit/database-lock/full-disk-style transient), recorded as
@@ -1586,7 +1596,13 @@ it queued and why, or say in its summary that nothing was worth queueing.
 Idle time is research time (ADR-045): when a project has nothing plannable,
 nothing queued or leased (blocked jobs do not count), and no research job or
 job that decided work created for `lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do
-not count), the planner seeds one research job - a `reflect` job whose
+not count), the planner seeds one research job. While the fleet is idle
+(fewer than half the local slots leased) a free lane is enough: research then
+runs beside the project's in-flight jobs as long as fewer than
+`parallel_per_project` ordinary jobs are open and the last research is older
+than the idle cadence, so idle slots make the next cards instead of waiting
+for the last job to finish (the idle line reads `N of M lanes are open (fleet
+idle)` when the lanes are full). The research job is a `reflect` job whose
 brief points a worker at one focus in turn (the product as its user sees it,
 the code that changes most, the next step toward the project's goal, the
 project's checks, the loop's report, the docs against the code, the

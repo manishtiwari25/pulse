@@ -4267,11 +4267,12 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             );
         }
 
+        // Only a regression beyond the tolerance drops a variant: a tie is kept.
         let (dropped, drop_sug) = experiment_job("slow.txt");
         scores
             .lock()
             .unwrap()
-            .insert(format!("evolve/{drop_sug}"), 0.52);
+            .insert(format!("evolve/{drop_sug}"), 0.40);
         let res = crate::land::land_pending(
             &s,
             proj,

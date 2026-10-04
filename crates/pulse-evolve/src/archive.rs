@@ -360,47 +360,30 @@ mod tests {
     }
 
     #[test]
-    fn keep_contract_unchanged() {
+    fn keep_contract_no_regression() {
         let _serial = crate::test_helpers::serial();
+        let scores = |total: f64| crate::api::Scores {
+            total,
+            ..Default::default()
+        };
+        let improved = crate::api::keep(Some(&scores(0.5)), Some(&scores(0.6)), 0.02);
         assert!(
-            crate::api::keep(
-                Some(&crate::api::Scores {
-                    total: 0.5,
-                    ..Default::default()
-                }),
-                Some(&crate::api::Scores {
-                    total: 0.6,
-                    ..Default::default()
-                }),
-                0.02
-            )
-            .0
+            improved.0 && improved.1.starts_with("kept: "),
+            "{improved:?}"
         );
+        let tie = crate::api::keep(Some(&scores(0.5)), Some(&scores(0.51)), 0.02);
         assert!(
-            !crate::api::keep(
-                Some(&crate::api::Scores {
-                    total: 0.5,
-                    ..Default::default()
-                }),
-                Some(&crate::api::Scores {
-                    total: 0.51,
-                    ..Default::default()
-                }),
-                0.02
-            )
-            .0
+            tie.0 && tie.1.starts_with("kept (no regression): "),
+            "a tie within the tolerance is kept: {tie:?}"
         );
+        let exact = crate::api::keep(Some(&scores(0.875)), Some(&scores(0.875)), 0.02);
+        assert!(exact.0, "pass/fail fixtures tie exactly: {exact:?}");
+        let regressed = crate::api::keep(Some(&scores(0.5)), Some(&scores(0.47)), 0.02);
         assert!(
-            !crate::api::keep(
-                None,
-                Some(&crate::api::Scores {
-                    total: 1.0,
-                    ..Default::default()
-                }),
-                0.02
-            )
-            .0
+            !regressed.0 && regressed.1.starts_with("discarded: "),
+            "a regression beyond the tolerance is discarded: {regressed:?}"
         );
+        assert!(!crate::api::keep(None, Some(&scores(1.0)), 0.02).0);
     }
 
     #[test]
@@ -470,13 +453,20 @@ mod tests {
         assert!(!crate::api::is_baseline_row("one variable", ""));
         assert!(!crate::api::is_baseline_row(BASELINE_HYPOTHESIS, "S-1"));
 
+        // A kept row that regresses the score is refused unless it has the
+        // baseline shape (same measurement on both sides, no suggestion).
+        let regressed = || Scores {
+            project: "demo".into(),
+            total: 0.9,
+            ..Default::default()
+        };
         let refused = vec![
             ArchiveRow {
                 project: "demo".into(),
                 hypothesis: "one variable".into(),
                 branch: "evolve/x".into(),
                 baseline: Some(measured()),
-                variant: Some(measured()),
+                variant: Some(regressed()),
                 tolerance: 0.02,
                 kept: true,
                 ..Default::default()
@@ -485,7 +475,7 @@ mod tests {
                 project: "demo".into(),
                 branch: "evolve/x".into(),
                 baseline: Some(measured()),
-                variant: Some(measured()),
+                variant: Some(regressed()),
                 tolerance: 0.02,
                 kept: true,
                 ..Default::default()
@@ -496,7 +486,7 @@ mod tests {
                 suggestion_post: "S-1".into(),
                 branch: "main".into(),
                 baseline: Some(measured()),
-                variant: Some(measured()),
+                variant: Some(regressed()),
                 tolerance: 0.02,
                 kept: true,
                 ..Default::default()
@@ -506,11 +496,7 @@ mod tests {
                 hypothesis: BASELINE_HYPOTHESIS.into(),
                 branch: "main".into(),
                 baseline: Some(measured()),
-                variant: Some(Scores {
-                    project: "demo".into(),
-                    total: 0.9,
-                    ..Default::default()
-                }),
+                variant: Some(regressed()),
                 tolerance: 0.02,
                 kept: true,
                 ..Default::default()
@@ -521,9 +507,23 @@ mod tests {
             assert!(err.to_string().contains("Keep rule"));
         }
         assert_eq!(count_rows(&s, "evolution_archive"), 1);
+        // A tie on a real hypothesis is a kept row under the no-regression rule.
+        let tie = ArchiveRow {
+            project: "demo".into(),
+            hypothesis: "one variable".into(),
+            suggestion_post: "S-1".into(),
+            branch: "evolve/x".into(),
+            baseline: Some(measured()),
+            variant: Some(measured()),
+            tolerance: 0.02,
+            kept: true,
+            note: "kept (no regression)".into(),
+            ..Default::default()
+        };
+        assert_eq!(crate::api::archive_row(&s, tie).unwrap(), "B-002");
         let mut discarded = row;
         discarded.kept = false;
         discarded.note = "not kept".into();
-        assert_eq!(crate::api::archive_row(&s, discarded).unwrap(), "B-002");
+        assert_eq!(crate::api::archive_row(&s, discarded).unwrap(), "B-003");
     }
 }

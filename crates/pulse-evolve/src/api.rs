@@ -98,17 +98,28 @@ pub fn measure(
 }
 
 /// Go: func Keep(baseline, variant *Scores, tolerance float64) (keep bool, reason string)
+///
+/// A variant is kept unless it regresses the score by more than the tolerance:
+/// an improvement is `kept`, a tie `kept (no regression)`. Held-out fixtures are
+/// mostly pass/fail, so a voted change that keeps every fixture green measures
+/// as a tie; it still has to pass the project's own check when it lands
+/// (ADR-024), which is what decides a tie. Only `discarded` deletes the branch.
 pub fn keep(baseline: Option<&Scores>, variant: Option<&Scores>, tolerance: f64) -> (bool, String) {
     let (Some(baseline), Some(variant)) = (baseline, variant) else {
         return (false, "no measurement".to_string());
     };
     let delta = variant.total - baseline.total;
-    if delta >= tolerance {
-        (true, crate::format::format_delta("kept", delta, tolerance))
-    } else {
+    if delta < -tolerance {
         (
             false,
             crate::format::format_delta("discarded", delta, tolerance),
+        )
+    } else if delta >= tolerance {
+        (true, crate::format::format_delta("kept", delta, tolerance))
+    } else {
+        (
+            true,
+            crate::format::format_delta("kept (no regression)", delta, tolerance),
         )
     }
 }
