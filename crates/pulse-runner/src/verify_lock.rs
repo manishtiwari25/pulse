@@ -17,6 +17,9 @@ pub(crate) const OFF: &str = "off";
 pub(crate) const PROJECT: &str = "project";
 pub(crate) const MACHINE: &str = "machine";
 pub(crate) const GAVE_UP_EXIT: i32 = 75;
+/// Exit code of a verification that did not run because the disk was under
+/// `daemon.min_free_mb` (EX_OSERR).
+pub(crate) const DISK_FULL_EXIT: i32 = 71;
 
 /// The lock file name for `slug` under the executor's `$PULSE_HOME/locks`, or None when
 /// verifications may overlap.
@@ -47,15 +50,48 @@ fn safe_slug(slug: &str) -> String {
 }
 
 /// `cmd` as the project's verification should run for `slug`: unchanged while
-/// `verify.lock` is off, else wrapped so it holds the lock for its whole run.
+/// `verify.lock` is off, else wrapped so it holds the lock for its whole run; when
+/// `daemon.min_free_mb` is set a disk-space check runs first and fails fast on a full disk.
 pub(crate) fn wrap(s: &pulse_store::Store, slug: &str, cmd: &str) -> String {
-    match lock_name(s, slug) {
-        Some(name) if !cmd.trim().is_empty() => {
+    if cmd.trim().is_empty() {
+        return cmd.to_string();
+    }
+    let locked = match lock_name(s, slug) {
+        Some(name) => {
             let minutes = i64::from(crate::util::setting_int(s, "minutes_per_job")).max(1);
             wrap_with_lock(cmd, &name, minutes)
         }
-        _ => cmd.to_string(),
+        None => cmd.to_string(),
+    };
+    let floor = crate::util::setting_int(s, "daemon.min_free_mb");
+    if floor > 0 {
+        format!("{}{locked}", disk_prelude(floor))
+    } else {
+        locked
     }
+}
+
+/// A POSIX shell prelude that exits with `DISK_FULL_EXIT` before the verification runs
+/// when the clone's filesystem, or `$CARGO_TARGET_DIR` when set, has under `floor_mb` MB
+/// free. Without it a verification waits its turn on the lock and then dies mid-link with
+/// ENOSPC, often only at the 15-minute command cap, and the run reports
+/// "N commit(s) but verify exit N" instead of the real cause. Pure.
+pub(crate) fn disk_prelude(floor_mb: i32) -> String {
+    let floor_mb = floor_mb.max(1);
+    format!(
+        r#"# pulse: fail fast on a full disk (daemon.min_free_mb)
+for pulse_disk in . "${{CARGO_TARGET_DIR:-.}}"; do
+  pulse_free=$(df -Pm "$pulse_disk" 2>/dev/null | awk 'NR==2 {{print $4}}')
+  case "$pulse_free" in
+    ''|*[!0-9]*) continue ;;
+  esac
+  if [ "$pulse_free" -lt {floor_mb} ]; then
+    echo "pulse: disk full: $pulse_free MB free on $pulse_disk, under daemon.min_free_mb ({floor_mb}); this verification did not run" >&2
+    exit {DISK_FULL_EXIT}
+  fi
+done
+"#
+    )
 }
 
 /// `cmd` wrapped in the lock prelude for `$PULSE_HOME/locks/<lock_name>`, waiting at most
@@ -115,6 +151,7 @@ mod tests {
     fn verify_lock_wraps_only_when_the_setting_asks() {
         let _serial = crate::test_helpers::serial();
         let s = new_store();
+        s.set_setting("human", "daemon.min_free_mb", "0").unwrap();
         assert_eq!(wrap(&s, "demo", "make test"), "make test");
         s.set_setting("human", SETTING, PROJECT).unwrap();
         let wrapped = wrap(&s, "demo app/x", "make test");
@@ -129,6 +166,44 @@ mod tests {
         assert!(wrap(&s, "demo", "make test").contains("/locks/verify.lock\"\n"));
         s.set_setting("human", SETTING, OFF).unwrap();
         assert_eq!(wrap(&s, "demo", "make test"), "make test");
+    }
+
+    #[test]
+    fn verify_disk_prelude_fails_fast_when_the_disk_is_under_the_floor() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        s.set_setting("human", "daemon.min_free_mb", "1024")
+            .unwrap();
+        let wrapped = wrap(&s, "demo", "make test");
+        assert!(
+            wrapped.starts_with("# pulse: fail fast on a full disk"),
+            "{wrapped}"
+        );
+        assert!(wrapped.ends_with("\nmake test"), "{wrapped}");
+        assert!(wrapped.contains("exit 71"), "{wrapped}");
+        s.set_setting("human", SETTING, PROJECT).unwrap();
+        let both = wrap(&s, "demo", "make test");
+        assert!(both.contains("daemon.min_free_mb") && both.contains("verify-demo.lock"));
+
+        let home = tempfile::tempdir().unwrap();
+        // A floor no filesystem reaches: the verification never runs and names the cause.
+        let script = format!("{}echo ran", disk_prelude(i32::MAX));
+        let out = sh(home.path(), &script);
+        assert_eq!(out.status.code(), Some(DISK_FULL_EXIT));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(
+            stderr.contains("disk full") && stderr.contains("did not run"),
+            "{stderr}"
+        );
+        // A floor of one megabyte passes and the command runs.
+        let out = sh(home.path(), &format!("{}echo ran", disk_prelude(1)));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "ran\n");
     }
 
     #[test]
