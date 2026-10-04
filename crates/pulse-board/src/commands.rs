@@ -465,6 +465,15 @@ fn print_post(c: &mut Context, row: &Post) -> Result<()> {
                 row.id
             )?;
         }
+        for (flag, text) in [("--summary", &row.summary), ("--body", &row.body)] {
+            if let Some(what) = shell_mangled_text(text) {
+                writeln!(
+                    c.err,
+                    "warning: post {} {} has {}; the shell may have eaten a backticked word (quote the text with single quotes or pass --body-file)",
+                    row.id, flag, what
+                )?;
+            }
+        }
     }
     Ok(())
 }

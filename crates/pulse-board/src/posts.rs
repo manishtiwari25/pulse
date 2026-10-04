@@ -44,6 +44,32 @@ pub struct Post {
     pub deduped: bool,
 }
 
+/// Names the shell-mangling pattern found in post text, if any: an empty
+/// backtick pair (`` `` ``) left where a double-quoted `` `word` `` was
+/// substituted away, or a doubled space inside a line where the dropped
+/// word used to sit. Fenced code blocks are not inspected because a
+/// `` ```lang `` fence is legitimately three backticks in a row.
+pub fn shell_mangled_text(text: &str) -> Option<&'static str> {
+    let mut in_fence = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let ticks = line.matches('`').count();
+        if line.contains("``") && ticks == 2 {
+            return Some("an empty backtick pair");
+        }
+        if line.trim().contains("  ") {
+            return Some("a doubled space");
+        }
+    }
+    None
+}
+
 pub fn is_bare_vote_summary(kind: &str, summary: &str) -> bool {
     kind == "vote" && matches!(summary.trim().to_ascii_lowercase().as_str(), "up" | "down")
 }
@@ -547,6 +573,32 @@ mod tests {
 
     const AMENDMENT_BODY: &str =
         "## Current text\n\n```\nold line\n```\n\n## Proposed text\n\n```\nnew line\n```\n";
+
+    #[test]
+    fn shell_mangled_text_spots_dropped_backticked_words() {
+        // What `pulse post --body "run `cargo test` first"` leaves behind
+        // once the shell substitutes the backticked command away.
+        assert_eq!(
+            shell_mangled_text("run `` first"),
+            Some("an empty backtick pair")
+        );
+        assert_eq!(shell_mangled_text("run  first"), Some("a doubled space"));
+        assert_eq!(
+            shell_mangled_text("ok line\nthe  gap is on line two"),
+            Some("a doubled space")
+        );
+        assert_eq!(shell_mangled_text("run `cargo test` first"), None);
+        assert_eq!(shell_mangled_text("plain text, no gaps"), None);
+        assert_eq!(shell_mangled_text(""), None);
+        // Indented lists and fenced code are legitimate, not mangling.
+        assert_eq!(shell_mangled_text("- item\n  - nested item"), None);
+        assert_eq!(
+            shell_mangled_text("## Current text\n\n```\nold  line\n```\n"),
+            None
+        );
+        // Three backticks on a line (a fence) is not an empty pair.
+        assert_eq!(shell_mangled_text("```rust"), None);
+    }
 
     fn seed_posts(s: &pulse_store::Store) -> (Post, Post, Post) {
         let suggestion = create_post(
