@@ -1040,7 +1040,13 @@ pub(crate) fn run_job(
                     let check_cmd = crate::verify_lock::wrap(s, &project.str("slug"), &check_cmd);
                     let (rc, vout) = ex.verify(&cancel, &check_cmd, minutes);
                     if let Some(rc) = rc {
-                        verify_note = format!("verify exit {rc}");
+                        verify_note = if rc == crate::verify_lock::DISK_FULL_EXIT {
+                            format!(
+                                "verify exit {rc} (disk full: under daemon.min_free_mb, verification did not run)"
+                            )
+                        } else {
+                            format!("verify exit {rc}")
+                        };
                         ok = rc == 0;
                         if !ok {
                             check_tool = crate::recipe::check_tool_missing(
