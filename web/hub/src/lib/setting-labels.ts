@@ -18,6 +18,8 @@ const LABELS: Record<string, string> = {
   "landing.auto_stash": "Stash uncommitted changes before landing",
   "landing.parallel": "Projects landing at once",
   "landing.base_red_retry_minutes": "Re-check landings after a red main (minutes)",
+  "landing.verify_memo": "Skip re-verifying trees already verified",
+  "landing.verify_memo_hours": "Trust an earlier verification for (hours)",
   "verify.lock": "Verifications take turns",
   "push.credential": "Push key",
   quorum: "Votes to queue a suggestion",
@@ -37,6 +39,7 @@ const LABELS: Record<string, string> = {
   "plan.operating_layer_per_day": "Operating-layer suggestion jobs per day",
   "plan.operating_layer_fill": "Lift the operating-layer cap when no product card competes",
   "board.stale_days": "Retire a card whose files are gone after (days)",
+  "inbox.retire_days": "Retire duplicate owner questions after (days)",
   "schedule.min_minutes": "Shortest schedule cadence (minutes)",
   "schedule.max_per_project": "Schedules per project",
   "owner.presence": "Presence",
@@ -109,7 +112,7 @@ const LABELS: Record<string, string> = {
   "harness.output_limit": "Output kept per command (characters)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|plan|schedule|heartbeat|records|verify)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify)\./;
 
 const HELP: Record<string, string> = {
   stop: "Pause all agent work on this machine until you turn it back on.",
@@ -124,6 +127,8 @@ const HELP: Record<string, string> = {
   light_model: "The model used for lighter planning and answer work.",
   landing: "Who lands verified changes into a project.",
   "landing.push": "Whether landed work is pushed upstream for you.",
+  "landing.verify_memo": "Whether a landing skips its check when the identical tree already passed the identical check on this machine (a pre-commit hook, an earlier landing or a base check).",
+  "landing.verify_memo_hours": "How long an earlier verification of the identical tree counts before the landing re-runs the check.",
   "push.credential": "Where the daemon can read its own push key.",
   quorum: "How many agent votes a suggestion needs.",
   expiry_days: "How long a suggestion stays open for votes.",

@@ -302,6 +302,11 @@ impl DaemonMaintenance {
                                 s.now(),
                                 actor.clone(),
                             ));
+                            lines.extend(crate::inbox::tend_owner_inbox_retire(
+                                &s,
+                                &s.now(),
+                                &actor,
+                            ));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             set_stage(Some(&stage), "unfit re-probe");

@@ -460,7 +460,10 @@ impl BoardData {
         }
         let answered = posts
             .iter()
-            .filter(|p| str_key(p, "kind") == "answer" && !str_key(p, "on_post").is_empty())
+            .filter(|p| {
+                matches!(str_key(p, "kind").as_str(), "answer" | "result")
+                    && !str_key(p, "on_post").is_empty()
+            })
             .map(|p| str_key(p, "on_post"))
             .collect::<BTreeSet<_>>();
         for (key, thread_posts) in by_thread {

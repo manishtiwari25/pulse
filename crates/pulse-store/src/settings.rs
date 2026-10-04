@@ -41,12 +41,13 @@ macro_rules! rules { ($($k:literal => ($kind:literal, $min:expr, [$($c:literal),
 
 pub static DEFAULT_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "amend_majority"=>"2/3","amend_quorum"=>"40","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","landing"=>"agents","landing.parallel"=>"4","max_ai_credits"=>"30","minutes_per_job"=>"10","parallel_per_project"=>"1","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","runner_cmd"=>"copilot","stale_days"=>"30","stop"=>"0","worker_model"=>"","workers"=>"1",
+    "amend_majority"=>"2/3","amend_quorum"=>"40","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","max_ai_credits"=>"30","minutes_per_job"=>"10","parallel_per_project"=>"1","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","runner_cmd"=>"copilot","stale_days"=>"30","stop"=>"0","worker_model"=>"","workers"=>"1",
     }
 });
 pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
         "jobs_per_day"=>("count-or-none",Some(0),[],None,"worker runs the runner may start per UTC day on every executor together; 0 or none means no daily cap"),
+        "inbox.retire_days"=>("count",Some(0),[],None,"days before daemon maintenance may close an open owner question only when it is an older duplicate of a newer open question or its job was cancelled; 0 turns the owner-inbox retire sweep off"),
         "minutes_per_job"=>("count",Some(0),[],None,"wall-clock minutes one worker run may take before the runner stops it"),
         "landing.parallel"=>("count",Some(1),[],None,"projects whose finished branches the daemon may land in parallel; 1 keeps the serial maintenance-pass behaviour"),
         "workers"=>("count",Some(0),[],None,"parallel slots on this machine (the local executor); 0 keeps it idle while remote hands exist"),

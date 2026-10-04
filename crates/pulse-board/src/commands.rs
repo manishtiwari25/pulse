@@ -451,6 +451,13 @@ fn print_post(c: &mut Context, row: &Post) -> Result<()> {
         write_json(&mut c.out, row)?
     } else {
         writeln!(c.out, "{}", row.id)?;
+        if row.deduped {
+            writeln!(
+                c.out,
+                "an identical owner question is already open: {}",
+                row.id
+            )?;
+        }
         if is_bare_vote_summary(&row.kind, &row.summary) {
             writeln!(
                 c.err,

@@ -5,6 +5,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
+use std::sync::LazyLock;
 
 pub(crate) const POST_COLS: &str = "id, project, area, thread, kind, agent, runner, model, session, date, branch, expires, on_post, vote, text_hash, has_read_line, resolution, summary, body, links, files, name, origin_project, extra, origin, created_at";
 
@@ -39,6 +40,8 @@ pub struct Post {
     pub created_at: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub for_owner: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub deduped: bool,
 }
 
 pub fn is_bare_vote_summary(kind: &str, summary: &str) -> bool {
@@ -79,6 +82,7 @@ pub(crate) fn scan_post(row: &Row<'_>) -> rusqlite::Result<Post> {
         origin: row.get(24)?,
         created_at: row.get(25)?,
         for_owner,
+        deduped: false,
     })
 }
 
@@ -150,6 +154,83 @@ pub fn normalize_thread(thread: &str) -> String {
     slugify(thread)
 }
 
+/// The key two owner questions must share to count as the same question, or
+/// `None` when the question is never collapsed by summary. The evolution stop
+/// question is one per suggestion thread by design: pulse-evolve keys it by
+/// (thread, on_post) and reads its body for the gate kind, and the owner's
+/// decision on it clears exactly that thread; the hub inbox already folds the
+/// card-needed and resolved ones away.
+pub fn owner_question_dedupe_key(summary: &str) -> Option<String> {
+    if summary.trim() == pulse_store::EVOLUTION_STOP_SUMMARY {
+        return None;
+    }
+    Some(normalize_owner_question_summary(summary))
+}
+
+pub fn normalize_owner_question_summary(summary: &str) -> String {
+    static PATH_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)(?:[a-z]:)?(?:\.{0,2}/|/)[^\s,;:]+").unwrap());
+    static UUID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+            .unwrap()
+    });
+    static HASH_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\b[0-9a-f]{7,64}\b").unwrap());
+    static DATE_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\b\d{4}-\d{2}-\d{2}(?:[t ][0-9:.+-]+z?)?\b").unwrap());
+    static ID_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\b[a-z]+[-_][a-z0-9]*\d+[a-z0-9_-]*\b").unwrap());
+    static NUMBER_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\b\d+(?:\.\d+)?\b").unwrap());
+    static SPACE_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
+
+    let mut text = summary.to_ascii_lowercase();
+    // A path keeps its last segment: questions about different files stay
+    // different questions; only the clone or worktree prefix collapses.
+    text = PATH_RE
+        .replace_all(&text, |c: &regex::Captures| {
+            let tail = c[0].trim_end_matches('/').rsplit('/').next().unwrap_or("");
+            format!(" {{path}}/{tail} ")
+        })
+        .into_owned();
+    for (re, placeholder) in [
+        (&*UUID_RE, " {id} "),
+        (&*HASH_RE, " {id} "),
+        (&*DATE_RE, " {date} "),
+        (&*ID_RE, " {id} "),
+        (&*NUMBER_RE, " {number} "),
+    ] {
+        text = re.replace_all(&text, placeholder).into_owned();
+    }
+    SPACE_RE.replace_all(text.trim(), " ").into_owned()
+}
+
+fn open_owner_question_with_summary(
+    conn: &Connection,
+    project: &str,
+    normalized_summary: &str,
+) -> Result<Option<Post>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {POST_COLS} FROM posts q
+         WHERE q.project = ? AND q.kind = 'question'
+         AND NOT EXISTS (
+             SELECT 1 FROM posts r
+             WHERE r.on_post = q.id AND r.kind IN ('answer', 'result')
+         )
+         ORDER BY q.date DESC, q.id DESC"
+    ))?;
+    let mut rows = stmt.query([project])?;
+    while let Some(row) = rows.next()? {
+        let post = scan_post(row)?;
+        if post.for_owner
+            && owner_question_dedupe_key(&post.summary).as_deref() == Some(normalized_summary)
+        {
+            return Ok(Some(post));
+        }
+    }
+    Ok(None)
+}
+
 pub fn create_post(s: &pulse_store::Store, input: PostInput) -> Result<Post> {
     let conn = s.conn()?;
     create_post_conn(s, &conn, input)
@@ -218,6 +299,28 @@ pub(crate) fn create_post_conn(
     } else {
         input.session.clone()
     };
+    if input.kind == "question"
+        && input.for_owner
+        && let Some(normalized) = owner_question_dedupe_key(&summary)
+        && let Some(mut existing) =
+            open_owner_question_with_summary(conn, &input.project, &normalized)?
+    {
+        let existing_id = existing.id.clone();
+        event_conn(
+            conn,
+            s,
+            &agent_name,
+            "question.deduped",
+            &existing_id,
+            pulse_store::Detail::json(json!({
+                "existing": existing_id,
+                "project": input.project,
+                "summary": summary,
+            }))?,
+        )?;
+        existing.deduped = true;
+        return Ok(existing);
+    }
     if !input.resolution.is_empty() && !contains(RESOLUTIONS, &input.resolution) {
         return Err(refuse(
             2,
@@ -604,6 +707,149 @@ mod tests {
         assert_eq!(saved["for_owner"], Value::Bool(true));
         assert_eq!(saved["ticket"], Value::String("T-12".into()));
         assert_eq!(saved["mentions"], json!(["bob"]));
+    }
+
+    fn owner_question(s: &pulse_store::Store, project: &str, summary: &str) -> Post {
+        create_post(
+            s,
+            PostInput {
+                kind: "question".into(),
+                project: project.into(),
+                area: "owner".into(),
+                thread: format!("ask-{}", slugify_n(summary, 20)),
+                summary: summary.into(),
+                agent: "alice".into(),
+                for_owner: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn owner_question_dedupe_reuses_open_question_and_records_event() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let first = owner_question(&s, "demo", "Approve the production release");
+        let second = owner_question(&s, "demo", "  approve   the production release  ");
+        assert_eq!(second.id, first.id);
+        assert!(second.deduped);
+        assert_eq!(
+            count_rows(&s, "posts", "kind = 'question'", &[]),
+            1,
+            "dedupe must not insert a second question"
+        );
+        assert_eq!(
+            count_rows(&s, "events", "action = 'question.deduped'", &[]),
+            1
+        );
+    }
+
+    #[test]
+    fn owner_question_dedupe_allows_answered_and_different_project() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let other_repo = crate::test_helpers::git_repo();
+        crate::projects::register_project(
+            &s,
+            &other_repo.path().display().to_string(),
+            "Other",
+            "",
+            false,
+            "",
+            pulse_store::HUMAN_AGENT,
+            "other",
+        )
+        .unwrap();
+        let first = owner_question(&s, "demo", "Pick a deployment window");
+        let other = owner_question(&s, "other", "Pick a deployment window");
+        assert_ne!(other.id, first.id);
+        create_post(
+            &s,
+            PostInput {
+                kind: "answer".into(),
+                project: "demo".into(),
+                area: "owner".into(),
+                thread: "ask-pick-a-deployment".into(),
+                summary: "Use Monday".into(),
+                on: first.id.clone(),
+                agent: pulse_store::HUMAN_AGENT.into(),
+                no_agent_check: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let after_answer = owner_question(&s, "demo", "Pick a deployment window");
+        assert_ne!(after_answer.id, first.id);
+    }
+
+    #[test]
+    fn owner_question_dedupe_normalizes_ids_dates_numbers_and_paths() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let first = owner_question(
+            &s,
+            "demo",
+            "Job job-123 failed on 2026-10-04 in /work/clones/job-123/src/main.rs",
+        );
+        let second = owner_question(
+            &s,
+            "demo",
+            "Job job-987 failed on 2026-10-05 in /work/clones/job-987/src/main.rs",
+        );
+        assert_eq!(second.id, first.id);
+    }
+
+    #[test]
+    fn owner_question_dedupe_keeps_different_meanings_separate() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let first = owner_question(&s, "demo", "Approve the production release");
+        let second = owner_question(&s, "demo", "Reject the production release");
+        assert_ne!(second.id, first.id);
+        let a = owner_question(&s, "demo", "May I delete /work/clones/job-1/src/a.rs?");
+        let b = owner_question(&s, "demo", "May I delete /work/clones/job-2/src/b.rs?");
+        assert_ne!(b.id, a.id, "different files are different questions");
+    }
+
+    #[test]
+    fn owner_question_dedupe_leaves_evolution_stop_questions_to_their_threads() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        assert_eq!(
+            owner_question_dedupe_key(pulse_store::EVOLUTION_STOP_SUMMARY),
+            None
+        );
+        let stop = |thread: &str, on: &str| {
+            create_post(
+                &s,
+                PostInput {
+                    kind: "question".into(),
+                    project: "demo".into(),
+                    area: "evolution".into(),
+                    thread: thread.into(),
+                    on: on.into(),
+                    summary: pulse_store::EVOLUTION_STOP_SUMMARY.into(),
+                    body: "evolution constraint violation: experiment target matches an immutable path".into(),
+                    agent: "alice".into(),
+                    for_owner: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let first = stop("idea-one", "");
+        let second = stop("idea-two", "");
+        assert_ne!(
+            second.id, first.id,
+            "one stop question per suggestion thread"
+        );
+        assert!(!second.deduped);
+        assert_eq!(
+            count_rows(&s, "events", "action = 'question.deduped'", &[]),
+            0,
+            "no dedupe event for a stop question"
+        );
     }
 
     #[test]

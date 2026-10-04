@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 use std::sync::LazyLock;
@@ -37,12 +39,6 @@ pub(crate) fn tend_board_hygiene(
         if retired > 0 {
             lines.push(format!("retired {retired} stale suggestion(s) for {slug}"));
         }
-    }
-    let dropped = drop_superseded_owner_questions(s, &now, &actor, HYGIENE_RETIRE_CAP);
-    if dropped > 0 {
-        lines.push(format!(
-            "dropped {dropped} superseded owner question group(s)"
-        ));
     }
     lines
 }
@@ -177,6 +173,7 @@ pub(crate) fn post_daemon_owner_question(
     .map(Some)
 }
 
+#[cfg(test)]
 pub(crate) fn drop_superseded_owner_questions(
     s: &pulse_store::Store,
     now: &str,
@@ -380,6 +377,7 @@ fn open_daemon_question_with_key(s: &pulse_store::Store, project: &str, key: &st
         .find(|q| question_key(q) == key)
 }
 
+#[cfg(test)]
 fn open_daemon_owner_question_groups(s: &pulse_store::Store) -> BTreeMap<String, Vec<Row>> {
     let mut groups: BTreeMap<String, Vec<Row>> = BTreeMap::new();
     for row in open_daemon_questions(s, None) {
@@ -698,21 +696,20 @@ mod tests {
             },
         )
         .unwrap();
-        let newer = crate::board::create_post(
-            &s,
-            TEST_NOW.into(),
-            crate::board::PostOpts {
-                kind: "question".into(),
-                project: "proj".into(),
-                area: "runner".into(),
-                thread: "login-new".into(),
-                summary: "Login wanted".into(),
-                body: "Sign in with GitHub before queued jobs can run.".into(),
-                for_owner: true,
-                agent: crate::board::actor_agent(&s, "daemon".into()),
-                ..Default::default()
-            },
+        let conn = s.conn().unwrap();
+        conn.execute(
+            "INSERT INTO posts (id, project, area, thread, kind, agent, date, summary, body, extra, created_at)
+             VALUES ('new-login-question', 'proj', 'runner', 'login-new', 'question', 'daemon', ?, 'Login wanted', 'Sign in with GitHub before queued jobs can run.', '{\"for_owner\":true}', ?)",
+            rusqlite::params![TEST_NOW, TEST_NOW],
         )
+        .unwrap();
+        let newer = must_rows(
+            &conn,
+            "SELECT * FROM posts WHERE id = 'new-login-question'",
+            &[],
+        )
+        .into_iter()
+        .next()
         .unwrap();
         assert_eq!(newer.str("kind"), "question");
         assert_eq!(
