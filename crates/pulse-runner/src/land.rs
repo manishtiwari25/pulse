@@ -1958,19 +1958,53 @@ impl AutoStash {
     }
 }
 
+/// The wait before the one retry of a `git stash pop` that failed while the
+/// fast-forward did not land - long enough for a concurrent git to release
+/// `index.lock`, short enough not to hold the landing pass.
+const AUTO_STASH_POP_RETRY_WAIT: Duration = Duration::from_millis(500);
+
+impl AutoStash {
+    /// Pops this landing's entry back onto the checkout when the fast-forward did not
+    /// land. The tree is still the one the work was stashed from, so a failed pop is
+    /// almost always a transient `index.lock` race with the owner's editor or another
+    /// git: it retries once after a short wait, re-locating the entry by id in case
+    /// the list moved. Returns `true` once the entry is popped or was already gone
+    /// (no other stash is popped in its place), `false` when both pops failed.
+    fn restore(&mut self) -> bool {
+        self.armed = false;
+        for attempt in 0..2 {
+            if attempt > 0 {
+                std::thread::sleep(AUTO_STASH_POP_RETRY_WAIT);
+            }
+            let Some(entry) = self.entry() else {
+                return true;
+            };
+            let pop = crate::util::git_timeout(
+                &self.root,
+                Duration::from_secs(60),
+                &["stash", "pop", &entry],
+            );
+            if pop.ok() {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 impl Drop for AutoStash {
     fn drop(&mut self) {
         if !self.armed {
             return;
         }
-        // A pop that conflicts leaves the stash entry in place, so the work is never
-        // lost either way; nothing here can usefully fail louder. An entry that is
-        // already gone is left alone: no other stash is popped in its place.
-        if let Some(entry) = self.entry() {
-            let _ = crate::util::git_timeout(
-                &self.root,
-                Duration::from_secs(60),
-                &["stash", "pop", &entry],
+        // A pop that fails leaves the stash entry in place, so the work is never lost
+        // either way; the landing has no note to carry the result, so the id goes to
+        // stderr, which the daemon log captures.
+        if !self.restore() {
+            eprintln!(
+                "landing auto-stash: the owner's uncommitted work stayed in `git stash list` of {} as stash commit {} because `git stash pop` failed twice; run `git stash pop` on that entry to recover it",
+                self.root,
+                crate::util::trunc(&self.id, 12)
             );
         }
     }
@@ -2830,6 +2864,83 @@ mod auto_stash_tests {
                 "land.landed event should carry the stash note and held seconds: {n}; lines={lines:?}"
             );
         }
+    }
+
+    /// A pop that fails once while the landing unwinds is retried: a stale
+    /// `index.lock` blocks the first `git stash pop`, a helper removes it during
+    /// the retry wait, and the second pop puts the work back in the checkout.
+    #[test]
+    fn armed_drop_retries_the_pop_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_str().unwrap().to_string();
+        run(&root, &["git", "init", "-q", "-b", "main"]);
+        run(&root, &["git", "config", "user.email", "t@t"]);
+        run(&root, &["git", "config", "user.name", "t"]);
+        std::fs::write(tmp.path().join("a.txt"), "base\n").unwrap();
+        run(&root, &["git", "add", "."]);
+        run(&root, &["git", "commit", "-q", "-m", "base"]);
+        std::fs::write(tmp.path().join("a.txt"), "edited\n").unwrap();
+        run(&root, &["git", "stash", "push", "-q", "-m", "test"]);
+        let id = run(&root, &["git", "rev-parse", "--verify", "refs/stash"])
+            .trim()
+            .to_string();
+        let lock = tmp.path().join(".git").join("index.lock");
+        std::fs::write(&lock, "").unwrap();
+        let unlock = lock.clone();
+        let helper = std::thread::spawn(move || {
+            std::thread::sleep(super::AUTO_STASH_POP_RETRY_WAIT / 4);
+            std::fs::remove_file(&unlock).unwrap();
+        });
+        let mut stash = super::AutoStash {
+            root: root.clone(),
+            armed: true,
+            since: std::time::Instant::now(),
+            id,
+        };
+        assert!(
+            stash.restore(),
+            "second pop succeeds after the lock is gone"
+        );
+        helper.join().unwrap();
+        assert!(!stash.armed);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "edited\n"
+        );
+        assert_eq!(run(&root, &["git", "stash", "list"]).trim(), "");
+    }
+
+    /// Both pops failing leaves the entry in `git stash list` and reports false,
+    /// so Drop logs the stash id instead of popping some other entry.
+    #[test]
+    fn armed_drop_leaves_the_stash_when_both_pops_fail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_str().unwrap().to_string();
+        run(&root, &["git", "init", "-q", "-b", "main"]);
+        run(&root, &["git", "config", "user.email", "t@t"]);
+        run(&root, &["git", "config", "user.name", "t"]);
+        std::fs::write(tmp.path().join("a.txt"), "base\n").unwrap();
+        run(&root, &["git", "add", "."]);
+        run(&root, &["git", "commit", "-q", "-m", "base"]);
+        std::fs::write(tmp.path().join("a.txt"), "edited\n").unwrap();
+        run(&root, &["git", "stash", "push", "-q", "-m", "test"]);
+        let id = run(&root, &["git", "rev-parse", "--verify", "refs/stash"])
+            .trim()
+            .to_string();
+        std::fs::write(tmp.path().join(".git").join("index.lock"), "").unwrap();
+        let mut stash = super::AutoStash {
+            root: root.clone(),
+            armed: true,
+            since: std::time::Instant::now(),
+            id: id.clone(),
+        };
+        assert!(!stash.restore());
+        std::fs::remove_file(tmp.path().join(".git").join("index.lock")).unwrap();
+        assert_eq!(
+            run(&root, &["git", "stash", "list", "--format=%H"]).trim(),
+            id,
+            "the entry is still there for the owner"
+        );
     }
 
     /// A checkout that already carries an older stash: the landing pops the entry
