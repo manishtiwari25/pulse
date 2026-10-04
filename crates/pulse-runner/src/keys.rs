@@ -147,12 +147,14 @@ fn append_verify_memo_hook(
     let agent_json = serde_json::to_string(agent).unwrap_or_else(|_| "\"\"".into());
     let clone_json = serde_json::to_string(clone).unwrap_or_else(|_| "\"\"".into());
     // The memo names the index tree, so it is written only when the working
-    // tree the verify ran on is that tree: no unstaged changes.
+    // tree the verify ran on is that tree: no unstaged changes. The home is
+    // the installer's, baked in: the daemon that installed the hook is the one
+    // that reads the memo, whatever PULSE_HOME the committing shell carries.
     let _ = writeln!(
         b,
         "tree=$(git diff --quiet 2>/dev/null && git write-tree 2>/dev/null || true)
 if [ -n \"$tree\" ]; then
-  memo_home=${{PULSE_HOME:-{home_q}}}
+  memo_home={home_q}
   memo_dir=\"$memo_home/verified/\"{project_q}
   at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
   if [ -n \"$at\" ] && mkdir -p \"$memo_dir\" 2>/dev/null; then
