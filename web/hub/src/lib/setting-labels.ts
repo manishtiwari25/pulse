@@ -173,9 +173,15 @@ export function settingLabel(name: string): string {
   return bare ? bare.charAt(0).toUpperCase() + bare.slice(1) : name;
 }
 
-export function settingHelp(name: string): string {
+// The help under a row: the curated sentence when this file has one, else
+// the store's own description of the key (what `pulse setting list` prints),
+// so a key the UI has no group for still says what it does. The generic
+// "Controls ..." line is the last resort for a key the store cannot describe.
+export function settingHelp(name: string, description = ""): string {
   const known = HELP[name];
   if (known) return known;
+  const own = description.trim();
+  if (own) return own.charAt(0).toUpperCase() + own.slice(1) + (/[.!?]$/.test(own) ? "" : ".");
   return "Controls " + settingLabel(name).toLowerCase() + ".";
 }
 

@@ -68,7 +68,7 @@ export function RowHead({ s, title, badge, children }: { s: Setting; title?: Rea
           </span>
         ) : null}
       </div>
-      {children ?? <Clamp>{settingHelp(s.name) || s.description}</Clamp>}
+      {children ?? <Clamp>{settingHelp(s.name, s.description)}</Clamp>}
     </div>
   );
 }

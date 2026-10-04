@@ -278,7 +278,7 @@ export default function SettingsPage() {
       if (rows.length) out.push({ g, rows });
     }
     const rest = all.filter((s) => !used.has(s.name)).sort((a, b) => a.name.localeCompare(b.name));
-    if (rest.length) out.push({ g: { id: "other", title: "Other", blurb: "Keys the store knows that this UI has no group for yet.", keys: [] }, rows: rest });
+    if (rest.length) out.push({ g: { id: "other", title: "Other", blurb: "Keys the store knows that this UI has no group for yet; each row shows the store's own description of the key.", keys: [] }, rows: rest });
     return out;
   }, [q.data]);
 
