@@ -1035,6 +1035,7 @@ pub(crate) fn run_job(
             } else {
                 let mut ok = true;
                 let mut check_tool = String::new();
+                let mut base_check_cmd = String::new();
                 if !project.str("verify_cmd").is_empty() {
                     let mut check_cmd = recipe
                         .as_ref()
@@ -1045,6 +1046,7 @@ pub(crate) fn run_job(
                         check_cmd = crate::recipe::mise_wrap_shell(&pins, &check_cmd, &clone);
                     }
                     let check_cmd = crate::verify_lock::wrap(s, &project.str("slug"), &check_cmd);
+                    base_check_cmd = check_cmd.clone();
                     let (rc, vout) = ex.verify(&cancel, &check_cmd, minutes);
                     if let Some(rc) = rc {
                         verify_note = if rc == crate::verify_lock::DISK_FULL_EXIT {
@@ -1089,6 +1091,19 @@ pub(crate) fn run_job(
                 } else if !ok {
                     status = "failed".into();
                     summary = format!("{commits} commit(s) but {verify_note}; nothing landed");
+                    if let Some(base_rc) = base_tree_verify_red(
+                        ex.as_ref(),
+                        &cancel,
+                        &base,
+                        &base_check_cmd,
+                        minutes,
+                        &log,
+                    ) {
+                        summary = format!(
+                            "{commits} commit(s) but {verify_note}; the base {} was already red before this job (verify exit {base_rc} on the base tree), so this is not a regression the job introduced; nothing landed",
+                            crate::recipe::short(&base, 12)
+                        );
+                    }
                 } else if !lease_ok(5) {
                     status = "stale".into();
                     summary = format!(
@@ -2158,6 +2173,65 @@ type StagedPulsePathFn = Option<fn() -> String>;
 pub(crate) static STAGED_PULSE_PATH: LazyLock<RwLock<StagedPulsePathFn>> =
     LazyLock::new(|| RwLock::new(None));
 
+/// On the failure path only: re-run the project's check against the base tree
+/// (the commit the job branched from) in a throwaway worktree beside the clone.
+/// Returns `Some(exit)` when the base itself fails verify, so the job's commits
+/// are not blamed for a regression they did not introduce; `None` when the base
+/// is green, the check timed out, or the worktree could not be made.
+pub(crate) fn base_tree_verify_red(
+    ex: &dyn Executor,
+    cancel: &pulse_bus::CancellationToken,
+    base: &str,
+    check_cmd: &str,
+    minutes: i32,
+    log: &RunLog,
+) -> Option<i32> {
+    if base.trim().is_empty() || check_cmd.trim().is_empty() {
+        return None;
+    }
+    let wt = format!("../.pulse-base-{}", crate::recipe::short(base, 12));
+    let q = crate::util::shell_quote;
+    // One shell string so it runs the same way on a local or an ssh executor:
+    // a detached worktree at the base, the check inside it, then the worktree
+    // goes away whatever the check did. Exit 125 marks a worktree that could
+    // not be made, which says nothing about the base.
+    let cmd = format!(
+        "git worktree remove --force {wt} >/dev/null 2>&1; git worktree add -q --detach {wt} {b} || exit 125; (cd {wt} && {c}); rc=$?; git worktree remove --force {wt} >/dev/null 2>&1; git worktree prune >/dev/null 2>&1; exit $rc",
+        wt = q(&wt),
+        b = q(base),
+        c = check_cmd
+    );
+    log.add(format!(
+        "$ verify the base tree {} (the job's verify failed; was the base already red?)",
+        crate::recipe::short(base, 12)
+    ));
+    let (rc, out) = ex.verify(cancel, &cmd, minutes);
+    match rc {
+        Some(0) => {
+            log.add("base tree verify exit 0: the base was green, so the failure is the job's own");
+            None
+        }
+        Some(125) => {
+            log.add(format!(
+                "could not check out the base tree; {}",
+                tail(&out, 2000)
+            ));
+            None
+        }
+        Some(code) => {
+            log.add(format!(
+                "base tree verify exit {code}: the base was already red\n{}",
+                tail(&out, 20000)
+            ));
+            Some(code)
+        }
+        None => {
+            log.add("base tree verify timed out; the base's state is unknown");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2257,6 +2331,93 @@ mod tests {
         assert_eq!(r.str("verify"), "verify exit 0", "run: {r:?}");
         let got = std::fs::read_to_string(marker_path).unwrap();
         assert_eq!(got, "setup\nworker\nverify\n");
+    }
+
+    #[test]
+    fn run_job_names_an_already_red_base_instead_of_blaming_the_commits() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        // The base tree is red: the check fails on the commit the job branches from.
+        std::fs::write(std::path::Path::new(&root).join("check.sh"), "exit 3\n").unwrap();
+        run(&root, &["git", "add", "check.sh"]);
+        run(&root, &["git", "commit", "-q", "-m", "red base"]);
+        let base = run(&root, &["git", "rev-parse", "HEAD"]).trim().to_string();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+                ["sh ./check.sh"],
+            )
+            .unwrap();
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "harmless commit".into(),
+            "add a note".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The worker commits something that does not touch the check at all.
+        let worker = "echo note > NOTE.md && git add NOTE.md && git commit -q -m note && echo 'SUMMARY: added a note'";
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "failed", "run: {r:?}");
+        let summary = r.str("summary");
+        assert!(
+            summary.contains("1 commit(s) but verify exit 3"),
+            "summary: {summary}"
+        );
+        assert!(
+            summary.contains(&format!(
+                "the base {} was already red before this job (verify exit 3 on the base tree)",
+                crate::recipe::short(&base, 12)
+            )),
+            "summary does not name the red base: {summary}"
+        );
+        assert!(
+            summary.contains("not a regression the job introduced"),
+            "summary: {summary}"
+        );
+        assert!(summary.ends_with("nothing landed"), "summary: {summary}");
+        assert_eq!(
+            run(&root, &["git", "rev-parse", "HEAD"]).trim(),
+            base,
+            "the red base must not move"
+        );
+        assert!(
+            run(&root, &["git", "worktree", "list"]).lines().count() == 1,
+            "the base-tree worktree must be removed again"
+        );
     }
 
     #[test]
