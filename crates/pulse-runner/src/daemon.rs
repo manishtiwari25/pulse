@@ -123,12 +123,31 @@ pub(crate) fn daemon_heartbeat(
     if let Some(restart) = restart {
         beat["restart"] = restart;
     }
-    if let Ok(conn) = s.conn() {
-        let _ = conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('daemon', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [pulse_store::gojson::to_string(&beat).unwrap_or_default()],
-        );
+    meta_upsert(s, "daemon", &beat);
+}
+
+/// Upsert one daemon meta row (the console's heartbeat and capacity notes).
+/// A failed write is logged instead of dropped: a silently stale console
+/// row would otherwise look like a healthy daemon that merely stopped
+/// updating.
+pub(crate) fn meta_upsert(s: &pulse_store::Store, key: &str, value: &serde_json::Value) {
+    if let Err(e) = meta_upsert_result(s, key, value) {
+        eprintln!("daemon: meta '{key}' write failed: {e}");
     }
+}
+
+fn meta_upsert_result(
+    s: &pulse_store::Store,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    let conn = s.conn().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [key.to_string(), pulse_store::gojson::to_string(value).unwrap_or_default()],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// Go: func capacityNote(s *store.Store, queued, slots, inflight int, starvedSince, held, now string)
@@ -152,12 +171,7 @@ pub(crate) fn capacity_note(
         "held": held,
         "disk": disk,
     });
-    if let Ok(conn) = s.conn() {
-        let _ = conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('capacity', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [pulse_store::gojson::to_string(&note).unwrap_or_default()],
-        );
-    }
+    meta_upsert(s, "capacity", &note);
 }
 
 /// Go: func handsWanted(s *store.Store, brain row, queued, slots, minutes int, now, actor string) row
@@ -1930,6 +1944,22 @@ mod tests {
     use crate::test_helpers_f5::{exec1, test_wait};
     use crate::test_helpers_selfupdate::{head_of, self_update_fixture, wait_self_update_idle};
     use crate::util::file_exists;
+
+    #[test]
+    fn meta_upsert_writes_and_reports_failure() {
+        let s = new_store();
+        meta_upsert(&s, "capacity", &serde_json::json!({"note": "x"}));
+        let row = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT value FROM meta WHERE key = 'capacity'",
+            &[],
+        );
+        assert!(row.str("value").contains("\"note\":\"x\""));
+        s.conn().unwrap().execute("DROP TABLE meta", []).unwrap();
+        let err = meta_upsert_result(&s, "daemon", &serde_json::json!({}))
+            .expect_err("a missing meta table must surface as an error");
+        assert!(err.contains("meta"), "{err}");
+    }
     use std::io::Write;
     use std::time::Duration;
 
