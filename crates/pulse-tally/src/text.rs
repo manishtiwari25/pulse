@@ -4,8 +4,9 @@ use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
 
 pub(crate) fn day_number(mut value: &str) -> i32 {
-    if value.len() > 10 {
-        value = &value[..10];
+    // Cut at a char boundary: a byte slice would panic on a non-ASCII date string.
+    if let Some((idx, _)) = value.char_indices().nth(10) {
+        value = &value[..idx];
     }
     let Ok(t) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") else {
         return 0;
@@ -298,5 +299,22 @@ pub fn check_amendment(body: &str, constitution: &str, protected: &[String]) -> 
         Ok(())
     } else {
         Err(VerdictError { check: c }.into())
+    }
+}
+
+#[cfg(test)]
+mod day_number_tests {
+    use super::day_number;
+
+    #[test]
+    fn day_number_does_not_panic_on_malformed_non_ascii_date() {
+        assert_eq!(day_number("2026-10-0\u{e9}T10:00:00Z"), 0);
+        assert_eq!(
+            day_number("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}"),
+            0
+        );
+        assert_eq!(day_number("\u{1f600}2026-10-04"), 0);
+        assert_eq!(day_number("2026-10-04T10:00:00Z"), day_number("2026-10-04"));
+        assert!(day_number("2026-10-04") > 0);
     }
 }
