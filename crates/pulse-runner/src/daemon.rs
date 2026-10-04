@@ -98,9 +98,18 @@ impl std::fmt::Debug for DaemonOpts {
 }
 
 /// Go: func daemonHeartbeat(s *store.Store, loops, interval int, note string)
-pub(crate) fn daemon_heartbeat(s: &pulse_store::Store, loops: i32, interval: i32, note: String) {
+/// `restart` is the pending handover (`restart_beat`) while a newer binary
+/// waits for the runs in flight; the hub reads it to say what the daemon
+/// waits for instead of a bare "restarting".
+pub(crate) fn daemon_heartbeat(
+    s: &pulse_store::Store,
+    loops: i32,
+    interval: i32,
+    note: String,
+    restart: Option<serde_json::Value>,
+) {
     let b = pulse_bus::default();
-    let beat = serde_json::json!({
+    let mut beat = serde_json::json!({
         "pid": std::process::id(),
         "at": s.now(),
         "loops": loops,
@@ -111,6 +120,9 @@ pub(crate) fn daemon_heartbeat(s: &pulse_store::Store, loops: i32, interval: i32
         "bus": {"subscribers": b.subscribers(), "dropped": b.dropped(), "deduped": b.deduped()},
         "planner_cache": pulse_tally::cache::cache_stats(),
     });
+    if let Some(restart) = restart {
+        beat["restart"] = restart;
+    }
     if let Ok(conn) = s.conn() {
         let _ = conn.execute(
             "INSERT INTO meta (key, value) VALUES ('daemon', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -312,6 +324,115 @@ pub(crate) fn restart_window(
         .max()
         .unwrap_or(0);
     drain_left.max(Duration::from_secs(slowest))
+}
+
+/// The runs a pending restart waits for: those in flight when it was armed
+/// (the anchors), or every run in flight once the anchors are done - the
+/// handover waits for all of them.
+fn restart_waits<'a>(
+    inflight: &'a BTreeMap<String, Dispatch>,
+    anchors: &std::collections::BTreeSet<String>,
+) -> Vec<&'a Dispatch> {
+    let anchored: Vec<&Dispatch> = inflight
+        .iter()
+        .filter(|(key, _)| anchors.contains(*key))
+        .map(|(_, d)| d)
+        .collect();
+    if anchored.is_empty() {
+        inflight.values().collect()
+    } else {
+        anchored
+    }
+}
+
+/// The heartbeat's record of a pending restart: since when, how many runs
+/// are in flight, whether new ones still start, and the runs the new build
+/// waits for. A brain run can take an hour and a bare "restarting" read as
+/// stuck for all of it; the console names the run and its age instead.
+pub(crate) fn restart_beat(
+    since: &str,
+    inflight: &BTreeMap<String, Dispatch>,
+    anchors: &std::collections::BTreeSet<String>,
+    dispatching: bool,
+) -> serde_json::Value {
+    let waits: Vec<serde_json::Value> = restart_waits(inflight, anchors)
+        .into_iter()
+        .map(|d| {
+            serde_json::json!({
+                "agent": d.worker,
+                "kind": d.job.str("kind"),
+                "project": d.job.str("project"),
+                "job": d.job.str("id"),
+                "started_at": d.started_at,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "since": since,
+        "inflight": inflight.len(),
+        "dispatching": dispatching,
+        "waits_for": waits,
+    })
+}
+
+/// Minutes and whole hours as a human writes them ("44m", "1h26m"); never
+/// seconds, which only suggest a precision the note does not need.
+fn minutes_text(secs: u64) -> String {
+    let minutes = secs / 60;
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else {
+        format!("{}h{}m", minutes / 60, minutes % 60)
+    }
+}
+
+/// The heartbeat note of a pending restart: the runs in flight and the ones
+/// the new build waits for, each with how long it has run so far.
+pub(crate) fn restart_note(
+    now: &str,
+    inflight: &BTreeMap<String, Dispatch>,
+    anchors: &std::collections::BTreeSet<String>,
+) -> String {
+    let waits = restart_waits(inflight, anchors);
+    if waits.is_empty() {
+        return format!("restarting: {} in flight", inflight.len());
+    }
+    let now_at = crate::util::must_iso(now);
+    let mut names: Vec<String> = waits
+        .iter()
+        .take(3)
+        .map(|d| {
+            let ran = if d.started_at.is_empty() {
+                String::new()
+            } else {
+                let secs = (now_at - crate::util::must_iso(&d.started_at))
+                    .num_seconds()
+                    .max(0) as u64;
+                format!(" ({} so far)", minutes_text(secs))
+            };
+            format!(
+                "{}'s {} on {}{ran}",
+                d.worker,
+                d.job.str("kind"),
+                d.job.str("project")
+            )
+        })
+        .collect();
+    if waits.len() > 3 {
+        names.push(format!("{} more", waits.len() - 3));
+    }
+    let list = match names.len() {
+        1 => names.remove(0),
+        2 => names.join(" and "),
+        _ => {
+            let last = names.pop().unwrap_or_default();
+            format!("{} and {last}", names.join(", "))
+        }
+    };
+    format!(
+        "restarting: {} in flight; the new build waits for {list}",
+        inflight.len()
+    )
 }
 
 /// Finished runs a measured `run_fits` needs before it trusts the measurement.
@@ -600,6 +721,8 @@ pub(crate) fn daemon(
     let mut restart_pending: Option<std::time::Instant> = None;
     // The runs in flight when the restart was armed: the window follows them.
     let mut restart_anchors: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // When the restart was armed, ISO; the heartbeat carries it.
+    let mut restart_since = String::new();
     let mut maintenance = crate::daemon_maintenance::DaemonMaintenance {
         held: crate::landing_hold::load_landing_holds(s),
         ..Default::default()
@@ -659,7 +782,7 @@ pub(crate) fn daemon(
             Arc::new(move |line| say(&out, line)),
             Some(Arc::new(move |note: String, dump: String| {
                 let loops = loops_note.load(std::sync::atomic::Ordering::SeqCst);
-                daemon_heartbeat(&s_note, loops, interval, note.clone());
+                daemon_heartbeat(&s_note, loops, interval, note.clone(), None);
                 if let Ok(conn) = s_note.conn() {
                     crate::util::event_at(
                         &conn,
@@ -682,8 +805,8 @@ pub(crate) fn daemon(
         dog
     });
     // Go: heartbeat(note) - the heartbeat row plus the watchdog's beat.
-    let heartbeat = |loops: i32, note: &str| {
-        daemon_heartbeat(s, loops, interval, note.to_string());
+    let heartbeat = |loops: i32, note: &str, restart: Option<serde_json::Value>| {
+        daemon_heartbeat(s, loops, interval, note.to_string(), restart);
         if let Some(dog) = &dog {
             dog.beat();
         }
@@ -937,6 +1060,7 @@ pub(crate) fn daemon(
                         ),
                     );
                     restart_pending = Some(std::time::Instant::now());
+                    restart_since = s.now();
                 }
                 Some(_) if inflight.is_empty() => {
                     say(
@@ -972,12 +1096,23 @@ pub(crate) fn daemon(
             // The binary was changed back: the handover is off.
             restart_pending = None;
             restart_anchors.clear();
+            restart_since.clear();
         }
         let now = s.now();
-        let restart_note = restart_pending
-            .map(|_| format!("restarting: {} in flight", inflight.len()))
-            .unwrap_or_default();
-        heartbeat(loops, &restart_note);
+        let (beat_note, restart_record) = if restart_pending.is_some() {
+            (
+                restart_note(&now, &inflight, &restart_anchors),
+                Some(restart_beat(
+                    &restart_since,
+                    &inflight,
+                    &restart_anchors,
+                    true,
+                )),
+            )
+        } else {
+            (String::new(), None)
+        };
+        heartbeat(loops, &beat_note, restart_record);
         let mut started: Vec<Dispatch> = Vec::new();
         let mut reason = String::new();
         let mut slots: Vec<String> = Vec::new();
@@ -1648,6 +1783,22 @@ pub(crate) fn daemon(
         let never_done = crossbeam_channel::never::<()>();
         let mut timer = (grace > Duration::ZERO).then(|| crossbeam_channel::after(grace));
         let mut caller_done = Some(cancel.done());
+        // The wait can outlast the heartbeat's freshness (a brain run takes
+        // an hour): beat on, naming the runs, so the console does not call a
+        // daemon that waits for its runs silent.
+        let beat_tick = crossbeam_channel::tick(Duration::from_secs(interval.max(1) as u64));
+        let wait_beat = |inflight: &BTreeMap<String, Dispatch>| {
+            heartbeat(
+                loops,
+                &format!(
+                    "{note}: waiting for {} run(s) in flight to finish",
+                    inflight.len()
+                ),
+                (result == "restart")
+                    .then(|| restart_beat(&restart_since, inflight, &restart_anchors, false)),
+            );
+        };
+        wait_beat(&inflight);
         while !inflight.is_empty() {
             crossbeam_channel::select! {
                 recv(results_rx) -> msg => {
@@ -1659,6 +1810,7 @@ pub(crate) fn daemon(
                         say(&o, format!("idle: {}", d.reason));
                     }
                 },
+                recv(beat_tick) -> _ => wait_beat(&inflight),
                 recv(caller_done.as_ref().unwrap_or(&never_done)) -> _ => {
                     caller_done = None;
                     if timer.is_none() {
@@ -1733,7 +1885,7 @@ pub(crate) fn daemon(
     } else {
         "exited"
     };
-    daemon_heartbeat(s, loops, interval, beat.to_string());
+    daemon_heartbeat(s, loops, interval, beat.to_string(), None);
     // Go: defer cancelWake() - the wake subscription outlives the heartbeat,
     // which therefore counts it among the bus subscribers.
     cancel_wake();
@@ -2668,6 +2820,92 @@ mod tests {
                 ),
             ],
             "the run started inside the window is no anchor, and no run outlives its budget"
+        );
+    }
+
+    #[test]
+    fn restart_heartbeat_names_the_runs_the_new_build_waits_for() {
+        let job = |id: &str, kind: &str, project: &str| {
+            let mut r = Row::new();
+            r.0.insert("id".into(), serde_json::Value::String(id.into()));
+            r.0.insert("kind".into(), serde_json::Value::String(kind.into()));
+            r.0.insert("project".into(), serde_json::Value::String(project.into()));
+            r
+        };
+        let dispatch = |worker: &str, job: Row, started: &str| Dispatch {
+            slot: "local".into(),
+            worker: worker.into(),
+            job,
+            started_at: started.into(),
+            ..Default::default()
+        };
+        let mut inflight = BTreeMap::new();
+        inflight.insert(
+            "a".to_string(),
+            dispatch(
+                "fjord",
+                job("job-1", "improve", "amistio-template"),
+                "2026-01-01T06:22:41Z",
+            ),
+        );
+        inflight.insert(
+            "b".to_string(),
+            dispatch(
+                "ember",
+                job("job-2", "reflect", "project-light"),
+                "2026-01-01T07:04:51Z",
+            ),
+        );
+        let anchors: BTreeSet<String> = ["a"].into_iter().map(String::from).collect();
+        let now = "2026-01-01T07:07:30Z";
+        // The anchor alone sets the wait while it runs; its age is rounded to
+        // the minute, and the note stays one line a human can read.
+        assert_eq!(
+            restart_note(now, &inflight, &anchors),
+            "restarting: 2 in flight; the new build waits for fjord's improve on amistio-template (44m so far)"
+        );
+        let beat = restart_beat("2026-01-01T06:42:03Z", &inflight, &anchors, true);
+        assert_eq!(beat["since"], "2026-01-01T06:42:03Z");
+        assert_eq!(beat["inflight"], 2);
+        assert_eq!(beat["dispatching"], true);
+        assert_eq!(
+            beat["waits_for"],
+            serde_json::json!([{
+                "agent": "fjord",
+                "kind": "improve",
+                "project": "amistio-template",
+                "job": "job-1",
+                "started_at": "2026-01-01T06:22:41Z",
+            }])
+        );
+        // Once the anchor is done the handover waits for whatever is left.
+        inflight.remove("a");
+        assert_eq!(
+            restart_note(now, &inflight, &anchors),
+            "restarting: 1 in flight; the new build waits for ember's reflect on project-light (2m so far)"
+        );
+        let beat = restart_beat("", &inflight, &anchors, false);
+        assert_eq!(beat["waits_for"][0]["agent"], "ember");
+        assert_eq!(beat["dispatching"], false);
+        // Many anchors: three are named, the rest counted.
+        for n in 0..4 {
+            inflight.insert(
+                format!("k{n}"),
+                dispatch(
+                    &format!("w{n}"),
+                    job(&format!("job-{n}"), "task", "proj"),
+                    "",
+                ),
+            );
+        }
+        let note = restart_note(now, &inflight, &BTreeSet::new());
+        assert!(
+            note.starts_with("restarting: 5 in flight; the new build waits for ember's reflect on project-light (2m so far), w0's task on proj, w1's task on proj and 2 more"),
+            "{note}"
+        );
+        assert_eq!(
+            restart_note(now, &BTreeMap::new(), &anchors),
+            "restarting: 0 in flight"
         );
     }
 

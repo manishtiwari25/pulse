@@ -1132,10 +1132,18 @@ pub(crate) fn land_branch(
                     ),
                 ));
             }
+            // The stash commit just pushed: the guard pops that entry and no other,
+            // so an older stash in the list is never popped onto the checkout.
+            let id = crate::util::git_timeout(
+                &root,
+                Duration::from_secs(60),
+                &["rev-parse", "--verify", "refs/stash"],
+            );
             auto_stash = Some(AutoStash {
                 root: root.clone(),
                 armed: true,
                 since: std::time::Instant::now(),
+                id: id.stdout.trim().to_string(),
             });
             if !checkout_state_pair(&root, &def).1 {
                 return Ok((
@@ -1886,14 +1894,33 @@ struct LandingCleanup {
 /// The owner's uncommitted work, auto-stashed for the length of the final
 /// fast-forward. Dropped while still armed - the fast-forward failed, deferred or
 /// panicked - it pops the stash so the work is back in the checkout; `pop` returns it
-/// once the branch landed.
+/// once the branch landed. It pops the entry it pushed (`id`, the stash commit) and
+/// no other: a checkout can carry older stashes, and a blind `git stash pop` would
+/// land one of those on the owner's tree with conflict markers.
 struct AutoStash {
     root: String,
     armed: bool,
     since: std::time::Instant,
+    id: String,
 }
 
 impl AutoStash {
+    /// The `stash@{n}` entry holding this landing's stash, while it is in the list.
+    fn entry(&self) -> Option<String> {
+        if self.id.is_empty() {
+            return None;
+        }
+        let list = crate::util::git_timeout(
+            &self.root,
+            Duration::from_secs(60),
+            &["stash", "list", "--format=%H"],
+        );
+        list.stdout
+            .lines()
+            .position(|hash| hash.trim() == self.id)
+            .map(|n| format!("stash@{{{n}}}"))
+    }
+
     /// Pops the stash back onto the checkout once the branch landed and disarms the
     /// guard. A pop that conflicts keeps the stash entry and puts the checkout back on
     /// the clean landed tree instead of leaving conflict markers; the returned note
@@ -1901,7 +1928,18 @@ impl AutoStash {
     /// `git stash list`.
     fn pop(&mut self) -> Option<String> {
         self.armed = false;
-        let pop = crate::util::git_timeout(&self.root, Duration::from_secs(60), &["stash", "pop"]);
+        let Some(entry) = self.entry() else {
+            return Some(format!(
+                "the owner's uncommitted work was stashed as {} before the fast-forward and that entry is no longer in `git stash list` of {}; nothing was popped",
+                crate::util::trunc(&self.id, 12),
+                self.root
+            ));
+        };
+        let pop = crate::util::git_timeout(
+            &self.root,
+            Duration::from_secs(60),
+            &["stash", "pop", &entry],
+        );
         if pop.ok() {
             return None;
         }
@@ -1914,7 +1952,7 @@ impl AutoStash {
             &["reset", "-q", "--hard", "HEAD"],
         );
         Some(format!(
-            "the owner's uncommitted work stayed in `git stash list` because `git stash pop` conflicted with the landed commits ({why}); the checkout was reset to the landed tree, run `git stash pop` in {} to recover it",
+            "the owner's uncommitted work stayed in `git stash list` because `git stash pop {entry}` conflicted with the landed commits ({why}); the checkout was reset to the landed tree, run `git stash pop {entry}` in {} to recover it",
             self.root
         ))
     }
@@ -1926,8 +1964,15 @@ impl Drop for AutoStash {
             return;
         }
         // A pop that conflicts leaves the stash entry in place, so the work is never
-        // lost either way; nothing here can usefully fail louder.
-        let _ = crate::util::git_timeout(&self.root, Duration::from_secs(60), &["stash", "pop"]);
+        // lost either way; nothing here can usefully fail louder. An entry that is
+        // already gone is left alone: no other stash is popped in its place.
+        if let Some(entry) = self.entry() {
+            let _ = crate::util::git_timeout(
+                &self.root,
+                Duration::from_secs(60),
+                &["stash", "pop", &entry],
+            );
+        }
     }
 }
 
@@ -2784,6 +2829,94 @@ mod auto_stash_tests {
             panic!(
                 "land.landed event should carry the stash note and held seconds: {n}; lines={lines:?}"
             );
+        }
+    }
+
+    /// A checkout that already carries an older stash: the landing pops the entry
+    /// it pushed and leaves the older one where it was, so the owner's tree never
+    /// receives a stranger's stash with conflict markers (2026-10-04: a September
+    /// auto-stash of files that no longer exist was popped onto the brain checkout).
+    #[test]
+    fn landing_pops_only_its_own_stash() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (_, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&"true"],
+        );
+        let proj = crate::board::project_by_slug(&s.conn().expect("conn"), "proj".into());
+
+        let branch = "pulse/aurora/feature";
+        run(&dir, &["git", "checkout", "-q", "-b", branch, "main"]);
+        std::fs::write(std::path::Path::new(&dir).join("feature.txt"), b"feature\n").unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "add feature"]);
+        run(&dir, &["git", "checkout", "-q", "main"]);
+        let (j, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "proj".into(),
+                kind: "task".into(),
+                title: "feature branch".into(),
+                brief: "b".into(),
+                tier: 1,
+                created_by: "aurora".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &j.id],
+        );
+
+        // An older stash from another day, with its own version of the README,
+        // then the owner's uncommitted work on top.
+        let readme = std::path::Path::new(&dir).join("README.md");
+        std::fs::write(&readme, b"# proj\n\nan old stash\n").unwrap();
+        run(&dir, &["git", "stash", "push", "-q", "-m", "old stash"]);
+        let old_stash = run(&dir, &["git", "rev-parse", "refs/stash"]);
+        let owner_work = b"# proj\n\nowner's work\n";
+        std::fs::write(&readme, owner_work).unwrap();
+
+        let (lines, _held) = crate::landing_hold::tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        let joined = lines.join("\n");
+        if !joined.contains("landed") {
+            panic!("expected the landing to land; lines={lines:?}");
+        }
+
+        let stash_list = run(&dir, &["git", "stash", "list", "--format=%H"]);
+        if stash_list.trim() != old_stash.trim() {
+            panic!("only the older stash should remain: {stash_list:?}; lines={lines:?}");
+        }
+        let restored = std::fs::read(&readme).unwrap();
+        if restored != owner_work {
+            panic!(
+                "owner's uncommitted work not restored: {:?}",
+                String::from_utf8_lossy(&restored)
+            );
+        }
+        let status = run(
+            &dir,
+            &["git", "status", "--porcelain", "--untracked-files=no"],
+        );
+        if status.trim() != "M README.md" {
+            panic!("checkout should show the owner's edit again, no conflict: {status:?}");
+        }
+        if !std::path::Path::new(&dir).join("feature.txt").exists() {
+            panic!("the landed branch should be in the checkout; lines={lines:?}");
         }
     }
 }

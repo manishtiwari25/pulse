@@ -416,6 +416,12 @@ impl Handler {
                         "note".into(),
                         json!(beat.get("note").and_then(Value::as_str).unwrap_or("")),
                     );
+                    // The pending handover: since when, how many runs are in
+                    // flight and which the new build waits for (daemon.rs
+                    // `restart_beat`); absent when no restart is pending.
+                    if let Some(restart) = beat.get("restart").filter(|r| r.is_object()) {
+                        daemon.insert("restart".into(), restart.clone());
+                    }
                 }
                 Err(_) => {
                     daemon.insert("state".into(), json!("unreadable"));
