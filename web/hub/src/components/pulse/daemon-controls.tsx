@@ -29,8 +29,14 @@ export function DaemonControls({ runner, service, settings }: { runner: Loaded<R
     "Paused by you"
   ) : state.label === "running" || state.label === "alive" ? (
     <>Running on this machine{checked}</>
+  ) : state.label === "restarting" ? (
+    <>Restarting on this machine once its runs in flight finish{checked}</>
+  ) : state.label === "silent" ? (
+    <>Heartbeat stale — read its log before starting another copy{checked}</>
   ) : state.label === "checking" ? (
     "Checking this machine"
+  ) : state.label === "unknown" || state.label === "unavailable" ? (
+    "Status unavailable — refresh before starting anything"
   ) : (
     "Not running — start it to let agents work"
   );

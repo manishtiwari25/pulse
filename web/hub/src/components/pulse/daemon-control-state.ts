@@ -56,8 +56,12 @@ export function daemonControlState({ runner, service, settings }: DaemonControlS
   const setup = service.error ? null : serviceSetupAction(service.data);
   const r = runner.error || !runner.data?.available ? undefined : runner.data;
   const heartbeat = r?.daemon.state;
+  // The store writes `alive` for a fresh loop heartbeat and `silent` for a stale
+  // one; `running` is kept for older hubs. A heartbeat whose note starts with
+  // `restarting:` is a live daemon draining its runs before it swaps binaries.
+  const restarting = (heartbeat === "running" || heartbeat === "alive") && !!r?.daemon.note?.startsWith("restarting");
   const mayBeAlive = heartbeat === "running" || heartbeat === "alive" || heartbeat === "silent";
-  const knownStopped = heartbeat === "stopped" || heartbeat === "off" || heartbeat === "never started" || heartbeat === "no heartbeat" || heartbeat === "no-heartbeat";
+  const knownStopped = heartbeat === "stopped" || heartbeat === "off" || heartbeat === "exited" || heartbeat === "never started" || heartbeat === "no heartbeat" || heartbeat === "no-heartbeat";
   const startsDaemon = setup === "install" || setup === "start";
   const controls = {
     pause,
@@ -74,13 +78,16 @@ export function daemonControlState({ runner, service, settings }: DaemonControlS
   if (!runner.data) return { ...controls, label: "checking", tone: "neutral", description: "Checking the daemon's heartbeat and the controls available on this machine." };
   if (!r) return { ...controls, label: "unavailable", tone: "warn", description: "The runner store is unavailable on this hub. Refresh status before trying to start a daemon." };
   if (r.runner?.allowed === false) return { ...controls, label: "stopped", tone: "warn", description: "New work is stopped: " + (r.runner.reason || "the runner does not allow work") + ". Service setup does not clear this stop." };
+  if (restarting) return { ...controls, label: "restarting", tone: "info", description: "The daemon has a newer pulse built and swaps to it once its runs in flight finish (" + r.daemon.note + "); until then it starts only runs that end before the slowest one. Its service brings it back within seconds; nothing to start by hand." };
   switch (heartbeat) {
     case "running":
       return { ...controls, label: "running", tone: "ok", description: "The daemon reports a recent heartbeat. Work still follows the owner's pause, STOP files, approvals and existing caps." };
     case "alive":
-      return { ...controls, label: "alive", tone: "info", description: "The daemon is reported alive. That is separate from whether its next loop or any worker can make progress." };
+      return { ...controls, label: "alive", tone: "ok", description: "The daemon's loop heartbeat is recent. Work still follows the owner's pause, STOP files, approvals and existing caps; whether a worker can make progress is a separate question." };
     case "silent":
       return { ...controls, label: "silent", tone: "warn", description: "The loop heartbeat is stale, not simply off. The daemon may still be alive or waiting; inspect its status and logs rather than starting another copy or automatically restarting it." };
+    case "exited":
+      return { ...controls, label: "stopped", tone: "warn", description: "The daemon wrote its last heartbeat on exit" + (r.daemon.at ? " at " + r.daemon.at : "") + ". A service-managed daemon is started again within seconds - refresh before doing anything; a foreground daemon needs you to start it." };
     case "stopped":
     case "off":
       return { ...controls, label: "stopped", tone: "warn", description: "The daemon is reported stopped. If its service is missing or unloaded, review the service setup below; a loaded service needs inspection, not a duplicate start." };
@@ -90,5 +97,29 @@ export function daemonControlState({ runner, service, settings }: DaemonControlS
       return { ...controls, label: "no heartbeat", tone: "warn", description: "No daemon loop heartbeat has been recorded. This is not an owner-disable setting, and a loaded service alone does not confirm that a loop has started." };
     default:
       return { ...controls, label: "unknown", tone: "warn", description: "The daemon heartbeat is unreadable or its state is not recognized. Refresh status or inspect pulse status before trying to start it." };
+  }
+}
+
+// The one short phrase the home hero pill and the controls' status line show
+// for a daemon state. Only a known stop reads "off": a fresh heartbeat is
+// running, a restart drain says so, and a stale or unreadable one is named
+// rather than called off, so nobody starts a second daemon on a guess.
+export function daemonHeadline(state: Pick<DaemonControlState, "label" | "pause">): string {
+  if (state.pause === "on") return "Daemon paused";
+  switch (state.label) {
+    case "running":
+    case "alive":
+      return "Daemon running";
+    case "restarting":
+      return "Daemon restarting";
+    case "silent":
+      return "Daemon silent";
+    case "checking":
+      return "Checking daemon…";
+    case "unknown":
+    case "unavailable":
+      return "Daemon status unknown";
+    default:
+      return "Daemon off";
   }
 }

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { ArrowUpRightIcon, SparklesIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/pulse/panel";
+import { daemonHeadline } from "@/components/pulse/daemon-control-state";
 import { cn } from "@/lib/utils";
 import { plural, type Tone } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -50,7 +51,7 @@ export function HomeHero({ inbox, daemon, daemonDown, runnerChecking, inboxCheck
         : inboxChecking
           ? "Checking what needs your yes or no…"
           : "Nothing needs you right now — " + plural(activeAgents, "agent") + " working on " + plural(projects, "project") + ".";
-  const daemonText = daemon.pause === "on" ? "Daemon paused" : daemon.tone === "ok" ? "Daemon running" : daemon.label === "checking" ? "Checking daemon…" : "Daemon off";
+  const daemonText = daemonHeadline(daemon);
   const agentText = runnerChecking ? "Checking agents…" : plural(working, "agent") + " working";
 
   return (

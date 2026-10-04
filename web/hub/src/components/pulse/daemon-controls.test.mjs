@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canApplyServiceSetup, daemonControlState, daemonServiceState, serviceSetupAction } from "./daemon-control-state.ts";
+import { canApplyServiceSetup, daemonControlState, daemonHeadline, daemonServiceState, serviceSetupAction } from "./daemon-control-state.ts";
 import { HANDOVER_WAIT_MS, waitForServiceHandover } from "./service-handover.ts";
 import { writes } from "../../lib/api.ts";
 
@@ -137,6 +137,42 @@ test("a stale heartbeat with a loaded service is silent, never off or a duplicat
   assert.equal(state.canPreview, false);
   assert.match(state.description, /may still be alive/);
   assert.match(state.description, /rather than starting another copy/);
+});
+
+// The store's heartbeat says `alive` for a fresh loop, never `running`; the
+// home hero read tone and called a healthy daemon "off" (2026-10-04).
+test("a fresh heartbeat is ok and reads running; a restart drain and an exit are named", () => {
+  const alive = daemonControlState(inputs({ runner: snapshot(runner("alive")) }));
+  assert.equal(alive.label, "alive");
+  assert.equal(alive.tone, "ok");
+  assert.equal(daemonHeadline(alive), "Daemon running");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("running")) }))), "Daemon running");
+
+  const draining = runner("alive");
+  draining.daemon.note = "restarting: 2 in flight";
+  const restarting = daemonControlState(inputs({ runner: snapshot(draining) }));
+  assert.equal(restarting.label, "restarting");
+  assert.equal(restarting.tone, "info");
+  assert.match(restarting.description, /restarting: 2 in flight/);
+  assert.match(restarting.description, /nothing to start by hand/);
+  assert.equal(restarting.setup, null, "a draining daemon is alive: no start action");
+  assert.equal(daemonHeadline(restarting), "Daemon restarting");
+  const silentNote = runner("silent");
+  silentNote.daemon.note = "restarting: 1 in flight";
+  assert.equal(daemonControlState(inputs({ runner: snapshot(silentNote) })).label, "silent", "a stale heartbeat is silent whatever its last note said");
+
+  const exited = daemonControlState(inputs({ runner: snapshot(runner("exited")) }));
+  assert.equal(exited.label, "stopped");
+  assert.match(exited.description, /started again within seconds/);
+  assert.equal(daemonHeadline(exited), "Daemon off");
+  const blocked = daemonControlState(inputs({ runner: snapshot(runner("exited")), service: snapshot(service({ present: true, loaded: false })) }));
+  assert.equal(blocked.setupBlock, "", "an exited daemon is a known stop: service setup may start one");
+
+  assert.equal(daemonHeadline(daemonControlState(inputs())), "Daemon silent");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(undefined) }))), "Checking daemon…");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("alive"), "offline") }))), "Daemon status unknown");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ settings: snapshot(settings("1")), runner: snapshot(runner("alive")) }))), "Daemon paused");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("never started")) }))), "Daemon off");
 });
 
 test("missing and unloaded service setup previews cannot apply over a possibly live foreground daemon", () => {
