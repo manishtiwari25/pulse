@@ -76,6 +76,7 @@ export function DaemonControls({ runner, service, settings }: { runner: Loaded<R
         {runner.error ? <ErrorNotice error={runner.error} onRetry={() => void runner.reload()}>Could not refresh daemon status: {runner.error}</ErrorNotice> : null}
         {settings.error ? <ErrorNotice error={settings.error} onRetry={() => void settings.reload()}>Could not read the owner pause: {settings.error}</ErrorNotice> : null}
         {service.error ? <ErrorNotice error={service.error} onRetry={() => void service.reload()}>Could not refresh service status: {service.error}</ErrorNotice> : null}
+        {r?.daemon.disk ? <Notice tone="bad">{r.daemon.disk} - free disk space before restarting; a restart does not clear this hold.</Notice> : null}
         {r?.daemon.note ? <Notice tone={state.update ? "info" : "warn"}>{r.daemon.note}</Notice> : null}
 
         <div className="flex flex-wrap items-center gap-2">

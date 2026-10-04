@@ -432,6 +432,11 @@ impl Handler {
         let stopped = pulse_inspect::runner_stopped(store)?;
         let capacity = pulse_inspect::capacity_status(store)?;
         let hold = pulse_inspect::capacity_hold(store)?;
+        if let Ok(disk) = pulse_inspect::capacity_disk(store)
+            && !disk.is_empty()
+        {
+            daemon.insert("disk".into(), json!(disk));
+        }
         let landing = pulse_inspect::landing_notes(store)?;
         let hygiene = pulse_inspect::hygiene_status(store).unwrap_or_default();
         Ok(map_from_pairs(vec![

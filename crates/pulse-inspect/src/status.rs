@@ -361,6 +361,19 @@ pub fn capacity_status(s: &pulse_store::Store) -> Result<String> {
     Ok(line)
 }
 
+/// The disk hold the daemon wrote with its last capacity note, or empty.
+pub fn capacity_disk(s: &pulse_store::Store) -> Result<String> {
+    let (raw, exists) = s.meta("capacity")?;
+    if !exists || raw.is_empty() {
+        return Ok(String::new());
+    }
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+    Ok(v.get("disk")
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .to_string())
+}
+
 pub fn capacity_hold(s: &pulse_store::Store) -> Result<String> {
     let (note, exists) = read_capacity_note(s)?;
     Ok(if exists { note.held } else { String::new() })
@@ -834,6 +847,21 @@ mod tests {
             "UPDATE meta SET value = '{\"queued\":3,\"slots\":2,\"inflight\":2,\"starved_since\":\"2026-09-06T18:29:01Z\"}' WHERE key = 'capacity'",
         );
         assert_eq!(capacity_hold(&s).unwrap(), "");
+        assert_eq!(capacity_disk(&s).unwrap(), "");
+        exec_sql(
+            &s,
+            "UPDATE meta SET value = '{\"queued\":3,\"slots\":2,\"inflight\":0,\"starved_since\":\"\",\"held\":\"\",\"disk\":\"disk: 252 MB free, needs 1024; 6 projects waiting\"}' WHERE key = 'capacity'",
+        );
+        assert_eq!(
+            capacity_disk(&s).unwrap(),
+            "disk: 252 MB free, needs 1024; 6 projects waiting"
+        );
+        // Back to the starved note so the CLI parity check below still sees it.
+        exec_sql(
+            &s,
+            "UPDATE meta SET value = '{\"queued\":3,\"slots\":2,\"inflight\":2,\"starved_since\":\"2026-09-06T18:29:01Z\"}' WHERE key = 'capacity'",
+        );
+        assert_eq!(capacity_disk(&s).unwrap(), "");
         assert!(report.harness.contains("native · GitHub Copilot ·"));
         assert!(
             report

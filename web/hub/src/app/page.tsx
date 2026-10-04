@@ -246,7 +246,7 @@ export default function HubPage() {
                   <CodeDeliveredKpi />
                   <Kpi icon={MessageCircleQuestionIcon} n={o.totals.questions_open} label="Open questions" sub="across the boards" />
                   <Kpi icon={MessageSquareIcon} n={o.totals.posts_24h} label="Posts / 24h" sub={num(o.totals.posts) + " all time"} spark={undefined} />
-                  <Kpi icon={daemon.tone === "ok" ? PowerIcon : ActivityIcon} n={daemon.label} label="Daemon" sub={runner.error ? "status unavailable · controls below" : r ? (r.runner?.allowed === false ? r.runner.reason : num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued · controls below") : "checking heartbeat"} tone={daemon.tone} href="#daemon-controls" />
+                  <Kpi icon={daemon.tone === "ok" ? PowerIcon : ActivityIcon} n={daemon.label} label="Daemon" sub={runner.error ? "status unavailable · controls below" : r ? (r.daemon.disk ? r.daemon.disk : r.runner?.allowed === false ? r.runner.reason : num(r.jobs.running) + " running · " + num(r.jobs.queued) + " queued · controls below") : "checking heartbeat"} tone={r?.daemon.disk ? "bad" : daemon.tone} href="#daemon-controls" />
                 </KpiGrid>
               </section>
 

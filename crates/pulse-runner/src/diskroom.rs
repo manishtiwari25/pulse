@@ -109,6 +109,16 @@ impl Admission {
         self.started += 1;
     }
 
+    /// The console's red daemon line while the headroom holds local slots
+    /// back: free megabytes, the floor, and how many projects wait.
+    pub(crate) fn console_line(&self) -> String {
+        console_line(
+            self.room.free_mb,
+            self.room.floor_mb,
+            Some(self.waiting().len()),
+        )
+    }
+
     /// The idle-log line while the headroom holds local slots back. The
     /// idle log compares it with its megabytes blanked, so a hold is said
     /// once as an install grows, and again when a project joins the wait.
@@ -235,10 +245,39 @@ pub(crate) fn local_headroom(
     })
 }
 
+/// The daemon line the hub's Overview shows in red while the disk holds
+/// runs back: `disk: 252 MB free, needs 1024; 6 projects waiting`. Without
+/// a project count (the floor hold stops every slot) it says `all projects
+/// waiting`.
+pub(crate) fn console_line(free_mb: i32, floor_mb: i32, waiting: Option<usize>) -> String {
+    let who = match waiting {
+        Some(1) => "1 project waiting".to_string(),
+        Some(n) => format!("{n} projects waiting"),
+        None => "all projects waiting".to_string(),
+    };
+    format!("disk: {} MB free, needs {floor_mb}; {who}", free_mb.max(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_helpers::new_store;
+
+    #[test]
+    fn console_line_names_the_hold_and_who_waits() {
+        assert_eq!(
+            console_line(252, 1024, Some(6)),
+            "disk: 252 MB free, needs 1024; 6 projects waiting"
+        );
+        assert_eq!(
+            console_line(900, 1024, Some(1)),
+            "disk: 900 MB free, needs 1024; 1 project waiting"
+        );
+        assert_eq!(
+            console_line(-5, 1024, None),
+            "disk: 0 MB free, needs 1024; all projects waiting"
+        );
+    }
 
     fn run(
         s: &pulse_store::Store,

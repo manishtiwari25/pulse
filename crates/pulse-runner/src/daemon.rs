@@ -132,6 +132,7 @@ pub(crate) fn daemon_heartbeat(
 }
 
 /// Go: func capacityNote(s *store.Store, queued, slots, inflight int, starvedSince, held, now string)
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn capacity_note(
     s: &pulse_store::Store,
     queued: i32,
@@ -139,6 +140,7 @@ pub(crate) fn capacity_note(
     inflight: i32,
     starved_since: String,
     held: String,
+    disk: String,
     now: String,
 ) {
     let note = serde_json::json!({
@@ -148,6 +150,7 @@ pub(crate) fn capacity_note(
         "inflight": inflight,
         "starved_since": starved_since,
         "held": held,
+        "disk": disk,
     });
     if let Ok(conn) = s.conn() {
         let _ = conn.execute(
@@ -1360,6 +1363,9 @@ pub(crate) fn daemon(
                 Some(line)
             });
             let disk_floor = crate::executor::disk_floor_hold(s);
+            // The console's daemon line: empty while the disk pays for runs,
+            // otherwise the hold in the copy the Overview prints in red.
+            let mut disk_line = String::new();
             if let Some(hold) = &restart_hold
                 && let Some(line) = idle_log.line("restart", hold, std::time::Instant::now())
             {
@@ -1376,6 +1382,9 @@ pub(crate) fn daemon(
                 }
                 starved_since.clear();
                 reason = crate::executor::disk_floor_note(s).unwrap_or_default();
+                if let Some((free, floor, _)) = &disk_floor {
+                    disk_line = crate::diskroom::console_line(*free, *floor, None);
+                }
                 slots.clear();
             } else {
                 if disk_floor_was_under {
@@ -1561,6 +1570,11 @@ pub(crate) fn daemon(
                             .expect("spawn daemon run");
                     }
                     let mut reason = crate::proc::sorted_keys(&bool_keys(reasons)).join("; ");
+                    if !disk_room_note.is_empty()
+                        && let Some(adm) = admission.as_ref()
+                    {
+                        disk_line = adm.console_line();
+                    }
                     if reason.is_empty() && started.is_empty() {
                         reason = "no queued job".into();
                     }
@@ -1599,6 +1613,7 @@ pub(crate) fn daemon(
                 inflight.len() as i32,
                 starved_since.clone(),
                 gate.clone(),
+                disk_line,
                 now.clone(),
             );
             if !gate.is_empty()
