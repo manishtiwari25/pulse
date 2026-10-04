@@ -1092,7 +1092,12 @@ pub(crate) fn json_map(value: Value) -> Result<JsonMap> {
 /// Go: func parseTime(text string) time.Time
 pub(crate) fn parse_dt(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     let text = text.trim().trim_end_matches('Z').replace(' ', "T");
-    let text = if text.len() > 19 { &text[..19] } else { &text };
+    // Cut on a char boundary: a byte slice panics on multi-byte input such as
+    // a date typed into frontmatter with a non-ASCII suffix.
+    let text = match text.char_indices().nth(19) {
+        Some((cut, _)) => &text[..cut],
+        None => text.as_str(),
+    };
     for layout in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"] {
         if let Ok(t) = chrono::NaiveDateTime::parse_from_str(text, layout) {
             return Some(t.and_utc());
@@ -1152,6 +1157,18 @@ fn go_value<T: serde::Serialize>(v: &T) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_dt_does_not_panic_on_multibyte_input() {
+        // Trailing junk past the 19-char prefix is ignored, even when multi-byte.
+        assert!(parse_dt("2026-10-04T01:04:47Zé").is_some());
+        assert_eq!(
+            parse_dt("2026-10-04T01:04:47Z").map(|d| d.timestamp()),
+            parse_dt("2026-10-04 01:04:47").map(|d| d.timestamp())
+        );
+        assert!(parse_dt("2026-10-04T01:04:4é").is_none());
+        assert!(parse_dt("ééééééééééééééééééééé").is_none());
+    }
     use crate::test_helpers_f2 as f2;
     use anyhow::{Result, anyhow};
     use serde_json::{Map, Value, json};
