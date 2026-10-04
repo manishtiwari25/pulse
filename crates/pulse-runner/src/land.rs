@@ -503,6 +503,74 @@ pub(crate) fn sh_with_timeout(
     crate::landing_context::sh_with_context(&ctx, dir, cmd, budget)
 }
 
+fn git_tree(root: &str, rev: &str) -> String {
+    crate::util::git_timeout(
+        root,
+        Duration::from_secs(10),
+        &["rev-parse", &format!("{rev}^{{tree}}")],
+    )
+    .stdout
+    .trim()
+    .to_string()
+}
+
+fn verify_memo_now(now: &str) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(now)
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now())
+}
+
+fn find_verify_memo(
+    s: &pulse_store::Store,
+    slug: &str,
+    tree: &str,
+    verify_cmd: &str,
+    now: &str,
+) -> Option<crate::verify_memo::VerifyMemo> {
+    if tree.is_empty() || s.setting("landing.verify_memo", "on") == "off" {
+        return None;
+    }
+    let hours = s
+        .setting("landing.verify_memo_hours", "24")
+        .parse::<i64>()
+        .unwrap_or(24)
+        .max(0);
+    crate::verify_memo::lookup(&s.home, slug, tree, verify_cmd, hours, verify_memo_now(now))
+}
+
+fn record_verify_memo_event(
+    s: &pulse_store::Store,
+    now: &str,
+    actor: &str,
+    branch: &str,
+    slug: &str,
+    tree: &str,
+    memo: &crate::verify_memo::VerifyMemo,
+    scope: &str,
+    def: &str,
+) {
+    if let Ok(conn) = s.conn() {
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "land.verify-memo",
+            branch,
+            serde_json::json!({
+                "project": slug,
+                "tree": tree,
+                "at": memo.at,
+                "by": memo.by,
+                "agent": memo.agent,
+                "clone": memo.clone,
+                "branch": branch,
+                "default_branch": def,
+                "scope": scope,
+            }),
+        );
+    }
+}
+
 /// Go: func landBranch(s *store.Store, project row, branch, actor, now string, o landOpts) (state, note string, err error)
 pub(crate) fn land_branch(
     s: &pulse_store::Store,
@@ -855,193 +923,236 @@ pub(crate) fn land_branch(
     let mut verify_note = "no verify command".to_string();
     let vc = project.str("verify_cmd");
     if o.verify && !vc.is_empty() {
-        let minutes = crate::util::setting_int(s, "minutes_per_job").max(1);
-        let guarded = check_definition_files(vc.clone(), files.clone(), root.clone());
-        if !guarded.is_empty() {
-            run_base_check_files(worktree.clone(), before.clone(), guarded.clone());
-        }
-        // The throwaway worktree starts bare: no node_modules, no .venv. The same setup a
-        // worker clone gets (the recipe's `setup:` lines, else the lockfile rules) runs here
-        // first, from {def}'s recipe so a branch cannot change what installs for its own check.
-        let setup_minutes = minutes.max(crate::recipe::SETUP_MINUTES);
-        let (base_recipe, base_problems, _) = crate::recipe::read_recipe(s, &slug, &root, &before);
-        let base_recipe = if base_problems.is_empty() {
-            base_recipe.unwrap_or_default()
+        let vc_run = crate::verify_lock::wrap(s, &slug, &vc);
+        let merged_tree = git_tree(&worktree, "HEAD");
+        if let Some(memo) = find_verify_memo(s, &slug, &merged_tree, &vc_run, &now) {
+            verify_note = crate::verify_memo::note(&memo, &merged_tree);
+            record_verify_memo_event(
+                s,
+                &now,
+                &actor,
+                &branch,
+                &slug,
+                &merged_tree,
+                &memo,
+                "landing",
+                &def,
+            );
         } else {
-            crate::recipe::Recipe::default()
-        };
-        let (setup_cmd, setup_files, _) =
-            crate::recipe::project_setup(&root, &before, &base_recipe, &worktree);
-        if !setup_cmd.is_empty() {
-            let setup_budget =
-                Duration::from_secs((setup_minutes as u64) * 60).max(Duration::from_secs(60));
+            let minutes = crate::util::setting_int(s, "minutes_per_job").max(1);
+            let guarded = check_definition_files(vc.clone(), files.clone(), root.clone());
+            if !guarded.is_empty() {
+                run_base_check_files(worktree.clone(), before.clone(), guarded.clone());
+            }
+            // The throwaway worktree starts bare: no node_modules, no .venv. The same setup a
+            // worker clone gets (the recipe's `setup:` lines, else the lockfile rules) runs here
+            // first, from {def}'s recipe so a branch cannot change what installs for its own check.
+            let setup_minutes = minutes.max(crate::recipe::SETUP_MINUTES);
+            let (base_recipe, base_problems, _) =
+                crate::recipe::read_recipe(s, &slug, &root, &before);
+            let base_recipe = if base_problems.is_empty() {
+                base_recipe.unwrap_or_default()
+            } else {
+                crate::recipe::Recipe::default()
+            };
+            let (setup_cmd, setup_files, _) =
+                crate::recipe::project_setup(&root, &before, &base_recipe, &worktree);
+            if !setup_cmd.is_empty() {
+                let setup_budget =
+                    Duration::from_secs((setup_minutes as u64) * 60).max(Duration::from_secs(60));
+                let (rc, so, se) = crate::landing_context::sh_with_context(
+                    &cancel,
+                    worktree.clone(),
+                    setup_cmd,
+                    setup_budget,
+                );
+                if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
+                    && !why.is_empty()
+                {
+                    return Ok(("stopped".into(), why));
+                }
+                let prep_tail = match rc.as_deref() {
+                    None => format!("timed out after {setup_minutes} min"),
+                    Some(_) => crate::run::squeeze(&format!("{so}{se}"), 300),
+                };
+                if rc.as_deref() != Some(&0) {
+                    let from = setup_files.join(", ");
+                    if let Ok(conn) = s.conn() {
+                        crate::util::event_at(
+                            &conn,
+                            &now,
+                            &actor,
+                            "land.deferred",
+                            &branch,
+                            serde_json::json!({
+                                "project": slug,
+                                "setup": from,
+                                "rc": rc.as_deref().copied(),
+                                "tail": prep_tail,
+                            }),
+                        );
+                    }
+                    return Ok((
+                        "deferred".into(),
+                        format!(
+                            "setup from {from} failed on this machine ({prep_tail}); nothing landed, try again once it is fixed"
+                        ),
+                    ));
+                }
+            }
+            let budget = Duration::from_secs((minutes as u64) * 60).max(Duration::from_secs(60));
+            let verify_started = std::time::Instant::now();
             let (rc, so, se) = crate::landing_context::sh_with_context(
                 &cancel,
                 worktree.clone(),
-                setup_cmd,
-                setup_budget,
+                vc_run.clone(),
+                budget,
             );
+            let verify_took = verify_started.elapsed();
             if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
                 && !why.is_empty()
             {
                 return Ok(("stopped".into(), why));
             }
-            let prep_tail = match rc.as_deref() {
-                None => format!("timed out after {setup_minutes} min"),
-                Some(_) => crate::run::squeeze(&format!("{so}{se}"), 300),
-            };
-            if rc.as_deref() != Some(&0) {
-                let from = setup_files.join(", ");
-                if let Ok(conn) = s.conn() {
-                    crate::util::event_at(
-                        &conn,
-                        &now,
-                        &actor,
-                        "land.deferred",
-                        &branch,
-                        serde_json::json!({
-                            "project": slug,
-                            "setup": from,
-                            "rc": rc.as_deref().copied(),
-                            "tail": prep_tail,
-                        }),
-                    );
-                }
-                return Ok((
-                    "deferred".into(),
-                    format!(
-                        "setup from {from} failed on this machine ({prep_tail}); nothing landed, try again once it is fixed"
-                    ),
+            let mut ok = false;
+            let mut tail_text = String::new();
+            let answered = rc.is_some();
+            if let Some(rc) = rc {
+                ok = *rc == 0;
+                verify_note = format!("verify exit {}", *rc);
+                tail_text = format!(
+                    "{}{}",
+                    crate::executor::tail(&so, 4000),
+                    crate::executor::tail(&se, 4000)
+                );
+            } else {
+                verify_note = format!("verify timed out after {minutes} min");
+            }
+            if !guarded.is_empty() {
+                let extra = if guarded.len() > 3 {
+                    format!(" +{}", guarded.len() - 3)
+                } else {
+                    String::new()
+                };
+                verify_note.push_str(&format!(
+                    ", check run with {}'s {}",
+                    def,
+                    guarded
+                        .iter()
+                        .take(3)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                        + &extra
                 ));
             }
-        }
-        let budget = Duration::from_secs((minutes as u64) * 60).max(Duration::from_secs(60));
-        let verify_started = std::time::Instant::now();
-        let vc_run = crate::verify_lock::wrap(s, &slug, &vc);
-        let (rc, so, se) = crate::landing_context::sh_with_context(
-            &cancel,
-            worktree.clone(),
-            vc_run.clone(),
-            budget,
-        );
-        let verify_took = verify_started.elapsed();
-        if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
-            && !why.is_empty()
-        {
-            return Ok(("stopped".into(), why));
-        }
-        let mut ok = false;
-        let mut tail_text = String::new();
-        let answered = rc.is_some();
-        if let Some(rc) = rc {
-            ok = *rc == 0;
-            verify_note = format!("verify exit {}", *rc);
-            tail_text = format!(
-                "{}{}",
-                crate::executor::tail(&so, 4000),
-                crate::executor::tail(&se, 4000)
-            );
-        } else {
-            verify_note = format!("verify timed out after {minutes} min");
-        }
-        if !guarded.is_empty() {
-            let extra = if guarded.len() > 3 {
-                format!(" +{}", guarded.len() - 3)
-            } else {
-                String::new()
-            };
-            verify_note.push_str(&format!(
-                ", check run with {}'s {}",
-                def,
-                guarded
-                    .iter()
-                    .take(3)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-                    + &extra
-            ));
-        }
-        if !ok && answered && !before.is_empty() {
-            // The merged result failed. Before charging the branch - a requeue throws the
-            // work away and spends a worker run - ask whether {def} itself passes the same
-            // command in the same worktree. A red base (a tool gone from the machine, a
-            // broken dependency, a flaky suite) is not the branch's fault: keep the branch,
-            // hold the project's landings and try again later.
-            let base_budget = (verify_took * 2).clamp(Duration::from_secs(60), budget);
-            let (base_red, base_tail) =
-                base_verify_red(&cancel, &worktree, &before, &vc_run, base_budget);
-            if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
-                && !why.is_empty()
-            {
-                return Ok(("stopped".into(), why));
+            if !ok && answered && !before.is_empty() {
+                // The merged result failed. Before charging the branch - a requeue throws the
+                // work away and spends a worker run - ask whether {def} itself passes the same
+                // command in the same worktree. A red base (a tool gone from the machine, a
+                // broken dependency, a flaky suite) is not the branch's fault: keep the branch,
+                // hold the project's landings and try again later.
+                let base_budget = (verify_took * 2).clamp(Duration::from_secs(60), budget);
+                let (base_red, base_tail) = base_verify_red(
+                    s,
+                    &cancel,
+                    &worktree,
+                    &before,
+                    &vc_run,
+                    base_budget,
+                    &slug,
+                    &branch,
+                    &actor,
+                    &now,
+                    &def,
+                );
+                if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
+                    && !why.is_empty()
+                {
+                    return Ok(("stopped".into(), why));
+                }
+                if base_red != Some(false) {
+                    let hint = verify_hint(if base_red.is_some() {
+                        &base_tail
+                    } else {
+                        &tail_text
+                    });
+                    let retry_minutes = s
+                        .setting("landing.base_red_retry_minutes", "10")
+                        .parse::<i32>()
+                        .unwrap_or(10)
+                        .max(1);
+                    let retry_at = crate::util::plus_minutes(&now, retry_minutes as f64);
+                    let base_note = if base_red.is_some() {
+                        format!("{def} itself fails `{vc}` ({hint})")
+                    } else {
+                        format!("`{vc}` on {def} itself gave no answer in time ({hint})")
+                    };
+                    let note = format!(
+                        "{base_note}; {verify_note} on the merged result is not the branch's fault, so it is kept and the landing waits until {retry_at} (retry in {retry_minutes}m; `pulse land --project {slug}` retries now)"
+                    );
+                    if let Ok(conn) = s.conn() {
+                        crate::util::event_at(
+                            &conn,
+                            &now,
+                            &actor,
+                            "land.base-red",
+                            &branch,
+                            serde_json::json!({"project": slug, "note": verify_note, "base": if base_red.is_some() { "red" } else { "unknown" }, "retry_at": retry_at, "tail": crate::executor::tail(if base_red.is_some() { &base_tail } else { &tail_text }, 1500)}),
+                        );
+                    }
+                    set_landing_retry(s, &slug, &retry_at, &note);
+                    return Ok(("deferred".into(), note));
+                }
             }
-            if base_red != Some(false) {
-                let hint = verify_hint(if base_red.is_some() {
-                    &base_tail
-                } else {
-                    &tail_text
-                });
-                let retry_minutes = s
-                    .setting("landing.base_red_retry_minutes", "10")
-                    .parse::<i32>()
-                    .unwrap_or(10)
-                    .max(1);
-                let retry_at = crate::util::plus_minutes(&now, retry_minutes as f64);
-                let base_note = if base_red.is_some() {
-                    format!("{def} itself fails `{vc}` ({hint})")
-                } else {
-                    format!("`{vc}` on {def} itself gave no answer in time ({hint})")
-                };
-                let note = format!(
-                    "{base_note}; {verify_note} on the merged result is not the branch's fault, so it is kept and the landing waits until {retry_at} (retry in {retry_minutes}m; `pulse land --project {slug}` retries now)"
+            if !ok {
+                let patch =
+                    save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
+                if !job.0.is_empty() {
+                    requeue_job(
+                        s,
+                        now.clone(),
+                        job.clone(),
+                        actor.clone(),
+                        format!("{verify_note} on the merged {def}: {branch}"),
+                        patch.clone(),
+                    );
+                }
+                crate::util::git_timeout(
+                    &root,
+                    Duration::from_secs(30),
+                    &["branch", "-D", &branch],
                 );
                 if let Ok(conn) = s.conn() {
                     crate::util::event_at(
                         &conn,
                         &now,
                         &actor,
-                        "land.base-red",
+                        "land.failed-verify",
                         &branch,
-                        serde_json::json!({"project": slug, "note": verify_note, "base": if base_red.is_some() { "red" } else { "unknown" }, "retry_at": retry_at, "tail": crate::executor::tail(if base_red.is_some() { &base_tail } else { &tail_text }, 1500)}),
+                        serde_json::json!({"project": slug, "patch": patch, "note": verify_note, "tail": crate::executor::tail(&tail_text, 1500)}),
                     );
                 }
-                set_landing_retry(s, &slug, &retry_at, &note);
-                return Ok(("deferred".into(), note));
+                let what = if job.0.is_empty() {
+                    "branch removed".to_string()
+                } else {
+                    format!("job {} requeued", job.str("id"))
+                };
+                return Ok((
+                    "failed-verify".into(),
+                    format!("{verify_note} on the merged {def}; {what}; patch at {patch}"),
+                ));
             }
-        }
-        if !ok {
-            let patch = save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
-            if !job.0.is_empty() {
-                requeue_job(
-                    s,
-                    now.clone(),
-                    job.clone(),
-                    actor.clone(),
-                    format!("{verify_note} on the merged {def}: {branch}"),
-                    patch.clone(),
-                );
-            }
-            crate::util::git_timeout(&root, Duration::from_secs(30), &["branch", "-D", &branch]);
-            if let Ok(conn) = s.conn() {
-                crate::util::event_at(
-                    &conn,
-                    &now,
-                    &actor,
-                    "land.failed-verify",
-                    &branch,
-                    serde_json::json!({"project": slug, "patch": patch, "note": verify_note, "tail": crate::executor::tail(&tail_text, 1500)}),
-                );
-            }
-            let what = if job.0.is_empty() {
-                "branch removed".to_string()
+            let tree = if merged_tree.is_empty() {
+                git_tree(&worktree, "HEAD")
             } else {
-                format!("job {} requeued", job.str("id"))
+                merged_tree.clone()
             };
-            return Ok((
-                "failed-verify".into(),
-                format!("{verify_note} on the merged {def}; {what}; patch at {patch}"),
-            ));
+            if !tree.is_empty() {
+                let _ = crate::verify_memo::write(
+                    &home, &slug, &tree, &vc_run, "landing", &actor, &worktree,
+                );
+            }
         }
     }
     if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
@@ -1709,11 +1820,17 @@ fn check_files() -> Vec<String> {
 /// it passes, `None` when there is no answer (the worktree could not be reset, or the
 /// command did not finish within `budget`). The second value is the tail of that run.
 fn base_verify_red(
+    s: &pulse_store::Store,
     cancel: &pulse_bus::CancellationToken,
     worktree: &str,
     before: &str,
     verify_cmd: &str,
     budget: Duration,
+    slug: &str,
+    branch: &str,
+    actor: &str,
+    now: &str,
+    def: &str,
 ) -> (Option<bool>, String) {
     let reset = crate::util::git_timeout(
         worktree,
@@ -1722,6 +1839,11 @@ fn base_verify_red(
     );
     if !reset.ok() {
         return (None, reset.stderr.trim().to_string());
+    }
+    let tree = git_tree(worktree, "HEAD");
+    if let Some(memo) = find_verify_memo(s, slug, &tree, verify_cmd, now) {
+        record_verify_memo_event(s, now, actor, branch, slug, &tree, &memo, "base", def);
+        return (Some(false), crate::verify_memo::note(&memo, &tree));
     }
     let (rc, so, se) = crate::landing_context::sh_with_context(
         cancel,
@@ -1734,6 +1856,10 @@ fn base_verify_red(
         crate::executor::tail(&so, 4000),
         crate::executor::tail(&se, 4000)
     );
+    if rc.as_deref() == Some(&0) && !tree.is_empty() {
+        let _ =
+            crate::verify_memo::write(&s.home, slug, &tree, verify_cmd, "base", actor, worktree);
+    }
     (rc.map(|code| *code != 0), tail)
 }
 
@@ -2111,6 +2237,122 @@ mod tests {
                 assert_eq!(job_row(&s, &job.str("id")).str("branch"), branch);
             }
         }
+    }
+
+    #[test]
+    fn landing_verify_memo_skips_matching_tree_verify() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let verify_cmd = "sh -c 'exit 9'";
+        project.insert("verify_cmd", serde_json::json!(verify_cmd));
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&verify_cmd],
+        );
+        let branch = "pulse/aurora/verify-memo";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        std::fs::write(std::path::Path::new(&root).join("memo.txt"), "memo\n").unwrap();
+        run(&root, &["git", "add", "memo.txt"]);
+        run(&root, &["git", "commit", "-q", "-m", "memo"]);
+        let tree = super::git_tree(&root, "HEAD");
+        run(&root, &["git", "switch", "-q", "main"]);
+        let wrapped = crate::verify_lock::wrap(&s, "proj", verify_cmd);
+        crate::verify_memo::write(&s.home, "proj", &tree, &wrapped, "hook", "aurora", &root)
+            .unwrap();
+
+        let (state, note) = super::land_branch(
+            &s,
+            project,
+            branch.into(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            super::LandOpts {
+                verify: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(state, "landed", "{note}");
+        let events = must_rows(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.verify-memo'",
+            &[],
+        );
+        assert_eq!(events.len(), 1, "memo events: {events:?}");
+        let landed = must_rows(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.landed'",
+            &[],
+        )[0]
+        .str("detail");
+        assert!(landed.contains("verified earlier by hook"), "{landed}");
+    }
+
+    #[test]
+    fn landing_verify_memo_hash_mismatch_runs_verify() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let marker = std::path::Path::new(&s.home)
+            .join("verify-ran")
+            .display()
+            .to_string();
+        let verify_cmd = format!("touch {}", crate::util::shell_quote(&marker));
+        project.insert("verify_cmd", serde_json::json!(verify_cmd));
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&project.str("verify_cmd")],
+        );
+        let branch = "pulse/aurora/verify-memo-mismatch";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        std::fs::write(
+            std::path::Path::new(&root).join("memo-mismatch.txt"),
+            "memo\n",
+        )
+        .unwrap();
+        run(&root, &["git", "add", "memo-mismatch.txt"]);
+        run(&root, &["git", "commit", "-q", "-m", "memo mismatch"]);
+        let tree = super::git_tree(&root, "HEAD");
+        run(&root, &["git", "switch", "-q", "main"]);
+        crate::verify_memo::write(
+            &s.home,
+            "proj",
+            &tree,
+            "different verify",
+            "hook",
+            "aurora",
+            &root,
+        )
+        .unwrap();
+
+        let (state, note) = super::land_branch(
+            &s,
+            project,
+            branch.into(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            super::LandOpts {
+                verify: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(state, "landed", "{note}");
+        assert!(
+            std::path::Path::new(&marker).exists(),
+            "mismatched memo skipped verify"
+        );
+        let events = must_rows(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.verify-memo'",
+            &[],
+        );
+        assert!(events.is_empty(), "unexpected memo event: {events:?}");
     }
 
     #[test]

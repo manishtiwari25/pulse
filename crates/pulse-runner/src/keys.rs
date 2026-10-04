@@ -104,6 +104,9 @@ pub(crate) fn pre_commit_hook_script(
     recipe: Option<&crate::recipe::Recipe>,
     pins: &[String],
     clone: &str,
+    pulse_home: &str,
+    project: &str,
+    agent: &str,
 ) -> String {
     let mut b = String::new();
     b.push_str("#!/bin/sh\n");
@@ -117,13 +120,46 @@ pub(crate) fn pre_commit_hook_script(
             b.push('\n');
         }
     }
+    // The verify runs in a subshell: the lock wrapper ends in `exit`, which
+    // would otherwise leave the hook before the memo below is written.
+    b.push_str("(\n");
     if pins.is_empty() {
         b.push_str(verify_cmd);
     } else {
         b.push_str(&crate::recipe::mise_wrap_shell(pins, verify_cmd, clone));
     }
-    b.push('\n');
+    b.push_str("\n)\nrc=$?\nif [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi\n");
+    append_verify_memo_hook(&mut b, verify_cmd, clone, pulse_home, project, agent);
     b
+}
+
+fn append_verify_memo_hook(
+    b: &mut String,
+    verify_cmd: &str,
+    clone: &str,
+    pulse_home: &str,
+    project: &str,
+    agent: &str,
+) {
+    let hash = crate::verify_memo::verify_sha256(verify_cmd);
+    let project_q = crate::util::shell_quote(project);
+    let home_q = crate::util::shell_quote(pulse_home);
+    let agent_json = serde_json::to_string(agent).unwrap_or_else(|_| "\"\"".into());
+    let clone_json = serde_json::to_string(clone).unwrap_or_else(|_| "\"\"".into());
+    // The memo names the index tree, so it is written only when the working
+    // tree the verify ran on is that tree: no unstaged changes.
+    let _ = writeln!(
+        b,
+        "tree=$(git diff --quiet 2>/dev/null && git write-tree 2>/dev/null || true)
+if [ -n \"$tree\" ]; then
+  memo_home=${{PULSE_HOME:-{home_q}}}
+  memo_dir=\"$memo_home/verified/\"{project_q}
+  at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  if [ -n \"$at\" ] && mkdir -p \"$memo_dir\" 2>/dev/null; then
+    {{ printf '%s' '{{\"verify_sha256\":\"{hash}\",\"at\":\"'; printf '%s' \"$at\"; printf '%s\\n' '\",\"by\":\"hook\",\"agent\":{agent_json},\"clone\":{clone_json}}}'; }} > \"$memo_dir/$tree\" 2>/dev/null || true
+  fi
+fi"
+    );
 }
 /// Go: func configureCloneIdentity(clone, agent, keyPath, hookText string) error
 pub(crate) fn configure_clone_identity(
@@ -398,5 +434,107 @@ mod tests {
             let got = crate::util::git(&dir.display().to_string(), &["config", "--get", k]);
             assert_eq!(got.stdout, format!("{want}\n"), "{k}: {}", got.stderr);
         }
+    }
+
+    #[test]
+    fn pre_commit_hook_writes_verified_tree_memo() {
+        let script = pre_commit_hook_script(
+            "cargo test -p pulse-runner",
+            None,
+            &[],
+            "/clone",
+            "/home/me/.pulse",
+            "proj",
+            "aurora",
+        );
+        let hash = crate::verify_memo::verify_sha256("cargo test -p pulse-runner");
+        assert!(script.contains("git write-tree"), "{script}");
+        assert!(script.contains("/verified/\"proj"), "{script}");
+        assert!(script.contains(&hash), "{script}");
+        assert!(script.contains("\"by\":\"hook\""), "{script}");
+        assert!(script.contains("\"agent\":\"aurora\""), "{script}");
+    }
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The lock wrapper around a verify command ends in `exit`; the hook must
+    /// still write the memo for the committed tree, and only when the working
+    /// tree it verified is that tree.
+    #[test]
+    fn pre_commit_hook_memo_survives_an_exiting_verify_and_skips_dirty_trees() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let clone = dir.path().join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        git_in(&clone, &["init", "-q", "-b", "main"]);
+        git_in(&clone, &["config", "user.email", "t@example.com"]);
+        git_in(&clone, &["config", "user.name", "t"]);
+        git_in(&clone, &["config", "commit.gpgsign", "false"]);
+        let verify = "( true )\npulse_rc=$?\nexit $pulse_rc";
+        let script = pre_commit_hook_script(
+            verify,
+            None,
+            &[],
+            &clone.display().to_string(),
+            &home.display().to_string(),
+            "proj",
+            "aurora",
+        );
+        write_pre_commit_hook(&clone.display().to_string(), &script).unwrap();
+
+        std::fs::write(clone.join("a.txt"), "one\n").unwrap();
+        git_in(&clone, &["add", "a.txt"]);
+        git_in(&clone, &["commit", "-q", "-m", "one"]);
+        let tree = git_in(&clone, &["rev-parse", "HEAD^{tree}"]);
+        let memo = crate::verify_memo::lookup(
+            &home.display().to_string(),
+            "proj",
+            &tree,
+            verify,
+            24,
+            chrono::Utc::now(),
+        )
+        .expect("the hook wrote a memo for the committed tree");
+        assert_eq!(memo.by, "hook");
+        assert_eq!(memo.agent, "aurora");
+
+        // A second commit with another file left modified but unstaged: the
+        // verify saw a tree that is not the one committed, so no memo.
+        std::fs::write(clone.join("b.txt"), "two\n").unwrap();
+        git_in(&clone, &["add", "b.txt"]);
+        std::fs::write(clone.join("a.txt"), "changed\n").unwrap();
+        git_in(&clone, &["commit", "-q", "-m", "two"]);
+        let dirty_tree = git_in(&clone, &["rev-parse", "HEAD^{tree}"]);
+        assert!(
+            crate::verify_memo::lookup(
+                &home.display().to_string(),
+                "proj",
+                &dirty_tree,
+                verify,
+                24,
+                chrono::Utc::now(),
+            )
+            .is_none(),
+            "no memo for a tree verified with unstaged changes"
+        );
     }
 }

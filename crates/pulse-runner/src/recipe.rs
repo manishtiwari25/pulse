@@ -2166,8 +2166,15 @@ mod tests {
             ]),
             ..Default::default()
         };
-        let script =
-            crate::keys::pre_commit_hook_script("make test", Some(&recipe), &[], "/tmp/clone");
+        let script = crate::keys::pre_commit_hook_script(
+            "make test",
+            Some(&recipe),
+            &[],
+            "/tmp/clone",
+            "/home/me/.pulse",
+            "proj",
+            "aurora",
+        );
         assert!(
             script.contains("export CI=1 FOO='bar baz'"),
             "recipe env not exported correctly:\n{script}"
@@ -2212,6 +2219,9 @@ mod tests {
             Some(&recipe),
             &pins,
             "/tmp/clone",
+            "/home/me/.pulse",
+            "proj",
+            "aurora",
         );
         assert!(
             script.contains("export CI=1"),

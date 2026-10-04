@@ -814,7 +814,14 @@ pub(crate) fn run_job(
         if !custom_worker && !project.str("verify_cmd").is_empty() {
             let hook_verify =
                 crate::verify_lock::wrap(s, &project.str("slug"), &project.str("verify_cmd"));
-            ex.install_pre_commit_hook(&hook_verify, recipe.as_ref(), &pins)?;
+            ex.install_pre_commit_hook(
+                &hook_verify,
+                recipe.as_ref(),
+                &pins,
+                &home,
+                &project.str("slug"),
+                agent,
+            )?;
         }
         let shown = cmd
             .iter()

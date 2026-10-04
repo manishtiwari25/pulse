@@ -40,6 +40,9 @@ pub(crate) trait Executor {
         verify_cmd: &str,
         recipe: Option<&crate::recipe::Recipe>,
         pins: &[String],
+        pulse_home: &str,
+        project: &str,
+        agent: &str,
     ) -> Result<()>;
     fn fetch_source(&self) -> String;
     fn fetch_env(&self) -> Vec<String>;
@@ -338,13 +341,24 @@ impl Executor for LocalExec {
         verify_cmd: &str,
         recipe: Option<&crate::recipe::Recipe>,
         pins: &[String],
+        pulse_home: &str,
+        project: &str,
+        agent: &str,
     ) -> Result<()> {
         if verify_cmd.is_empty() {
             return Ok(());
         }
         crate::keys::write_pre_commit_hook(
             &self.clone_dir,
-            &crate::keys::pre_commit_hook_script(verify_cmd, recipe, pins, &self.clone_dir),
+            &crate::keys::pre_commit_hook_script(
+                verify_cmd,
+                recipe,
+                pins,
+                &self.clone_dir,
+                pulse_home,
+                project,
+                agent,
+            ),
         )
     }
     fn fetch_source(&self) -> String {
@@ -743,12 +757,22 @@ impl Executor for SshExec {
         verify_cmd: &str,
         recipe: Option<&crate::recipe::Recipe>,
         pins: &[String],
+        pulse_home: &str,
+        project: &str,
+        agent: &str,
     ) -> Result<()> {
         if verify_cmd.is_empty() {
             return Ok(());
         }
-        let script =
-            crate::keys::pre_commit_hook_script(verify_cmd, recipe, pins, &self.local.clone_dir);
+        let script = crate::keys::pre_commit_hook_script(
+            verify_cmd,
+            recipe,
+            pins,
+            &self.local.clone_dir,
+            pulse_home,
+            project,
+            agent,
+        );
         let (rc, out, err) = self.call(
             &["hook".into(), self.local.job.str("id")],
             script.as_bytes(),
