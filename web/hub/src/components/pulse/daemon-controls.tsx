@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Loader2Icon, PowerIcon, RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "./confirm";
-import { daemonControlState } from "./daemon-control-state";
+import { daemonControlState, daemonUpdateText } from "./daemon-control-state";
 import { CommandBox, TerminalAlternative } from "./evolve";
 import { ErrorNotice, Notice, Panel } from "./panel";
 import { ServiceControl } from "./service";
@@ -28,9 +28,7 @@ export function DaemonControls({ runner, service, settings }: { runner: Loaded<R
   const statusLine = state.pause === "on" ? (
     "Paused by you"
   ) : state.label === "running" || state.label === "alive" ? (
-    <>Running on this machine{checked}</>
-  ) : state.label === "restarting" ? (
-    <>Restarting on this machine once its runs in flight finish{checked}</>
+    <>Running on this machine{state.update ? " — " + daemonUpdateText(state.update).replace(/^New build/, "a newer build") : ""}{checked}</>
   ) : state.label === "silent" ? (
     <>Heartbeat stale — read its log before starting another copy{checked}</>
   ) : state.label === "checking" ? (
@@ -78,7 +76,7 @@ export function DaemonControls({ runner, service, settings }: { runner: Loaded<R
         {runner.error ? <ErrorNotice error={runner.error} onRetry={() => void runner.reload()}>Could not refresh daemon status: {runner.error}</ErrorNotice> : null}
         {settings.error ? <ErrorNotice error={settings.error} onRetry={() => void settings.reload()}>Could not read the owner pause: {settings.error}</ErrorNotice> : null}
         {service.error ? <ErrorNotice error={service.error} onRetry={() => void service.reload()}>Could not refresh service status: {service.error}</ErrorNotice> : null}
-        {r?.daemon.note ? <Notice tone="warn">{r.daemon.note}</Notice> : null}
+        {r?.daemon.note ? <Notice tone={state.update ? "info" : "warn"}>{r.daemon.note}</Notice> : null}
 
         <div className="flex flex-wrap items-center gap-2">
           {state.pause === "on" ? (

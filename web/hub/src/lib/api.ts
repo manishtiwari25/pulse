@@ -652,10 +652,22 @@ export interface HeldoutFixtureInput {
   slot?: number;
 }
 
+// Written by a live daemon that has a newer pulse built: it keeps running
+// until the runs it was supervising when the build landed (`waits_for`)
+// finish, then swaps. `dispatching` is false once it stopped taking new work
+// and only waits. Omitted by older daemons, whose note still reads
+// `restarting: N in flight`.
+export interface DaemonRestart {
+  since: string;
+  inflight: number;
+  dispatching?: boolean;
+  waits_for: { agent: string; kind: string; project: string; job: string; started_at: string }[];
+}
+
 export interface Runner {
   available: boolean;
   now?: string;
-  daemon: { state: string; text?: string; pid: number; at: string; loops?: number; interval: number; note?: string };
+  daemon: { state: string; text?: string; pid: number; at: string; loops?: number; interval: number; note?: string; restart?: DaemonRestart | null };
   runner?: { allowed: boolean; reason: string };
   hands: { free: number; slots: number; executors_active: number; executors: number; any_project: boolean };
   executors: Executor[];

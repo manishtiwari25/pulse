@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { ArrowUpRightIcon, SparklesIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/pulse/panel";
-import { daemonHeadline } from "@/components/pulse/daemon-control-state";
+import { daemonHeadline, daemonUpdateText, type DaemonUpdate } from "@/components/pulse/daemon-control-state";
 import { cn } from "@/lib/utils";
 import { plural, type Tone } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -21,7 +21,7 @@ const PILL_TONE: Record<Tone, string> = {
 
 export interface HomeHeroProps {
   inbox: number;
-  daemon: { tone: Tone; label: string; pause: "on" | "off" | "unknown"; setup: unknown };
+  daemon: { tone: Tone; label: string; pause: "on" | "off" | "unknown"; setup: unknown; update?: DaemonUpdate | null };
   daemonDown: boolean;
   runnerChecking: boolean;
   inboxChecking: boolean;
@@ -52,6 +52,8 @@ export function HomeHero({ inbox, daemon, daemonDown, runnerChecking, inboxCheck
           ? "Checking what needs your yes or no…"
           : "Nothing needs you right now — " + plural(activeAgents, "agent") + " working on " + plural(projects, "project") + ".";
   const daemonText = daemonHeadline(daemon);
+  // A pending self-update is not a stopped daemon: the hero names the run the new build waits for.
+  const updateText = daemon.pause !== "on" && daemon.update ? daemonUpdateText(daemon.update) : "";
   const agentText = runnerChecking ? "Checking agents…" : plural(working, "agent") + " working";
 
   return (
@@ -65,6 +67,7 @@ export function HomeHero({ inbox, daemon, daemonDown, runnerChecking, inboxCheck
           <h1 className="max-w-4xl text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{sentence}</h1>
           <div className="mt-5 flex min-w-0 flex-wrap gap-2">
             <StatusPill tone={daemon.tone}>{daemonText}</StatusPill>
+            {updateText ? <StatusPill tone="info">{updateText}</StatusPill> : null}
             <StatusPill tone={runnerChecking ? "neutral" : working ? "ok" : "neutral"}>{agentText}</StatusPill>
             <StatusPill tone="neutral">{plural(projects, "project")}</StatusPill>
           </div>

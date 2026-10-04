@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canApplyServiceSetup, daemonControlState, daemonHeadline, daemonServiceState, serviceSetupAction } from "./daemon-control-state.ts";
+import { canApplyServiceSetup, daemonControlState, daemonHeadline, daemonServiceState, daemonUpdateText, pendingUpdate, serviceSetupAction } from "./daemon-control-state.ts";
 import { HANDOVER_WAIT_MS, waitForServiceHandover } from "./service-handover.ts";
 import { writes } from "../../lib/api.ts";
 
@@ -141,25 +141,33 @@ test("a stale heartbeat with a loaded service is silent, never off or a duplicat
 
 // The store's heartbeat says `alive` for a fresh loop, never `running`; the
 // home hero read tone and called a healthy daemon "off" (2026-10-04).
-test("a fresh heartbeat is ok and reads running; a restart drain and an exit are named", () => {
+test("a fresh heartbeat is ok and reads running; a pending update and an exit are named", () => {
   const alive = daemonControlState(inputs({ runner: snapshot(runner("alive")) }));
   assert.equal(alive.label, "alive");
   assert.equal(alive.tone, "ok");
+  assert.equal(alive.update, null);
   assert.equal(daemonHeadline(alive), "Daemon running");
   assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("running")) }))), "Daemon running");
 
+  // An older daemon only writes the count; the console still calls it running
+  // and says what it waits for, instead of a bare "restarting" that reads as stuck.
   const draining = runner("alive");
   draining.daemon.note = "restarting: 2 in flight";
   const restarting = daemonControlState(inputs({ runner: snapshot(draining) }));
-  assert.equal(restarting.label, "restarting");
-  assert.equal(restarting.tone, "info");
-  assert.match(restarting.description, /restarting: 2 in flight/);
+  assert.equal(restarting.label, "alive");
+  assert.equal(restarting.tone, "ok");
+  assert.deepEqual(restarting.update, { since: null, inflight: 2, dispatching: true, waits: [] });
+  assert.match(restarting.description, /newer pulse built/);
+  assert.match(restarting.description, /2 runs in flight/);
   assert.match(restarting.description, /nothing to start by hand/);
   assert.equal(restarting.setup, null, "a draining daemon is alive: no start action");
-  assert.equal(daemonHeadline(restarting), "Daemon restarting");
+  assert.equal(daemonHeadline(restarting), "Daemon running");
+  assert.equal(daemonUpdateText(restarting.update), "New build waits for 2 runs in flight");
   const silentNote = runner("silent");
   silentNote.daemon.note = "restarting: 1 in flight";
-  assert.equal(daemonControlState(inputs({ runner: snapshot(silentNote) })).label, "silent", "a stale heartbeat is silent whatever its last note said");
+  const silent = daemonControlState(inputs({ runner: snapshot(silentNote) }));
+  assert.equal(silent.label, "silent", "a stale heartbeat is silent whatever its last note said");
+  assert.equal(silent.update, null);
 
   const exited = daemonControlState(inputs({ runner: snapshot(runner("exited")) }));
   assert.equal(exited.label, "stopped");
@@ -173,6 +181,49 @@ test("a fresh heartbeat is ok and reads running; a restart drain and an exit are
   assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("alive"), "offline") }))), "Daemon status unknown");
   assert.equal(daemonHeadline(daemonControlState(inputs({ settings: snapshot(settings("1")), runner: snapshot(runner("alive")) }))), "Daemon paused");
   assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("never started")) }))), "Daemon off");
+});
+
+// "Daemon restarting" read as stuck while a self-update waited an hour for one
+// improve run (2026-10-04). The heartbeat's `restart` record names the runs the
+// new build waits for; the console shows that, with how long each has run.
+test("a pending self-update names the run the new build waits for", () => {
+  const now = Date.parse("2026-10-04T07:06:41Z");
+  const named = runner("alive");
+  named.daemon.note = "restarting: 1 in flight; the new build waits for fjord's improve on amistio-template (44m so far)";
+  named.daemon.restart = { since: "2026-10-04T06:42:03Z", inflight: 1, dispatching: true, waits_for: [{ agent: "fjord", kind: "improve", project: "amistio-template", job: "job-20261004T054200Z-5f9979", started_at: "2026-10-04T06:22:41Z" }] };
+  const state = daemonControlState(inputs({ runner: snapshot(named) }), now);
+  assert.equal(state.label, "alive");
+  assert.equal(state.tone, "ok");
+  assert.equal(daemonHeadline(state), "Daemon running");
+  assert.equal(state.update?.since, "2026-10-04T06:42:03Z");
+  assert.equal(state.update?.inflight, 1);
+  assert.equal(state.update?.dispatching, true);
+  assert.equal(daemonUpdateText(state.update, now), "New build waits for fjord's improve (44m so far)");
+  assert.match(state.description, /fjord's improve on amistio-template \(44m so far\)/);
+  assert.match(state.description, /starts only runs that end before/);
+  assert.doesNotMatch(state.description, /restarting/);
+
+  // Once the drain is over the daemon only waits; the longest run leads the list.
+  const waiting = runner("alive");
+  waiting.daemon.note = "restarting: 3 in flight: waiting for 3 run(s) in flight to finish";
+  waiting.daemon.restart = {
+    since: "2026-10-04T06:42:03Z", inflight: 3, dispatching: false,
+    waits_for: [
+      { agent: "umber", kind: "task", project: "amistio-template", job: "j2", started_at: "2026-10-04T06:50:41Z" },
+      { agent: "fjord", kind: "improve", project: "amistio-template", job: "j1", started_at: "2026-10-04T06:22:41Z" },
+    ],
+  };
+  const exit = daemonControlState(inputs({ runner: snapshot(waiting) }), now);
+  assert.equal(daemonUpdateText(exit.update, now), "New build waits for 2 runs, the longest fjord's improve (44m so far)");
+  assert.match(exit.description, /fjord's improve on amistio-template \(44m so far\), umber's task on amistio-template \(16m so far\)/);
+  assert.match(exit.description, /stopped taking new work/);
+
+  // A record without names falls back to the count; a silent heartbeat shows no update at all.
+  assert.equal(daemonUpdateText(pendingUpdate({ note: "restarting: 0 in flight", restart: { since: "2026-10-04T06:42:03Z", inflight: 0, waits_for: [] } }, now), now), "New build swapping in");
+  assert.equal(pendingUpdate({ note: "idle" }, now), null);
+  const stale = runner("silent");
+  stale.daemon.restart = named.daemon.restart;
+  assert.equal(daemonControlState(inputs({ runner: snapshot(stale) }), now).update, null);
 });
 
 test("missing and unloaded service setup previews cannot apply over a possibly live foreground daemon", () => {
