@@ -652,7 +652,7 @@ pub(crate) fn land_branch(
             ));
         }
     }
-    let (on_default, mut clean) = checkout_state_pair(&root, &def);
+    let (on_default, clean) = checkout_state_pair(&root, &def);
     // A checkout parked on another branch is the human's; the landing then moves
     // `refs/heads/{def}` itself once the merge is verified and never touches the working
     // tree. Only a worktree that has {def} checked out still defers the landing.
@@ -668,51 +668,18 @@ pub(crate) fn land_branch(
             ));
         }
     }
-    // Holds the owner's uncommitted work while the landing runs. Any exit before the
-    // fast-forward lands - an error, a hold, a deferral, a panic - pops the stash back
-    // onto the checkout so a failed landing never leaves that work buried in `git
-    // stash list`. A landed branch pops it too, so the owner's edits are back on
-    // the new commits; a pop that conflicts keeps the stash entry and the landing
-    // note says so.
-    let mut auto_stash: Option<AutoStash> = None;
+    // The owner's uncommitted work is auto-stashed only around the final fast-forward
+    // of the checkout, not for the whole merge+verify (which runs in its own worktree
+    // and never needs the checkout clean). A checkout with edits and auto-stash off
+    // still defers here, before any work is spent.
     let mut stash_note: Option<String> = None;
-    if !by_ref && !clean {
-        if s.setting("landing.auto_stash", "on") == "off" {
-            return Ok((
-                "deferred".into(),
-                format!("the checkout of {root} has uncommitted changes"),
-            ));
-        }
-        let stash_msg = format!("pulse auto-stash before landing {}", job_id_of(job.clone()));
-        let stash = crate::util::git_timeout(
-            &root,
-            Duration::from_secs(60),
-            &["stash", "push", "-m", &stash_msg],
-        );
-        if !stash.ok() {
-            let why = if stash.stderr.trim().is_empty() {
-                "git stash failed".to_string()
-            } else {
-                stash.stderr.trim().to_string()
-            };
-            return Ok((
-                "blocked".into(),
-                format!(
-                    "the checkout of {root} has uncommitted changes and could not be auto-stashed: {why}"
-                ),
-            ));
-        }
-        auto_stash = Some(AutoStash {
-            root: root.clone(),
-            armed: true,
-        });
-        clean = checkout_state_pair(&root, &def).1;
-        if !clean {
-            return Ok((
-                "blocked".into(),
-                format!("the checkout of {root} has uncommitted changes that could not be stashed"),
-            ));
-        }
+    let mut stash_held: Option<f64> = None;
+    let auto_stash_on = s.setting("landing.auto_stash", "on") != "off";
+    if !by_ref && !clean && !auto_stash_on {
+        return Ok((
+            "deferred".into(),
+            format!("the checkout of {root} has uncommitted changes"),
+        ));
     }
     let lock = landing_lock(root.clone(), now.clone());
     if lock.is_empty() {
@@ -1125,12 +1092,59 @@ pub(crate) fn land_branch(
             "a fast-forward of `{def}` by ref (the checkout was on another branch and was not touched)"
         );
     } else {
-        if !(on_default && clean) {
+        if !on_default {
             return Ok((
                 "deferred".into(),
                 "the checkout changed while the merge was verified; nothing landed, try again"
                     .into(),
             ));
+        }
+        // Holds the owner's uncommitted work for the fast-forward only - seconds, not
+        // the minutes a verify takes. Any exit before the fast-forward lands pops the
+        // stash back; a landed branch pops it too so the owner's edits sit on the new
+        // commits. A pop that conflicts restores the clean landed tree, keeps the
+        // stash entry and the landing note says so: the checkout never carries
+        // conflict markers it did not ask for.
+        let mut auto_stash: Option<AutoStash> = None;
+        if !clean {
+            if !auto_stash_on {
+                return Ok((
+                    "deferred".into(),
+                    format!("the checkout of {root} has uncommitted changes"),
+                ));
+            }
+            let stash_msg = format!("pulse auto-stash before landing {}", job_id_of(job.clone()));
+            let stash = crate::util::git_timeout(
+                &root,
+                Duration::from_secs(60),
+                &["stash", "push", "-m", &stash_msg],
+            );
+            if !stash.ok() {
+                let why = if stash.stderr.trim().is_empty() {
+                    "git stash failed".to_string()
+                } else {
+                    stash.stderr.trim().to_string()
+                };
+                return Ok((
+                    "blocked".into(),
+                    format!(
+                        "the checkout of {root} has uncommitted changes and could not be auto-stashed: {why}"
+                    ),
+                ));
+            }
+            auto_stash = Some(AutoStash {
+                root: root.clone(),
+                armed: true,
+                since: std::time::Instant::now(),
+            });
+            if !checkout_state_pair(&root, &def).1 {
+                return Ok((
+                    "blocked".into(),
+                    format!(
+                        "the checkout of {root} has uncommitted changes that could not be stashed"
+                    ),
+                ));
+            }
         }
         let ff = crate::util::git_timeout_env(
             &root,
@@ -1155,6 +1169,7 @@ pub(crate) fn land_branch(
         }
         if let Some(stash) = auto_stash.as_mut() {
             stash_note = stash.pop();
+            stash_held = Some(stash.since.elapsed().as_secs_f64());
         }
     }
     let (effective_before, effective_after) = crate::landing_evidence::landing_ref_transition(
@@ -1200,6 +1215,12 @@ pub(crate) fn land_branch(
     ]);
     if let Some(note) = stash_note.as_ref() {
         detail.insert("auto_stash".into(), serde_json::json!(note));
+    }
+    if let Some(held) = stash_held {
+        detail.insert(
+            "stash_held_seconds".into(),
+            serde_json::json!((held * 1000.0).round() / 1000.0),
+        );
     }
     if let Some(m) = moved_lock {
         detail.insert(
@@ -1862,17 +1883,20 @@ struct LandingCleanup {
     lock: String,
 }
 
-/// The owner's uncommitted work, auto-stashed for the length of a landing. Dropped
-/// while still armed - the landing failed, held, deferred or panicked - it pops the
-/// stash so the work is back in the checkout; `disarm` keeps it once the branch landed.
+/// The owner's uncommitted work, auto-stashed for the length of the final
+/// fast-forward. Dropped while still armed - the fast-forward failed, deferred or
+/// panicked - it pops the stash so the work is back in the checkout; `pop` returns it
+/// once the branch landed.
 struct AutoStash {
     root: String,
     armed: bool,
+    since: std::time::Instant,
 }
 
 impl AutoStash {
     /// Pops the stash back onto the checkout once the branch landed and disarms the
-    /// guard. A pop that conflicts leaves the stash entry in place; the returned note
+    /// guard. A pop that conflicts keeps the stash entry and puts the checkout back on
+    /// the clean landed tree instead of leaving conflict markers; the returned note
     /// tells the owner where the work is instead of letting it sit unmentioned in
     /// `git stash list`.
     fn pop(&mut self) -> Option<String> {
@@ -1882,8 +1906,15 @@ impl AutoStash {
             return None;
         }
         let why = crate::util::trunc(pop.stderr.trim(), 200);
+        // A failed pop leaves the stash entry in place; `reset --hard` only drops the
+        // half-applied, conflict-marked copy of it from the tree and index.
+        let _ = crate::util::git_timeout(
+            &self.root,
+            Duration::from_secs(60),
+            &["reset", "-q", "--hard", "HEAD"],
+        );
         Some(format!(
-            "the owner's uncommitted work stayed in `git stash list` because `git stash pop` failed on the landed commits ({why}); run `git stash pop` in {} to recover it",
+            "the owner's uncommitted work stayed in `git stash list` because `git stash pop` conflicted with the landed commits ({why}); the checkout was reset to the landed tree, run `git stash pop` in {} to recover it",
             self.root
         ))
     }
@@ -2668,6 +2699,91 @@ mod auto_stash_tests {
         );
         if status.trim() != "M README.md" {
             panic!("checkout should show the owner's edit again: {status:?}");
+        }
+    }
+
+    /// A landing whose stash pop conflicts with the landed commits keeps the owner's
+    /// work in `git stash list` and leaves the checkout on the clean landed tree -
+    /// no conflict markers - with the landing note saying where the work is.
+    #[test]
+    fn conflicting_pop_keeps_the_stash_and_a_clean_checkout() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (_, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&"true"],
+        );
+        let proj = crate::board::project_by_slug(&s.conn().expect("conn"), "proj".into());
+
+        let branch = "pulse/aurora/readme";
+        let readme = std::path::Path::new(&dir).join("README.md");
+        run(&dir, &["git", "checkout", "-q", "-b", branch, "main"]);
+        std::fs::write(&readme, b"# proj\n\nagent's line\n").unwrap();
+        run(&dir, &["git", "add", "-A"]);
+        run(&dir, &["git", "commit", "-q", "-m", "agent edits readme"]);
+        run(&dir, &["git", "checkout", "-q", "main"]);
+        let (j, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "proj".into(),
+                kind: "task".into(),
+                title: "readme branch".into(),
+                brief: "b".into(),
+                tier: 1,
+                created_by: "aurora".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &j.id],
+        );
+
+        // The owner edits the same line the branch changes: the pop must conflict.
+        std::fs::write(&readme, b"# proj\n\nowner's line\n").unwrap();
+
+        let (lines, _held) = crate::landing_hold::tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        let joined = lines.join("\n");
+        if !joined.contains("landed") {
+            panic!("expected the landing to land; lines={lines:?}");
+        }
+        let stash_list = run(&dir, &["git", "stash", "list"]);
+        if !stash_list.contains("pulse auto-stash before landing") {
+            panic!("the conflicting pop should keep the stash entry: {stash_list:?}");
+        }
+        let tree = String::from_utf8_lossy(&std::fs::read(&readme).unwrap()).to_string();
+        if tree.contains("<<<<<<<") || tree.contains(">>>>>>>") {
+            panic!("landing left conflict markers in the checkout: {tree:?}");
+        }
+        let status = run(
+            &dir,
+            &["git", "status", "--porcelain", "--untracked-files=no"],
+        );
+        if status.trim() != "" {
+            panic!("checkout should be on the clean landed tree: {status:?}");
+        }
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'land.landed' AND subject = ? AND detail LIKE '%stash_held_seconds%' AND detail LIKE '%stayed in `git stash list`%'",
+            &[&branch],
+        );
+        if n != 1 {
+            panic!(
+                "land.landed event should carry the stash note and held seconds: {n}; lines={lines:?}"
+            );
         }
     }
 }
