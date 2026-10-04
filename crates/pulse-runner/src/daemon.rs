@@ -1151,6 +1151,7 @@ pub(crate) fn daemon(
                             now.clone(),
                             snapshot.suggestion_idle,
                             snapshot.tally.suggestions,
+                            snapshot.tally.amendments,
                         )
                     } else {
                         crate::idle::idle_note(s, slug.clone(), now.clone())

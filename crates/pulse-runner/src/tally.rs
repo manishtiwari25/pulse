@@ -23,6 +23,27 @@ pub(crate) fn suggestion_records(
     }
 }
 
+/// The project's amendments as the light tally sees them now.
+#[allow(dead_code)]
+pub(crate) fn amendment_records(
+    s: &pulse_store::Store,
+    slug: String,
+    now: String,
+) -> Vec<pulse_tally::Amendment> {
+    match pulse_tally::compute_light(
+        s,
+        &slug,
+        "",
+        pulse_tally::Thresholds {
+            now,
+            ..Default::default()
+        },
+    ) {
+        Ok(res) => res.amendments,
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Go: func ballotItemsFor(s *store.Store, slug, agent, now, session string) []ballotItem
 pub(crate) fn ballot_items_for(
     s: &pulse_store::Store,

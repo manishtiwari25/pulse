@@ -528,7 +528,12 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   (`needs votes`, `short of the supermajority`); a `ballot` job shows their
   full Current and Proposed text, and the runner casts a `VOTE:` line on one as
   an informed vote - the proposal's `text_hash` plus a `Read:` line holding the
-  worker's reason - so it counts toward the amendment quorum. When
+  worker's reason - so it counts toward the amendment quorum. The planner seeds
+  a `ballot` job for such an amendment on the same terms as for a suggestion
+  (older than the ballot wait, some other active agent still able to vote), so
+  an amendment nobody listed cannot sit at one vote for days while ordinary
+  runs see a one-line summary; its ballot line reads `(amendment, N of Q
+  informed voters)` with the constitution's own quorum. When
   `evolve.loop=1` and the project is at Level D, the evolution loop gets first
   pick as a measured experiment and the planner builds the rest; the daemon
   says `plan <slug>: left suggestion <id> to the evolution loop` when it

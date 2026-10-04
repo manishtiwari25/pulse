@@ -181,6 +181,22 @@ pub(crate) fn ballot_cap(s: &pulse_store::Store) -> i32 {
     pulse_tally::ballot_cap(s) as i32
 }
 
+/// The moment before which a card must have been posted to be on a ballot
+/// now, or `None` while the last ballot job of the project is younger than
+/// the wait (`ballot_wait_minutes`): one ballot per project per wait.
+fn ballot_since(s: &pulse_store::Store, slug: &str, now: &str) -> Option<String> {
+    let (wait, _) = ballot_wait_minutes(s);
+    let since = crate::util::plus_minutes(now, -(wait as f64));
+    let prefix = format!("ballot:{slug}:");
+    let conn = s.conn().ok()?;
+    let start = (prefix.len() + 1) as i32;
+    let last = must_one(&conn, "SELECT MAX(substr(source, ?)) AS m FROM jobs WHERE project = ? AND kind = 'ballot' AND source LIKE ?", &[&start, &slug, &format!("{prefix}%")]).str("m");
+    if !last.is_empty() && last > stamp_of(&since) {
+        return None;
+    }
+    Some(since)
+}
+
 /// Go: func ballotDue(s *store.Store, slug, now string, suggestions []tally.Suggestion) []tally.Suggestion
 pub(crate) fn ballot_due(
     s: &pulse_store::Store,
@@ -188,17 +204,9 @@ pub(crate) fn ballot_due(
     now: String,
     suggestions: Vec<pulse_tally::Suggestion>,
 ) -> Vec<pulse_tally::Suggestion> {
-    let (wait, _) = ballot_wait_minutes(s);
-    let since = crate::util::plus_minutes(&now, -(wait as f64));
-    let prefix = format!("ballot:{slug}:");
-    let Ok(conn) = s.conn() else {
+    let Some(since) = ballot_since(s, &slug, &now) else {
         return Vec::new();
     };
-    let start = (prefix.len() + 1) as i32;
-    let last = must_one(&conn, "SELECT MAX(substr(source, ?)) AS m FROM jobs WHERE project = ? AND kind = 'ballot' AND source LIKE ?", &[&start, &slug, &format!("{prefix}%")]).str("m");
-    if !last.is_empty() && last > stamp_of(&since) {
-        return Vec::new();
-    }
     let out: Vec<_> = suggestions
         .into_iter()
         .filter(|sg| {
@@ -208,6 +216,31 @@ pub(crate) fn ballot_due(
         })
         .collect();
     pulse_tally::limit_ballot_suggestions(&out, setting_int(s, "quorum"), ballot_cap(s) as usize)
+}
+
+/// Open amendments still short of their quorum that have waited at least the
+/// ballot wait and that some active agent other than the proposer can still
+/// vote on. An amendment reaches its quorum only through informed votes, and
+/// a run's brief shows its Current and Proposed text in full only in a ballot
+/// job; an amendment that no ballot job ever listed sat at one vote in forty
+/// for days while ordinary runs saw a one-line summary and passed it by.
+pub(crate) fn ballot_amendments_due(
+    s: &pulse_store::Store,
+    slug: String,
+    now: String,
+    amendments: Vec<pulse_tally::Amendment>,
+) -> Vec<pulse_tally::Amendment> {
+    let Some(since) = ballot_since(s, &slug, &now) else {
+        return Vec::new();
+    };
+    amendments
+        .into_iter()
+        .filter(|a| {
+            crate::tally::amendment_votable(a)
+                && a.date <= since
+                && can_any_agent_vote_on(s, &a.agent, &a.id)
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -264,8 +297,14 @@ pub(crate) fn can_any_agent_vote_on_suggestion(
     s: &pulse_store::Store,
     sg: pulse_tally::Suggestion,
 ) -> bool {
+    can_any_agent_vote_on(s, &sg.agent, &sg.id)
+}
+
+/// Whether an active agent other than `author`, human agents aside, has not
+/// yet voted on post `id`: a ballot for a card nobody may vote on is wasted.
+pub(crate) fn can_any_agent_vote_on(s: &pulse_store::Store, author: &str, id: &str) -> bool {
     let Ok(conn) = s.conn() else { return false };
-    !must_one(&conn, "SELECT 1 AS x FROM agents a\n\t\tWHERE a.status = 'active' AND a.kind != 'human' AND a.name != ?\n\t\tAND NOT EXISTS (SELECT 1 FROM posts v WHERE v.kind = 'vote' AND v.agent = a.name AND v.on_post = ?)\n\t\tLIMIT 1", &[&sg.agent, &sg.id]).0.is_empty()
+    !must_one(&conn, "SELECT 1 AS x FROM agents a\n\t\tWHERE a.status = 'active' AND a.kind != 'human' AND a.name != ?\n\t\tAND NOT EXISTS (SELECT 1 FROM posts v WHERE v.kind = 'vote' AND v.agent = a.name AND v.on_post = ?)\n\t\tLIMIT 1", &[&author, &id]).0.is_empty()
 }
 
 /// Go: func isOwnerAddressedPost(post row) bool
@@ -590,7 +629,16 @@ pub(crate) fn plan_jobs_with_tally(
     }
     if created.is_empty() {
         let cards = ballot_due(s, slug.clone(), now.clone(), suggestions);
-        if !cards.is_empty() {
+        let amendments = ballot_amendments_due(
+            s,
+            slug.clone(),
+            now.clone(),
+            plan_res
+                .as_ref()
+                .map(|r| r.amendments.clone())
+                .unwrap_or_default(),
+        );
+        if !cards.is_empty() || !amendments.is_empty() {
             let listing = ballot_listing(s, cards);
             let mut lines = listing
                 .cards
@@ -606,13 +654,34 @@ pub(crate) fn plan_jobs_with_tally(
                     )
                 })
                 .collect::<Vec<_>>();
+            lines.extend(amendments.iter().map(|a| {
+                format!(
+                    "- `{}` {} (amendment, {} of {} informed voters): {}",
+                    a.id,
+                    a.key,
+                    a.voters,
+                    a.quorum,
+                    trunc(&a.summary, 160)
+                )
+            }));
             lines.extend(listing.lines.clone());
             let listed = lines.join("\n");
             let (wait, _) = ballot_wait_minutes(s);
+            let waiting = match (listing.cards.len(), amendments.len()) {
+                (n, 0) => format!("{n} suggestion(s)"),
+                (0, m) => format!("{m} amendment(s)"),
+                (n, m) => format!("{n} suggestion(s) and {m} amendment(s)"),
+            };
+            let amendment_rule = if amendments.is_empty() {
+                String::new()
+            } else {
+                " An item marked `amendment` changes the constitution: read its Current and Proposed text in the Ballot section, check that the replaced text is still in the constitution (`pulse constitution --project SLUG`), and make your reason restate the change in your own words - the runner records it as the vote's `Read:` line with the proposal's hash, and only such informed votes count toward the amendment quorum; vote down a proposal that weakens a hard stop, the kill switch, or a guard row.".to_string()
+            };
             let brief = format!(
-                "{} suggestion(s) on this project's board have waited more than {} without quorum deciding, and nothing else is queued. Read each listed card in full (its body is in the Ballot section; check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, down when it is a guess, a duplicate (vote on the older same File+Variable), owner-only, already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week. Never vote on your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n{}",
-                listing.cards.len(),
+                "{} on this project's board have waited more than {} without quorum deciding, and nothing else is queued. Read each listed card in full (its body is in the Ballot section; check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, down when it is a guess, a duplicate (vote on the older same File+Variable), owner-only, already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week.{} Never vote on your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n{}",
+                waiting,
                 crate::util::format_minutes(wait),
+                amendment_rule,
                 listed
             );
             let (job, is_new) = crate::jobs::add_job(
@@ -621,7 +690,7 @@ pub(crate) fn plan_jobs_with_tally(
                 "ballot".into(),
                 format!(
                     "Vote the ballot: {} card(s) below quorum for {}",
-                    listing.cards.len(),
+                    listing.cards.len() + amendments.len(),
                     slug
                 ),
                 brief,
@@ -1657,8 +1726,90 @@ mod tests {
             "proj".into(),
             TEST_NOW.into(),
             crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into()),
+            crate::tally::amendment_records(&s, "proj".into(), TEST_NOW.into()),
         );
         assert_eq!(part, "");
+    }
+
+    #[test]
+    fn ballot_fires_for_an_open_amendment_below_its_quorum() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        suppress_planner_reflect(&s);
+        // Posted 90 minutes ago by `prop`; `voter` has not voted, so it waits
+        // below its quorum of one informed voter. No suggestion is on the board.
+        let am = crate::test_helpers_f1b::open_amendment(
+            &s,
+            &crate::util::plus_minutes(TEST_NOW, -90.0),
+        );
+        let idle = |now: &str| {
+            crate::idle::ballot_idle_part(
+                &s,
+                "proj".into(),
+                now.into(),
+                crate::tally::suggestion_records(&s, "proj".into(), now.into()),
+                crate::tally::amendment_records(&s, "proj".into(), now.into()),
+            )
+        };
+        assert_eq!(idle(TEST_NOW), "ballot due");
+        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        assert!(
+            jobs.len() == 1 && jobs[0].str("kind") == "ballot",
+            "a ballot for the amendment alone: {jobs:?}"
+        );
+        assert_eq!(
+            jobs[0].str("title"),
+            "Vote the ballot: 1 card(s) below quorum for proj"
+        );
+        let brief = jobs[0].str("brief");
+        assert!(
+            brief.contains("1 amendment(s) on this project's board have waited more than 1h"),
+            "ballot brief:\n{brief}"
+        );
+        assert!(
+            brief.contains(&format!(
+                "- `{am}` governance/fleet-votes (amendment, 0 of 1 informed voters): Count a fleet as one voter"
+            )),
+            "ballot brief lists the amendment with its own quorum:\n{brief}"
+        );
+        assert!(
+            brief.contains("`Read:` line with the proposal's hash"),
+            "ballot brief says how an amendment vote counts:\n{brief}"
+        );
+        // An informed vote takes it to its quorum: passed, so no ballot is due.
+        let hash = crate::board::post_row(&s.conn().expect("conn"), am.clone()).str("text_hash");
+        crate::board::create_post(
+            &s,
+            crate::util::plus_minutes(TEST_NOW, -30.0),
+            crate::board::PostOpts {
+                kind: "vote".into(),
+                project: "proj".into(),
+                area: "governance".into(),
+                thread: "fleet-votes".into(),
+                summary: "up".into(),
+                body: "up\n\nRead: a fleet counts once; quorum untouched.".into(),
+                agent: crate::board::actor_agent(&s, "voter".into()),
+                session: "s-voter".into(),
+                on: am.clone(),
+                vote: "up".into(),
+                text_hash: hash,
+                ..Default::default()
+            },
+        )
+        .expect("vote");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "DELETE FROM jobs WHERE kind = 'ballot'",
+            &[],
+        );
+        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        assert!(
+            jobs.iter().all(|j| j.str("kind") != "ballot"),
+            "no ballot once the amendment passed: {jobs:?}"
+        );
+        assert_eq!(idle(TEST_NOW), "", "nothing left to vote on");
     }
 
     #[test]
@@ -1706,6 +1857,7 @@ mod tests {
             "proj".into(),
             TEST_NOW.into(),
             crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into()),
+            crate::tally::amendment_records(&s, "proj".into(), TEST_NOW.into()),
         );
         assert_eq!(part, "ballot in 20m (fleet idle)");
         crate::util::exec1(
@@ -1752,6 +1904,7 @@ mod tests {
             "proj".into(),
             later.clone(),
             crate::tally::suggestion_records(&s, "proj".into(), later.clone()),
+            crate::tally::amendment_records(&s, "proj".into(), later.clone()),
         );
         assert!(
             part.starts_with("ballot in ") && !part.contains("fleet idle"),

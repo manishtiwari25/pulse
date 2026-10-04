@@ -131,6 +131,34 @@ pub(crate) const TEST_CONSTITUTION: &str = "# Constitution\n\n## Hard stops\n\nN
 pub(crate) const TEST_AMENDMENT: &str = "## Current text\n\n```\n| Votes per identity per suggestion | 1 (the latest wins) |\n```\n\n## Proposed text\n\n```\n| Votes per identity per suggestion | 1 (the latest wins; a fleet is one voter) |\n```\n\n## Why\n\nFleets voted twice.\n";
 
 pub(crate) fn passed_amendment(s: &pulse_store::Store) -> String {
+    let am = open_amendment(s, "2026-09-02T08:00:00Z");
+    let hash = crate::board::post_row(&s.conn().unwrap(), am.clone()).str("text_hash");
+    crate::board::create_post(
+        s,
+        "2026-09-03T08:00:00Z".into(),
+        crate::board::PostOpts {
+            kind: "vote".into(),
+            project: "proj".into(),
+            area: "governance".into(),
+            thread: "fleet-votes".into(),
+            summary: "up".into(),
+            body: "up\n\nRead: a fleet counts once; quorum untouched.".into(),
+            agent: crate::board::actor_agent(s, "voter".into()),
+            session: "s-voter".into(),
+            on: am.clone(),
+            vote: "up".into(),
+            text_hash: hash,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    am
+}
+
+/// A constitution record for `proj` (amendment quorum 1), two worker agents
+/// `prop` and `voter`, and an open amendment by `prop` posted at `date` with
+/// no vote yet: `needs votes` until `voter` casts an informed one.
+pub(crate) fn open_amendment(s: &pulse_store::Store, date: &str) -> String {
     let rec = pulse_store::Record {
         id: "EVO-constitution-proj".into(),
         project: "proj".into(),
@@ -169,7 +197,7 @@ pub(crate) fn passed_amendment(s: &pulse_store::Store) -> String {
     }
     let am = crate::board::create_post(
         s,
-        "2026-09-02T08:00:00Z".into(),
+        date.into(),
         crate::board::PostOpts {
             kind: "amendment".into(),
             project: "proj".into(),
@@ -179,25 +207,6 @@ pub(crate) fn passed_amendment(s: &pulse_store::Store) -> String {
             body: TEST_AMENDMENT.into(),
             agent: crate::board::actor_agent(s, "prop".into()),
             session: "s-prop".into(),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    crate::board::create_post(
-        s,
-        "2026-09-03T08:00:00Z".into(),
-        crate::board::PostOpts {
-            kind: "vote".into(),
-            project: "proj".into(),
-            area: "governance".into(),
-            thread: "fleet-votes".into(),
-            summary: "up".into(),
-            body: "up\n\nRead: a fleet counts once; quorum untouched.".into(),
-            agent: crate::board::actor_agent(s, "voter".into()),
-            session: "s-voter".into(),
-            on: am.str("id"),
-            vote: "up".into(),
-            text_hash: am.str("text_hash"),
             ..Default::default()
         },
     )

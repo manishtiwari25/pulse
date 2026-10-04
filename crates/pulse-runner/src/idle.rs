@@ -31,7 +31,8 @@ pub(crate) fn idle_note_with_tally(
 ) -> String {
     let suggestion_part = suggestion_idle_part_with_tally(s, slug.clone(), now.clone(), tally);
     let suggestions = tally.map(|r| r.suggestions.clone()).unwrap_or_default();
-    idle_note_from_parts(s, slug, now, suggestion_part, suggestions)
+    let amendments = tally.map(|r| r.amendments.clone()).unwrap_or_default();
+    idle_note_from_parts(s, slug, now, suggestion_part, suggestions, amendments)
 }
 
 pub(crate) fn idle_note_from_parts(
@@ -40,6 +41,7 @@ pub(crate) fn idle_note_from_parts(
     now: String,
     suggestion_part: String,
     suggestions: Vec<pulse_tally::Suggestion>,
+    amendments: Vec<pulse_tally::Amendment>,
 ) -> String {
     let mut parts = vec![suggestion_part];
     if let Ok(handoffs) = pulse_tally::open_handoffs_for(s, &slug) {
@@ -52,7 +54,7 @@ pub(crate) fn idle_note_from_parts(
     if !part.is_empty() {
         parts.push(part);
     }
-    let part = ballot_idle_part(s, slug.clone(), now.clone(), suggestions);
+    let part = ballot_idle_part(s, slug.clone(), now.clone(), suggestions, amendments);
     if !part.is_empty() {
         parts.push(part);
     }
@@ -252,11 +254,17 @@ pub(crate) fn ballot_idle_part(
     slug: String,
     now: String,
     suggestions: Vec<pulse_tally::Suggestion>,
+    amendments: Vec<pulse_tally::Amendment>,
 ) -> String {
-    if !crate::plan::ballot_due(s, slug.clone(), now.clone(), suggestions.clone()).is_empty() {
+    if !crate::plan::ballot_due(s, slug.clone(), now.clone(), suggestions.clone()).is_empty()
+        || !crate::plan::ballot_amendments_due(s, slug.clone(), now.clone(), amendments.clone())
+            .is_empty()
+    {
         return "ballot due".into();
     }
-    if !suggestions.iter().any(|sg| sg.status == "needs votes") {
+    if !suggestions.iter().any(|sg| sg.status == "needs votes")
+        && !amendments.iter().any(crate::tally::amendment_votable)
+    {
         return String::new();
     }
     let last = match s.conn() {
