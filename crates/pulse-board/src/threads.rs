@@ -62,7 +62,7 @@ pub fn thread_summaries(
     } else {
         now.to_string()
     };
-    Ok(summarize_threads(s, thread_posts(s, project, "")?, &now))
+    summarize_threads(s, thread_posts(s, project, "")?, &now)
 }
 
 pub fn thread_detail(
@@ -88,7 +88,7 @@ pub fn thread_detail(
             ),
         ));
     }
-    let sum = summarize_threads(s, posts.clone(), &now).remove(0);
+    let sum = summarize_threads(s, posts.clone(), &now)?.remove(0);
     Ok((sum, posts))
 }
 
@@ -169,7 +169,12 @@ fn thread_posts(s: &pulse_store::Store, project: &str, key: &str) -> Result<Vec<
         .collect::<rusqlite::Result<_>>()?)
 }
 
-fn summarize_threads(s: &pulse_store::Store, posts: Vec<Post>, now: &str) -> Vec<ThreadSummary> {
+fn summarize_threads(
+    s: &pulse_store::Store,
+    posts: Vec<Post>,
+    now: &str,
+) -> Result<Vec<ThreadSummary>> {
+    let conn = s.conn()?;
     let mut map: BTreeMap<String, (ThreadSummary, BTreeSet<String>, Vec<Post>)> = BTreeMap::new();
     let mut order = Vec::new();
     for p in posts {
@@ -204,7 +209,11 @@ fn summarize_threads(s: &pulse_store::Store, posts: Vec<Post>, now: &str) -> Vec
         if !p.resolution.is_empty() {
             sum.resolution = p.resolution.clone();
         }
-        if p.kind == "claim" && !p.expires.is_empty() && p.expires.as_str() > now {
+        if p.kind == "claim"
+            && !p.expires.is_empty()
+            && p.expires.as_str() > now
+            && crate::focus::claim_alive(&conn, &p.agent, &p.project, &p.date)?
+        {
             sum.active_claims.push(ThreadClaim {
                 post_id: p.id.clone(),
                 agent: p.agent.clone(),
@@ -264,7 +273,7 @@ fn summarize_threads(s: &pulse_store::Store, posts: Vec<Post>, now: &str) -> Vec
             .cmp(&status_rank(&b.status))
             .then_with(|| b.last_at.cmp(&a.last_at))
     });
-    out
+    Ok(out)
 }
 fn status_rank(s: &str) -> i32 {
     match s {

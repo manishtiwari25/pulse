@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -137,7 +138,7 @@ fn add_claim_focuses(
     now: &str,
 ) -> Result<()> {
     let conn = s.conn()?;
-    let mut stmt = conn.prepare("SELECT id, project, area, thread, agent, summary, expires FROM posts WHERE kind = 'claim' AND expires > ? ORDER BY date DESC, id DESC")?;
+    let mut stmt = conn.prepare("SELECT id, project, area, thread, agent, summary, expires, date FROM posts WHERE kind = 'claim' AND expires > ? ORDER BY date DESC, id DESC")?;
     for row in stmt.query_map([&now], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -147,9 +148,13 @@ fn add_claim_focuses(
             r.get::<_, String>(4)?,
             r.get::<_, String>(5)?,
             r.get::<_, String>(6)?,
+            r.get::<_, String>(7)?,
         ))
     })? {
-        let (post_id, project, area, thread, agent, summary, expires) = row?;
+        let (post_id, project, area, thread, agent, summary, expires, date) = row?;
+        if !claim_alive(&conn, &agent, &project, &date)? {
+            continue;
+        }
         let f = out.entry(agent.clone()).or_insert_with(|| Focus {
             agent,
             ..Default::default()
@@ -167,6 +172,22 @@ fn add_claim_focuses(
         f.claims.push(claim);
     }
     Ok(())
+}
+
+pub(crate) fn claim_alive(
+    conn: &Connection,
+    agent: &str,
+    project: &str,
+    claim_date: &str,
+) -> Result<bool> {
+    let (has_running, has_finished_after_claim): (bool, bool) = conn.query_row(
+        "SELECT
+            EXISTS(SELECT 1 FROM runs WHERE agent = ?1 AND project = ?2 AND status = 'running'),
+            EXISTS(SELECT 1 FROM runs WHERE agent = ?1 AND project = ?2 AND status != 'running' AND finished_at != '' AND finished_at >= ?3)",
+        (agent, project, claim_date),
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(has_running || !has_finished_after_claim)
 }
 
 pub fn project_focus(s: &pulse_store::Store, project: &str, now: &str) -> Result<Vec<Focus>> {
@@ -305,6 +326,24 @@ mod tests {
         summary: &str,
         expires: &str,
     ) -> Post {
+        post_focus_at(
+            s, id, project, kind, area, thread, agent, summary, expires, "",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn post_focus_at(
+        s: &pulse_store::Store,
+        id: &str,
+        project: &str,
+        kind: &str,
+        area: &str,
+        thread: &str,
+        agent: &str,
+        summary: &str,
+        expires: &str,
+        date: &str,
+    ) -> Post {
         create_post(
             s,
             PostInput {
@@ -316,6 +355,7 @@ mod tests {
                 agent: agent.into(),
                 summary: summary.into(),
                 expires: expires.into(),
+                date: date.into(),
                 ..Default::default()
             },
         )
@@ -506,5 +546,122 @@ mod tests {
         assert_eq!(project[0].agent, "aurora");
         assert_eq!(project[0].claims.len(), 1);
         assert_eq!(project[0].claims[0].project, "proj");
+    }
+
+    #[test]
+    fn agent_focus_claim_posted_during_finished_run_is_dead() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s) = new_home();
+        add_focus_project(&s, "proj");
+        join_focus_agent(&s, "fjord");
+        exec_focus_sql(
+            &s,
+            "INSERT INTO runs(id,job_id,agent,project,started_at,finished_at,status)
+             VALUES('run-fjord','job-1','fjord','proj','2026-09-06T09:00:00Z','2026-09-06T09:30:00Z','done')",
+            &[],
+        );
+        post_focus_at(
+            &s,
+            "claim-fjord",
+            "proj",
+            "claim",
+            "area",
+            "thread",
+            "fjord",
+            "mine",
+            "2026-09-06T11:00:00Z",
+            "2026-09-06T09:10:00Z",
+        );
+
+        let focuses = agent_focuses(&s, TEST_NOW).unwrap();
+
+        assert!(!focuses.contains_key("fjord"));
+    }
+
+    #[test]
+    fn agent_focus_claim_with_running_run_is_alive() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s) = new_home();
+        add_focus_project(&s, "proj");
+        join_focus_agent(&s, "delta");
+        exec_focus_sql(
+            &s,
+            "INSERT INTO runs(id,job_id,agent,project,started_at,status)
+             VALUES('run-delta','job-1','delta','proj','2026-09-06T09:00:00Z','running')",
+            &[],
+        );
+        post_focus_at(
+            &s,
+            "claim-delta",
+            "proj",
+            "claim",
+            "area",
+            "thread",
+            "delta",
+            "mine",
+            "2026-09-06T11:00:00Z",
+            "2026-09-06T09:10:00Z",
+        );
+
+        let focuses = agent_focuses(&s, TEST_NOW).unwrap();
+
+        assert_eq!(focuses["delta"].claims.len(), 1);
+        assert_eq!(focuses["delta"].claims[0].post_id, "claim-delta");
+    }
+
+    #[test]
+    fn agent_focus_claim_without_runs_is_alive_until_expiry() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s) = new_home();
+        add_focus_project(&s, "proj");
+        join_focus_agent(&s, "manual");
+        post_focus_at(
+            &s,
+            "claim-manual",
+            "proj",
+            "claim",
+            "area",
+            "thread",
+            "manual",
+            "mine",
+            "2026-09-06T11:00:00Z",
+            "2026-09-06T09:10:00Z",
+        );
+
+        let focuses = agent_focuses(&s, TEST_NOW).unwrap();
+
+        assert_eq!(focuses["manual"].claims.len(), 1);
+        assert_eq!(focuses["manual"].claims[0].post_id, "claim-manual");
+    }
+
+    #[test]
+    fn agent_focus_claim_after_last_finished_run_is_alive() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s) = new_home();
+        add_focus_project(&s, "proj");
+        join_focus_agent(&s, "aurora");
+        exec_focus_sql(
+            &s,
+            "INSERT INTO runs(id,job_id,agent,project,started_at,finished_at,status)
+             VALUES('run-aurora','job-1','aurora','proj','2026-09-06T08:00:00Z','2026-09-06T09:00:00Z','done')",
+            &[],
+        );
+        post_focus_at(
+            &s,
+            "claim-aurora",
+            "proj",
+            "claim",
+            "area",
+            "thread",
+            "aurora",
+            "mine",
+            "2026-09-06T11:00:00Z",
+            "2026-09-06T09:10:00Z",
+        );
+
+        let focuses = agent_focuses(&s, TEST_NOW).unwrap();
+
+        assert_eq!(focuses["aurora"].claims.len(), 1);
+        assert_eq!(focuses["aurora"].claims[0].post_id, "claim-aurora");
     }
 }
