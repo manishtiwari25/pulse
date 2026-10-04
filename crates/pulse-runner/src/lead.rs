@@ -829,10 +829,20 @@ pub(crate) fn tend_idle_lead(
     now: String,
     actor: String,
 ) -> Vec<String> {
-    let hours = crate::util::setting_int(s, "lead.idle_hours");
+    let mut hours = crate::util::setting_int(s, "lead.idle_hours");
     if hours <= 0 {
         return Vec::new();
     }
+    // Empty lanes are the lead's cue as much as research's: while the fleet
+    // is idle the standing brief comes lead.idle_factor times sooner (never
+    // under an hour), so a project without plannable cards is asked for its
+    // next work instead of waiting out the plain window.
+    let factor = crate::research::idle_factor(s);
+    let fleet_idle = factor > 1 && crate::research::fleet_idle(s);
+    if fleet_idle {
+        hours = (hours / factor).max(1);
+    }
+    let suffix = if fleet_idle { ", fleet idle" } else { "" };
     let Ok(conn) = s.conn() else {
         return Vec::new();
     };
@@ -892,12 +902,13 @@ pub(crate) fn tend_idle_lead(
         return Vec::new();
     }
     vec![format!(
-        "queued {} {} for {}: {} (owner idle {}h)",
+        "queued {} {} for {}: {} (owner idle {}h{})",
         LEAD_KIND,
         job.str("id"),
         lead,
         title,
-        hours
+        hours,
+        suffix
     )]
 }
 
@@ -1469,8 +1480,78 @@ mod tests {
         let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
         assert!(
             idle_lead_job_rows(&s.conn().expect("conn")).len() == 1
-                && lines.join("\n").contains("owner idle 6h"),
+                && lines.join("\n").contains("owner idle 6h)"),
             "old done job did not allow idle: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn idle_lead_comes_sooner_while_the_fleet_is_idle() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "lead.idle_hours", "6");
+        set_setting(&s, "lead.idle_factor", "3");
+        set_setting(&s, "workers", "2");
+        let add = |title: &str, source: &str| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "improve".into(),
+                title.into(),
+                "one variable".into(),
+                1,
+                5,
+                source.into(),
+                "daemon".into(),
+                false,
+            )
+            .expect("add job")
+            .0
+        };
+        // Decided work three hours ago: inside the plain six-hour window,
+        // outside the two-hour one the idle fleet gets.
+        let done = add("decided three hours ago", "suggestion:x1");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', created_at = ?, finished_at = ? WHERE id = ?",
+            &[
+                &crate::util::plus_hours(TEST_NOW, -3.0),
+                &crate::util::plus_hours(TEST_NOW, -3.0),
+                &done.str("id"),
+            ],
+        );
+        assert!(crate::research::fleet_idle(&s), "no lease held: fleet idle");
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            idle_lead_job_rows(&s.conn().expect("conn")).len() == 1
+                && lines.join("\n").contains("(owner idle 2h, fleet idle)"),
+            "idle fleet did not shorten the standing brief's window: {lines:?}"
+        );
+        // A busy fleet (half the slots leased) keeps the plain window: with
+        // the lead job gone and a lease held elsewhere, nothing is queued.
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "DELETE FROM jobs WHERE kind = ?",
+            &[&LEAD_KIND],
+        );
+        let lease = add("leased elsewhere", "suggestion:x2");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET project = 'other', status = 'leased', created_at = ? WHERE id = ?",
+            &[&crate::util::plus_hours(TEST_NOW, -4.0), &lease.str("id")],
+        );
+        assert!(
+            !crate::research::fleet_idle(&s),
+            "one of two slots leased: fleet busy"
+        );
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            idle_lead_job_rows(&s.conn().expect("conn")).is_empty()
+                && !lines.join("\n").contains("owner idle"),
+            "busy fleet did not keep the plain window: {lines:?}"
         );
     }
 

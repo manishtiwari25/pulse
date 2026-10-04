@@ -35,7 +35,7 @@ const LABELS: Record<string, string> = {
   "lead.research_per_day": "Research jobs per project per day",
   "lead.ballot_hours": "Hours a card waits before a ballot",
   "lead.ballot_cap": "Cards per ballot job",
-  "lead.idle_factor": "Research speed-up while the fleet is idle",
+  "lead.idle_factor": "Research, ballot and lead speed-up while the fleet is idle",
   "plan.operating_layer_per_day": "Operating-layer suggestion jobs per day",
   "plan.operating_layer_fill": "Lift the operating-layer cap when no product card competes",
   "board.stale_days": "Retire a card whose files are gone after (days)",

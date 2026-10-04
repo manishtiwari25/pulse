@@ -104,6 +104,8 @@ pub(crate) fn suggestion_idle_part_with_tally(
     let mut net_non_positive = 0;
     let mut owner = 0;
     let mut no_evidence = 0;
+    let mut owner_paths = 0;
+    let mut unlanded = 0;
     let mut file_gone = 0;
     let mut over_operating_cap = 0;
     let mut duplicates = 0;
@@ -138,9 +140,11 @@ pub(crate) fn suggestion_idle_part_with_tally(
                     over_operating_cap += 1;
                 } else if gate == pulse_tally::GATE_FILE_GONE {
                     file_gone += 1;
+                } else if gate == pulse_tally::GATE_OWNER_PATHS {
+                    owner_paths += 1;
+                } else if gate == pulse_tally::GATE_UNLANDED {
+                    unlanded += 1;
                 } else if gate == pulse_tally::GATE_NO_EVIDENCE
-                    || gate == pulse_tally::GATE_OWNER_PATHS
-                    || gate == pulse_tally::GATE_UNLANDED
                     || gate == pulse_tally::GATE_NO_OP_CHECK
                     || !gate.is_empty()
                 {
@@ -180,6 +184,15 @@ pub(crate) fn suggestion_idle_part_with_tally(
     }
     if no_evidence > 0 {
         held.push(format!("{no_evidence} without evidence"));
+    }
+    // Owner-only paths and unlanded signals are not evidence problems a
+    // worker can fix: the owner decides the first, a landing clears the
+    // second, so the line names them apart.
+    if owner_paths > 0 {
+        held.push(format!("{owner_paths} name owner-only paths"));
+    }
+    if unlanded > 0 {
+        held.push(format!("{unlanded} wait for a landing"));
     }
     if file_gone > 0 {
         held.push(format!("{file_gone} name gone paths"));
@@ -531,6 +544,62 @@ mod tests {
         assert!(
             got.contains("1 handoffs (1 tried)"),
             "tried handoff idle note: {got:?}"
+        );
+    }
+
+    #[test]
+    fn idle_note_names_owner_only_paths_apart_from_missing_evidence() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (_, path) = new_bare_repo(&s);
+        let ci = std::path::Path::new(&path).join(".github/workflows/ci.yml");
+        std::fs::create_dir_all(ci.parent().unwrap()).unwrap();
+        std::fs::write(&ci, "name: ci\n").unwrap();
+        let author = join(&s, "author");
+        let voter1 = join(&s, "voter-one");
+        let voter2 = join(&s, "voter-two");
+        let card = crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "code".into(),
+                thread: "plan".into(),
+                summary: "pin the CI Node major".into(),
+                body: "Class: operating-layer; File: .github/workflows/ci.yml; Variable: node-version 20; Hypothesis: check:ci passes; Tier: 1; Signal: .github/workflows/ci.yml\n".into(),
+                agent: Some(Box::new(row_agent(author))),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for voter in [voter1, voter2] {
+            crate::board::create_post(
+                &s,
+                TEST_NOW.into(),
+                crate::board::PostOpts {
+                    kind: "vote".into(),
+                    project: "proj".into(),
+                    area: "code".into(),
+                    thread: "plan".into(),
+                    summary: "up".into(),
+                    body: "measurable\n".into(),
+                    agent: Some(Box::new(row_agent(voter))),
+                    on: card.str("id"),
+                    vote: "up".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let got = idle_note(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            got.contains("1 eligible suggestions, 0 plannable (1 name owner-only paths)"),
+            "owner-path idle note: {got:?}"
+        );
+        assert!(
+            !got.contains("without evidence"),
+            "owner-path card counted as missing evidence: {got:?}"
         );
     }
 
