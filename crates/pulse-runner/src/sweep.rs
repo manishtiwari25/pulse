@@ -2,8 +2,12 @@
 
 //! Port of internal/runner/sweep.go.
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -74,6 +78,19 @@ pub(crate) struct SweepReport {
     pub held: Vec<Swept>,
     #[serde(rename = "errors")]
     pub errors: Vec<String>,
+    #[serde(rename = "cargo_target", default)]
+    pub cargo_target: Vec<CargoTargetSweep>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct CargoTargetSweep {
+    pub project: String,
+    pub target: String,
+    pub units: i64,
+    pub incremental: i64,
+    pub bytes: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub skipped: String,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +148,7 @@ pub(crate) fn sweep(
             removed: Vec::new(),
             held: Vec::new(),
             errors: Vec::new(),
+            cargo_target: Vec::new(),
         },
     };
     w.rep.dry_run = w.o.dry_run;
@@ -140,6 +158,7 @@ pub(crate) fn sweep(
     w.sweep_orphan_jobs();
     w.sweep_work();
     w.sweep_push_keys();
+    w.sweep_cargo_targets();
     w.sweep_measure_roots();
     w.sweep_stray_worktrees();
     for proj in w.projects.clone() {
@@ -410,6 +429,7 @@ pub(crate) fn record_sweep(
             "held": rep.held.iter().take(HYGIENE_ITEMS_CAP).collect::<Vec<_>>(),
             "errors": rep.errors.iter().take(HYGIENE_ITEMS_CAP).collect::<Vec<_>>(),
         },
+        "cargo_target": rep.cargo_target,
     });
     if let Ok(conn) = s.conn()
         && let Ok(text) = pulse_store::gojson::to_string(&note)
@@ -419,7 +439,7 @@ pub(crate) fn record_sweep(
             [&text],
         );
     }
-    if rep.removed.is_empty() && rep.errors.is_empty() {
+    if rep.removed.is_empty() && rep.errors.is_empty() && rep.cargo_target.is_empty() {
         return;
     }
     let examples: Vec<String> = rep
@@ -429,6 +449,23 @@ pub(crate) fn record_sweep(
         .map(|x| format!("{} {}", x.kind, x.path))
         .collect();
     if let Ok(conn) = s.conn() {
+        for cargo in &rep.cargo_target {
+            crate::util::event_at(
+                &conn,
+                &now,
+                &actor,
+                "hygiene.cargo-target",
+                crate::executor::LOCAL_EXECUTOR,
+                serde_json::json!({
+                    "project": cargo.project,
+                    "target": cargo.target,
+                    "units": cargo.units,
+                    "incremental": cargo.incremental,
+                    "freed_mb": ((cargo.bytes as f64) / ((1 << 20) as f64) * 10.0).round() / 10.0,
+                    "skipped": cargo.skipped,
+                }),
+            );
+        }
         crate::util::event_at(
             &conn,
             &now,
@@ -648,6 +685,79 @@ impl Sweeper {
             true,
         )
     }
+
+    fn cargo_target_skip(&mut self, project: &str, target: &str, skipped: impl Into<String>) {
+        self.rep.cargo_target.push(CargoTargetSweep {
+            project: project.to_string(),
+            target: target.to_string(),
+            skipped: skipped.into(),
+            ..Default::default()
+        });
+    }
+
+    fn sweep_cargo_targets(&mut self) {
+        if self.s.setting("hygiene.cargo_target", "on") == "off" {
+            return;
+        }
+        let min_age = Duration::from_secs(
+            self.s
+                .setting("hygiene.cargo_target_hours", "24")
+                .parse::<u64>()
+                .unwrap_or(24)
+                * 3600,
+        );
+        for proj in self.projects.clone() {
+            let slug = proj.str("slug");
+            let verify = proj.str("verify_cmd");
+            let Some(target) = cargo_target_dir_from_verify(&verify) else {
+                continue;
+            };
+            let project_path = PathBuf::from(proj.str("path"));
+            let target_path = PathBuf::from(&target);
+            if !cargo_target_allowed(&target_path, &project_path, Path::new(&self.home)) {
+                self.cargo_target_skip(&slug, &target, "target outside project and PULSE_HOME");
+                continue;
+            }
+            let Some(_verify_lock) = (match acquire_project_verify_lock(&self.s, &slug) {
+                Ok(lock) => Some(lock),
+                Err(reason) => {
+                    self.cargo_target_skip(&slug, &target, reason);
+                    None
+                }
+            }) else {
+                continue;
+            };
+            let mut total = CargoTargetSweep {
+                project: slug.clone(),
+                target: target.clone(),
+                ..Default::default()
+            };
+            for profile in cargo_profile_dirs(&target_path) {
+                let Some(_cargo_lock) = (match acquire_cargo_profile_lock(&profile) {
+                    Ok(lock) => Some(lock),
+                    Err(reason) => {
+                        self.cargo_target_skip(&slug, &profile.display().to_string(), reason);
+                        None
+                    }
+                }) else {
+                    continue;
+                };
+                match prune_cargo_profile(&profile, min_age, self.clock.into(), self.o.dry_run) {
+                    Ok(stats) => {
+                        total.units += stats.units;
+                        total.incremental += stats.incremental;
+                        total.bytes += stats.bytes;
+                    }
+                    Err(err) => self.failed(
+                        format!("cannot prune cargo target {}: {err}", profile.display()),
+                        vec![],
+                    ),
+                }
+            }
+            self.rep.cargo_target.push(total);
+        }
+    }
+
     /// Go: func (w *sweeper) sweepWork()
     pub(crate) fn sweep_work(&mut self) {
         let work = Path::new(&self.home).join("work");
@@ -1655,11 +1765,358 @@ fn nonempty(s: String) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+fn cargo_target_dir_from_verify(cmd: &str) -> Option<String> {
+    let needle = "CARGO_TARGET_DIR=";
+    let mut rest = cmd;
+    loop {
+        let pos = rest.find(needle)?;
+        let before = rest[..pos].chars().last();
+        if before.is_none_or(|c| c.is_whitespace()) {
+            let mut value = &rest[pos + needle.len()..];
+            if let Some(stripped) = value.strip_prefix('"') {
+                let end = stripped.find('"')?;
+                return Some(stripped[..end].to_string());
+            }
+            if let Some(stripped) = value.strip_prefix('\'') {
+                let end = stripped.find('\'')?;
+                return Some(stripped[..end].to_string());
+            }
+            let end = value.find(char::is_whitespace).unwrap_or(value.len());
+            value = &value[..end];
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        rest = &rest[pos + needle.len()..];
+    }
+}
+
+fn canonical_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn path_is_under(path: &Path, base: &Path) -> bool {
+    let path = canonical_or_self(path);
+    let base = canonical_or_self(base);
+    path == base || path.starts_with(base)
+}
+
+fn cargo_target_allowed(target: &Path, project: &Path, home: &Path) -> bool {
+    target.is_absolute() && (path_is_under(target, project) || path_is_under(target, home))
+}
+
+struct VerifyLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for VerifyLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_project_verify_lock(
+    s: &pulse_store::Store,
+    slug: &str,
+) -> Result<VerifyLockGuard, String> {
+    let name = crate::verify_lock::lock_name(s, slug)
+        .unwrap_or_else(|| format!("verify-{}.lock", verify_lock_safe_slug(slug)));
+    let dir = Path::new(&s.home).join("locks");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("busy: cannot create lock dir: {e}"))?;
+    let path = dir.join(name);
+    let pid = std::process::id().to_string();
+    loop {
+        match symlink_lock(&pid, &path) {
+            Ok(()) => return Ok(VerifyLockGuard { path }),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let holder = std::fs::read_link(&path)
+                    .ok()
+                    .and_then(|p| p.to_string_lossy().parse::<i32>().ok())
+                    .unwrap_or(0);
+                if holder > 0 && !process_alive(holder) {
+                    let _ = std::fs::remove_file(&path);
+                    continue;
+                }
+                return Err("busy: verify lock held".into());
+            }
+            Err(err) => return Err(format!("busy: cannot take verify lock: {err}")),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn symlink_lock(pid: &str, path: &Path) -> std::io::Result<()> {
+    unix_fs::symlink(pid, path)
+}
+
+#[cfg(not(unix))]
+fn symlink_lock(pid: &str, path: &Path) -> std::io::Result<()> {
+    std::fs::write(path, pid)
+}
+
+fn verify_lock_safe_slug(slug: &str) -> String {
+    let safe: String = slug
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        "project".to_string()
+    } else {
+        safe
+    }
+}
+
+fn cargo_profile_dirs(target: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(target) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|t| t.is_dir()) && path.join("deps").is_dir() {
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
+
+struct CargoLockGuard(File);
+
+fn acquire_cargo_profile_lock(profile: &Path) -> Result<CargoLockGuard, String> {
+    let lock = profile.join(".cargo-lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock)
+        .map_err(|e| format!("busy: cannot open cargo lock: {e}"))?;
+    file.try_lock_exclusive()
+        .map_err(|_| "busy: cargo lock held".to_string())?;
+    Ok(CargoLockGuard(file))
+}
+
+impl Drop for CargoLockGuard {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CargoPruneStats {
+    units: i64,
+    incremental: i64,
+    bytes: i64,
+}
+
+fn prune_cargo_profile(
+    profile: &Path,
+    incremental_age: Duration,
+    now: std::time::SystemTime,
+    dry_run: bool,
+) -> std::io::Result<CargoPruneStats> {
+    let mut stats = CargoPruneStats::default();
+    for unit in dead_cargo_units(profile)? {
+        let bytes: i64 = unit
+            .paths
+            .iter()
+            .map(|p| disk_usage(p.display().to_string()))
+            .sum();
+        if !dry_run {
+            for path in &unit.paths {
+                remove_path(path)?;
+            }
+        }
+        stats.units += 1;
+        stats.bytes += bytes;
+    }
+    let incremental = profile.join("incremental");
+    if let Ok(entries) = std::fs::read_dir(incremental) {
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            if dir_tree_recently_modified(&path, now, incremental_age) {
+                continue;
+            }
+            let bytes = disk_usage(path.display().to_string());
+            if !dry_run {
+                remove_path(&path)?;
+            }
+            stats.incremental += 1;
+            stats.bytes += bytes;
+        }
+    }
+    Ok(stats)
+}
+
+struct DeadCargoUnit {
+    paths: Vec<PathBuf>,
+}
+
+fn dead_cargo_units(profile: &Path) -> std::io::Result<Vec<DeadCargoUnit>> {
+    let deps = profile.join("deps");
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    let entries = match std::fs::read_dir(&deps) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(err) => return Err(err),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("d") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some((_, hash)) = stem.rsplit_once('-') else {
+            continue;
+        };
+        if hash.is_empty() || !seen.insert(stem.to_string()) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if !dep_info_points_at_dead_clone(&text) {
+            continue;
+        }
+        let mut paths = deps_unit_paths(&deps, stem)?;
+        paths.extend(hash_dir_paths(&profile.join(".fingerprint"), hash)?);
+        paths.extend(hash_dir_paths(&profile.join("build"), hash)?);
+        if !paths.is_empty() {
+            out.push(DeadCargoUnit { paths });
+        }
+    }
+    Ok(out)
+}
+
+fn deps_unit_paths(deps: &Path, stem: &str) -> std::io::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir(deps) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(err) => return Err(err),
+    };
+    let dotted = format!("{stem}.");
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == stem || name.starts_with(&dotted) {
+            out.push(entry.path());
+        }
+    }
+    Ok(out)
+}
+
+fn hash_dir_paths(parent: &Path, hash: &str) -> std::io::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(err) => return Err(err),
+    };
+    let suffix = format!("-{hash}");
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|t| t.is_dir())
+            && entry.file_name().to_string_lossy().ends_with(&suffix)
+        {
+            out.push(entry.path());
+        }
+    }
+    Ok(out)
+}
+
+fn dep_info_points_at_dead_clone(text: &str) -> bool {
+    let line = text.lines().next().unwrap_or_default();
+    let Some((_, deps)) = line.split_once(':') else {
+        return false;
+    };
+    let paths = split_dep_info_paths(deps);
+    let first = paths.iter().find(|p| Path::new(p).is_absolute());
+    first
+        .into_iter()
+        .chain(paths.iter().filter(|p| Path::new(p).is_absolute()))
+        .any(|p| absolute_source_parent_missing(Path::new(p)))
+}
+
+fn split_dep_info_paths(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = input.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                cur.push(next);
+            }
+        } else if c.is_whitespace() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn absolute_source_parent_missing(path: &Path) -> bool {
+    path.is_absolute() && path.parent().is_some_and(|parent| !parent.exists())
+}
+
+fn dir_tree_recently_modified(path: &Path, now: std::time::SystemTime, age: Duration) -> bool {
+    fn walk(path: &Path, newest: &mut Option<std::time::SystemTime>) {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        if let Ok(modified) = meta.modified()
+            && newest.is_none_or(|seen| modified > seen)
+        {
+            *newest = Some(modified);
+        }
+        if meta.is_dir()
+            && let Ok(entries) = std::fs::read_dir(path)
+        {
+            for entry in entries.flatten() {
+                walk(&entry.path(), newest);
+            }
+        }
+    }
+    let mut newest = None;
+    walk(path, &mut newest);
+    newest
+        .and_then(|modified| now.duration_since(modified).ok())
+        .is_none_or(|elapsed| elapsed < age)
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_dir_all(path).or_else(|dir_err| {
+        std::fs::remove_file(path).or_else(|file_err| {
+            if file_err.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(dir_err)
+            }
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_helpers::{TEST_NOW, count, new_bare_repo, run};
     use crate::test_helpers_f3b::*;
+    use filetime::FileTime;
     use rusqlite::params;
     use std::path::Path;
     use std::time::Duration;
@@ -1682,6 +2139,7 @@ mod tests {
             mkdir_file(work.join(format!("{job}.key")), "key");
             mkdir_file(work.join(format!("{job}.brief.md")), "# brief");
         }
+
         mkdir_file(work.join("mine.txt"), "not the runner's");
         let mut rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
         assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
@@ -1731,6 +2189,166 @@ mod tests {
         )
         .unwrap();
         assert_eq!(held_why(&rep.held, work.join(&finished)), "run in flight");
+    }
+
+    #[test]
+    fn cargo_target_prune_removes_dead_units_and_stale_incremental_only() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let target = project.join("target/debug");
+        let deps = target.join("deps");
+        let fingerprint = target.join(".fingerprint");
+        let build = target.join("build");
+        let live_src = project.join("src/lib.rs");
+        mkdir_file(&live_src, "pub fn live() {}\n");
+
+        let live_hash = "1111111111111111";
+        let dead_hash = "2222222222222222";
+        mkdir_file(
+            deps.join(format!("livecrate-{live_hash}.d")),
+            &format!("out: {}\n", live_src.display()),
+        );
+        mkdir_file(deps.join(format!("livecrate-{live_hash}.rlib")), "live");
+        mkdir_file(
+            fingerprint.join(format!("livepkg-{live_hash}/stamp")),
+            "live",
+        );
+        mkdir_file(build.join(format!("livepkg-{live_hash}/out")), "live");
+
+        let dead_src = root.path().join("dead clone/src/lib.rs");
+        mkdir_file(&dead_src, "pub fn dead() {}\n");
+        std::fs::remove_dir_all(root.path().join("dead clone")).unwrap();
+        mkdir_file(
+            deps.join(format!("deadcrate-{dead_hash}.d")),
+            &format!(
+                "out: {}\n",
+                dead_src.display().to_string().replace(' ', "\\ ")
+            ),
+        );
+        mkdir_file(deps.join(format!("deadcrate-{dead_hash}.rlib")), "dead");
+        mkdir_file(
+            fingerprint.join(format!("deadpkg-{dead_hash}/stamp")),
+            "dead",
+        );
+        mkdir_file(build.join(format!("deadpkg-{dead_hash}/out")), "dead");
+
+        let old_inc = target.join("incremental/old-cache");
+        let fresh_inc = target.join("incremental/fresh-cache");
+        mkdir_file(old_inc.join("state.bin"), "old");
+        mkdir_file(fresh_inc.join("state.bin"), "fresh");
+        let old = FileTime::from_unix_time(1_600_000_000, 0);
+        filetime::set_file_mtime(old_inc.join("state.bin"), old).unwrap();
+        filetime::set_file_mtime(&old_inc, old).unwrap();
+
+        let expected_bytes = disk_usage(
+            deps.join(format!("deadcrate-{dead_hash}.d"))
+                .display()
+                .to_string(),
+        ) + disk_usage(
+            deps.join(format!("deadcrate-{dead_hash}.rlib"))
+                .display()
+                .to_string(),
+        ) + disk_usage(
+            fingerprint
+                .join(format!("deadpkg-{dead_hash}"))
+                .display()
+                .to_string(),
+        ) + disk_usage(
+            build
+                .join(format!("deadpkg-{dead_hash}"))
+                .display()
+                .to_string(),
+        ) + disk_usage(old_inc.display().to_string());
+        let stats = prune_cargo_profile(
+            &target,
+            Duration::from_secs(24 * 3600),
+            std::time::SystemTime::now(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            stats,
+            CargoPruneStats {
+                units: 1,
+                incremental: 1,
+                bytes: expected_bytes,
+            }
+        );
+        assert!(deps.join(format!("livecrate-{live_hash}.d")).exists());
+        assert!(deps.join(format!("livecrate-{live_hash}.rlib")).exists());
+        assert!(fingerprint.join(format!("livepkg-{live_hash}")).exists());
+        assert!(build.join(format!("livepkg-{live_hash}")).exists());
+        assert!(!deps.join(format!("deadcrate-{dead_hash}.d")).exists());
+        assert!(!deps.join(format!("deadcrate-{dead_hash}.rlib")).exists());
+        assert!(!fingerprint.join(format!("deadpkg-{dead_hash}")).exists());
+        assert!(!build.join(format!("deadpkg-{dead_hash}")).exists());
+        assert!(!old_inc.exists());
+        assert!(fresh_inc.exists());
+    }
+
+    #[test]
+    fn cargo_target_sweep_refuses_targets_outside_project_and_home() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let outside = root.path().join("outside-target");
+        std::fs::create_dir_all(&outside).unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET path = ?, verify_cmd = ? WHERE slug = 'proj'",
+                params![
+                    project.display().to_string(),
+                    format!("env CARGO_TARGET_DIR={} cargo test", outside.display())
+                ],
+            )
+            .unwrap();
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert_eq!(rep.cargo_target.len(), 1);
+        assert!(rep.cargo_target[0].skipped.contains("outside project"));
+    }
+
+    #[test]
+    fn cargo_target_sweep_skips_when_cargo_lock_is_busy() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let profile = project.join("target/debug");
+        std::fs::create_dir_all(profile.join("deps")).unwrap();
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(profile.join(".cargo-lock"))
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET path = ?, verify_cmd = ? WHERE slug = 'proj'",
+                params![
+                    project.display().to_string(),
+                    format!(
+                        "env CARGO_TARGET_DIR={} cargo test",
+                        project.join("target").display()
+                    )
+                ],
+            )
+            .unwrap();
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        let skipped = rep
+            .cargo_target
+            .iter()
+            .map(|x| x.skipped.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(skipped.contains("busy: cargo lock held"), "{skipped}");
+        lock.unlock().unwrap();
     }
 
     #[test]

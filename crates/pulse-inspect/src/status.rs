@@ -378,6 +378,16 @@ pub fn hygiene_status(s: &pulse_store::Store) -> Result<String> {
         held: BTreeMap<String, i64>,
         bytes: i64,
         errors: i64,
+        #[serde(default)]
+        cargo_target: Vec<CargoTargetNote>,
+    }
+    #[derive(Deserialize)]
+    struct CargoTargetNote {
+        units: i64,
+        incremental: i64,
+        bytes: i64,
+        #[serde(default)]
+        skipped: String,
     }
     let note: Note = serde_json::from_str(&raw).map_err(|e| anyhow!("read hygiene note: {e}"))?;
     let counts = |m: &BTreeMap<String, i64>| {
@@ -404,6 +414,34 @@ pub fn hygiene_status(s: &pulse_store::Store) -> Result<String> {
         line.push_str(&format!(
             "; {} error(s) - pulse sweep --dry-run shows them",
             note.errors
+        ));
+    }
+    let cargo_units: i64 = note.cargo_target.iter().map(|x| x.units).sum();
+    let cargo_incremental: i64 = note.cargo_target.iter().map(|x| x.incremental).sum();
+    let cargo_bytes: i64 = note.cargo_target.iter().map(|x| x.bytes).sum();
+    let cargo_skipped = note
+        .cargo_target
+        .iter()
+        .filter(|x| !x.skipped.is_empty())
+        .count();
+    if cargo_bytes > 0 || cargo_units > 0 || cargo_incremental > 0 {
+        line.push_str(&format!(
+            "; cargo target: freed {} ({} dead clone {}, {} stale incremental {})",
+            size_text(cargo_bytes),
+            cargo_units,
+            if cargo_units == 1 { "unit" } else { "units" },
+            cargo_incremental,
+            if cargo_incremental == 1 {
+                "dir"
+            } else {
+                "dirs"
+            },
+        ));
+    } else if !note.cargo_target.is_empty() && cargo_skipped == 0 {
+        line.push_str("; cargo target: nothing to prune");
+    } else if cargo_skipped > 0 {
+        line.push_str(&format!(
+            "; cargo target: skipped {cargo_skipped} busy or unsafe target(s)"
         ));
     }
     Ok(line)
