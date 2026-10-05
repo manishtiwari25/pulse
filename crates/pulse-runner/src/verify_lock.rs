@@ -121,14 +121,34 @@ while ! ln -s "$$" "$pulse_lock" 2>/dev/null; do
   pulse_waited=$((pulse_waited + 5))
 done
 trap 'rm -f "$pulse_lock"' INT TERM HUP
+pulse_t0=$(date +%s)
 (
 {cmd}
 )
 pulse_rc=$?
 rm -f "$pulse_lock"
+pulse_t1=$(date +%s)
+echo "{RAN_MARKER} $((pulse_t1 - pulse_t0))s after waiting ${{pulse_waited}}s for the lock" >&2
 exit $pulse_rc
 "#
     )
+}
+
+/// Start of the line the lock prelude writes to stderr when the command ends:
+/// `pulse: verification ran 412s after waiting 35s for the lock`. The run time
+/// excludes the wait, so it measures the project's check itself.
+pub(crate) const RAN_MARKER: &str = "pulse: verification ran";
+
+/// The verification's own run time in seconds from a wrapped command's stderr
+/// (the last `RAN_MARKER` line), or None when the output has no marker - the
+/// lock is off, or the command was killed before it ended.
+pub(crate) fn ran_seconds(stderr: &str) -> Option<u64> {
+    stderr
+        .lines()
+        .rev()
+        .find_map(|l| l.trim().strip_prefix(RAN_MARKER))
+        .and_then(|rest| rest.trim().split('s').next())
+        .and_then(|n| n.trim().parse().ok())
 }
 
 #[cfg(test)]
@@ -234,8 +254,16 @@ mod tests {
         );
         let stderr = String::from_utf8_lossy(&b.stderr).to_string();
         assert!(stderr.contains("another verification holds"), "{stderr}");
+        assert!(stderr.contains(RAN_MARKER), "{stderr}");
+        assert_eq!(ran_seconds(&stderr), Some(0), "{stderr}");
         let a = a.join().unwrap();
         assert_eq!(a.status.code(), Some(3));
+        let a_err = String::from_utf8_lossy(&a.stderr).to_string();
+        assert!(
+            matches!(ran_seconds(&a_err), Some(2..=4)),
+            "the first run's own time should be about two seconds: {a_err}"
+        );
+        assert!(a_err.contains("after waiting 0s"), "{a_err}");
         let order = std::fs::read_to_string(&log).unwrap();
         assert_eq!(order, "first-start\nfirst-end\nsecond-start\n");
         assert!(!home.path().join("locks/verify-demo.lock").exists());
@@ -277,5 +305,19 @@ mod tests {
         );
         assert!(std::fs::symlink_metadata(&lock).is_ok());
         std::fs::remove_file(&lock).unwrap();
+    }
+
+    #[test]
+    fn ran_seconds_reads_the_last_marker_and_nothing_else() {
+        assert_eq!(ran_seconds(""), None);
+        assert_eq!(ran_seconds("error: test failed\n"), None);
+        assert_eq!(
+            ran_seconds("pulse: another verification holds x (pid 4); waiting for it to finish\n"),
+            None
+        );
+        let out = "warning: unused\npulse: verification ran 412s after waiting 35s for the lock\n";
+        assert_eq!(ran_seconds(out), Some(412));
+        let two = "pulse: verification ran 9s after waiting 0s for the lock\n  pulse: verification ran 7s after waiting 0s for the lock\n";
+        assert_eq!(ran_seconds(two), Some(7));
     }
 }

@@ -921,6 +921,9 @@ pub(crate) fn land_branch(
         .trim()
         .to_string();
     let mut verify_note = "no verify command".to_string();
+    // The check's own run time in seconds, lock wait excluded: the dispatcher sizes a
+    // project's work lanes from it (jobs::project_lanes).
+    let mut verify_seconds: Option<u64> = None;
     let vc = project.str("verify_cmd");
     if o.verify && !vc.is_empty() {
         let vc_run = crate::verify_lock::wrap(s, &slug, &vc);
@@ -1020,6 +1023,8 @@ pub(crate) fn land_branch(
             if let Some(rc) = rc {
                 ok = *rc == 0;
                 verify_note = format!("verify exit {}", *rc);
+                verify_seconds =
+                    Some(crate::verify_lock::ran_seconds(&se).unwrap_or(verify_took.as_secs()));
                 tail_text = format!(
                     "{}{}",
                     crate::executor::tail(&so, 4000),
@@ -1334,6 +1339,9 @@ pub(crate) fn land_branch(
     ]);
     if let Some(note) = stash_note.as_ref() {
         detail.insert("auto_stash".into(), serde_json::json!(note));
+    }
+    if let Some(secs) = verify_seconds {
+        detail.insert("verify_seconds".into(), serde_json::json!(secs));
     }
     if let Some(held) = stash_held {
         detail.insert(
@@ -2353,6 +2361,69 @@ mod tests {
             &[],
         );
         assert!(events.is_empty(), "unexpected memo event: {events:?}");
+        // A check that ran records how long it took (wall time when no lock measures it).
+        let landed = must_rows(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.landed'",
+            &[],
+        )[0]
+        .str("detail");
+        let parsed: serde_json::Value = serde_json::from_str(&landed).unwrap();
+        assert!(
+            parsed["verify_seconds"].as_u64().is_some_and(|n| n < 60),
+            "{landed}"
+        );
+    }
+
+    #[test]
+    fn landing_records_the_checks_own_time_under_the_verify_lock() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        // The check sleeps two seconds; the lock prelude reports its own run time.
+        project.insert("verify_cmd", serde_json::json!("sleep 2"));
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&project.str("verify_cmd")],
+        );
+        let branch = "pulse/aurora/verify-seconds";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        std::fs::write(std::path::Path::new(&root).join("timed.txt"), "timed\n").unwrap();
+        run(&root, &["git", "add", "timed.txt"]);
+        run(&root, &["git", "commit", "-q", "-m", "timed"]);
+        run(&root, &["git", "switch", "-q", "main"]);
+        let (state, note) = super::land_branch(
+            &s,
+            project,
+            branch.into(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            super::LandOpts {
+                verify: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(state, "landed", "{note}");
+        let landed = must_rows(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.landed'",
+            &[],
+        )[0]
+        .str("detail");
+        let parsed: serde_json::Value = serde_json::from_str(&landed).unwrap();
+        assert!(
+            matches!(parsed["verify_seconds"].as_u64(), Some(2..=5)),
+            "{landed}"
+        );
     }
 
     #[test]

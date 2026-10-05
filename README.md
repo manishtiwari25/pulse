@@ -1260,6 +1260,19 @@ command. Taking turns does not make a shared cache tell one checkout from
 another: a build system that decides freshness by file times still needs
 the project's own command to refresh what the checkout owns (for Cargo,
 touch the workspace sources before building; the dependency cache stays).
+Taking turns also sets how many work jobs a project can usefully run at once:
+with `parallel_per_project` 4 and a check that takes eight minutes, a clone's
+commit may wait for three other checks before its own and the harness kills
+the command at `harness.step_timeout` (15 min by default) - the run retries,
+and the lanes burn their budget waiting on each other. So the daemon measures
+the check's own run time at every landing (`verify_seconds` on the
+`land.landed` event, the lock's wait excluded) and leases `improve` and `task`
+jobs for the project only up to the lanes that fit the cap
+(`step_timeout / median of the last five`, never below one); research,
+ballots and answers keep the plain limit. The project's idle line says so:
+`2 of 4 work lanes open: the check takes ~8 min and 2 in a row fit the 15 min
+step cap (harness.step_timeout)`. A quicker check, a longer step cap, or
+`verify.lock off` opens the lanes again.
 Landing moves your local default branch; whether it goes further is your
 standing instruction, `landing.push` (ADR-037). `off`, the default: you review
 and push. `pulse settings landing.push main`: after each landing the daemon

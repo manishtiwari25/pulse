@@ -109,6 +109,131 @@ pub(crate) fn parallel_per_project(s: &pulse_store::Store) -> i32 {
     if n < 1 { 1 } else { n }
 }
 
+/// The job kinds whose runs commit and so run the project's check under the
+/// verify lock (a clone's pre-commit hook, the post-run check, the landing):
+/// these share a project's work lanes. Research, ballots, answers and leads
+/// read and post; they keep the plain `parallel_per_project` limit.
+pub(crate) const WORK_KINDS: &[&str] = &["improve", "task"];
+
+/// How many landings the verify-time median is taken over.
+const LANE_SAMPLE: usize = 5;
+
+/// How many work jobs one project may run at once, and why when that is fewer
+/// than `parallel_per_project`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Lanes {
+    pub lanes: i32,
+    pub base: i32,
+    /// The median run time of the project's last landed checks, in seconds,
+    /// when a lock serialises them and one was recorded.
+    pub verify_seconds: Option<i64>,
+    /// Empty while every lane is open.
+    pub reason: String,
+}
+
+/// With `verify.lock` on, a project's checks take turns on this machine, so N work
+/// jobs in flight mean a clone's commit waits for up to N checks before its own; past
+/// `harness.step_timeout` the harness kills the command, the run retries and the
+/// lanes burn their budget waiting on each other. The lanes that fit are
+/// `step_timeout / verify_seconds` (never below 1, never above `parallel_per_project`),
+/// with the check's own run time from the last landings (`land.landed`,
+/// `verify_seconds`). A project with no lock, no recorded landing, or a quick check
+/// keeps every lane.
+pub(crate) fn project_lanes(s: &pulse_store::Store, slug: &str) -> Lanes {
+    let base = parallel_per_project(s);
+    let open = Lanes {
+        lanes: base,
+        base,
+        verify_seconds: None,
+        reason: String::new(),
+    };
+    if base <= 1 || crate::verify_lock::lock_name(s, slug).is_none() {
+        return open;
+    }
+    let cap = i64::from(crate::util::setting_int(s, "harness.step_timeout"));
+    if cap <= 0 {
+        return open;
+    }
+    let Ok(conn) = s.conn() else {
+        return open;
+    };
+    let mut secs: Vec<i64> = query_rows_dyn(
+        &conn,
+        "SELECT CAST(json_extract(detail, '$.verify_seconds') AS INTEGER) AS s FROM events WHERE action = 'land.landed' AND json_extract(detail, '$.project') = ? AND json_extract(detail, '$.verify_seconds') IS NOT NULL ORDER BY at DESC, seq DESC LIMIT ?",
+        &[&slug, &(LANE_SAMPLE as i64)],
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| i64::from(r.int("s")))
+    .filter(|n| *n > 0)
+    .collect();
+    if secs.is_empty() {
+        return open;
+    }
+    secs.sort_unstable();
+    let median = secs[secs.len() / 2];
+    let fit = (cap / median).clamp(1, i64::from(base)) as i32;
+    if fit >= base {
+        return Lanes {
+            verify_seconds: Some(median),
+            ..open
+        };
+    }
+    let reason = if median > cap {
+        format!(
+            "1 of {base} work lanes open: the check alone takes ~{} min, over the {} min step cap (harness.step_timeout)",
+            minutes_up(median),
+            minutes_up(cap)
+        )
+    } else if fit == 1 {
+        format!(
+            "1 of {base} work lanes open: the check takes ~{} min and only one fits the {} min step cap (harness.step_timeout)",
+            minutes_up(median),
+            minutes_up(cap)
+        )
+    } else {
+        format!(
+            "{fit} of {base} work lanes open: the check takes ~{} min and {fit} in a row fit the {} min step cap (harness.step_timeout)",
+            minutes_up(median),
+            minutes_up(cap)
+        )
+    };
+    Lanes {
+        lanes: fit,
+        base,
+        verify_seconds: Some(median),
+        reason,
+    }
+}
+
+fn minutes_up(seconds: i64) -> i64 {
+    (seconds + 59) / 60
+}
+
+/// The projects whose work lanes are fewer than `parallel_per_project`, with their
+/// lane counts; empty when every project keeps the plain limit.
+pub(crate) fn narrowed_lanes(s: &pulse_store::Store) -> Vec<(String, Lanes)> {
+    if parallel_per_project(s) <= 1 {
+        return Vec::new();
+    }
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    query_rows_dyn(
+        &conn,
+        "SELECT slug FROM projects WHERE status = 'active' ORDER BY slug",
+        &[],
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| r.str("slug"))
+    .filter_map(|slug| {
+        let lanes = project_lanes(s, &slug);
+        (lanes.lanes < lanes.base).then_some((slug, lanes))
+    })
+    .collect()
+}
+
 pub(crate) fn job_wait_seconds(q: &Querier, job: &Row, now: &str) -> i64 {
     let since = one_dyn(
         q,
@@ -144,6 +269,7 @@ pub(crate) fn lease_job(
         o.minutes
     };
     let limit = parallel_per_project(s);
+    let narrowed = narrowed_lanes(s);
     let is_lead = s
         .agent(&agent)
         .ok()
@@ -174,6 +300,20 @@ pub(crate) fn lease_job(
             "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) < ?"
         );
         let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit)];
+        // A project whose checks take turns runs only as many work jobs as fit the
+        // step cap (project_lanes); its research, ballots and answers keep the plain limit.
+        let work_kinds = WORK_KINDS
+            .iter()
+            .map(|k| format!("'{k}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        for (slug, lanes) in &narrowed {
+            sql.push_str(&format!(
+                " AND NOT (j.project = ? AND j.kind IN ({work_kinds}) AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL}) >= ?)"
+            ));
+            vals.push(Box::new(slug.clone()));
+            vals.push(Box::new(lanes.lanes));
+        }
         if !o.project.is_empty() {
             sql.push_str(" AND j.project = ?");
             vals.push(Box::new(o.project.clone()));
@@ -364,6 +504,155 @@ mod tests {
         .str("detail");
         let parsed: serde_json::Value = serde_json::from_str(&detail).unwrap();
         assert_eq!(parsed["wait_s"], 120, "lease detail = {detail}");
+    }
+
+    fn record_landing_verify(s: &pulse_store::Store, slug: &str, at: &str, seconds: i64) {
+        let conn = s.conn().unwrap();
+        crate::util::event_at(
+            &*conn,
+            at,
+            "daemon",
+            "land.landed",
+            &format!("pulse/x/{at}"),
+            json!({"project": slug, "sha": "abc", "verify": "verify exit 0", "verify_seconds": seconds}),
+        );
+    }
+
+    #[test]
+    fn project_lanes_fit_the_step_cap_only_while_checks_take_turns() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
+            .unwrap();
+        // No lock: checks may overlap, every lane stays open whatever they take.
+        record_landing_verify(&s, "proj", "2026-09-01T00:00:00Z", 450);
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!((lanes.lanes, lanes.base), (4, 4));
+        assert!(lanes.reason.is_empty(), "{lanes:?}");
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        // One 7.5-minute check: two in a row fit the 15-minute step cap.
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!(lanes.lanes, 2, "{lanes:?}");
+        assert_eq!(lanes.verify_seconds, Some(450));
+        assert_eq!(
+            lanes.reason,
+            "2 of 4 work lanes open: the check takes ~8 min and 2 in a row fit the 15 min step cap (harness.step_timeout)"
+        );
+        // The median of the last five landings decides, not one slow outlier.
+        for (i, secs) in [60, 70, 80, 90].iter().enumerate() {
+            record_landing_verify(&s, "proj", &format!("2026-09-02T00:0{i}:00Z"), *secs);
+        }
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!(
+            (lanes.lanes, lanes.verify_seconds),
+            (4, Some(80)),
+            "{lanes:?}"
+        );
+        assert!(lanes.reason.is_empty(), "{lanes:?}");
+        // A check longer than the cap alone leaves one lane and says so.
+        for i in 0..5 {
+            record_landing_verify(&s, "proj", &format!("2026-09-03T00:0{i}:00Z"), 1000);
+        }
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!(lanes.lanes, 1, "{lanes:?}");
+        assert!(
+            lanes.reason.starts_with(
+                "1 of 4 work lanes open: the check alone takes ~17 min, over the 15 min step cap"
+            ),
+            "{lanes:?}"
+        );
+        // Another project without landings keeps its lanes; the narrowed list names only proj.
+        let narrowed = super::narrowed_lanes(&s);
+        assert_eq!(narrowed.len(), 1, "{narrowed:?}");
+        assert_eq!(narrowed[0].0, "proj");
+        // parallel_per_project 1 has nothing to narrow.
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "1")
+            .unwrap();
+        assert!(super::narrowed_lanes(&s).is_empty());
+        assert_eq!(super::project_lanes(&s, "proj").lanes, 1);
+    }
+
+    #[test]
+    fn lease_keeps_work_within_the_projects_lanes_and_lets_research_through() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
+            .unwrap();
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        record_landing_verify(&s, "proj", "2026-09-01T00:00:00Z", 600);
+        assert_eq!(super::project_lanes(&s, "proj").lanes, 1);
+        for name in ["aurora", "borealis", "cinder"] {
+            join(&s, name);
+        }
+        let mut ids = Vec::new();
+        for (kind, title) in [
+            ("improve", "first"),
+            ("improve", "second"),
+            ("reflect", "research"),
+        ] {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                kind.into(),
+                title.into(),
+                "brief".into(),
+                1,
+                10,
+                format!("lanes-test:{title}"),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+            ids.push(job.str("id"));
+        }
+        let lease = |agent: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let first = lease("aurora");
+        assert_eq!(first.str("id"), ids[0], "{first:?}");
+        // The one work lane is taken: the second improve job waits, research still goes.
+        let next = lease("borealis");
+        assert_eq!(
+            next.str("id"),
+            ids[2],
+            "research should pass the lane cap: {next:?}"
+        );
+        let none = lease("cinder");
+        assert!(
+            none.0.is_empty(),
+            "a second work job leased past the lane: {none:?}"
+        );
+        // Quick checks open every lane again.
+        for i in 0..5 {
+            record_landing_verify(&s, "proj", &format!("2026-09-02T00:0{i}:00Z"), 30);
+        }
+        let second = lease("cinder");
+        assert_eq!(second.str("id"), ids[1], "{second:?}");
     }
 
     fn fake_probe_ssh(

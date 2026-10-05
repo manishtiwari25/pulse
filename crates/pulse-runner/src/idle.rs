@@ -60,6 +60,10 @@ pub(crate) fn idle_note_from_parts(
     }
     parts.push(reflect_idle_part(s, slug.clone(), now.clone()));
     parts.push(research_idle_part(s, slug.clone(), now));
+    let lanes = crate::jobs::project_lanes(s, &slug);
+    if lanes.lanes < lanes.base {
+        parts.push(lanes.reason);
+    }
     if let Ok(st) = pulse_evolve::status(s, &slug) {
         if st.level != "D" {
             parts.push(format!("evolve: {}", crate::util::trunc(&st.reason, 120)));
@@ -411,6 +415,37 @@ mod tests {
         let got = idle_note(&s, "proj".into(), TEST_NOW.into());
         assert!(got.contains("no suggestions"));
         assert!(got.contains("reflect due"));
+        assert!(!got.contains("work lanes"), "{got}");
+    }
+
+    #[test]
+    fn idle_note_names_narrowed_work_lanes() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
+            .unwrap();
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        crate::util::event_at(
+            &*s.conn().unwrap(),
+            "2026-09-01T00:00:00Z",
+            "daemon",
+            "land.landed",
+            "pulse/x/one",
+            serde_json::json!({"project": "proj", "sha": "abc", "verify": "verify exit 0", "verify_seconds": 500}),
+        );
+        let got = idle_note(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            got.contains("; 1 of 4 work lanes open: the check takes ~9 min and only one fits the 15 min step cap (harness.step_timeout)"),
+            "{got}"
+        );
     }
 
     #[test]
