@@ -1273,6 +1273,9 @@ credentials, no upstream) never undoes the landing: it is a `landing` note in
 `pulse status` and the hub and a `land.held` event once per change, retried
 every tick until it goes through as `land.pushed`. `pulse land` by hand does
 the same. Workers never push, whatever the setting.
+Before you push, `pulse verify <ref>` checks that a landed commit's signature
+and its `Pulse-Agent`/`Pulse-Job`/`Pulse-Executor` trailers match the run that
+made it (ADR-022); `pulse signers` lists the keys it trusts.
 The daemon can tend multiple projects' finished branches at once with
 `landing.parallel` (default `4`); landings within one project remain serial
 behind that project's landing lock, and `landing.parallel=1` keeps the old
