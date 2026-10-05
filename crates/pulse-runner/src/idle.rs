@@ -321,12 +321,18 @@ pub(crate) fn reflect_idle_part(s: &pulse_store::Store, slug: String, now: Strin
 
 /// Go: func researchIdlePart(s *store.Store, slug, now string) string
 pub(crate) fn research_idle_part(s: &pulse_store::Store, slug: String, now: String) -> String {
+    let shallow = crate::research::shallow_research_share(s, &slug);
     let (focus, reason, ok) = crate::research::research_due(s, slug, now);
-    if ok {
+    let mut line = if ok {
         format!("research due: {}", focus.name)
     } else {
         format!("research: {reason}")
+    };
+    if let Some(share) = shallow {
+        line.push_str("; ");
+        line.push_str(&share);
     }
+    line
 }
 
 /// Go: func jobSourceCount(s *store.Store, source string) int
