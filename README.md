@@ -598,6 +598,17 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   it, archives the row, and hands a passing result to `pulse land`. When the
   gates allow, the daemon runs the cycle by itself; the command is the by-hand
   alternative.
+- The evolution archive keeps lineage as well as scores. Each measured
+  variant saves a binary patch outside the checkout under
+  `~/.pulse/patches/evolve/<project>/`, records the `parent` archive row it
+  built on (empty means the default branch) and the `base_commit` merge-base
+  it forked from. The planner uses `evolve.parent_rate` (default `0.5`) as the
+  share of experiments that should try an archived parent; eligible parents
+  must have a saved patch and are weighted by clade metaproductivity
+  `(kept descendants + 1) / (descendants + 2)` with the Beta prior keeping
+  unexplored nodes alive, times novelty `1 / (1 + children)`. `pulse evolve
+  lineage --project P [--json]` prints the archived tree, CMP values and the
+  current candidate count.
 - **Seeded records and starter fixtures** - registering a project (`pulse
   init`, `pulse onboard`, the console) seeds the loop's records and six public
   behaviour fixtures. The records: a project whose checkout commits

@@ -4,6 +4,8 @@
 )]
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 pub(crate) const EXPERIMENT_MEASURE_BUDGET: Duration = Duration::from_secs(90 * 60);
@@ -47,6 +49,15 @@ pub(crate) fn experiment_suggestion(job: crate::util::Row) -> (String, String) {
         suggestion = rest.trim().to_string();
     }
     (suggestion, hypothesis)
+}
+
+pub(crate) fn experiment_parent(job: crate::util::Row) -> String {
+    brief_fields(job.str("brief"))
+        .get("parent")
+        .and_then(|v| v.split_whitespace().next())
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 /// Go: func experimentThread(s *store.Store, slug, suggestion string) (area, thread, on string)
@@ -172,6 +183,117 @@ pub(crate) fn default_commit(root: &str, def: &str) -> String {
     }
 }
 
+pub(crate) fn archive_patch_path(home: &str, slug: &str, archive_id: &str) -> String {
+    Path::new(home)
+        .join("patches")
+        .join("evolve")
+        .join(crate::util::slugify(slug, 80))
+        .join(format!("{archive_id}.patch"))
+        .display()
+        .to_string()
+}
+
+fn next_archive_id(s: &pulse_store::Store, project: &str) -> String {
+    s.conn()
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT COALESCE(MAX(CAST(SUBSTR(id, 3) AS INTEGER)), 0) + 1 FROM evolution_archive WHERE project = ?",
+                [project],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(Into::into)
+        })
+        .map(|next| format!("B-{next:03}"))
+        .unwrap_or_default()
+}
+
+fn merge_base(root: &str, def: &str, branch: &str) -> String {
+    let base =
+        crate::util::git_timeout(root, Duration::from_secs(30), &["merge-base", def, branch]);
+    if base.ok() {
+        base.stdout.trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn save_experiment_patch(
+    s: &pulse_store::Store,
+    root: &str,
+    slug: &str,
+    def: &str,
+    branch: &str,
+    archive_id: &str,
+    log: (&str, &str),
+) -> (String, String) {
+    let base = merge_base(root, def, branch);
+    if base.is_empty() || archive_id.is_empty() {
+        return (String::new(), base);
+    }
+    let path = archive_patch_path(&s.home, slug, archive_id);
+    let Some(parent) = Path::new(&path).parent() else {
+        return (String::new(), base);
+    };
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        log_patch_skip(
+            s,
+            log.0,
+            log.1,
+            branch,
+            format!("creating patch directory failed: {e}"),
+        );
+        return (String::new(), base);
+    }
+    let out = Command::new(pulse_gitenv::git_program())
+        .args(["-C", root, "diff", "--binary", &base, branch])
+        .output();
+    match out {
+        Ok(out) if out.status.success() => {
+            if let Err(e) = std::fs::write(&path, out.stdout) {
+                log_patch_skip(
+                    s,
+                    log.0,
+                    log.1,
+                    branch,
+                    format!("writing patch failed: {e}"),
+                );
+                return (String::new(), base);
+            }
+            (path, base)
+        }
+        Ok(out) => {
+            log_patch_skip(
+                s,
+                log.0,
+                log.1,
+                branch,
+                format!(
+                    "git diff failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            );
+            (String::new(), base)
+        }
+        Err(e) => {
+            log_patch_skip(s, log.0, log.1, branch, format!("git diff failed: {e}"));
+            (String::new(), base)
+        }
+    }
+}
+
+fn log_patch_skip(s: &pulse_store::Store, actor: &str, now: &str, branch: &str, reason: String) {
+    if let Ok(conn) = s.conn() {
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "evolution.patch_skipped",
+            branch,
+            serde_json::json!({"branch": branch, "reason": reason}),
+        );
+    }
+}
+
 /// Go: func landExperiment(s *store.Store, project row, job row, actor, now string, verify bool) (state, note string)
 pub(crate) fn land_experiment(
     s: &pulse_store::Store,
@@ -203,6 +325,7 @@ pub(crate) fn land_experiment_context(
     let slug = project.str("slug");
     let branch = job.str("branch");
     let (suggestion, hypothesis) = experiment_suggestion(job.clone());
+    let parent_archive = experiment_parent(job.clone());
     let (area, thread, on) = experiment_thread(s, slug.clone(), suggestion.clone());
     let agent = crate::board::actor_agent(s, actor.clone());
     let post = |resolution: &str, summary: String, body: String| {
@@ -523,6 +646,16 @@ pub(crate) fn land_experiment_context(
     } else {
         variant.sandbox.clone()
     };
+    let expected_archive_id = next_archive_id(s, &slug);
+    let (patch, base_commit) = save_experiment_patch(
+        s,
+        &root,
+        &slug,
+        &def,
+        &branch,
+        &expected_archive_id,
+        (&actor, &now),
+    );
     let archive_id = match pulse_evolve::archive_row(
         s,
         pulse_evolve::ArchiveRow {
@@ -530,6 +663,9 @@ pub(crate) fn land_experiment_context(
             suggestion_post: suggestion.clone(),
             hypothesis: hypothesis.clone(),
             branch: branch.clone(),
+            parent: parent_archive.clone(),
+            patch,
+            base_commit,
             baseline: Some(baseline.clone()),
             variant: Some(variant.clone()),
             tolerance: tol,
@@ -625,6 +761,27 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_f5::*;
+
+    #[test]
+    fn archive_patch_path_uses_evolve_project_archive_folder() {
+        assert_eq!(
+            archive_patch_path("/home/me/.pulse", "proj name", "B-017"),
+            "/home/me/.pulse/patches/evolve/proj-name/B-017.patch"
+        );
+    }
+
+    #[test]
+    fn experiment_parent_reads_parent_line_from_brief() {
+        let mut job = crate::util::Row::new();
+        job.insert(
+            "brief",
+            serde_json::Value::String(
+                "Suggestion: S-1\nParent: B-017 (patch ~/.pulse/patches/evolve/proj/B-017.patch, forked from abc, cmp 0.67)\n"
+                    .into(),
+            ),
+        );
+        assert_eq!(experiment_parent(job), "B-017");
+    }
 
     #[test]
     fn variant_is_measured_merged_onto_main_when_main_moved() {

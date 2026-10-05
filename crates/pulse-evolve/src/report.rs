@@ -22,6 +22,8 @@ pub struct Report {
     pub landings: Landings,
     pub experiments: Experiments,
     pub owner: OwnerInbox,
+    #[serde(default)]
+    pub lineage: crate::lineage::LineageSummary,
     /// The improver's own numbers for the window and the window before it:
     /// the only place the report says whether the system got better at
     /// improving, not only how much it did.
@@ -191,6 +193,7 @@ pub fn build_report(s: &pulse_store::Store, project: &str, days: i64) -> Result<
     let before_since = (at.with_timezone(&Utc) - Duration::days(2 * days))
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
+    let archive = crate::archive::list_archive(s, project)?;
     Ok(Report {
         project: project.to_string(),
         days,
@@ -204,6 +207,7 @@ pub fn build_report(s: &pulse_store::Store, project: &str, days: i64) -> Result<
         landings: landing_counts(s, project, &since)?,
         experiments: experiment_counts(s, project, &since, &status)?,
         owner: owner_inbox(s, project)?,
+        lineage: crate::lineage::summary(&archive),
         improver: Improver {
             now: improver_window(s, project, &since, None)?,
             before: improver_window(s, project, &before_since, Some(&since))?,
@@ -783,6 +787,22 @@ pub(crate) fn report_rows(r: &Report) -> Vec<Vec<String>> {
             r.research.votes,
             r.research.findings,
             r.research.answers
+        ),
+    ]);
+    let lineage = &r.lineage;
+    let best = if lineage.best_clade.is_empty() {
+        "none".to_string()
+    } else {
+        format!(
+            "best clade {} cmp {:.2}",
+            lineage.best_clade, lineage.best_cmp
+        )
+    };
+    rows.push(vec![
+        "Lineage".to_string(),
+        format!(
+            "archive {} rows, {} kept, {} built on a parent, {}",
+            lineage.rows, lineage.kept, lineage.built_on_parent, best
         ),
     ]);
     let l = &r.landings;

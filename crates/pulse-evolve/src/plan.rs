@@ -314,7 +314,7 @@ pub(crate) fn plan_experiment_locked(
     let mut card_created = false;
     for candidate in candidates {
         let p = candidate.post;
-        let card = match crate::card::make_card(s, &p, &status) {
+        let mut card = match crate::card::make_card(s, &p, &status) {
             Ok(card) => card,
             Err(e) => {
                 if let Some(v) = e.downcast_ref::<crate::clones::ViolationError>() {
@@ -366,6 +366,9 @@ pub(crate) fn plan_experiment_locked(
                 continue;
             }
         };
+        if let Some(block) = parent_block(s, project, &p.id)? {
+            card.body.push_str(&block);
+        }
         let commit = crate::card::card_fields(&p.body)
             .get("commit")
             .cloned()
@@ -445,6 +448,33 @@ pub(crate) fn plan_experiment_locked(
         reason: format!("{reason}; vote with pulse ballot"),
         ..Default::default()
     })
+}
+
+fn display_patch(home: &str, patch: &str) -> String {
+    let prefix = format!("{}/", home.trim_end_matches('/'));
+    patch
+        .strip_prefix(&prefix)
+        .map(|rest| format!("~/.pulse/{rest}"))
+        .unwrap_or_else(|| patch.to_string())
+}
+
+fn parent_block(s: &pulse_store::Store, project: &str, seed: &str) -> Result<Option<String>> {
+    let rows = crate::archive::list_archive(s, project)?;
+    let rate = crate::lineage::parent_rate(s);
+    let Some(parent_id) = crate::lineage::pick_parent(&rows, rate, seed) else {
+        return Ok(None);
+    };
+    let Some(parent) = rows.iter().find(|r| r.id == parent_id) else {
+        return Ok(None);
+    };
+    let patch = display_patch(&s.home, &parent.patch);
+    Ok(Some(format!(
+        "\nParent: {} (patch {}, forked from {}, cmp {:.2})\nBuild on it: apply the patch first (`git apply --3way <patch>`); if it does not apply cleanly, continue from the default branch and say so in your result.",
+        parent.id,
+        patch,
+        parent.base_commit,
+        crate::lineage::cmp(parent, &rows)
+    )))
 }
 
 /// Go: func cardJobSuggestion(job *board.Job) string { return strings.TrimPrefix(job.Source, "suggestion:") }
@@ -1387,6 +1417,63 @@ mod tests {
         assert!(
             result.created && result.suggestion == next.id,
             "archived suggestion was not skipped: {result:?}"
+        );
+    }
+    #[test]
+    fn plan_experiment_adds_lineage_parent_block() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e1_test_lock();
+        let s = cycle_ready();
+        s.set_setting("human", "evolve.parent_rate", "1").unwrap();
+        let patch = Path::new(&s.home)
+            .join("patches")
+            .join("evolve")
+            .join("demo")
+            .join("B-002.patch");
+        std::fs::create_dir_all(patch.parent().unwrap()).unwrap();
+        std::fs::write(&patch, "diff --git a/README.md b/README.md\n").unwrap();
+        crate::api::archive_row(
+            &s,
+            ArchiveRow {
+                project: "demo".into(),
+                suggestion_post: "old".into(),
+                hypothesis: "parent improvement".into(),
+                branch: "evolve/old".into(),
+                patch: patch.display().to_string(),
+                base_commit: "abcdef123456".into(),
+                baseline: Some(Scores {
+                    total: 0.2,
+                    ..Default::default()
+                }),
+                variant: Some(Scores {
+                    total: 0.4,
+                    ..Default::default()
+                }),
+                tolerance: 0.02,
+                kept: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let suggestion =
+            voted_suggestion_with_votes(&s, "next", "operating-layer", "README.md", &["up", "up"]);
+        let result = plan_experiment(
+            &s,
+            "demo",
+            PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result.suggestion, suggestion.id);
+        let job = pulse_board::job_by_id(&s, &result.job_id).unwrap().unwrap();
+        assert!(job.brief.contains("Parent: B-002"), "{}", job.brief);
+        assert!(
+            job.brief
+                .contains("Build on it: apply the patch first (`git apply --3way <patch>`)"),
+            "{}",
+            job.brief
         );
     }
     #[test]

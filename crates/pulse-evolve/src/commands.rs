@@ -22,7 +22,7 @@ impl RepeatedStrings {
 }
 /// Go command metadata: evolve
 pub const EVOLVE_SUMMARY: &str = "measure, rehearse and run the voted self-improvement loop";
-pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS...";
+pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|lineage|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json] | lineage --project P [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS...";
 pub const REFLECT_SUMMARY: &str =
     "read-only working state, board, ballot, hygiene and evolution gates";
 pub const REFLECT_USAGE: &str = "pulse reflect [--project P] [--area A] [--agent R/M] [--json]";
@@ -315,12 +315,12 @@ pub fn run_evolve(
         "fixture" => run_fixture(c, &rest),
         "seed" => run_seed(c, &rest),
         "score" => run_score(c, &rest),
-        "report" | "measure" | "cycle" | "status" | "gates" | "archive" | "setup" => {
+        "report" | "measure" | "cycle" | "status" | "gates" | "archive" | "lineage" | "setup" => {
             run_evolve_sub(c, &sub, &rest)
         }
         _ => Err(crate::fixtures::input_error(
             "Unknown evolve subcommand",
-            "choose status, report, fixture, seed, setup, measure, archive, cycle or score",
+            "choose status, report, fixture, seed, setup, measure, archive, lineage, cycle or score",
             "pulse help evolve",
         )),
     };
@@ -1043,6 +1043,19 @@ pub(crate) fn print_archive(w: &mut dyn Write, color: bool, archive: &[crate::ar
     );
 }
 
+pub(crate) fn print_lineage(w: &mut dyn Write, tree: &[crate::lineage::LineageNode]) {
+    for node in tree {
+        let indent = "  ".repeat(node.depth);
+        let decision = if node.kept { "kept" } else { "discarded" };
+        let hypothesis = crate::card_job::truncate(&node.hypothesis.replace('\n', " "), 80);
+        let _ = writeln!(
+            w,
+            "{}{} {} {:+.3} cmp {:.2} children {} \"{}\"",
+            indent, node.id, decision, node.score_delta, node.cmp, node.children, hypothesis
+        );
+    }
+}
+
 fn add_common_flags(fs: &mut pulse_cli::FlagSet, c: &pulse_cli::Context) {
     fs.string_var("project", &c.project, "project slug");
     fs.string_var("agent", &c.agent, "calling agent");
@@ -1150,7 +1163,7 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
             filtered = filter_repeated(args, "fixture");
         }
         "cycle" => fs.bool_var("once", false, "finish at most one experiment"),
-        "status" | "gates" | "archive" | "setup" => {}
+        "status" | "gates" | "archive" | "lineage" | "setup" => {}
         _ => {}
     }
     parse_command_flags(c, &mut fs, &filtered)?;
@@ -1164,8 +1177,8 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
         ));
     }
     let shadow = fs.lookup("shadow").is_some_and(|_| fs.get_bool("shadow"));
-    let read_only =
-        matches!(sub, "status" | "report" | "gates" | "archive") || (sub == "measure" && !shadow);
+    let read_only = matches!(sub, "status" | "report" | "gates" | "archive" | "lineage")
+        || (sub == "measure" && !shadow);
     let mut sc = store_context(c);
     with_store(&mut sc, read_only, |s| {
         if sub == "archive" {
@@ -1178,6 +1191,39 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
             }
             if !c.quiet {
                 print_archive(&mut *c.out, c.color, &rows);
+            }
+            return Ok(());
+        }
+        if sub == "lineage" {
+            if c.project.is_empty() {
+                return Err(crate::fixtures::input_error(
+                    "Project required",
+                    "lineage is per project",
+                    "pulse evolve lineage --project P",
+                ));
+            }
+            crate::fixtures::valid_project(s, &c.project)?;
+            let rows = crate::archive::list_archive(s, &c.project)?;
+            let tree = crate::lineage::tree(&rows);
+            let summary = crate::lineage::summary(&rows);
+            let parent_rate = crate::lineage::parent_rate(s);
+            if c.json {
+                return pulse_cli::write_json(
+                    &mut *c.out,
+                    &pulse_store::gomap! {
+                        "lineage": tree,
+                        "summary": summary,
+                        "parent_rate": parent_rate
+                    },
+                );
+            }
+            if !c.quiet {
+                print_lineage(&mut *c.out, &tree);
+                writeln!(
+                    c.out,
+                    "Parent rate: {:.3} - {} candidates with a saved patch",
+                    parent_rate, summary.candidates
+                )?;
             }
             return Ok(());
         }

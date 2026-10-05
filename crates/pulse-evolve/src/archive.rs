@@ -26,6 +26,12 @@ pub struct Archived {
     pub hypothesis: String,
     #[serde(rename = "branch")]
     pub branch: String,
+    #[serde(rename = "parent", default)]
+    pub parent: String,
+    #[serde(rename = "patch", default)]
+    pub patch: String,
+    #[serde(rename = "base_commit", default)]
+    pub base_commit: String,
     #[serde(rename = "baseline_score")]
     pub baseline_score: f64,
     #[serde(rename = "variant_score")]
@@ -130,6 +136,7 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
         &row.hypothesis,
         &row.note,
         &row.branch,
+        &row.parent,
         &row.suggestion_post,
         &row.run_id,
     ] {
@@ -157,7 +164,7 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
     tx.execute(
         "INSERT INTO evolution_archive
 		(id, project, suggestion_post, hypothesis, branch, baseline_score, variant_score, tolerance, kept,
-		 fixtures_json, sandbox, run_id, at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		 fixtures_json, sandbox, run_id, at, note, parent, patch, base_commit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id,
             row.project,
@@ -172,7 +179,10 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
             sandbox,
             row.run_id,
             s.now(),
-            row.note
+            row.note,
+            row.parent,
+            row.patch,
+            row.base_commit
         ],
     )?;
     tx.event(
@@ -181,7 +191,8 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
         &id,
         serde_json::json!({
             "project": row.project, "kept": row.kept, "baseline": baseline.total, "variant": variant.total,
-            "tolerance": row.tolerance, "suggestion_post": row.suggestion_post, "run_id": row.run_id
+            "tolerance": row.tolerance, "suggestion_post": row.suggestion_post, "run_id": row.run_id,
+            "parent": row.parent, "patch": row.patch, "base_commit": row.base_commit
         }),
     )?;
     tx.commit()?;
@@ -193,7 +204,7 @@ pub fn list_archive(s: &pulse_store::Store, project: &str) -> Result<Vec<Archive
     let conn = s.conn()?;
     let mut stmt = conn.prepare(
         "SELECT id, project, suggestion_post, hypothesis, branch, baseline_score, variant_score,
-		tolerance, kept, fixtures_json, sandbox, run_id, at, note FROM evolution_archive
+		tolerance, kept, fixtures_json, sandbox, run_id, at, note, parent, patch, base_commit FROM evolution_archive
 		WHERE (? = '' OR project = ?) ORDER BY at DESC, CAST(SUBSTR(id, 3) AS INTEGER) DESC, project",
     )?;
     let mut rows = stmt.query(params![project, project])?;
@@ -206,6 +217,9 @@ pub fn list_archive(s: &pulse_store::Store, project: &str) -> Result<Vec<Archive
             suggestion_post: r.get(2)?,
             hypothesis: r.get(3)?,
             branch: r.get(4)?,
+            parent: r.get(14)?,
+            patch: r.get(15)?,
+            base_commit: r.get(16)?,
             baseline_score: r.get(5)?,
             variant_score: r.get(6)?,
             tolerance: r.get(7)?,
@@ -255,6 +269,9 @@ mod tests {
             project: "demo".into(),
             hypothesis: "one variable".into(),
             branch: "evolve/example".into(),
+            parent: "B-000".into(),
+            patch: "/home/me/.pulse/patches/evolve/demo/B-001.patch".into(),
+            base_commit: "abc123".into(),
             baseline: Some(Scores {
                 project: "demo".into(),
                 total: 0.2,
@@ -285,6 +302,8 @@ mod tests {
         let detail: serde_json::Value = serde_json::from_str(&event.detail).unwrap();
         assert_eq!(detail["project"], "demo");
         assert_eq!(detail["run_id"], "run-one");
+        assert_eq!(detail["parent"], "B-000");
+        assert_eq!(detail["base_commit"], "abc123");
         let conn = s.conn().unwrap();
         for query in [
             "UPDATE evolution_archive SET note = 'changed'",
@@ -297,6 +316,12 @@ mod tests {
         }
         let rows = list_archive(&s, "demo").unwrap();
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].parent, "B-000");
+        assert_eq!(
+            rows[0].patch,
+            "/home/me/.pulse/patches/evolve/demo/B-001.patch"
+        );
+        assert_eq!(rows[0].base_commit, "abc123");
         assert_eq!(
             rows[0].fixtures.variant.as_ref().unwrap().fixtures[0].name,
             "H1"
