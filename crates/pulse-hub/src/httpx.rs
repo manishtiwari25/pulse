@@ -730,7 +730,10 @@ mod tests {
 
         let mut buf = [0u8; 1024];
         let mut got = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Generous bound: under a loaded scheduler (full-suite pre-commit runs) the
+        // handler thread may take well over a second to be scheduled; the test only
+        // needs the first chunk to arrive before the second write, not quickly.
+        let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline && !String::from_utf8_lossy(&got).contains("data: 1\n\n") {
             match stream.read(&mut buf) {
                 Ok(0) => break,
@@ -753,17 +756,22 @@ mod tests {
             "first chunk was not observed before the second write"
         );
 
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        while !String::from_utf8_lossy(&got).contains("data: 2\n\n") {
-            let n = stream.read(&mut buf).unwrap();
-            if n == 0 {
-                break;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline && !String::from_utf8_lossy(&got).contains("data: 2\n\n") {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    continue;
+                }
+                Err(e) => panic!("socket read: {e}"),
             }
-            got.extend_from_slice(&buf[..n]);
         }
-        assert!(String::from_utf8_lossy(&got).contains("data: 2\n\n"));
+        let text = String::from_utf8_lossy(&got);
+        assert!(text.contains("data: 2\n\n"), "{text}");
         ctx.cancel();
         join.join().unwrap().unwrap();
     }
