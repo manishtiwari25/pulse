@@ -709,6 +709,18 @@ the direction that counts as better. A window with fewer than five landings is
 marked a thin comparison. A system that is getting better at improving moves
 those numbers; one that is only busy does not.
 
+Landing outcomes close the self-change loop after each improver landing. For
+brain projects, the daemon waits `evolve.outcome_hours` (default `24`) after a
+`land.landed` event whose delivered paths touch the improver crates, compares
+the fleet-wide loop window before the landing with the same-length window after
+it, records a `land.measured` event, and posts a `result` on the landing's
+suggestion thread when the job came from one (otherwise under
+`evolution/landing-outcomes`). The result names landings per worker-hour,
+first-pass share, median lead time, and owner asks per landing across all
+projects. If landings per worker-hour drops by more than 20% and both windows
+have at least 10 landing attempts, the daemon posts a revert `suggestion` with
+the numbers as evidence; it never reverts by itself.
+
 Landing, sweeping and binary checks share a maintenance pass outside the
 supervisor tick, so a slow verification does not freeze worker dispatch,
 heartbeats or STOP handling. The pass starts per-project landing workers for

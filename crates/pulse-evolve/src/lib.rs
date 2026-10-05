@@ -22,6 +22,7 @@ pub mod format; // crate-private items only; not re-exported
 pub(crate) mod gopath;
 pub mod heldout_auto;
 pub mod measure; // crate-private items only; not re-exported
+pub mod outcome;
 pub mod plan;
 pub mod private;
 pub mod process; // crate-private items only; not re-exported
@@ -49,6 +50,7 @@ pub use feedback::*;
 pub use fixtures::*;
 pub use fleet::*;
 pub use heldout_auto::*;
+pub use outcome::*;
 pub use plan::*;
 pub use private::*;
 pub use readiness::*;

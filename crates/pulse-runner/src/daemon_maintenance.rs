@@ -309,6 +309,15 @@ impl DaemonMaintenance {
                             ));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                            set_stage(Some(&stage), "landing outcomes");
+                            lines.extend(crate::landing_outcome::tend_landing_outcomes(
+                                &s,
+                                &projects,
+                                s.now(),
+                                actor.clone(),
+                            ));
+                        }
+                        if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             set_stage(Some(&stage), "unfit re-probe");
                             lines.extend(tend_unfit_reprobes(&s, s.now(), actor.clone()));
                         }

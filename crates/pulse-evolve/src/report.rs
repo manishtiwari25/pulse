@@ -488,6 +488,24 @@ pub(crate) fn improver_window(
     since: &str,
     until: Option<&str>,
 ) -> Result<ImproverWindow> {
+    improver_window_for(s, Some(project), since, until)
+}
+
+pub fn loop_window(
+    s: &pulse_store::Store,
+    project: Option<&str>,
+    since: &str,
+    until: Option<&str>,
+) -> Result<ImproverWindow> {
+    improver_window_for(s, project, since, until)
+}
+
+fn improver_window_for(
+    s: &pulse_store::Store,
+    project: Option<&str>,
+    since: &str,
+    until: Option<&str>,
+) -> Result<ImproverWindow> {
     let mut w = ImproverWindow {
         since: since.to_string(),
         until: until.unwrap_or_default().to_string(),
@@ -500,10 +518,11 @@ pub(crate) fn improver_window(
         r#"SELECT e.action, e.at, e.detail, j.created_at FROM events e
 		LEFT JOIN jobs j ON j.id = json_extract(e.detail, '$.job')
 		WHERE e.action IN ('land.landed', 'land.conflict', 'land.failed-verify')
-		AND e.at >= ? AND e.at < ? AND json_extract(e.detail, '$.project') = ?"#,
+		AND (?1 IS NULL OR json_extract(e.detail, '$.project') = ?1)
+		AND e.at >= ?2 AND e.at < ?3"#,
     )?;
     let mut leads: Vec<f64> = Vec::new();
-    let mut rows = stmt.query(params![since, until, project])?;
+    let mut rows = stmt.query(params![project, since, until])?;
     while let Some(row) = rows.next()? {
         let action: String = row.get(0)?;
         let at: String = row.get(1)?;
@@ -541,7 +560,7 @@ pub(crate) fn improver_window(
     leads.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     w.lead_minutes_median = median(&leads);
     let seconds: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(seconds), 0) FROM runs WHERE project = ? AND status != 'running' AND started_at >= ? AND started_at < ?",
+        "SELECT COALESCE(SUM(seconds), 0) FROM runs WHERE (?1 IS NULL OR project = ?1) AND status != 'running' AND started_at >= ?2 AND started_at < ?3",
         params![project, since, until],
         |r| r.get(0),
     )?;
@@ -553,7 +572,7 @@ pub(crate) fn improver_window(
         w.first_pass_pct = 100.0 * w.landed as f64 / w.attempts as f64;
     }
     let mut asks = conn.prepare(
-        "SELECT extra FROM posts WHERE project = ? AND kind = 'question' AND date >= ? AND date < ?",
+        "SELECT extra FROM posts WHERE (?1 IS NULL OR project = ?1) AND kind = 'question' AND date >= ?2 AND date < ?3",
     )?;
     let mut rows = asks.query(params![project, since, until])?;
     while let Some(row) = rows.next()? {
@@ -562,7 +581,11 @@ pub(crate) fn improver_window(
             w.owner_asks += 1;
         }
     }
-    if s.project(project)?.map(|p| p.brain).unwrap_or(false) {
+    if project
+        .map(|p| s.project(p).map(|p| p.map(|p| p.brain).unwrap_or(false)))
+        .transpose()?
+        .unwrap_or(true)
+    {
         w.self_updates = conn.query_row(
             "SELECT COUNT(*) FROM events WHERE action = 'daemon.self_update' AND at >= ? AND at < ?",
             params![since, until],
