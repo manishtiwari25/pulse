@@ -38,4 +38,4 @@ pub const RECORDS_DDL: &[&str] = &[
   job_id TEXT NOT NULL DEFAULT ''     -- the job whose run filed it, when one did
 );"####,
 ];
-pub const RECORDS_VERSION: &str = "4";
+pub const RECORDS_VERSION: &str = "5";

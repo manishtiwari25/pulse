@@ -740,6 +740,7 @@ pub fn additive_columns() -> Vec<Column> {
     RUNNER_COLUMNS
         .iter()
         .chain(HARNESS_COLUMNS.iter())
+        .chain(crate::evolve_ddl::EVOLVE_COLUMNS.iter())
         .copied()
         .collect()
 }
