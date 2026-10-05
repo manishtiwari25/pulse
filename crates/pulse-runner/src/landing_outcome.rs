@@ -14,6 +14,11 @@ struct Landing {
     project: String,
 }
 
+/// Landings measured in one maintenance pass. The first pass after this
+/// feature lands finds every improver landing of the last two weeks due at
+/// once; draining them a few per pass keeps the board readable.
+const OUTCOMES_PER_PASS: usize = 5;
+
 struct ThreadTarget<'a> {
     area: &'a str,
     thread: &'a str,
@@ -42,7 +47,7 @@ pub(crate) fn tend_landing_outcomes(
     for project in projects.iter().filter(|p| p.int("brain") == 1) {
         match due_landings(s, &project.str("slug"), &since, &due_before) {
             Ok(landings) => {
-                for landing in landings {
+                for landing in landings.into_iter().take(OUTCOMES_PER_PASS) {
                     match measure_landing(s, &landing, hours, &now, &actor) {
                         Ok(line) => lines.push(line),
                         Err(err) => lines.push(format!(

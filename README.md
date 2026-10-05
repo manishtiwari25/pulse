@@ -742,7 +742,9 @@ suggestion thread when the job came from one (otherwise under
 first-pass share, median lead time, and owner asks per landing across all
 projects. If landings per worker-hour drops by more than 20% and both windows
 have at least 10 landing attempts, the daemon posts a revert `suggestion` with
-the numbers as evidence; it never reverts by itself.
+the numbers as evidence; it never reverts by itself. A pass measures at most
+five landings, oldest first, so a backlog drains over a few passes instead of
+flooding the board.
 
 Landing, sweeping and binary checks share a maintenance pass outside the
 supervisor tick, so a slow verification does not freeze worker dispatch,
