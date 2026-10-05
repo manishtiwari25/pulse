@@ -697,7 +697,17 @@ cards nothing and asks nothing, because no experiment could run. `pulse evolve
 report --project P [--days N]` prints the week from the store - suggestions
 and where the vote left them, card jobs, jobs done with and without a change,
 landings, experiments, and the questions still waiting for the owner - so
-"is anything improving" is a table anyone can recompute, not an essay.
+"is anything improving" is a table anyone can recompute, not an essay. Its
+last three rows measure the improver itself: landings per worker-hour,
+first-pass share of landing attempts, median lead time from job to landing,
+owner asks per landing, how many landings changed the improver's own crates
+(`crates/pulse-runner`, `pulse-evolve`, `pulse-harness`, `pulse-provider*`,
+`pulse-board`, `pulse-tally`, `pulse-tasks`, `pulse-goals`) and, on the
+brain, how often the daemon rebuilt itself - for the window and for the
+window of the same length before it, with an `Improver trend` line that names
+the direction that counts as better. A window with fewer than five landings is
+marked a thin comparison. A system that is getting better at improving moves
+those numbers; one that is only busy does not.
 
 Landing, sweeping and binary checks share a maintenance pass outside the
 supervisor tick, so a slow verification does not freeze worker dispatch,

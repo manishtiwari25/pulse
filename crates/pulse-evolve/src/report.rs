@@ -22,6 +22,11 @@ pub struct Report {
     pub landings: Landings,
     pub experiments: Experiments,
     pub owner: OwnerInbox,
+    /// The improver's own numbers for the window and the window before it:
+    /// the only place the report says whether the system got better at
+    /// improving, not only how much it did.
+    #[serde(default)]
+    pub improver: Improver,
 }
 
 fn deserialize_status<'de, D>(
@@ -35,7 +40,7 @@ where
         return Ok(None);
     };
     if let Some(serde_json::Value::Object(planning)) = status.get_mut("planning") {
-        for key in ["query", "suggestion", "question"] {
+        for key in ["job", "query", "suggestion", "question"] {
             planning
                 .entry(key)
                 .or_insert_with(|| serde_json::Value::String(String::new()));
@@ -122,6 +127,58 @@ pub struct OwnerInbox {
     pub questions: i64,
 }
 
+/// One window of the improver's productivity: what the loop delivered per
+/// worker-hour, how much of it landed first time, how long it took, what it
+/// cost the owner, and how often the improver itself changed meanwhile.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ImproverWindow {
+    pub since: String,
+    /// Empty for the current window, which runs to the report's `now`.
+    pub until: String,
+    /// Hours of finished runs that started in the window.
+    pub worker_hours: f64,
+    pub landed: i64,
+    /// Landings plus failed verifies plus conflicts: every time the daemon
+    /// tried to land a branch.
+    pub attempts: i64,
+    pub landings_per_hour: f64,
+    /// Landed share of attempts, in percent; 0 when nothing was attempted.
+    pub first_pass_pct: f64,
+    /// Median minutes from a job's creation to its landing.
+    pub lead_minutes_median: f64,
+    /// Questions marked for the owner that were posted in the window.
+    pub owner_asks: i64,
+    /// Landings whose code paths touch the improver (`IMPROVER_PREFIXES`).
+    pub improver_landings: i64,
+    /// Daemon rebuilds from the brain's commits; 0 for other projects.
+    pub self_updates: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Improver {
+    pub now: ImproverWindow,
+    pub before: ImproverWindow,
+}
+
+/// Paths that decide what the agents do and how their work lands: the
+/// planner, daemon, landing and harness, the loop, the model providers, the
+/// board's rules and the ballot. A landing under one of these changed the
+/// improver, so the window after it is the measurement of that change.
+pub const IMPROVER_PREFIXES: &[&str] = &[
+    "crates/pulse-runner/",
+    "crates/pulse-evolve/",
+    "crates/pulse-harness/",
+    "crates/pulse-provider",
+    "crates/pulse-board/",
+    "crates/pulse-tally/",
+    "crates/pulse-tasks/",
+    "crates/pulse-goals",
+];
+
+pub fn is_improver_path(path: &str) -> bool {
+    IMPROVER_PREFIXES.iter().any(|p| path.starts_with(p))
+}
+
 /// Go: func BuildReport(s *store.Store, project string, days int) (*Report, error) {
 pub fn build_report(s: &pulse_store::Store, project: &str, days: i64) -> Result<Report> {
     let days = if days <= 0 { 7 } else { days };
@@ -131,11 +188,14 @@ pub fn build_report(s: &pulse_store::Store, project: &str, days: i64) -> Result<
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
     let status = crate::status::status(s, project)?;
+    let before_since = (at.with_timezone(&Utc) - Duration::days(2 * days))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
     Ok(Report {
         project: project.to_string(),
         days,
         since: since.clone(),
-        now,
+        now: now.clone(),
         posts: post_counts(s, project, &since)?,
         suggestions: suggestion_funnel(s, project, &since, &status)?,
         card_jobs: card_job_counts(s, project, &since)?,
@@ -144,6 +204,10 @@ pub fn build_report(s: &pulse_store::Store, project: &str, days: i64) -> Result<
         landings: landing_counts(s, project, &since)?,
         experiments: experiment_counts(s, project, &since, &status)?,
         owner: owner_inbox(s, project)?,
+        improver: Improver {
+            now: improver_window(s, project, &since, None)?,
+            before: improver_window(s, project, &before_since, Some(&since))?,
+        },
         status: Some(status),
     })
 }
@@ -413,6 +477,195 @@ pub(crate) fn experiment_counts(
     Ok(e)
 }
 
+/// The improver's numbers for `[since, until)`, or from `since` on when
+/// `until` is `None` (the current window, like every other count in the
+/// report). Landing attempts and lead times come from the landing events,
+/// worker hours from the runs that started in the window, owner asks from
+/// the board, self-updates from the daemon's own events (brain only).
+pub(crate) fn improver_window(
+    s: &pulse_store::Store,
+    project: &str,
+    since: &str,
+    until: Option<&str>,
+) -> Result<ImproverWindow> {
+    let mut w = ImproverWindow {
+        since: since.to_string(),
+        until: until.unwrap_or_default().to_string(),
+        ..Default::default()
+    };
+    // An open window compares against a bound no timestamp reaches.
+    let until = until.unwrap_or("9999");
+    let conn = s.conn()?;
+    let mut stmt = conn.prepare(
+        r#"SELECT e.action, e.at, e.detail, j.created_at FROM events e
+		LEFT JOIN jobs j ON j.id = json_extract(e.detail, '$.job')
+		WHERE e.action IN ('land.landed', 'land.conflict', 'land.failed-verify')
+		AND e.at >= ? AND e.at < ? AND json_extract(e.detail, '$.project') = ?"#,
+    )?;
+    let mut leads: Vec<f64> = Vec::new();
+    let mut rows = stmt.query(params![since, until, project])?;
+    while let Some(row) = rows.next()? {
+        let action: String = row.get(0)?;
+        let at: String = row.get(1)?;
+        let detail: String = row.get(2)?;
+        let created: Option<String> = row.get(3)?;
+        w.attempts += 1;
+        if action != "land.landed" {
+            continue;
+        }
+        w.landed += 1;
+        if let (Ok(a), Some(Ok(c))) = (
+            DateTime::parse_from_rfc3339(&at),
+            created.as_deref().map(DateTime::parse_from_rfc3339),
+        ) {
+            let minutes = (a - c).num_seconds() as f64 / 60.0;
+            if minutes >= 0.0 {
+                leads.push(minutes);
+            }
+        }
+        let d: serde_json::Value = serde_json::from_str(&detail).unwrap_or_default();
+        let touches_improver = d
+            .pointer("/code_delivery/code_paths")
+            .and_then(|v| v.as_array())
+            .map(|paths| {
+                paths
+                    .iter()
+                    .filter_map(|p| p.as_str())
+                    .any(is_improver_path)
+            })
+            .unwrap_or(false);
+        if touches_improver {
+            w.improver_landings += 1;
+        }
+    }
+    leads.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    w.lead_minutes_median = median(&leads);
+    let seconds: f64 = conn.query_row(
+        "SELECT COALESCE(SUM(seconds), 0) FROM runs WHERE project = ? AND status != 'running' AND started_at >= ? AND started_at < ?",
+        params![project, since, until],
+        |r| r.get(0),
+    )?;
+    w.worker_hours = seconds / 3600.0;
+    if w.worker_hours > 0.0 {
+        w.landings_per_hour = w.landed as f64 / w.worker_hours;
+    }
+    if w.attempts > 0 {
+        w.first_pass_pct = 100.0 * w.landed as f64 / w.attempts as f64;
+    }
+    let mut asks = conn.prepare(
+        "SELECT extra FROM posts WHERE project = ? AND kind = 'question' AND date >= ? AND date < ?",
+    )?;
+    let mut rows = asks.query(params![project, since, until])?;
+    while let Some(row) = rows.next()? {
+        let extra: String = row.get(0)?;
+        if pulse_store::post_for_owner(&extra).unwrap_or(false) {
+            w.owner_asks += 1;
+        }
+    }
+    if s.project(project)?.map(|p| p.brain).unwrap_or(false) {
+        w.self_updates = conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE action = 'daemon.self_update' AND at >= ? AND at < ?",
+            params![since, until],
+            |r| r.get(0),
+        )?;
+    }
+    Ok(w)
+}
+
+fn median(sorted: &[f64]) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let mid = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    }
+}
+
+fn improver_line(w: &ImproverWindow) -> String {
+    let per_hour = if w.worker_hours > 0.0 {
+        format!("{:.2} per worker-hour", w.landings_per_hour)
+    } else {
+        "no finished runs".to_string()
+    };
+    let first_pass = if w.attempts > 0 {
+        format!(
+            "first pass {:.0}% of {} attempt(s)",
+            w.first_pass_pct, w.attempts
+        )
+    } else {
+        "no landing attempts".to_string()
+    };
+    let lead = if w.landed > 0 {
+        format!("lead time median {:.0} min", w.lead_minutes_median)
+    } else {
+        "no lead time".to_string()
+    };
+    let asks_per_landing = if w.landed > 0 {
+        format!("{:.2} per landing", w.owner_asks as f64 / w.landed as f64)
+    } else {
+        "no landing".to_string()
+    };
+    format!(
+        "{} landed in {:.1} worker-hour(s) = {}; {}; {}; {} owner ask(s) = {}; {} landing(s) changed the improver; {} self-update(s)",
+        w.landed,
+        w.worker_hours,
+        per_hour,
+        first_pass,
+        lead,
+        w.owner_asks,
+        asks_per_landing,
+        w.improver_landings,
+        w.self_updates
+    )
+}
+
+/// `before -> now` for every number a reader compares, with the direction
+/// that counts as better named so the line reads without the table.
+fn improver_trend(before: &ImproverWindow, now: &ImproverWindow) -> String {
+    if before.landed == 0 && before.attempts == 0 && before.worker_hours <= 0.0 {
+        return "no finished runs in the window before; nothing to compare yet".to_string();
+    }
+    let pct = |b: f64, n: f64| -> String {
+        if b <= 0.0 {
+            return String::new();
+        }
+        format!(" ({:+.0}%)", 100.0 * (n - b) / b)
+    };
+    let mut line = format!(
+        "landings per worker-hour {:.2} -> {:.2}{} (higher is better); first pass {:.0}% -> {:.0}%; lead time median {:.0} -> {:.0} min (lower is better); owner asks per landing {:.2} -> {:.2} (lower is better)",
+        before.landings_per_hour,
+        now.landings_per_hour,
+        pct(before.landings_per_hour, now.landings_per_hour),
+        before.first_pass_pct,
+        now.first_pass_pct,
+        before.lead_minutes_median,
+        now.lead_minutes_median,
+        asks_per_landing(before),
+        asks_per_landing(now),
+    );
+    // A trend against a handful of landings says little; say so on the line.
+    if before.landed < THIN_WINDOW_LANDINGS {
+        line.push_str(&format!(
+            "; only {} landing(s) in the window before - a thin comparison",
+            before.landed
+        ));
+    }
+    line
+}
+
+/// Below this many landings the window before is too thin to trend against.
+pub const THIN_WINDOW_LANDINGS: i64 = 5;
+
+fn asks_per_landing(w: &ImproverWindow) -> f64 {
+    if w.landed == 0 {
+        return 0.0;
+    }
+    w.owner_asks as f64 / w.landed as f64
+}
+
 /// Go: func ownerInbox(s *store.Store, project string) (OwnerInbox, error) {
 pub(crate) fn owner_inbox(s: &pulse_store::Store, project: &str) -> Result<OwnerInbox> {
     let mut o = OwnerInbox::default();
@@ -531,6 +784,18 @@ pub(crate) fn report_rows(r: &Report) -> Vec<Vec<String>> {
                 "{} undecided stop question(s), {} other open question(s)",
                 r.owner.stop_questions, r.owner.questions
             ),
+        ],
+        vec![
+            format!("Improver last {}d", r.days),
+            improver_line(&r.improver.now),
+        ],
+        vec![
+            format!("Improver {}d before", r.days),
+            improver_line(&r.improver.before),
+        ],
+        vec![
+            "Improver trend".to_string(),
+            improver_trend(&r.improver.before, &r.improver.now),
         ],
     ]);
     rows
@@ -712,6 +977,194 @@ mod tests {
         assert_eq!(back.suggestions, r.suggestions);
         assert_eq!(back.landings, r.landings);
         assert_eq!(back.owner, r.owner);
+    }
+    #[test]
+    fn improver_lines_read_plainly_when_a_window_is_empty() {
+        let empty = ImproverWindow::default();
+        assert_eq!(
+            improver_line(&empty),
+            "0 landed in 0.0 worker-hour(s) = no finished runs; no landing attempts; no lead time; 0 owner ask(s) = no landing; 0 landing(s) changed the improver; 0 self-update(s)"
+        );
+        let now = ImproverWindow {
+            landed: 2,
+            attempts: 2,
+            worker_hours: 1.0,
+            landings_per_hour: 2.0,
+            first_pass_pct: 100.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            improver_trend(&empty, &now),
+            "no finished runs in the window before; nothing to compare yet"
+        );
+        // Runs without a landing still make a window worth comparing.
+        let thin = ImproverWindow {
+            worker_hours: 0.5,
+            attempts: 1,
+            ..Default::default()
+        };
+        let line = improver_trend(&thin, &now);
+        assert!(
+            line.starts_with("landings per worker-hour 0.00 -> 2.00 (higher is better)"),
+            "{line}"
+        );
+        assert!(
+            line.ends_with("only 0 landing(s) in the window before - a thin comparison"),
+            "{line}"
+        );
+    }
+    #[test]
+    fn improver_window_measures_the_loop_against_the_window_before() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e2_guard();
+        let s = cycle_ready();
+        join_test_agent(&s, "card-writer");
+        let now = DateTime::parse_from_rfc3339(&s.now())
+            .unwrap()
+            .with_timezone(&Utc);
+        let iso = |d: DateTime<Utc>| d.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let conn = s.conn().unwrap();
+        // Three jobs: two land this week (one touching the improver, one not),
+        // one landed last week; one branch fails verify this week.
+        let mut job_ids = Vec::new();
+        for (i, created) in [
+            now - Duration::hours(3),
+            now - Duration::hours(1),
+            now - Duration::days(8),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let job = report_job(&s, "improve", &format!("Improve {i}"), "board", "done", 1);
+            conn.execute(
+                "UPDATE jobs SET created_at = ? WHERE id = ?",
+                params![iso(*created), job.id],
+            )
+            .unwrap();
+            job_ids.push(job.id);
+        }
+        let event = |action: &str, at: DateTime<Utc>, detail: serde_json::Value| {
+            conn.execute(
+                "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', ?, 'job', ?)",
+                params![iso(at), action, detail.to_string()],
+            )
+            .unwrap();
+        };
+        event(
+            "land.landed",
+            now - Duration::hours(2),
+            serde_json::json!({"project": "demo", "job": job_ids[0], "code_delivery": {"code_files": 1, "code_paths": ["crates/pulse-runner/src/plan.rs"]}}),
+        );
+        event(
+            "land.landed",
+            now - Duration::minutes(30),
+            serde_json::json!({"project": "demo", "job": job_ids[1], "code_delivery": {"code_files": 1, "code_paths": ["web/hub/src/app.tsx"]}}),
+        );
+        event(
+            "land.failed-verify",
+            now - Duration::minutes(20),
+            serde_json::json!({"project": "demo", "job": job_ids[1]}),
+        );
+        event(
+            "land.landed",
+            now - Duration::days(7) - Duration::hours(2),
+            serde_json::json!({"project": "demo", "job": job_ids[2], "code_delivery": {"code_files": 1, "code_paths": ["README.md"]}}),
+        );
+        event(
+            "land.landed",
+            now - Duration::hours(2),
+            serde_json::json!({"project": "other", "job": job_ids[0], "code_delivery": {"code_files": 1, "code_paths": ["crates/pulse-runner/src/plan.rs"]}}),
+        );
+        for (job, started, seconds) in [
+            (&job_ids[0], now - Duration::hours(3), 5400.0),
+            (&job_ids[1], now - Duration::hours(1), 1800.0),
+            (&job_ids[2], now - Duration::days(8), 3600.0),
+        ] {
+            // report_job already wrote a run per job at "now" without
+            // seconds; move it into place so each window has known hours.
+            conn.execute(
+                "UPDATE runs SET started_at = ?, finished_at = ?, seconds = ? WHERE id = ?",
+                params![
+                    iso(started),
+                    iso(started + Duration::seconds(seconds as i64)),
+                    seconds,
+                    format!("run-{job}")
+                ],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, seconds, commits) VALUES ('run-live', ?, 'card-writer', 'demo', ?, '', 'running', 999999, 0)",
+            params![job_ids[1], iso(now - Duration::minutes(5))],
+        )
+        .unwrap();
+        drop(conn);
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: "runner".into(),
+                thread: "recipe".into(),
+                kind: "question".into(),
+                agent: "proposer".into(),
+                for_owner: true,
+                summary: "The recipe does not parse".into(),
+                body: "pulse env import".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let r = build_report(&s, "demo", 7).unwrap();
+        let now_w = &r.improver.now;
+        assert_eq!((now_w.landed, now_w.attempts), (2, 3));
+        assert!((now_w.worker_hours - 2.0).abs() < 1e-9, "{now_w:?}");
+        assert!((now_w.landings_per_hour - 1.0).abs() < 1e-9, "{now_w:?}");
+        assert!(
+            (now_w.first_pass_pct - 200.0 / 3.0).abs() < 1e-6,
+            "{now_w:?}"
+        );
+        // Lead times 60 and 30 minutes: the median of two is their mean.
+        assert!((now_w.lead_minutes_median - 45.0).abs() < 1e-6, "{now_w:?}");
+        assert_eq!(now_w.owner_asks, 1);
+        assert_eq!(now_w.improver_landings, 1);
+        assert_eq!(now_w.self_updates, 0, "demo is not the brain");
+        let before = &r.improver.before;
+        assert_eq!((before.landed, before.attempts), (1, 1));
+        assert!((before.worker_hours - 1.0).abs() < 1e-9, "{before:?}");
+        assert!(
+            (before.lead_minutes_median - 1320.0).abs() < 1e-6,
+            "{before:?}"
+        );
+        assert_eq!(before.improver_landings, 0);
+        let text = report_rows(&r)
+            .into_iter()
+            .map(|row| row.join(" | "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("Improver last 7d | 2 landed in 2.0 worker-hour(s) = 1.00 per worker-hour; first pass 67% of 3 attempt(s); lead time median 45 min; 1 owner ask(s) = 0.50 per landing; 1 landing(s) changed the improver; 0 self-update(s)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Improver trend | landings per worker-hour 1.00 -> 1.00 (+0%) (higher is better); first pass 100% -> 67%; lead time median 1320 -> 45 min (lower is better); owner asks per landing 0.00 -> 0.50 (lower is better); only 1 landing(s) in the window before - a thin comparison"),
+            "{text}"
+        );
+        let raw = serde_json::to_string(&r).unwrap();
+        let back: Report = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.improver, r.improver);
+        // A report written before this section existed still loads.
+        let old: Report = serde_json::from_str(&raw.replace(
+            &format!(
+                ",\"improver\":{}",
+                serde_json::to_string(&r.improver).unwrap()
+            ),
+            "",
+        ))
+        .unwrap();
+        assert_eq!(old.improver, Improver::default());
+        assert!(is_improver_path("crates/pulse-provider-copilot/src/lib.rs"));
+        assert!(!is_improver_path("crates/pulse-hub/src/board.rs"));
     }
     #[test]
     fn build_report_window_excludes_older_work() {
