@@ -427,16 +427,20 @@ fn prepare_setup(
     minutes: i32,
     log: &mut RunLog,
 ) -> Result<(Option<crate::recipe::Recipe>, bool, String, Vec<String>)> {
-    let (recipe, problems, found) = crate::recipe::read_recipe(s, &project.str("slug"), root, base);
+    let slug = project.str("slug");
+    let (recipe, problems, found, source) = crate::recipe::read_recipe_from(s, &slug, root, base);
     if !problems.is_empty() {
-        crate::recipe::recipe_finding(s, project.clone(), &problems, base, &s.now(), "runner");
-        let shown = problems.iter().take(3).cloned().collect::<Vec<_>>();
-        return Err(run_err(format!(
-            "{} at {} is not a valid recipe ({}); the job runs again once it is fixed",
-            crate::recipe::RECIPE_PATH,
-            crate::recipe::short(base, 12),
-            shown.join("; ")
+        let now = s.now();
+        crate::recipe::recipe_blocker(s, project.clone(), &problems, base, source.as_ref(), &now);
+        return Err(run_err(crate::recipe::recipe_problem_line(
+            &slug,
+            &problems,
+            base,
+            source.as_ref(),
         )));
+    }
+    if found {
+        crate::recipe::recipe_unblocked(s, project, base, source.as_ref(), &s.now());
     }
     let Some(r) = recipe.clone() else {
         return Ok((None, found, String::new(), Vec::new()));

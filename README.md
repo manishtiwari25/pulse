@@ -1458,6 +1458,22 @@ without repeating the recovery itself. Corrected briefs keep the original
 instructions and human retry notes while bounding old failure summaries and
 log excerpts; unavailable logs are reported explicitly.
 
+A recipe that does not parse stops every job of its project before a worker
+starts, so the runner treats it as an ask, not a log line: one `question`
+marked for the owner on the project's `runner/recipe` thread (agent `daemon`,
+coalesced on the breakage, so it posts once however many jobs hit it) names
+the copy it read - the store's `CTX-environment-<slug>` record, which `pulse
+init` fills from the committed `docs/context/environment.md` and `pulse env
+import --project SLUG` copies again, or the file at the base commit when the
+store has none - and the exact `setup`/`tools`/`env` line to fix; the project's
+card and the inbox count it, and the first run that parses answers it
+(`resolution: answered`, event `env.valid`). Onboarding stores the file
+verbatim, as `pulse env set` does, so a recipe the committed file gets right
+cannot go wrong on the way into the store (before this landed the importer
+kept one line per key and turned `setup:` lists into `setup: ''`; two freshly
+onboarded projects then erred 342 runs in 14 hours while their cards read
+"Quiet").
+
 Open **Home → Failed job repair**, or the same section in a project's
 **Overview**, to inspect current recovery reasons. The historical total counts
 all-age jobs still marked failed, including autonomous jobs that have no owner

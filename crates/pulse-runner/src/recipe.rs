@@ -364,15 +364,23 @@ pub(crate) fn recipe_record_id(s: &pulse_store::Store, slug: &str) -> String {
 }
 /// Go: func recipeText(s *store.Store, slug string) (string, bool)
 pub(crate) fn recipe_text(s: &pulse_store::Store, slug: &str) -> (String, bool) {
-    let (_, rev) = recipe_record(s, slug);
+    let (text, _, ok) = recipe_text_with_id(s, slug);
+    (text, ok)
+}
+
+/// The store's copy of the recipe and the record it came from.
+pub(crate) fn recipe_text_with_id(s: &pulse_store::Store, slug: &str) -> (String, String, bool) {
+    let (rec, rev) = recipe_record(s, slug);
     let Some(rev) = rev else {
-        return (String::new(), false);
+        return (String::new(), String::new(), false);
     };
+    let id = rec.map(|r| r.id).unwrap_or_default();
     if rev.body.trim_start_matches('\u{feff}').starts_with("---") {
-        return (rev.body, true);
+        return (rev.body, id, true);
     }
     (
         render_recipe_frontmatter(&rev.frontmatter) + &rev.body,
+        id,
         true,
     )
 }
@@ -462,6 +470,14 @@ pub(crate) fn recipe_scalar_text(v: &Value) -> String {
 pub(crate) fn index_of(list: &[String], s: &str) -> i32 {
     list.iter().position(|x| x == s).unwrap_or(list.len()) as i32
 }
+/// Where the recipe text a run parsed came from: the store's record (the
+/// copy `pulse env import` or onboarding wrote) or the project's git tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RecipeSource {
+    Store(String),
+    Git,
+}
+
 /// Go: func readRecipe(s *store.Store, slug, root, rev string) (*Recipe, []string, bool)
 pub(crate) fn read_recipe(
     s: &pulse_store::Store,
@@ -469,20 +485,32 @@ pub(crate) fn read_recipe(
     root: &str,
     rev: &str,
 ) -> (Option<Recipe>, Vec<String>, bool) {
+    let (r, p, found, _) = read_recipe_from(s, slug, root, rev);
+    (r, p, found)
+}
+
+/// `read_recipe` plus the source of the text, for messages that must name
+/// the copy that failed rather than the file at the base commit.
+pub(crate) fn read_recipe_from(
+    s: &pulse_store::Store,
+    slug: &str,
+    root: &str,
+    rev: &str,
+) -> (Option<Recipe>, Vec<String>, bool, Option<RecipeSource>) {
     if !slug.is_empty() {
-        let (text, ok) = recipe_text(s, slug);
+        let (text, id, ok) = recipe_text_with_id(s, slug);
         if ok {
             let (r, p) = parse_recipe(&text);
-            return (r, p, true);
+            return (r, p, true, Some(RecipeSource::Store(id)));
         }
     }
     let spec = format!("{rev}:{RECIPE_PATH}");
     let shown = crate::util::git_timeout(root, Duration::from_secs(30), &["show", &spec]);
     if !shown.ok() {
-        return (None, Vec::new(), false);
+        return (None, Vec::new(), false, None);
     }
     let (r, p) = parse_recipe(&shown.stdout);
-    (r, p, true)
+    (r, p, true, Some(RecipeSource::Git))
 }
 /// Go: func recipeSummary(r *Recipe) string
 pub(crate) fn recipe_summary(r: &Recipe) -> String {
@@ -1472,71 +1500,196 @@ pub(crate) fn tools_wanted(
     );
     post
 }
+pub(crate) const RECIPE_ASK_KIND: &str = "recipe";
+pub(crate) const RECIPE_THREAD: &str = "recipe";
+const RECIPE_ACTOR: &str = "daemon";
+
+/// The one-line reason a run gives when the recipe does not parse; it names
+/// the copy that failed (the store's record or the file at the base commit)
+/// and the step that clears it. Keeps "is not a valid recipe" so the failure
+/// stays structural (failure.rs) and the job waits instead of retrying.
+pub(crate) fn recipe_problem_line(
+    slug: &str,
+    why: &[String],
+    base: &str,
+    source: Option<&RecipeSource>,
+) -> String {
+    let shown = why.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+    match source {
+        Some(RecipeSource::Store(id)) if !id.is_empty() => format!(
+            "{id}, the store's copy of {RECIPE_PATH} for {slug}, is not a valid recipe ({shown}); `pulse env import --project {slug}` copies the committed file again, and the job runs again once the copy parses"
+        ),
+        _ => format!(
+            "{RECIPE_PATH} at {} is not a valid recipe ({shown}); the job runs again once it is fixed",
+            short(base, 12)
+        ),
+    }
+}
+
 /// Go: func recipeFinding(s *store.Store, project row, why []string, base, now, actor string) row
-pub(crate) fn recipe_finding(
+///
+/// Asks the owner once while the recipe stays broken: a `question` with
+/// `for_owner` on runner/recipe, coalesced on its substance so the same
+/// breakage never posts twice; an older open ask with other substance is
+/// closed as superseded. The project's card and inbox count it, where a
+/// finding stayed out of sight while every job of the project errored.
+pub(crate) fn recipe_blocker(
     s: &pulse_store::Store,
     project: Row,
     why: &[String],
     base: &str,
+    source: Option<&RecipeSource>,
     now: &str,
-    actor: &str,
 ) -> Row {
-    let thread = "environment";
-    let needle = "invalid environment recipe";
-    let conn = match s.conn() {
-        Ok(c) => c,
-        Err(_) => return Row::new(),
-    };
-    let like_date = format!("{}%", &now[..10]);
-    let like_summary = format!("{needle}%");
-    if !crate::util::must_one(&conn, "SELECT 1 FROM posts WHERE project = ? AND kind = 'finding' AND area = 'runner' AND thread = ? AND date LIKE ? AND summary LIKE ?", &[&project.str("slug"), &thread, &like_date, &like_summary]).0.is_empty() { return Row::new(); }
+    let slug = project.str("slug");
     let mut joined = why.join("; ");
     if joined.len() > 120 {
         joined.truncate(120);
     }
-    let summary = crate::util::trunc(
-        &format!(
-            "{needle} at {}: jobs error before a worker starts until it is fixed ({joined})",
-            short(base, 12)
-        ),
-        230,
-    );
     let bullets: Vec<String> = why.iter().map(|p| format!("- {p}")).collect();
-    let body = format!(
-        "`{RECIPE_PATH}` at the base commit {} does not parse as a recipe (ADR-026), so the runner cannot know what a clone needs and starts no worker for {}:\n\n{}\n\nThe file is the project's; whoever fixes it commits it alone, and the branch waits for a human landing.\n",
-        short(base, 12),
-        project.str("slug"),
-        bullets.join("\n")
-    );
-    let post = crate::board::create_post(
+    let (summary, body) = match source {
+        Some(RecipeSource::Store(id)) if !id.is_empty() => (
+            crate::util::trunc(
+                &format!(
+                    "environment recipe: the store's copy ({id}) does not parse; every job of {slug} errors before a worker starts ({joined})"
+                ),
+                230,
+            ),
+            format!(
+                "`{id}`, the store's copy of `{RECIPE_PATH}` for {slug}, does not parse as a recipe (ADR-026), so the runner cannot know what a clone needs and starts no worker:\n\n{}\n\nThe runner reads the store's copy, not the committed file. If the committed file is right, `pulse env import --project {slug}` copies it into the store again (a one-line `setup:` or `tools:` is often an import that lost its `- item` lines); if the file itself is wrong, fix it and commit it alone, then import. Jobs resume on their own once the copy parses.\n",
+                bullets.join("\n")
+            ),
+        ),
+        _ => (
+            crate::util::trunc(
+                &format!(
+                    "environment recipe at {} does not parse; every job of {slug} errors before a worker starts ({joined})",
+                    short(base, 12)
+                ),
+                230,
+            ),
+            format!(
+                "`{RECIPE_PATH}` at the base commit {} does not parse as a recipe (ADR-026), so the runner cannot know what a clone needs and starts no worker for {slug}:\n\n{}\n\nThe file is the project's; whoever fixes it commits it alone, and the branch waits for a human landing. Jobs resume on their own once it parses.\n",
+                short(base, 12),
+                bullets.join("\n")
+            ),
+        ),
+    };
+    let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
         s,
-        now.to_string(),
-        crate::board::PostOpts {
-            kind: "finding".into(),
-            project: project.str("slug"),
+        crate::hygiene::DaemonQuestionAsk {
+            project: slug.clone(),
+            ask_kind: RECIPE_ASK_KIND.into(),
             area: "runner".into(),
-            thread: thread.into(),
+            thread: RECIPE_THREAD.into(),
             summary,
             body,
-            agent: crate::board::actor_agent(s, actor.to_string()),
-            date: now.to_string(),
-            ..Default::default()
+            actor: RECIPE_ACTOR.into(),
+            now: now.to_string(),
         },
-    )
-    .unwrap_or_default();
-    if post.0.is_empty() {
+    ) else {
         return Row::new();
-    }
-    let problems: Vec<String> = why.iter().take(6).cloned().collect();
-    crate::util::event_at(
-        &conn,
+    };
+    close_recipe_questions(
+        s,
+        &slug,
         now,
-        actor,
-        "env.invalid",
-        &project.str("slug"),
-        json!({"base": base, "problems": problems, "post": post.str("id")}),
+        "dropped",
+        &format!("superseded by {}", post.str("id")),
+        Some(&post.str("id")),
     );
+    if let Ok(conn) = s.conn() {
+        let problems: Vec<String> = why.iter().take(6).cloned().collect();
+        let source_text = match source {
+            Some(RecipeSource::Store(id)) => id.clone(),
+            _ => "git".to_string(),
+        };
+        crate::util::event_at(
+            &conn,
+            now,
+            RECIPE_ACTOR,
+            "env.invalid",
+            &slug,
+            json!({"base": base, "problems": problems, "post": post.str("id"), "source": source_text}),
+        );
+    }
     post
+}
+
+/// Closes the owner's open recipe asks for a project once a run parsed the
+/// recipe again; returns how many it answered.
+pub(crate) fn recipe_unblocked(
+    s: &pulse_store::Store,
+    project: &Row,
+    base: &str,
+    source: Option<&RecipeSource>,
+    now: &str,
+) -> usize {
+    let slug = project.str("slug");
+    let from = match source {
+        Some(RecipeSource::Store(id)) if !id.is_empty() => format!("the store's copy ({id})"),
+        _ => format!("{RECIPE_PATH} at {}", short(base, 12)),
+    };
+    let n = close_recipe_questions(
+        s,
+        &slug,
+        now,
+        "answered",
+        &format!("environment recipe parses again: {from}; jobs run"),
+        None,
+    );
+    if n > 0
+        && let Ok(conn) = s.conn()
+    {
+        crate::util::event_at(
+            &conn,
+            now,
+            RECIPE_ACTOR,
+            "env.valid",
+            &slug,
+            json!({"base": base, "closed": n}),
+        );
+    }
+    n
+}
+
+fn close_recipe_questions(
+    s: &pulse_store::Store,
+    slug: &str,
+    now: &str,
+    resolution: &str,
+    summary: &str,
+    except: Option<&str>,
+) -> usize {
+    let mut closed = 0;
+    for q in crate::hygiene::open_daemon_questions_of_kind(s, slug, RECIPE_ASK_KIND) {
+        let id = q.str("id");
+        if except == Some(id.as_str()) {
+            continue;
+        }
+        if crate::board::create_post(
+            s,
+            now.to_string(),
+            crate::board::PostOpts {
+                kind: "answer".into(),
+                project: slug.to_string(),
+                area: q.str("area"),
+                thread: q.str("thread"),
+                summary: crate::util::trunc(summary, 230),
+                body: format!("{summary}.\nre: {id}\n"),
+                resolution: resolution.into(),
+                on: id.clone(),
+                agent: crate::board::actor_agent(s, RECIPE_ACTOR.to_string()),
+                date: now.to_string(),
+                ..Default::default()
+            },
+        )
+        .is_ok()
+        {
+            closed += 1;
+        }
+    }
+    closed
 }
 /// Go: func short(s string, n int) string
 pub(crate) fn short(s: &str, n: usize) -> String {
@@ -1913,6 +2066,211 @@ mod tests {
         assert_eq!(r.str("verify"), "verify exit 0");
         let got = std::fs::read_to_string(marker_path).unwrap();
         assert_eq!(got, "setup\nworker\nverify\n");
+    }
+
+    /// The onboarding importer once flattened a recipe's frontmatter to one
+    /// line per key (`setup: ""`), so the store's copy rendered `setup: ''`
+    /// and every job of the project errored before a worker started, while
+    /// the only trace was a daily finding blaming the committed file.
+    fn flattened_environment_record(s: &pulse_store::Store, slug: &str) -> String {
+        let id = format!("CTX-environment-{slug}");
+        let mut fm = BTreeMap::new();
+        for (k, v) in [
+            ("recipe", "1"),
+            ("tools", "[]"),
+            ("setup", ""),
+            ("env", "{}"),
+            ("services", "[]"),
+            ("suggested_check", "make test"),
+        ] {
+            fm.insert(k.to_string(), Value::String(v.to_string()));
+        }
+        s.put_record(
+            pulse_store::Record {
+                id: id.clone(),
+                project: slug.to_string(),
+                kind: "context".into(),
+                slug: "environment".into(),
+                title: "Environment recipe".into(),
+                path: RECIPE_PATH.into(),
+                origin: format!("markdown:{RECIPE_PATH}@abc123"),
+                ..Default::default()
+            },
+            fm,
+            "\n# Runner environment\n",
+            crate::util::HUMAN_AGENT,
+            "imported at pulse init",
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn read_recipe_from_names_the_store_copy_and_the_import_that_repairs_it() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (proj, root) = crate::test_helpers::new_bare_repo(&s);
+        let id = flattened_environment_record(&s, "proj");
+        let (_, problems, found, source) = read_recipe_from(&s, "proj", &root, "HEAD");
+        assert!(found);
+        assert_eq!(source, Some(RecipeSource::Store(id.clone())));
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("`setup`: write `setup:` with `- item` lines under it")),
+            "{problems:?}"
+        );
+        let line = recipe_problem_line("proj", &problems, "0123456789abcdef", source.as_ref());
+        assert!(
+            line.starts_with(&format!(
+                "{id}, the store's copy of {RECIPE_PATH} for proj, is not a valid recipe ("
+            )),
+            "{line}"
+        );
+        assert!(line.contains("`pulse env import --project proj`"), "{line}");
+        assert_eq!(
+            crate::failure::classify_failure(line.clone(), "failed".into(), String::new(), false)
+                .class
+                .0,
+            "structural",
+            "the store-copy reason must stay a structural failure: {line}"
+        );
+        // Without a store copy the reason names the file at the base commit.
+        let git_line = recipe_problem_line(
+            "proj",
+            &problems,
+            "0123456789abcdef",
+            Some(&RecipeSource::Git),
+        );
+        assert!(
+            git_line.starts_with(&format!(
+                "{RECIPE_PATH} at 0123456789ab is not a valid recipe ("
+            )),
+            "{git_line}"
+        );
+        let _ = proj;
+    }
+
+    #[test]
+    fn recipe_blocker_asks_the_owner_once_and_recipe_unblocked_resolves_it() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (proj, root) = crate::test_helpers::new_bare_repo(&s);
+        let id = flattened_environment_record(&s, "proj");
+        let now = crate::test_helpers::TEST_NOW;
+        let (_, problems, _, source) = read_recipe_from(&s, "proj", &root, "HEAD");
+        let post = recipe_blocker(&s, proj.clone(), &problems, "abc123", source.as_ref(), now);
+        assert!(!post.0.is_empty(), "no question posted");
+        assert_eq!(post.str("kind"), "question");
+        assert_eq!(post.str("area"), "runner");
+        assert_eq!(post.str("thread"), RECIPE_THREAD);
+        assert!(
+            pulse_store::post_for_owner(&post.str("extra")).unwrap_or(false),
+            "the ask must reach the owner's inbox: {post:?}"
+        );
+        assert!(
+            post.str("summary")
+                .contains(&format!("the store's copy ({id}) does not parse")),
+            "{}",
+            post.str("summary")
+        );
+        assert!(
+            post.str("body")
+                .contains("`pulse env import --project proj`"),
+            "{}",
+            post.str("body")
+        );
+        let open_questions = "SELECT COUNT(*) AS n FROM posts WHERE project = 'proj' AND kind = 'question' AND thread = ?";
+        assert_eq!(
+            crate::test_helpers::count(&s, open_questions, &[&RECIPE_THREAD]),
+            1
+        );
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'env.invalid' AND subject = 'proj' AND json_extract(detail, '$.source') = ?",
+                &[&id]
+            ),
+            1
+        );
+        // The same breakage a minute later coalesces into the open ask.
+        let later = crate::util::plus_minutes(now, 1.0);
+        let again = recipe_blocker(
+            &s,
+            proj.clone(),
+            &problems,
+            "abc123",
+            source.as_ref(),
+            &later,
+        );
+        assert!(
+            again.0.is_empty(),
+            "a second ask for the same breakage: {again:?}"
+        );
+        assert_eq!(
+            crate::test_helpers::count(&s, open_questions, &[&RECIPE_THREAD]),
+            1
+        );
+        assert_eq!(
+            crate::hygiene::open_daemon_questions_of_kind(&s, "proj", RECIPE_ASK_KIND).len(),
+            1
+        );
+        // `pulse env import` repairs the copy; the next run closes the ask.
+        let fixed = crate::test_helpers::recipe_with(
+            Some(&[]),
+            Some(&["npm --prefix js/ui ci --no-audit --no-fund"]),
+            None,
+            None,
+            "make test",
+        );
+        crate::env::env_set(
+            &s,
+            proj.clone(),
+            fixed,
+            crate::util::HUMAN_AGENT.into(),
+            format!("markdown:{RECIPE_PATH}"),
+            "imported again".into(),
+        )
+        .unwrap();
+        let (recipe, problems, _, source) = read_recipe_from(&s, "proj", &root, "HEAD");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            recipe.unwrap().setup,
+            vec!["npm --prefix js/ui ci --no-audit --no-fund".to_string()]
+        );
+        let after = crate::util::plus_minutes(now, 2.0);
+        assert_eq!(
+            recipe_unblocked(&s, &proj, "abc123", source.as_ref(), &after),
+            1
+        );
+        let answer = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE project = 'proj' AND kind = 'answer' AND thread = ? ORDER BY date DESC LIMIT 1",
+            &[&RECIPE_THREAD],
+        );
+        assert_eq!(answer.str("resolution"), "answered", "{answer:?}");
+        assert_eq!(answer.str("on_post"), post.str("id"), "{answer:?}");
+        assert!(
+            answer.str("summary").contains("parses again"),
+            "{}",
+            answer.str("summary")
+        );
+        assert!(
+            crate::hygiene::open_daemon_questions_of_kind(&s, "proj", RECIPE_ASK_KIND).is_empty()
+        );
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'env.valid' AND subject = 'proj'",
+                &[]
+            ),
+            1
+        );
+        // A second valid run has nothing left to close.
+        assert_eq!(
+            recipe_unblocked(&s, &proj, "abc123", source.as_ref(), &after),
+            0
+        );
     }
 
     #[test]

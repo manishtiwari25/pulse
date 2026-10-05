@@ -377,6 +377,24 @@ fn open_daemon_question_with_key(s: &pulse_store::Store, project: &str, key: &st
         .find(|q| question_key(q) == key)
 }
 
+/// The owner's open daemon asks of one kind for a project (`coalesce_kind`
+/// in the post's extra), oldest first.
+pub(crate) fn open_daemon_questions_of_kind(
+    s: &pulse_store::Store,
+    project: &str,
+    ask_kind: &str,
+) -> Vec<Row> {
+    open_daemon_questions(s, Some(project))
+        .into_iter()
+        .filter(|q| {
+            crate::util::json_map(&q.str("extra"))
+                .get("coalesce_kind")
+                .and_then(|v| v.as_str())
+                == Some(ask_kind)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 fn open_daemon_owner_question_groups(s: &pulse_store::Store) -> BTreeMap<String, Vec<Row>> {
     let mut groups: BTreeMap<String, Vec<Row>> = BTreeMap::new();

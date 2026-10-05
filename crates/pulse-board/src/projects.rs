@@ -266,7 +266,7 @@ pub fn import_environment(
     if s.get_record(&id, 0).is_ok() {
         return Ok(String::new());
     }
-    let (fm, body) = split_frontmatter(&data);
+    let (fm, _) = split_frontmatter(&data);
     let commit = {
         let v = git(&p.path, &["rev-parse", "--short", "HEAD"]).0;
         if v.is_empty() { "worktree".into() } else { v }
@@ -290,11 +290,20 @@ pub fn import_environment(
         origin: format!("markdown:docs/context/environment.md@{commit}"),
         ..Default::default()
     };
+    // The revision body is the file as committed: the runner parses the
+    // recipe from it verbatim (`recipe_text`), so `setup:` and `tools:` lists
+    // keep their `- item` lines. The frontmatter carries only what names the
+    // record; the one-line scan above cannot represent the recipe's blocks.
     let front = fm
         .iter()
+        .filter(|(k, _)| ["recipe", "title", "status", "date"].contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+        .chain(std::iter::once((
+            "path".to_string(),
+            serde_json::Value::String("docs/context/environment.md".into()),
+        )))
         .collect();
-    s.put_record(rec, front, &body, actor, "imported at pulse init")?;
+    s.put_record(rec, front, &data, actor, "imported at pulse init")?;
     event(
         s,
         actor,
@@ -808,7 +817,7 @@ mod tests {
         std::fs::create_dir_all(&context).unwrap();
         std::fs::write(
             context.join("environment.md"),
-            "---\ntitle: Environment\nareas: [runner, tooling]\n---\n\n# Environment\n\n| tool | pin |\n|---|---|\n| go | go@1.26 |\n",
+            "---\ntitle: Environment\nareas: [runner, tooling]\nrecipe: 1\ntools: []\nsetup:\n  - go mod download\n  - npm --prefix ui ci --no-audit\nenv: {}\nservices: []\n---\n\n# Environment\n\n| tool | pin |\n|---|---|\n| go | go@1.26 |\n",
         )
         .unwrap();
         let out = init(
@@ -852,6 +861,25 @@ mod tests {
         assert_eq!(rec.path, "docs/context/environment.md");
         assert!(rev.body.contains("go@1.26"));
         assert_eq!(rev.frontmatter["title"], "Environment");
+        // The body is the committed file itself, so the runner's recipe
+        // parser sees the `setup:` list; the one-line frontmatter scan never
+        // stands in for it (it read `setup:` as an empty string).
+        assert!(rev.body.starts_with("---\n"), "{}", rev.body);
+        assert!(
+            rev.body
+                .contains("setup:\n  - go mod download\n  - npm --prefix ui ci --no-audit\n"),
+            "{}",
+            rev.body
+        );
+        assert_eq!(rev.frontmatter["recipe"], "1");
+        assert_eq!(rev.frontmatter["path"], "docs/context/environment.md");
+        for key in ["setup", "tools", "env", "services", "areas"] {
+            assert!(
+                !rev.frontmatter.contains_key(key),
+                "{key} flattened into the frontmatter: {:?}",
+                rev.frontmatter
+            );
+        }
         let second = init(
             &s,
             &repo.path().display().to_string(),
