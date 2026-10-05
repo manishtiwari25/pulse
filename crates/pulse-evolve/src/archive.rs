@@ -268,6 +268,7 @@ mod tests {
                     kind: "heldout".into(),
                     score: 0.4,
                     weight: 1.0,
+                    metric: false,
                     note: "private annotation".into(),
                 }],
                 ..Default::default()

@@ -22,6 +22,8 @@ pub struct Fixture {
     pub weight: f64,
     #[serde(rename = "kind")]
     pub kind: String,
+    #[serde(rename = "metric")]
+    pub metric: bool,
     #[serde(rename = "enabled")]
     pub enabled: bool,
     #[serde(rename = "created_by")]
@@ -39,6 +41,7 @@ pub struct FixtureInput {
     pub request: String,
     pub scorer: String,
     pub kind: String,
+    pub metric: bool,
     pub actor: String,
     pub weight: f64,
     pub answer_keys: Vec<String>,
@@ -115,10 +118,10 @@ pub fn add_fixture(s: &pulse_store::Store, input: FixtureInput) -> Result<Fixtur
             "pulse evolve fixture add --help",
         ));
     }
-    if input.request.trim().is_empty() || input.scorer.trim().is_empty() {
+    if (!input.metric && input.request.trim().is_empty()) || input.scorer.trim().is_empty() {
         return Err(input_error(
             "Cannot add fixture",
-            "a request and scorer are required",
+            "a request and scorer are required unless --metric is set",
             "pulse evolve fixture add --help",
         ));
     }
@@ -204,6 +207,7 @@ pub fn add_fixture(s: &pulse_store::Store, input: FixtureInput) -> Result<Fixtur
         scorer: input.scorer.clone(),
         weight: input.weight,
         kind: input.kind.clone(),
+        metric: input.metric,
         enabled: true,
         created_by: input.actor.clone(),
         at: s.now(),
@@ -211,8 +215,8 @@ pub fn add_fixture(s: &pulse_store::Store, input: FixtureInput) -> Result<Fixtur
     };
     tx.execute(
         "INSERT INTO evolution_fixtures
-		(id, project, name, request, scorer_cmd, weight, kind, enabled, created_by, at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+		(id, project, name, request, scorer_cmd, weight, kind, metric, enabled, created_by, at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
         params![
             f.id,
             f.project,
@@ -221,6 +225,7 @@ pub fn add_fixture(s: &pulse_store::Store, input: FixtureInput) -> Result<Fixtur
             f.scorer,
             f.weight,
             f.kind,
+            if f.metric { 1 } else { 0 },
             f.created_by,
             f.at
         ],
@@ -235,7 +240,7 @@ pub fn add_fixture(s: &pulse_store::Store, input: FixtureInput) -> Result<Fixtur
         &input.actor,
         "evolution.fixture.added",
         &f.id,
-        serde_json::json!({"project": f.project, "name": f.name, "kind": f.kind}),
+        serde_json::json!({"project": f.project, "name": f.name, "kind": f.kind, "metric": f.metric}),
     )?;
     tx.commit()?;
     Ok(f)
@@ -249,7 +254,7 @@ pub fn list_fixtures(
 ) -> Result<Vec<Fixture>> {
     let conn = s.conn()?;
     let mut stmt = conn.prepare(
-        "SELECT id, project, name, request, scorer_cmd, weight, kind, enabled, created_by, at
+        "SELECT id, project, name, request, scorer_cmd, weight, kind, COALESCE(metric, 0), enabled, created_by, at
 		FROM evolution_fixtures WHERE (? = '' OR project = ?) AND (? = 0 OR enabled = 1) ORDER BY project, name",
     )?;
     let mut out: Vec<Fixture> = stmt
@@ -262,9 +267,10 @@ pub fn list_fixtures(
                 scorer: r.get(4)?,
                 weight: r.get(5)?,
                 kind: r.get(6)?,
-                enabled: r.get::<_, i64>(7)? != 0,
-                created_by: r.get(8)?,
-                at: r.get(9)?,
+                metric: r.get::<_, i64>(7)? != 0,
+                enabled: r.get::<_, i64>(8)? != 0,
+                created_by: r.get(9)?,
+                at: r.get(10)?,
                 answer_keys: Vec::new(),
             })
         })?
@@ -341,6 +347,7 @@ mod tests {
         let enabled = list_fixtures(&s, "demo", true).unwrap();
         assert_eq!(enabled.len(), 1, "enabled fixture missing");
         assert_eq!(enabled[0].answer_keys.len(), 1, "answer keys not retained");
+        assert!(!enabled[0].metric);
 
         let base = FixtureInput {
             project: "demo".into(),
@@ -373,6 +380,41 @@ mod tests {
             );
         }
         assert_eq!(count_rows(&s, "evolution_fixtures"), 1);
+        let metric = add_fixture(
+            &s,
+            FixtureInput {
+                project: "demo".into(),
+                name: "metric-headroom".into(),
+                request: String::new(),
+                scorer: "printf 0.5".into(),
+                metric: true,
+                weight: 1.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(metric.request.is_empty());
+        let listed = list_fixtures(&s, "demo", true).unwrap();
+        assert!(
+            listed
+                .iter()
+                .any(|f| f.name == "metric-headroom" && f.metric)
+        );
+        assert!(
+            add_fixture(
+                &s,
+                FixtureInput {
+                    project: "demo".into(),
+                    name: "empty-non-metric".into(),
+                    request: String::new(),
+                    scorer: "printf 0.5".into(),
+                    weight: 1.0,
+                    ..Default::default()
+                },
+            )
+            .is_err(),
+            "non-metric fixture accepted an empty request"
+        );
         let conn = s.conn().unwrap();
         assert!(
             conn.execute("DELETE FROM evolution_fixtures WHERE id = ?", [&f.id])

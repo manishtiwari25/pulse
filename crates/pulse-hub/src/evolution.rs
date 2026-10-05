@@ -183,6 +183,7 @@ impl Handler {
                 let mut row = JsonMap::new();
                 row.insert("name".into(), Value::String(f.name.clone()));
                 row.insert("kind".into(), Value::String(f.kind));
+                row.insert("metric".into(), Value::Bool(f.metric));
                 row.insert("enabled".into(), Value::Bool(f.enabled));
                 row.insert("weight".into(), number_f64(f.weight));
                 row.insert("created_by".into(), Value::String(f.created_by));

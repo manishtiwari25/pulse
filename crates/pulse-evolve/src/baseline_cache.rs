@@ -73,7 +73,7 @@ pub fn baseline_fixture_key(s: &pulse_store::Store, project: &str) -> Result<Str
     let conn = s.conn()?;
     let mut canonical = String::new();
     let mut rows = conn.prepare(
-        "SELECT id, request, scorer_cmd, weight, kind FROM evolution_fixtures
+        "SELECT id, request, scorer_cmd, weight, kind, COALESCE(metric, 0) FROM evolution_fixtures
         WHERE project = ? AND enabled = 1 ORDER BY id",
     )?;
     let mut fixtures = rows.query(params![project])?;
@@ -85,6 +85,7 @@ pub fn baseline_fixture_key(s: &pulse_store::Store, project: &str) -> Result<Str
         let scorer_cmd: String = row.get(2)?;
         let weight: f64 = row.get(3)?;
         let kind: String = row.get(4)?;
+        let metric = row.get::<_, i64>(5)? != 0;
         push_kv(&mut canonical, &format!("fixture.{idx}.id"), &id)?;
         push_kv(&mut canonical, &format!("fixture.{idx}.request"), &request)?;
         push_kv(
@@ -94,7 +95,9 @@ pub fn baseline_fixture_key(s: &pulse_store::Store, project: &str) -> Result<Str
         )?;
         writeln!(canonical, "fixture.{idx}.weight={weight:.17}").expect("write to string");
         push_kv(&mut canonical, &format!("fixture.{idx}.kind"), &kind)?;
+        writeln!(canonical, "fixture.{idx}.metric={metric}").expect("write to string");
     }
+
     writeln!(canonical, "fixtures.count={idx}").expect("write to string");
     let (mut heldout, heldout_state) = crate::private::load_private(s).unwrap_or_default();
     heldout.sort_by(|a, b| a.stem.cmp(&b.stem));
@@ -130,6 +133,23 @@ pub fn baseline_fixture_key(s: &pulse_store::Store, project: &str) -> Result<Str
         )?;
     }
     Ok(canonical)
+}
+
+pub fn latest_baseline_scores(s: &pulse_store::Store, project: &str) -> Result<Option<Scores>> {
+    let conn = s.conn()?;
+    let fixtures_json: Option<String> = match conn
+        .query_row(
+            "SELECT fixtures_json FROM evolution_baselines WHERE project = ? ORDER BY at DESC LIMIT 1",
+            params![project],
+            |r| r.get(0),
+        )
+        .optional()
+    {
+        Ok(row) => row,
+        Err(e) if missing_baseline_table(&e) => None,
+        Err(e) => return Err(e.into()),
+    };
+    Ok(fixtures_json.and_then(|text| serde_json::from_str(&text).ok()))
 }
 
 pub fn baseline_fixture_hash(s: &pulse_store::Store, project: &str) -> Result<String> {
@@ -325,6 +345,14 @@ mod tests {
             .unwrap();
         let model_changed = baseline_fixture_hash(&s, "demo").unwrap();
         assert_ne!(first, model_changed);
+        s.set_setting("human", "worker_model", "").unwrap();
+        conn.execute(
+            "UPDATE evolution_fixtures SET metric = 1 WHERE project = 'demo'",
+            [],
+        )
+        .unwrap();
+        let metric_changed = baseline_fixture_hash(&s, "demo").unwrap();
+        assert_ne!(first, metric_changed);
     }
 
     #[test]

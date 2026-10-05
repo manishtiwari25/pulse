@@ -22,7 +22,7 @@ impl RepeatedStrings {
 }
 /// Go command metadata: evolve
 pub const EVOLVE_SUMMARY: &str = "measure, rehearse and run the voted self-improvement loop";
-pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME   (starter fixture scorer; run inside the measured clone, prints 1 or 0)";
+pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS...";
 pub const REFLECT_SUMMARY: &str =
     "read-only working state, board, ballot, hygiene and evolution gates";
 pub const REFLECT_USAGE: &str = "pulse reflect [--project P] [--area A] [--agent R/M] [--json]";
@@ -348,6 +348,11 @@ pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result
                 "",
                 "owner-owned read-only command; prints a score in [0,1]",
             );
+            fs.bool_var(
+                "metric",
+                false,
+                "score the tree directly; --request may be empty",
+            );
             fs.float64_var("weight", 1.0, "positive score weight");
             fs.string_var("kind", "public", "public or signal");
             fs.string_var(
@@ -398,6 +403,7 @@ pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result
                             f.project.clone(),
                             f.name.clone(),
                             f.kind.clone(),
+                            if f.metric { "metric" } else { "request" }.to_string(),
                             format_float(f.weight),
                             f.enabled.to_string(),
                         ]
@@ -406,7 +412,7 @@ pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result
                 pulse_cli::table(
                     &mut *c.out,
                     c.color,
-                    Some(&["PROJECT", "NAME", "KIND", "WEIGHT", "ENABLED"]),
+                    Some(&["PROJECT", "NAME", "KIND", "MODE", "WEIGHT", "ENABLED"]),
                     &rows,
                 )?;
             }
@@ -418,7 +424,12 @@ pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result
         let p = current_project(s, c)?;
         let actor = calling_actor(s, c)?;
         if sub == "add" {
-            let body = read_request(s, &fs.get_string("request"))?;
+            let metric = fs.get_bool("metric");
+            let body = if metric && fs.get_string("request").is_empty() {
+                String::new()
+            } else {
+                read_request(s, &fs.get_string("request"))?
+            };
             let f = crate::fixtures::add_fixture(
                 s,
                 crate::fixtures::FixtureInput {
@@ -427,6 +438,7 @@ pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result
                     request: body,
                     scorer: fs.get_string("scorer"),
                     kind: fs.get_string("kind"),
+                    metric,
                     weight: fs.get_f64("weight"),
                     actor,
                     answer_keys,
@@ -566,6 +578,9 @@ pub(crate) fn seed_words(slug: &str, r: pulse_records::SeedResult) -> String {
 }
 /// Go: func runScore(c *cli.Context, args []string) error
 pub(crate) fn run_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
+    if args.first().is_some_and(|arg| arg == "metric") {
+        return run_metric_score(c, &args[1..]);
+    }
     let mut fs = pulse_cli::FlagSet::new("evolve score");
     add_common_flags(&mut fs, c);
     parse_command_flags(c, &mut fs, args)?;
@@ -597,6 +612,38 @@ pub(crate) fn run_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<(
         writeln!(c.err, "score 0: {reason}")?;
     }
     Ok(())
+}
+
+fn run_metric_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
+    let mut fs = pulse_cli::FlagSet::new("evolve score metric");
+    add_common_flags(&mut fs, c);
+    fs.bool_var("higher", false, "higher raw values are better");
+    fs.bool_var("lower", false, "lower raw values are better");
+    fs.float64_var("scale", f64::NAN, "raw value scale");
+    fs.float64_var("floor", f64::NAN, "minimum score in [0,1]");
+    parse_command_flags(c, &mut fs, args)?;
+    apply_common_flags(c, &fs);
+    if fs.get_bool("higher") == fs.get_bool("lower") {
+        return Err(crate::fixtures::input_error(
+            "Wrong metric score arguments",
+            "choose exactly one of --higher or --lower",
+            "pulse evolve score metric --higher --scale S -- CMD ARGS...",
+        ));
+    }
+    let scale = fs.get_f64("scale");
+    let floor = fs
+        .is_set("floor")
+        .then(|| fs.get_f64("floor"))
+        .filter(|v| !v.is_nan());
+    let argv = fs.args().to_vec();
+    crate::metric::run_metric_score(
+        &mut *c.out,
+        &mut *c.err,
+        fs.get_bool("higher"),
+        scale,
+        floor,
+        &argv,
+    )
 }
 /// Go: func runFleet(c *cli.Context, _ *flag.FlagSet, args []string) error
 pub fn run_fleet(
@@ -1345,6 +1392,44 @@ mod tests {
         );
         assert!(err.is_ok(), "{err:?}");
         require_json(&out);
+        let (out, _, err) = run_test_command(
+            &s,
+            "evolve",
+            &[
+                "fixture",
+                "add",
+                "--name",
+                "metric-lines",
+                "--metric",
+                "--scorer",
+                "printf 0.4",
+                "--json",
+            ],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        let metric_fixture: crate::fixtures::Fixture = serde_json::from_str(&out).unwrap();
+        assert!(metric_fixture.metric);
+        let (list, _, err) = run_test_command(&s, "evolve", &["fixture", "list"]);
+        assert!(err.is_ok(), "{err:?}");
+        assert!(list.contains("metric"));
+        let (metric_out, metric_err, err) = run_test_command(
+            &s,
+            "evolve",
+            &[
+                "score",
+                "metric",
+                "--higher",
+                "--scale",
+                "10",
+                "--",
+                "sh",
+                "-c",
+                "echo raw 5",
+            ],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        assert!(metric_out.contains("score: 0.5000"));
+        assert!(metric_err.contains("raw: 5"));
         let (out, progress, err) =
             run_test_command(&s, "evolve", &["measure", "--shadow", "--json"]);
         assert!(err.is_ok(), "{err:?}");

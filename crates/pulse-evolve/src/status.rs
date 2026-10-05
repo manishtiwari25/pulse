@@ -64,6 +64,15 @@ pub struct HitRate {
     pub rate: Option<f64>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct BaselineFixtureStatus {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "metric")]
+    pub metric: bool,
+    #[serde(rename = "score")]
+    pub score: Option<f64>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProductScope {
     #[serde(rename = "allowed")]
     pub allowed: bool,
@@ -248,6 +257,10 @@ pub struct LoopStatus {
     pub baseline_failed_at: String,
     #[serde(rename = "baseline_cache", default)]
     pub baseline_cache: crate::baseline_cache::BaselineCacheSummary,
+    #[serde(rename = "baseline_fixtures", default)]
+    pub baseline_fixtures: Vec<BaselineFixtureStatus>,
+    #[serde(rename = "headroom", default)]
+    pub headroom: String,
     #[serde(rename = "public_fixtures")]
     pub public_fixtures: i64,
     #[serde(rename = "heldout")]
@@ -547,6 +560,7 @@ pub(crate) fn loop_status(s: &pulse_store::Store, project: &str) -> Result<LoopS
         .map(|(failed_at, _)| failed_at.clone())
         .unwrap_or_default();
     status.baseline_cache = crate::baseline_cache::baseline_cache_summary(s, project)?;
+    set_headroom(s, &mut status, project)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT a.kept,
 		CASE WHEN p.kind = 'suggestion' AND EXISTS (
@@ -663,6 +677,26 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         Some(rate) => format!("{}/{} kept ({:.1}%)", r.kept, r.tried, 100.0 * rate),
         None => "0 tried; hit rate unavailable".to_string(),
     };
+    let fixture_scores = if s.baseline_fixtures.is_empty() {
+        "none cached".to_string()
+    } else {
+        s.baseline_fixtures
+            .iter()
+            .map(|f| match f.score {
+                Some(score) => format!(
+                    "{}{}={score:.4}",
+                    f.name,
+                    if f.metric { " (metric)" } else { "" }
+                ),
+                None => format!(
+                    "{}{}=uncached",
+                    f.name,
+                    if f.metric { " (metric)" } else { "" }
+                ),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     vec![
         vec!["STOP".into(), s.stop.to_string()],
         vec!["Loop".into(), s.loop_enabled.to_string()],
@@ -670,6 +704,8 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         vec!["Tolerance".into(), format!("{:.4}", s.tolerance)],
         vec!["Baseline".into(), baseline],
         vec!["Baseline cache".into(), baseline_cache],
+        vec!["Fixture baselines".into(), fixture_scores],
+        vec!["Headroom".into(), s.headroom.clone()],
         vec!["Public fixtures".into(), s.public_fixtures.to_string()],
         vec!["Held-out fixtures".into(), heldout_label(&s.heldout)],
         vec![
@@ -694,6 +730,44 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         ],
         vec!["Next human step".into(), s.next_human_step.clone()],
     ]
+}
+
+fn set_headroom(s: &pulse_store::Store, status: &mut LoopStatus, project: &str) -> Result<()> {
+    let fixtures = crate::fixtures::list_fixtures(s, project, true)?;
+    let Some(scores) = crate::baseline_cache::latest_baseline_scores(s, project)? else {
+        status.headroom = "unknown - no cached baseline fixture scores".into();
+        return Ok(());
+    };
+    let by_name: std::collections::BTreeMap<_, _> = scores
+        .fixtures
+        .iter()
+        .filter(|f| f.kind != "heldout")
+        .map(|f| (f.name.as_str(), f.score))
+        .collect();
+    let mut total = 0;
+    let mut below = 0;
+    for fixture in fixtures {
+        let score = by_name.get(fixture.name.as_str()).copied();
+        if let Some(score) = score {
+            total += 1;
+            if score < 0.999 {
+                below += 1;
+            }
+        }
+        status.baseline_fixtures.push(BaselineFixtureStatus {
+            name: fixture.name,
+            metric: fixture.metric,
+            score,
+        });
+    }
+    status.headroom = if total == 0 {
+        "unknown - no cached baseline fixture scores".into()
+    } else if below == 0 {
+        "none - every fixture scores 1.0 at baseline; add a metric fixture (pulse evolve fixture add --metric)".into()
+    } else {
+        format!("{below} of {total} fixtures below 1.0")
+    };
+    Ok(())
 }
 
 fn set_ladder(s: &pulse_store::Store, status: &mut LoopStatus, project: &str) {
@@ -903,6 +977,66 @@ mod tests {
         );
         s.set_setting("human", "stop", "1").unwrap();
         read("B", "pulse start");
+    }
+
+    #[test]
+    fn status_reports_cached_fixture_headroom() {
+        let _serial = crate::test_helpers::serial();
+        let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
+        let s = test_store();
+        disable_project_hook();
+        test_project(&s, "demo");
+        fixture(&s, "demo", "starter-one", "printf 1", 1.0);
+        crate::fixtures::add_fixture(
+            &s,
+            crate::fixtures::FixtureInput {
+                project: "demo".into(),
+                name: "metric-lines".into(),
+                scorer: "printf 0.8".into(),
+                metric: true,
+                weight: 1.0,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let scores = Scores {
+            project: "demo".into(),
+            total: 0.9,
+            fixtures: vec![
+                FixtureScore {
+                    name: "starter-one".into(),
+                    kind: "public".into(),
+                    score: 1.0,
+                    weight: 1.0,
+                    ..Default::default()
+                },
+                FixtureScore {
+                    name: "metric-lines".into(),
+                    kind: "public".into(),
+                    score: 0.8,
+                    weight: 1.0,
+                    metric: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        crate::baseline_cache::upsert_baseline(&s, "demo", "abcdef", "hash", &scores, "run")
+            .unwrap();
+        let st = status(&s, "demo").unwrap();
+        assert_eq!(st.headroom, "1 of 2 fixtures below 1.0");
+        assert_eq!(st.baseline_fixtures.len(), 2);
+        assert!(
+            st.baseline_fixtures
+                .iter()
+                .any(|f| f.metric && f.score == Some(0.8))
+        );
+        let rows = status_rows(&st);
+        assert!(
+            rows.iter()
+                .any(|r| r[0] == "Headroom" && r[1] == st.headroom)
+        );
     }
 
     #[test]

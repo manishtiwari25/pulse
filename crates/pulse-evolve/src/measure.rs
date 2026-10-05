@@ -27,6 +27,7 @@ pub(crate) struct MeasuredFixture {
     pub(crate) request: String,
     pub(crate) scorer: Vec<String>,
     pub(crate) weight: f64,
+    pub(crate) metric: bool,
 }
 
 struct FixtureResult {
@@ -60,6 +61,10 @@ pub(crate) fn self_scorer(scorer: &str, exe: &str) -> String {
 pub(crate) fn scorer_env(home: &str, commit: &str, exe: &str) -> Vec<String> {
     let mut env = crate::process::isolated_env(home);
     env.push(format!("PULSE_MEASURE_COMMIT={commit}"));
+    env.push(format!(
+        "PULSE_MEASURE_SCRATCH={}",
+        Path::new(home).join("scratch").display()
+    ));
     if !exe.is_empty() {
         env.push(format!("PULSE_MEASURE_BINARY={exe}"));
     }
@@ -92,7 +97,7 @@ pub(crate) fn measure(
     for f in fixtures {
         if !crate::fixtures::finite(f.weight)
             || f.weight <= 0.0
-            || f.request.trim().is_empty()
+            || (!f.metric && f.request.trim().is_empty())
             || pulse_store::secret_shaped(&f.request)
             || pulse_store::secret_shaped(&f.scorer)
         {
@@ -119,6 +124,7 @@ pub(crate) fn measure(
             request: f.request,
             scorer: vec!["sh".into(), "-c".into(), scorer],
             weight: f.weight,
+            metric: f.metric,
         });
     }
     for (i, f) in private.iter().enumerate() {
@@ -128,6 +134,7 @@ pub(crate) fn measure(
             request: f.request.clone(),
             scorer: vec![f.scorer.clone()],
             weight: 1.0,
+            metric: false,
         });
     }
     if matrix.is_empty() {
@@ -328,19 +335,22 @@ fn measure_fixture(
         crate::clones::stripped_clone(cancel, repo, commit, &clone, keys)?;
         fs::create_dir_all(&home)?;
         crate::process::prepare_measurement_caches(&home)?;
-        crate::process::seed_provider_logins(&s.home, &home)?;
-        let argv = crate::process::measurement_argv(s, exe, &f.request)?;
-        let mut sink = std::io::sink();
-        let job_cancel = cancel.with_timeout(timeout);
-        crate::process::run_process(
-            &job_cancel,
-            &clone,
-            &crate::process::isolated_env(&home),
-            &argv,
-            &mut sink,
-        )
-        .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
-        crate::clones::check_clone(cancel, &clone, keys)?;
+        fs::create_dir_all(Path::new(&home).join("scratch"))?;
+        if !f.metric {
+            crate::process::seed_provider_logins(&s.home, &home)?;
+            let argv = crate::process::measurement_argv(s, exe, &f.request)?;
+            let mut sink = std::io::sink();
+            let job_cancel = cancel.with_timeout(timeout);
+            crate::process::run_process(
+                &job_cancel,
+                &clone,
+                &crate::process::isolated_env(&home),
+                &argv,
+                &mut sink,
+            )
+            .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
+            crate::clones::check_clone(cancel, &clone, keys)?;
+        }
         let score_cancel = cancel.with_timeout(timeout);
         score_clone(
             &score_cancel,
@@ -404,6 +414,7 @@ fn measure_fixture(
             kind: f.kind.clone(),
             score: value,
             weight: f.weight,
+            metric: f.metric,
             note: String::new(),
         }),
         value,
@@ -702,6 +713,8 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
             r#"
 test -f "$CARGO_TARGET_DIR/harness-built"
 test "$(cat "$CARGO_TARGET_DIR/harness-built")" = "$CARGO_TARGET_DIR"
+test -d "$PULSE_MEASURE_SCRATCH"
+case "$PULSE_MEASURE_SCRATCH" in "$PULSE_HOME"/scratch) ;; *) exit 6 ;; esac
 test ! -e target
 printf 1
 "#,
@@ -735,6 +748,48 @@ test ! -e target
         assert_eq!(scores.total, 1.0);
         let target_dir = std::fs::read_to_string(&log).unwrap();
         assert!(target_dir.contains("/homes/1/build/cargo-target"));
+        assert_no_clones(&s);
+    }
+
+    #[test]
+    fn measure_metric_fixture_skips_harness_and_scores_clone() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = e3_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        crate::fixtures::add_fixture(
+            &s,
+            crate::fixtures::FixtureInput {
+                project: "demo".into(),
+                name: "metric-lines".into(),
+                scorer: r#"
+test -d "$PULSE_MEASURE_SCRATCH"
+test -f value.txt
+test ! -e "$PULSE_HOME/private/providers"
+printf 'score: 0.75\n'
+"#
+                .into(),
+                metric: true,
+                weight: 1.0,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fake_harness(&s, "exit 9");
+        let cancel = pulse_bus::CancellationToken::new();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(scores.fixtures.len(), 1);
+        assert_eq!(scores.fixtures[0].score, 0.75);
+        assert!(scores.fixtures[0].metric);
         assert_no_clones(&s);
     }
 

@@ -19,6 +19,8 @@ pub struct FixtureScore {
     pub score: f64,
     #[serde(rename = "weight")]
     pub weight: f64,
+    #[serde(rename = "metric", skip_serializing_if = "is_false", default)]
+    pub metric: bool,
     #[serde(rename = "note", skip_serializing_if = "String::is_empty", default)]
     pub note: String,
 }

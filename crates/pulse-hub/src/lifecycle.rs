@@ -492,6 +492,7 @@ mod tests {
                     "created_by",
                     "enabled",
                     "kind",
+                    "metric",
                     "name",
                     "starter",
                     "weight"

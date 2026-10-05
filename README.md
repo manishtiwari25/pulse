@@ -647,16 +647,28 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   yours to add with `pulse evolve fixture add`. Every scorer runs against a
   frozen clone: a symlink or hardlink that leaves the clone, a special file,
   or a tree that differs after the scorer ran fails the measurement as a
-  violation. Fixtures run in a bounded pool (`evolve.measure_parallel`,
+  violation. A metric fixture skips the agent request and scores the frozen
+  tree directly, which gives the baseline headroom when governance fixtures
+  already score `1.0`: `pulse evolve fixture add --project P --name N --metric
+  --scorer 'pulse evolve score metric --higher --scale S -- CMD ARGS...'`.
+  The helper takes the last number printed by `CMD`; `--higher` scores
+  `min(1, raw/S)`, `--lower` scores `S/(S+raw)`, and `--floor F` clamps the
+  final score upward. `pulse evolve status` shows each cached baseline fixture
+  score and a `Headroom` line (`none - every fixture scores 1.0 at baseline;
+  add a metric fixture (pulse evolve fixture add --metric)` or `N of M
+  fixtures below 1.0`). Fixtures run in a bounded pool (`evolve.measure_parallel`,
   default `4`; `0` or `1` keeps them sequential), and the log starts with
   `measuring <k> fixtures with <p> in parallel`; rows and scores are still
   reported in fixture order. Build caches are placed under that fixture's
   isolated measurement home (`build/cargo-target`, `npm-cache`, `go-cache`,
   `go-mod`, `pip-cache`, `uv-cache`, `yarn-cache`) and the scorer gets the
   same cache environment, so cargo `target/` and other tool caches are not
-  part of the frozen clone. Each worker has at most one fixture clone at a
-  time, and removes that clone as soon as its scorer finishes; the isolated
-  homes stay until the measurement root's final cleanup.
+  part of the frozen clone. Scorers also receive `PULSE_MEASURE_COMMIT`,
+  `PULSE_MEASURE_BINARY` for self-scorers and `PULSE_MEASURE_SCRATCH`, a
+  per-fixture scratch directory under the isolated home for work that must
+  stay outside the tree. Each worker has at most one fixture clone at a time,
+  and removes that clone as soon as its scorer finishes; the isolated homes
+  stay until the measurement root's final cleanup.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 
