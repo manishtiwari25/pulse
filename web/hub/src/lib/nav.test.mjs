@@ -24,3 +24,10 @@ test("project tab links resolve old ids to human tabs", () => {
   assert.equal(hrefs.project("demo-app", "suggestions"), "/project/?slug=demo-app&tab=board&sub=suggestions");
   assert.equal(hrefs.task("demo-app", "TASK-001"), "/project/?slug=demo-app&tab=work&task=TASK-001");
 });
+
+test("record evidence links agree with the board hrefs", async () => {
+  const { recordEvidence } = await import("./record-evidence.ts");
+  const [job, post] = recordEvidence("demo-app", "job-20261004T221802Z-28402f 20261004T221729Z-cinder-3");
+  assert.equal(job.href, hrefs.thread("demo-app", "evolution/job-20261004t221802z-28402f"));
+  assert.equal(post.href, hrefs.post("demo-app", "20261004T221729Z-cinder-3"));
+});

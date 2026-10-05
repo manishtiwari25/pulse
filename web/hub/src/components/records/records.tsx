@@ -12,6 +12,7 @@ import { EmptyState, ErrorNotice, Kv, Panel, SkeletonRows } from "@/components/p
 import { Mono, ProjectLink, StatusBadge, ToneBadge, When, Who } from "@/components/pulse/who";
 import { awaitsDecision, RecordDecisionButtons } from "@/components/records/decide-record";
 import { hrefs } from "@/lib/nav";
+import { recordEvidence } from "@/lib/record-evidence";
 import { enc, type RecordDetail, type RecordRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { fmtDate, num, type Tone } from "@/lib/format";
@@ -162,6 +163,7 @@ export function RecordBody({ id, project }: { id: string; project?: string }) {
   const shownRev = rev ? Number(rev) : r.current_rev;
   const areas = r.areas || [];
   const author = r.created_by || (typeof fm.author === "string" ? fm.author : "");
+  const evidence = recordEvidence(r.project, data.body || "", fm);
   return (
     <>
       <SheetHeader className="gap-2 border-b">
@@ -230,6 +232,21 @@ export function RecordBody({ id, project }: { id: string; project?: string }) {
         <article className="rounded-lg border bg-card p-4 shadow-card">
           <Markdown source={data.body || ""} />
         </article>
+        {evidence.length ? (
+          <Panel title="Evidence">
+            <p className="mb-2 text-xs text-muted-foreground">Jobs and board posts this record names: open the thread or post here instead of running `pulse record show` and searching the board.</p>
+            <ul className="flex flex-wrap gap-2">
+              {evidence.map((e) => (
+                <li key={e.kind + e.id}>
+                  <Link href={e.href} className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-accent" title={e.kind === "job" ? "Open the job's board thread" : "Open the board post"}>
+                    <span className="text-muted-foreground">{e.kind}</span>
+                    <Mono className="anywhere">{e.id}</Mono>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        ) : null}
         <Panel title="Frontmatter">
           <Kv rows={Object.entries(fm).map(([k, v]) => [k, <Mono key={k} className="anywhere">{Array.isArray(v) ? v.join(", ") : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}</Mono>])} />
         </Panel>
