@@ -696,6 +696,13 @@ pub(crate) fn run_job(
             &[&pubkey, &run_id],
         );
         let base = ex.prepare(&cancel)?;
+        // Record the base sha now so every exit path (red base, verify failure, cancel)
+        // leaves `runs.base` set; retries and the hub compare bases against it.
+        crate::util::exec1(
+            &c,
+            "UPDATE runs SET base = ? WHERE id = ?",
+            &[&base, &run_id],
+        );
         let (recipe, found, setup_shown, pins) = prepare_setup(
             s, &project, &root, &base, &clone, &*ex, &cancel, o.dry_run, minutes, &mut log,
         )?;
@@ -2417,6 +2424,16 @@ mod tests {
             run(&root, &["git", "rev-parse", "HEAD"]).trim(),
             base,
             "the red base must not move"
+        );
+        let stored = crate::util::must_one(
+            &conn(&s),
+            "SELECT base FROM runs WHERE id = ?",
+            &[&r.str("id")],
+        )
+        .str("base");
+        assert_eq!(
+            stored, base,
+            "runs.base must record the base sha so retries can compare bases: {r:?}"
         );
         assert!(
             run(&root, &["git", "worktree", "list"]).lines().count() == 1,
