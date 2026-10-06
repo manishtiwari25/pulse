@@ -388,12 +388,24 @@ fn report(name: &str, errv: AnyError, err: &mut dyn Write) -> i32 {
         return ce.exit_code();
     }
     if let Some(nf) = errv.downcast_ref::<pulse_store::NotFoundError>() {
-        let e = pulse_cli::errorf(
-            2,
-            &format!("No store at {}", nf.path),
-            "this machine has no PULSE store yet",
-            "pulse init <project-path>",
-        );
+        // A worker (PULSE_JOB set) may never create a store, so telling it
+        // to run `pulse init` would send it in a circle.
+        let in_worker = std::env::var("PULSE_JOB").is_ok_and(|v| !v.is_empty());
+        let e = if in_worker {
+            pulse_cli::errorf(
+                2,
+                &format!("No store at {}", nf.path),
+                "this command runs inside a PULSE job (PULSE_JOB is set), and workers never create a store",
+                "point PULSE_HOME at the owner's existing store, or run `pulse init <project-path>` outside a job",
+            )
+        } else {
+            pulse_cli::errorf(
+                2,
+                &format!("No store at {}", nf.path),
+                "this machine has no PULSE store yet",
+                "pulse init <project-path>",
+            )
+        };
         let _ = writeln!(err, "{e}");
         return 2;
     }
@@ -723,6 +735,32 @@ mod tests {
             if home.exists() {
                 panic!("{}: help touched the store home", args.join(" "));
             }
+        }
+    }
+
+    #[test]
+    fn missing_store_inside_worker_does_not_suggest_init() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "job-test");
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("missing");
+        let _home = setenv("PULSE_HOME", home.to_str().unwrap());
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run(&["init", dir.path().to_str().unwrap()], &mut out, &mut errb);
+        let err = s(&errb);
+        if code != 2
+            || !out.is_empty()
+            || !err.contains("No store at")
+            || !err.contains("PULSE_JOB")
+            || err.contains("fix: pulse init <project-path>")
+        {
+            panic!(
+                "worker init: code {code}, stdout {:?}, stderr {err:?}",
+                s(&out)
+            );
+        }
+        if home.exists() {
+            panic!("worker init created a store home");
         }
     }
 
