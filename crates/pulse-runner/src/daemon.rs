@@ -1393,6 +1393,19 @@ pub(crate) fn daemon(
                 if disk_floor_since.is_empty() {
                     disk_floor_since = now.clone();
                     disk_floor_posted = false;
+                    // Before asking the owner to free space, drop the
+                    // scratch dirs our own checks left under TMPDIR: a
+                    // pause that clears itself needs no owner at all.
+                    let (freed, dirs) = sweep_scratch_dirs(&std::env::temp_dir(), SCRATCH_STALE);
+                    if dirs > 0 {
+                        say(
+                            &o,
+                            format!(
+                                "disk floor: swept {dirs} stale scratch dir(s) under TMPDIR, {} MB freed",
+                                freed / (1024 * 1024)
+                            ),
+                        );
+                    }
                 }
                 starved_since.clear();
                 reason = crate::executor::disk_floor_note(s).unwrap_or_default();
@@ -1936,6 +1949,67 @@ pub(crate) fn bool_keys(m: BTreeMap<String, bool>) -> BTreeMap<String, String> {
     m.into_keys().map(|k| (k, String::new())).collect()
 }
 
+/// Scratch dirs the daemon's own checks create under TMPDIR
+/// (`check-site-*`, `distill-ui-*`) count as ours to remove once stale.
+const SCRATCH_PREFIXES: [&str; 2] = ["check-site-", "distill-ui-"];
+/// A scratch dir older than this with no live writer is stale.
+const SCRATCH_STALE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Removes stale `check-site-*`/`distill-ui-*` dirs under `root` and
+/// returns (bytes freed, dirs removed). Anything younger than `stale`
+/// is left alone: a check still running owns it. Never follows symlinks
+/// and never touches names outside the two prefixes.
+pub(crate) fn sweep_scratch_dirs(
+    root: &std::path::Path,
+    stale: std::time::Duration,
+) -> (u64, usize) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return (0, 0);
+    };
+    let now = std::time::SystemTime::now();
+    let mut freed = 0u64;
+    let mut dirs = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !SCRATCH_PREFIXES.iter().any(|p| name.starts_with(p)) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        let age = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .unwrap_or_default();
+        if age < stale {
+            continue;
+        }
+        let path = entry.path();
+        let bytes = dir_bytes(&path);
+        if std::fs::remove_dir_all(&path).is_ok() {
+            freed += bytes;
+            dirs += 1;
+        }
+    }
+    (freed, dirs)
+}
+
+fn dir_bytes(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_bytes(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1944,6 +2018,37 @@ mod tests {
     use crate::test_helpers_f5::{exec1, test_wait};
     use crate::test_helpers_selfupdate::{head_of, self_update_fixture, wait_self_update_idle};
     use crate::util::file_exists;
+
+    #[test]
+    fn sweep_scratch_dirs_removes_only_stale_prefixed_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let old_site = root.path().join("check-site-abc");
+        let old_ui = root.path().join("distill-ui-xyz");
+        let fresh = root.path().join("check-site-fresh");
+        let other = root.path().join("keep-me");
+        for d in [&old_site, &old_ui, &fresh, &other] {
+            std::fs::create_dir(d).unwrap();
+            std::fs::write(d.join("blob"), vec![1u8; 2048]).unwrap();
+        }
+        // Zero staleness: every prefixed dir counts as stale.
+        let fresh_file = root.path().join("check-site-file");
+        std::fs::write(&fresh_file, b"x").unwrap();
+        let (freed, dirs) = sweep_scratch_dirs(root.path(), std::time::Duration::ZERO);
+        assert_eq!(dirs, 3);
+        assert!(freed >= 3 * 2048, "freed {freed}");
+        assert!(!old_site.exists() && !old_ui.exists() && !fresh.exists());
+        assert!(other.exists(), "unrelated dirs stay");
+        assert!(fresh_file.exists(), "plain files stay");
+        // A long staleness window leaves just-made dirs alone.
+        std::fs::create_dir(&fresh).unwrap();
+        let (_, dirs) = sweep_scratch_dirs(root.path(), SCRATCH_STALE);
+        assert_eq!(dirs, 0);
+        assert!(fresh.exists());
+        assert_eq!(
+            sweep_scratch_dirs(&root.path().join("missing"), SCRATCH_STALE),
+            (0, 0)
+        );
+    }
 
     #[test]
     fn meta_upsert_writes_and_reports_failure() {

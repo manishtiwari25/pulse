@@ -190,8 +190,9 @@ pub(crate) fn sweep(
 /// `~/.pulse/work`, holding `current_job` and every job with a run in flight.
 /// The pre-commit verify calls this when the lock wrapper refuses to run for
 /// lack of disk room, so a clone left by a finished or lost job does not block
-/// a healthy job on `daemon.min_free_mb`. Returns the bytes freed and the
-/// paths removed.
+/// a healthy job on `daemon.min_free_mb`. Also prunes each project's shared
+/// `CARGO_TARGET_DIR` the way the periodic sweep does. Returns the bytes
+/// freed and the paths removed or pruned.
 pub(crate) fn sweep_stale_clones(
     s: &pulse_store::Store,
     current_job: &str,
@@ -238,8 +239,27 @@ pub(crate) fn sweep_stale_clones(
         },
     };
     w.sweep_work();
-    let freed = w.rep.removed.iter().map(|x| x.bytes).sum();
-    let paths = w.rep.removed.iter().map(|x| x.path.clone()).collect();
+    // The shared CARGO_TARGET_DIR (several GB on a Rust project) is as often
+    // the reason the host is under min_free_mb as a leftover clone, so prune
+    // dead units and stale incremental dirs here too instead of waiting for
+    // the periodic sweep. The verify lock wrapper has already exited at this
+    // point, so the project verify lock is free to take.
+    w.projects = s
+        .conn()
+        .map(|conn| crate::board::project_rows(&conn, false))
+        .unwrap_or_default();
+    w.sweep_cargo_targets();
+    let mut freed: i64 = w.rep.removed.iter().map(|x| x.bytes).sum();
+    let mut paths: Vec<String> = w.rep.removed.iter().map(|x| x.path.clone()).collect();
+    for ct in &w.rep.cargo_target {
+        if ct.skipped.is_empty() && (ct.units > 0 || ct.incremental > 0) {
+            freed += ct.bytes;
+            paths.push(format!(
+                "{} ({} dead unit(s), {} stale incremental dir(s))",
+                ct.target, ct.units, ct.incremental
+            ));
+        }
+    }
     (freed, paths)
 }
 
