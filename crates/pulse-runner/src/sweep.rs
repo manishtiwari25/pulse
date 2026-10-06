@@ -186,6 +186,63 @@ pub(crate) fn sweep(
     Some(w.rep)
 }
 
+/// Sweeps only the runner's own leftover clones and scratch files under
+/// `~/.pulse/work`, holding `current_job` and every job with a run in flight.
+/// The pre-commit verify calls this when the lock wrapper refuses to run for
+/// lack of disk room, so a clone left by a finished or lost job does not block
+/// a healthy job on `daemon.min_free_mb`. Returns the bytes freed and the
+/// paths removed.
+pub(crate) fn sweep_stale_clones(
+    s: &pulse_store::Store,
+    current_job: &str,
+    now: String,
+) -> (i64, Vec<String>) {
+    let checkouts = s
+        .conn()
+        .map(|conn| {
+            crate::util::must_rows(&conn, "SELECT path FROM projects", &[])
+                .into_iter()
+                .map(|r| r.str("path"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut o = SweepOpts {
+        actor: "runner".into(),
+        ..SweepOpts::default()
+    };
+    if !current_job.is_empty() {
+        o.inflight.insert(current_job.to_string(), true);
+    }
+    let mut w = Sweeper {
+        s: s.clone(),
+        now: now.clone(),
+        clock: chrono::DateTime::<chrono::Utc>::from(crate::run::wall_clock()),
+        home: s.home.clone(),
+        grace: Duration::from_secs((s.setting_int("daemon.sweep_grace_minutes") as u64) * 60),
+        branches: Duration::from_secs(
+            (s.setting_int("daemon.sweep_branch_days") as u64) * 24 * 3600,
+        ),
+        keep: Duration::from_secs((s.setting_int("daemon.sweep_keep_days") as u64) * 24 * 3600),
+        o,
+        projects: Vec::new(),
+        checkouts,
+        prune: BTreeMap::new(),
+        running: BTreeMap::new(),
+        rep: SweepReport {
+            at: now,
+            dry_run: false,
+            removed: Vec::new(),
+            held: Vec::new(),
+            errors: Vec::new(),
+            cargo_target: Vec::new(),
+        },
+    };
+    w.sweep_work();
+    let freed = w.rep.removed.iter().map(|x| x.bytes).sum();
+    let paths = w.rep.removed.iter().map(|x| x.path.clone()).collect();
+    (freed, paths)
+}
+
 /// Go: func liveWorktree(path string) (live string, isRepo bool)
 pub(crate) fn live_worktree(path: String) -> (String, bool) {
     fn check(p: &Path) -> Option<(String, bool)> {
@@ -2120,6 +2177,51 @@ mod tests {
     use rusqlite::params;
     use std::path::Path;
     use std::time::Duration;
+
+    #[test]
+    fn sweep_stale_clones_frees_leftovers_and_holds_inflight() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let work = Path::new(&s.home).join("work");
+        let finished = sweep_job(&s, "done", "");
+        sweep_run(&s, &finished, "done");
+        let lost = sweep_job(&s, "failed", "");
+        sweep_run(&s, &lost, "lost");
+        // The verifying job's own clone: its run is in flight and it is
+        // passed as the current job, so it must stay.
+        let current = sweep_job(&s, "leased", "");
+        sweep_run(&s, &current, "running");
+        for job in [&finished, &lost, &current] {
+            mkdir_file(work.join(job).join("src/main.rs"), "fn main() {}\n");
+            mkdir_file(work.join(format!("{job}.key")), "key");
+        }
+        mkdir_file(work.join("mine.txt"), "not the runner's");
+
+        let (freed, paths) = sweep_stale_clones(&s, &current, TEST_NOW.into());
+        assert!(freed > 0, "freed = {freed}");
+        assert_eq!(paths.len(), 4, "paths = {paths:?}");
+        for job in [&finished, &lost] {
+            for p in [job.to_string(), format!("{job}.key")] {
+                assert!(
+                    !crate::util::file_exists(&work.join(p).display().to_string()),
+                    "{job} leftovers should be swept"
+                );
+            }
+        }
+        for p in [current.clone(), format!("{current}.key")] {
+            assert!(
+                crate::util::file_exists(&work.join(p).display().to_string()),
+                "current job's clone must be held"
+            );
+        }
+        assert!(crate::util::file_exists(
+            &work.join("mine.txt").display().to_string()
+        ));
+        // A second sweep finds nothing more to free.
+        let (freed, paths) = sweep_stale_clones(&s, &current, TEST_NOW.into());
+        assert_eq!((freed, paths.len()), (0, 0));
+    }
 
     #[test]
     fn sweep_work_leftovers() {

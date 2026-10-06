@@ -1058,7 +1058,30 @@ pub(crate) fn run_job(
                     }
                     let check_cmd = crate::verify_lock::wrap(s, &project.str("slug"), &check_cmd);
                     base_check_cmd = check_cmd.clone();
-                    let (rc, vout) = ex.verify(&cancel, &check_cmd, minutes);
+                    let (mut rc, mut vout) = ex.verify(&cancel, &check_cmd, minutes);
+                    if rc == Some(crate::verify_lock::DISK_FULL_EXIT) && ex.name() == "local" {
+                        // Leftover clones from finished or lost jobs are the
+                        // usual reason the host is under min_free_mb: sweep
+                        // the runner's own work dir once and retry before
+                        // calling the disk full.
+                        let (freed, paths) =
+                            crate::sweep::sweep_stale_clones(s, &job.str("id"), s.now());
+                        if paths.is_empty() {
+                            log.add(
+                                "verify refused for lack of disk room; no stale clone under work/ to sweep"
+                                    .to_string(),
+                            );
+                        } else {
+                            log.add(format!(
+                                "verify refused for lack of disk room; swept {} stale clone item(s), {} MB freed; retrying once",
+                                paths.len(),
+                                freed / (1024 * 1024)
+                            ));
+                            let (rc2, vout2) = ex.verify(&cancel, &check_cmd, minutes);
+                            rc = rc2;
+                            vout = vout2;
+                        }
+                    }
                     if let Some(rc) = rc {
                         verify_note = if rc == crate::verify_lock::DISK_FULL_EXIT {
                             format!(
