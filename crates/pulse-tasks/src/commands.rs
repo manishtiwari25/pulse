@@ -330,6 +330,9 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
             )
         }
         "list" => {
+            if !c.project.is_empty() {
+                crate::tasks::check_project(store(c)?, &c.project)?;
+            }
             let list = schedules::list(store(c)?, &c.project, &fs.get_string("status"))?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &SchedulesOut { schedules: &list });

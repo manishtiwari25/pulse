@@ -1311,3 +1311,18 @@ fn schedule_commands_end_to_end() {
     assert_eq!(v["schedule"]["every_minutes"], 1440);
     assert_eq!(v["jobs"].as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn schedule_list_rejects_unknown_project() {
+    let s = new_store();
+    let (mut c, out) = ctx_for(&s, "demo-lead", "nope", false);
+    let err = run_cmd(&mut c, "schedule", &["list"]).unwrap_err();
+    let text = format!("{err}");
+    assert!(text.contains("No project \"nope\""), "{text}");
+    assert!(!out.string().contains("No schedules"), "{}", out.string());
+    out.clear();
+    // The default (all projects) listing still works.
+    let (mut c, out) = ctx_for(&s, "demo-lead", "", false);
+    run_cmd(&mut c, "schedule", &["list"]).unwrap();
+    assert!(out.string().contains("No schedules"), "{}", out.string());
+}

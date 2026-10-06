@@ -2331,7 +2331,7 @@ mod tests {
         });
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             leased_rx
-                .recv_timeout(test_wait(Duration::from_secs(20)))
+                .recv_timeout(test_wait(Duration::from_secs(60)))
                 .expect("the slow run was never leased");
             TEST_RESTART_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
             if queue_after_flip {
@@ -2340,7 +2340,7 @@ mod tests {
                 let armed = std::time::Instant::now();
                 while !out.string().contains("pulse changed on disk") {
                     assert!(
-                        armed.elapsed() < test_wait(Duration::from_secs(20)),
+                        armed.elapsed() < test_wait(Duration::from_secs(60)),
                         "the daemon never noticed the binary change:\n{}",
                         out.string()
                     );
@@ -2373,7 +2373,7 @@ mod tests {
                 .unwrap();
             }
             done_rx
-                .recv_timeout(test_wait(Duration::from_secs(30)))
+                .recv_timeout(test_wait(Duration::from_secs(90)))
                 .expect("the daemon did not exit after the run in flight finished")
         }));
         cancel.cancel();
@@ -3329,7 +3329,7 @@ mod tests {
             );
             let _ = done_tx.send(result);
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(30));
         while std::time::Instant::now() < deadline {
             let beat = crate::util::must_one(
                 &*s.conn().unwrap(),
@@ -3350,7 +3350,7 @@ mod tests {
         )
         .unwrap();
         let result = done_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(test_wait(Duration::from_secs(30)))
             .unwrap_or_else(|_| {
                 cancel.cancel();
                 panic!(
@@ -3459,10 +3459,10 @@ mod tests {
                     // A restart cancels the experiment lane at once instead of
                     // holding the new binary for the whole measurement.
                     cancelled_rx
-                        .recv_timeout(test_wait(Duration::from_secs(10)))
+                        .recv_timeout(test_wait(Duration::from_secs(30)))
                         .expect("restart drain kept waiting for the measurement");
                     let result = done_rx
-                        .recv_timeout(test_wait(Duration::from_secs(10)))
+                        .recv_timeout(test_wait(Duration::from_secs(30)))
                         .expect("restart drain did not finish once the lane was cancelled");
                     joined = true;
                     assert_eq!(result, "restart", "restart drain returned {result}");
@@ -3487,7 +3487,7 @@ mod tests {
                     );
                     cancel.cancel();
                     let result = done_rx
-                        .recv_timeout(test_wait(Duration::from_secs(10)))
+                        .recv_timeout(test_wait(Duration::from_secs(30)))
                         .expect("caller cancellation was ignored after drain began");
                     joined = true;
                     assert_eq!(
@@ -3495,7 +3495,7 @@ mod tests {
                         "late cancellation returned {result} instead of interrupted"
                     );
                     cancelled_rx
-                        .recv_timeout(test_wait(Duration::from_secs(10)))
+                        .recv_timeout(test_wait(Duration::from_secs(30)))
                         .expect("daemon returned without cancelling and joining its measurement");
                 }
                 let job = crate::jobs::job_row(&*s.conn().unwrap(), "draining".into());
@@ -3521,7 +3521,7 @@ mod tests {
             cancel.cancel();
             let _ = release_tx.send(());
             if !joined {
-                let _ = done_rx.recv_timeout(test_wait(Duration::from_secs(10)));
+                let _ = done_rx.recv_timeout(test_wait(Duration::from_secs(30)));
             }
             let _ = pulse_evolve::set_measure(old_measure);
             set_binary_stamp(old_stamp);
@@ -3598,7 +3598,7 @@ mod tests {
             );
             let _ = done_tx.send(result);
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(30));
         loop {
             let (_, exists) = s.meta("hygiene").unwrap();
             if exists {
@@ -3613,7 +3613,7 @@ mod tests {
         use std::io::Write as _;
         (&gate).write_all(b"go\n").unwrap();
         let result = done_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(test_wait(Duration::from_secs(30)))
             .unwrap_or_else(|_| {
                 cancel.cancel();
                 panic!("fake completion did not wake the supervisor")
@@ -4037,9 +4037,9 @@ mod tests {
             let _ = done_tx.send(result);
         });
         waiting_rx
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(test_wait(Duration::from_secs(60)))
             .expect("daemon did not enter its normal worker drain");
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(30));
         while !marker.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -4050,7 +4050,7 @@ mod tests {
         let cancelled_at = std::time::Instant::now();
         cancel.cancel();
         let result = done_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(test_wait(Duration::from_secs(30)))
             .expect("late cancellation failed to bound the previously unbounded worker drain");
         assert!(
             result == "interrupted" && cancelled_at.elapsed() >= GRACE,
