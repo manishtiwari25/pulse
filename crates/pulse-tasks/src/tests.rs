@@ -791,6 +791,21 @@ fn commands_end_to_end() {
 }
 
 #[test]
+fn task_list_rejects_unknown_project() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let (mut c, _) = ctx_for(&s, "", "demmo", false);
+    let err = run_cmd(&mut c, "task", &["list"]).unwrap_err();
+    assert!(
+        err.to_string().contains("No project \"demmo\""),
+        "unexpected error: {err}"
+    );
+    let (mut c, out) = ctx_for(&s, "", "demo", false);
+    run_cmd(&mut c, "task", &["list"]).unwrap();
+    assert!(out.string().contains("No tasks."));
+}
+
+#[test]
 fn watch_delivers_events_from_another_connection() {
     let _serial = crate::test_helpers::serial();
     let s = new_store();
