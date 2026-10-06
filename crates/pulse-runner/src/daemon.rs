@@ -11,6 +11,11 @@ pub const DEFAULT_DAEMON_INTERVAL_SECONDS: i32 = 300;
 pub(crate) const DISPATCH_TICK_SECONDS: i32 = 15;
 pub(crate) const HANDS_WANTED_MINUTES: i32 = 30;
 pub(crate) const DISK_FLOOR_WANTED_MINUTES: i32 = 15;
+/// A disk that hovers around the floor clears and re-crosses it many times
+/// an hour; each crossing used to ask the owner again, and every post became
+/// another "answer the disk question" lead job. One post per this window
+/// is enough: the condition and the remedy have not changed.
+pub(crate) const DISK_FLOOR_REPOST_MINUTES: i32 = 6 * 60;
 pub(crate) static BINARY_STAMP: LazyLock<RwLock<fn() -> String>> =
     LazyLock::new(|| RwLock::new(pulse_cli::binary_stamp));
 #[cfg(test)]
@@ -892,6 +897,9 @@ pub(crate) fn daemon(
     let mut disk_floor_since = String::new();
     let mut disk_floor_posted = false;
     let mut disk_floor_was_under = false;
+    // When the last disk-floor finding was posted; a re-crossing inside
+    // DISK_FLOOR_REPOST_MINUTES keeps pausing but does not post again.
+    let mut disk_floor_last_post = String::new();
     let mut planner_cache: BTreeMap<String, PlannerSnapshot> = BTreeMap::new();
     // Go: report(d)
     fn report(
@@ -1665,7 +1673,14 @@ pub(crate) fn daemon(
                 let waited = (crate::util::must_iso(&now)
                     - crate::util::must_iso(&disk_floor_since))
                 .num_minutes() as i32;
-                if waited >= DISK_FLOOR_WANTED_MINUTES
+                let debounced = !disk_floor_last_post.is_empty()
+                    && (crate::util::must_iso(&now) - crate::util::must_iso(&disk_floor_last_post))
+                        .num_minutes()
+                        < i64::from(DISK_FLOOR_REPOST_MINUTES);
+                if waited >= DISK_FLOOR_WANTED_MINUTES && debounced {
+                    // Same transient pressure, already asked: no duplicate post.
+                    disk_floor_posted = true;
+                } else if waited >= DISK_FLOOR_WANTED_MINUTES
                     && let Some((free, floor, path)) = crate::executor::disk_floor_hold(s)
                 {
                     let post = disk_floor_wanted(
@@ -1680,6 +1695,7 @@ pub(crate) fn daemon(
                     );
                     disk_floor_posted = true;
                     if !post.0.is_empty() {
+                        disk_floor_last_post = now.clone();
                         say(&o, format!("disk floor wanted: {}", post.str("summary")));
                     }
                 }
