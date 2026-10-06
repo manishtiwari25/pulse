@@ -216,10 +216,12 @@ pub fn proposals_text(items: &[Proposal]) -> String {
 
 pub fn queue_text(res: &TallyResult) -> String {
     let mut b = String::new();
+    let mut any = false;
     for x in &res.suggestions {
         if x.status == "closed" {
             continue;
         }
+        any = true;
         let _ = writeln!(
             b,
             "{:+3}  {:<12} {:<38} {:<44} up {} down {} voters {}  {}",
@@ -232,6 +234,9 @@ pub fn queue_text(res: &TallyResult) -> String {
             x.voters,
             trunc(&x.summary, 50)
         );
+    }
+    if !any {
+        b.push_str("  nothing queued\n");
     }
     b
 }
@@ -779,4 +784,16 @@ pub fn post_json(p: &Post) -> BTreeMap<String, Value> {
     }
     m.insert("body".into(), Value::String(p.body.clone()));
     m
+}
+
+#[cfg(test)]
+mod empty_queue_tests {
+    use super::*;
+    use crate::tally::TallyResult;
+
+    #[test]
+    fn queue_text_reports_empty_state() {
+        let res = TallyResult::default();
+        assert_eq!(queue_text(&res), "  nothing queued\n");
+    }
 }
