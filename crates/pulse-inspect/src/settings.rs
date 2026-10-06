@@ -25,7 +25,7 @@ Runner and evolution caps (built-in defaults):
   evolve.limits   default {}
     Optional loop budget: cycles=N,hours=H. none does not remove runner caps.
 
-evolve_minutes and evolve_credits are not supported by this Go CLI; they are
+evolve_minutes and evolve_credits are not supported by this CLI; they are
 not aliases for the settings above.
 
 Use pulse settings get NAME for an effective value, or pulse settings list --json
