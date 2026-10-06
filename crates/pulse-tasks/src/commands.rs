@@ -480,7 +480,11 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             )
         }
         "list" => {
-            let list = list(store(c)?, &c.project, &fs.get_string("status"))?;
+            let s = store(c)?;
+            if !c.project.is_empty() {
+                check_project(s, &c.project)?;
+            }
+            let list = list(s, &c.project, &fs.get_string("status"))?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &TasksOut { tasks: &list });
             }
