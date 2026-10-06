@@ -4681,7 +4681,15 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 },
             )
         });
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Wait for the daemon's first heartbeat (written after it subscribes
+        // to the bus) instead of a fixed delay: under full-workspace load a
+        // sleep raced the subscription and the job.add wake was missed.
+        let ready = || s.meta("daemon").map(|(_, ok)| ok).unwrap_or(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline && !ready() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(ready(), "the daemon never heartbeat:\n{}", out.string());
         let other = pulse_store::Store::open(pulse_store::Options {
             home: s.home.clone(),
             now: crate::test_helpers::TEST_NOW.into(),
