@@ -74,6 +74,7 @@ static TRANSIENT_MARKS: &[&str] = &[
     "not enough space",
     "insufficient space",
     "disk full",
+    "disk i/o error",
 ];
 
 static OWNER_BLOCKED_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -710,6 +711,20 @@ mod tests {
             super::classify_failure("worker exited 1".into(), "failed".into(), "".into(), true)
                 .reason
                 .starts_with("the worker asked the owner a question: ")
+        );
+    }
+
+    #[test]
+    fn sqlite_disk_io_error_is_transient() {
+        let _serial = crate::test_helpers::serial();
+        let result = "3 commit(s) but verify exit 1: seed framework: disk I/O error (SQLITE_IOERR)";
+        let got = super::classify_failure(result.into(), "failed".into(), "".into(), false);
+        assert_eq!(got.class.0, FAILURE_TRANSIENT, "{result}");
+        assert!(super::is_transient_reason(result));
+        assert_eq!(
+            super::environment_failure_reason(result.into(), String::new()),
+            "",
+            "a disk I/O error is a transient fault, not an environment-recipe defect"
         );
     }
 
