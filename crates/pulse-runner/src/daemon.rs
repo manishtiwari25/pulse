@@ -290,6 +290,18 @@ pub(crate) fn run_budget(s: &pulse_store::Store) -> std::time::Duration {
     Duration::from_secs(((2 * minutes + i64::from(crate::recipe::SETUP_MINUTES) + 15) as u64) * 60)
 }
 
+/// Say why the project list is empty when the store connection fails, so a
+/// DB hiccup no longer looks like "zero projects" with no explanation.
+pub(crate) fn warn_store_unavailable(o: &DaemonOpts, e: &anyhow::Error) {
+    say(
+        o,
+        format!(
+            "store unavailable: {}; skipping projects this loop",
+            crate::run::err_message(e)
+        ),
+    );
+}
+
 /// Go: say := func(format string, args ...any) { outMu.Lock(); fmt.Fprintf(out, format+"\n", args...) }
 pub(crate) fn say(o: &DaemonOpts, line: impl AsRef<str>) {
     use std::io::Write;
@@ -1179,7 +1191,13 @@ pub(crate) fn daemon(
                     say(&o, line);
                 }
             }
-            let conn = s.conn().ok();
+            let conn = match s.conn() {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    warn_store_unavailable(&o, &e);
+                    None
+                }
+            };
             let all_projects = conn
                 .as_ref()
                 .map(|c| crate::board::project_rows(c, false))
@@ -2034,6 +2052,32 @@ mod tests {
     use crate::test_helpers_f5::{exec1, test_wait};
     use crate::test_helpers_selfupdate::{head_of, self_update_fixture, wait_self_update_idle};
     use crate::util::file_exists;
+
+    #[test]
+    fn warn_store_unavailable_explains_empty_project_list() {
+        struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Shared {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let out: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(Shared(buf.clone())));
+        let opts = DaemonOpts {
+            out: Some(out),
+            ..Default::default()
+        };
+        warn_store_unavailable(&opts, &anyhow::anyhow!("database is locked"));
+        let log = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("store unavailable") && log.contains("database is locked"),
+            "log: {log:?}"
+        );
+    }
 
     #[test]
     fn sweep_scratch_dirs_removes_only_stale_prefixed_dirs() {
