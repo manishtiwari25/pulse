@@ -1393,7 +1393,10 @@ pub(crate) fn land_branch(
         project.str("verify_cmd")
     };
     let def_copy = def.clone();
-    let _ = crate::board::create_post(
+    // The landing already happened; a result post that fails must not undo it, but
+    // it must not vanish either: owners read the board for "what landed", so the
+    // miss goes to stderr, which the daemon log captures.
+    if let Err(e) = crate::board::create_post(
         s,
         now,
         crate::board::PostOpts {
@@ -1416,7 +1419,9 @@ pub(crate) fn land_branch(
             resolution: "proceeded".into(),
             ..Default::default()
         },
-    );
+    ) {
+        eprintln!("{}", result_post_failed_warning(&branch, &def, &sha, &e));
+    }
     drop(cleanup);
     Ok((
         "landed".into(),
@@ -1425,6 +1430,21 @@ pub(crate) fn land_branch(
             crate::recipe::short(&sha, 12)
         ),
     ))
+}
+
+/// The stderr line written when the post-land result post could not be created:
+/// the landing itself succeeded, so the owner needs the sha and the branch to find
+/// it without the board entry.
+pub(crate) fn result_post_failed_warning(
+    branch: &str,
+    def: &str,
+    sha: &str,
+    err: &anyhow::Error,
+) -> String {
+    format!(
+        "landing: `{branch}` landed on `{def}` as {} but the result post could not be written to the board: {err:#}; the commits are on {def} and the landing is recorded in the landing evidence",
+        crate::recipe::short(sha, 12)
+    )
 }
 
 /// Go: func pendingLandings(q querier, slug string) []row
@@ -2164,6 +2184,22 @@ mod tests {
         bare_ref, exec1, job_row, must_rows, push_branch, push_fixture, ref_of, set_setting,
     };
     use crate::{commands, test_helpers};
+
+    #[test]
+    fn result_post_failure_warning_names_landing_and_cause() {
+        let err = anyhow::anyhow!("board unavailable").context("create_post");
+        let line = super::result_post_failed_warning(
+            "pulse/worker/1",
+            "main",
+            "0123456789abcdef0123",
+            &err,
+        );
+        assert!(line.contains("pulse/worker/1"), "{line}");
+        assert!(line.contains("`main`"), "{line}");
+        assert!(line.contains("0123456789ab"), "{line}");
+        assert!(line.contains("create_post: board unavailable"), "{line}");
+        assert!(line.contains("result post could not be written"), "{line}");
+    }
 
     #[test]
     fn land_by_hand_pushes_when_asked() {
