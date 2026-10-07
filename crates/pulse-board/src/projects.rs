@@ -57,6 +57,55 @@ pub fn unique_slug(
     }
 }
 
+/// How long `pulse init` waits for a store another process holds locked
+/// before refusing. The pool's default busy timeout is ten seconds, which
+/// makes a non-interactive `pulse init` look hung; a registration is quick, so
+/// a lock still held after this long means another writer owns the store.
+const INIT_LOCK_WAIT_MS: u64 = 1_500;
+
+/// Fails fast with a clear message when the store cannot take a write right
+/// now (held lock, read-only or unwritable PULSE_HOME) instead of blocking for
+/// the full busy timeout and surfacing a bare SQLite error.
+fn probe_store_writable(s: &pulse_store::Store) -> Result<()> {
+    let conn = s.conn().map_err(|e| {
+        refuse(
+            2,
+            format!("Cannot open the store {}: {e}; check PULSE_HOME", s.path),
+        )
+    })?;
+    conn.busy_timeout(std::time::Duration::from_millis(INIT_LOCK_WAIT_MS))?;
+    let probe = conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;");
+    // Restore the pool's default before the connection goes back to the pool.
+    conn.busy_timeout(std::time::Duration::from_millis(
+        pulse_store::BUSY_TIMEOUT_MS,
+    ))?;
+    match probe {
+        Ok(()) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(err, _))
+            if matches!(
+                err.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ) =>
+        {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(refuse(
+                2,
+                format!(
+                    "The store {} is locked by another pulse process; wait for it to finish or stop it, then run pulse init again",
+                    s.path
+                ),
+            ))
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(refuse(
+                2,
+                format!("Cannot write the store {}: {e}; check PULSE_HOME", s.path),
+            ))
+        }
+    }
+}
+
 /// Subdirectories of PULSE_HOME whose checkouts the runner makes and removes:
 /// worker clones, fleet clones and measurement roots, landing worktrees.
 const RUNNER_MANAGED_DIRS: [&str; 3] = ["work", "fleet", "worktrees"];
@@ -102,6 +151,7 @@ pub fn register_project(
     if !root.is_dir() {
         return Err(refuse(2, format!("Not a directory: {}", root.display())));
     }
+    probe_store_writable(s)?;
     if is_inside(Path::new(&s.path), &root) {
         return Err(refuse(
             2,
@@ -982,5 +1032,52 @@ mod tests {
             .unwrap()
             .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    use crate::test_helpers::{git_repo, new_home};
+
+    #[test]
+    fn init_refuses_fast_when_store_is_locked() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, _home, s) = new_home();
+        let repo = git_repo();
+        // Another process holding a write lock on the store.
+        let other = rusqlite::Connection::open(&s.path).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let started = std::time::Instant::now();
+        let err = init(
+            &s,
+            &repo.path().display().to_string(),
+            "locked",
+            "",
+            false,
+            "cargo test",
+            "human",
+        )
+        .expect_err("init must refuse while the store is locked");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "init blocked for {elapsed:?} on a locked store"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("locked by another pulse process"), "{msg}");
+        assert!(msg.contains("pulse init again"), "{msg}");
+        other.execute_batch("ROLLBACK").unwrap();
+        // The pool connection keeps its default busy timeout afterwards.
+        init(
+            &s,
+            &repo.path().display().to_string(),
+            "locked",
+            "",
+            false,
+            "cargo test",
+            "human",
+        )
+        .unwrap();
     }
 }
