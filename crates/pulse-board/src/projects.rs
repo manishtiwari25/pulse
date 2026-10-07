@@ -175,7 +175,7 @@ pub fn register_project(
                 home.display()
             ),
             "worker clones, fleet clones and worktrees there are made and removed by the runner; a project is the checkout they are cloned from",
-            "pulse project add /path/to/the/checkout",
+            "pulse init /path/to/the/checkout",
         ));
     }
     if git_top_level(root.to_str().unwrap_or_default()).is_empty() {
