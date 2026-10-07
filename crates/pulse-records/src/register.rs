@@ -271,10 +271,21 @@ pub fn run_record(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()>
             ));
         }
         let kind = rest.first().cloned().unwrap_or_default();
+        let project = fs.get_string("project");
+        if !project.is_empty()
+            && project != pulse_store::COMMONS_SLUG
+            && store(c)?.project(&project)?.is_none()
+        {
+            return Err(input_error(
+                &format!("No project {project:?}"),
+                "it is not registered in this store",
+                "pulse projects",
+            ));
+        }
         let rows = crate::records::list(
             store(c)?,
             Filter {
-                project: fs.get_string("project"),
+                project,
                 kind,
                 status: fs.get_string("status"),
                 area: fs.get_string("area"),
@@ -1155,6 +1166,30 @@ mod tests {
         .unwrap();
         let (_, rev) = crate::records::get(&s, "ADR-001", 0).unwrap();
         assert_eq!(rev.body, "From stdin\n", "stdin body not stored");
+    }
+
+    #[test]
+    fn list_rejects_unknown_project() {
+        let _serial = crate::test_helpers::serial();
+        let s = temp_store();
+        add_project(&s, "brain", true);
+        let (mut c, _out) = context(s.clone());
+        let err = run_record(
+            &mut c,
+            &FlagSet::new(""),
+            &["list".into(), "--project".into(), "nonexistent-slug".into()],
+        )
+        .expect_err("list accepted an unknown project");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No project") && msg.contains("nonexistent-slug"),
+            "error message: {msg:?}"
+        );
+        let code = err
+            .downcast_ref::<pulse_cli::Error>()
+            .map(|e| e.exit_code())
+            .unwrap_or(1);
+        assert_eq!(code, 2, "exit code for unknown project");
     }
 
     #[test]
