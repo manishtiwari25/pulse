@@ -1579,8 +1579,8 @@ holding ref, a run log, a `pulse/<agent>/<job>` branch waiting to land. A run
 that ends removes its own; a runner that died mid-run, a landing killed
 half-way or an older hub does not. So the daemon sweeps once at start and
 then every ten minutes, removing only what the store says nothing holds any
-more: queued or blocked jobs of a project that was removed (`pulse project
-remove` lets a leased job finish, but one whose run is lost would come back
+more: queued or blocked jobs of a project that was removed (`pulse remove
+project` lets a leased job finish, but one whose run is lost would come back
 queued for a project no daemon lists), clones, keys and bundles of jobs in an
 end state (`done`, `failed`, `cancelled`) whose `finished_at` is more than an
 hour old once they have also sat untouched for `daemon.sweep_grace_minutes`
