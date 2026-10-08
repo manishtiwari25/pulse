@@ -71,7 +71,7 @@ If the owner's pause is on, **Resume daemon** clears only the `stop` setting
 file STOPs or change caps. **Silent** means the loop heartbeat is stale, not
 that the daemon is disabled: it may still be running or waiting. A loop that
 stays silent for half an hour (six intervals when the interval is longer) is
-treated as hung: the daemon writes every goroutine's stack to
+treated as hung: the daemon writes its own thread's stack and thread count to
 `~/.pulse/logs/daemon-stall-<time>.log`, notes the stall in its heartbeat and
 event log, cancels the runs in flight and exits 3, so the service starts it
 again; `kill -USR1 <pid>` writes the same dump without a restart. The controls
@@ -894,7 +894,7 @@ on a pinned tree where the gap is reproduced. Canonical evidence:
 ### Events, hooks and channels
 
 Every write appends one row to the event log and publishes it once on an
-in-process bus (goroutines and channels; no polling inside one process).
+in-process bus (crossbeam channels; no polling inside one process).
 Other processes tail the log.
 Action filters are family globs: without `*`, `?` or `[` the name matches
 itself and its dotted children. `post` matches every `post.<kind>`,
