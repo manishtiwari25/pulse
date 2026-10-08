@@ -32,6 +32,10 @@ talks to the model provider (GitHub Copilot first) itself, so there is no
 `copilot` CLI, no Node runtime and no other agent tool to install or keep
 logged in.
 
+The repository is private: the clone below needs authenticated git access (an
+SSH key or a GitHub token registered with your account); an anonymous clone or
+a plain HTTPS fetch of the URL is refused.
+
 ```bash
 git clone https://github.com/manishtiwari25/pulse.git && cd pulse
 cargo install --path crates/pulse --root ~/.pulse --locked   # builds release, lands ~/.pulse/bin/pulse
