@@ -151,6 +151,22 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
     if rev == st.installed || rev == env.revision {
         return lines;
     }
+    // A human may have built and installed HEAD by hand while this process
+    // still runs the old binary; the file watcher restarts onto it, so a
+    // build would only redo that work on a machine the runs need.
+    if installed_binary_is(&env.binary, &rev) {
+        st.installed = rev.clone();
+        say(
+            &mut st,
+            &mut lines,
+            format!(
+                "{} is already installed at {}; restarting onto it after the runs in flight",
+                short_rev(rev),
+                env.binary
+            ),
+        );
+        return lines;
+    }
     let def = first_non_empty(&[brain.str("default_branch"), "main".into()]);
     let got_branch = branch.stdout.trim();
     if got_branch != def {
@@ -237,6 +253,22 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
         }
     });
     lines
+}
+
+/// Whether the binary at `path` already prints `rev`'s short form as its
+/// version, the same check the install smoke test applies to a new build.
+fn installed_binary_is(path: &str, rev: &str) -> bool {
+    if path.is_empty() || rev.is_empty() {
+        return false;
+    }
+    std::process::Command::new(path)
+        .arg("version")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .is_some_and(|out| {
+            String::from_utf8_lossy(&out.stdout).contains(&short_rev(rev.to_string()))
+        })
 }
 
 /// Go: func buildAndInstall(s *store.Store, repo, rev string, env selfUpdateEnv) selfUpdateOutcome
@@ -729,6 +761,40 @@ mod tests {
             lines.is_empty() && !file_exists(&format!("{}.new", env.binary)),
             "rebuilt the installed revision: {lines:?}"
         );
+    }
+
+    #[test]
+    fn self_update_skips_the_build_when_head_is_already_installed_by_hand() {
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        reset_self_update();
+        let (s, repo, env, _fixture) = self_update_fixture();
+        let rev = head_of(&repo);
+        std::fs::write(
+            &env.binary,
+            format!("#!/bin/sh\necho v0.0.0-20261009-{}\n", &rev[..12]),
+        )
+        .unwrap();
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains(&format!(
+                    "{} is already installed at {}; restarting onto it",
+                    &rev[..12],
+                    env.binary
+                )),
+            "installed by hand: {lines:?}"
+        );
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.is_empty() && !file_exists(&format!("{}.new", env.binary)),
+            "second tick built anyway: {lines:?}"
+        );
+        assert!(!file_exists(&format!("{}.prev", env.binary)));
+        assert!(installed_binary_is(&env.binary, &rev));
+        assert!(!installed_binary_is(&env.binary, "0000000000000000"));
+        assert!(!installed_binary_is("", &rev));
+        assert!(!installed_binary_is("/nonexistent/pulse", &rev));
     }
 
     #[test]

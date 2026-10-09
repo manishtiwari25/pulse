@@ -137,7 +137,9 @@ room: <why>` once, keeps one local slot free so the build starts within one
 run, and the experiment lane measures nothing new meanwhile, as when the build
 waits for the lane. A build that then exits three times early is put back to
 the previous one by the launcher, which turns `daemon.self_update` off and
-leaves a finding. Set `daemon.self_update` to `off` to keep the build you
+leaves a finding. A revision already installed by hand is not built again:
+when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
+restarts onto it after the runs in flight. Set `daemon.self_update` to `off` to keep the build you
 have and `cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
 
 On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
