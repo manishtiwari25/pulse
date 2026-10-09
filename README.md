@@ -1712,6 +1712,14 @@ recipe that sets `CARGO_TARGET_DIR` itself wins, and a lane unused for
 `daemon.build_cache_keep_days` (default 7) or of a project the store no
 longer lists is swept, while a live lane is pruned of dead units and stale
 incremental caches like any shared Cargo target (`hygiene.cargo_target`).
+The same pass drops the per-codegen-unit debug objects rustc leaves in
+`deps/` on macOS (`<crate>-<hash>.<cgu>.rcgu.o`, kept because debuginfo is
+unpacked there) once nothing reads them: every incremental session writes its
+units afresh and never removes the superseded ones, an rlib archives its own
+copies, and only an executable's debug map names the live ones, so a checkout
+built a few times a day otherwise carries gigabytes of them. Each object is
+checked against the debug map of the binary that owns it, so a live one is
+never touched, and a binary the sweep cannot read keeps all of its objects.
 `pulse sweep --dry-run` shows all of it before it happens; the Hygiene panel
 lists the new kinds (`trajectory`, `binary`, `cache`, `store`) with the rest.
 

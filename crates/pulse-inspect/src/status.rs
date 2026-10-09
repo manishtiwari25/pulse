@@ -398,6 +398,8 @@ pub fn hygiene_status(s: &pulse_store::Store) -> Result<String> {
     struct CargoTargetNote {
         units: i64,
         incremental: i64,
+        #[serde(default)]
+        objects: i64,
         bytes: i64,
         #[serde(default)]
         skipped: String,
@@ -431,15 +433,16 @@ pub fn hygiene_status(s: &pulse_store::Store) -> Result<String> {
     }
     let cargo_units: i64 = note.cargo_target.iter().map(|x| x.units).sum();
     let cargo_incremental: i64 = note.cargo_target.iter().map(|x| x.incremental).sum();
+    let cargo_objects: i64 = note.cargo_target.iter().map(|x| x.objects).sum();
     let cargo_bytes: i64 = note.cargo_target.iter().map(|x| x.bytes).sum();
     let cargo_skipped = note
         .cargo_target
         .iter()
         .filter(|x| !x.skipped.is_empty())
         .count();
-    if cargo_bytes > 0 || cargo_units > 0 || cargo_incremental > 0 {
+    if cargo_bytes > 0 || cargo_units > 0 || cargo_incremental > 0 || cargo_objects > 0 {
         line.push_str(&format!(
-            "; cargo target: freed {} ({} dead clone {}, {} stale incremental {})",
+            "; cargo target: freed {} ({} dead clone {}, {} stale incremental {}, {} stale debug {})",
             size_text(cargo_bytes),
             cargo_units,
             if cargo_units == 1 { "unit" } else { "units" },
@@ -448,6 +451,12 @@ pub fn hygiene_status(s: &pulse_store::Store) -> Result<String> {
                 "dir"
             } else {
                 "dirs"
+            },
+            cargo_objects,
+            if cargo_objects == 1 {
+                "object"
+            } else {
+                "objects"
             },
         ));
     } else if !note.cargo_target.is_empty() && cargo_skipped == 0 {

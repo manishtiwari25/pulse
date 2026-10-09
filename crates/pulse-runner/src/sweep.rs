@@ -92,9 +92,24 @@ pub(crate) struct CargoTargetSweep {
     pub target: String,
     pub units: i64,
     pub incremental: i64,
+    #[serde(default)]
+    pub objects: i64,
     pub bytes: i64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub skipped: String,
+}
+
+impl CargoTargetSweep {
+    fn pruned(&self) -> bool {
+        self.units > 0 || self.incremental > 0 || self.objects > 0
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{} dead unit(s), {} stale incremental dir(s), {} stale debug object(s)",
+            self.units, self.incremental, self.objects
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -296,12 +311,9 @@ pub(crate) fn sweep_stale_clones(
     let mut freed: i64 = w.rep.removed.iter().map(|x| x.bytes).sum();
     let mut paths: Vec<String> = w.rep.removed.iter().map(|x| x.path.clone()).collect();
     for ct in &w.rep.cargo_target {
-        if ct.skipped.is_empty() && (ct.units > 0 || ct.incremental > 0) {
+        if ct.skipped.is_empty() && ct.pruned() {
             freed += ct.bytes;
-            paths.push(format!(
-                "{} ({} dead unit(s), {} stale incremental dir(s))",
-                ct.target, ct.units, ct.incremental
-            ));
+            paths.push(format!("{} ({})", ct.target, ct.describe()));
         }
     }
     (freed, paths)
@@ -523,6 +535,22 @@ pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
             size_text(work.1)
         ));
     }
+    for ct in &rep.cargo_target {
+        if !ct.skipped.is_empty() {
+            lines.push(format!(
+                "left cargo target {} alone ({})",
+                ct.target, ct.skipped
+            ));
+        } else if ct.pruned() {
+            lines.push(format!(
+                "{} cargo target {} ({}, {})",
+                if rep.dry_run { "would prune" } else { "pruned" },
+                ct.target,
+                ct.describe(),
+                size_text(ct.bytes)
+            ));
+        }
+    }
     lines.extend(rep.errors.iter().map(|e| format!("sweep: {e}")));
     lines
 }
@@ -583,6 +611,7 @@ pub(crate) fn record_sweep(
                     "target": cargo.target,
                     "units": cargo.units,
                     "incremental": cargo.incremental,
+                    "objects": cargo.objects,
                     "freed_mb": ((cargo.bytes as f64) / ((1 << 20) as f64) * 10.0).round() / 10.0,
                     "skipped": cargo.skipped,
                 }),
@@ -896,6 +925,7 @@ impl Sweeper {
                     Ok(stats) => {
                         total.units += stats.units;
                         total.incremental += stats.incremental;
+                        total.objects += stats.objects;
                         total.bytes += stats.bytes;
                     }
                     Err(err) => self.failed(
@@ -1322,6 +1352,7 @@ impl Sweeper {
                     Ok(stats) => {
                         total.units += stats.units;
                         total.incremental += stats.incremental;
+                        total.objects += stats.objects;
                         total.bytes += stats.bytes;
                     }
                     Err(err) => self.failed(
@@ -1330,7 +1361,7 @@ impl Sweeper {
                     ),
                 }
             }
-            if total.units > 0 || total.incremental > 0 {
+            if total.pruned() {
                 self.rep.cargo_target.push(total);
             }
         }
@@ -2350,6 +2381,7 @@ impl Drop for CargoLockGuard {
 struct CargoPruneStats {
     units: i64,
     incremental: i64,
+    objects: i64,
     bytes: i64,
 }
 
@@ -2392,7 +2424,155 @@ fn prune_cargo_profile(
             stats.bytes += bytes;
         }
     }
+    for path in stale_debug_objects(profile)? {
+        let bytes = disk_usage(path.display().to_string());
+        if !dry_run {
+            remove_path(&path)?;
+        }
+        stats.objects += 1;
+        stats.bytes += bytes;
+    }
     Ok(stats)
+}
+
+/// The per-codegen-unit objects rustc leaves in `deps/` next to what it
+/// linked (`<crate>-<hash>.<cgu>.<hash>.rcgu.o`) when it keeps debuginfo
+/// unpacked, as it does by default on macOS. Every incremental session
+/// writes its units afresh and nothing removes the superseded ones, so a
+/// checkout that is built often carries gigabytes of them. Only an
+/// executable or dylib ever reads them, through the object list in its own
+/// debug map; an rlib archives its units, so its loose copies are never
+/// read. Returns the objects whose owner is gone, is an archive, or lists
+/// other units; an owner we cannot read keeps all of its objects.
+fn stale_debug_objects(profile: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let deps = profile.join("deps");
+    let entries = match std::fs::read_dir(&deps) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let mut by_owner: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(stem) = name.strip_suffix(".rcgu.o") else {
+            continue;
+        };
+        let Some((owner, _)) = stem.split_once('.') else {
+            continue;
+        };
+        if owner.is_empty() || !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        by_owner
+            .entry(owner.to_string())
+            .or_default()
+            .push(entry.path());
+    }
+    let mut out = Vec::new();
+    for (owner, objects) in by_owner {
+        let images = [
+            deps.join(&owner),
+            deps.join(format!("lib{owner}.dylib")),
+            deps.join(format!("lib{owner}.so")),
+        ];
+        let mut referenced = BTreeSet::new();
+        let mut unreadable = false;
+        for image in images.iter().filter(|p| p.is_file()) {
+            match macho_debug_map(image)? {
+                Some(names) => referenced.extend(names),
+                None => unreadable = true,
+            }
+        }
+        if unreadable {
+            continue;
+        }
+        out.extend(objects.into_iter().filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| referenced.contains(n.to_string_lossy().as_ref()))
+        }));
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// The basenames of the object files a Mach-O image's debug map (its
+/// `N_OSO` stabs) points at. `None` for anything that is not a thin 64-bit
+/// Mach-O image, so a caller keeps what it cannot read.
+fn macho_debug_map(path: &Path) -> std::io::Result<Option<BTreeSet<String>>> {
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_SYMTAB: u32 = 0x2;
+    const N_OSO: u8 = 0x66;
+    const NLIST_64: usize = 16;
+    fn le(b: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+    }
+    let mut f = BufReader::new(std::fs::File::open(path)?);
+    let mut header = [0u8; 32];
+    if f.read_exact(&mut header).is_err() || le(&header, 0) != MH_MAGIC_64 {
+        return Ok(None);
+    }
+    let ncmds = le(&header, 16) as usize;
+    let mut cmds = vec![0u8; le(&header, 20) as usize];
+    if f.read_exact(&mut cmds).is_err() {
+        return Ok(None);
+    }
+    let mut symtab = None;
+    let mut at = 0usize;
+    for _ in 0..ncmds {
+        if at + 8 > cmds.len() {
+            return Ok(None);
+        }
+        let size = le(&cmds, at + 4) as usize;
+        if size < 8 || at + size > cmds.len() {
+            return Ok(None);
+        }
+        if le(&cmds, at) == LC_SYMTAB && size >= 24 {
+            symtab = Some((
+                le(&cmds, at + 8),
+                le(&cmds, at + 12),
+                le(&cmds, at + 16),
+                le(&cmds, at + 20),
+            ));
+        }
+        at += size;
+    }
+    let mut out = BTreeSet::new();
+    let Some((symoff, nsyms, stroff, strsize)) = symtab else {
+        return Ok(Some(out));
+    };
+    f.seek(SeekFrom::Start(u64::from(symoff)))?;
+    let mut offsets = Vec::new();
+    let mut sym = [0u8; NLIST_64];
+    for _ in 0..nsyms {
+        if f.read_exact(&mut sym).is_err() {
+            return Ok(None);
+        }
+        if sym[4] == N_OSO && le(&sym, 0) < strsize {
+            offsets.push(le(&sym, 0));
+        }
+    }
+    offsets.sort_unstable();
+    offsets.dedup();
+    let mut name = Vec::new();
+    for strx in offsets {
+        f.seek(SeekFrom::Start(u64::from(stroff) + u64::from(strx)))?;
+        name.clear();
+        let cap = (strsize - strx) as u64;
+        if f.by_ref().take(cap).read_until(0, &mut name).is_err() {
+            return Ok(None);
+        }
+        if name.last() == Some(&0) {
+            name.pop();
+        }
+        let text = String::from_utf8_lossy(&name);
+        if let Some(base) = text.rsplit('/').next()
+            && !base.is_empty()
+        {
+            out.insert(base.to_string());
+        }
+    }
+    Ok(Some(out))
 }
 
 struct DeadCargoUnit {
@@ -2753,6 +2933,7 @@ mod tests {
             CargoPruneStats {
                 units: 1,
                 incremental: 1,
+                objects: 0,
                 bytes: expected_bytes,
             }
         );
@@ -2766,6 +2947,161 @@ mod tests {
         assert!(!build.join(format!("deadpkg-{dead_hash}")).exists());
         assert!(!old_inc.exists());
         assert!(fresh_inc.exists());
+    }
+
+    /// A thin 64-bit Mach-O image whose symbol table holds one ordinary
+    /// symbol and one `N_OSO` stab per name in `debug_map`.
+    fn fake_macho(debug_map: &[&str]) -> Vec<u8> {
+        let mut strtab = vec![0u8];
+        let mut syms = Vec::new();
+        let mut push = |strx: usize, n_type: u8| {
+            syms.extend((strx as u32).to_le_bytes());
+            syms.push(n_type);
+            syms.push(0);
+            syms.extend(0u16.to_le_bytes());
+            syms.extend(0u64.to_le_bytes());
+        };
+        push(strtab.len(), 0x0f);
+        strtab.extend(b"_main\0");
+        for name in debug_map {
+            push(strtab.len(), 0x66);
+            strtab.extend(name.as_bytes());
+            strtab.push(0);
+        }
+        let symoff = 32 + 24;
+        let stroff = symoff + syms.len();
+        let mut out = Vec::new();
+        for word in [0xfeed_facf_u32, 0x0100_000c, 0, 2, 1, 24, 0, 0] {
+            out.extend(word.to_le_bytes());
+        }
+        for word in [
+            2u32,
+            24,
+            symoff as u32,
+            (syms.len() / 16) as u32,
+            stroff as u32,
+            strtab.len() as u32,
+        ] {
+            out.extend(word.to_le_bytes());
+        }
+        out.extend(syms);
+        out.extend(strtab);
+        out
+    }
+
+    #[test]
+    fn prune_cargo_profile_drops_debug_objects_no_debug_map_names() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("debug");
+        let deps = target.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let obj = |name: &str| deps.join(format!("{name}.rcgu.o"));
+        let app = fake_macho(&[
+            &obj("app-aaaa.app.11-cgu.0").display().to_string(),
+            "/elsewhere/deps/libdep-bbbb.rlib(dep-bbbb.dep.22-cgu.0.rcgu.o)",
+        ]);
+        std::fs::write(deps.join("app-aaaa"), app).unwrap();
+        mkdir_file(obj("app-aaaa.app.11-cgu.0"), "live");
+        mkdir_file(obj("app-aaaa.app.11-cgu.1"), "superseded");
+        mkdir_file(deps.join("libdep-bbbb.rlib"), "archive holds its own copy");
+        mkdir_file(obj("dep-bbbb.dep.22-cgu.0"), "loose copy");
+        mkdir_file(obj("gone-cccc.gone.33-cgu.0"), "owner was removed");
+        mkdir_file(deps.join("odd-dddd"), "not a Mach-O image");
+        mkdir_file(obj("odd-dddd.odd.44-cgu.0"), "owner unreadable");
+        std::fs::write(
+            deps.join("libmacro-eeee.dylib"),
+            fake_macho(&[&obj("macro-eeee.macro.55-cgu.0").display().to_string()]),
+        )
+        .unwrap();
+        mkdir_file(obj("macro-eeee.macro.55-cgu.0"), "live in a dylib");
+        mkdir_file(obj("macro-eeee.macro.55-cgu.1"), "superseded in a dylib");
+
+        let stale: Vec<PathBuf> = [
+            obj("app-aaaa.app.11-cgu.1"),
+            obj("dep-bbbb.dep.22-cgu.0"),
+            obj("gone-cccc.gone.33-cgu.0"),
+            obj("macro-eeee.macro.55-cgu.1"),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(stale_debug_objects(&target).unwrap(), stale);
+        let expected_bytes: i64 = stale
+            .iter()
+            .map(|p| disk_usage(p.display().to_string()))
+            .sum();
+
+        let dry = prune_cargo_profile(
+            &target,
+            Duration::from_secs(24 * 3600),
+            std::time::SystemTime::now(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            dry,
+            CargoPruneStats {
+                units: 0,
+                incremental: 0,
+                objects: 4,
+                bytes: expected_bytes,
+            }
+        );
+        assert!(stale.iter().all(|p| p.exists()));
+
+        let stats = prune_cargo_profile(
+            &target,
+            Duration::from_secs(24 * 3600),
+            std::time::SystemTime::now(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(stats, dry);
+        assert!(stale.iter().all(|p| !p.exists()));
+        for kept in [
+            obj("app-aaaa.app.11-cgu.0"),
+            obj("odd-dddd.odd.44-cgu.0"),
+            obj("macro-eeee.macro.55-cgu.0"),
+            deps.join("app-aaaa"),
+            deps.join("libdep-bbbb.rlib"),
+            deps.join("odd-dddd"),
+            deps.join("libmacro-eeee.dylib"),
+        ] {
+            assert!(kept.exists(), "{} should survive", kept.display());
+        }
+        assert!(stale_debug_objects(&target).unwrap().is_empty());
+        assert!(
+            stale_debug_objects(&root.path().join("missing"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn macho_debug_map_reads_only_thin_images() {
+        let root = tempfile::tempdir().unwrap();
+        let image = root.path().join("image");
+        std::fs::write(
+            &image,
+            fake_macho(&["/a/b/x.rcgu.o", "/c/libd.rlib(d.rcgu.o)"]),
+        )
+        .unwrap();
+        let names = macho_debug_map(&image).unwrap().unwrap();
+        assert_eq!(
+            names.into_iter().collect::<Vec<_>>(),
+            vec!["libd.rlib(d.rcgu.o)".to_string(), "x.rcgu.o".to_string()]
+        );
+        std::fs::write(&image, fake_macho(&[])).unwrap();
+        assert!(macho_debug_map(&image).unwrap().unwrap().is_empty());
+        let mut fat = 0xcafe_babe_u32.to_be_bytes().to_vec();
+        fat.extend([0u8; 60]);
+        std::fs::write(&image, fat).unwrap();
+        assert!(macho_debug_map(&image).unwrap().is_none());
+        std::fs::write(&image, b"#!/bin/sh\n").unwrap();
+        assert!(macho_debug_map(&image).unwrap().is_none());
+        let mut truncated = fake_macho(&["/a/b/x.rcgu.o"]);
+        truncated.truncate(40);
+        std::fs::write(&image, truncated).unwrap();
+        assert!(macho_debug_map(&image).unwrap().is_none());
     }
 
     #[test]
