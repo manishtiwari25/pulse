@@ -622,7 +622,14 @@ impl Hands {
     }
     pub(crate) fn clean(&mut self, job: &str) -> Result<()> {
         let dir = self.job_dir(job)?;
-        // What the agent left registered on the clone goes first and is
+        // Processes the worker left running under the job directory go first;
+        // the runner's log keeps the stderr line.
+        let mut notes = Vec::new();
+        crate::proc::sweep_job_dir(&dir, &mut |line| notes.push(line));
+        for note in notes {
+            writeln!(self.stderr, "{note}")?;
+        }
+        // What the agent left registered on the clone goes next and is
         // reported line by line; the runner writes it down against the agent.
         for left in crate::tidy::clear_leftovers(&format!("{dir}/clone")) {
             writeln!(self.stdout, "{}", crate::tidy::leftover_line(&left))?;

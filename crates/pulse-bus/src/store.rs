@@ -249,6 +249,9 @@ pub fn tail(
             last = id;
         }
         let mut version = -1_i64;
+        // Ready once the context is done; the wait between polls blocks on
+        // it instead of waking every 5 ms (200 wakeups a second per tail).
+        let done = cancel.done();
         while !cancel.is_cancelled() {
             let Ok(v) = conn.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0)) else {
                 return;
@@ -265,9 +268,9 @@ pub fn tail(
                     }
                 }
             }
-            let end = std::time::Instant::now() + interval;
-            while !cancel.is_cancelled() && std::time::Instant::now() < end {
-                thread::sleep(Duration::from_millis(5).min(interval));
+            crossbeam_channel::select! {
+                recv(done) -> _ => return,
+                recv(crossbeam_channel::after(interval)) -> _ => {}
             }
         }
     });

@@ -4,12 +4,158 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
+
+/// Process-tree control shared with the harness: own process groups for job
+/// subprocesses, bounded SIGTERM/SIGKILL termination, and the straggler sweep
+/// that kills whatever still works under a job directory before it is removed.
+///
+/// `kill_tree_under(dir)` is what to call right before a finished job's
+/// workdir or clone is deleted (`LocalExec::cleanup` and the hands `clean`
+/// verb do); it never touches the calling process, its parent, or anything
+/// outside `dir`, and refuses directories too broad to be a job directory.
+pub use pulse_cli::procs::{
+    DEFAULT_KILL_GRACE, KilledProc, ProcInfo, ProcessGroup, describe_killed, kill_tree_under,
+    kill_tree_under_with_grace, own_process_group, processes_under, sweepable_dir,
+};
+
+/// How long the output readers may lag once every process we know of is dead.
+const OUTPUT_DRAIN: Duration = Duration::from_secs(2);
+
+/// Reads a pipe on its own thread into a shared buffer; the receiver fires at EOF.
+fn drain(
+    reader: impl Read + Send + 'static,
+) -> (Arc<Mutex<Vec<u8>>>, crossbeam_channel::Receiver<()>) {
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let sink = buf.clone();
+    std::thread::spawn(move || {
+        let mut r = reader;
+        let mut chunk = [0u8; 8192];
+        loop {
+            match r.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => sink.lock().unwrap().extend_from_slice(&chunk[..n]),
+            }
+        }
+        let _ = tx.send(());
+    });
+    (buf, rx)
+}
+
+/// Waits for a reader until `deadline`, then takes whatever it has: a pipe
+/// still held by something we could not kill must not hang the caller.
+fn collect(
+    buf: &Arc<Mutex<Vec<u8>>>,
+    done: &crossbeam_channel::Receiver<()>,
+    deadline: Instant,
+) -> String {
+    let _ = done.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    String::from_utf8_lossy(&std::mem::take(&mut *buf.lock().unwrap())).into_owned()
+}
+
+/// How long the wait sleeps between looks at the clock and the cancel flag
+/// when neither the child, a heartbeat tick nor the cancel channel wakes it
+/// first; a step of many minutes must not keep a core busy polling.
+const WAIT_TICK: Duration = Duration::from_millis(250);
+
+/// What ended the wait for a child.
+enum Waited {
+    /// The child exited by itself: its status, or the error `wait` gave.
+    Exited(std::io::Result<std::process::ExitStatus>),
+    /// The token was cancelled or the budget ran out while it was running.
+    Interrupted,
+}
+
+/// A child parked in `waitpid` on a thread of its own, so the caller sleeps
+/// on channels instead of polling `try_wait`. The thread reaps the child the
+/// moment it exits and hands its status over.
+struct Reaper {
+    pid: i32,
+    exit: crossbeam_channel::Receiver<std::io::Result<std::process::ExitStatus>>,
+}
+
+impl Reaper {
+    fn start(mut child: Child) -> Self {
+        let pid = child.id() as i32;
+        let (tx, exit) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(child.wait());
+        });
+        Reaper { pid, exit }
+    }
+
+    /// Blocks until the child exits, `cancel` is done, or `budget` (when set)
+    /// has passed since `started`. The observer's beat runs once at the start
+    /// and again on every heartbeat tick meanwhile.
+    fn await_exit<T>(
+        &self,
+        cancel: &pulse_bus::CancellationToken,
+        started: Instant,
+        budget: Duration,
+        observer: Option<&ProcessObserver>,
+        beats: Option<&crossbeam_channel::Receiver<T>>,
+    ) -> Waited {
+        let beat = observer.and_then(|o| o.beat.as_ref());
+        if let Some(beat) = beat {
+            beat();
+        }
+        let done = cancel.done();
+        let never: crossbeam_channel::Receiver<T> = crossbeam_channel::never();
+        let mut beats = beats;
+        loop {
+            let elapsed = started.elapsed();
+            if cancel.is_cancelled() || (budget > Duration::ZERO && elapsed >= budget) {
+                return Waited::Interrupted;
+            }
+            let nap = if budget > Duration::ZERO {
+                WAIT_TICK.min(budget - elapsed)
+            } else {
+                WAIT_TICK
+            };
+            crossbeam_channel::select! {
+                recv(self.exit) -> status => {
+                    return Waited::Exited(status.unwrap_or_else(|_| {
+                        Err(std::io::Error::other("the wait thread went away"))
+                    }));
+                }
+                recv(done) -> _ => return Waited::Interrupted,
+                recv(beats.unwrap_or(&never)) -> tick => match tick {
+                    Ok(_) => {
+                        if let Some(beat) = beat {
+                            beat();
+                        }
+                    }
+                    // The ticker is gone; nothing more to wake up for there.
+                    Err(_) => beats = None,
+                },
+                default(nap) => {}
+            }
+        }
+    }
+
+    /// Ends the child's process group, so `cmd &`, nohup children and servers
+    /// go with the command; the parked thread reaps the child itself. Returns
+    /// the members that had to be signalled, the child excluded.
+    fn end_group(&self, grace: Duration) -> Vec<KilledProc> {
+        ProcessGroup::with_grace(self.pid, grace)
+            .terminate()
+            .into_iter()
+            .filter(|k| k.pid != self.pid)
+            .collect()
+    }
+
+    /// The child's status once the thread has it; bounded, since a child
+    /// even SIGKILL could not end is not worth waiting for.
+    fn status(&self, wait: Duration) -> Option<std::io::Result<std::process::ExitStatus>> {
+        self.exit.recv_timeout(wait).ok()
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Outcome {
@@ -75,37 +221,21 @@ pub(crate) fn run_group_observed(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let input = stdin.to_vec();
-    let mut child = unsafe {
-        cmd.pre_exec(|| {
-            // Put the child in its own process group before exec, matching Go Setpgid.
-            if libc::setpgid(0, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-        cmd.spawn()
-    }?;
+    // The child leads its own process group (Go: Setpgid) so the whole tree
+    // it spawns ends with it, at the nice level the daemon set for its jobs.
+    own_process_group(&mut cmd);
+    crate::daemon_load::nice_child(&mut cmd);
+    let mut child = cmd.spawn()?;
     if let Some(mut sin) = child.stdin.take() {
         let _ = std::thread::spawn(move || {
             use std::io::Write;
             let _ = sin.write_all(&input);
         });
     }
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let out_thread = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout.read_to_string(&mut s);
-        s
-    });
-    let err_thread = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
-    });
+    let (out_buf, out_done) = drain(child.stdout.take().expect("stdout piped"));
+    let (err_buf, err_done) = drain(child.stderr.take().expect("stderr piped"));
 
     let started = Instant::now();
-    let mut observe = observer.is_some();
     let (beats, stop_ticks) = observer
         .map(|_| {
             (crate::heartbeat::HEARTBEAT_TICKS
@@ -113,62 +243,44 @@ pub(crate) fn run_group_observed(
                 .expect("heartbeat ticks lock"))(pulse_board::HEARTBEAT_INTERVAL)
         })
         .unzip();
-    let mut stopped = false;
-    let mut stop_observer = || {
-        if !stopped {
-            stopped = true;
-            if let Some(stop) = observer.and_then(|o| o.stop.as_ref()) {
-                stop();
-            }
+    let reaper = Reaper::start(child);
+    let waited = reaper.await_exit(cancel, started, budget, observer, beats.as_ref());
+    if let Some(stop) = observer.and_then(|o| o.stop.as_ref()) {
+        stop();
+    }
+    if let Some(stop) = stop_ticks {
+        stop();
+    }
+    // Whatever the command left behind in its group (`cmd &`, nohup
+    // children, servers) ends with the command.
+    reaper.end_group(*KILL_AFTER.read().unwrap());
+    let deadline = Instant::now() + OUTPUT_DRAIN;
+    let (code, timed_out) = match waited {
+        Waited::Exited(Err(e)) => return Err(e.into()),
+        Waited::Exited(Ok(status)) => (exit_code(status), false),
+        Waited::Interrupted => {
+            let _ = reaper.status(deadline.saturating_duration_since(Instant::now()));
+            (None, true)
         }
     };
-    loop {
-        if let Some(status) = child.try_wait()? {
-            stop_observer();
-            if let Some(stop) = stop_ticks {
-                stop();
-            }
-            let stdout = out_thread.join().unwrap_or_default();
-            let stderr = err_thread.join().unwrap_or_default();
-            let code = status.code().or_else(|| {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::process::ExitStatusExt;
-                    status.signal().map(|s| 128 + s)
-                }
-                #[cfg(not(unix))]
-                {
-                    None
-                }
-            });
-            return Ok(finish(code, &stdout, &stderr, false));
-        }
-        if cancel.is_cancelled() || (budget > Duration::ZERO && started.elapsed() >= budget) {
-            stop_observer();
-            if let Some(stop) = stop_ticks {
-                stop();
-            }
-            terminate_child_group(&mut child, *KILL_AFTER.read().unwrap());
-            let _ = child.wait();
-            let stdout = out_thread.join().unwrap_or_default();
-            let stderr = err_thread.join().unwrap_or_default();
-            return Ok(finish(None, &stdout, &stderr, true));
-        }
-        if observe {
-            if let Some(beat) = observer.and_then(|o| o.beat.as_ref()) {
-                beat();
-            }
-            observe = false;
-        }
-        if let Some(beats) = &beats
-            && beats.recv_timeout(Duration::from_millis(20)).is_ok()
+    let stdout = collect(&out_buf, &out_done, deadline);
+    let stderr = collect(&err_buf, &err_done, deadline);
+    Ok(finish(code, &stdout, &stderr, timed_out))
+}
+
+/// The exit code a status stands for: the code, or 128 plus the signal.
+fn exit_code(status: std::process::ExitStatus) -> Option<i32> {
+    status.code().or_else(|| {
+        #[cfg(unix)]
         {
-            observe = true;
-            continue;
-        } else {
-            std::thread::sleep(Duration::from_millis(20));
+            use std::os::unix::process::ExitStatusExt;
+            status.signal().map(|s| 128 + s)
         }
-    }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    })
 }
 
 /// Go: func waitCommand(ctx context.Context, cmd *exec.Cmd, budget, grace time.Duration, observer *processObserver) (error, bool, bool)
@@ -183,20 +295,12 @@ pub(crate) fn wait_command(
         return (Some(anyhow::anyhow!("cancelled")), true, false);
     }
     let start = Instant::now();
-    let spawn = unsafe {
-        cmd.pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-        cmd.spawn()
-    };
-    let mut child = match spawn {
+    own_process_group(cmd);
+    crate::daemon_load::nice_child(cmd);
+    let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return (Some(e.into()), false, false),
     };
-    let mut observe = observer.is_some();
     let (beats, stop_ticks) = observer
         .map(|_| {
             (crate::heartbeat::HEARTBEAT_TICKS
@@ -204,49 +308,21 @@ pub(crate) fn wait_command(
                 .expect("heartbeat ticks lock"))(pulse_board::HEARTBEAT_INTERVAL)
         })
         .unzip();
-    let mut stopped = false;
-    let mut stop_observer = || {
-        if !stopped {
-            stopped = true;
-            if let Some(stop) = observer.and_then(|o| o.stop.as_ref()) {
-                stop();
-            }
-        }
-    };
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                stop_observer();
-                if let Some(stop) = stop_ticks {
-                    stop();
-                }
-                return (None, false, true);
-            }
-            Ok(None) => {}
-            Err(e) => return (Some(e.into()), false, true),
-        }
-        if cancel.is_cancelled() || (budget > Duration::ZERO && start.elapsed() >= budget) {
-            stop_observer();
-            if let Some(stop) = stop_ticks {
-                stop();
-            }
-            terminate_child_group(&mut child, grace);
-            let _ = child.wait();
-            return (None, true, true);
-        }
-        if observe {
-            if let Some(beat) = observer.and_then(|o| o.beat.as_ref()) {
-                beat();
-            }
-            observe = false;
-        }
-        if let Some(beats) = &beats
-            && beats.recv_timeout(Duration::from_millis(20)).is_ok()
-        {
-            observe = true;
-            continue;
-        } else {
-            std::thread::sleep(Duration::from_millis(20));
+    let reaper = Reaper::start(child);
+    let waited = reaper.await_exit(cancel, start, budget, observer, beats.as_ref());
+    if let Some(stop) = observer.and_then(|o| o.stop.as_ref()) {
+        stop();
+    }
+    if let Some(stop) = stop_ticks {
+        stop();
+    }
+    reaper.end_group(grace);
+    match waited {
+        Waited::Exited(Err(e)) => (Some(e.into()), false, true),
+        Waited::Exited(Ok(_)) => (None, false, true),
+        Waited::Interrupted => {
+            let _ = reaper.status(OUTPUT_DRAIN);
+            (None, true, true)
         }
     }
 }
@@ -255,41 +331,22 @@ pub(crate) fn kill_group(pid: i32) {
     kill_group_after(pid, Duration::from_secs(5));
 }
 /// Go: func killGroupAfter(pid int, done <-chan error, grace time.Duration)
+/// SIGTERM the group, wait up to `grace` for it to empty, then SIGKILL it.
 pub(crate) fn kill_group_after(pid: i32, grace: Duration) {
-    let _ = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid),
-        nix::sys::signal::Signal::SIGTERM,
-    );
-    std::thread::sleep(grace);
-    let _ = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid),
-        nix::sys::signal::Signal::SIGKILL,
-    );
+    ProcessGroup::with_grace(pid, grace).terminate();
 }
-fn terminate_child_group(child: &mut Child, grace: Duration) {
-    let pid = child.id() as i32;
-    let _ = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid),
-        nix::sys::signal::Signal::SIGTERM,
-    );
-    let deadline = Instant::now() + grace;
-    while Instant::now() < deadline {
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
+/// Kills what still works under a job directory and writes one log line per
+/// process; for the moment right before the directory is removed.
+pub(crate) fn sweep_job_dir(dir: &str, log: &mut dyn FnMut(String)) -> Vec<KilledProc> {
+    let killed = kill_tree_under(Path::new(dir));
+    if !killed.is_empty() {
+        log(format!(
+            "killed {} straggler process(es) under {dir}: {}",
+            killed.len(),
+            describe_killed(&killed)
+        ));
     }
-    let _ = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid),
-        nix::sys::signal::Signal::SIGKILL,
-    );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    killed
 }
 pub(crate) static KILL_AFTER: LazyLock<RwLock<Duration>> =
     LazyLock::new(|| RwLock::new(Duration::from_secs(5)));
@@ -342,4 +399,178 @@ pub(crate) fn environ() -> Vec<String> {
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>(),
     )
+}
+
+#[cfg(test)]
+mod process_tree_tests {
+    use super::*;
+
+    fn alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["/bin/sh".into(), "-c".into(), script.into()]
+    }
+
+    fn env() -> Vec<String> {
+        vec!["PATH=/usr/bin:/bin".into()]
+    }
+
+    fn bg_pid(dir: &Path) -> i32 {
+        std::fs::read_to_string(dir.join("bg.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn run_group_ends_the_background_children_of_a_finished_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run_group(
+            &pulse_bus::CancellationToken::new(),
+            &sh("sleep 300 & echo $! > bg.pid; echo done"),
+            &dir.path().display().to_string(),
+            &env(),
+            b"",
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(out.exit_code, 0, "{out:?}");
+        assert!(!out.timeout);
+        assert_eq!(out.stdout, "done\n");
+        let bg = bg_pid(dir.path());
+        assert!(!alive(bg), "sleep 300 (pid {bg}) outlived the command");
+    }
+
+    #[test]
+    fn run_group_returns_although_a_background_child_held_the_pipes() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = Instant::now();
+        let out = run_group(
+            &pulse_bus::CancellationToken::new(),
+            &sh("sleep 300 & echo held"),
+            &dir.path().display().to_string(),
+            &env(),
+            b"",
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(out.stdout, "held\n");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn run_group_on_timeout_kills_the_whole_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = Instant::now();
+        let out = run_group(
+            &pulse_bus::CancellationToken::new(),
+            &sh("sleep 300 & echo $! > bg.pid; sleep 300"),
+            &dir.path().display().to_string(),
+            &env(),
+            b"",
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        assert!(out.timeout);
+        assert_eq!(out.exit_code, -1);
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "took {:?}",
+            start.elapsed()
+        );
+        let bg = bg_pid(dir.path());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive(bg) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !alive(bg),
+            "background sleep (pid {bg}) survived the timeout"
+        );
+    }
+
+    #[test]
+    fn wait_command_ends_the_group_after_a_normal_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("sleep 300 & echo $! > bg.pid")
+            .current_dir(dir.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let (err, timed_out, _) = wait_command(
+            &pulse_bus::CancellationToken::new(),
+            &mut cmd,
+            Duration::from_secs(10),
+            Duration::from_millis(500),
+            None,
+        );
+        assert!(err.is_none());
+        assert!(!timed_out);
+        let bg = bg_pid(dir.path());
+        assert!(!alive(bg), "sleep 300 (pid {bg}) outlived wait_command");
+    }
+
+    #[test]
+    fn sweep_job_dir_logs_what_it_killed_and_spares_the_rest() {
+        let job = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let spawn = |dir: &Path| {
+            let mut cmd = Command::new("/bin/sh");
+            cmd.arg("-c")
+                .arg("sleep 300")
+                .current_dir(dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            own_process_group(&mut cmd);
+            cmd.spawn().unwrap()
+        };
+        let mut inside = spawn(job.path());
+        let mut bystander = spawn(other.path());
+        let inside_pid = inside.id() as i32;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !processes_under(job.path())
+            .iter()
+            .any(|p| p.pid == inside_pid)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "process never showed under the job dir"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut lines = Vec::new();
+        let killed = sweep_job_dir(&job.path().display().to_string(), &mut |l| lines.push(l));
+        assert!(killed.iter().any(|k| k.pid == inside_pid), "{killed:?}");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("killed 1 straggler process(es) under"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains(&format!("pid {inside_pid}")), "{lines:?}");
+        assert!(!inside.wait().unwrap().success());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(bystander.try_wait().unwrap().is_none(), "bystander died");
+        ProcessGroup::with_grace(bystander.id() as i32, Duration::from_secs(2)).terminate_reaping(
+            || {
+                let _ = bystander.try_wait();
+            },
+        );
+        let _ = bystander.wait();
+        let mut quiet = Vec::new();
+        assert!(
+            sweep_job_dir(&job.path().display().to_string(), &mut |l| quiet.push(l)).is_empty()
+        );
+        assert!(quiet.is_empty());
+    }
 }

@@ -454,6 +454,86 @@ impl Store {
             .optional()?;
         Ok(v.map_or((String::new(), false), |v| (v, true)))
     }
+
+    /// Page accounting of the store file: how big it is and how much of it is free
+    /// pages that only a vacuum gives back to the file system.
+    pub fn db_space(&self) -> Result<DbSpace> {
+        let conn = self.conn()?;
+        let pragma = |name: &str| -> Result<i64> {
+            Ok(conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))?)
+        };
+        Ok(DbSpace {
+            page_size: pragma("page_size")?,
+            page_count: pragma("page_count")?,
+            freelist_count: pragma("freelist_count")?,
+            auto_vacuum: pragma("auto_vacuum")?,
+        })
+    }
+
+    /// Gives free pages back to the file system. A store already in incremental
+    /// auto-vacuum mode frees at most `max_pages` in one short write transaction; one that
+    /// is not is switched to incremental mode with the one full `VACUUM` that switch needs
+    /// (a copy of the whole file, which blocks other writers for its duration - the caller
+    /// picks an idle moment and checks disk room with `db_space` first). Neither runs when
+    /// nothing is free.
+    pub fn vacuum(&self, max_pages: i64) -> Result<VacuumResult> {
+        let before = self.db_space()?;
+        let conn = self.conn()?;
+        let started = std::time::Instant::now();
+        let mode = if before.freelist_count == 0 {
+            "none"
+        } else if before.auto_vacuum == AUTO_VACUUM_INCREMENTAL {
+            // The pragma frees one page per step and yields a row for each, so it has
+            // to be stepped to the end; `execute_batch` would stop after the first page.
+            let mut stmt =
+                conn.prepare(&format!("PRAGMA incremental_vacuum({})", max_pages.max(1)))?;
+            let mut rows = stmt.query([])?;
+            while rows.next()?.is_some() {}
+            "incremental"
+        } else {
+            conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+            conn.execute_batch("VACUUM")?;
+            "full"
+        };
+        let after = self.db_space()?;
+        Ok(VacuumResult {
+            mode: mode.into(),
+            freed_bytes: (before.bytes() - after.bytes()).max(0),
+            free_bytes_after: after.free_bytes(),
+            auto_vacuum: after.auto_vacuum,
+            millis: started.elapsed().as_millis() as i64,
+        })
+    }
+}
+
+/// `PRAGMA auto_vacuum` value for incremental mode.
+pub const AUTO_VACUUM_INCREMENTAL: i64 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbSpace {
+    pub page_size: i64,
+    pub page_count: i64,
+    pub freelist_count: i64,
+    pub auto_vacuum: i64,
+}
+
+impl DbSpace {
+    pub fn bytes(&self) -> i64 {
+        self.page_size * self.page_count
+    }
+    pub fn free_bytes(&self) -> i64 {
+        self.page_size * self.freelist_count
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VacuumResult {
+    /// `none`, `incremental` or `full`.
+    pub mode: String,
+    pub freed_bytes: i64,
+    pub free_bytes_after: i64,
+    pub auto_vacuum: i64,
+    pub millis: i64,
 }
 
 pub struct Tx {
@@ -1139,6 +1219,53 @@ mod tests {
             "checkpoint did not report truncation after {before}: {got:?}"
         );
         assert!(wal_size(&s.path) <= 4096);
+    }
+
+    #[test]
+    fn vacuum_converts_once_then_frees_slices() {
+        let _serial = crate::test_helpers::serial();
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        let fill = |s: &Store| {
+            let conn = s.conn().unwrap();
+            let payload = "y".repeat(4096);
+            for n in 0..600 {
+                conn.execute(
+                    "INSERT INTO harness_steps (session_id, n, at, kind, content) VALUES ('hs-vac', ?, '2026-09-06T10:00:00Z', 'assistant', ?)",
+                    rusqlite::params![n, payload],
+                )
+                .unwrap();
+            }
+            conn.execute("DELETE FROM harness_steps WHERE session_id = 'hs-vac'", [])
+                .unwrap();
+        };
+        let space = s.db_space().unwrap();
+        assert_eq!(space.auto_vacuum, 0, "a fresh store is not auto-vacuumed");
+        assert_eq!(
+            s.vacuum(1000).unwrap().mode,
+            "none",
+            "nothing free, nothing to vacuum"
+        );
+        fill(&s);
+        let space = s.db_space().unwrap();
+        assert!(
+            space.freelist_count > 0,
+            "deletes left no free pages: {space:?}"
+        );
+        let got = s.vacuum(1000).unwrap();
+        assert_eq!(got.mode, "full", "{got:?}");
+        assert_eq!(got.auto_vacuum, AUTO_VACUUM_INCREMENTAL);
+        assert!(got.freed_bytes > 0 && got.free_bytes_after == 0, "{got:?}");
+        s.checkpoint().unwrap();
+        fill(&s);
+        let space = s.db_space().unwrap();
+        assert!(space.freelist_count > 0, "{space:?}");
+        let got = s.vacuum(space.freelist_count).unwrap();
+        assert_eq!(got.mode, "incremental", "{got:?}");
+        assert_eq!(got.free_bytes_after, 0, "{got:?}");
+        assert!(got.freed_bytes > 0, "{got:?}");
     }
 
     #[test]

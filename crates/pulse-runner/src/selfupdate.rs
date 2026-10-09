@@ -23,6 +23,10 @@ pub(crate) struct SelfUpdateState {
     /// A build is due but waits for the experiment lane to finish its
     /// measurement; the lane starts no new experiment while this is set.
     pub(crate) lane_wait: bool,
+    /// A build is due but waits for the machine: saturated, or every slot
+    /// under daemon.max_jobs holds a run. The dispatcher keeps one local
+    /// slot free while this is set so the build starts within one run.
+    pub(crate) build_wait: bool,
 }
 
 pub(crate) static SELF_UPDATE_STATE: LazyLock<RwLock<SelfUpdateState>> =
@@ -38,6 +42,12 @@ pub(crate) struct SelfUpdateEnv {
     pub inflight: i32,
     /// The experiment lane is measuring; the daemon sets it per pass.
     pub measuring: bool,
+    /// Local runs in flight on this machine; the daemon sets it per pass.
+    pub local_inflight: i32,
+    /// The load governor's limits; None (tests, `pulse work`) builds
+    /// whenever the checkout differs, as before the governor.
+    #[serde(skip)]
+    pub governor: Option<crate::daemon_load::Limits>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -57,14 +67,15 @@ pub(crate) fn short_rev(rev: String) -> String {
     }
 }
 
-/// True while a self-update is building or waits for the experiment lane;
-/// the lane then measures nothing new, so the update is never starved and a
+/// True while a self-update is building or waits for the experiment lane
+/// or for room on the machine; the lane then measures nothing new and the
+/// dispatcher keeps one slot free, so the update is never starved and a
 /// measurement is never thrown away by the restart it brings.
 pub(crate) fn update_pending() -> bool {
     let st = SELF_UPDATE_STATE
         .read()
         .expect("self-update state poisoned");
-    st.inflight || st.lane_wait
+    st.inflight || st.lane_wait || st.build_wait
 }
 
 /// Go: func tendBinary(s *store.Store, now string, env selfUpdateEnv) []string
@@ -76,8 +87,10 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
     if st.inflight {
         return lines;
     }
-    // Each pass decides afresh whether a due build waits for the lane.
+    // Each pass decides afresh whether a due build waits for the lane or
+    // for the machine.
     st.lane_wait = false;
+    st.build_wait = false;
     let say = |st: &mut SelfUpdateState, lines: &mut Vec<String>, reason: String| {
         if reason != st.last_skip {
             st.last_skip = reason.clone();
@@ -180,6 +193,27 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
         );
         return lines;
     }
+    // The build is a full release compile; on a saturated laptop it would
+    // fight the runs for the machine, so it waits for room (daemon_load.rs).
+    if let Some(limits) = env.governor.as_ref()
+        && let Some(hold) = crate::daemon_load::build_hold(
+            limits,
+            &crate::daemon_load::pressure(),
+            env.local_inflight.max(0) as usize,
+        )
+    {
+        st.build_wait = true;
+        say(
+            &mut st,
+            &mut lines,
+            format!(
+                "brain HEAD {} differs from the running {}; building once the machine has room: {hold}",
+                short_rev(rev.clone()),
+                short_rev(env.revision.clone())
+            ),
+        );
+        return lines;
+    }
     st.last_skip.clear();
     st.inflight = true;
     lines.push(format!(
@@ -220,6 +254,8 @@ pub(crate) fn build_and_install(
     let new_binary = format!("{}.new", env.binary);
     let _ = std::fs::remove_file(&new_binary);
     let target_dir = std::path::Path::new(&repo).join("target");
+    // Half the cores: the build never takes the whole machine from the runs.
+    let jobs = crate::daemon_load::Machine::detect().build_jobs();
     let build_args = vec![
         "build".to_string(),
         "--release".to_string(),
@@ -228,6 +264,8 @@ pub(crate) fn build_and_install(
         "pulse".to_string(),
         "--target-dir".to_string(),
         target_dir.display().to_string(),
+        "-j".to_string(),
+        jobs.to_string(),
     ];
     let (out, err) = run_in(repo.clone(), timeout, env.cargo_cmd.clone(), &build_args);
     if let Some(err) = err {
@@ -393,6 +431,11 @@ pub(crate) fn self_update_finding(
 }
 
 /// Go: func runIn(dir string, timeout time.Duration, name string, args ...string) (string, error)
+///
+/// The child runs at nice [`crate::daemon_load::CHILD_NICE`]: it is the
+/// daemon's own build or smoke test, never the owner's work. Its output is
+/// drained while it runs (a build with many warnings once filled the pipe
+/// and hung until the timeout), and the wait polls ten times a second.
 pub(crate) fn run_in(
     dir: String,
     timeout: std::time::Duration,
@@ -417,6 +460,7 @@ pub(crate) fn run_in(
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    crate::daemon_load::low_priority(&mut cmd);
     let base = std::path::Path::new(&name)
         .file_name()
         .and_then(|s| s.to_str())
@@ -426,23 +470,23 @@ pub(crate) fn run_in(
         Ok(child) => child,
         Err(err) => return (String::new(), Some(err.into())),
     };
+    let stdout = Drained::read(child.stdout.take());
+    let stderr = Drained::read(child.stderr.take());
+    let text = |grace: Duration| {
+        let mut text = String::from_utf8_lossy(&stdout.bytes(grace)).into_owned();
+        text.push_str(&String::from_utf8_lossy(&stderr.bytes(grace)));
+        text
+    };
     let deadline = std::time::Instant::now() + timeout;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
-                    let out = child.wait_with_output();
-                    let text = out
-                        .map(|out| {
-                            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
-                            text.push_str(&String::from_utf8_lossy(&out.stderr));
-                            text
-                        })
-                        .unwrap_or_default();
+                    let _ = child.wait();
                     return (
-                        text,
+                        text(Duration::ZERO),
                         Some(anyhow!(
                             "{} timed out after {}",
                             base,
@@ -450,32 +494,68 @@ pub(crate) fn run_in(
                         )),
                     );
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(100));
             }
             Err(err) => {
                 let _ = child.kill();
-                let out = child.wait_with_output().ok();
-                let text = out
-                    .map(|out| {
-                        let mut text = String::from_utf8_lossy(&out.stdout).to_string();
-                        text.push_str(&String::from_utf8_lossy(&out.stderr));
-                        text
-                    })
-                    .unwrap_or_default();
-                return (text, Some(err.into()));
+                let _ = child.wait();
+                return (text(Duration::ZERO), Some(err.into()));
             }
         }
-    }
-    let out = match child.wait_with_output() {
-        Ok(out) => out,
-        Err(err) => return (String::new(), Some(err.into())),
     };
-    let mut text = String::from_utf8_lossy(&out.stdout).to_string();
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    if out.status.success() {
+    let text = text(Duration::from_secs(5));
+    if status.success() {
         (text, None)
     } else {
-        (text, Some(anyhow!(pulse_hooks::exit_text(out.status))))
+        (text, Some(anyhow!(pulse_hooks::exit_text(status))))
+    }
+}
+
+/// A child's pipe read to its end on a thread, so a chatty build never
+/// fills the pipe and stalls; the bytes are taken once the child is gone.
+struct Drained {
+    buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drained {
+    fn read<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> Self {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(pipe.is_none()));
+        if let Some(mut pipe) = pipe {
+            let sink = buf.clone();
+            let done = closed.clone();
+            let spawned = std::thread::Builder::new()
+                .name("selfupdate-drain".into())
+                .spawn(move || {
+                    let mut chunk = [0u8; 8192];
+                    while let Ok(n) = std::io::Read::read(&mut pipe, &mut chunk) {
+                        if n == 0 {
+                            break;
+                        }
+                        sink.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .extend_from_slice(&chunk[..n]);
+                    }
+                    done.store(true, std::sync::atomic::Ordering::SeqCst);
+                });
+            if spawned.is_err() {
+                closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        Self { buf, closed }
+    }
+
+    /// The bytes read so far, after waiting up to `grace` for the pipe to
+    /// close (a grandchild that keeps it open bounds the wait, not the daemon).
+    fn bytes(&self, grace: Duration) -> Vec<u8> {
+        let deadline = std::time::Instant::now() + grace;
+        while !self.closed.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -747,6 +827,55 @@ mod tests {
             "old binary",
             "pulse was touched while waiting"
         );
+    }
+
+    #[test]
+    fn self_update_waits_for_room_on_the_machine_and_says_so_once() {
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        reset_self_update();
+        let (s, repo, env, _fixture) = self_update_fixture();
+        let rev = head_of(&repo);
+        // A cap of one with one local run in flight: the build waits and the
+        // dispatcher sees the update pending, so it keeps a slot free.
+        let mut full = env.clone();
+        full.local_inflight = 1;
+        full.governor = Some(crate::daemon_load::Limits {
+            max_jobs: 1,
+            max_load: f64::MAX,
+            min_free_mem_mb: 0,
+            source: "test",
+        });
+        let lines = tend_binary(&s, TEST_NOW.into(), full.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains(&format!(
+                    "self-update: brain HEAD {} differs from the running 000000000000; building once the machine has room: 1 local run(s) in flight fill daemon.max_jobs 1",
+                    &rev[..12]
+                )),
+            "full: {lines:?}"
+        );
+        assert!(update_pending(), "a build waiting for room is pending");
+        let lines = tend_binary(&s, TEST_NOW.into(), full.clone());
+        assert!(lines.is_empty(), "said twice: {lines:?}");
+        assert!(
+            !file_exists(&format!("{}.new", env.binary)),
+            "something was built while the machine was full"
+        );
+        // The run finished: the slot the dispatcher kept free admits the build.
+        full.local_inflight = 0;
+        let lines = tend_binary(&s, TEST_NOW.into(), full.clone());
+        assert!(
+            lines.len() == 1 && lines[0].ends_with("; building"),
+            "room: {lines:?}"
+        );
+        wait_self_update_idle();
+        let lines = tend_binary(&s, TEST_NOW.into(), full);
+        assert!(
+            lines.len() == 1 && lines[0].contains(&format!("pulse rebuilt from {}", &rev[..12])),
+            "built once the machine had room: {lines:?}"
+        );
+        assert!(!update_pending(), "nothing pending after the install");
     }
 
     #[test]

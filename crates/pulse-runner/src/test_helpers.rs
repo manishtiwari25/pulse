@@ -465,6 +465,32 @@ pub(crate) fn count(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::To
         .int("n")
 }
 
+/// Entries left under `PULSE_HOME/work` once the trash remover is done: a
+/// finished run leaves its clone in `work/.trash` for the low-priority
+/// remover (`retention::discard_dir`), so a test that wants "nothing left"
+/// waits for that and ignores the empty trash folder itself.
+pub(crate) fn work_leftovers(home: &str) -> Vec<String> {
+    let home = Path::new(home);
+    for _ in 0..400 {
+        if crate::retention::trash_entries(home) == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let trash = crate::retention::trash_dir(home);
+    let mut left: Vec<String> = std::fs::read_dir(home.join("work"))
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| *p != trash || crate::retention::trash_entries(home) != 0)
+                .map(|p| p.display().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    left.sort();
+    left
+}
+
 /// Go: func recipeWith(...)
 pub(crate) fn recipe_with(
     tools: Option<&[&str]>,

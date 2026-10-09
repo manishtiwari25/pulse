@@ -568,6 +568,9 @@ pub fn serve(ctx: &CancellationToken, listener: TcpListener, handler: HandlerFn)
                         let _ = builder.serve_connection(TokioIo::new(stream), service).await;
                     });
                 }
+                // Reap closed connections as they finish; otherwise the set
+                // keeps every finished task until shutdown.
+                Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {}
             }
         }

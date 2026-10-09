@@ -137,8 +137,79 @@ pub(crate) fn f2_temp_dir() -> Scratch {
     Scratch(dir)
 }
 
+/// FIFOs handed to quiet workers that no test has finished or discarded yet.
+/// A test that panics half-way leaves its `sh` worker blocked in `open()` on
+/// the FIFO; once the directory is gone nothing can ever release it, and the
+/// orphan sits on the machine for days. The janitor releases every FIFO still
+/// registered when the test binary exits.
+static OPEN_FIFOS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+static FIFO_JANITOR: std::sync::Once = std::sync::Once::new();
+
+fn register_fifo(path: &Path) {
+    FIFO_JANITOR.call_once(|| unsafe {
+        libc::atexit(release_open_fifos);
+    });
+    OPEN_FIFOS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(path.to_path_buf());
+}
+
+fn unregister_fifo(path: &Path) {
+    OPEN_FIFOS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|p| p != path);
+}
+
+extern "C" fn release_open_fifos() {
+    let paths = std::mem::take(&mut *OPEN_FIFOS.lock().unwrap_or_else(|e| e.into_inner()));
+    release_fifos(paths);
+}
+
+fn release_fifos(paths: Vec<PathBuf>) {
+    for path in paths {
+        release_fifo_reader(&path);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+/// Wakes a worker blocked opening or reading the FIFO without ever blocking
+/// ourselves: an O_RDWR|O_NONBLOCK open of a FIFO returns at once and counts
+/// as a writer, so the reader's `open()` completes and its `read` gets a line.
+/// A worker that has not reached `open()` yet fails on the removed path.
+fn release_fifo_reader(path: &Path) {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    let Ok(mut pipe) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+    else {
+        return;
+    };
+    let _ = pipe.write_all(b"finish\n");
+    // Stay the writer until the line is consumed (a reader woken from
+    // `open()` needs a moment to read), bounded so an absent reader costs
+    // little.
+    let deadline = std::time::Instant::now() + Duration::from_millis(250);
+    while std::time::Instant::now() < deadline {
+        let mut pending: libc::c_int = 0;
+        let rc = unsafe { libc::ioctl(pipe.as_raw_fd(), libc::FIONREAD, &mut pending) };
+        if rc != 0 || pending == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// A FIFO in a scratch directory of its own; `finish_heartbeat_fifo` or
 /// `discard_heartbeat_fifo` removes the directory, or the gate's `Drop` does.
+/// Whatever is left when the test binary exits is released and removed by the
+/// FIFO janitor, so a failed test never leaves a worker behind.
 pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
     let path = f2_temp_dir().keep().join("finish");
     let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
@@ -146,6 +217,7 @@ pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
     if rc != 0 {
         panic!("mkfifo: {}", std::io::Error::last_os_error());
     }
+    register_fifo(&path);
     (
         path.display().to_string(),
         vec![
@@ -158,16 +230,22 @@ pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
     )
 }
 
+/// Releases the worker: the blocking write waits for the reader to open the
+/// FIFO, so a worker still starting up is never left without a writer.
 pub(crate) fn finish_heartbeat_fifo(path: &str) {
     std::fs::write(path, b"finish\n").unwrap();
     // The reader holds the FIFO open by now; its scratch directory is done.
     discard_heartbeat_fifo(path);
 }
 
-/// Removes a FIFO's scratch directory when no reader will ever be released
-/// (the worker was killed, cancelled, or never launched).
+/// Removes a FIFO's scratch directory when no reader is expected to be
+/// waiting (the worker was killed, cancelled, or never launched); a reader
+/// that is waiting after all is released first rather than stranded.
 pub(crate) fn discard_heartbeat_fifo(path: &str) {
-    if let Some(dir) = Path::new(path).parent() {
+    let path = Path::new(path);
+    unregister_fifo(path);
+    release_fifo_reader(path);
+    if let Some(dir) = path.parent() {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
@@ -444,4 +522,102 @@ pub(crate) fn daemon_retry_fixture() -> (crate::test_helpers::TestStore, crate::
     .unwrap();
     crate::plan::plan_jobs(&s, "proj".into(), s.now(), pulse_store::HUMAN_AGENT.into()).unwrap();
     (s, job)
+}
+
+#[cfg(test)]
+mod fifo_janitor_tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+
+    fn spawn_worker(argv: &[String]) -> std::process::Child {
+        Command::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    fn wait_blocked_on_open(pid: u32) {
+        // The shell is parked in open() once `ps` shows it sleeping; a short
+        // settle covers the shell start-up on slow machines too.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let ps = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&ps.stdout).trim().to_string();
+            if stat.starts_with('S') || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    fn finished(child: std::process::Child) -> bool {
+        let out = child.wait_with_output().unwrap();
+        out.status.success()
+            && String::from_utf8_lossy(&out.stdout).contains("SUMMARY: quiet worker finished")
+    }
+
+    #[test]
+    fn discarding_a_fifo_releases_a_worker_still_waiting_on_it() {
+        let (fifo, argv) = heartbeat_fifo();
+        let child = spawn_worker(&argv);
+        wait_blocked_on_open(child.id());
+        discard_heartbeat_fifo(&fifo);
+        assert!(!Path::new(&fifo).exists());
+        assert!(finished(child), "the worker was left blocked on the FIFO");
+        assert!(
+            !OPEN_FIFOS
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p == Path::new(&fifo)),
+            "discarded FIFO still registered"
+        );
+    }
+
+    #[test]
+    fn the_janitor_releases_every_fifo_a_failed_test_left_behind() {
+        let (fifo, argv) = heartbeat_fifo();
+        let (idle, _) = heartbeat_fifo();
+        let child = spawn_worker(&argv);
+        wait_blocked_on_open(child.id());
+        assert!(
+            OPEN_FIFOS
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p == Path::new(&fifo))
+        );
+        // A panicking test never reaches finish/discard; the exit hook does
+        // what `release_fifos` does here, for every FIFO still registered.
+        // This test takes only its own, so heartbeat tests running alongside
+        // keep their workers.
+        let mine = {
+            let mut reg = OPEN_FIFOS.lock().unwrap();
+            let (mine, rest): (Vec<PathBuf>, Vec<PathBuf>) = std::mem::take(&mut *reg)
+                .into_iter()
+                .partition(|p| p == Path::new(&fifo) || p == Path::new(&idle));
+            *reg = rest;
+            mine
+        };
+        assert_eq!(mine.len(), 2);
+        release_fifos(mine);
+        assert!(finished(child), "the janitor did not release the worker");
+        assert!(!Path::new(&fifo).exists());
+        assert!(!Path::new(&idle).exists());
+        assert!(
+            !OPEN_FIFOS
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p == Path::new(&fifo) || p == Path::new(&idle)),
+            "released FIFOs still registered"
+        );
+    }
 }

@@ -1471,10 +1471,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 panic!("no {action} event; have {actions:?}");
             }
         }
-        let work_entries = std::fs::read_dir(std::path::Path::new(&s.home).join("work"))
-            .map(|rd| rd.count())
-            .unwrap_or(0);
-        assert_eq!(work_entries, 0, "clone left behind");
+        let left = crate::test_helpers::work_leftovers(&s.home);
+        assert!(left.is_empty(), "clone left behind: {left:?}");
         assert!(
             !std::path::Path::new(&dir).join("PULSE_RESULT.md").exists(),
             "a result file appeared in the checkout"

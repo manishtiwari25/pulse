@@ -58,6 +58,7 @@ pub mod running;
 pub mod server;
 pub mod service;
 pub mod store_views;
+pub mod view_cache;
 
 pub use additions::*;
 pub use board::*;

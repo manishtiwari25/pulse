@@ -135,8 +135,17 @@ pub fn project_watermark(s: &pulse_store::Store, project: &str, area: &str) -> R
         [project],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )?;
-    let events_max: i64 =
-        conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?;
+    // Only landings and constitution amendments can change a tally through
+    // the bus; the bulk of the bus (harness steps, every second or two) must
+    // not evict it. Both ranges walk the (action, subject, seq) index.
+    let events_max: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(m), 0) FROM (
+            SELECT MAX(seq) AS m FROM events WHERE action >= 'land.' AND action < 'land/'
+            UNION ALL
+            SELECT MAX(seq) FROM events WHERE action >= 'constitution.' AND action < 'constitution/')",
+        [],
+        |r| r.get(0),
+    )?;
     let (records_count, records_updated) =
         table_version(s, "records", "project", project, "updated_at");
     let (revs_count, revs_at) = record_revision_version(s, project);

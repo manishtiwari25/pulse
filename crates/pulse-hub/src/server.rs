@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 pub(crate) type JsonMap = BTreeMap<String, Value>;
 pub type LoadHubFn = Box<dyn Fn() -> Result<()> + Send + Sync>;
@@ -23,8 +23,10 @@ pub struct Handler {
     pub port: i64,
     pub handover: Option<HandoverFn>,
     pub(crate) provider_cache: ProviderCache,
-    pub(crate) org_cache: Mutex<Vec<u8>>,
-    pub(crate) org_cache_at: Mutex<Option<SystemTime>>,
+    /// Board snapshots and organization responses shared between requests.
+    pub(crate) views: Arc<crate::view_cache::ViewCache>,
+    /// How long a shared snapshot or organization response may be served
+    /// after it was built; zero disables sharing (every request rebuilds).
     pub(crate) org_cache_ttl: Duration,
 }
 
@@ -276,8 +278,7 @@ pub fn new_handler(
         port: 0,
         handover: None,
         provider_cache: Arc::new(Mutex::new(BTreeMap::new())),
-        org_cache: Mutex::new(Vec::new()),
-        org_cache_at: Mutex::new(None),
+        views: Arc::new(crate::view_cache::ViewCache::default()),
         org_cache_ttl: Duration::from_secs(60),
     }
 }
@@ -501,8 +502,7 @@ impl Handler {
             port: self.port,
             handover: self.handover.clone(),
             provider_cache: self.provider_cache.clone(),
-            org_cache: Mutex::new(self.org_cache.lock().expect("org cache").clone()),
-            org_cache_at: Mutex::new(*self.org_cache_at.lock().expect("org cache at")),
+            views: self.views.clone(),
             org_cache_ttl: self.org_cache_ttl,
         }
     }

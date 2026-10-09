@@ -215,6 +215,11 @@ pub struct Observation {
 pub trait Environment: Send {
     fn execute(&mut self, cancel: &CancelToken, command: &str, timeout: Duration) -> Observation;
     fn info(&self) -> BTreeMap<String, String>;
+    /// Called once when the run ends, whatever the exit status: the
+    /// environment ends whatever the commands left running and reports it.
+    fn close(&mut self) -> Vec<pulse_cli::procs::KilledProc> {
+        Vec::new()
+    }
 }
 
 pub struct Agent {
@@ -981,6 +986,18 @@ impl Agent {
     }
 
     fn finish(&mut self, status: &str, submission: &str, err_text: &str) -> ResultSummary {
+        let stragglers = self.env.close();
+        if !stragglers.is_empty() {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: format!(
+                    "killed {} process(es) the run left under its clone: {}",
+                    stragglers.len(),
+                    pulse_cli::procs::describe_killed(&stragglers)
+                ),
+                ..Step::default()
+            });
+        }
         self.result.exit_status = status.to_string();
         self.result.submission = submission.to_string();
         self.result.error = err_text.to_string();
@@ -1080,6 +1097,7 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "```edit\nsrc/lib.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```\n",
     "Each shell command runs in a fresh non-interactive {{.Info.shell}} in the working directory.\n",
     "No state survives between commands: cd, exports, aliases, and shell variables are lost.\n",
+    "Background processes a command starts (cmd &, nohup, servers) are killed when the command ends; to smoke-test a server, start it, probe it, and stop it within one command.\n",
     "Chain setup and use with &&, or use absolute paths.\n",
     "Commands time out after {{.StepTimeout}}.\n",
     "Keep outputs small with head, tail, grep, and focused test selectors.\n",

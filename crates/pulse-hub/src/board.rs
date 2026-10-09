@@ -22,6 +22,13 @@ fn post_at<'a>(
 
 pub trait TallySource: Send + Sync {
     fn records(&self, project: &str, area: &str) -> Result<String>;
+
+    /// The tally the records were rendered from, when the source has one:
+    /// lets a snapshot reuse its posts and duplicates instead of loading
+    /// and tallying the project again. `None` falls back to `records`.
+    fn tally(&self, _project: &str, _area: &str) -> Result<Option<pulse_tally::TallyResult>> {
+        Ok(None)
+    }
 }
 
 /// Go: type nativeTally struct{ store *store.Store }
@@ -37,6 +44,15 @@ impl TallySource for NativeTally {
             area,
             pulse_tally::Thresholds::default(),
         )
+    }
+
+    fn tally(&self, project: &str, area: &str) -> Result<Option<pulse_tally::TallyResult>> {
+        Ok(Some(pulse_tally::compute(
+            &self.store,
+            project,
+            area,
+            pulse_tally::Thresholds::default(),
+        )?))
     }
 }
 
@@ -97,12 +113,28 @@ impl crate::server::Handler {
             .as_deref()
             .ok_or_else(|| anyhow!("the store is unavailable"))?;
         let p = self.entry(project)?;
-        let text = if let Some(source) = &self.source {
-            source.records(project, area)?
-        } else {
-            pulse_tally::records(store, project, area, pulse_tally::Thresholds::default())?
+        // One tally serves the records, the post rows and the plan context;
+        // the records-only path (test sources) loads posts a second time.
+        let mut tally = match &self.source {
+            Some(source) => source.tally(project, area)?,
+            None => Some(pulse_tally::compute(
+                store,
+                project,
+                area,
+                pulse_tally::Thresholds::default(),
+            )?),
         };
-        let raw_posts = pulse_tally::posts_for(store, project, "")?;
+        let text = match (&tally, &self.source) {
+            (Some(res), _) => res.records(),
+            (None, Some(source)) => source.records(project, area)?,
+            (None, None) => {
+                pulse_tally::records(store, project, area, pulse_tally::Thresholds::default())?
+            }
+        };
+        let raw_posts = match tally.as_mut() {
+            Some(res) if area.is_empty() => std::mem::take(&mut res.posts),
+            _ => pulse_tally::posts_for(store, project, "")?,
+        };
         let open_jobs = pulse_tally::open_suggestion_jobs(store)?;
         let db_posts = raw_posts
             .into_iter()
@@ -213,17 +245,24 @@ impl crate::server::Handler {
             ],
         );
         let now = params.get("now").cloned().unwrap_or_default();
-        let plan_res = pulse_tally::compute_light(
-            store,
-            project,
-            "",
-            pulse_tally::Thresholds {
-                now: now.clone(),
-                ..Default::default()
-            },
-        )
-        .ok();
-        let plan_ctx = pulse_tally::plan_context_for(store, project, &now, plan_res.as_ref());
+        let plan_fallback;
+        let plan_res = match &tally {
+            Some(res) if area.is_empty() => Some(res),
+            _ => {
+                plan_fallback = pulse_tally::compute_light(
+                    store,
+                    project,
+                    "",
+                    pulse_tally::Thresholds {
+                        now: now.clone(),
+                        ..Default::default()
+                    },
+                )
+                .ok();
+                plan_fallback.as_ref()
+            }
+        };
+        let plan_ctx = pulse_tally::plan_context_for(store, project, &now, plan_res);
         d.enrich_threads();
         d.collect_owner_questions(&decided_posts(store, project)?);
         for row in &mut d.proposals {
@@ -1631,9 +1670,10 @@ mod tests {
 
         let view = crate::read::ProjectView {
             project: s.project("one").unwrap().unwrap(),
-            data: Some(data),
+            data: Some(std::sync::Arc::new(data)),
             error: String::new(),
             present: true,
+            mark: String::new(),
         };
         let summary = h.summary(&view);
         assert_eq!(summary["owner_questions"], 2);

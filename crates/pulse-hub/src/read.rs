@@ -1,29 +1,25 @@
 use crate::board::{BoardData, object, order, pick, str_value};
 use crate::httpx::{Request, ResponseWriter};
 use crate::server::Handler;
+use crate::view_cache::org_mark;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 pub(crate) type JsonMap = BTreeMap<String, Value>;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProjectView {
     pub(crate) project: pulse_store::Project,
-    pub(crate) data: Option<BoardData>,
+    /// Shared with the snapshot cache and every other request reading it.
+    pub(crate) data: Option<Arc<BoardData>>,
     pub(crate) error: String,
     pub(crate) present: bool,
-}
-
-/// Go returns the response and lets the garbage collector reclaim the snapshot
-/// on its own time; freeing a multi-gigabyte view set inline would hold the
-/// response until the deallocation finished, so it leaves the request thread.
-/// A failed spawn drops the value right here instead.
-fn release<T: Send + 'static>(value: T) {
-    let _ = std::thread::Builder::new()
-        .name("pulse-hub-release".into())
-        .spawn(move || drop(value));
+    /// The store watermark the snapshot was built from, so organization
+    /// responses assembled from these views can be reused while it holds.
+    pub(crate) mark: String,
 }
 
 pub(crate) trait OrgViews<'a> {
@@ -50,52 +46,59 @@ impl OrgViews<'static> for Value {
             .into_iter()
             .map(|v| {
                 let project = v.get("project").cloned().unwrap_or(Value::Null);
-                let data = v.get("data").cloned().and_then(|data| {
-                    data.as_object().map(|obj| {
-                        let mut summary = obj.clone().into_iter().collect::<JsonMap>();
-                        let suggestions_plannable = summary
-                            .get("suggestions_plannable")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
-                        let suggestions_needing_votes = summary
-                            .get("suggestions_needing_votes")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
-                        let amendments_open = summary
-                            .get("amendments_open")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
-                        let proposals_awaiting = summary
-                            .get("proposals_awaiting")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
-                        BoardData {
-                            suggestions: (0..suggestions_plannable)
-                                .map(|_| {
-                                    object("status plannable", vec![json!("eligible"), json!(true)])
-                                })
-                                .chain((0..suggestions_needing_votes).map(|_| {
-                                    object(
-                                        "status plannable",
-                                        vec![json!("needs votes"), json!(false)],
-                                    )
-                                }))
-                                .collect(),
-                            amendments: (0..amendments_open)
-                                .map(|_| object("status", vec![json!("open")]))
-                                .collect(),
-                            proposals: (0..proposals_awaiting)
-                                .map(|_| object("status", vec![json!("awaiting")]))
-                                .collect(),
-                            evolution: serde_json::from_value(
-                                summary.remove("evolution").unwrap_or(Value::Null),
-                            )
-                            .unwrap_or_default(),
-                            meta: summary,
-                            ..Default::default()
-                        }
+                let data = v
+                    .get("data")
+                    .cloned()
+                    .and_then(|data| {
+                        data.as_object().map(|obj| {
+                            let mut summary = obj.clone().into_iter().collect::<JsonMap>();
+                            let suggestions_plannable = summary
+                                .get("suggestions_plannable")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0);
+                            let suggestions_needing_votes = summary
+                                .get("suggestions_needing_votes")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0);
+                            let amendments_open = summary
+                                .get("amendments_open")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0);
+                            let proposals_awaiting = summary
+                                .get("proposals_awaiting")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0);
+                            BoardData {
+                                suggestions: (0..suggestions_plannable)
+                                    .map(|_| {
+                                        object(
+                                            "status plannable",
+                                            vec![json!("eligible"), json!(true)],
+                                        )
+                                    })
+                                    .chain((0..suggestions_needing_votes).map(|_| {
+                                        object(
+                                            "status plannable",
+                                            vec![json!("needs votes"), json!(false)],
+                                        )
+                                    }))
+                                    .collect(),
+                                amendments: (0..amendments_open)
+                                    .map(|_| object("status", vec![json!("open")]))
+                                    .collect(),
+                                proposals: (0..proposals_awaiting)
+                                    .map(|_| object("status", vec![json!("awaiting")]))
+                                    .collect(),
+                                evolution: serde_json::from_value(
+                                    summary.remove("evolution").unwrap_or(Value::Null),
+                                )
+                                .unwrap_or_default(),
+                                meta: summary,
+                                ..Default::default()
+                            }
+                        })
                     })
-                });
+                    .map(Arc::new);
                 ProjectView {
                     project: pulse_store::Project {
                         slug: project
@@ -126,6 +129,7 @@ impl OrgViews<'static> for Value {
                         .unwrap_or("")
                         .to_string(),
                     data,
+                    mark: String::new(),
                 }
             })
             .collect::<Vec<_>>()
@@ -162,7 +166,7 @@ impl Handler {
                 return;
             }
         };
-        if !crate::board::present(&p) {
+        if !self.present_cached(&p) {
             crate::server::write_error(
                 w,
                 503,
@@ -211,13 +215,14 @@ impl Handler {
             );
             return;
         }
-        let d = match self.snapshot(&slug, &r.query("area")) {
-            Ok(d) => d,
-            Err(err) => {
-                self.respond(w, Value::Null, err.to_string());
-                return;
-            }
-        };
+        let d =
+            match self.snapshot_shared(&slug, &r.query("area"), route == "refresh", Some(&r.ctx)) {
+                Ok(d) => d,
+                Err(err) => {
+                    self.respond(w, Value::Null, err.to_string());
+                    return;
+                }
+            };
         let value = match route.as_str() {
             "project" | "refresh" => json!(d.meta),
             "overview" => json!(d.overview()),
@@ -308,15 +313,18 @@ impl Handler {
                 .enumerate()
                 .map(|(i, p)| {
                     scope.spawn(move || {
-                        let present = crate::board::present(&p);
+                        let present = self.present_cached(&p);
                         let mut view = ProjectView {
                             project: p.clone(),
                             present,
                             ..Default::default()
                         };
                         if present {
-                            match self.snapshot(&p.slug, "") {
-                                Ok(data) => view.data = Some(data),
+                            match self.snapshot_marked(&p.slug, "", false, None) {
+                                Ok((data, mark)) => {
+                                    view.data = Some(data);
+                                    view.mark = mark;
+                                }
                                 Err(err) => view.error = err.to_string(),
                             }
                         } else if p.slug == pulse_store::COMMONS_SLUG {
@@ -394,29 +402,6 @@ impl Handler {
             }
             return;
         }
-        if route == "org" {
-            let cache = self.org_cache.lock().expect("org cache lock poisoned");
-            let cache_at = self
-                .org_cache_at
-                .lock()
-                .expect("org cache time lock poisoned");
-            if !cache.is_empty()
-                && cache_at
-                    .as_ref()
-                    .and_then(|at| at.elapsed().ok())
-                    .is_some_and(|d| d < self.org_cache_ttl)
-            {
-                w.header_mut().insert("x-org-cache", "hit".parse().unwrap());
-                w.header_mut().insert(
-                    hyper::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8".parse().unwrap(),
-                );
-                w.header_mut()
-                    .insert(hyper::header::CACHE_CONTROL, "no-store".parse().unwrap());
-                let _ = w.write(&cache);
-                return;
-            }
-        }
         let views = match self.each() {
             Ok(v) => v,
             Err(err) => {
@@ -424,10 +409,36 @@ impl Handler {
                 return;
             }
         };
+        // The response for a route is reused while every project snapshot
+        // behind it is the one it was built from; only the aggregation over
+        // the shared snapshots is skipped, the snapshots themselves are
+        // already shared.
+        let ttl = if route == "org" {
+            self.org_cache_ttl
+        } else {
+            self.org_cache_ttl
+                .min(crate::view_cache::ORG_ROUTE_BYTES_TTL)
+        };
+        let mark = org_mark(&views);
+        let json_headers = |w: &mut ResponseWriter| {
+            w.header_mut().insert(
+                hyper::header::CONTENT_TYPE,
+                "application/json; charset=utf-8".parse().unwrap(),
+            );
+            w.header_mut()
+                .insert(hyper::header::CACHE_CONTROL, "no-store".parse().unwrap());
+        };
+        if let Some(buf) = self.views.org_bytes(&route, &mark, ttl) {
+            drop(views);
+            w.header_mut().insert("x-org-cache", "hit".parse().unwrap());
+            json_headers(w);
+            w.write_header(200);
+            let _ = w.write(&buf);
+            return;
+        }
         let data = match route.as_str() {
             "org" => {
                 let mut org = self.org(&views);
-                release(views);
                 match self.metadata() {
                     Ok(metadata) => org.extend(metadata),
                     Err(err) => {
@@ -435,33 +446,7 @@ impl Handler {
                         return;
                     }
                 }
-                w.header_mut()
-                    .insert("x-org-cache", "miss".parse().unwrap());
-                let buf = match pulse_store::gojson::to_vec(&org) {
-                    Ok(v) => v,
-                    Err(err) => {
-                        self.respond(w, Value::Null, err.to_string());
-                        return;
-                    }
-                };
-                {
-                    let mut cache = self.org_cache.lock().expect("org cache lock poisoned");
-                    let mut cache_at = self
-                        .org_cache_at
-                        .lock()
-                        .expect("org cache time lock poisoned");
-                    *cache = buf.clone();
-                    *cache_at = Some(std::time::SystemTime::now());
-                }
-                w.header_mut().insert(
-                    hyper::header::CONTENT_TYPE,
-                    "application/json; charset=utf-8".parse().unwrap(),
-                );
-                w.header_mut()
-                    .insert(hyper::header::CACHE_CONTROL, "no-store".parse().unwrap());
-                w.write_header(200);
-                let _ = w.write(&buf);
-                return;
+                json!(org)
             }
             "notices" => self
                 .org(&views)
@@ -482,8 +467,25 @@ impl Handler {
             },
             _ => Value::Null,
         };
-        release(views);
-        self.respond(w, data, String::new());
+        drop(views);
+        let mut buf = match pulse_store::gojson::to_vec(&data) {
+            Ok(v) => v,
+            Err(err) => {
+                self.respond(w, Value::Null, err.to_string());
+                return;
+            }
+        };
+        if route != "org" {
+            buf.push(b'\n');
+        }
+        if !ttl.is_zero() {
+            self.views.store_org_bytes(&route, &mark, &buf);
+        }
+        w.header_mut()
+            .insert("x-org-cache", "miss".parse().unwrap());
+        json_headers(w);
+        w.write_header(200);
+        let _ = w.write(&buf);
     }
 
     pub(crate) fn summary(&self, view: &ProjectView) -> JsonMap {

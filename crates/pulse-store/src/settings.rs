@@ -156,7 +156,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"1024","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.sweep_keep_days"=>"30","landing.push"=>"off","landing.auto_stash"=>"on","landing.base_red_retry_minutes"=>"10","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"1024","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.base_red_retry_minutes"=>"10","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.max_jobs"=>"0","daemon.max_load"=>"0","daemon.min_free_mem_mb"=>"1024",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -171,7 +171,13 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "daemon.sweep"=>("choice",None,["on","off"],None,"on: every ten minutes the daemon removes what runs, landings and agents left on this machine and nothing holds any more - clones, keys and bundles of finished jobs under PULSE_HOME/work, landing worktrees whose process is gone, holding refs, run logs and patches past daemon.sweep_keep_days, pulse/* or evolve/* branches no job will land (saved as a patch first), and worktrees a project checkout lists whose work is on the default branch (its merged branch goes with it) or that sat untouched for daemon.sweep_branch_days (the branch stays); a run in flight, a branch waiting to land, a locked worktree, uncommitted changes and the owner's own files are never touched. off: `pulse sweep` by hand"),
         "daemon.sweep_grace_minutes"=>("count",Some(0),[],None,"minutes a finished job's clone, key or bundle, a dead landing's worktree and a clean project worktree whose every commit is on the default branch must sit untouched before the sweep removes them; a lost run's leftovers go at once"),
         "daemon.sweep_branch_days"=>("count",Some(0),[],None,"days since its last commit before a pulse/* or evolve/* branch that no job will land is removed, its commits saved under PULSE_HOME/patches first unless they are already on the default branch; also the days a clean worktree of a project with commits not on the default branch sits untouched before the worktree alone goes (its branch stays; a detached HEAD is saved as a patch first)"),
-        "daemon.sweep_keep_days"=>("count",Some(1),[],None,"days run logs, saved patches and work files of jobs this store does not know are kept before the sweep removes them"),
+        "daemon.sweep_keep_days"=>("count",Some(1),[],None,"days saved patches and work files of jobs this store does not know are kept before the sweep removes them"),
+        "daemon.transcript_keep_days"=>("count",Some(0),[],None,"days a harness session's step transcript is kept after the session ends - its harness_steps rows, its harness.step notification events and its PULSE_HOME/harness/<session>.json file - before the sweep removes them in small batches; the session row (counts, tokens, cost, submission) stays for good; 0 keeps every transcript"),
+        "daemon.log_keep_days"=>("count",Some(1),[],None,"days run logs and daemon stall/signal logs under PULSE_HOME/logs are kept before the sweep removes them"),
+        "daemon.log_max_mb"=>("count",Some(0),[],None,"megabytes daemon.log and hub.log may grow to before the sweep copies each to <name>.1 and truncates it in place (the launcher opens them in append mode, so the live process keeps writing); 0 never caps them"),
+        "daemon.vacuum_free_mb"=>("count",Some(0),[],None,"megabytes of free pages the store may hold before the sweep gives them back to the file system: a store in incremental auto-vacuum mode frees a slice each pass, one that is not is converted with one full VACUUM only while no run or harness session is in flight and the disk has room for a copy; 0 never vacuums"),
+        "daemon.build_cache"=>("choice",None,["on","off"],None,"on: a local run of a Cargo project builds into a shared per-project target directory under PULSE_HOME/cache/cargo-target/<slug>/<lane> (one lane per run in flight, so concurrent runs never share one) instead of a cold target inside its throwaway clone, unless the project's recipe sets CARGO_TARGET_DIR itself; off: every clone builds from scratch"),
+        "daemon.build_cache_keep_days"=>("count",Some(1),[],None,"days a shared build-cache lane may sit unused before the sweep removes it; lanes of projects the store no longer lists go at once, and dead units and stale incremental caches inside a lane are pruned like any shared Cargo target"),
         "hygiene.cargo_target"=>("choice",None,["on","off"],None,"on: the daemon sweep prunes dead workspace-crate units and stale incremental caches from shared Cargo target directories named by active projects' CARGO_TARGET_DIR verify commands, only under the project checkout or PULSE_HOME and only while verify/cargo locks are free; off: leave Cargo target directories alone"),
         "hygiene.cargo_target_hours"=>("count",Some(1),[],None,"hours an incremental cache directory and everything inside it must sit unmodified before the hygiene sweep removes it from a shared Cargo target"),
         "landing.push"=>("choice",None,["off","main"],None,"main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)"),
@@ -184,6 +190,9 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "board.stale_days"=>("count",Some(1),[],None,"days before the daemon retires an open suggestion whose non-empty files list names only paths absent at the project HEAD"),
         "daemon.planner_cache_ttl_seconds"=>("count",Some(60),[],None,"seconds an unchanged planner/tally snapshot may stay in memory; watermarks invalidate it earlier when board, job, landing, record or setting state changes"),
         "daemon.restart_drain_minutes"=>("count",Some(0),[],None,"minutes a daemon whose binary changed on disk keeps dispatching and landing while runs are in flight before it stops starting runs and exits with code 3 after them; it exits as soon as nothing is in flight, stops dispatching once less than minutes_per_job + 5 of the window is left, and 0 stops dispatching at once (the old behaviour)"),
+        "daemon.max_jobs"=>("count",Some(0),[],None,"local runs the daemon on this machine starts at once, whatever `workers` says (remote executors keep their own); 0 derives it from the hardware - half the physical cores, one run per 4 GB of RAM, never more than four - and `pulse daemon --max-jobs N` overrides both for one daemon"),
+        "daemon.max_load"=>("count",Some(0),[],None,"one-minute load average over which the daemon leases no new local run; the runs in flight finish and the idle line says `machine saturated`; 0 uses the number of CPUs"),
+        "daemon.min_free_mem_mb"=>("count",Some(0),[],None,"megabytes of memory a new run could use without swapping (free, inactive and speculative pages on macOS, MemAvailable on Linux) under which the daemon leases no new local run and starts no self-update build; 0 turns the floor off"),
         "push.credential"=>("reference",None,[],None,"where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)"),
     }
 });
@@ -957,10 +966,34 @@ mod go_settings_tests {
             ("daemon.sweep_grace_minutes", "30"),
             ("daemon.sweep_branch_days", "7"),
             ("daemon.sweep_keep_days", "30"),
+            ("daemon.transcript_keep_days", "14"),
+            ("daemon.log_keep_days", "14"),
+            ("daemon.log_max_mb", "32"),
+            ("daemon.vacuum_free_mb", "256"),
+            ("daemon.build_cache", "on"),
+            ("daemon.build_cache_keep_days", "7"),
         ] {
             assert_eq!(s.setting(key, ""), want);
             assert!(extra_setting_names().contains(&key.to_string()));
         }
+        for key in [
+            "daemon.transcript_keep_days",
+            "daemon.log_max_mb",
+            "daemon.vacuum_free_mb",
+        ] {
+            s.set_setting("human", key, "0").unwrap();
+            assert!(s.set_setting("human", key, "-1").is_err());
+        }
+        for key in ["daemon.log_keep_days", "daemon.build_cache_keep_days"] {
+            assert!(s.set_setting("human", key, "0").is_err());
+            s.set_setting("human", key, "3").unwrap();
+        }
+        assert!(
+            s.set_setting("human", "daemon.build_cache", "maybe")
+                .is_err()
+        );
+        s.set_setting("human", "daemon.build_cache", "off").unwrap();
+        assert_eq!(s.setting("daemon.build_cache", ""), "off");
         assert!(
             s.set_setting("human", "daemon.sweep", "maybe")
                 .unwrap_err()

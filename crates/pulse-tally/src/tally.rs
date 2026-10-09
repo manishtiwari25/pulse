@@ -358,24 +358,30 @@ struct Tally {
 }
 
 fn new_tally(
-    rows: &[Post],
+    rows: Vec<Post>,
     params: Thresholds,
     now: &str,
     area: &str,
     built: BTreeMap<String, String>,
     open: BTreeMap<String, OpenSuggestionJobInternal>,
 ) -> Tally {
+    // Amendments are tallied over every area, so the unfiltered rows are kept
+    // when an area narrows `t.rows`; without one they are the same vector.
+    let (tallied, all) = if area.is_empty() {
+        (rows, Vec::new())
+    } else {
+        (
+            rows.iter().filter(|r| r.area == area).cloned().collect(),
+            rows,
+        )
+    };
     let mut t = Tally {
         now: now.to_string(),
         today: day_number(now),
         params,
         built,
         open,
-        rows: rows
-            .iter()
-            .filter(|r| area.is_empty() || r.area == area)
-            .cloned()
-            .collect(),
+        rows: tallied,
         nokind: 0,
         order: Vec::new(),
         nposts: BTreeMap::new(),
@@ -465,7 +471,11 @@ fn new_tally(
             t.nokind += 1;
         }
     }
-    for r in rows {
+    for r in if area.is_empty() {
+        t.rows.iter()
+    } else {
+        all.iter()
+    } {
         let key = format!("{}/{}", r.area, r.thread);
         if !r.resolution.is_empty() {
             t.a_closed.insert(key.clone(), true);
@@ -899,7 +909,7 @@ fn compute_light_uncached(
     params.now = now.clone();
     let rows = posts_for(s, project, "")?;
     let (built, open) = suggestion_jobs(s)?;
-    let t = new_tally(&rows, params.clone(), &now, area, built, open);
+    let t = new_tally(rows, params.clone(), &now, area, built, open);
     let mut res = TallyResult {
         project: project.into(),
         repo,
@@ -955,25 +965,26 @@ fn compute_light_uncached(
     }
     res.svotes = t.svote_records();
     res.suggestions = t.suggestion_records();
-    res.duplicates = duplicate_map(&rows, &res.suggestions);
+    // Suggestions only ever point at tallied rows, so the area-filtered rows
+    // find every one of them.
+    res.duplicates = duplicate_map(&t.rows, &res.suggestions);
     (res.amendments, res.avotes) = t.amendment_records();
     Ok(res)
 }
 
 pub fn duplicate_map(posts: &[Post], suggestions: &[Suggestion]) -> BTreeMap<String, String> {
-    let post_by_id: BTreeMap<String, Post> =
-        posts.iter().map(|p| (p.id.clone(), p.clone())).collect();
-    let mut open: Vec<Suggestion> = suggestions
+    let post_by_id: BTreeMap<&str, &Post> = posts.iter().map(|p| (p.id.as_str(), p)).collect();
+    let mut open: Vec<&Suggestion> = suggestions
         .iter()
         .filter(|sg| sg.status == "needs votes" || sg.status == "eligible")
-        .cloned()
         .collect();
     open.sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.id.cmp(&b.id)));
     let mut seen_summary: BTreeMap<String, String> = BTreeMap::new();
     let mut seen_pair: BTreeMap<String, String> = BTreeMap::new();
     let mut dups = BTreeMap::new();
+    let none = Post::default();
     for sg in open {
-        let p = post_by_id.get(&sg.id).cloned().unwrap_or_default();
+        let p = post_by_id.get(sg.id.as_str()).copied().unwrap_or(&none);
         let summary = if !p.summary.is_empty() {
             p.summary.clone()
         } else {

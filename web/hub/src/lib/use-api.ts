@@ -2,18 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api, errorText, type StoreEvent } from "./api";
+import { Coalescer, touchedBy } from "./refresh";
 
 // A small SWR-style cache: one entry per API path, shared by every component
 // that asks for it, refreshed on an interval while the tab is visible, and
 // invalidated by the event stream. Nothing here knows about React beyond the
 // hooks at the bottom, so the mock server and tests can drive it too.
+//
+// Every path has at most one request in flight. A refetch asked for during
+// that flight runs once after it, so a burst of invalidations costs two
+// requests at most, never a pile of parallel ones. The stream's own
+// invalidations go through refresh.ts: each event action names the paths it
+// can change, they coalesce into one refresh per quiet window, and nothing
+// refreshes while the tab is hidden.
 
 interface Entry {
   data: unknown;
   error: string;
   loading: boolean;
   updatedAt: number;
+  startedAt: number; // when the latest request began; a request that began after a change already reflects it
   inflight: Promise<void> | null;
+  queued: Promise<void> | null; // the one follow-up fetch promised to callers who invalidated mid-flight
   subscribers: Set<() => void>;
   refresh: number;
   version: number; // bumped on every change so useSyncExternalStore sees it
@@ -24,7 +34,7 @@ const cache = new Map<string, Entry>();
 function entry(path: string): Entry {
   let e = cache.get(path);
   if (!e) {
-    e = { data: undefined, error: "", loading: true, updatedAt: 0, inflight: null, subscribers: new Set(), refresh: 0, version: 0 };
+    e = { data: undefined, error: "", loading: true, updatedAt: 0, startedAt: 0, inflight: null, queued: null, subscribers: new Set(), refresh: 0, version: 0 };
     cache.set(path, e);
   }
   return e;
@@ -35,9 +45,8 @@ function notify(e: Entry) {
   for (const fn of e.subscribers) fn();
 }
 
-export function load(path: string, force = false): Promise<void> {
-  const e = entry(path);
-  if (e.inflight && !force) return e.inflight;
+function run(e: Entry, path: string): Promise<void> {
+  e.startedAt = Date.now();
   const p = api<unknown>(path)
     .then((data) => {
       e.data = data;
@@ -54,6 +63,22 @@ export function load(path: string, force = false): Promise<void> {
     });
   e.inflight = p;
   return p;
+}
+
+// Single flight per path. `force` while a request is in flight queues one
+// follow-up (shared by everyone who asks during the flight) and resolves
+// when that follow-up lands, so `await reload()` always sees fresh data.
+export function load(path: string, force = false): Promise<void> {
+  const e = entry(path);
+  if (!e.inflight) return run(e, path);
+  if (!force) return e.inflight;
+  if (!e.queued) {
+    e.queued = e.inflight.then(() => {
+      e.queued = null;
+      return run(e, path);
+    });
+  }
+  return e.queued;
 }
 
 // Refetch every subscribed path whose key matches. `invalidate()` with no
@@ -128,22 +153,6 @@ export function useApi<T>(path: string | null, opts: { refresh?: number | false 
 
 // ----- the event stream --------------------------------------------------
 
-// Which cached paths an event touches. Anything unmatched refreshes the
-// whole screen after a short debounce, so a new event action never leaves a
-// stale view; matched actions refresh only what changed.
-const TOUCHES: [RegExp, (path: string) => boolean][] = [
-  [/^task\./, (p) => p.startsWith("tasks") || p.startsWith("messages") || p.startsWith("events")],
-  [/^(message|msg)\./, (p) => p.startsWith("messages") || p.startsWith("tasks/") || p.startsWith("events")],
-  [/^compute\./, (p) => p.startsWith("compute") || p.startsWith("executors") || p.startsWith("runner") || p.startsWith("proposals") || p.startsWith("events")],
-  // Transcript panels consume harness.step from live.events and fetch ?after=N, so do not full-refetch every step.
-  [/^harness\.(?!step$)/, (p) => p.startsWith("harness/sessions") || p.startsWith("harness") || p.startsWith("events")],
-  [/^settings\./, (p) => p.startsWith("settings") || p.startsWith("compute") || p.startsWith("runner") || p.startsWith("jobs/failed") || p.startsWith("events")],
-  [/^record/, (p) => p.startsWith("records") || p.startsWith("constitution") || p.startsWith("events")],
-  [/^constitution\./, (p) => p.startsWith("constitution") || p.startsWith("records") || /amendments/.test(p) || p.startsWith("events")],
-  [/^executor\./, (p) => p.startsWith("executors") || p.startsWith("runner") || p.startsWith("compute") || p.startsWith("events")],
-  [/^(job|run|daemon)\./, (p) => p.startsWith("runner") || p.startsWith("jobs/failed") || p.startsWith("tasks") || p.startsWith("events") || /\/(overview|timeline)$/.test(p)],
-];
-
 export type StreamState = "connecting" | "live" | "polling";
 
 interface LiveStore {
@@ -160,32 +169,24 @@ function liveNotify() {
   for (const fn of live.subscribers) fn();
 }
 
-let pending = new Set<string>();
-let pendingAll = false;
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-
-function scheduleFlush() {
-  if (flushTimer) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    if (pendingAll) invalidate();
-    else {
-      const actions = [...pending];
-      invalidate((path) => actions.some((a) => TOUCHES.find(([rx]) => rx.test(a))?.[1](path) ?? false) || /^(org|activity|timeline|notices|health)/.test(path) || /^projects\//.test(path));
-    }
-    pending = new Set();
-    pendingAll = false;
-  }, 400);
-}
+// The stream's invalidations: one refresh per quiet window of the paths the
+// pending actions touch (refresh.ts), skipping paths nobody shows and paths
+// whose latest request began after the last event arrived - that request
+// already reflects the change, whether it has landed or is still in flight.
+const streamRefresh = new Coalescer((actions, lastAt) => {
+  const touched = touchedBy(actions);
+  for (const [path, e] of cache) {
+    if (!e.subscribers.size || e.startedAt > lastAt || !touched(path)) continue;
+    void load(path, true);
+  }
+});
 
 export function pushEvent(ev: StoreEvent) {
   if (ev.id && ev.id <= live.lastId) return;
   live.lastId = Math.max(live.lastId, ev.id || 0);
   live.events = [ev, ...live.events].slice(0, LIVE_MAX);
   liveNotify();
-  if (TOUCHES.some(([rx]) => rx.test(ev.action))) pending.add(ev.action);
-  else pendingAll = true;
-  scheduleFlush();
+  streamRefresh.add(ev.action);
 }
 
 let streamAbort: AbortController | null = null;
@@ -247,7 +248,8 @@ function handleFrame(frame: string) {
 // name reaches the handler (EventSource only fires listeners you named) and
 // so `since` can be sent on reconnect. Falls back to polling while down.
 async function readStream(signal: AbortSignal) {
-  setState("connecting");
+  // Reopening after a hidden spell keeps "live" rather than flashing "reconnecting".
+  if (live.state !== "live") setState("connecting");
   try {
     const r = await fetch("/api/v1/events/stream" + (live.lastId ? "?since=" + live.lastId : ""), { signal, headers: { accept: "text/event-stream" }, cache: "no-store" });
     if (!r.ok || !r.body) throw new Error("stream " + r.status);
@@ -292,20 +294,40 @@ function closeStream() {
   stopPolling();
 }
 
+// A hidden tab stops refreshing at once and, after a minute, drops its
+// stream connection too: a background transcript would otherwise keep
+// answering every harness.step with a fetch. Coming back reopens the stream
+// with `since`, so the hub replays what was missed, and flushes once.
+const HIDDEN_CLOSE_MS = 60000;
+let hiddenTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onVisibility() {
+  if (document.hidden) {
+    streamRefresh.pause();
+    if (!hiddenTimer) hiddenTimer = setTimeout(closeStream, HIDDEN_CLOSE_MS);
+    return;
+  }
+  if (hiddenTimer) clearTimeout(hiddenTimer);
+  hiddenTimer = null;
+  if (streamUsers) openStream();
+  streamRefresh.resume();
+}
+
 // Mount once in the shell: opens the SSE connection, keeps the last 200
 // events for the live feed, and invalidates the queries each event touches.
 export function useEventStream(): { state: StreamState; events: StoreEvent[] } {
   useEffect(() => {
     streamUsers++;
-    openStream();
-    const onVis = () => {
-      if (!document.hidden && !streamAbort) openStream();
-    };
-    document.addEventListener("visibilitychange", onVis);
+    if (streamUsers === 1) document.addEventListener("visibilitychange", onVisibility);
+    onVisibility();
     return () => {
       streamUsers--;
-      document.removeEventListener("visibilitychange", onVis);
-      if (streamUsers === 0) closeStream();
+      if (streamUsers === 0) {
+        document.removeEventListener("visibilitychange", onVisibility);
+        if (hiddenTimer) clearTimeout(hiddenTimer);
+        hiddenTimer = null;
+        closeStream();
+      }
     };
   }, []);
   return useLiveEvents();

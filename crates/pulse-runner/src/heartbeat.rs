@@ -264,30 +264,32 @@ impl crate::exec::LocalExec {
         let home = self.home.clone();
         let agent = self.agent.clone();
         let source = source.to_string();
-        let done = Arc::new(AtomicBool::new(false));
-        let thread_done = Arc::clone(&done);
+        // Dropped once f returns: the beater wakes on it, or on a tick, and
+        // never between (it once polled every 20 ms for the whole verify).
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(0);
         let (ticks, stop_ticks) = heartbeat_ticks(pulse_board::HEARTBEAT_INTERVAL);
         let beater = std::thread::spawn(move || {
-            let mut due = true;
-            while !thread_done.load(Ordering::SeqCst) {
-                if due {
-                    let err = (|| -> Result<()> {
-                        let s = open_store(&home)?;
-                        let now = heartbeat_now(&s)?;
-                        pulse_board::beat_agent_at(&s, &agent, &source, now)?;
-                        Ok(())
-                    })()
-                    .err();
-                    report_presence(err, &reported);
-                    due = false;
-                }
-                if ticks.recv_timeout(Duration::from_millis(20)).is_ok() {
-                    due = true;
+            loop {
+                let err = (|| -> Result<()> {
+                    let s = open_store(&home)?;
+                    let now = heartbeat_now(&s)?;
+                    pulse_board::beat_agent_at(&s, &agent, &source, now)?;
+                    Ok(())
+                })()
+                .err();
+                report_presence(err, &reported);
+                crossbeam_channel::select! {
+                    recv(done_rx) -> _ => break,
+                    recv(ticks) -> tick => {
+                        if tick.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
         });
         let out = f();
-        done.store(true, Ordering::SeqCst);
+        drop(done_tx);
         stop_ticks();
         let _ = beater.join();
         out

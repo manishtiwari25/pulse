@@ -3,6 +3,7 @@
 pub mod cli;
 pub mod flags;
 pub mod help;
+pub mod procs;
 pub mod signed;
 pub mod table;
 pub mod version;

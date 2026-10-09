@@ -127,11 +127,18 @@ measure for all either held the short runs for every window or admitted long
 runs against the runs in flight's two-hour budget while those ended within
 the half hour - one such run held nine idle slots for forty minutes at each
 release. A run the window outlives is waited for, never cut. `0` stops
-dispatching at once and waits for the runs, as before. A build that then
-exits three times early is put back to the previous one by the launcher,
-which turns `daemon.self_update` off and leaves a finding. Set
-`daemon.self_update` to `off` to keep the build you have and
-`cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
+dispatching at once and waits for the runs, as before. The build itself is a
+full release compile, so it keeps out of the runs' way: it runs at nice 10
+with `cargo -j` set to half the machine's cores, and it does not start while
+the load governor (below) says the machine is saturated or every local slot
+under `daemon.max_jobs` holds a run - the daemon then says `self-update: brain
+HEAD <rev> differs from the running <rev>; building once the machine has
+room: <why>` once, keeps one local slot free so the build starts within one
+run, and the experiment lane measures nothing new meanwhile, as when the build
+waits for the lane. A build that then exits three times early is put back to
+the previous one by the launcher, which turns `daemon.self_update` off and
+leaves a finding. Set `daemon.self_update` to `off` to keep the build you
+have and `cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
 
 On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
 system ask once whether `pulse` may access that folder the first time the
@@ -1257,7 +1264,31 @@ and slots held back this way are not counted as hands wanted. A held project
 shows in the idle reason as `N queued wait: N for <project> (local needs M MB of
 disk)`, and a slot no project fits says `disk headroom: R MB above
 daemon.min_free_mb F with K run(s) setting up; waits: <project> (M MB), ...`;
-`daemon.setup_mb` 0 turns the admission off. Hands keep their own disks. `pulse executor
+`daemon.setup_mb` 0 turns the admission off. Hands keep their own disks. The
+machine itself is governed the same way (`crates/pulse-runner/src/daemon_load.rs`):
+`workers` says how many local slots the owner would like, but a 12-core 16 GB
+laptop with `workers 12` leased seven jobs within a few seconds and ran their
+`npm ci`, test suites and `cargo test` builds at once, at a load average of
+forty with 2.3 GB of its 3 GB swap in use, while the daemon's own loop crawled.
+So the daemon starts no more local runs at once than `daemon.max_jobs`
+- by default derived from the hardware: half the physical cores, one run per
+4 GB of RAM, never more than four (a 12-core 16 GB laptop: four) - and `pulse
+daemon --max-jobs N` overrides both for one daemon; the startup line `load
+governor: up to N local run(s) at once (auto|daemon.max_jobs|--max-jobs; C
+cores, P CPUs, M MB), nothing new over load L or under F MB of memory free;
+children run at nice 10` names what is in force. Before leasing it also reads
+the one-minute load average and the memory a new run could use (free, inactive
+and speculative pages on macOS, `MemAvailable` on Linux) and leases nothing
+new while the load is over `daemon.max_load` (default: the number of CPUs) or
+the memory is under `daemon.min_free_mem_mb` (default 1024; 0 off), or while
+macOS itself reports memory pressure; the runs in flight finish, the idle line
+says `machine saturated: load 40.1 is over daemon.max_load 12` or `machine
+saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024` once per
+change rather than per tick, and slots held this way are not hands wanted.
+Remote hands carry their own load and are not capped by this machine's
+governor. Every run the daemon starts here - the worker, its `npm ci`, its
+test suite, the clone's removal - runs at nice 10, so the owner's own work and
+the daemon's loop stay responsive while the fleet works. `pulse executor
 probe local` probes this machine the same way (git, free space under
 `~/.pulse/work`), and a passing probe run by the owner clears the projects a
 failed setup marked unfit here, instead of waiting a day for the marks to
@@ -1594,9 +1625,11 @@ refs of landing steps that are over, dead folders under `~/.pulse/worktrees`,
 measurement clone roots (`~/.pulse/fleet/measure-*`) whose measuring process
 is gone once they have sat for the grace period (a measurement removes its
 own root when it ends; one left behind came from a kill),
-run logs, saved patches and the step transcripts of harness sessions older
-than `daemon.sweep_keep_days` (default 30; a session keeps its counts, tokens,
-cost and submission), and `pulse/*` or `evolve/*` branches that no job will land whose last commit
+saved patches older than `daemon.sweep_keep_days` (default 30), run logs
+older than `daemon.log_keep_days` (default 14), the step transcripts of
+harness sessions that ended more than `daemon.transcript_keep_days` ago
+(default 14; a session keeps its counts, tokens, cost and submission - see
+the retention paragraph below), and `pulse/*` or `evolve/*` branches that no job will land whose last commit
 is older than `daemon.sweep_branch_days` (default 7) - their commits are saved
 under `~/.pulse/patches/<slug>/` first unless they are already on the default
 branch (`land.swept`). The same pass takes the worktrees agents leave behind:
@@ -1623,6 +1656,55 @@ last pass ran, what it removed and freed, and what it held. `pulse sweep
 [--dry-run] [--held] [--json]` is the same pass by hand - `--dry-run` lists
 what would go and removes nothing, `--held` also says what stays and why;
 `daemon.sweep off` leaves it to you.
+
+What the machine keeps is bounded, not just tidied (`crates/pulse-runner/src/retention.rs`,
+`buildcache.rs`, and the sweep). A laptop that ran the fleet for a month held
+8 GB under `~/.pulse`: seven clones of 0.6-1.6 GB each (`node_modules`, a
+`.venv`, a `target/` built from scratch per job), 8,400 trajectory files
+under `harness/`, a 1.1 GB store whose `harness_steps` rows and `harness.step`
+events were the same transcripts a third time, 130 MB of logs and five old
+binaries - and the daemon's own loop spent its CPU unlinking dependency trees.
+So: a clone or scratch folder the sweep or a finished run removes is renamed
+into `~/.pulse/work/.trash` (one instant directory operation) and unlinked by
+one low-priority background remover (`nice -n 15 rm -rf`, under `taskpolicy -b`
+on macOS), never on the thread that ends the run or runs the maintenance pass.
+A harness session's step transcript - its `harness_steps` rows, its
+`harness.step` notification events (the one kind of event the append-only
+ledger lets go, since the hub's feed skips them and nothing reads them back)
+and its `~/.pulse/harness/<session>.json` file (a copy of the rows the hub
+offers for download; a pruned one answers not found) - goes
+`daemon.transcript_keep_days` (default 14; 0 keeps them) after the session
+ended, deleted in batches of 5,000 rows so no writer waits; the session row
+stays for good. Run logs and `daemon-stall-*`/`daemon-signal-*` logs go after
+`daemon.log_keep_days` (default 14); `daemon.log` and `hub.log`, which the
+launcher opens in append mode, are copied to `<name>.1` and truncated in place
+once over `daemon.log_max_mb` (default 32; 0 never). Under `~/.pulse/bin` only
+`pulse`, `pulse.prev` (the launcher's crash-guard fallback), a `pulse.new`
+being installed, the `pulse.restored` marker and the launch scripts are kept;
+any other `pulse.*` - a `pulse.failed` the crash guard set aside, a
+`pulse.rollback-*`, an old build - goes after a week. The store gives its
+free pages back once they pass `daemon.vacuum_free_mb` (default 256; 0 never):
+a store already in incremental auto-vacuum mode frees a slice every pass; a
+store that is not is switched to that mode with the one full `VACUUM` the
+switch needs, taken only while no run or harness session is in flight and the
+disk has room for a copy of the file, because that VACUUM holds every writer
+off while it copies; the same pass checkpoints and truncates the WAL as
+before. The events ledger is otherwise untouched: forty modules read it as
+state (the last login per executor, a setting's history, a job's recovery
+ledger), so no age-based pruning of events exists and none is planned. A local
+run of a Cargo project no longer builds a cold `target/` inside its clone:
+with `daemon.build_cache` (default on) it builds into
+`~/.pulse/cache/cargo-target/<slug>/<lane>` - one lane per run in flight, held
+by a lock for the whole run, because Cargo judges freshness by mtimes and two
+clones sharing one target at once could take each other's artifacts - so
+registry dependencies stay compiled between jobs and the clone stays small;
+`<clone>/target` is a symlink to the lane for scripts that spell the path, a
+recipe that sets `CARGO_TARGET_DIR` itself wins, and a lane unused for
+`daemon.build_cache_keep_days` (default 7) or of a project the store no
+longer lists is swept, while a live lane is pruned of dead units and stale
+incremental caches like any shared Cargo target (`hygiene.cargo_target`).
+`pulse sweep --dry-run` shows all of it before it happens; the Hygiene panel
+lists the new kinds (`trajectory`, `binary`, `cache`, `store`) with the rest.
 
 Each agent cleans up after itself first, and the record says whether it did.
 The brief's rule 9 tells a worker to remove every worktree it added

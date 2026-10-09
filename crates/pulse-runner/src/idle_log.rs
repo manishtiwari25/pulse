@@ -28,20 +28,26 @@ static GAUGE: LazyLock<regex::Regex> = LazyLock::new(|| {
     // `118 MB` - not a count of things.
     regex::Regex::new(r"\b\d+(\.\d+)? ?(MB|GB|MiB|GiB|KB|KiB)\b").expect("gauge regex")
 });
+static LOAD: LazyLock<regex::Regex> = LazyLock::new(|| {
+    // The load average the governor's hold names - `load 40.1` - moves
+    // every tick; `daemon.max_load 12`, a limit, keeps its number.
+    regex::Regex::new(r"\bload \d+(\.\d+)?\b").expect("load regex")
+});
 
 /// The reason with each countdown replaced by one `#`, so two notes that
 /// differ only by the time left compare equal - also across a unit boundary
 /// (`1h05m` then `59m`, `10m0s` then `56s`), where a per-digit replacement
 /// kept re-logging the same hold as its countdown ran down. A gauge in
-/// megabytes or gigabytes is normalised the same way: the disk-floor hold
-/// once re-logged every tick because the free megabytes moved with each
-/// install.
+/// megabytes or gigabytes, or a load average, is normalised the same way:
+/// the disk-floor hold once re-logged every tick because the free megabytes
+/// moved with each install.
 pub(crate) fn normalize_countdowns(reason: &str) -> String {
     let reason = GAUGE
         .replace_all(reason, |caps: &regex::Captures| {
             DIGITS.replace_all(&caps[0], "#").into_owned()
         })
         .into_owned();
+    let reason = LOAD.replace_all(&reason, "load #").into_owned();
     COUNTDOWN
         .replace_all(&reason, |caps: &regex::Captures| {
             if caps.get(5).is_some() {
@@ -168,6 +174,28 @@ mod tests {
             ),
             normalize_countdowns(
                 "disk headroom: room for 0 more local run(s) of up to 1600 MB above daemon.min_free_mb 1024; 2 setting up"
+            )
+        );
+        // The load governor's hold names a load average that moves every
+        // tick and a limit that does not.
+        assert_eq!(
+            normalize_countdowns("machine saturated: load 40.1 is over daemon.max_load 12"),
+            "machine saturated: load # is over daemon.max_load 12"
+        );
+        assert_eq!(
+            normalize_countdowns("machine saturated: load 40.1 is over daemon.max_load 12"),
+            normalize_countdowns("machine saturated: load 13 is over daemon.max_load 12")
+        );
+        assert_ne!(
+            normalize_countdowns("machine saturated: load 40.1 is over daemon.max_load 12"),
+            normalize_countdowns("machine saturated: load 40.1 is over daemon.max_load 16")
+        );
+        assert_eq!(
+            normalize_countdowns(
+                "machine saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024"
+            ),
+            normalize_countdowns(
+                "machine saturated: 731 MB of memory free, under daemon.min_free_mem_mb 1024"
             )
         );
     }

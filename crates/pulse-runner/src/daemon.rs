@@ -81,6 +81,9 @@ pub(crate) struct DaemonOpts {
     pub hub_home: String,
     pub self_update: Option<Box<crate::selfupdate::SelfUpdateEnv>>,
     pub no_watchdog: bool,
+    /// `--max-jobs`: local runs at once; 0 defers to `daemon.max_jobs` and
+    /// then the machine's default (see `daemon_load`).
+    pub max_jobs: i32,
 }
 
 impl std::fmt::Debug for DaemonOpts {
@@ -98,6 +101,7 @@ impl std::fmt::Debug for DaemonOpts {
             .field("hub_home", &self.hub_home)
             .field("self_update", &self.self_update)
             .field("no_watchdog", &self.no_watchdog)
+            .field("max_jobs", &self.max_jobs)
             .finish()
     }
 }
@@ -868,6 +872,18 @@ pub(crate) fn daemon(
             std::process::id()
         ),
     );
+    // The load governor: the machine's shape is read once; the limits are
+    // re-read from the settings each tick so a changed setting takes effect
+    // without a restart. Job children run at nice CHILD_NICE from here on.
+    let machine = crate::daemon_load::Machine::detect();
+    crate::daemon_load::set_child_nice(crate::daemon_load::CHILD_NICE);
+    say(
+        &o,
+        crate::daemon_load::describe(
+            &machine,
+            &crate::daemon_load::limits(s, &machine, o.max_jobs),
+        ),
+    );
     if lost > 0 {
         say(
             &o,
@@ -1154,6 +1170,9 @@ pub(crate) fn daemon(
         let mut reason = String::new();
         let mut slots: Vec<String> = Vec::new();
         let mut disk_trimmed = 0usize;
+        // Local slots the load governor closed this tick (machine saturated):
+        // like disk_trimmed, not offered and not hands wanted.
+        let mut load_held = 0usize;
         // Go: the tick body runs under recover(); a panic becomes the idle reason, not the daemon's end.
         let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if now[..10.min(now.len())] != last_prune_day {
@@ -1212,6 +1231,11 @@ pub(crate) fn daemon(
             {
                 let mut binary = self_env.clone();
                 binary.inflight = inflight.len() as i32;
+                binary.local_inflight = inflight
+                    .values()
+                    .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
+                    .count() as i32;
+                binary.governor = Some(crate::daemon_load::limits(s, &machine, o.max_jobs));
                 let inflight_jobs = inflight
                     .values()
                     .map(|d| (d.job.str("id"), true))
@@ -1460,9 +1484,44 @@ pub(crate) fn daemon(
                     admission = crate::diskroom::local_headroom(s, &inflight_local)
                         .map(crate::diskroom::Admission::new);
                 }
+                // The load governor (daemon_load.rs): the local slots are capped
+                // at daemon.max_jobs and all close while the machine is saturated.
+                // One slot stays free while a self-update build waits for room.
+                let mut load_hold: Option<String> = None;
+                if slots.iter().any(|n| n == crate::executor::LOCAL_EXECUTOR) {
+                    let running_local = inflight
+                        .values()
+                        .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
+                        .count();
+                    let reserved = usize::from(crate::selfupdate::update_pending());
+                    let verdict = crate::daemon_load::decide(
+                        &crate::daemon_load::limits(s, &machine, o.max_jobs),
+                        &crate::daemon_load::pressure(),
+                        running_local,
+                        reserved,
+                    );
+                    if let Some(hold) = verdict.hold {
+                        load_held = crate::daemon_load::trim_local_slots(&mut slots, 0);
+                        load_hold = Some(hold);
+                    } else {
+                        // Over the cap is capacity the owner chose not to use, not
+                        // a hold: those slots are simply not there this tick.
+                        crate::daemon_load::trim_local_slots(&mut slots, verdict.room);
+                    }
+                }
+                match &load_hold {
+                    Some(hold) => {
+                        if let Some(line) = idle_log.line("load", hold, std::time::Instant::now()) {
+                            say(&o, line);
+                        }
+                    }
+                    None => idle_log.clear("load"),
+                }
                 let mut disk_room_note = String::new();
                 reason = if slots.is_empty() {
-                    if gate.is_empty() {
+                    if let Some(hold) = load_hold.clone() {
+                        hold
+                    } else if gate.is_empty() {
                         "every executor slot is busy".to_string()
                     } else {
                         gate.clone()
@@ -1474,6 +1533,9 @@ pub(crate) fn daemon(
                         .collect::<Vec<_>>();
                     let mut reasons = BTreeMap::new();
                     if let Some(hold) = &restart_hold {
+                        reasons.insert(hold.clone(), true);
+                    }
+                    if let Some(hold) = &load_hold {
                         reasons.insert(hold.clone(), true);
                     }
                     let mut rows = BTreeMap::new();
@@ -1644,14 +1706,16 @@ pub(crate) fn daemon(
                 }
             }
             let queued = active_queued_count(s);
-            // Slots the disk headroom held back were not offered this tick
-            // and are not hands wanted.
+            // Slots the disk headroom or the load governor held back were not
+            // offered this tick and are not hands wanted: the machine, not the
+            // slot count, is what is short.
             let offered = slots.len() - disk_trimmed;
             let total_slots = inflight.len() as i32 + offered as i32 - started.len() as i32;
             let starved = queued > 0
                 && offered - started.len() == 0
                 && !inflight.is_empty()
-                && disk_trimmed == 0;
+                && disk_trimmed == 0
+                && load_held == 0;
             if starved {
                 if starved_since.is_empty() {
                     starved_since = now.clone();
@@ -2301,6 +2365,180 @@ mod tests {
         );
         assert!(
             crate::diskroom::footprint_mb(&*s.conn().unwrap(), "proj", 2_000_000_000) < 1000,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn daemon_load_governor_holds_every_local_slot_while_the_machine_is_saturated() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Waits for room".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        let saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            load1: Some(40.2),
+            ..crate::daemon_load::CALM
+        });
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            out.contains(
+                "load governor: up to 4 local run(s) at once (auto; 12 cores, 12 CPUs, 16384 MB)"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("machine saturated: load 40.2 is over daemon.max_load 12"),
+            "{out}"
+        );
+        assert!(!out.contains("leased "), "{out}");
+        assert!(!out.contains("hands wanted"), "{out}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE project = 'proj' AND status = 'queued'",
+                &[]
+            ),
+            1,
+            "{out}"
+        );
+        drop(saturated);
+        // Memory under the floor holds the same way; a floor of 0 is off and
+        // the run starts.
+        let tight = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            free_mem_mb: Some(300),
+            ..crate::daemon_load::CALM
+        });
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            out.contains(
+                "machine saturated: 300 MB of memory free, under daemon.min_free_mem_mb 1024"
+            ) && !out.contains("leased "),
+            "{out}"
+        );
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mem_mb", "0")
+            .unwrap();
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            out.contains("leased ") && !out.contains("machine saturated"),
+            "{out}"
+        );
+        drop(tight);
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE project = 'proj'",
+                &[]
+            ),
+            1,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn daemon_load_governor_caps_the_local_slots_at_max_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "borealis");
+        join(&s, "cirrus");
+        for title in ["First", "Second", "Third"] {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "test".into(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+        }
+        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "3")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "3")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.setup_mb", "0")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "jobs_per_day", "none")
+            .unwrap();
+        // The flag beats the setting, the setting beats the machine.
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.max_jobs", "2")
+            .unwrap();
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                max_jobs: 1,
+                ..Default::default()
+            },
+        );
+        assert!(
+            out.contains("load governor: up to 1 local run(s) at once (--max-jobs;"),
+            "{out}"
+        );
+        assert_eq!(out.matches("leased ").count(), 1, "{out}");
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            out.contains("load governor: up to 2 local run(s) at once (daemon.max_jobs;"),
+            "{out}"
+        );
+        assert_eq!(out.matches("leased ").count(), 2, "{out}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE project = 'proj'",
+                &[]
+            ),
+            3,
             "{out}"
         );
     }

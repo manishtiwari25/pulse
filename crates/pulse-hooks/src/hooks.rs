@@ -9,7 +9,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -578,20 +578,24 @@ impl Runner {
         let b = self.bus.clone().unwrap_or_else(pulse_bus::default);
         let (ch, stop) = b.subscribe(Filter::default(), 256);
         self.retry_due(&cancel, &self.store.now());
-        let mut last_retry = Instant::now();
+        // Blocks on the bus, the retry tick and the context's done signal
+        // rather than waking every 20 ms with nothing to deliver.
+        let done = cancel.done();
+        let retry = crossbeam_channel::tick(RETRY_INTERVAL);
         while !cancel.is_cancelled() {
-            if last_retry.elapsed() >= RETRY_INTERVAL {
-                self.retry_due(&cancel, &self.store.now());
-                last_retry = Instant::now();
-            }
-            match ch.recv_timeout(Duration::from_millis(20)) {
-                Ok(e) => {
-                    if !e.action.starts_with("hook.") {
-                        self.dispatch(&e);
-                    }
+            crossbeam_channel::select! {
+                recv(done) -> _ => break,
+                recv(retry) -> _ => {
+                    self.retry_due(&cancel, &self.store.now());
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                recv(ch) -> msg => match msg {
+                    Ok(e) => {
+                        if !e.action.starts_with("hook.") {
+                            self.dispatch(&e);
+                        }
+                    }
+                    Err(_) => break,
+                },
             }
         }
         stop();
@@ -777,6 +781,7 @@ pub(crate) mod test_helpers {
     use super::*;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
 
     pub struct TestStore {
         _home: tempfile::TempDir,

@@ -40,7 +40,11 @@ pub(crate) static SWEEP_KINDS: &[&str] = &[
     "scratch",
     "log",
     "transcript",
+    "trajectory",
     "patch",
+    "binary",
+    "cache",
+    "store",
 ];
 
 #[derive(Debug, Clone, Default)]
@@ -103,6 +107,16 @@ pub(crate) struct Sweeper {
     pub(crate) grace: std::time::Duration,
     pub(crate) branches: std::time::Duration,
     pub(crate) keep: std::time::Duration,
+    /// `daemon.transcript_keep_days`; zero keeps every transcript.
+    pub(crate) transcripts: std::time::Duration,
+    /// `daemon.log_keep_days`.
+    pub(crate) logs_keep: std::time::Duration,
+    /// `daemon.log_max_mb` in bytes; zero never caps.
+    pub(crate) log_max: u64,
+    /// `daemon.vacuum_free_mb` in bytes; zero never vacuums.
+    pub(crate) vacuum_free: i64,
+    /// `daemon.build_cache_keep_days`.
+    pub(crate) cache_keep: std::time::Duration,
     pub(crate) rep: SweepReport,
     pub(crate) projects: Vec<Row>,
     /// Every project checkout the store knows, active or not: never a sweep target.
@@ -137,6 +151,17 @@ pub(crate) fn sweep(
             (s.setting_int("daemon.sweep_branch_days") as u64) * 24 * 3600,
         ),
         keep: Duration::from_secs((s.setting_int("daemon.sweep_keep_days") as u64) * 24 * 3600),
+        transcripts: Duration::from_secs(
+            (s.setting_int("daemon.transcript_keep_days").max(0) as u64) * 24 * 3600,
+        ),
+        logs_keep: Duration::from_secs(
+            (s.setting_int("daemon.log_keep_days").max(1) as u64) * 24 * 3600,
+        ),
+        log_max: (s.setting_int("daemon.log_max_mb").max(0) as u64) << 20,
+        vacuum_free: s.setting_int("daemon.vacuum_free_mb").max(0) << 20,
+        cache_keep: Duration::from_secs(
+            (s.setting_int("daemon.build_cache_keep_days").max(1) as u64) * 24 * 3600,
+        ),
         o,
         projects,
         checkouts,
@@ -165,11 +190,13 @@ pub(crate) fn sweep(
         w.sweep_checkout(proj);
     }
     w.sweep_harness_steps();
+    w.sweep_trajectories();
     w.sweep_files(
         Path::new(&w.home).join("logs").display().to_string(),
         "log".into(),
         serde_json::Value::Null,
     );
+    w.cap_logs();
     if let Ok(folders) = std::fs::read_dir(Path::new(&w.home).join("patches")) {
         for f in folders.flatten() {
             if f.file_type().is_ok_and(|t| t.is_dir()) {
@@ -180,6 +207,12 @@ pub(crate) fn sweep(
                 );
             }
         }
+    }
+    w.sweep_binaries();
+    w.sweep_build_cache();
+    w.sweep_store_space();
+    if !w.o.dry_run {
+        crate::retention::empty_trash_later(Path::new(&w.home));
     }
     w.rep.removed.sort_by_key(|x| kind_rank_value(&x.kind));
     w.rep.held.sort_by_key(|x| kind_rank_value(&x.kind));
@@ -224,6 +257,17 @@ pub(crate) fn sweep_stale_clones(
             (s.setting_int("daemon.sweep_branch_days") as u64) * 24 * 3600,
         ),
         keep: Duration::from_secs((s.setting_int("daemon.sweep_keep_days") as u64) * 24 * 3600),
+        transcripts: Duration::from_secs(
+            (s.setting_int("daemon.transcript_keep_days").max(0) as u64) * 24 * 3600,
+        ),
+        logs_keep: Duration::from_secs(
+            (s.setting_int("daemon.log_keep_days").max(1) as u64) * 24 * 3600,
+        ),
+        log_max: (s.setting_int("daemon.log_max_mb").max(0) as u64) << 20,
+        vacuum_free: s.setting_int("daemon.vacuum_free_mb").max(0) << 20,
+        cache_keep: Duration::from_secs(
+            (s.setting_int("daemon.build_cache_keep_days").max(1) as u64) * 24 * 3600,
+        ),
         o,
         projects: Vec::new(),
         checkouts,
@@ -432,7 +476,7 @@ pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
     let mut lines = Vec::new();
     let mut bulk: BTreeMap<String, (i32, i64)> = BTreeMap::new();
     for x in &rep.removed {
-        if matches!(x.kind.as_str(), "scratch" | "log" | "patch") {
+        if matches!(x.kind.as_str(), "scratch" | "log" | "patch" | "trajectory") {
             let e = bulk.entry(x.kind.clone()).or_default();
             e.0 += 1;
             e.1 += x.bytes;
@@ -456,6 +500,7 @@ pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
                 "scratch" => "scratch file",
                 "log" => "run log",
                 "patch" => "patch",
+                "trajectory" => "trajectory file",
                 _ => kind,
             };
             lines.push(format!(
@@ -660,7 +705,7 @@ impl Sweeper {
         project: String,
         why: String,
     ) -> bool {
-        let item = Swept {
+        let mut item = Swept {
             kind,
             path: path.clone(),
             project,
@@ -668,9 +713,23 @@ impl Sweeper {
             bytes: disk_usage(path.clone()),
             patch: String::new(),
         };
+        // Whatever a run left running under the folder (a dev server, a
+        // watcher) dies first, or it would keep spinning in a deleted cwd.
+        if !self.o.dry_run && Path::new(&path).is_dir() {
+            let killed = crate::proc::kill_tree_under(Path::new(&path));
+            if !killed.is_empty() {
+                item.why = format!(
+                    "{}; killed {} straggler process(es): {}",
+                    item.why,
+                    killed.len(),
+                    crate::proc::describe_killed(&killed)
+                );
+            }
+        }
+        // A folder goes to the trash with one rename and is unlinked by the
+        // low-priority remover; a file goes at once.
         if !self.o.dry_run
-            && let Err(err) =
-                std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path))
+            && let Err(err) = crate::retention::discard_dir(Path::new(&self.home), Path::new(&path))
         {
             if err.kind() == std::io::ErrorKind::NotFound {
                 self.rep.removed.push(item);
@@ -1071,7 +1130,10 @@ impl Sweeper {
     /// ago: the session rows keep their counts, tokens, cost and submission; the step-by-step
     /// content is a run log and goes with the run logs.
     pub(crate) fn sweep_harness_steps(&mut self) {
-        let keep_days = self.keep.as_secs() / 86_400;
+        if self.transcripts.is_zero() {
+            return;
+        }
+        let keep_days = self.transcripts.as_secs() / 86_400;
         let before = crate::util::plus_minutes(&self.now, -((keep_days * 24 * 60) as f64));
         let found = match self.s.prune_harness_steps(&before, !self.o.dry_run) {
             Ok(found) => found,
@@ -1086,21 +1148,295 @@ impl Sweeper {
         if found.steps == 0 {
             return;
         }
+        let mut path = format!(
+            "{} {} of {} {}",
+            found.steps,
+            crate::util::plural(found.steps as i32, "harness step"),
+            found.sessions,
+            crate::util::plural(found.sessions as i32, "session")
+        );
+        if found.events > 0 {
+            path.push_str(&format!(
+                " and {} {}",
+                found.events,
+                crate::util::plural(found.events as i32, "step event")
+            ));
+        }
         self.rep.removed.push(Swept {
             kind: "transcript".into(),
-            path: format!(
-                "{} {} of {} {}",
-                found.steps,
-                crate::util::plural(found.steps as i32, "harness step"),
-                found.sessions,
-                crate::util::plural(found.sessions as i32, "session")
-            ),
+            path,
             project: String::new(),
             why: format!("ended more than {keep_days}d ago"),
             bytes: found.bytes,
             patch: String::new(),
         });
     }
+
+    /// The trajectory files under `PULSE_HOME/harness` of sessions that ended
+    /// more than `daemon.transcript_keep_days` ago (by the file's last write;
+    /// a running session's file is never taken). The hub's download of a
+    /// pruned one answers not found; the session's rows stay.
+    pub(crate) fn sweep_trajectories(&mut self) {
+        if self.transcripts.is_zero() {
+            return;
+        }
+        let running = self.s.running_harness_trajectories().unwrap_or_default();
+        let found = crate::retention::stale_trajectories(
+            &Path::new(&self.home).join("harness"),
+            self.transcripts,
+            self.clock.into(),
+            &running,
+        );
+        let why = format!("older than {}", round_duration(self.transcripts));
+        for t in found {
+            self.remove(
+                "trajectory".into(),
+                t.path.display().to_string(),
+                String::new(),
+                why.clone(),
+            );
+        }
+    }
+
+    /// Copies daemon.log and hub.log aside and truncates them in place once
+    /// they pass `daemon.log_max_mb`; the launcher writes them in append
+    /// mode, so the live processes continue from the new end.
+    pub(crate) fn cap_logs(&mut self) {
+        if self.log_max == 0 {
+            return;
+        }
+        for name in crate::retention::CAPPED_LOGS {
+            let path = Path::new(&self.home).join("logs").join(name);
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if meta.len() <= self.log_max {
+                continue;
+            }
+            let item = Swept {
+                kind: "log".into(),
+                path: path.display().to_string(),
+                project: String::new(),
+                why: format!("over {} (kept as {name}.1)", size_text(self.log_max as i64)),
+                bytes: meta.len() as i64,
+                patch: String::new(),
+            };
+            if self.o.dry_run {
+                self.rep.removed.push(item);
+                continue;
+            }
+            match crate::retention::cap_log(&path, self.log_max) {
+                Ok(Some(_)) => self.rep.removed.push(item),
+                Ok(None) => {}
+                Err(err) => self.failed(format!("cannot cap {}: {err}", path.display()), vec![]),
+            }
+        }
+    }
+
+    /// Stale `bin/pulse.*` files: what the launcher's crash guard and the
+    /// self-update set aside and nothing reads after a week.
+    pub(crate) fn sweep_binaries(&mut self) {
+        let bin = Path::new(&self.home).join("bin");
+        for b in crate::retention::stale_binaries(&bin, self.clock.into()) {
+            self.remove(
+                "binary".into(),
+                b.path.display().to_string(),
+                String::new(),
+                format!("stale for {}", round_duration(b.age)),
+            );
+        }
+    }
+
+    /// The shared build-cache lanes (`PULSE_HOME/cache/cargo-target/<slug>/<n>`):
+    /// a lane of a project the store no longer lists or one unused for
+    /// `daemon.build_cache_keep_days` goes whole; a lane in use is held; any
+    /// other has its dead units and stale incremental caches pruned like a
+    /// project's own shared Cargo target.
+    pub(crate) fn sweep_build_cache(&mut self) {
+        let home = PathBuf::from(&self.home);
+        let known: BTreeSet<String> = self
+            .projects
+            .iter()
+            .map(|p| crate::buildcache::lane_slug(&p.str("slug")))
+            .collect();
+        let min_age = Duration::from_secs(
+            self.s
+                .setting("hygiene.cargo_target_hours", "24")
+                .parse::<u64>()
+                .unwrap_or(24)
+                * 3600,
+        );
+        let now: std::time::SystemTime = self.clock.into();
+        for (slug, lane) in crate::buildcache::lanes(&home) {
+            let path = lane.display().to_string();
+            if crate::buildcache::lane_busy(&lane) {
+                self.held("cache".into(), path, slug, "run in flight".into());
+                continue;
+            }
+            if !known.contains(&slug) {
+                self.remove("cache".into(), path, slug, "no such project".into());
+                continue;
+            }
+            let idle = crate::buildcache::lane_last_used(&lane)
+                .and_then(|t| now.duration_since(t).ok())
+                .unwrap_or(Duration::ZERO);
+            if idle >= self.cache_keep {
+                self.remove(
+                    "cache".into(),
+                    path,
+                    slug,
+                    format!("unused for {}", round_duration(idle)),
+                );
+                continue;
+            }
+            let mut total = CargoTargetSweep {
+                project: slug.clone(),
+                target: path.clone(),
+                ..Default::default()
+            };
+            for profile in cargo_profile_dirs(&lane) {
+                let Some(_cargo_lock) = (match acquire_cargo_profile_lock(&profile) {
+                    Ok(lock) => Some(lock),
+                    Err(reason) => {
+                        self.cargo_target_skip(&slug, &profile.display().to_string(), reason);
+                        None
+                    }
+                }) else {
+                    continue;
+                };
+                match prune_cargo_profile(&profile, min_age, now, self.o.dry_run) {
+                    Ok(stats) => {
+                        total.units += stats.units;
+                        total.incremental += stats.incremental;
+                        total.bytes += stats.bytes;
+                    }
+                    Err(err) => self.failed(
+                        format!("cannot prune build cache {}: {err}", profile.display()),
+                        vec![],
+                    ),
+                }
+            }
+            if total.units > 0 || total.incremental > 0 {
+                self.rep.cargo_target.push(total);
+            }
+        }
+    }
+
+    /// Gives the store's free pages back once they pass `daemon.vacuum_free_mb`.
+    /// A store in incremental auto-vacuum mode frees a slice every pass; one
+    /// that is not takes the one full VACUUM the switch needs only while no
+    /// run and no harness session is in flight and the disk has room for a
+    /// copy of the file, since that VACUUM holds every writer off while it
+    /// copies.
+    pub(crate) fn sweep_store_space(&mut self) {
+        if self.vacuum_free <= 0 {
+            return;
+        }
+        let space = match self.s.db_space() {
+            Ok(space) => space,
+            Err(err) => {
+                self.failed(
+                    "store space: {}".into(),
+                    vec![serde_json::Value::String(crate::run::err_message(&err))],
+                );
+                return;
+            }
+        };
+        if space.free_bytes() < self.vacuum_free {
+            return;
+        }
+        let path = self.s.path.clone();
+        let incremental = space.auto_vacuum == pulse_store::AUTO_VACUUM_INCREMENTAL;
+        if !incremental {
+            if let Some(why) = self.store_busy_reason() {
+                self.held("store".into(), path, String::new(), why);
+                return;
+            }
+            let free_disk = (crate::executor::free_mb(Path::new(&self.home)).max(0) as i64) << 20;
+            let need = space.bytes() * 2;
+            if free_disk < need {
+                self.held(
+                    "store".into(),
+                    path,
+                    String::new(),
+                    format!(
+                        "a full VACUUM needs {} free on disk, {} free",
+                        size_text(need),
+                        size_text(free_disk)
+                    ),
+                );
+                return;
+            }
+        }
+        let mut item = Swept {
+            kind: "store".into(),
+            path,
+            project: String::new(),
+            why: format!(
+                "{} of free pages{}",
+                size_text(space.free_bytes()),
+                if incremental {
+                    ""
+                } else {
+                    ", switched to incremental auto-vacuum"
+                }
+            ),
+            bytes: space.free_bytes(),
+            patch: String::new(),
+        };
+        if self.o.dry_run {
+            self.rep.removed.push(item);
+            return;
+        }
+        // One slice per pass: the threshold's worth of pages.
+        let max_pages = (self.vacuum_free / space.page_size.max(1)).max(1);
+        match self.s.vacuum(max_pages) {
+            Ok(got) => {
+                item.bytes = got.freed_bytes;
+                item.why = format!("{} ({} in {} ms)", item.why, got.mode, got.millis);
+                self.rep.removed.push(item);
+            }
+            Err(err) => self.failed(
+                "store vacuum: {}".into(),
+                vec![serde_json::Value::String(crate::run::err_message(&err))],
+            ),
+        }
+    }
+
+    fn store_busy_reason(&self) -> Option<String> {
+        if self.o.inflight.values().any(|v| *v) {
+            return Some("runs in flight".into());
+        }
+        let conn = self.s.conn().ok()?;
+        let runs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM runs WHERE status = 'running'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if runs > 0 {
+            return Some(format!(
+                "{runs} {} in progress",
+                crate::util::plural(runs as i32, "run")
+            ));
+        }
+        let sessions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM harness_sessions WHERE status = 'running'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if sessions > 0 {
+            return Some(format!(
+                "{sessions} {} running",
+                crate::util::plural(sessions as i32, "harness session")
+            ));
+        }
+        None
+    }
+
     /// Measurement clone roots (PULSE_HOME/fleet/measure-*) whose measuring
     /// process is gone: a measurement removes its own root when it ends, so a
     /// root that outlives its process was left by a kill or a crash.
@@ -1804,7 +2140,12 @@ impl Sweeper {
                 continue;
             }
             let matches = match kind.as_str() {
-                "log" => SWEEP_RUN_LOG_RE.is_match(&name),
+                "log" => {
+                    SWEEP_RUN_LOG_RE.is_match(&name)
+                        || ((name.starts_with("daemon-stall-")
+                            || name.starts_with("daemon-signal-"))
+                            && name.ends_with(".log"))
+                }
                 "patch" => name.ends_with(".patch"),
                 _ => true,
             };
@@ -1818,13 +2159,18 @@ impl Sweeper {
                 self.held(kind.clone(), path, String::new(), "run in progress".into());
                 continue;
             }
+            let keep = if kind == "log" {
+                self.logs_keep
+            } else {
+                self.keep
+            };
             let (age, ok) = self.age(path.clone());
-            if ok && age >= self.keep {
+            if ok && age >= keep {
                 self.remove(
                     kind.clone(),
                     path,
                     String::new(),
-                    format!("older than {}", round_duration(self.keep)),
+                    format!("older than {}", round_duration(keep)),
                 );
             }
         }
@@ -2671,7 +3017,7 @@ mod tests {
     fn sweep_harness_transcripts() {
         let _serial = crate::test_helpers::serial();
         let s = sweep_store();
-        set_setting(&s, "daemon.sweep_keep_days", "30");
+        set_setting(&s, "daemon.transcript_keep_days", "30");
         let old_end = crate::util::plus_minutes(TEST_NOW, -(31.0 * 24.0 * 60.0));
         let fresh_end = crate::util::plus_minutes(TEST_NOW, -(29.0 * 24.0 * 60.0));
         {
@@ -3324,6 +3670,171 @@ mod tests {
         assert!(
             lines[0].contains("swept 1 run log") && lines[1].contains("swept 1 patch"),
             "lines = {lines:?}"
+        );
+    }
+    #[test]
+    fn sweep_bounds_trajectories_binaries_logs_and_store() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        set_setting(&s, "daemon.log_max_mb", "1");
+        set_setting(&s, "daemon.vacuum_free_mb", "1");
+        let home = Path::new(&s.home);
+        let old = FileTime::from_system_time(
+            std::time::SystemTime::now() - Duration::from_secs(20 * 24 * 3600),
+        );
+        let harness = home.join("harness");
+        let stale = harness.join("run-20260901T000000Z-aaaaaa.json");
+        let fresh = harness.join("run-20261009T000000Z-bbbbbb.json");
+        let live = harness.join("run-20260901T000000Z-cccccc.json");
+        for p in [&stale, &fresh, &live] {
+            mkdir_file(p, "{}");
+        }
+        for p in [&stale, &live] {
+            filetime::set_file_mtime(p, old).unwrap();
+        }
+        let bin = home.join("bin");
+        let stale_bins = ["pulse.failed", "pulse.rollback-20260913T073142Z"];
+        let kept_bins = ["pulse", "pulse.prev", "pulse-daemon.sh", "pulse.restored"];
+        for name in stale_bins.iter().chain(kept_bins.iter()) {
+            let p = bin.join(name);
+            mkdir_file(&p, "bin");
+            filetime::set_file_mtime(&p, old).unwrap();
+        }
+        let daemon_log = home.join("logs/daemon.log");
+        mkdir_file(&daemon_log, &"d".repeat((1 << 20) + 16));
+        let hub_log = home.join("logs/hub.log");
+        mkdir_file(&hub_log, "small");
+        {
+            let conn = s.conn().unwrap();
+            conn.execute(
+                "INSERT INTO harness_sessions (id, status, started_at, updated_at, trajectory) VALUES ('run-20260901T000000Z-cccccc', 'running', ?, ?, ?)",
+                params![TEST_NOW, TEST_NOW, live.display().to_string()],
+            )
+            .unwrap();
+            let payload = "y".repeat(4096);
+            for n in 0..600 {
+                conn.execute(
+                    "INSERT INTO harness_steps (session_id, n, at, kind, content) VALUES ('hs-vac', ?, ?, 'assistant', ?)",
+                    params![n, TEST_NOW, payload],
+                )
+                .unwrap();
+            }
+            conn.execute("DELETE FROM harness_steps WHERE session_id = 'hs-vac'", [])
+                .unwrap();
+        }
+        assert!(s.db_space().unwrap().free_bytes() >= 1 << 20);
+
+        let dry = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(dry.errors.is_empty(), "errors: {:?}", dry.errors);
+        assert!(
+            stale.exists() && bin.join("pulse.failed").exists(),
+            "dry run removes nothing"
+        );
+        assert_eq!(
+            std::fs::metadata(&daemon_log).unwrap().len(),
+            (1 << 20) + 16
+        );
+        assert_eq!(
+            swept_paths(&dry.removed, "trajectory"),
+            vec![stale.display().to_string()],
+            "a running session's file is never taken"
+        );
+        let mut bins = swept_paths(&dry.removed, "binary");
+        bins.sort();
+        assert_eq!(
+            bins,
+            stale_bins
+                .iter()
+                .map(|n| bin.join(n).display().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            swept_paths(&dry.removed, "log"),
+            vec![daemon_log.display().to_string()]
+        );
+        assert_eq!(
+            held_why_text(&dry.held, &s.path),
+            "1 harness session running",
+            "a full VACUUM waits for an idle store"
+        );
+        assert_eq!(s.db_space().unwrap().auto_vacuum, 0);
+
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE harness_sessions SET status = 'submitted', ended_at = ? WHERE id = 'run-20260901T000000Z-cccccc'",
+                params![TEST_NOW],
+            )
+            .unwrap();
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert!(!stale.exists() && !live.exists() && fresh.exists());
+        for name in stale_bins {
+            assert!(!bin.join(name).exists(), "{name} still there");
+        }
+        for name in kept_bins {
+            assert!(bin.join(name).exists(), "{name} removed");
+        }
+        assert_eq!(std::fs::metadata(&daemon_log).unwrap().len(), 0);
+        assert_eq!(
+            std::fs::metadata(home.join("logs/daemon.log.1"))
+                .unwrap()
+                .len(),
+            (1 << 20) + 16
+        );
+        assert_eq!(std::fs::read_to_string(&hub_log).unwrap(), "small");
+        let store_item = rep
+            .removed
+            .iter()
+            .find(|x| x.kind == "store")
+            .expect("store swept");
+        assert!(
+            store_item
+                .why
+                .contains("switched to incremental auto-vacuum")
+                && store_item.why.contains("(full in"),
+            "{}",
+            store_item.why
+        );
+        assert!(store_item.bytes > 0, "{store_item:?}");
+        let space = s.db_space().unwrap();
+        assert_eq!(space.auto_vacuum, pulse_store::AUTO_VACUUM_INCREMENTAL);
+        assert_eq!(space.freelist_count, 0);
+        let lines = sweep_lines(Some(rep));
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("swept binary "))
+                .count(),
+            2,
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("swept 2 trajectory files")),
+            "{lines:?}"
+        );
+
+        let again = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(again.errors.is_empty(), "errors: {:?}", again.errors);
+        assert!(
+            again
+                .removed
+                .iter()
+                .all(|x| !matches!(x.kind.as_str(), "trajectory" | "binary" | "log" | "store")),
+            "second pass finds nothing: {:?}",
+            again.removed
         );
     }
     #[test]

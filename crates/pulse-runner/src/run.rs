@@ -686,6 +686,9 @@ pub(crate) fn run_job(
     let mut worker_reported = String::new();
     // The ballot the brief showed; `VOTE:` lines may only name these cards.
     let mut run_ballot: Vec<BallotItem> = Vec::new();
+    // The shared Cargo build-cache lane this run builds into, held until the
+    // clone is gone so no concurrent run of the project shares it.
+    let mut build_cache: Option<crate::buildcache::Lane> = None;
 
     let body_result: Result<()> = (|| {
         pubkey = crate::keys::make_run_key(&ex.key_path(), agent, &run_id)?;
@@ -810,6 +813,20 @@ pub(crate) fn run_job(
                 for (k, v) in &r.env {
                     env.insert(k.clone(), v.clone());
                 }
+            }
+            if !o.dry_run {
+                let (prepared, lane) = crate::buildcache::prepare(
+                    s.setting("daemon.build_cache", "on") != "off",
+                    Path::new(&home),
+                    &project.str("slug"),
+                    Path::new(&clone),
+                    &mut env,
+                );
+                let line = prepared.line();
+                if !line.is_empty() {
+                    log.add(line);
+                }
+                build_cache = lane;
             }
             if !pins.is_empty() {
                 for kv in crate::recipe::mise_env(&clone) {
@@ -1291,6 +1308,7 @@ pub(crate) fn run_job(
     // The agent was told to remove what it added (brief rule 9); whatever is
     // still registered on the clone goes now and is written down against it.
     let left = ex.cleanup();
+    drop(build_cache);
     if ex.started() {
         let clone_text = if ex.remote() {
             format!("clone removed on {}", ex.name())
@@ -3918,10 +3936,8 @@ mod tests {
                 ],
             );
             assert_eq!(content, "slow lifecycle\n", "landed content");
-            let entries = std::fs::read_dir(Path::new(&s.home).join("work"))
-                .map(|rd| rd.count())
-                .unwrap_or(0);
-            assert_eq!(entries, 0, "worker left temporary state");
+            let left = work_leftovers(&s.home);
+            assert!(left.is_empty(), "worker left temporary state: {left:?}");
             cancel.cancel();
             drop(fake);
         }

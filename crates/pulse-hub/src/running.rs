@@ -449,7 +449,7 @@ mod tests {
                 slug: pulse_store::COMMONS_SLUG.into(),
                 ..Default::default()
             },
-            data: Some(crate::board::BoardData {
+            data: Some(std::sync::Arc::new(crate::board::BoardData {
                 params: std::collections::BTreeMap::from([(
                     "now".into(),
                     json!("2026-09-06T11:00:00Z"),
@@ -495,7 +495,7 @@ mod tests {
                     ),
                 ],
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         }];
         let h = f2::handler(&s);

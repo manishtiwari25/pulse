@@ -189,7 +189,12 @@ impl Executor for LocalExec {
     }
     fn prepare(&mut self, cancel: &pulse_bus::CancellationToken) -> Result<String> {
         preflight_run_key(&self.key)?;
-        let _ = std::fs::remove_dir_all(&self.clone_dir);
+        // A clone left by an earlier attempt goes, with whatever still runs in it.
+        if Path::new(&self.clone_dir).exists() {
+            crate::proc::sweep_job_dir(&self.clone_dir, &mut |line| self.log.add(line));
+            let _ =
+                crate::retention::discard_dir(Path::new(&self.home), Path::new(&self.clone_dir));
+        }
         let mut args = vec![
             "git".to_string(),
             "clone".to_string(),
@@ -368,8 +373,14 @@ impl Executor for LocalExec {
         crate::util::git_env(&[])
     }
     fn cleanup(&self) -> Vec<crate::tidy::Leftover> {
+        // Servers and watchers the worker left behind go before their
+        // directory does; the directory itself is renamed into the trash in
+        // an instant and deleted later by the low-priority remover.
+        crate::proc::sweep_job_dir(&self.clone_dir, &mut |line| self.log.add(line));
         let left = crate::tidy::clear_leftovers(&self.clone_dir);
-        let _ = std::fs::remove_dir_all(&self.clone_dir);
+        let home = Path::new(&self.home);
+        let _ = crate::retention::discard_dir(home, Path::new(&self.clone_dir));
+        crate::retention::empty_trash_later(home);
         crate::keys::remove_run_key(&self.key);
         left
     }

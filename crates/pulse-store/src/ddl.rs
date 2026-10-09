@@ -156,5 +156,15 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
 BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
+WHEN OLD.action NOT IN ('harness.step')
 BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 "####;
+
+/// The one kind of event the ledger lets go: a harness session's per-step
+/// notification, which belongs to the step transcript and is pruned with it
+/// (`daemon.transcript_keep_days`). Everything else stays append-only.
+pub const PRUNABLE_EVENT_ACTIONS: &[&str] = &["harness.step"];
+
+/// The delete guard as the schema creates it now; `ensure_events_prunable`
+/// swaps an older store's unconditional guard for this one.
+pub const EVENTS_NO_DELETE_SQL: &str = "CREATE TRIGGER events_no_delete BEFORE DELETE ON events\nWHEN OLD.action NOT IN ('harness.step')\nBEGIN SELECT RAISE(ABORT, 'events are append-only'); END";

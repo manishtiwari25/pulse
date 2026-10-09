@@ -119,8 +119,10 @@ fn write_build_info(version: &str, rev: &str, dirty: Option<bool>) {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=PULSE_VERSION");
+    // HEAD, its ref and the tags decide the version. `.git/index` is left out on
+    // purpose: every `git status` rewrites it, and a rerun here recompiles this
+    // crate plus everything above it; `+dirty` refreshes whenever HEAD moves.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../.git/index");
     println!("cargo:rerun-if-changed=../../.git/refs/tags");
     if let Some(r) = fs::read_to_string("../../.git/HEAD")
         .ok()

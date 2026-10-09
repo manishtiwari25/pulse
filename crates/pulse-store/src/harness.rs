@@ -59,7 +59,14 @@ pub struct HarnessPrune {
     pub steps: i64,
     pub sessions: i64,
     pub bytes: i64,
+    /// `harness.step` notification events of the same sessions.
+    pub events: i64,
 }
+
+/// Rows one pruning statement deletes before it commits and lets other
+/// writers in; a transcript prune of a month-old store is a few hundred
+/// thousand rows, and one long transaction would hold every writer off.
+pub const PRUNE_BATCH: usize = 5_000;
 
 pub fn harness_session_cursor(h: &HarnessSession) -> String {
     format!("{}|{}", h.started_at, h.id)
@@ -285,8 +292,11 @@ impl Store {
         Ok(HarnessCounts{running:conn.query_row("SELECT COUNT(*) FROM harness_sessions WHERE status = 'running'",[],|r|r.get(0))?,today:conn.query_row("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ?",[&day],|r|r.get(0))?,failed_today:conn.query_row("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ? AND status NOT IN ('running', 'submitted')",[&day],|r|r.get(0))?,submitted_today:conn.query_row("SELECT COUNT(*) FROM harness_sessions WHERE started_at >= ? AND status = 'submitted'",[&day],|r|r.get(0))?,cost_today:conn.query_row("SELECT COALESCE(SUM(cost), 0) FROM harness_sessions WHERE started_at >= ?",[&day],|r|r.get(0))?})
     }
     /// The step transcripts of harness sessions that ended before `ended_before`: how many
-    /// steps, across how many sessions, holding how many bytes of content and commands. With
-    /// `remove` the steps are deleted; the session rows (counts, tokens, cost, submission) stay.
+    /// steps, across how many sessions, holding how many bytes of content and commands, and
+    /// how many `harness.step` notification events they left in the ledger. With `remove`
+    /// the steps and those events are deleted in batches of `PRUNE_BATCH`, each its own
+    /// transaction so a writer never waits long; the session rows (counts, tokens, cost,
+    /// submission) stay.
     pub fn prune_harness_steps(&self, ended_before: &str, remove: bool) -> Result<HarnessPrune> {
         if ended_before.trim().is_empty() {
             return Err(input_err("endedBefore cannot be empty"));
@@ -299,18 +309,54 @@ impl Store {
             [ended_before],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
         )?;
+        let events: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM events e JOIN harness_sessions h ON h.id = e.subject \
+             WHERE e.action = 'harness.step' AND h.ended_at != '' AND h.ended_at < ?",
+            [ended_before],
+            |r| r.get(0),
+        )?;
         if remove && steps > 0 {
-            conn.execute(
-                "DELETE FROM harness_steps WHERE session_id IN \
-                 (SELECT id FROM harness_sessions WHERE ended_at != '' AND ended_at < ?)",
-                [ended_before],
+            delete_in_batches(
+                &conn,
+                "DELETE FROM harness_steps WHERE rowid IN \
+                 (SELECT st.rowid FROM harness_steps st JOIN harness_sessions h ON h.id = st.session_id \
+                  WHERE h.ended_at != '' AND h.ended_at < ?1 LIMIT ?2)",
+                ended_before,
+            )?;
+        }
+        if remove && events > 0 {
+            ensure_events_prunable(&conn)?;
+            delete_in_batches(
+                &conn,
+                "DELETE FROM events WHERE seq IN \
+                 (SELECT e.seq FROM events e JOIN harness_sessions h ON h.id = e.subject \
+                  WHERE e.action = 'harness.step' AND h.ended_at != '' AND h.ended_at < ?1 LIMIT ?2)",
+                ended_before,
             )?;
         }
         Ok(HarnessPrune {
             steps,
             sessions,
             bytes,
+            events,
         })
+    }
+    /// The trajectory files (`harness_sessions.trajectory`) of sessions still running: the
+    /// sweep never removes those, whatever their age on disk.
+    pub fn running_harness_trajectories(&self) -> Result<Vec<String>> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT id, trajectory FROM harness_sessions WHERE status = 'running'")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, trajectory) = row?;
+            out.push(id);
+            if !trajectory.is_empty() {
+                out.push(trajectory);
+            }
+        }
+        Ok(out)
     }
     pub fn mark_lost_harness_sessions(&self, older_than: &str) -> Result<i64> {
         if older_than.trim().is_empty() {
@@ -319,6 +365,45 @@ impl Store {
         let conn = self.conn()?;
         Ok(conn.execute("UPDATE harness_sessions SET status = 'lost', updated_at = ?, ended_at = ? WHERE status = 'running' AND updated_at < ?",params![self.now(),self.now(),older_than])? as i64)
     }
+}
+
+/// Runs `sql` (a DELETE with `?1` = `cutoff` and `?2` = batch size) until it deletes
+/// nothing more; every batch is its own autocommit transaction.
+fn delete_in_batches(conn: &rusqlite::Connection, sql: &str, cutoff: &str) -> Result<i64> {
+    let mut total = 0i64;
+    loop {
+        let n = conn.execute(sql, params![cutoff, PRUNE_BATCH as i64])?;
+        total += n as i64;
+        if n < PRUNE_BATCH {
+            return Ok(total);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Makes the ledger's delete guard the conditional one the schema creates today, so the
+/// `harness.step` notifications can go with their transcripts; a store created before
+/// the guard took its `WHEN` clause has the unconditional trigger, which is swapped once.
+pub fn ensure_events_prunable(conn: &rusqlite::Connection) -> Result<bool> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'events_no_delete'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(sql) = sql else {
+        return Ok(false);
+    };
+    if sql.to_uppercase().contains("WHEN") {
+        return Ok(false);
+    }
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE; DROP TRIGGER events_no_delete; {}; COMMIT;",
+        crate::ddl::EVENTS_NO_DELETE_SQL
+    ))
+    .map_err(|e| anyhow!("events delete guard: {e}"))?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -880,6 +965,135 @@ mod go_harness_tests {
             ),
             (5, 6, 0, 1, 3.5)
         );
+    }
+
+    #[test]
+    fn prune_harness_steps_takes_transcripts_and_step_events_in_batches() {
+        let _serial = crate::test_helpers::serial();
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: dir.path().display().to_string(),
+            create: true,
+            now: "2026-09-01T05:00:00Z".into(),
+            ..Options::default()
+        })
+        .unwrap();
+        // An older store carries the unconditional delete guard; the prune swaps it once.
+        {
+            let conn = s.conn().unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER events_no_delete; \
+                 CREATE TRIGGER events_no_delete BEFORE DELETE ON events \
+                 BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;",
+            )
+            .unwrap();
+        }
+        let steps_per_session = PRUNE_BATCH as i64 + 7;
+        for (id, ended) in [("hs-old", true), ("hs-new", false)] {
+            s.begin_harness_session(HarnessSession {
+                id: id.into(),
+                run_id: format!("run-{id}"),
+                job_id: format!("job-{id}"),
+                agent: "agent-a".into(),
+                project: "proj".into(),
+                ..HarnessSession::default()
+            })
+            .unwrap();
+            let conn = s.conn().unwrap();
+            for n in 1..=steps_per_session {
+                conn.execute(
+                    "INSERT INTO harness_steps (session_id, n, at, kind, content) VALUES (?, ?, ?, 'assistant', 'x')",
+                    params![id, n, s.now()],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'agent-a', 'harness.step', ?, '{}')",
+                    params![s.now(), id],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'agent-a', 'harness.finished', ?, '{}')",
+                params![s.now(), id],
+            )
+            .unwrap();
+            if ended {
+                s.finish_harness_session(id, "submitted", "ok", "done", "", 0.1, "")
+                    .unwrap();
+            }
+        }
+        let events_before: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+
+        let dry = s
+            .prune_harness_steps("2026-09-02T00:00:00Z", false)
+            .unwrap();
+        assert_eq!(
+            (dry.steps, dry.sessions, dry.events),
+            (steps_per_session, 1, steps_per_session),
+            "dry run counts: {dry:?}"
+        );
+        let after_dry: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM harness_steps", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after_dry, steps_per_session * 2, "dry run removed nothing");
+
+        let got = s.prune_harness_steps("2026-09-02T00:00:00Z", true).unwrap();
+        assert_eq!(got.steps, steps_per_session);
+        let conn = s.conn().unwrap();
+        let left_old: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM harness_steps WHERE session_id = 'hs-old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let left_new: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM harness_steps WHERE session_id = 'hs-new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            (left_old, left_new),
+            (0, steps_per_session),
+            "only the ended session's steps go"
+        );
+        let events_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            events_after,
+            events_before - steps_per_session,
+            "only hs-old's harness.step events go"
+        );
+        let old_kinds: Vec<String> = conn
+            .prepare("SELECT action FROM events WHERE subject = 'hs-old' ORDER BY seq")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(old_kinds, vec!["harness.finished".to_string()]);
+        // The ledger stays append-only for everything else.
+        let err = conn
+            .execute("DELETE FROM events WHERE action = 'harness.finished'", [])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("append-only"), "guard still holds: {err}");
+        assert!(
+            !ensure_events_prunable(&conn).unwrap(),
+            "guard already conditional"
+        );
+        let h = s.harness_session_head("hs-old").unwrap().unwrap();
+        assert_eq!(h.status, "submitted", "the session row stays");
     }
 
     #[test]

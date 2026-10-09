@@ -50,14 +50,9 @@ serde_json = { version = "1.0" }
 erased-serde = "0.4"
 # time
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-humantime = "2.4"
 # text
 regex = "1.13"
-strsim = "0.11"
-unicode-width = "0.2"
 tabwriter = "1.4"
-shell-words = "1.1"
-tinytemplate = "1.2"
 indexmap = { version = "2.14", features = ["serde"] }
 # ids, hashing, encoding
 uuid = { version = "1.26", features = ["v4"] }
@@ -75,7 +70,6 @@ walkdir = "2.5"
 home = "0.5"
 fs2 = "0.4"
 filetime = "0.2"
-sysinfo = "0.39"
 # concurrency
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
@@ -83,15 +77,16 @@ once_cell = "1.21"
 # net
 url = "2.5"
 tokio = { version = "1.53", features = ["full"] }
-axum = { version = "0.8", features = ["json", "query", "tokio", "http1", "macros"] }
-tower-http = { version = "0.7", features = ["fs", "cors", "trace"] }
 hyper = { version = "1.11", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
 http-body-util = "0.1"
 bytes = "1.12"
 futures = "0.3"
-reqwest = { version = "0.13", default-features = false, features = ["json", "blocking", "rustls", "webpki-roots", "rustls-native-certs", "charset", "http2", "stream", "gzip"] }
-rust-embed = { version = "8.12", features = ["include-exclude"] }
+# reqwest 0.13's `rustls` feature verifies with rustls-platform-verifier; its
+# `webpki-roots` / `rustls-native-certs` optional deps are not referenced by any
+# code path any more, so they are not enabled.
+reqwest = { version = "0.13", default-features = false, features = ["json", "blocking", "rustls", "charset", "http2", "stream", "gzip"] }
+rust-embed = "8.12"
 mime_guess = "2.0"
 # test
 tempfile = "3.27"
@@ -100,11 +95,22 @@ tempfile = "3.27"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+# Keep unwinding: pulse-runner's daemon, compute and landing workers supervise
+# their ticks with catch_unwind/resume_unwind; abort would turn a caught panic
+# into a process exit.
 panic = "unwind"
+debug = false
 strip = "symbols"
 
 [profile.dev]
 opt-level = 0
+# file:line stays in backtraces and panics; the type/variable DWARF that made
+# every workspace rlib and test binary several times larger is dropped. macOS
+# keeps the default split-debuginfo = "unpacked" (no dsymutil pass).
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
+# Dependencies carry no debuginfo. This is also what the PULSE verify command
+# builds with (CARGO_PROFILE_DEV_DEBUG=0), so both share one set of artifacts.
+debug = false
