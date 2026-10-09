@@ -647,6 +647,20 @@ pub(crate) fn tend_sweep(
         }
         lines.push(line);
     }
+    // Planner statistics (`Store::optimize`): a table without any, or one
+    // that grew or shrank ten-fold since they were taken, is analyzed; every
+    // other pass is a few milliseconds of no-op. Nothing is removed, so this
+    // is a log line like the checkpoint, not part of the sweep report.
+    match s.optimize() {
+        Ok(tables) if !tables.is_empty() => {
+            lines.push(format!("analyzed store statistics: {}", tables.join(", ")));
+        }
+        Ok(_) => {}
+        Err(err) => lines.push(format!(
+            "store statistics not refreshed: {}",
+            crate::run::err_message(&err)
+        )),
+    }
     let older_than =
         crate::util::plus_minutes(&now, -((s.setting_int("minutes_per_job") * 2 + 10) as f64));
     if let Ok(n) = s.mark_lost_harness_sessions(&older_than)
@@ -4032,7 +4046,8 @@ mod tests {
         } else {
             for line in &lines {
                 assert!(
-                    line.starts_with("checkpointed WAL:"),
+                    line.starts_with("checkpointed WAL:")
+                        || line.starts_with("analyzed store statistics:"),
                     "first pass: {lines:?} {last:?}"
                 );
             }
@@ -4066,6 +4081,61 @@ mod tests {
         assert!(
             lines.join("\n").contains("swept clone "),
             "pass after the interval: {lines:?}"
+        );
+    }
+    #[test]
+    fn tend_sweep_refreshes_planner_statistics_once() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        {
+            let conn = s.conn().unwrap();
+            for n in 0..20 {
+                conn.execute(
+                    "INSERT INTO posts (id, project, area, thread, kind, agent, date, on_post, created_at) VALUES (?1, 'p', 'a', 't', 'vote', 'ant', ?2, 's1', ?2)",
+                    params![format!("v{n}"), TEST_NOW],
+                )
+                .unwrap();
+            }
+        }
+        let mut last: Option<std::time::SystemTime> = None;
+        let lines = tend_sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            "daemon".into(),
+            Default::default(),
+            &mut last,
+        );
+        let stats = lines
+            .iter()
+            .find(|l| l.starts_with("analyzed store statistics:"))
+            .unwrap_or_else(|| panic!("statistics taken: {lines:?}"));
+        assert!(stats.contains("posts"), "{stats}");
+        let note: String = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT value FROM meta WHERE key = 'hygiene'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            !note.contains("stats") && !note.contains("analyzed"),
+            "statistics are not sweep work: {note}"
+        );
+        last = last.map(|t| t - SWEEP_EVERY);
+        let lines = tend_sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            "daemon".into(),
+            Default::default(),
+            &mut last,
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.starts_with("analyzed store statistics:")),
+            "nothing grew, nothing analyzed: {lines:?}"
         );
     }
     #[test]

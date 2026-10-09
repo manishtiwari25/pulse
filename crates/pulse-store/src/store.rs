@@ -179,6 +179,11 @@ impl Store {
         if !o.read_only && !o.skip_records && !guard {
             s.ensure_records()?;
         }
+        if !o.read_only && !guard {
+            // Statistics are a performance matter, never a reason to refuse the
+            // store; a busy writer only postpones them to the next open or sweep.
+            let _ = s.optimize();
+        }
         Ok(s)
     }
 
@@ -468,6 +473,67 @@ impl Store {
             freelist_count: pragma("freelist_count")?,
             auto_vacuum: pragma("auto_vacuum")?,
         })
+    }
+
+    /// Keeps the query planner's statistics (`sqlite_stat1`) current:
+    /// `PRAGMA optimize(0x10002)` analyzes every table that has no statistics
+    /// yet or whose row count moved ten-fold since its last ANALYZE, under
+    /// SQLite's own analysis limit, and is a few milliseconds of no-op
+    /// otherwise. Returns the tables it analyzed.
+    ///
+    /// Without statistics SQLite guesses index selectivity. On a store with
+    /// tens of thousands of vote posts it answered the evolution status's
+    /// "has this suggestion a vote from someone else" lookup by scanning
+    /// every vote through `posts (kind)` instead of the handful under the
+    /// post through `posts (on_post)` - three hundred times slower, on every
+    /// planner pass of the daemon and every project registry fetch of the
+    /// hub. Run at open and by the sweeper; a read-only store is left alone.
+    pub fn optimize(&self) -> Result<Vec<String>> {
+        if self.inner.read_only {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        // Mask 0x1 only reports what the pragma would do, one row per table.
+        let mut stmt = conn.prepare("PRAGMA optimize(0x10003)")?;
+        let planned = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let tables = planned
+            .iter()
+            .filter_map(|line| {
+                line.strip_prefix("ANALYZE ").map(|t| {
+                    t.rsplit('.')
+                        .next()
+                        .unwrap_or(t)
+                        .trim_matches('"')
+                        .to_string()
+                })
+            })
+            .collect::<Vec<_>>();
+        if tables.is_empty() {
+            return Ok(Vec::new());
+        }
+        conn.execute_batch("PRAGMA optimize(0x10002)")?;
+        // An empty table leaves no statistics behind and is proposed again
+        // every time; only tables that now carry statistics count as work done.
+        // A store nothing has ever analyzed has no sqlite_stat1 at all.
+        let have_stats: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'",
+            [],
+            |r| r.get(0),
+        )?;
+        if have_stats == 0 {
+            return Ok(Vec::new());
+        }
+        let mut has_stats = conn.prepare("SELECT 1 FROM sqlite_stat1 WHERE tbl = ?1 LIMIT 1")?;
+        let mut done = Vec::new();
+        for t in tables {
+            if has_stats.exists(params![t])? {
+                done.push(t);
+            }
+        }
+        Ok(done)
     }
 
     /// Gives free pages back to the file system. A store already in incremental
@@ -1266,6 +1332,91 @@ mod tests {
         assert_eq!(got.mode, "incremental", "{got:?}");
         assert_eq!(got.free_bytes_after, 0, "{got:?}");
         assert!(got.freed_bytes > 0, "{got:?}");
+    }
+
+    #[test]
+    fn optimize_analyzes_grown_tables_once() {
+        let _serial = crate::test_helpers::serial();
+        let s = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        let stat_for = |s: &Store, idx: &str| -> Option<String> {
+            let conn = s.conn().unwrap();
+            let have: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if have == 0 {
+                return None;
+            }
+            conn.query_row(
+                "SELECT stat FROM sqlite_stat1 WHERE idx = ?1",
+                params![idx],
+                |r| r.get(0),
+            )
+            .ok()
+        };
+        assert_eq!(
+            stat_for(&s, "posts_on"),
+            None,
+            "an empty table has no statistics to take"
+        );
+        assert!(
+            s.optimize().unwrap().is_empty(),
+            "open took the statistics the seeded tables needed; nothing is left"
+        );
+        {
+            let conn = s.conn().unwrap();
+            for n in 0..40 {
+                conn.execute(
+                    "INSERT INTO posts (id, project, area, thread, kind, agent, date, body, created_at) VALUES (?1, 'p', 'a', 't', 'suggestion', 'bee', '2026-09-06T10:00:00Z', 'x', '2026-09-06T10:00:00Z')",
+                    params![format!("s{n}")],
+                )
+                .unwrap();
+                for v in 0..40 {
+                    conn.execute(
+                        "INSERT INTO posts (id, project, area, thread, kind, agent, date, on_post, vote, created_at) VALUES (?1, 'p', 'a', 't', 'vote', 'ant', '2026-09-06T10:00:00Z', ?2, 'up', '2026-09-06T10:00:00Z')",
+                        params![format!("v{n}-{v}"), format!("s{n}")],
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        let done = s.optimize().unwrap();
+        assert!(done.iter().any(|t| t == "posts"), "{done:?}");
+        let stat = stat_for(&s, "posts_on").expect("posts_on analyzed");
+        assert!(stat.starts_with("1640 "), "{stat}");
+        let plan: Vec<String> = {
+            let conn = s.conn().unwrap();
+            let mut st = conn
+                .prepare(
+                    "EXPLAIN QUERY PLAN SELECT 1 FROM posts p WHERE p.kind = 'suggestion' AND EXISTS (SELECT 1 FROM posts v WHERE v.kind = 'vote' AND v.on_post = p.id AND v.agent <> p.agent)",
+                )
+                .unwrap();
+            st.query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<std::result::Result<_, _>>()
+                .unwrap()
+        };
+        assert!(
+            plan.iter().any(|l| l.contains("posts_on")),
+            "the vote lookup goes through posts_on: {plan:?}"
+        );
+        assert!(
+            s.optimize().unwrap().is_empty(),
+            "nothing grew, nothing to analyze"
+        );
+        let ro = Store::open(Options {
+            home: s.home.clone(),
+            read_only: true,
+            ..Options::default()
+        })
+        .unwrap();
+        assert!(ro.optimize().unwrap().is_empty());
     }
 
     #[test]

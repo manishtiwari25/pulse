@@ -47,11 +47,18 @@ pub(crate) struct CachedBytes {
     at: Instant,
 }
 
+struct CachedGates {
+    gates: crate::lifecycle::JsonMap,
+    mark: String,
+    at: Instant,
+}
+
 #[derive(Default)]
 pub(crate) struct ViewCache {
     snapshots: Mutex<BTreeMap<(String, String), Slot>>,
     presence: Mutex<BTreeMap<String, (bool, Instant)>>,
     org: Mutex<BTreeMap<String, CachedBytes>>,
+    gates: Mutex<BTreeMap<String, CachedGates>>,
     builds: Mutex<usize>,
     build_done: Condvar,
 }
@@ -168,6 +175,51 @@ impl Handler {
             at: Instant::now(),
         });
         data.map(|data| (data, mark))
+    }
+
+    /// The evolution gates of the project registry row for `slug`
+    /// (`lifecycle::project_gates`: loop status, baseline, constitution and
+    /// evaluator records), shared between requests under the same watermark
+    /// and TTL as the board snapshots. The registry is refetched by the
+    /// console on every job, run and landing event, and computing the gates
+    /// walks the evolution tables of every registered project; a miss takes a
+    /// build permit so a cold registry does not take one core per project.
+    pub(crate) fn project_gates_cached(
+        &self,
+        store: &pulse_store::Store,
+        slug: &str,
+    ) -> crate::lifecycle::JsonMap {
+        let ttl = self.org_cache_ttl;
+        if ttl.is_zero() {
+            return crate::lifecycle::project_gates(store, slug.to_string());
+        }
+        let Ok(mark) = self.watermark(slug) else {
+            return crate::lifecycle::project_gates(store, slug.to_string());
+        };
+        {
+            let gates = self.views.gates.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = gates.get(slug)
+                && c.mark == mark
+                && c.at.elapsed() < ttl
+            {
+                return c.gates.clone();
+            }
+        }
+        let _permit = self.views.build_permit();
+        let fresh = crate::lifecycle::project_gates(store, slug.to_string());
+        self.views
+            .gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                slug.to_string(),
+                CachedGates {
+                    gates: fresh.clone(),
+                    mark,
+                    at: Instant::now(),
+                },
+            );
+        fresh
     }
 
     /// `board::present` remembered per path for the cache TTL: it spawns git.
@@ -449,6 +501,54 @@ mod tests {
         assert_eq!(c.posts.len(), a.posts.len() + 1);
         let d = h.snapshot_shared("cached", "", true, None).unwrap();
         assert!(!Arc::ptr_eq(&c, &d), "refresh forces a rebuild");
+    }
+
+    #[test]
+    fn project_gates_are_shared_until_the_store_changes() {
+        let _serial = crate::test_helpers::serial();
+        let (s, h) = fixture();
+        let built_at = |h: &Handler| {
+            h.views
+                .gates
+                .lock()
+                .unwrap()
+                .get("cached")
+                .map(|c| c.at)
+                .expect("the gates are cached after a request")
+        };
+        let a = h.project_gates_cached(&s, "cached");
+        let first = built_at(&h);
+        std::thread::sleep(Duration::from_millis(5));
+        let b = h.project_gates_cached(&s, "cached");
+        assert_eq!(a, b);
+        assert_eq!(first, built_at(&h), "an unchanged store reuses the gates");
+        // Harness steps are the bulk of the bus and must not invalidate them.
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO events (at, actor, action, subject, detail) VALUES ('2026-01-01T00:00:00Z', 'x', 'harness.step', 'cached', '')",
+                [],
+            )
+            .unwrap();
+        h.project_gates_cached(&s, "cached");
+        assert_eq!(first, built_at(&h), "a harness step keeps the gates");
+        s.conn()
+            .unwrap()
+            .execute("UPDATE settings SET value = '1' WHERE name = 'stop'", [])
+            .unwrap();
+        h.project_gates_cached(&s, "cached");
+        assert_ne!(first, built_at(&h), "a store change recomputes the gates");
+        let mut zero = f3::handler(&s);
+        zero.org_cache_ttl = Duration::ZERO;
+        assert_eq!(
+            zero.project_gates_cached(&s, "cached"),
+            crate::lifecycle::project_gates(&s, "cached".into()),
+            "a zero TTL computes the gates directly"
+        );
+        assert!(
+            zero.views.gates.lock().unwrap().is_empty(),
+            "a zero TTL caches nothing"
+        );
     }
 
     #[test]

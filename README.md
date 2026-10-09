@@ -1689,7 +1689,16 @@ store that is not is switched to that mode with the one full `VACUUM` the
 switch needs, taken only while no run or harness session is in flight and the
 disk has room for a copy of the file, because that VACUUM holds every writer
 off while it copies; the same pass checkpoints and truncates the WAL as
-before. The events ledger is otherwise untouched: forty modules read it as
+before. The same pass keeps SQLite's query-planner statistics current
+(`PRAGMA optimize`, also run when the store opens for writing): a table that
+has none, or whose row count moved ten-fold since they were taken, is
+analyzed and logged as `analyzed store statistics: posts, jobs` - a log line
+like the checkpoint, not sweep work; otherwise it is a no-op. Without
+statistics SQLite guessed wrong on a store with 30,000 vote posts and answered
+the evolution status's "has anyone else voted on this suggestion" lookup
+through the `kind` index - every vote scanned - instead of the dozen under
+the post, three hundred times slower, on each planner pass of the daemon and
+each project-registry fetch of the hub. The events ledger is otherwise untouched: forty modules read it as
 state (the last login per executor, a setting's history, a job's recovery
 ledger), so no age-based pruning of events exists and none is planned. A local
 run of a Cargo project no longer builds a cold `target/` inside its clone:

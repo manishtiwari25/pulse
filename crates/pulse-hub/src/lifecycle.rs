@@ -84,7 +84,7 @@ impl Handler {
                                     "present": self.present_cached(&p),
                                 });
                                 if let Some(obj) = row.as_object_mut() {
-                                    for (key, value) in project_gates(store, p.slug.clone()) {
+                                    for (key, value) in self.project_gates_cached(store, &p.slug) {
                                         obj.insert(key, value);
                                     }
                                 }
