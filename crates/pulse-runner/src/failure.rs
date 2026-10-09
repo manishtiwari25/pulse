@@ -115,6 +115,11 @@ static MISSING_MISE_RE: LazyLock<Regex> = LazyLock::new(|| {
 static MISSING_EXECUTOR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)executor.*not found|no such executor|unknown executor").unwrap()
 });
+/// The verify step refused to run because the host is under
+/// `daemon.min_free_mb` (run.rs): a stable environment block, not a flake.
+#[allow(dead_code)]
+static DISK_FULL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)disk full|under daemon\.min_free_mb").unwrap());
 static ID_LIKE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(job|run|post|task|msg|req|sg|q)-[a-z0-9]+(-[a-z0-9]+)*").unwrap()
 });
@@ -142,6 +147,8 @@ pub(crate) fn environment_failure_reason(result: String, run_summary: String) ->
         "environment: missing-bundle".into()
     } else if MISSING_EXECUTOR_RE.is_match(&text) {
         "environment: missing-executor".into()
+    } else if DISK_FULL_RE.is_match(&text) {
+        "environment: disk-full".into()
     } else {
         String::new()
     }
@@ -331,6 +338,18 @@ mod tests {
                 "unknown executor hands-1",
                 "",
                 "environment: missing-executor",
+            ),
+            (
+                "disk full verify",
+                "1 commit(s) but verify exit 71 (disk full: 529 MB free on ., under daemon.min_free_mb (1024); this verification did not run)",
+                "",
+                "environment: disk-full",
+            ),
+            (
+                "disk full in summary",
+                "worker exited 1",
+                "pulse: disk full: under daemon.min_free_mb",
+                "environment: disk-full",
             ),
             ("ordinary failure", "verify exit 1", "", ""),
             (
