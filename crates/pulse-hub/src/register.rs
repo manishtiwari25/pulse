@@ -237,6 +237,16 @@ fn run_command(
 
     let ctx = pulse_bus::CancellationToken::new();
     let _stop = SignalStop::notify(&ctx)?;
+    // Board snapshots past the view-cache TTL can never be served again;
+    // drop them on a timer so an idle hub does not keep every board it built.
+    {
+        let views = h.views.clone();
+        let ttl = h.org_cache_ttl;
+        let evict_ctx = ctx.clone();
+        std::thread::Builder::new()
+            .name("hub-evict".into())
+            .spawn(move || crate::view_cache::evict_loop(&evict_ctx, &views, ttl))?;
+    }
     // Go's watcher and handover goroutines print to c.Err/c.Out themselves right before they cancel;
     // nothing else reaches either stream until Serve returns, so the same lines are written after it here.
     let changed = Arc::new(AtomicBool::new(false));

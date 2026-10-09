@@ -1930,6 +1930,13 @@ seconds after the first roster read; use a free loopback port via
 `PULSE_HUB_PORT`. `MOCK_ROSTER_ONLY=1 npm run mock:generate`
 refreshes only the roster fixture rather than unrelated console fixtures.
 
+The hub builds a project's board snapshot (every post with its body, the
+tally, the plan gates) once and shares it between requests until the store
+rows it reads change or a minute passes; at most three builds run at once.
+A snapshot past that minute cannot be served again, so a timer drops it: the
+hub holds the boards the console asked for in the last minute or two, not
+every project and area ever opened, and an idle hub's heap empties on its own.
+
 ```text
 crates/pulse/                  the binary (registers every command crate; the parity harness lives in its tests)
 crates/pulse-cli               command registry, context, errors, JSON output

@@ -10,6 +10,10 @@
 //! tables a snapshot reads) or it reaches `Handler::org_cache_ttl`. Requests
 //! for the same project queue behind one build instead of each running their
 //! own, and at most `MAX_CONCURRENT_BUILDS` builds run at once hub-wide.
+//! Snapshots past the TTL cannot be served again and are dropped by
+//! `evict_loop` (one thread per hub, ticking every TTL), so a hub holds the
+//! boards requested in the last minute or two rather than every project and
+//! area ever opened.
 
 use crate::board::BoardData;
 use crate::server::Handler;
@@ -112,6 +116,76 @@ impl ViewCache {
                 at: Instant::now(),
             },
         );
+    }
+
+    /// Drops what no request can be served from any more. A snapshot, a
+    /// gates record or cached organization bytes older than `ttl` is rebuilt
+    /// on its next request whatever its watermark says, yet it stayed in
+    /// memory for the life of the hub: a snapshot is a whole board (every
+    /// post with its body and frontmatter, tens of megabytes for a busy
+    /// project) and an area view is a full copy of it with other `in_area`
+    /// flags, so a console that browsed a few areas of each project left the
+    /// hub holding gigabytes it would never read again. A slot whose build is
+    /// in progress is left alone. The boards are freed after the slot map is
+    /// unlocked. Returns the number of snapshots dropped.
+    pub(crate) fn evict_expired(&self, ttl: Duration) -> usize {
+        let mut expired = Vec::new();
+        {
+            let mut slots = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
+            slots.retain(|_, slot| {
+                let guard = match slot.try_lock() {
+                    Ok(guard) => guard,
+                    Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+                    Err(std::sync::TryLockError::WouldBlock) => return true,
+                };
+                if guard.as_ref().is_some_and(|s| s.at.elapsed() < ttl) {
+                    return true;
+                }
+                expired.push(Arc::clone(slot));
+                false
+            });
+        }
+        self.org
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, c| c.at.elapsed() < ttl);
+        self.gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, c| c.at.elapsed() < ttl);
+        let dropped = expired.len();
+        drop(expired);
+        dropped
+    }
+
+    /// How many board snapshots are held at the moment.
+    #[cfg(test)]
+    fn snapshot_count(&self) -> usize {
+        self.snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+}
+
+/// Runs `ViewCache::evict_expired` every `ttl` until `ctx` is cancelled, so
+/// an idle hub does not keep every board it ever built. Returns at once when
+/// sharing is disabled (a zero TTL caches nothing).
+pub(crate) fn evict_loop(ctx: &CancellationToken, views: &ViewCache, ttl: Duration) {
+    if ttl.is_zero() {
+        return;
+    }
+    let step = Duration::from_secs(1).min(ttl);
+    loop {
+        let mut waited = Duration::ZERO;
+        while waited < ttl {
+            if ctx.is_cancelled() {
+                return;
+            }
+            std::thread::sleep(step);
+            waited += step;
+        }
+        views.evict_expired(ttl);
     }
 }
 
@@ -501,6 +575,82 @@ mod tests {
         assert_eq!(c.posts.len(), a.posts.len() + 1);
         let d = h.snapshot_shared("cached", "", true, None).unwrap();
         assert!(!Arc::ptr_eq(&c, &d), "refresh forces a rebuild");
+    }
+
+    #[test]
+    fn evict_expired_drops_only_what_the_ttl_has_outlived() {
+        let _serial = crate::test_helpers::serial();
+        let (s, h) = fixture();
+        let whole = h.snapshot_shared("cached", "", false, None).unwrap();
+        let area = h.snapshot_shared("cached", "console", false, None).unwrap();
+        h.project_gates_cached(&s, "cached");
+        h.views.store_org_bytes("org", "mark", b"{}");
+        assert_eq!(h.views.snapshot_count(), 2, "one slot per project and area");
+
+        assert_eq!(
+            h.views.evict_expired(h.org_cache_ttl),
+            0,
+            "snapshots within the TTL stay"
+        );
+        assert_eq!(h.views.snapshot_count(), 2);
+        assert!(
+            Arc::ptr_eq(
+                &whole,
+                &h.snapshot_shared("cached", "", false, None).unwrap()
+            ),
+            "a kept snapshot is still the one handed out"
+        );
+        assert!(
+            h.views.gates.lock().unwrap().contains_key("cached"),
+            "gates within the TTL stay"
+        );
+
+        // A slot whose build is in progress holds its lock; the evictor
+        // leaves it alone rather than letting a second build start.
+        let building = h.views.slot("cached", "building");
+        let held = building.lock().unwrap();
+        assert_eq!(
+            h.views.evict_expired(Duration::ZERO),
+            2,
+            "everything past the TTL goes, the slot being built stays"
+        );
+        drop(held);
+        assert_eq!(
+            h.views.snapshot_count(),
+            1,
+            "only the slot being built is left"
+        );
+        assert!(
+            h.views.gates.lock().unwrap().is_empty(),
+            "gates past the TTL go"
+        );
+        assert!(
+            h.views.org.lock().unwrap().is_empty(),
+            "organization bytes past the TTL go"
+        );
+
+        let rebuilt = h.snapshot_shared("cached", "", false, None).unwrap();
+        assert!(
+            !Arc::ptr_eq(&whole, &rebuilt),
+            "an evicted snapshot is built anew on the next request"
+        );
+        assert_eq!(rebuilt.posts.len(), whole.posts.len());
+        drop(area);
+        assert_eq!(h.views.evict_expired(Duration::ZERO), 2);
+        assert_eq!(
+            h.views.snapshot_count(),
+            0,
+            "an unlocked empty slot goes too"
+        );
+    }
+
+    #[test]
+    fn evict_loop_returns_when_cancelled_and_when_sharing_is_off() {
+        let views = ViewCache::default();
+        let ctx = CancellationToken::new();
+        evict_loop(&ctx, &views, Duration::ZERO);
+        ctx.cancel();
+        evict_loop(&ctx, &views, Duration::from_secs(60));
     }
 
     #[test]
