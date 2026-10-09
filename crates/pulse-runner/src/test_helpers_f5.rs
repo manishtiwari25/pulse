@@ -591,6 +591,10 @@ pub(crate) fn measured_keep_fixture() -> (
         "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
         &[&project.str("verify_cmd")],
     );
+    // The verification is wrapped with the `daemon.min_free_mb` disk prelude (default
+    // 1024 MB); these tests measure landing, not the host's free space, so turn the
+    // probe off or they fail spuriously on a nearly full machine.
+    set_setting(&s, "daemon.min_free_mb", "0");
     let calls = Arc::new(Mutex::new(0));
     let calls2 = calls.clone();
     let _old = pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, _opts| {
