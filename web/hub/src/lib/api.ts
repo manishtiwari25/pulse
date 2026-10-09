@@ -31,8 +31,14 @@ async function readJson<T>(r: Response): Promise<T> {
   let data: unknown;
   try {
     data = await r.json();
-  } catch {
-    data = { error: r.ok ? "empty response" : "HTTP " + r.status };
+  } catch (err: unknown) {
+    // A body that is not JSON (a proxy's HTML page, a truncated reply, an
+    // empty 200) must not pass as data: a panel would then render an object
+    // with nothing to say. Surface it with the status and the parser's word.
+    const detail = err instanceof Error ? err.message : String(err);
+    const why = "The reply from " + r.url + " (HTTP " + r.status + ") was not JSON: " + detail;
+    if (r.ok) throw new ApiError("unreadable response", r.status, why, "Check that the pulse hub is serving /api/v1 and reload.");
+    data = { error: "HTTP " + r.status, why };
   }
   if (!r.ok) {
     const e = (data ?? {}) as Partial<ErrorBody>;
