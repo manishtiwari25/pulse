@@ -1712,6 +1712,16 @@ recipe that sets `CARGO_TARGET_DIR` itself wins, and a lane unused for
 `daemon.build_cache_keep_days` (default 7) or of a project the store no
 longer lists is swept, while a live lane is pruned of dead units and stale
 incremental caches like any shared Cargo target (`hygiene.cargo_target`).
+A dead unit is one whose dep-info points into a clone that is gone, or a
+workspace crate's unit that nothing has written to for
+`hygiene.cargo_target_hours` (default 24): Cargo names a workspace crate's
+sources relative to the workspace root, so a unit a job compiled in its
+clone is indistinguishable from one compiled in the checkout, and each job's
+clone path gives every workspace crate a fresh metadata hash, so a shared
+target would otherwise gain a full set of workspace units per job and never
+lose one. Registry and git dependencies, the part of the cache worth
+keeping, are never pruned for idleness; a developer who has not built for a
+day pays one rebuild of the workspace crates, not of the dependencies.
 The same pass drops the per-codegen-unit debug objects rustc leaves in
 `deps/` on macOS (`<crate>-<hash>.<cgu>.rcgu.o`, kept because debuginfo is
 unpacked there) once nothing reads them: every incremental session writes its

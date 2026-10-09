@@ -2392,7 +2392,7 @@ fn prune_cargo_profile(
     dry_run: bool,
 ) -> std::io::Result<CargoPruneStats> {
     let mut stats = CargoPruneStats::default();
-    for unit in dead_cargo_units(profile)? {
+    for unit in dead_cargo_units(profile, now, incremental_age)? {
         let bytes: i64 = unit
             .paths
             .iter()
@@ -2579,58 +2579,89 @@ struct DeadCargoUnit {
     paths: Vec<PathBuf>,
 }
 
-fn dead_cargo_units(profile: &Path) -> std::io::Result<Vec<DeadCargoUnit>> {
+/// A unit is dead when its dep-info points into a clone that is gone, or
+/// when it belongs to a workspace crate and nothing has written to it for
+/// `idle`. The second rule is what catches a job's build: Cargo names a
+/// workspace crate's sources relative to the workspace root, so a unit a
+/// job compiled in its clone looks exactly like one the developer compiled
+/// in the checkout, and the only thing that tells them apart is that the
+/// job's units stop changing once the job ends. Each job clones to a new
+/// path, which gives every workspace crate a new metadata hash, so without
+/// this rule a shared target gains a full set of workspace units per job
+/// and never loses one. Registry and git dependencies are never touched by
+/// the idle rule: their sources are absolute and their units are the part
+/// of the cache worth keeping.
+fn dead_cargo_units(
+    profile: &Path,
+    now: std::time::SystemTime,
+    idle: Duration,
+) -> std::io::Result<Vec<DeadCargoUnit>> {
     let deps = profile.join("deps");
     let mut out = Vec::new();
-    let mut seen = BTreeSet::new();
-    let entries = match std::fs::read_dir(&deps) {
-        Ok(entries) => entries,
+    let names: BTreeSet<String> = match std::fs::read_dir(&deps) {
+        Ok(entries) => entries
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect(),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
         Err(err) => return Err(err),
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("d") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+    for name in &names {
+        let Some(stem) = name.strip_suffix(".d") else {
             continue;
         };
         let Some((_, hash)) = stem.rsplit_once('-') else {
             continue;
         };
-        if hash.is_empty() || !seen.insert(stem.to_string()) {
+        if hash.is_empty() {
             continue;
         }
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        if !dep_info_points_at_dead_clone(&text) {
-            continue;
-        }
-        let mut paths = deps_unit_paths(&deps, stem)?;
+        let text = std::fs::read_to_string(deps.join(name)).unwrap_or_default();
+        let mut paths = deps_unit_paths(&deps, &names, stem);
         paths.extend(hash_dir_paths(&profile.join(".fingerprint"), hash)?);
         paths.extend(hash_dir_paths(&profile.join("build"), hash)?);
-        if !paths.is_empty() {
+        if paths.is_empty() {
+            continue;
+        }
+        let dead = dep_info_points_at_dead_clone(&text)
+            || (dep_info_is_workspace_unit(&text)
+                && !paths
+                    .iter()
+                    .any(|p| dir_tree_recently_modified(p, now, idle)));
+        if dead {
             out.push(DeadCargoUnit { paths });
         }
     }
     Ok(out)
 }
 
-fn deps_unit_paths(deps: &Path, stem: &str) -> std::io::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    let entries = match std::fs::read_dir(deps) {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-        Err(err) => return Err(err),
-    };
+/// Everything in `deps/` that belongs to the unit `stem`: the unit itself
+/// (an executable has no extension), `stem.<anything>` (dep-info, debug
+/// objects) and `libstem.<anything>` (the rlib, rmeta or dylib Cargo names
+/// with a `lib` prefix).
+fn deps_unit_paths(deps: &Path, names: &BTreeSet<String>, stem: &str) -> Vec<PathBuf> {
     let dotted = format!("{stem}.");
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name == stem || name.starts_with(&dotted) {
-            out.push(entry.path());
-        }
-    }
-    Ok(out)
+    let lib = format!("lib{stem}.");
+    let own = names
+        .range(stem.to_string()..)
+        .take_while(|name| name.starts_with(stem))
+        .filter(|name| *name == stem || name.starts_with(&dotted));
+    let libs = names
+        .range(lib.clone()..)
+        .take_while(|name| name.starts_with(&lib));
+    own.chain(libs).map(|name| deps.join(name)).collect()
+}
+
+/// Whether a dep-info file describes a workspace crate: Cargo hands rustc
+/// the sources of a workspace member relative to the workspace root and
+/// those of every other dependency as absolute paths.
+fn dep_info_is_workspace_unit(text: &str) -> bool {
+    let line = text.lines().next().unwrap_or_default();
+    let Some((_, deps)) = line.split_once(':') else {
+        return false;
+    };
+    let paths = split_dep_info_paths(deps);
+    !paths.is_empty() && paths.iter().all(|p| !Path::new(p).is_absolute())
 }
 
 fn hash_dir_paths(parent: &Path, hash: &str) -> std::io::Result<Vec<PathBuf>> {
@@ -2651,17 +2682,25 @@ fn hash_dir_paths(parent: &Path, hash: &str) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+/// Whether a dep-info file names a source, or the manifest directory rustc
+/// recorded for an `env!("CARGO_MANIFEST_DIR")`, inside a directory that no
+/// longer exists: the clone the unit was built in has been swept.
 fn dep_info_points_at_dead_clone(text: &str) -> bool {
     let line = text.lines().next().unwrap_or_default();
     let Some((_, deps)) = line.split_once(':') else {
         return false;
     };
     let paths = split_dep_info_paths(deps);
-    let first = paths.iter().find(|p| Path::new(p).is_absolute());
-    first
-        .into_iter()
-        .chain(paths.iter().filter(|p| Path::new(p).is_absolute()))
-        .any(|p| absolute_source_parent_missing(Path::new(p)))
+    let manifest_dirs = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("# env-dep:CARGO_MANIFEST_DIR="))
+        .map(|dir| PathBuf::from(dir).join("Cargo.toml"));
+    paths
+        .iter()
+        .filter(|p| Path::new(p).is_absolute())
+        .map(PathBuf::from)
+        .chain(manifest_dirs)
+        .any(|p| absolute_source_parent_missing(&p))
 }
 
 fn split_dep_info_paths(input: &str) -> Vec<String> {
@@ -2870,7 +2909,7 @@ mod tests {
             deps.join(format!("livecrate-{live_hash}.d")),
             &format!("out: {}\n", live_src.display()),
         );
-        mkdir_file(deps.join(format!("livecrate-{live_hash}.rlib")), "live");
+        mkdir_file(deps.join(format!("liblivecrate-{live_hash}.rlib")), "live");
         mkdir_file(
             fingerprint.join(format!("livepkg-{live_hash}/stamp")),
             "live",
@@ -2887,7 +2926,7 @@ mod tests {
                 dead_src.display().to_string().replace(' ', "\\ ")
             ),
         );
-        mkdir_file(deps.join(format!("deadcrate-{dead_hash}.rlib")), "dead");
+        mkdir_file(deps.join(format!("libdeadcrate-{dead_hash}.rlib")), "dead");
         mkdir_file(
             fingerprint.join(format!("deadpkg-{dead_hash}/stamp")),
             "dead",
@@ -2907,7 +2946,7 @@ mod tests {
                 .display()
                 .to_string(),
         ) + disk_usage(
-            deps.join(format!("deadcrate-{dead_hash}.rlib"))
+            deps.join(format!("libdeadcrate-{dead_hash}.rlib"))
                 .display()
                 .to_string(),
         ) + disk_usage(
@@ -2938,15 +2977,131 @@ mod tests {
             }
         );
         assert!(deps.join(format!("livecrate-{live_hash}.d")).exists());
-        assert!(deps.join(format!("livecrate-{live_hash}.rlib")).exists());
+        assert!(deps.join(format!("liblivecrate-{live_hash}.rlib")).exists());
         assert!(fingerprint.join(format!("livepkg-{live_hash}")).exists());
         assert!(build.join(format!("livepkg-{live_hash}")).exists());
         assert!(!deps.join(format!("deadcrate-{dead_hash}.d")).exists());
-        assert!(!deps.join(format!("deadcrate-{dead_hash}.rlib")).exists());
+        assert!(!deps.join(format!("libdeadcrate-{dead_hash}.rlib")).exists());
         assert!(!fingerprint.join(format!("deadpkg-{dead_hash}")).exists());
         assert!(!build.join(format!("deadpkg-{dead_hash}")).exists());
         assert!(!old_inc.exists());
         assert!(fresh_inc.exists());
+    }
+
+    #[test]
+    fn cargo_target_prune_drops_idle_workspace_units_only() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target/debug");
+        let deps = target.join("deps");
+        let fingerprint = target.join(".fingerprint");
+        let old = FileTime::from_unix_time(1_600_000_000, 0);
+        let age = |path: &Path| {
+            for entry in walkdir(path) {
+                filetime::set_file_mtime(&entry, old).unwrap();
+            }
+        };
+        fn walkdir(path: &Path) -> Vec<PathBuf> {
+            let mut out = Vec::new();
+            if path.is_dir() {
+                for entry in std::fs::read_dir(path).unwrap().flatten() {
+                    out.extend(walkdir(&entry.path()));
+                }
+            }
+            out.push(path.to_path_buf());
+            out
+        }
+        let unit = |name: &str, hash: &str, dep_info: &str| {
+            mkdir_file(deps.join(format!("{name}-{hash}.d")), dep_info);
+            mkdir_file(deps.join(format!("lib{name}-{hash}.rlib")), "rlib");
+            mkdir_file(deps.join(format!("{name}-{hash}")), "test executable");
+            mkdir_file(
+                fingerprint.join(format!("{name}-{hash}/invoked.timestamp")),
+                "",
+            );
+        };
+        let relative = "out: crates/x/src/lib.rs crates/x/src/a.rs\n\ncrates/x/src/lib.rs:\n";
+        unit("idle", "1111111111111111", relative);
+        unit("fresh", "2222222222222222", relative);
+        unit("touched", "3333333333333333", relative);
+        let registry = format!(
+            "out: {}\n",
+            root.path().join("registry/src/lib.rs").display()
+        );
+        mkdir_file(root.path().join("registry/src/lib.rs"), "");
+        unit("serde", "4444444444444444", &registry);
+        let swept_clone = root.path().join("work/job-1/crates/x");
+        unit(
+            "clone",
+            "5555555555555555",
+            &format!(
+                "{relative}# env-dep:CARGO_MANIFEST_DIR={}\n",
+                swept_clone.display()
+            ),
+        );
+        let live_clone = root.path().join("work/job-2/crates/x");
+        mkdir_file(live_clone.join("Cargo.toml"), "");
+        unit(
+            "running",
+            "6666666666666666",
+            &format!(
+                "{relative}# env-dep:CARGO_MANIFEST_DIR={}\n",
+                live_clone.display()
+            ),
+        );
+        age(&target);
+        for name in ["fresh-2222222222222222.d", "running-6666666666666666.d"] {
+            filetime::set_file_mtime(deps.join(name), FileTime::now()).unwrap();
+        }
+        filetime::set_file_mtime(
+            fingerprint.join("touched-3333333333333333/invoked.timestamp"),
+            FileTime::now(),
+        )
+        .unwrap();
+
+        let day = Duration::from_secs(24 * 3600);
+        let now = std::time::SystemTime::now();
+        let dead: BTreeSet<String> = dead_cargo_units(&target, now, day)
+            .unwrap()
+            .into_iter()
+            .flat_map(|u| u.paths)
+            .map(|p| p.strip_prefix(&target).unwrap().display().to_string())
+            .collect();
+        let expected: BTreeSet<String> = [
+            ".fingerprint/clone-5555555555555555",
+            "deps/clone-5555555555555555",
+            "deps/clone-5555555555555555.d",
+            "deps/libclone-5555555555555555.rlib",
+            ".fingerprint/idle-1111111111111111",
+            "deps/idle-1111111111111111",
+            "deps/idle-1111111111111111.d",
+            "deps/libidle-1111111111111111.rlib",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(dead, expected);
+
+        let stats = prune_cargo_profile(&target, day, now, false).unwrap();
+        assert_eq!(stats.units, 2);
+        assert_eq!(stats.incremental, 0);
+        for gone in ["idle-1111111111111111", "clone-5555555555555555"] {
+            assert!(!deps.join(gone).exists());
+            assert!(!deps.join(format!("{gone}.d")).exists());
+            assert!(!fingerprint.join(gone).exists());
+        }
+        for kept in [
+            "fresh-2222222222222222",
+            "touched-3333333333333333",
+            "serde-4444444444444444",
+            "running-6666666666666666",
+        ] {
+            assert!(deps.join(kept).exists(), "{kept} should survive");
+            assert!(deps.join(format!("{kept}.d")).exists());
+            assert!(fingerprint.join(kept).exists());
+        }
+        // The rlib of a pruned unit went with it; the others stay.
+        assert!(!deps.join("libidle-1111111111111111.rlib").exists());
+        assert!(deps.join("libserde-4444444444444444.rlib").exists());
     }
 
     /// A thin 64-bit Mach-O image whose symbol table holds one ordinary
