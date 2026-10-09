@@ -236,7 +236,9 @@ pub fn queue_text(res: &TallyResult) -> String {
         );
     }
     if !any {
-        b.push_str("  nothing queued\n");
+        b.push_str(
+            "  nothing queued - post a card with `pulse post suggestion --project <name> ...` or run `pulse ballot` to vote on open cards\n",
+        );
     }
     b
 }
@@ -794,6 +796,8 @@ mod empty_queue_tests {
     #[test]
     fn queue_text_reports_empty_state() {
         let res = TallyResult::default();
-        assert_eq!(queue_text(&res), "  nothing queued\n");
+        let text = queue_text(&res);
+        assert!(text.starts_with("  nothing queued - "), "{text}");
+        assert!(text.contains("pulse post suggestion"), "{text}");
     }
 }
