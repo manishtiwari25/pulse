@@ -1,6 +1,6 @@
 use crate::bundle::{bundle_path, ensure_framework, export_bundle, framework_status};
 use crate::export::{ExportOptions, export};
-use crate::frontmatter::render_markdown;
+use crate::frontmatter::{parse_frontmatter, render_markdown};
 use crate::import::{ImportOptions, import_repo};
 use crate::leadtime::{lead_days, lead_time};
 use crate::records::{Filter, NewOptions, input_error};
@@ -824,17 +824,27 @@ fn split_csv(s: &str) -> Vec<String> {
 }
 
 fn read_body(file: &str) -> Result<String> {
-    if file == "stdin" || file == "-" {
+    let raw = if file == "stdin" || file == "-" {
         let mut s = String::new();
         std::io::stdin().read_to_string(&mut s)?;
-        return Ok(s);
-    }
-    std::fs::read_to_string(file).map_err(|e| {
-        input_error(
-            "Cannot read record body",
-            &e.to_string(),
-            "pulse record amend ID --body-file stdin",
-        )
+        s
+    } else {
+        std::fs::read_to_string(file).map_err(|e| {
+            input_error(
+                "Cannot read record body",
+                &e.to_string(),
+                "pulse record amend ID --body-file stdin",
+            )
+        })?
+    };
+    // `pulse record show` and `pulse record export` both print a leading
+    // frontmatter block; an agent that copies that output into
+    // `--body-file`/stdin for `amend` or `new` would otherwise store the
+    // frontmatter as literal body text. Strip it when present so a pasted
+    // export round-trips as a body, not as noise in the record.
+    Ok(match parse_frontmatter(&raw) {
+        Ok((_, body)) => body,
+        Err(_) => raw,
     })
 }
 
@@ -1281,5 +1291,65 @@ mod tests {
             );
             assert_eq!(s.revisions(&rec.id).unwrap().len() as i64, want_rev);
         }
+    }
+
+    #[test]
+    fn amend_strips_a_leading_frontmatter_block() {
+        // Regression test for the lesson behind `pulse record amend`:
+        // `pulse record show`/`export` prints a leading `---\n...\n---`
+        // frontmatter block before the body. An agent that pastes that
+        // output straight into `--body-file` for `amend` must not have
+        // the frontmatter stored as literal body text.
+        let _serial = crate::test_helpers::serial();
+        let s = temp_store();
+        add_project(&s, "brain", true);
+        let rec = crate::records::new_record(
+            &s,
+            "memory",
+            "brain",
+            "Keep this body",
+            crate::records::NewOptions {
+                author: "agent".into(),
+                body: "Original body\n".into(),
+                body_set: true,
+                ..crate::records::NewOptions::default()
+            },
+        )
+        .unwrap();
+        let pasted = "---\ntitle: Keep this body\nstatus: Draft\n---\nRevised body\n";
+        let body_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(body_file.path(), pasted).unwrap();
+        let out = pulse_cli::Buffer::new();
+        let err = pulse_cli::Buffer::new();
+        let mut c = Context {
+            store: Some(s.clone()),
+            home: s.home.clone(),
+            out: Box::new(out.clone()),
+            err: Box::new(err),
+            json: false,
+            quiet: false,
+            color: false,
+            agent: "agent".into(),
+            project: "brain".into(),
+            session: String::new(),
+            now: "2026-09-06T21:00:00Z".into(),
+            args: vec![],
+        };
+        run_record(
+            &mut c,
+            &FlagSet::new(""),
+            &[
+                "amend".into(),
+                rec.id.clone(),
+                "--body-file".into(),
+                body_file.path().display().to_string(),
+                "--note".into(),
+                "Replace body".into(),
+            ],
+        )
+        .unwrap();
+        let (_head, rev) = crate::records::get(&s, &rec.id, 0).unwrap();
+        assert_eq!(rev.body, "Revised body\n");
+        assert!(!rev.body.contains("title:"));
     }
 }
