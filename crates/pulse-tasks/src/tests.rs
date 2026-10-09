@@ -763,6 +763,12 @@ fn commands_end_to_end() {
     let cl: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
     assert_eq!(cl["requests"].as_array().unwrap().len(), 1);
     assert_eq!(cl["caps"]["vms_now"], 1);
+    let (mut c, _) = ctx_for(&s, "", "no-such-project", false);
+    let err = run_cmd(&mut c, "compute", &["list"]).unwrap_err();
+    assert!(
+        err.to_string().contains("No project"),
+        "unexpected error: {err}"
+    );
     let (mut c, _) = ctx_for(&s, "", "", false);
     run_cmd(
         &mut c,

@@ -746,6 +746,9 @@ pub fn run_compute(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()>
             }
         }
         "list" => {
+            if !c.project.is_empty() {
+                crate::tasks::check_project(store(c)?, &c.project)?;
+            }
             let list = list_compute(store(c)?, &c.project, &fs.get_string("status"))?;
             let caps = get_caps(store(c)?)?;
             if c.json {
