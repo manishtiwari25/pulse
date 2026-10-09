@@ -192,6 +192,19 @@ pub fn status_note(
     if rec.kind == "adr" && status.eq_ignore_ascii_case("Proposed") {
         check_wip(s, &rec.project, &rec.areas, id)?;
     }
+    if is_terminal_status(status) && !delivery_recorded(&rec.delivery) {
+        return Err(input_error(
+            &format!("Cannot set {id} to {status}"),
+            &format!(
+                "delivery is '{}'; a closed record needs a dated delivery or `pulse record lead-time` reports it as undated",
+                rec.delivery
+            ),
+            &format!(
+                "pulse record deliver {id} 'delivered' --date {}",
+                &s.now()[..10]
+            ),
+        ));
+    }
     rec.status = status.into();
     rev.frontmatter
         .insert("status".into(), Value::String(status.into()));
@@ -203,6 +216,18 @@ pub fn status_note(
     }
     s.put_record(rec, rev.frontmatter, &rev.body, author, &message)?;
     Ok(())
+}
+
+/// A status that closes a record (`Done`, `Done: shipped`, ...). `lead-time`
+/// treats such records as closed and reports them as `undated` when no
+/// delivery was recorded, so `status()` refuses the move until `deliver` ran.
+fn is_terminal_status(status: &str) -> bool {
+    let head = status.split([':', ' ']).next().unwrap_or("");
+    head.eq_ignore_ascii_case("Done")
+}
+
+fn delivery_recorded(delivery: &str) -> bool {
+    !matches!(delivery.trim(), "" | "not started")
 }
 
 pub fn accept(s: &store::Store, id: &str, words: &str) -> Result<()> {
@@ -717,6 +742,47 @@ mod tests {
         let (head, rev) = get(&s, &rec.id, 0).unwrap();
         assert_eq!(head.delivered, "");
         assert_eq!(rev.frontmatter["delivered"], json!(""));
+    }
+
+    #[test]
+    fn status_done_requires_prior_delivery() {
+        let _serial = crate::test_helpers::serial();
+        let s = temp_store();
+        add_project(&s, "brain", true);
+        let rec = new_record(
+            &s,
+            "wu",
+            "brain",
+            "Ship it",
+            NewOptions {
+                author: "agent".into(),
+                ..NewOptions::default()
+            },
+        )
+        .unwrap();
+        // A fresh record carries an empty delivery; an explicit "not started"
+        // must be refused the same way.
+        for delivery in ["", "not started"] {
+            if !delivery.is_empty() {
+                deliver(&s, &rec.id, delivery, "", "agent").unwrap();
+            }
+            let (head, _) = get(&s, &rec.id, 0).unwrap();
+            assert_eq!(head.delivery, delivery);
+            for terminal in ["Done", "done", "Done: shipped"] {
+                let err = status(&s, &rec.id, terminal, "agent").unwrap_err();
+                let msg = err.to_string();
+                assert!(msg.contains("pulse record deliver"), "{msg}");
+            }
+        }
+        let (head, _) = get(&s, &rec.id, 0).unwrap();
+        assert_eq!(head.status, rec.status);
+        // Non-terminal statuses remain allowed without delivery.
+        status(&s, &rec.id, "Active", "agent").unwrap();
+        deliver(&s, &rec.id, "delivered", "2026-09-09", "agent").unwrap();
+        status(&s, &rec.id, "Done", "agent").unwrap();
+        let (head, _) = get(&s, &rec.id, 0).unwrap();
+        assert_eq!(head.status, "Done");
+        assert_eq!(head.delivered, "2026-09-09");
     }
 
     #[test]
