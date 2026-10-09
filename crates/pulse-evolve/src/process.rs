@@ -2,7 +2,31 @@ use anyhow::{Result, anyhow};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+/// Nice level of every process a measurement starts (harness, scorer and
+/// what they build), the level the daemon gives the runs it dispatches: a
+/// measurement must never crowd out the person using the machine.
+pub(crate) const MEASUREMENT_NICE: i32 = 10;
+
+/// How many fixtures the current measurement runs at once; `isolated_env`
+/// sizes each fixture's build jobs from it so N cold Cargo builds share the
+/// cores instead of each taking them all.
+static MEASURE_PARALLEL: AtomicUsize = AtomicUsize::new(1);
+
+pub(crate) fn set_measure_parallel(n: usize) {
+    MEASURE_PARALLEL.store(n.max(1), Ordering::SeqCst);
+}
+
+/// Build jobs one fixture may use: the cores split between the fixtures
+/// measured in parallel, never below one.
+pub(crate) fn fixture_build_jobs() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    (cores / MEASURE_PARALLEL.load(Ordering::SeqCst).max(1)).max(1)
+}
 
 /// Go: func commandWords(text string) ([]string, error)
 pub(crate) fn command_words(text: &str) -> Result<Vec<String>> {
@@ -217,6 +241,9 @@ pub(crate) fn isolated_env(home: &str) -> Vec<String> {
         );
     }
     env.extend(measurement_cache_env(home));
+    if !env.iter().any(|v| v.starts_with("CARGO_BUILD_JOBS=")) {
+        env.push(format!("CARGO_BUILD_JOBS={}", fixture_build_jobs()));
+    }
     env
 }
 
@@ -320,33 +347,75 @@ pub(crate) fn run_process_to(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let cleanup = contain_process(&mut cmd);
     let mut child = cmd.spawn()?;
-    loop {
+    let out_rx = drain(child.stdout.take());
+    let err_rx = drain(child.stderr.take());
+    let done = cancel.done();
+    let status = loop {
         if let Some(err) = cancel.err() {
-            #[cfg(unix)]
-            {
-                // SAFETY: plain libc call on the child's own process group id.
-                unsafe {
-                    libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
-                }
-            }
+            kill_group(&mut child);
             let _ = child.kill();
             cleanup();
             let _ = child.wait();
             return Err(err.into());
         }
         if let Some(status) = child.try_wait()? {
-            let output = child.wait_with_output()?;
-            stdout.write_all(&output.stdout)?;
-            stderr.write_all(&output.stderr)?;
-            return if status.success() {
-                Ok(())
-            } else {
-                Err(anyhow!("{status}"))
-            };
+            break status;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        // Wakes at once on cancel, otherwise looks at the child ten times a
+        // second instead of a hundred.
+        let _ = done.recv_timeout(Duration::from_millis(100));
+    };
+    // Whatever the command left running in its process group (a server
+    // started with `&`) would hold the pipes open and keep the measurement
+    // from ending; it goes with the group.
+    kill_group(&mut child);
+    cleanup();
+    stdout.write_all(&out_rx.recv_timeout(OUTPUT_DRAIN).unwrap_or_default())?;
+    stderr.write_all(&err_rx.recv_timeout(OUTPUT_DRAIN).unwrap_or_default())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("{status}"))
     }
 }
+
+/// How long the output readers may lag once the command and its group are
+/// gone; a pipe a process outside the group still holds is given up on.
+const OUTPUT_DRAIN: Duration = Duration::from_secs(2);
+
+/// Reads a child's pipe to its end on a thread, so a chatty build or test
+/// run never fills the pipe and stalls behind a parent that only reads at
+/// exit; the bytes arrive on the receiver once the pipe closes.
+fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    match pipe {
+        Some(mut pipe) => {
+            // A failed spawn drops `tx`, and the receiver reads as empty.
+            let _ = std::thread::Builder::new()
+                .name("measure-drain".into())
+                .spawn(move || {
+                    let mut buf = Vec::new();
+                    let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+                    let _ = tx.send(buf);
+                });
+        }
+        None => {
+            let _ = tx.send(Vec::new());
+        }
+    }
+    rx
+}
+
+#[cfg(unix)]
+fn kill_group(child: &mut std::process::Child) {
+    // SAFETY: plain libc call on the child's own process group id.
+    unsafe {
+        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_child: &mut std::process::Child) {}
 /// Go: func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 pub(crate) fn git_output(
     cancel: &pulse_bus::CancellationToken,
@@ -385,6 +454,15 @@ pub(crate) fn git_raw(
 pub(crate) fn contain_process(cmd: &mut std::process::Command) -> Box<dyn FnOnce()> {
     use std::os::unix::process::CommandExt;
     cmd.process_group(0);
+    // SAFETY: the hook makes one setpriority system call and allocates
+    // nothing. A refusal (the parent already runs at a higher nice) leaves
+    // the child at the parent's priority, which is the point.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setpriority(libc::PRIO_PROCESS, 0, MEASUREMENT_NICE);
+            Ok(())
+        });
+    }
     Box::new(|| {})
 }
 #[cfg(not(unix))]
@@ -482,6 +560,69 @@ mod tests {
             assert!(value.ends_with(suffix), "{key}={value}");
             assert!(std::path::Path::new(value).is_dir(), "{key}={value}");
         }
+    }
+
+    #[test]
+    fn fixture_build_jobs_split_the_cores_between_parallel_fixtures() {
+        let _serial = crate::test_helpers::serial();
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        set_measure_parallel(1);
+        assert_eq!(fixture_build_jobs(), cores);
+        set_measure_parallel(2);
+        assert_eq!(fixture_build_jobs(), (cores / 2).max(1));
+        set_measure_parallel(cores * 4);
+        assert_eq!(fixture_build_jobs(), 1, "never below one job");
+        set_measure_parallel(0);
+        assert_eq!(fixture_build_jobs(), cores, "0 reads as sequential");
+        let home = crate::test_helpers::temp_path();
+        prepare_measurement_caches(&home.display().to_string()).unwrap();
+        let env = isolated_env(&home.display().to_string());
+        assert!(
+            env.iter()
+                .any(|v| v == &format!("CARGO_BUILD_JOBS={cores}")),
+            "{env:?}"
+        );
+        set_measure_parallel(1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_process_drains_a_chatty_child_and_its_stragglers() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = pulse_bus::CancellationToken::with_timeout(
+            &pulse_bus::CancellationToken::new(),
+            Duration::from_secs(20),
+        );
+        // 1 MB on stdout is far past a pipe's buffer: the old reader, which
+        // only read at exit, deadlocked here. The `sleep` keeps the group's
+        // pipes open after the shell exits; it must not hold the run.
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "sleep 30 & yes | head -c 1048576; echo err >&2".to_string(),
+        ];
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let started = Instant::now();
+        run_process_to(
+            &cancel,
+            dir.path().to_str().unwrap(),
+            &isolated_env(dir.path().to_str().unwrap()),
+            &argv,
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 1_048_576, "stdout drained in full");
+        assert_eq!(err, b"err\n");
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "a straggler held the run for {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

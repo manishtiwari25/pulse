@@ -203,6 +203,7 @@ pub(crate) fn measure(
         } else {
             (requested_parallel as usize).min(len)
         };
+        crate::process::set_measure_parallel(parallel);
         if let Some(w) = out.as_deref_mut() {
             writeln!(w, "measuring {len} fixtures with {parallel} in parallel")?;
         }
