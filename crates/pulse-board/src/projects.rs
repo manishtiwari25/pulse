@@ -856,6 +856,64 @@ mod tests {
     }
 
     #[test]
+    fn not_a_checkout_hint_leads_to_a_working_state() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, home, s) = new_home();
+        // A first-time user pointing `pulse init` at a plain directory gets a refusal whose
+        // fix line is a literal command; running that command must make the retry succeed.
+        let plain = Path::new(&home).join("checkouts").join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let err = register_project(
+            &s,
+            &plain.display().to_string(),
+            "",
+            "",
+            false,
+            "",
+            "owner",
+            "",
+        )
+        .unwrap_err();
+        let cli = err
+            .downcast_ref::<pulse_cli::Error>()
+            .expect("refusal must be a structured CLI error");
+        assert!(cli.what.contains("Not a git checkout"), "{}", cli.what);
+        let real = real_path(&plain);
+        let expected = format!("git -C {} init", real.display());
+        assert!(
+            cli.fix.starts_with(&expected),
+            "fix hint {:?} must start with the literal command {expected:?}",
+            cli.fix
+        );
+        // Run exactly the command the hint names (the words before the parenthetical).
+        let command = cli.fix.split("  (").next().unwrap().trim();
+        let words: Vec<&str> = command.split_whitespace().collect();
+        assert_eq!(words[0], "git");
+        assert!(
+            std::process::Command::new(words[0])
+                .args(&words[1..])
+                .arg("-q")
+                .status()
+                .unwrap()
+                .success(),
+            "hint command failed: {command}"
+        );
+        let (project, created) = register_project(
+            &s,
+            &plain.display().to_string(),
+            "",
+            "",
+            false,
+            "",
+            "owner",
+            "",
+        )
+        .unwrap();
+        assert!(created);
+        assert_eq!(project.path, real.display().to_string());
+    }
+
+    #[test]
     fn init_registers_project() {
         let _serial = crate::test_helpers::serial();
         let _fidelity_literals = (
@@ -1102,5 +1160,64 @@ mod lock_tests {
             "human",
         )
         .unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn init_refuses_fast_when_home_is_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let _serial = crate::test_helpers::serial();
+        let (dir, _home, s) = new_home();
+        let repo = git_repo();
+        // Root ignores file modes, so the probe cannot be exercised there.
+        if std::env::var("USER").is_ok_and(|u| u == "root") {
+            return;
+        }
+        // Drop pooled connections so the probe opens a fresh one against the
+        // read-only files, like a new `pulse init` process would.
+        s.close().unwrap();
+        let db = std::path::Path::new(&s.path);
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::fs::set_permissions(entry.path(), PermissionsExt::from_mode(0o444)).unwrap();
+            }
+        }
+        std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o555)).unwrap();
+        let started = std::time::Instant::now();
+        let result = init(
+            &s,
+            &repo.path().display().to_string(),
+            "readonly",
+            "",
+            false,
+            "cargo test",
+            "human",
+        );
+        let elapsed = started.elapsed();
+        // Restore modes before asserting so the temp dir can be removed.
+        std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).unwrap();
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::fs::set_permissions(entry.path(), PermissionsExt::from_mode(0o600)).unwrap();
+            }
+        }
+        let err = result.expect_err("init must refuse when PULSE_HOME is read-only");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "init blocked for {elapsed:?} on a read-only PULSE_HOME"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains(&s.path), "{msg}");
+        assert!(msg.contains("check PULSE_HOME"), "{msg}");
+        assert!(
+            msg.contains("Cannot write the store") || msg.contains("Cannot open the store"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("readonly") || msg.contains("permission") || msg.contains("denied"),
+            "message must name the permission problem: {msg}"
+        );
+        assert!(db.exists());
     }
 }
