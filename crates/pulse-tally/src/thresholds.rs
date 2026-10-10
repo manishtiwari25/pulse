@@ -70,16 +70,61 @@ pub fn load_thresholds(s: &pulse_store::Store, project: &str, override_: Thresho
     th.constitution_present = !text.is_empty();
     th.constitution = text;
     th.stop_present = stop_present(s, project);
-    let (num, den) = parse_majority(&th.amend_majority).unwrap_or_else(|_| {
-        th.amend_majority = pulse_store::DEFAULT_SETTINGS["amend_majority"].clone();
-        parse_majority(&th.amend_majority).unwrap_or((2, 3))
-    });
+    let (value, (num, den), warning) = resolve_majority(&th.amend_majority);
+    if let Some(w) = warning {
+        eprintln!("warning: {w}");
+    }
+    th.amend_majority = value;
     th.amend_num = num;
     th.amend_den = den;
     th
 }
 
+/// Parse an `amend_majority` value, falling back to the default when it is
+/// not a valid fraction. Returns the effective value, its parsed parts, and a
+/// warning line when a fallback happened, so a misconfigured setting or
+/// constitution row is never reset silently.
+pub fn resolve_majority(raw: &str) -> (String, (i32, i32), Option<String>) {
+    match parse_majority(raw) {
+        Ok(parts) => (raw.to_string(), parts, None),
+        Err(err) => {
+            let default = pulse_store::DEFAULT_SETTINGS["amend_majority"].clone();
+            let parts = parse_majority(&default).unwrap_or((2, 3));
+            let warning = format!(
+                "amend_majority {:?} is not a valid fraction ({err}); using the default {default}",
+                raw
+            );
+            (default, parts, Some(warning))
+        }
+    }
+}
+
 pub fn parse_majority(value: &str) -> anyhow::Result<(i32, i32)> {
     let (n, d) = pulse_store::majority(value)?;
     Ok((n as i32, d as i32))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_majority;
+
+    #[test]
+    fn valid_majority_emits_no_warning() {
+        let (value, parts, warning) = resolve_majority("3/4");
+        assert_eq!(value, "3/4");
+        assert_eq!(parts, (3, 4));
+        assert!(warning.is_none());
+    }
+
+    #[test]
+    fn bad_majority_falls_back_with_warning() {
+        for bad in ["", "0.66", "1/0", "two thirds"] {
+            let (value, parts, warning) = resolve_majority(bad);
+            assert_eq!(value, "2/3", "fallback value for {bad:?}");
+            assert_eq!(parts, (2, 3), "fallback parts for {bad:?}");
+            let w = warning.unwrap_or_else(|| panic!("no warning for {bad:?}"));
+            assert!(w.contains("amend_majority"), "{w}");
+            assert!(w.contains("using the default 2/3"), "{w}");
+        }
+    }
 }
