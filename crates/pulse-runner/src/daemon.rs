@@ -107,12 +107,16 @@ impl std::fmt::Debug for DaemonOpts {
 }
 
 /// Go: func daemonHeartbeat(s *store.Store, loops, interval int, note string)
+/// `passes` counts the planning passes among the `loops`
+/// (`daemon.pass_seconds`); the rest were ticks that only reaped, refilled
+/// slots and watched the stop switch.
 /// `restart` is the pending handover (`restart_beat`) while a newer binary
 /// waits for the runs in flight; the hub reads it to say what the daemon
 /// waits for instead of a bare "restarting".
 pub(crate) fn daemon_heartbeat(
     s: &pulse_store::Store,
     loops: i32,
+    passes: i32,
     interval: i32,
     note: String,
     restart: Option<serde_json::Value>,
@@ -122,6 +126,7 @@ pub(crate) fn daemon_heartbeat(
         "pid": std::process::id(),
         "at": s.now(),
         "loops": loops,
+        "passes": passes,
         "interval": interval,
         "note": note,
         "version": pulse_cli::version(),
@@ -329,6 +334,22 @@ pub(crate) fn say(o: &DaemonOpts, line: impl AsRef<str>) {
 /// runs are in flight (daemon.restart_drain_minutes); zero exits at once.
 pub(crate) fn restart_drain(s: &pulse_store::Store) -> Duration {
     Duration::from_secs((s.setting_int("daemon.restart_drain_minutes").max(0) as u64) * 60)
+}
+
+/// The least time between two planning passes (`daemon.pass_seconds`). The
+/// loop wakes every `DISPATCH_TICK_SECONDS` while runs are in flight and
+/// whenever a run ends or the bus has news, and each wake used to run the
+/// whole pass: the leads, tasks, amendments, recoveries and lessons of every
+/// project, the evolution and schedules, the planner, the idle notes, the
+/// executors and a maintenance thread. With four agents at work that was a
+/// pass every fifteen seconds, a quarter of a core, for jobs that only queued
+/// behind slots already full. A tick inside the spacing reaps, watches the
+/// stop switch and the restart drain, starts approved compute and refills
+/// free slots; the planning pass waits for the spacing, however often the
+/// loop wakes. Zero plans on every tick as before; the loop caps the spacing
+/// at its interval, so `--interval 30` still plans every half minute.
+pub(crate) fn pass_spacing(s: &pulse_store::Store) -> Duration {
+    Duration::from_secs(s.setting_int("daemon.pass_seconds").max(0) as u64)
 }
 
 /// How long new runs may still start while a restart is pending: the drain
@@ -750,7 +771,11 @@ pub(crate) fn daemon(
         o.agent.clone()
     };
     let mut loops = 0;
+    let mut passes = 0;
     let mut last_prune_day = String::new();
+    // When the last planning pass began (`pass_spacing`); None before the
+    // first, which plans at once.
+    let mut last_pass: Option<std::time::Instant> = None;
     let mut prev_idle: BTreeMap<String, String> = BTreeMap::new();
     let mut idle_log = crate::idle_log::IdleLog::default();
     // Set when the binary changed on disk while runs were in flight: the
@@ -805,10 +830,12 @@ pub(crate) fn daemon(
     // The watchdog outlives nothing: a loop that stops beating for daemonStallBound is dumped and restarted.
     // Go's `loops` is read by the stalled note from the watchdog thread, so it is shared.
     let loops_shared = Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let passes_shared = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let dog = (!o.no_watchdog).then(|| {
         let s_note = s.clone();
         let actor_note = actor.clone();
         let loops_note = Arc::clone(&loops_shared);
+        let passes_note = Arc::clone(&passes_shared);
         let out = o.clone();
         let kill = run_ctx.clone();
         let dog = Arc::new(crate::daemon_watchdog::new_daemon_watchdog(
@@ -820,7 +847,8 @@ pub(crate) fn daemon(
             Arc::new(move |line| say(&out, line)),
             Some(Arc::new(move |note: String, dump: String| {
                 let loops = loops_note.load(std::sync::atomic::Ordering::SeqCst);
-                daemon_heartbeat(&s_note, loops, interval, note.clone(), None);
+                let passes = passes_note.load(std::sync::atomic::Ordering::SeqCst);
+                daemon_heartbeat(&s_note, loops, passes, interval, note.clone(), None);
                 if let Ok(conn) = s_note.conn() {
                     crate::util::event_at(
                         &conn,
@@ -843,8 +871,8 @@ pub(crate) fn daemon(
         dog
     });
     // Go: heartbeat(note) - the heartbeat row plus the watchdog's beat.
-    let heartbeat = |loops: i32, note: &str, restart: Option<serde_json::Value>| {
-        daemon_heartbeat(s, loops, interval, note.to_string(), restart);
+    let heartbeat = |loops: i32, passes: i32, note: &str, restart: Option<serde_json::Value>| {
+        daemon_heartbeat(s, loops, passes, interval, note.to_string(), restart);
         if let Some(dog) = &dog {
             dog.beat();
         }
@@ -1162,7 +1190,17 @@ pub(crate) fn daemon(
         } else {
             (String::new(), None)
         };
-        heartbeat(loops, &beat_note, restart_record);
+        // A bounded daemon (`--once`, the tests' loop limits) plans on every
+        // loop: its loops are the passes it was asked for. An interval shorter
+        // than the spacing caps it: the owner asked to plan that often.
+        let spacing = pass_spacing(s).min(Duration::from_secs(interval as u64));
+        let full_pass = o.max_loops > 0 || last_pass.is_none_or(|began| began.elapsed() >= spacing);
+        if full_pass {
+            last_pass = Some(std::time::Instant::now());
+            passes += 1;
+            passes_shared.store(passes, std::sync::atomic::Ordering::SeqCst);
+        }
+        heartbeat(loops, passes, &beat_note, restart_record);
         let mut started: Vec<Dispatch> = Vec::new();
         let mut reason = String::new();
         let mut slots: Vec<String> = Vec::new();
@@ -1214,168 +1252,180 @@ pub(crate) fn daemon(
                     None
                 }
             };
-            let all_projects = conn
-                .as_ref()
-                .map(|c| crate::board::project_rows(c, false))
-                .unwrap_or_default();
-            let (projects, _, hold_lines) =
-                probes.ready(all_projects, crate::checkout::CHECKOUT_PROBE_TIMEOUT);
-            for line in hold_lines {
-                say(&o, line);
-            }
-            if maintenance.done.is_none()
-                && (!only_maintenance_wake || maintenance.has_new_pending(s, projects.clone()))
-            {
-                let mut binary = self_env.clone();
-                binary.inflight = inflight.len() as i32;
-                binary.local_inflight = inflight
-                    .values()
-                    .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
-                    .count() as i32;
-                binary.governor = Some(crate::daemon_load::limits(s, &machine, o.max_jobs));
-                let inflight_jobs = inflight
-                    .values()
-                    .map(|d| (d.job.str("id"), true))
-                    .collect::<BTreeMap<_, _>>();
-                maintenance.start(
-                    &maintenance_ctx,
-                    s,
-                    projects.clone(),
-                    actor.clone(),
-                    now.clone(),
-                    o.dry_run,
-                    inflight_jobs,
-                    binary,
-                );
-            }
-            for line in crate::auto_adopt::auto_adopt_drafts(s, now.clone(), actor.clone()) {
-                say(&o, line);
-            }
-            let slugs = projects.iter().map(|p| p.str("slug")).collect::<Vec<_>>();
-            for project in &projects {
-                let slug = project.str("slug");
-                for line in
-                    crate::amend::auto_apply_amendments(s, slug.clone(), now.clone(), &mut refused)
+            // The planning pass; a tick inside `daemon.pass_seconds` skips to
+            // the slots below.
+            if full_pass {
+                let all_projects = conn
+                    .as_ref()
+                    .map(|c| crate::board::project_rows(c, false))
+                    .unwrap_or_default();
+                let (projects, _, hold_lines) =
+                    probes.ready(all_projects, crate::checkout::CHECKOUT_PROBE_TIMEOUT);
+                for line in hold_lines {
+                    say(&o, line);
+                }
+                if maintenance.done.is_none()
+                    && (!only_maintenance_wake || maintenance.has_new_pending(s, projects.clone()))
                 {
+                    let mut binary = self_env.clone();
+                    binary.inflight = inflight.len() as i32;
+                    binary.local_inflight = inflight
+                        .values()
+                        .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
+                        .count() as i32;
+                    binary.governor = Some(crate::daemon_load::limits(s, &machine, o.max_jobs));
+                    let inflight_jobs = inflight
+                        .values()
+                        .map(|d| (d.job.str("id"), true))
+                        .collect::<BTreeMap<_, _>>();
+                    maintenance.start(
+                        &maintenance_ctx,
+                        s,
+                        projects.clone(),
+                        actor.clone(),
+                        now.clone(),
+                        o.dry_run,
+                        inflight_jobs,
+                        binary,
+                    );
+                }
+                for line in crate::auto_adopt::auto_adopt_drafts(s, now.clone(), actor.clone()) {
                     say(&o, line);
                 }
-                for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone()) {
-                    say(&o, line);
-                }
-                for line in crate::lead::tend_tasks(s, slug.clone(), now.clone(), actor.clone()) {
-                    say(&o, line);
-                }
-                for line in crate::recover::recover_failed_jobs(
-                    s,
-                    project.clone(),
-                    now.clone(),
-                    actor.clone(),
-                ) {
-                    say(&o, line);
-                }
-                for line in crate::lessons::tend_lessons(s, slug, now.clone(), actor.clone()) {
-                    say(&o, line);
-                }
-            }
-            if !o.dry_run {
-                for line in
-                    crate::evolve_plan::tend_evolve(s, now.clone(), actor.clone(), slugs.clone())
-                {
-                    say(&o, line);
-                }
-                if crate::run::runner_stopped(s).is_empty() {
-                    for line in
-                        crate::schedule::tend_schedules(s, now.clone(), actor.clone(), &slugs)
+                let slugs = projects.iter().map(|p| p.str("slug")).collect::<Vec<_>>();
+                for project in &projects {
+                    let slug = project.str("slug");
+                    for line in crate::amend::auto_apply_amendments(
+                        s,
+                        slug.clone(),
+                        now.clone(),
+                        &mut refused,
+                    ) {
+                        say(&o, line);
+                    }
+                    for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone())
                     {
                         say(&o, line);
                     }
+                    for line in crate::lead::tend_tasks(s, slug.clone(), now.clone(), actor.clone())
+                    {
+                        say(&o, line);
+                    }
+                    for line in crate::recover::recover_failed_jobs(
+                        s,
+                        project.clone(),
+                        now.clone(),
+                        actor.clone(),
+                    ) {
+                        say(&o, line);
+                    }
+                    for line in crate::lessons::tend_lessons(s, slug, now.clone(), actor.clone()) {
+                        say(&o, line);
+                    }
                 }
-            }
-            let mut planned = BTreeMap::new();
-            for slug in &slugs {
-                let before_plan = crate::plan::last_event_seq(s);
-                let snapshot = planner_snapshot(s, &mut planner_cache, slug, &now);
-                let jobs = match crate::plan::plan_jobs_with_tally(
-                    s,
-                    slug.clone(),
-                    now.clone(),
-                    actor.clone(),
-                    snapshot.as_ref().map(|snap| &snap.tally),
-                ) {
-                    Ok(jobs) => jobs,
-                    Err(e) => {
+                if !o.dry_run {
+                    for line in crate::evolve_plan::tend_evolve(
+                        s,
+                        now.clone(),
+                        actor.clone(),
+                        slugs.clone(),
+                    ) {
+                        say(&o, line);
+                    }
+                    if crate::run::runner_stopped(s).is_empty() {
+                        for line in
+                            crate::schedule::tend_schedules(s, now.clone(), actor.clone(), &slugs)
+                        {
+                            say(&o, line);
+                        }
+                    }
+                }
+                let mut planned = BTreeMap::new();
+                for slug in &slugs {
+                    let before_plan = crate::plan::last_event_seq(s);
+                    let snapshot = planner_snapshot(s, &mut planner_cache, slug, &now);
+                    let jobs = match crate::plan::plan_jobs_with_tally(
+                        s,
+                        slug.clone(),
+                        now.clone(),
+                        actor.clone(),
+                        snapshot.as_ref().map(|snap| &snap.tally),
+                    ) {
+                        Ok(jobs) => jobs,
+                        Err(e) => {
+                            say(
+                                &o,
+                                format!("planning {slug}: {}", crate::run::err_message(&e)),
+                            );
+                            Vec::new()
+                        }
+                    };
+                    for l in crate::plan::plan_deferred_lines_since(s, before_plan) {
+                        say(&o, l);
+                    }
+                    planned.insert(slug.clone(), jobs.len() as i32);
+                    for job in jobs {
                         say(
                             &o,
-                            format!("planning {slug}: {}", crate::run::err_message(&e)),
+                            format!(
+                                "planned {} {}: {}",
+                                job.str("kind"),
+                                job.str("id"),
+                                job.str("title")
+                            ),
                         );
-                        Vec::new()
                     }
-                };
-                for l in crate::plan::plan_deferred_lines_since(s, before_plan) {
-                    say(&o, l);
                 }
-                planned.insert(slug.clone(), jobs.len() as i32);
-                for job in jobs {
+                let mut cur_idle = BTreeMap::new();
+                if let Some(c) = conn.as_ref() {
+                    for slug in &slugs {
+                        if *planned.get(slug).unwrap_or(&0) != 0 {
+                            continue;
+                        }
+                        let busy = crate::util::must_one(
+                            c,
+                            "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased') LIMIT 1",
+                            &[slug],
+                        );
+                        if !busy.0.is_empty() {
+                            continue;
+                        }
+                        let note = if let Some(snapshot) =
+                            planner_snapshot(s, &mut planner_cache, slug, &now)
+                        {
+                            crate::idle::idle_note_from_parts(
+                                s,
+                                slug.clone(),
+                                now.clone(),
+                                snapshot.suggestion_idle,
+                                snapshot.tally.suggestions,
+                                snapshot.tally.amendments,
+                            )
+                        } else {
+                            crate::idle::idle_note(s, slug.clone(), now.clone())
+                        };
+                        cur_idle.insert(slug.clone(), note);
+                    }
+                }
+                for line in crate::idle::idle_notes_changed(prev_idle.clone(), cur_idle.clone()) {
+                    say(&o, line);
+                }
+                crate::idle::record_idle_notes(s, cur_idle.clone(), now.clone());
+                prev_idle = cur_idle;
+                for line in crate::heldout::tend_heldout(s, now.clone()) {
+                    say(&o, line);
+                }
+                for pr in crate::keys::reprobe_due(s, interval, &now) {
                     say(
                         &o,
-                        format!(
-                            "planned {} {}: {}",
-                            job.str("kind"),
-                            job.str("id"),
-                            job.str("title")
-                        ),
+                        format!("executor {} is reachable again: {}", pr[0], pr[1]),
                     );
                 }
-            }
-            let mut cur_idle = BTreeMap::new();
-            if let Some(c) = conn.as_ref() {
-                for slug in &slugs {
-                    if *planned.get(slug).unwrap_or(&0) != 0 {
-                        continue;
-                    }
-                    let busy = crate::util::must_one(
-                        c,
-                        "SELECT 1 AS x FROM jobs WHERE project = ? AND status IN ('queued', 'leased') LIMIT 1",
-                        &[slug],
-                    );
-                    if !busy.0.is_empty() {
-                        continue;
-                    }
-                    let note = if let Some(snapshot) =
-                        planner_snapshot(s, &mut planner_cache, slug, &now)
-                    {
-                        crate::idle::idle_note_from_parts(
-                            s,
-                            slug.clone(),
-                            now.clone(),
-                            snapshot.suggestion_idle,
-                            snapshot.tally.suggestions,
-                            snapshot.tally.amendments,
-                        )
-                    } else {
-                        crate::idle::idle_note(s, slug.clone(), now.clone())
-                    };
-                    cur_idle.insert(slug.clone(), note);
+                for line in crate::retire::tend_executors(s, now.clone(), actor.clone()) {
+                    say(&o, line);
                 }
             }
-            for line in crate::idle::idle_notes_changed(prev_idle.clone(), cur_idle.clone()) {
-                say(&o, line);
-            }
-            crate::idle::record_idle_notes(s, cur_idle.clone(), now.clone());
-            prev_idle = cur_idle;
             for line in compute.tick(&compute_ctx, &now) {
-                say(&o, line);
-            }
-            for line in crate::heldout::tend_heldout(s, now.clone()) {
-                say(&o, line);
-            }
-            for pr in crate::keys::reprobe_due(s, interval, &now) {
-                say(
-                    &o,
-                    format!("executor {} is reachable again: {}", pr[0], pr[1]),
-                );
-            }
-            for line in crate::retire::tend_executors(s, now.clone(), actor.clone()) {
                 say(&o, line);
             }
             let mut busy = BTreeMap::new();
@@ -1883,9 +1933,18 @@ pub(crate) fn daemon(
                     break;
                 },
             }
-        } else if !sleep_idle_wait(&mut wake_events, Duration::from_secs(interval as u64)) {
-            leave = ("interrupted", "stopping on signal");
-            break;
+        } else {
+            // An early wake (a run ended, the bus had news) ran the tick
+            // alone: sleep until the planning pass is due, not a whole
+            // interval, so what woke the loop is planned for in time.
+            let mut wait = Duration::from_secs(interval as u64);
+            if !full_pass && let Some(began) = last_pass {
+                wait = wait.min(spacing.saturating_sub(began.elapsed()));
+            }
+            if !sleep_idle_wait(&mut wake_events, wait) {
+                leave = ("interrupted", "stopping on signal");
+                break;
+            }
         }
     }
     let (mut result, note) = leave;
@@ -1927,6 +1986,7 @@ pub(crate) fn daemon(
         let wait_beat = |inflight: &BTreeMap<String, Dispatch>| {
             heartbeat(
                 loops,
+                passes,
                 &format!(
                     "{note}: waiting for {} run(s) in flight to finish",
                     inflight.len()
@@ -2022,7 +2082,7 @@ pub(crate) fn daemon(
     } else {
         "exited"
     };
-    daemon_heartbeat(s, loops, interval, beat.to_string(), None);
+    daemon_heartbeat(s, loops, passes, interval, beat.to_string(), None);
     // Go: defer cancelWake() - the wake subscription outlives the heartbeat,
     // which therefore counts it among the bus subscribers.
     cancel_wake();
@@ -3028,6 +3088,125 @@ mod tests {
         assert_eq!(
             fits_phrase(&mixed),
             "any run on blog, fresh; ballot, reflect, lead runs on brain"
+        );
+    }
+
+    #[test]
+    fn pass_spacing_reads_the_setting_and_refuses_negatives() {
+        let s = new_store();
+        assert_eq!(pass_spacing(&s), Duration::from_secs(60));
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.pass_seconds", "0")
+            .unwrap();
+        assert_eq!(pass_spacing(&s), Duration::ZERO);
+        assert!(
+            s.set_setting(pulse_store::HUMAN_AGENT, "daemon.pass_seconds", "-5")
+                .is_err(),
+            "the catalogue floors the spacing at zero"
+        );
+    }
+
+    /// Inside `daemon.pass_seconds` the loop's wakes are ticks: a job queued
+    /// while a run is in flight is still leased at once, the runs that end
+    /// are reaped, but the planning pass does not run again.
+    #[test]
+    fn ticks_inside_the_pass_spacing_refill_slots_without_planning() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "borealis");
+        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.pass_seconds", "3600")
+            .unwrap();
+        let add = |title: &str| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "test".into(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+        };
+        add("First run");
+        let out = OutBuf::new();
+        let (leased_tx, leased_rx) = crossbeam_channel::bounded(1);
+        let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(SignalWriter {
+            out: out.clone(),
+            waiting: leased_tx,
+            needle: "leased job-".into(),
+            sent: false,
+        }));
+        let opts = DaemonOpts {
+            interval: 300,
+            out: Some(writer),
+            worker_cmd: "sh -c 'sleep 1; echo SUMMARY: ok'".into(),
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = pulse_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            leased_rx
+                .recv_timeout(test_wait(Duration::from_secs(60)))
+                .expect("the first run was never leased");
+            // Queued inside the spacing: job.add wakes the loop for a tick.
+            add("Second run");
+            let since = std::time::Instant::now();
+            loop {
+                let text = out.string();
+                let loops = s
+                    .meta("daemon")
+                    .ok()
+                    .and_then(|(raw, _)| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                    .and_then(|beat| beat.get("loops").and_then(|v| v.as_i64()))
+                    .unwrap_or(0);
+                if text.matches("leased job-").count() >= 2
+                    && text.matches("done job-").count() >= 2
+                    && loops >= 4
+                {
+                    break;
+                }
+                assert!(
+                    since.elapsed() < test_wait(Duration::from_secs(60)),
+                    "two leases, two finished runs and four loops never came:\n{text}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }));
+        cancel.cancel();
+        let _ = done_rx.recv_timeout(test_wait(Duration::from_secs(30)));
+        if let Err(panic) = result {
+            panic!("{}\n{}", panic_message(&panic), out.string());
+        }
+        let text = out.string();
+        let beat: serde_json::Value = serde_json::from_str(&s.meta("daemon").unwrap().0).unwrap();
+        assert!(beat["loops"].as_i64().unwrap() >= 4, "{beat}\n{text}");
+        assert_eq!(
+            beat["passes"].as_i64(),
+            Some(1),
+            "one planning pass, the first; the ticks after it only reaped and refilled: {beat}\n{text}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE status = 'done'",
+                &[]
+            ),
+            2,
+            "{text}"
         );
     }
 

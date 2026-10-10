@@ -486,7 +486,7 @@ export function MachinePanel({ r }: { r: Runner | undefined | null }) {
         <div className="mt-2 grid gap-2">
           <Kv
             rows={[
-              ["daemon", (d.text || d.state) + (d.loops !== undefined ? " · loop " + num(d.loops) : "")],
+              ["daemon", (d.text || d.state) + (d.loops !== undefined ? " · loop " + num(d.loops) + (d.passes !== undefined ? " (" + num(d.passes) + " planned)" : "") : "")],
               ["interval", d.interval ? spanSeconds(d.interval) : "—"],
               ["last loop", <When key="at" d={d.at} />],
               ["slots", r.hands.free + " free of " + r.hands.slots + " on " + plural(r.hands.executors_active, "active executor")],

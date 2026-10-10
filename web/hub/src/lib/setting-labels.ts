@@ -87,6 +87,7 @@ const LABELS: Record<string, string> = {
   "daemon.self_update_retry_minutes": "Retry a failed build after (minutes)",
   "daemon.restart_drain_minutes": "Drain in-flight runs before a restart (minutes)",
   "daemon.planner_cache_ttl_seconds": "Keep a planner snapshot for (seconds)",
+  "daemon.pass_seconds": "Least seconds between planning passes (0 = every tick)",
   "daemon.unfit_reprobe_minutes": "Re-probe an unfit executor after (minutes)",
   "daemon.recover": "Recover failed jobs",
   "daemon.recover_days": "Recovery window (days)",

@@ -1217,6 +1217,16 @@ wake the loop early; job queue events (`job.add`, `job.queued`, `job.requeue`,
 count every 15 seconds so a missed event still starts work within one dispatch
 tick without multiplying idle log lines. Cancellation stops the wait. Successful
 runs and work still in flight keep their existing prompt-dispatch behavior.
+The loop has two speeds: every tick (each 15 seconds while runs are in
+flight, and whenever a run ends or an event wakes it) reaps, watches the stop
+switch and a pending restart, starts approved compute and refills free slots;
+the planning pass (the leads, tasks, amendments, recoveries and lessons of
+every project, evolution, schedules, the planner, idle notes, executors and
+the maintenance thread) runs at most once per `daemon.pass_seconds` (default
+60), however often the loop wakes, since planning every fifteen seconds under
+four agents cost a quarter of a core for jobs that only queued behind full
+slots. Zero plans on every tick, and a shorter `--interval` caps the spacing.
+The heartbeat the hub shows counts `loops` and `passes` apart.
 
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project

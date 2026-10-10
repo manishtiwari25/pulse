@@ -673,7 +673,7 @@ export interface DaemonRestart {
 export interface Runner {
   available: boolean;
   now?: string;
-  daemon: { state: string; text?: string; pid: number; at: string; loops?: number; interval: number; note?: string; restart?: DaemonRestart | null; disk?: string };
+  daemon: { state: string; text?: string; pid: number; at: string; loops?: number; passes?: number; interval: number; note?: string; restart?: DaemonRestart | null; disk?: string };
   runner?: { allowed: boolean; reason: string };
   hands: { free: number; slots: number; executors_active: number; executors: number; any_project: boolean };
   executors: Executor[];

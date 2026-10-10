@@ -408,6 +408,12 @@ impl Handler {
                         "loops".into(),
                         json!(num_value(beat.get("loops").unwrap_or(&Value::Null))),
                     );
+                    // Planning passes (daemon.pass_seconds); heartbeats older
+                    // than the two-speed loop have none, and the card says
+                    // nothing rather than "0 passes".
+                    if let Some(passes) = beat.get("passes") {
+                        daemon.insert("passes".into(), json!(num_value(passes)));
+                    }
                     daemon.insert(
                         "interval".into(),
                         json!(num_value(beat.get("interval").unwrap_or(&Value::Null))),
