@@ -87,6 +87,9 @@ pub(crate) fn plan_deferred_lines_since(s: &pulse_store::Store, seq: i32) -> Vec
 }
 
 /// Go: func threadStatuses(s *store.Store, rows []row, now string) map[string]string
+/// The in-memory reference for `thread_statuses_for`, kept so tests can hold
+/// the aggregate to the walk it replaced.
+#[cfg(test)]
 pub(crate) fn thread_statuses(
     s: &pulse_store::Store,
     rows: Vec<Row>,
@@ -120,6 +123,8 @@ pub(crate) fn thread_statuses(
 }
 
 /// Go: func projectPosts(q querier, slug string) []row
+/// Every post of the board; production paths read only the kinds they follow.
+#[cfg(test)]
 pub(crate) fn project_posts(q: &dyn Querier, slug: String) -> Vec<Row> {
     must_rows(
         q,
@@ -131,13 +136,63 @@ pub(crate) fn project_posts(q: &dyn Querier, slug: String) -> Vec<Row> {
     .collect()
 }
 
+/// `project_posts` narrowed to a few kinds, same order.
+fn project_posts_of_kinds(q: &dyn Querier, slug: &str, kinds: &[&str]) -> Vec<Row> {
+    let marks = vec!["?"; kinds.len()].join(", ");
+    let mut args: Vec<&dyn rusqlite::ToSql> = vec![&slug];
+    args.extend(kinds.iter().map(|k| k as &dyn rusqlite::ToSql));
+    must_rows(
+        q,
+        &format!(
+            "SELECT rowid AS post_order, * FROM posts WHERE project = ? AND kind IN ({marks}) ORDER BY date, rowid"
+        ),
+        &args,
+    )
+    .into_iter()
+    .map(crate::board::parse_post_row)
+    .collect()
+}
+
+/// `thread_statuses` computed by the store: the newest date and whether any
+/// post carries a resolution, per thread, without reading a single body.
+pub(crate) fn thread_statuses_for(
+    s: &pulse_store::Store,
+    q: &dyn Querier,
+    slug: &str,
+    now: &str,
+) -> BTreeMap<String, String> {
+    let stale_days = setting_int(s, "stale_days");
+    let today = day_number(now);
+    must_rows(
+        q,
+        "SELECT area || '/' || thread AS key, MAX(date) AS d,
+            MAX(CASE WHEN COALESCE(resolution, '') != '' THEN 1 ELSE 0 END) AS closed
+         FROM posts WHERE project = ? GROUP BY area, thread",
+        &[&slug],
+    )
+    .into_iter()
+    .map(|r| {
+        let status = if r.int("closed") != 0 {
+            "closed"
+        } else if today - day_number(&r.str("d")) > stale_days {
+            "stale"
+        } else {
+            "open"
+        };
+        (r.str("key"), status.to_string())
+    })
+    .collect()
+}
+
 /// Go: func openQuestions(s *store.Store, slug, now string) []row
+/// Only questions and answers decide what is open, so only they are read;
+/// the thread statuses come from one aggregate over the board.
 pub(crate) fn open_questions(s: &pulse_store::Store, slug: String, now: String) -> Vec<Row> {
     let Ok(conn) = s.conn() else {
         return Vec::new();
     };
-    let rows = project_posts(&conn, slug);
-    let status = thread_statuses(s, rows.clone(), now);
+    let rows = project_posts_of_kinds(&conn, &slug, &["question", "answer"]);
+    let status = thread_statuses_for(s, &conn, &slug, &now);
     let mut answered = BTreeMap::new();
     let mut answered_at = BTreeMap::new();
     let mut thread_answers: BTreeMap<String, Row> = BTreeMap::new();
@@ -1127,6 +1182,144 @@ mod tests {
         for (body, want) in cases {
             assert_eq!(suggestion_quality_score(body.into()), want, "{body}");
         }
+    }
+
+    /// A post on the test board at a chosen date; `(on, resolution)` answers a
+    /// post or closes the thread.
+    fn dated_post(
+        s: &pulse_store::Store,
+        kind: &str,
+        area: &str,
+        thread: &str,
+        date: &str,
+        summary: &str,
+        (on, resolution): (&str, &str),
+    ) -> String {
+        pulse_board::create_post(
+            s,
+            pulse_board::PostInput {
+                kind: kind.into(),
+                project: "proj".into(),
+                area: area.into(),
+                thread: thread.into(),
+                agent: "asker".into(),
+                summary: summary.into(),
+                body: format!(
+                    "{summary}\n\n{}",
+                    "a body the planner never needs ".repeat(8)
+                ),
+                date: date.into(),
+                on: on.into(),
+                resolution: resolution.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|err| panic!("{err}"))
+        .id
+    }
+
+    #[test]
+    fn open_questions_reads_questions_and_answers_alone() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (_, _root) = new_repo(&s);
+        join(&s, "asker");
+        // An unanswered question in a thread whose later finding is not an answer.
+        let waiting = dated_post(
+            &s,
+            "question",
+            "governance",
+            "waiting",
+            "2026-09-05T09:00:00Z",
+            "Which port?",
+            ("", ""),
+        );
+        dated_post(
+            &s,
+            "finding",
+            "governance",
+            "waiting",
+            "2026-09-05T10:00:00Z",
+            "still looking",
+            ("", ""),
+        );
+        // A question answered directly.
+        let direct = dated_post(
+            &s,
+            "question",
+            "governance",
+            "direct",
+            "2026-09-04T09:00:00Z",
+            "Which model?",
+            ("", ""),
+        );
+        dated_post(
+            &s,
+            "answer",
+            "governance",
+            "direct",
+            "2026-09-04T10:00:00Z",
+            "The small one",
+            (&direct, ""),
+        );
+        // A question in a thread a resolution closed.
+        dated_post(
+            &s,
+            "question",
+            "governance",
+            "settled",
+            "2026-09-05T09:00:00Z",
+            "Keep the cache?",
+            ("", ""),
+        );
+        dated_post(
+            &s,
+            "finding",
+            "governance",
+            "settled",
+            "2026-09-05T11:00:00Z",
+            "Yes, measured",
+            ("", "agreed"),
+        );
+        // An old question: stale, not closed, still waiting.
+        let old = dated_post(
+            &s,
+            "question",
+            "governance",
+            "old",
+            "2026-07-01T09:00:00Z",
+            "Who owns the key?",
+            ("", ""),
+        );
+        // Questions under jobs/ are the daemon's own and never open.
+        dated_post(
+            &s,
+            "question",
+            "jobs",
+            "job-1",
+            "2026-09-05T09:00:00Z",
+            "Which job?",
+            ("", ""),
+        );
+        let conn = s.conn().expect("conn");
+        let sql = thread_statuses_for(&s, &conn, "proj", TEST_NOW);
+        let walked = thread_statuses(&s, project_posts(&conn, "proj".into()), TEST_NOW.into());
+        assert_eq!(sql, walked);
+        assert_eq!(
+            sql.get("governance/settled").map(String::as_str),
+            Some("closed")
+        );
+        assert_eq!(
+            sql.get("governance/waiting").map(String::as_str),
+            Some("open")
+        );
+        assert_eq!(sql.get("governance/old").map(String::as_str), Some("stale"));
+        let open: Vec<String> = open_questions(&s, "proj".into(), TEST_NOW.into())
+            .into_iter()
+            .map(|r| r.str("id"))
+            .collect();
+        assert_eq!(open, vec![old, waiting]);
     }
 
     #[test]

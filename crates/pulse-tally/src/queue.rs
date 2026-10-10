@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use crate::digest::{agent_session, ballot_cap};
 use crate::gate::{GATE_OWNER, in_flight_gate, plan_gate_with};
 use crate::plan_context::plan_context_for;
-use crate::tally::{Post, Proposal, TallyResult, compute};
+use crate::tally::{Post, Proposal, TallyResult, compute, compute_light, posts_of_kinds};
 use crate::text::{plural, trunc};
 use crate::thresholds::Thresholds;
 
@@ -217,8 +217,14 @@ pub fn open_handoffs(res: &TallyResult) -> Vec<Post> {
     out
 }
 
+/// `open_handoffs` over the project: the thread statuses come from the cached
+/// light tally and only the handoffs and claims are read, the two kinds the
+/// walk looks at. Loading every post with its body here was the daemon's
+/// largest cost per tick on a board with ten thousand posts.
 pub fn open_handoffs_for(s: &pulse_store::Store, project: &str) -> Result<Vec<Post>> {
-    compute(s, project, "", Thresholds::default()).map(|r| open_handoffs(&r))
+    let mut res = compute_light(s, project, "", Thresholds::default())?;
+    res.posts = posts_of_kinds(s, project, &["handoff", "claim"])?;
+    Ok(open_handoffs(&res))
 }
 
 fn plannable_work(items: &[WorkItem]) -> i32 {

@@ -3781,6 +3781,88 @@ fn open_handoffs() {
 }
 
 #[test]
+fn open_handoffs_for_reads_handoffs_and_claims_alone() {
+    let _serial = crate::test_helpers::serial();
+    let mut f = test_fixture::new_fixture(true);
+    let agent = "runner-h/model";
+    // left: a handoff nobody claimed, with a later note that must not count as a claim.
+    f.post(test_fixture::FPost::new(
+        "handoff",
+        "governance",
+        "left",
+        agent,
+        "2026-09-01T10:00:00Z",
+        "left for someone",
+        "s-h1",
+    ));
+    f.post(test_fixture::FPost::new(
+        "note",
+        "governance",
+        "left",
+        agent,
+        "2026-09-01T11:00:00Z",
+        "a note after it",
+        "s-h2",
+    ));
+    // taken: a handoff followed by a claim.
+    f.post(test_fixture::FPost::new(
+        "handoff",
+        "governance",
+        "taken",
+        agent,
+        "2026-09-01T12:00:00Z",
+        "taken soon",
+        "s-h3",
+    ));
+    f.post(test_fixture::FPost::new(
+        "claim",
+        "governance",
+        "taken",
+        "runner-c/model",
+        "2026-09-01T13:00:00Z",
+        "on it",
+        "s-h4",
+    ));
+    let direct: Vec<_> = crate::queue::open_handoffs_for(&f.st, "fixture")
+        .expect("open handoffs")
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    let full = compute(&f.st, "fixture", "", Thresholds::default()).expect("tally");
+    let reference: Vec<_> = crate::queue::open_handoffs(&full)
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(direct, reference);
+    assert!(
+        direct.contains(&test_fixture::fixture_post_id(
+            "2026-09-01T10:00:00Z",
+            agent
+        )),
+        "the unclaimed handoff is open: {direct:?}"
+    );
+    assert!(!direct.contains(&test_fixture::fixture_post_id(
+        "2026-09-01T12:00:00Z",
+        agent
+    )));
+    let kinds: std::collections::BTreeSet<_> =
+        crate::tally::posts_of_kinds(&f.st, "fixture", &["handoff", "claim"])
+            .expect("posts of kinds")
+            .into_iter()
+            .map(|p| p.kind)
+            .collect();
+    assert!(
+        kinds.iter().all(|k| k == "handoff" || k == "claim"),
+        "{kinds:?}"
+    );
+    assert!(
+        crate::tally::posts_of_kinds(&f.st, "fixture", &[])
+            .expect("none")
+            .is_empty()
+    );
+}
+
+#[test]
 fn owner_wording_does_not_set_plan_gate() {
     let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(true);

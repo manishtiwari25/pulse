@@ -104,6 +104,34 @@ pub fn posts_for(s: &pulse_store::Store, project: &str, area: &str) -> AnyResult
     Ok(out)
 }
 
+/// The posts of `project` whose kind is one of `kinds`, in `posts_for`'s
+/// order. Readers that only follow a few kinds (the planner's handoffs and
+/// claims) take this instead of every post with its body: the daemon asked
+/// for a board's whole history several times a tick.
+pub fn posts_of_kinds(
+    s: &pulse_store::Store,
+    project: &str,
+    kinds: &[&str],
+) -> AnyResult<Vec<Post>> {
+    if kinds.is_empty() {
+        return Ok(Vec::new());
+    }
+    let conn = s.conn()?;
+    let marks = vec!["?"; kinds.len()].join(", ");
+    let q = format!(
+        "SELECT {POST_COLS} FROM posts WHERE project = ? AND kind IN ({marks}) ORDER BY area, thread, id"
+    );
+    let mut args: Vec<&dyn ToSql> = vec![&project];
+    args.extend(kinds.iter().map(|k| k as &dyn ToSql));
+    let mut stmt = conn.prepare(&q)?;
+    let rows = stmt.query_map(args.as_slice(), scan_post)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(finish_post(row?)?);
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claim {
     pub id: String,
