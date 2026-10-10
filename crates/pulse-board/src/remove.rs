@@ -30,9 +30,18 @@ pub struct RemovePreview {
     pub duplicate_groups: i64,
     #[serde(skip_serializing_if = "is_zero")]
     pub duplicate_rows: i64,
+    /// `pulse remove project SLUG --forget`: the hard delete, not the deactivation.
+    #[serde(skip_serializing_if = "is_false")]
+    pub forget: bool,
+    /// The rows forget deletes (or deleted), table by table in cascade order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deleted: Vec<pulse_store::ForgetRows>,
 }
 fn is_zero(n: &i64) -> bool {
     *n == 0
+}
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 impl RemovePreview {
     pub fn change(&mut self, label: impl Into<String>, detail: impl Into<String>) {
@@ -50,6 +59,9 @@ impl RemovePreview {
     pub fn render(&self, w: &mut dyn Write, _st: pulse_cli::Style) {
         let st = _st;
         let mut title = format!("pulse remove {} {}", self.kind, self.name);
+        if self.forget {
+            title.push_str(" --forget");
+        }
         if self.applied {
             title.push_str(&format!("  {}", st.dim("(applied)")));
         } else if self.dry_run {
@@ -325,6 +337,8 @@ pub fn remove_project(
         duplicate_projects: vec![],
         duplicate_groups: 0,
         duplicate_rows: 0,
+        forget: false,
+        deleted: vec![],
     };
     pre.change(format!("project {slug}"), "status active -> inactive");
 
@@ -541,27 +555,242 @@ pub fn remove_project(
     Ok(pre)
 }
 
-pub(crate) fn yours_for_project(s: &pulse_store::Store, p: &pulse_store::Project) -> Vec<String> {
-    let mut out = Vec::new();
-    let (refs, ok) = git(
-        &p.path,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "refs/heads/pulse/",
-            "refs/heads/evolve/",
-        ],
+/// `pulse remove project SLUG --forget`: the hard delete for a project that
+/// `pulse remove project` already deactivated and whose checkout is gone. The
+/// preview lists what every table loses; the store does the deleting in one
+/// transaction (`Store::forget_project`). Refused while the project is active,
+/// while its checkout - or the volume it lived on - is still there, and while
+/// a run, a harness session or a leased job of it is in flight.
+pub fn forget_project(
+    s: &pulse_store::Store,
+    slug: &str,
+    actor: &str,
+    dry_run: bool,
+) -> Result<RemovePreview> {
+    let p = s.project(slug)?.ok_or_else(|| {
+        refuse_fix(
+            2,
+            format!("No project {}", py_repr(slug)),
+            "only a registered project can be forgotten",
+            "pulse projects",
+        )
+    })?;
+    if p.brain {
+        return Err(refuse_fix(
+            2,
+            format!("Refusing to forget {slug}: the brain is the framework checkout"),
+            "the brain holds the constitution, the guide and the framework's own board",
+            "pulse settings set stop 1  (pauses every runner)",
+        ));
+    }
+    if p.status == "active" {
+        return Err(refuse_fix(
+            2,
+            format!("Project {slug} is still active"),
+            "--forget deletes an inactive project whose checkout is gone; deactivate it first",
+            format!("pulse remove project {slug}"),
+        ));
+    }
+    if let Some(root) = unmounted_volume(&p.path) {
+        return Err(refuse_fix(
+            2,
+            format!(
+                "Refusing to forget {slug}: its checkout {} lives on an unmounted volume",
+                p.path
+            ),
+            format!(
+                "{} is not mounted, so the checkout is unreachable, not gone",
+                root.display()
+            ),
+            format!(
+                "mount it and look; pulse init {}  (registers it again)",
+                p.path
+            ),
+        ));
+    }
+    if Path::new(&p.path).exists() {
+        return Err(refuse_fix(
+            2,
+            format!(
+                "Refusing to forget {slug}: the checkout {} is still on disk",
+                p.path
+            ),
+            "--forget is for a project whose checkout is gone; one that is still there can come back",
+            format!(
+                "pulse init {}  (registers it again), or move the checkout away first",
+                p.path
+            ),
+        ));
+    }
+    let rep = s.forget_project_preview(slug)?;
+    if let Some(first) = rep.in_flight.first() {
+        let more = match rep.in_flight.len() {
+            1 => String::new(),
+            n => format!(" and {} more", n - 1),
+        };
+        return Err(refuse_fix(
+            2,
+            format!("Refusing to forget {slug}: {first}{more}"),
+            "a forgotten project cannot take the worker's report",
+            "wait for the work to finish: pulse status",
+        ));
+    }
+    let mut pre = RemovePreview {
+        kind: "project".into(),
+        name: slug.into(),
+        dry_run,
+        applied: false,
+        changes: GoSlice::nil(),
+        stays: GoSlice::nil(),
+        yours: GoSlice::empty(),
+        cancelled_jobs: GoSlice::empty(),
+        leased_jobs: GoSlice::empty(),
+        executors: GoSlice::empty(),
+        duplicate_projects: vec![],
+        duplicate_groups: 0,
+        duplicate_rows: 0,
+        forget: true,
+        deleted: rep.tables.clone(),
+    };
+    let total = rep.total();
+    let losing = rep.nonzero();
+    pre.change(
+        format!("project {slug}"),
+        if total <= 1 {
+            "forgotten: only the registry row is left to go".to_string()
+        } else {
+            format!(
+                "forgotten: the registry row and {} other {} in {} {} go",
+                total - 1,
+                plural((total - 1) as usize, "row"),
+                losing.len() - 1,
+                plural(losing.len() - 1, "table")
+            )
+        },
     );
-    if ok && !refs.is_empty() {
-        for b in refs.lines().map(str::trim).filter(|b| !b.is_empty()) {
-            out.push(format!(
-                "git -C {} branch -D {}",
-                shell_quote(&p.path),
-                shell_quote(b)
-            ));
+    for t in losing.iter().filter(|t| t.table != "projects") {
+        pre.change(
+            format!("  {}", t.table),
+            format!("{} {}", t.rows, plural(t.rows as usize, "row")),
+        );
+    }
+    let lead = crate::jobs::lead_name(slug);
+    if !rep.lead.is_empty() {
+        pre.change(
+            format!("agent {lead}"),
+            "the project's lead; nothing outside the project names it",
+        );
+    } else if s.agent(&lead)?.is_some() {
+        pre.stay(
+            format!("agent {lead}"),
+            "posts or runs of other projects name it; pulse agent prune retires it",
+        );
+    }
+    {
+        let conn = s.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT name, projects FROM executors WHERE projects != '*' ORDER BY name")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (name, projects) = row?;
+            if projects.split(',').any(|x| x == slug) {
+                pre.executors.push(name.clone());
+                pre.stay(
+                    format!("executor {name}"),
+                    format!("still lists {slug}; drain it: pulse executor drain {name}"),
+                );
+            }
         }
-    } else {
-        out.push(format!("# no pulse/* or evolve/* branches in {}", p.path));
+    }
+    pre.stay(
+        format!("the checkout {}", p.path),
+        "already gone; that is what lets forget run",
+    );
+    pre.yours = yours_for_project_at(s, &p, true).into();
+    if !dry_run {
+        let done = s.forget_project(slug, actor)?;
+        pre.deleted = done.tables;
+        pre.applied = true;
+    }
+    Ok(pre)
+}
+
+/// The mount point a path on a removable volume names - `/Volumes/<name>` on
+/// macOS, `/media/<user>/<name>` or `/run/media/<user>/<name>` on Linux - and
+/// None for a path anywhere else.
+pub(crate) fn volume_root(path: &str) -> Option<PathBuf> {
+    let p = Path::new(path);
+    for (parent, depth) in [("/Volumes", 1), ("/media", 2), ("/run/media", 2)] {
+        let Ok(rest) = p.strip_prefix(parent) else {
+            continue;
+        };
+        let parts: Vec<_> = rest
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .take(depth)
+            .collect();
+        if parts.len() == depth {
+            let mut root = PathBuf::from(parent);
+            root.extend(parts);
+            return Some(root);
+        }
+    }
+    None
+}
+
+/// The mount point when `path` lives on a removable volume that is not mounted
+/// now: the mount point is missing, or it is a plain directory on the same
+/// device as its parent with nothing mounted on it.
+pub(crate) fn unmounted_volume(path: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let root = volume_root(path)?;
+    let Ok(meta) = fs::metadata(&root) else {
+        return Some(root);
+    };
+    let parent_dev = root
+        .parent()
+        .and_then(|p| fs::metadata(p).ok())
+        .map(|m| m.dev());
+    if parent_dev == Some(meta.dev()) {
+        return Some(root);
+    }
+    None
+}
+
+pub(crate) fn yours_for_project(s: &pulse_store::Store, p: &pulse_store::Project) -> Vec<String> {
+    yours_for_project_at(s, p, false)
+}
+
+/// The commands a human may want to run after a project goes; with
+/// `checkout_gone` the lines that need the checkout (branch deletion, git
+/// worktree removal) give way to plain `rm -rf` of what is left on this side.
+fn yours_for_project_at(
+    s: &pulse_store::Store,
+    p: &pulse_store::Project,
+    checkout_gone: bool,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if !checkout_gone {
+        let (refs, ok) = git(
+            &p.path,
+            &[
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/pulse/",
+                "refs/heads/evolve/",
+            ],
+        );
+        if ok && !refs.is_empty() {
+            for b in refs.lines().map(str::trim).filter(|b| !b.is_empty()) {
+                out.push(format!(
+                    "git -C {} branch -D {}",
+                    shell_quote(&p.path),
+                    shell_quote(b)
+                ));
+            }
+        } else {
+            out.push(format!("# no pulse/* or evolve/* branches in {}", p.path));
+        }
     }
     let mut worktrees = glob_dirs(
         &Path::new(&s.home).join("work"),
@@ -570,11 +799,15 @@ pub(crate) fn yours_for_project(s: &pulse_store::Store, p: &pulse_store::Project
     worktrees.extend(glob_dirs(&Path::new(&s.home).join("worktrees"), &p.slug));
     worktrees.sort();
     for wt in worktrees {
-        out.push(format!(
-            "git -C {} worktree remove --force {}",
-            shell_quote(&p.path),
-            shell_quote(&wt.to_string_lossy())
-        ));
+        if checkout_gone {
+            out.push(format!("rm -rf {}", shell_quote(&wt.to_string_lossy())));
+        } else {
+            out.push(format!(
+                "git -C {} worktree remove --force {}",
+                shell_quote(&p.path),
+                shell_quote(&wt.to_string_lossy())
+            ));
+        }
     }
     if let Ok(conn) = s.conn()
         && let Ok(mut stmt) =
@@ -679,6 +912,8 @@ pub fn remove_executor(
         duplicate_projects: vec![],
         duplicate_groups: 0,
         duplicate_rows: 0,
+        forget: false,
+        deleted: vec![],
     };
     pre.change(
         format!("executor {name}"),
@@ -797,6 +1032,8 @@ pub fn remove_duplicate_findings(
         duplicate_projects: vec![],
         duplicate_groups: 0,
         duplicate_rows: 0,
+        forget: false,
+        deleted: vec![],
     };
     fill_duplicate_findings_preview(s, project, &mut pre)?;
     if pre.duplicate_rows == 0 {
@@ -951,6 +1188,8 @@ mod tests {
             duplicate_projects: vec![],
             duplicate_groups: 0,
             duplicate_rows: 0,
+            forget: false,
+            deleted: vec![],
         }
         .render(&mut b, Default::default());
         assert!(!b.is_empty());
@@ -1101,6 +1340,240 @@ mod tests {
             count_rows(&s, "events", "action = 'project.removed'", &[]),
             1
         );
+    }
+
+    #[test]
+    fn volume_root_names_removable_mount_points_only() {
+        assert_eq!(
+            volume_root("/Volumes/Backup/video"),
+            Some(PathBuf::from("/Volumes/Backup"))
+        );
+        assert_eq!(
+            volume_root("/Volumes/Backup"),
+            Some(PathBuf::from("/Volumes/Backup"))
+        );
+        assert_eq!(volume_root("/Volumes"), None);
+        assert_eq!(volume_root("/Volumes/"), None);
+        assert_eq!(volume_root("/private/tmp/proj1"), None);
+        assert_eq!(volume_root("/Users/me/Volumes/x"), None);
+        assert_eq!(
+            volume_root("/media/alice/usb/repo"),
+            Some(PathBuf::from("/media/alice/usb"))
+        );
+        assert_eq!(volume_root("/media/alice"), None);
+        assert_eq!(
+            volume_root("/run/media/alice/usb"),
+            Some(PathBuf::from("/run/media/alice/usb"))
+        );
+        // A missing mount point is an unmounted volume; the root volume is not.
+        assert!(unmounted_volume("/Volumes/pulse-no-such-volume-7f3a/repo").is_some());
+        assert!(unmounted_volume("/private/tmp/pulse-no-such-dir-7f3a").is_none());
+    }
+
+    #[test]
+    fn forget_project_refuses_until_the_checkout_is_gone_then_deletes_everything() {
+        let _serial = crate::test_helpers::serial();
+        no_tty();
+        let (_home_dir, home, s) = new_home();
+        let repo = git_repo();
+        let (p, _) = register_project(
+            &s,
+            &repo.path().display().to_string(),
+            "forget me",
+            "",
+            false,
+            "",
+            "human",
+            "",
+        )
+        .expect("register project");
+        let sibling = git_repo();
+        let (keep, _) = register_project(
+            &s,
+            &sibling.path().display().to_string(),
+            "keep me",
+            "",
+            false,
+            "",
+            "human",
+            "",
+        )
+        .expect("register sibling");
+        let conn = s.conn().expect("conn");
+        for slug in [&p.slug, &keep.slug] {
+            conn.execute(
+                "INSERT INTO jobs (id, project, kind, title, status, created_at) VALUES (?, ?, 'task', 'Tidy', 'done', ?)",
+                rusqlite::params![format!("job-{slug}"), slug, TEST_NOW],
+            )
+            .expect("job");
+            conn.execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES (?, ?, 'alice', ?, ?, 'done')",
+                rusqlite::params![format!("run-{slug}"), format!("job-{slug}"), slug, TEST_NOW],
+            )
+            .expect("run");
+            conn.execute(
+                "INSERT INTO posts (id, project, area, thread, kind, agent, date, created_at) VALUES (?, ?, 'runner', 'topic', 'finding', 'alice', ?, ?)",
+                rusqlite::params![format!("post-{slug}"), slug, TEST_NOW, TEST_NOW],
+            )
+            .expect("post");
+        }
+        drop(conn);
+        let rows_of = |slug: &str| -> i64 {
+            count_rows(&s, "posts", "project = ?", &[&slug])
+                + count_rows(&s, "jobs", "project = ?", &[&slug])
+                + count_rows(&s, "runs", "project = ?", &[&slug])
+                + count_rows(&s, "projects", "slug = ?", &[&slug])
+        };
+        assert_eq!(rows_of(&p.slug), 4);
+
+        // Still active: refused, through the API and the command line alike.
+        let err = forget_project(&s, &p.slug, "human", true).unwrap_err();
+        assert_eq!(code(Some(&err)), 2);
+        assert!(what_any(&err).contains("still active"), "{err}");
+        let (_, err) = run_cmd(
+            &s,
+            None,
+            &["remove", "project", &p.slug, "--forget", "--yes"],
+        );
+        assert_eq!(code(err.as_ref().err()), 2);
+        let (_, err) = run_cmd(&s, None, &["remove", "executor", "x", "--forget"]);
+        assert_eq!(code(err.as_ref().err()), 2);
+        assert!(what_any(err.as_ref().unwrap_err()).contains("--forget goes with project"));
+        let (_, err) = run_cmd(&s, None, &["remove", "project", "nope", "--forget"]);
+        assert_eq!(what_any(err.as_ref().unwrap_err()), "No project 'nope'");
+
+        remove_project(&s, &p.slug, "human", false).expect("deactivate");
+
+        // Inactive but the checkout is still on disk: refused.
+        let err = forget_project(&s, &p.slug, "human", true).unwrap_err();
+        assert_eq!(code(Some(&err)), 2);
+        assert!(what_any(&err).contains("still on disk"), "{err}");
+
+        // On a volume that is not mounted: refused, the checkout may well be there.
+        let conn = s.conn().expect("conn");
+        conn.execute(
+            "UPDATE projects SET path = '/Volumes/pulse-no-such-volume-7f3a/repo' WHERE slug = ?",
+            [&p.slug],
+        )
+        .expect("move to a volume");
+        let err = forget_project(&s, &p.slug, "human", true).unwrap_err();
+        assert_eq!(code(Some(&err)), 2);
+        assert!(what_any(&err).contains("unmounted volume"), "{err}");
+
+        // Gone for good: the dry run lists what goes and changes nothing.
+        let gone = format!("{home}/checkouts/forget-me");
+        conn.execute(
+            "UPDATE projects SET path = ? WHERE slug = ?",
+            rusqlite::params![gone, p.slug],
+        )
+        .expect("checkout gone");
+        drop(conn);
+        let pre = forget_project(&s, &p.slug, "human", true).expect("dry run");
+        assert!(pre.dry_run && !pre.applied && pre.forget);
+        assert!(
+            pre.changes
+                .iter()
+                .any(|i| i.label == format!("project {}", p.slug)
+                    && i.detail.starts_with("forgotten"))
+        );
+        assert!(
+            pre.changes
+                .iter()
+                .any(|i| i.label == "  posts" && i.detail == "1 row")
+        );
+        assert!(pre.changes.iter().any(|i| i.label == "  jobs"));
+        assert!(pre.changes.iter().any(|i| i.label == "  events"));
+        assert!(
+            pre.stays
+                .iter()
+                .any(|i| i.label == format!("the checkout {gone}"))
+        );
+        assert!(
+            pre.deleted
+                .iter()
+                .any(|t| t.table == "projects" && t.rows == 1)
+        );
+        assert_eq!(rows_of(&p.slug), 4, "the dry run deleted nothing");
+        let (out, err) = run_cmd(
+            &s,
+            Some(test_context_json()),
+            &["remove", "project", &p.slug, "--forget", "--dry-run"],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("json preview");
+        assert_eq!(v["forget"], true);
+        assert_eq!(v["dry_run"], true);
+        assert_eq!(v["applied"], false);
+        assert!(v["deleted"].as_array().is_some_and(|d| !d.is_empty()));
+        assert_eq!(rows_of(&p.slug), 4);
+        let (out, err) = run_cmd(
+            &s,
+            None,
+            &["remove", "project", &p.slug, "--forget", "--dry-run"],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        assert!(
+            out.contains(&format!(
+                "pulse remove project {} --forget  (dry run - nothing changed)",
+                p.slug
+            )),
+            "{out}"
+        );
+
+        // Work in flight: refused.
+        let conn = s.conn().expect("conn");
+        conn.execute(
+            "UPDATE runs SET status = 'running' WHERE id = ?",
+            [format!("run-{}", p.slug)],
+        )
+        .expect("running run");
+        let err = forget_project(&s, &p.slug, "human", false).unwrap_err();
+        assert_eq!(code(Some(&err)), 2);
+        assert!(what_any(&err).contains("is running"), "{err}");
+        conn.execute(
+            "UPDATE runs SET status = 'done' WHERE id = ?",
+            [format!("run-{}", p.slug)],
+        )
+        .expect("run done");
+        let guards_before = count_rows(&s, "sqlite_master", "type = 'trigger'", &[]);
+        drop(conn);
+
+        // Applied: every row of the project goes, the sibling keeps its rows.
+        let (out, err) = run_cmd(
+            &s,
+            None,
+            &["remove", "project", &p.slug, "--forget", "--yes"],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        assert!(out.contains("(applied)"), "{out}");
+        assert_eq!(rows_of(&p.slug), 0);
+        assert_eq!(rows_of(&keep.slug), 4);
+        assert!(s.project(&p.slug).expect("lookup").is_none());
+        assert_eq!(
+            count_rows(
+                &s,
+                "events",
+                "action = 'project.forgotten' AND subject = ?",
+                &[&p.slug]
+            ),
+            1
+        );
+        assert_eq!(
+            count_rows(
+                &s,
+                "events",
+                "subject = ? OR subject = ?",
+                &[&format!("job-{}", p.slug), &format!("post-{}", p.slug)]
+            ),
+            0
+        );
+        assert_eq!(
+            count_rows(&s, "sqlite_master", "type = 'trigger'", &[]),
+            guards_before,
+            "the delete guards are back"
+        );
+        let err = forget_project(&s, &p.slug, "human", true).unwrap_err();
+        assert_eq!(what_any(&err), format!("No project {}", py_repr(&p.slug)));
     }
 
     #[test]

@@ -1495,8 +1495,16 @@ permanently retired names are unchanged.
 
 `pulse remove project <slug>` and `pulse remove executor <name>` show a preview
 of what deactivates (nothing is deleted) and ask before applying; `--dry-run`
-only previews, `--yes` skips the prompt. `pulse remove duplicate-findings
-[--project SLUG] [--apply] [--yes] [--json]` is dry-run by default and reports
+only previews, `--yes` skips the prompt. `pulse remove project <slug> --forget`
+is the hard delete for a registration that is already inactive and whose
+checkout no longer exists: it previews the per-table row counts (posts, jobs,
+runs, briefs, records, events, harness rows, ...), asks the same way, deletes
+them all in one transaction with the project row, and writes a
+`project.forgotten` event; it refuses while the project is active, while the
+checkout is still on disk or lives on a volume that is not mounted, and while
+a run, harness session or leased job of it is in flight. `pulse remove
+duplicate-findings [--project SLUG] [--apply] [--yes] [--json]` is dry-run by
+default and reports
 per-project duplicate groups and rows; with `--apply` it deletes only exact
 duplicate system findings (`daemon` or project lead, same
 project/area/thread/summary/agent, earliest kept), drops and recreates the post

@@ -41,7 +41,7 @@ pub fn register_commands() {
         cli_register(Command { name:"init".into(), group:"human".into(), summary:"register a checkout as a project, queue its onboarding job, import its environment recipe".into(), usage:"pulse init [PATH] [--name N] [--remote URL] [--verify CMD] [--brain]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_init, flags:Some(init_flags) });
         cli_register(Command { name:"export".into(), group:"records".into(), summary:"copy the store to a .sql or .sqlite file outside every project".into(), usage:"pulse export --sql PATH | --db PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_export, flags:Some(export_flags) });
         cli_register(Command { name:"import".into(), group:"records".into(), summary:"register the projects of a JSON registry (the pre-store ~/.pulse/projects.json)".into(), usage:"pulse import --registry PATH".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_import, flags:Some(import_flags) });
-        cli_register(Command { name:"remove".into(), group:"human".into(), summary:"deactivate a project, retire an executor, or remove duplicate system findings".into(), usage:"pulse remove project SLUG [--dry-run] [--yes] [--json]\n       pulse remove executor NAME [--dry-run] [--yes] [--json]   (the old spelling was: pulse executor remove NAME)\n       pulse remove duplicate-findings [--project SLUG] [--apply] [--yes] [--json]\n       pulse remove service                                     (the daemon's user service; today: pulse service uninstall)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_remove, flags:Some(remove_flags) });
+        cli_register(Command { name:"remove".into(), group:"human".into(), summary:"deactivate or forget a project, retire an executor, or remove duplicate system findings".into(), usage:"pulse remove project SLUG [--dry-run] [--yes] [--json]\n       pulse remove project SLUG --forget [--dry-run] [--yes] [--json]  (deletes an inactive project whose checkout is gone, with every row it left)\n       pulse remove executor NAME [--dry-run] [--yes] [--json]   (the old spelling was: pulse executor remove NAME)\n       pulse remove duplicate-findings [--project SLUG] [--apply] [--yes] [--json]\n       pulse remove service                                     (the daemon's user service; today: pulse service uninstall)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_remove, flags:Some(remove_flags) });
     });
 }
 
@@ -203,6 +203,11 @@ fn remove_flags(fs: &mut FlagSet) {
         "duplicate-findings: delete after preview/confirmation",
     );
     fs.string_var("project", "", "duplicate-findings: limit to one project");
+    fs.bool_var(
+        "forget",
+        false,
+        "project: delete an inactive project whose checkout is gone, with every row it left (posts, jobs, runs, records, events, ...)",
+    );
 }
 
 fn usage(name: &str, what: &str) -> anyhow::Error {
@@ -922,6 +927,10 @@ fn run_remove(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     }
     let mut dry = fs.get_bool("dry-run");
     let yes = fs.get_bool("yes");
+    let forget = fs.get_bool("forget");
+    if forget && args[0] != "project" {
+        return Err(usage("remove", "--forget goes with project SLUG only"));
+    }
     let actor_name = actor(c);
     let project_flag = fs.get_string("project");
     let run = |d: bool| -> Result<RemovePreview> {
@@ -930,7 +939,11 @@ fn run_remove(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 if args.len() != 2 {
                     return Err(usage("remove", "project needs one SLUG"));
                 }
-                remove_project(&s, &args[1], &actor_name, d)
+                if forget {
+                    forget_project(&s, &args[1], &actor_name, d)
+                } else {
+                    remove_project(&s, &args[1], &actor_name, d)
+                }
             }
             Some("executor") => {
                 if args.len() != 2 {
