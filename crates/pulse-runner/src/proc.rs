@@ -394,11 +394,13 @@ pub(crate) fn sort_strings(a: &mut [String]) {
 }
 /// Go: func environ() []string
 pub(crate) fn environ() -> Vec<String> {
-    crate::util::strip_hook_git_env(
+    let mut env = crate::util::strip_hook_git_env(
         &std::env::vars()
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>(),
-    )
+    );
+    crate::daemon_load::build_env(&mut env);
+    env
 }
 
 #[cfg(test)]

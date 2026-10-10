@@ -27,6 +27,11 @@ pub(crate) struct SelfUpdateState {
     /// under daemon.max_jobs holds a run. The dispatcher keeps one local
     /// slot free while this is set so the build starts within one run.
     pub(crate) build_wait: bool,
+    /// The brain HEAD last seen differing from the running binary and when
+    /// it was first seen there (store clock): a build starts only once it
+    /// has stood for `daemon.self_update_settle_minutes`.
+    pub(crate) settle_rev: String,
+    pub(crate) settle_since: String,
 }
 
 pub(crate) static SELF_UPDATE_STATE: LazyLock<RwLock<SelfUpdateState>> =
@@ -185,6 +190,30 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
         );
         return lines;
     }
+    // A release build is three to seven minutes of half the cores and ends
+    // in a restart; a fleet lands a burst of brain branches minutes apart.
+    // The build waits until HEAD has stood unchanged for a while, so the
+    // burst builds once, from its last commit. A new HEAD restarts the clock.
+    let settle = s.setting_int("daemon.self_update_settle_minutes").max(0);
+    if settle > 0 {
+        if st.settle_rev != rev {
+            st.settle_rev = rev.clone();
+            st.settle_since = now.clone();
+        }
+        let due = crate::util::plus_minutes(&st.settle_since, settle as f64);
+        if crate::util::must_iso(&now) < crate::util::must_iso(&due) {
+            say(
+                &mut st,
+                &mut lines,
+                format!(
+                    "brain HEAD {} differs from the running {}; building once it has stood for {settle} min (daemon.self_update_settle_minutes), so a burst of landings builds once",
+                    short_rev(rev.clone()),
+                    short_rev(env.revision.clone())
+                ),
+            );
+            return lines;
+        }
+    }
     if which::which(&env.cargo_cmd).is_err() {
         say(
             &mut st,
@@ -286,8 +315,14 @@ pub(crate) fn build_and_install(
     let new_binary = format!("{}.new", env.binary);
     let _ = std::fs::remove_file(&new_binary);
     let target_dir = std::path::Path::new(&repo).join("target");
-    // Half the cores: the build never takes the whole machine from the runs.
-    let jobs = crate::daemon_load::Machine::detect().build_jobs();
+    // daemon.build_jobs, half the cores by default: the build never takes
+    // the whole machine from the runs.
+    let jobs = env
+        .governor
+        .as_ref()
+        .map(|limits| limits.build_jobs)
+        .filter(|jobs| *jobs > 0)
+        .unwrap_or_else(|| crate::daemon_load::Machine::detect().build_jobs());
     let build_args = vec![
         "build".to_string(),
         "--release".to_string(),
@@ -911,6 +946,7 @@ mod tests {
             max_load: f64::MAX,
             min_free_mem_mb: 0,
             own_nice: 0,
+            build_jobs: 6,
             source: "test",
         });
         let lines = tend_binary(&s, TEST_NOW.into(), full.clone());
@@ -943,6 +979,72 @@ mod tests {
             "built once the machine had room: {lines:?}"
         );
         assert!(!update_pending(), "nothing pending after the install");
+    }
+
+    #[test]
+    fn self_update_waits_for_head_to_settle_so_a_burst_of_landings_builds_once() {
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        reset_self_update();
+        let (s, repo, env, _fixture) = self_update_fixture();
+        set_setting(&s, "daemon.self_update_settle_minutes", "15");
+        let first = head_of(&repo);
+        let at = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        let lines = tend_binary(&s, at(0.0), env.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains(&format!(
+                    "brain HEAD {} differs from the running 000000000000; building once it has stood for 15 min",
+                    &first[..12]
+                )),
+            "a new HEAD waits: {lines:?}"
+        );
+        assert!(
+            !update_pending(),
+            "settling reserves no slot and holds no lane"
+        );
+        let lines = tend_binary(&s, at(5.0), env.clone());
+        assert!(lines.is_empty(), "the wait is said once: {lines:?}");
+        // Another landing ten minutes in: the clock restarts for the new HEAD.
+        run(
+            &repo,
+            &[
+                "git",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "second landing",
+            ],
+        );
+        let second = head_of(&repo);
+        assert_ne!(second, first);
+        let lines = tend_binary(&s, at(10.0), env.clone());
+        assert!(
+            lines.len() == 1 && lines[0].contains(&second[..12]),
+            "the new HEAD is named: {lines:?}"
+        );
+        let lines = tend_binary(&s, at(20.0), env.clone());
+        assert!(
+            lines.is_empty(),
+            "fifteen minutes count from the second HEAD, not the first: {lines:?}"
+        );
+        let lines = tend_binary(&s, at(25.0), env.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0]
+                    == format!(
+                        "self-update: brain HEAD {} differs from the running 000000000000; building",
+                        &second[..12]
+                    ),
+            "settled: {lines:?}"
+        );
+        wait_self_update_idle();
+        let lines = tend_binary(&s, at(26.0), env);
+        assert!(
+            lines.len() == 1 && lines[0].contains(&format!("pulse rebuilt from {}", &second[..12])),
+            "one build for two landings: {lines:?}"
+        );
     }
 
     #[test]

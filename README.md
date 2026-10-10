@@ -129,13 +129,19 @@ the half hour - one such run held nine idle slots for forty minutes at each
 release. A run the window outlives is waited for, never cut. `0` stops
 dispatching at once and waits for the runs, as before. The build itself is a
 full release compile, so it keeps out of the runs' way: it runs at nice 10
-with `cargo -j` set to half the machine's cores, and it does not start while
-the load governor (below) says the machine is saturated or every local slot
-under `daemon.max_jobs` holds a run - the daemon then says `self-update: brain
-HEAD <rev> differs from the running <rev>; building once the machine has
-room: <why>` once, keeps one local slot free so the build starts within one
-run, and the experiment lane measures nothing new meanwhile, as when the build
-waits for the lane. A build that then exits three times early is put back to
+with `cargo -j` set to `daemon.build_jobs` (half the machine's cores by
+default), and it does not start while the load governor (below) says the
+machine is saturated or every local slot under `daemon.max_jobs` holds a run -
+the daemon then says `self-update: brain HEAD <rev> differs from the running
+<rev>; building once the machine has room: <why>` once, keeps one local slot
+free so the build starts within one run, and the experiment lane measures
+nothing new meanwhile, as when the build waits for the lane. Nor does it start
+until the brain's HEAD has stood unchanged for `daemon.self_update_settle_minutes`
+(default 15; 0 builds at once): a fleet lands a burst of brain branches minutes
+apart, and eight release builds a day, each followed by a restart drain, were
+the price of building on every landing - the daemon says `building once it has
+stood for 15 min` once, and a further landing restarts the clock, so the burst
+builds once, from its last commit. A build that then exits three times early is put back to
 the previous one by the launcher, which turns `daemon.self_update` off and
 leaves a finding. A revision already installed by hand is not built again:
 when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
@@ -1293,7 +1299,8 @@ So the daemon starts no more local runs at once than `daemon.max_jobs`
 daemon --max-jobs N` overrides both for one daemon; the startup line `load
 governor: up to N local run(s) at once (auto|daemon.max_jobs|--max-jobs; C
 cores, P CPUs, M MB), nothing new over load L or under F MB of memory free;
-children run at nice 10, the daemon itself at nice 5` names what is in force.
+children run at nice 10, builds at -jJ, the daemon itself at nice 5` names what
+is in force.
 Before leasing it also reads the one-minute load average and the memory a new run could use (free, inactive
 and speculative pages on macOS, `MemAvailable` on Linux) and leases nothing
 new while the load is over `daemon.max_load` (default: the number of CPUs) or
@@ -1305,7 +1312,16 @@ change rather than per tick, and slots held this way are not hands wanted.
 Remote hands carry their own load and are not capped by this machine's
 governor. Every run the daemon starts here - the worker, its `npm ci`, its
 test suite, the clone's removal - runs at nice 10, so the owner's own work and
-the daemon's loop stay responsive while the fleet works. The daemon itself
+the daemon's loop stay responsive while the fleet works. Nice keeps the machine
+responsive, not cool: four runs each compiling on all twelve cores still ran
+the laptop hot for most of a day, so the daemon also exports
+`CARGO_BUILD_JOBS=<daemon.build_jobs>` (default 0: half the physical cores) to
+everything it spawns - a worker's `cargo test`, the pre-commit verification
+that inherits the worker's environment, the landing verification, the
+self-update build's `-j` - whenever the environment does not set it already,
+so an owner's own export or a recipe's `env:` wins and a `-j` on a command
+line still overrides it. Other toolchains read their own variables
+(`GOMAXPROCS`, `MAKEFLAGS`); a recipe sets those where a project needs them. The daemon itself
 lowers its own priority to `daemon.nice` (default 5) as it starts, so its
 planning, sweeps and landing passes yield to the owner's foreground work while
 the loop still comes before the fleet's builds; 0 leaves the level the service

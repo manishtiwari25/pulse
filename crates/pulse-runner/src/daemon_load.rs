@@ -36,6 +36,15 @@ const MB_PER_JOB: i64 = 4096;
 /// `pulse work` and the other commands run as before.
 static CHILD_NICE_LEVEL: AtomicI32 = AtomicI32::new(0);
 
+/// The environment variable Cargo reads its `build.jobs` from; every build a
+/// child of the daemon runs (a worker's `cargo test`, the pre-commit
+/// verification, the landing verification) gets it from [`build_env`].
+pub(crate) const BUILD_JOBS_VAR: &str = "CARGO_BUILD_JOBS";
+
+/// The parallelism [`build_env`] exports; 0 until the daemon sets it, so
+/// `pulse work` and the other commands leave the environment alone.
+static BUILD_JOBS_LEVEL: AtomicI32 = AtomicI32::new(0);
+
 /// The machine every test runs on (four local runs by default).
 #[cfg(test)]
 pub(crate) const TEST_MACHINE: Machine = Machine {
@@ -98,8 +107,9 @@ impl Machine {
         by_cores.min(by_mem).clamp(1, DEFAULT_MAX_JOBS_CAP)
     }
 
-    /// Parallelism for a build the daemon runs for itself (`cargo -j`):
-    /// half the cores, so a self-update can never take the whole machine.
+    /// Parallelism for a build the daemon runs for itself (`cargo -j`) and
+    /// the default `daemon.build_jobs`: half the cores, so no single build
+    /// takes the whole machine from the owner or the other runs.
     pub(crate) fn build_jobs(&self) -> i32 {
         (self.cores / 2).max(1)
     }
@@ -130,6 +140,10 @@ pub(crate) struct Limits {
     /// Nice level the daemon's own process runs at from startup
     /// (`daemon.nice`); 0 leaves the level the service started it at.
     pub(crate) own_nice: i32,
+    /// Compile jobs one build may use (`daemon.build_jobs`, else half the
+    /// cores): the `CARGO_BUILD_JOBS` the children get and the `-j` of the
+    /// self-update build.
+    pub(crate) build_jobs: i32,
     /// Where `max_jobs` came from, for the startup line.
     pub(crate) source: &'static str,
 }
@@ -137,7 +151,7 @@ pub(crate) struct Limits {
 /// The limits from the settings, the flag and the machine: a positive
 /// `--max-jobs` wins, then a positive `daemon.max_jobs`, then the machine's
 /// default; `daemon.max_load` 0 is the number of CPUs; `daemon.min_free_mem_mb`
-/// 0 turns the memory floor off.
+/// 0 turns the memory floor off; `daemon.build_jobs` 0 is half the cores.
 pub(crate) fn limits(s: &pulse_store::Store, machine: &Machine, flag_max_jobs: i32) -> Limits {
     let setting_max_jobs = s.setting_int("daemon.max_jobs") as i32;
     let (max_jobs, source) = if flag_max_jobs > 0 {
@@ -151,11 +165,16 @@ pub(crate) fn limits(s: &pulse_store::Store, machine: &Machine, flag_max_jobs: i
         n if n > 0 => n as f64,
         _ => f64::from(machine.cpus.max(1)),
     };
+    let build_jobs = match s.setting_int("daemon.build_jobs") {
+        n if n > 0 => n.min(i64::from(i32::MAX)) as i32,
+        _ => machine.build_jobs(),
+    };
     Limits {
         max_jobs: max_jobs.max(1),
         max_load,
         min_free_mem_mb: s.setting_int("daemon.min_free_mem_mb").max(0),
         own_nice: own_nice_level(s.setting_int("daemon.nice")),
+        build_jobs,
         source,
     }
 }
@@ -259,13 +278,14 @@ pub(crate) fn describe(machine: &Machine, limits: &Limits) -> String {
         String::new()
     };
     format!(
-        "load governor: up to {} local run(s) at once ({}; {} cores, {} CPUs, {} MB), nothing new over load {:.0} or {floor}; children run at nice {CHILD_NICE}{own}",
+        "load governor: up to {} local run(s) at once ({}; {} cores, {} CPUs, {} MB), nothing new over load {:.0} or {floor}; children run at nice {CHILD_NICE}, builds at -j{}{own}",
         limits.max_jobs,
         limits.source,
         machine.cores,
         machine.cpus,
         machine.mem_mb,
-        limits.max_load
+        limits.max_load,
+        limits.build_jobs
     )
 }
 
@@ -299,6 +319,36 @@ pub(crate) fn set_child_nice(level: i32) {
 
 pub(crate) fn child_nice() -> i32 {
     CHILD_NICE_LEVEL.load(Ordering::SeqCst)
+}
+
+/// The daemon sets the compile parallelism its children's builds get;
+/// [`build_env`] exports it. Re-set each pass so a changed
+/// `daemon.build_jobs` applies without a restart; 0 exports nothing.
+pub(crate) fn set_build_jobs(jobs: i32) {
+    BUILD_JOBS_LEVEL.store(jobs.max(0), Ordering::SeqCst);
+}
+
+pub(crate) fn build_jobs() -> i32 {
+    BUILD_JOBS_LEVEL.load(Ordering::SeqCst)
+}
+
+/// Adds `CARGO_BUILD_JOBS=<daemon.build_jobs>` to a child's environment
+/// (`KEY=VALUE` lines) when the daemon set a level and the environment does
+/// not carry the variable already: an owner who exports it, or a recipe
+/// that sets it, wins. Before this every `cargo test` a worker ran and every
+/// landing verification compiled on all the cores at once, four runs deep,
+/// and the laptop ran hot for most of the day; Cargo reads this variable as
+/// `build.jobs`, and a `-j` on the command line still overrides it.
+pub(crate) fn build_env(env: &mut Vec<String>) {
+    let jobs = build_jobs();
+    if jobs <= 0 {
+        return;
+    }
+    let prefix = format!("{BUILD_JOBS_VAR}=");
+    if env.iter().any(|kv| kv.starts_with(&prefix)) {
+        return;
+    }
+    env.push(format!("{prefix}{jobs}"));
 }
 
 /// Lowers the calling process's scheduling priority to the level the daemon
@@ -590,6 +640,7 @@ mod tests {
             max_load,
             min_free_mem_mb,
             own_nice: 0,
+            build_jobs: 6,
             source: "test",
         }
     }
@@ -794,7 +845,7 @@ mod tests {
         assert!(
             line.contains("up to 4 local run(s) at once (test; 12 cores, 12 CPUs, 16384 MB)")
                 && line.contains("over load 12 or under 1024 MB of memory free")
-                && line.ends_with("children run at nice 10"),
+                && line.ends_with("children run at nice 10, builds at -j6"),
             "{line}"
         );
         let off = describe(&m, &limits(2, 12.0, 0));
@@ -807,7 +858,7 @@ mod tests {
             },
         );
         assert!(
-            own.ends_with("children run at nice 10, the daemon itself at nice 5"),
+            own.ends_with("children run at nice 10, builds at -j6, the daemon itself at nice 5"),
             "{own}"
         );
     }
@@ -832,17 +883,59 @@ mod tests {
         assert_eq!(l.max_load, 12.0, "daemon.max_load 0 is the CPU count");
         assert_eq!(l.min_free_mem_mb, 1024, "the documented default floor");
         assert_eq!(l.own_nice, 5, "the documented default daemon.nice");
+        assert_eq!(l.build_jobs, 6, "daemon.build_jobs 0 is half the cores");
         crate::test_helpers_f5::set_setting(&s, "daemon.max_jobs", "2");
         crate::test_helpers_f5::set_setting(&s, "daemon.max_load", "20");
         crate::test_helpers_f5::set_setting(&s, "daemon.min_free_mem_mb", "0");
         crate::test_helpers_f5::set_setting(&s, "daemon.nice", "0");
+        crate::test_helpers_f5::set_setting(&s, "daemon.build_jobs", "3");
         let l = limits_from(&s, &m, 0);
         assert_eq!((l.max_jobs, l.source), (2, "daemon.max_jobs"));
         assert_eq!(l.max_load, 20.0);
         assert_eq!(l.min_free_mem_mb, 0);
         assert_eq!(l.own_nice, 0, "daemon.nice 0 leaves the priority alone");
+        assert_eq!(l.build_jobs, 3);
         let l = limits_from(&s, &m, 3);
         assert_eq!((l.max_jobs, l.source), (3, "--max-jobs"));
+        assert!(
+            s.set_setting("human", "daemon.build_jobs", "-1").is_err(),
+            "the catalogue refuses a negative parallelism"
+        );
+    }
+
+    #[test]
+    fn build_env_exports_cargo_build_jobs_once_the_daemon_sets_it() {
+        let _serial = crate::test_helpers::serial();
+        set_build_jobs(0);
+        let mut env = vec!["PATH=/bin".to_string()];
+        build_env(&mut env);
+        assert_eq!(env, ["PATH=/bin"], "nothing is exported under pulse work");
+        set_build_jobs(6);
+        build_env(&mut env);
+        assert_eq!(env, ["PATH=/bin", "CARGO_BUILD_JOBS=6"]);
+        // The owner's own value, or a recipe's, is left alone.
+        let mut own = vec!["CARGO_BUILD_JOBS=2".to_string()];
+        build_env(&mut own);
+        assert_eq!(own, ["CARGO_BUILD_JOBS=2"]);
+        // A second call does not stack a second entry.
+        build_env(&mut env);
+        assert_eq!(env.len(), 2);
+        // The daemon's own environment for children carries it from here on
+        // (unless the test host exports its own, which wins).
+        if std::env::var_os(BUILD_JOBS_VAR).is_none() {
+            assert!(
+                crate::proc::environ().contains(&"CARGO_BUILD_JOBS=6".to_string()),
+                "proc::environ() folds the level in"
+            );
+            set_build_jobs(0);
+            assert!(
+                !crate::proc::environ()
+                    .iter()
+                    .any(|kv| kv.starts_with("CARGO_BUILD_JOBS=")),
+                "cleared again"
+            );
+        }
+        set_build_jobs(0);
     }
 
     fn limits_from(s: &crate::test_helpers::TestStore, m: &Machine, flag: i32) -> Limits {

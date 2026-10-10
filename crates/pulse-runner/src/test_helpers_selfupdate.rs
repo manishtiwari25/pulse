@@ -110,6 +110,8 @@ pub(crate) fn self_update_fixture() -> (
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     crate::test_helpers_f3b::set_setting(&s, "daemon.self_update", "on");
+    // The fixtures build as soon as HEAD differs; the settle time has its own test.
+    crate::test_helpers_f3b::set_setting(&s, "daemon.self_update_settle_minutes", "0");
     let path = format!(
         "{}{}{}",
         tools.display(),

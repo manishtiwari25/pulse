@@ -908,6 +908,7 @@ pub(crate) fn daemon(
     crate::daemon_load::set_child_nice(crate::daemon_load::CHILD_NICE);
     let limits = crate::daemon_load::limits(s, &machine, o.max_jobs);
     crate::daemon_load::renice_self(limits.own_nice);
+    crate::daemon_load::set_build_jobs(limits.build_jobs);
     say(&o, crate::daemon_load::describe(&machine, &limits));
     if lost > 0 {
         say(
@@ -1273,7 +1274,10 @@ pub(crate) fn daemon(
                         .values()
                         .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
                         .count() as i32;
-                    binary.governor = Some(crate::daemon_load::limits(s, &machine, o.max_jobs));
+                    let limits = crate::daemon_load::limits(s, &machine, o.max_jobs);
+                    // A changed daemon.build_jobs reaches the next child here.
+                    crate::daemon_load::set_build_jobs(limits.build_jobs);
+                    binary.governor = Some(limits);
                     let inflight_jobs = inflight
                         .values()
                         .map(|d| (d.job.str("id"), true))
