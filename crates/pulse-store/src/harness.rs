@@ -62,6 +62,23 @@ pub struct HarnessPrune {
     /// `harness.step` notification events of the same sessions.
     pub events: i64,
 }
+/// What `Store::prune_briefs` found (and, when asked, removed).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BriefPrune {
+    pub briefs: i64,
+    /// Characters of brief text, the bytes the rows give back.
+    pub bytes: i64,
+}
+
+/// A brief goes with `?1` as the cutoff when it was written before it, its run is
+/// over and finished before it, and its job is in an end state; a brief whose run
+/// or job row is gone has nothing left to hold it.
+const PRUNABLE_BRIEFS: &str = "FROM briefs b \
+     LEFT JOIN runs r ON r.id = b.run_id \
+     LEFT JOIN jobs j ON j.id = b.job_id \
+     WHERE b.at < ?1 \
+       AND (r.id IS NULL OR (r.status <> 'running' AND r.finished_at < ?1)) \
+       AND (j.id IS NULL OR j.status IN ('done', 'failed', 'cancelled'))";
 
 /// Rows one pruning statement deletes before it commits and lets other
 /// writers in; a transcript prune of a month-old store is a few hundred
@@ -340,6 +357,35 @@ impl Store {
             bytes,
             events,
         })
+    }
+    /// The worker briefs (`briefs` rows: the task text a run was given) written before
+    /// `before` whose run is over and finished before `before` and whose job is in an
+    /// end state (`done`, `failed`, `cancelled`); a brief whose run or job row is gone
+    /// has nothing holding it. Nothing reads a brief once its run is over except the
+    /// disk-room footprint of a project's last ten runs, which a month-old brief is
+    /// long out of. With `remove` the rows are deleted in batches of `PRUNE_BATCH`,
+    /// each its own transaction so a writer never waits long; the run and job rows
+    /// stay.
+    pub fn prune_briefs(&self, before: &str, remove: bool) -> Result<BriefPrune> {
+        if before.trim().is_empty() {
+            return Err(input_err("before cannot be empty"));
+        }
+        let conn = self.conn()?;
+        let (briefs, bytes) = conn.query_row(
+            &format!("SELECT COUNT(*), COALESCE(SUM(LENGTH(b.text)), 0) {PRUNABLE_BRIEFS}"),
+            [before],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )?;
+        if remove && briefs > 0 {
+            delete_in_batches(
+                &conn,
+                &format!(
+                    "DELETE FROM briefs WHERE rowid IN (SELECT b.rowid {PRUNABLE_BRIEFS} LIMIT ?2)"
+                ),
+                before,
+            )?;
+        }
+        Ok(BriefPrune { briefs, bytes })
     }
     /// The trajectory files (`harness_sessions.trajectory`) of sessions still running: the
     /// sweep never removes those, whatever their age on disk.
@@ -1094,6 +1140,115 @@ mod go_harness_tests {
         );
         let h = s.harness_session_head("hs-old").unwrap().unwrap();
         assert_eq!(h.status, "submitted", "the session row stays");
+    }
+
+    #[test]
+    fn prune_briefs_takes_the_briefs_of_finished_runs_in_batches() {
+        let _serial = crate::test_helpers::serial();
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: dir.path().display().to_string(),
+            create: true,
+            now: "2026-09-01T05:00:00Z".into(),
+            ..Options::default()
+        })
+        .unwrap();
+        let cutoff = "2026-08-01T00:00:00Z";
+        let old = "2026-07-01T00:00:00Z";
+        let fresh = "2026-08-15T00:00:00Z";
+        let mut conn = s.conn().unwrap();
+        let tx = conn.transaction().unwrap();
+        let job = |id: &str, status: &str| {
+            tx.execute(
+                "INSERT INTO jobs (id, project, kind, title, status, created_at) VALUES (?, 'proj', 'task', 't', ?, ?)",
+                params![id, status, old],
+            )
+            .unwrap();
+        };
+        job("job-done", "done");
+        job("job-leased", "leased");
+        job("job-queued", "queued");
+        job("job-cancelled", "cancelled");
+        let run = |id: &str, job: &str, status: &str, finished: &str| {
+            tx.execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status, finished_at) VALUES (?, ?, 'w', 'proj', ?, ?, ?)",
+                params![id, job, old, status, finished],
+            )
+            .unwrap();
+        };
+        let batch = PRUNE_BATCH as i64 + 3;
+        for n in 0..batch {
+            run(&format!("run-old-{n}"), "job-done", "done", old);
+        }
+        run("run-live", "job-leased", "running", "");
+        run("run-requeued", "job-queued", "failed", old);
+        run("run-fresh", "job-done", "done", fresh);
+        run("run-late", "job-done", "failed", fresh);
+        run("run-lost", "job-cancelled", "lost", "");
+        let brief = |run: &str, job: &str, at: &str| {
+            tx.execute(
+                "INSERT INTO briefs (run_id, job_id, agent, text, at) VALUES (?, ?, 'w', 'ten chars!', ?)",
+                params![run, job, at],
+            )
+            .unwrap();
+        };
+        for n in 0..batch {
+            brief(&format!("run-old-{n}"), "job-done", old);
+        }
+        // The run is still going: its brief is in use whatever its date says.
+        brief("run-live", "job-leased", old);
+        // The run failed long ago but the job waits for another run: kept.
+        brief("run-requeued", "job-queued", old);
+        // Written recently; and written long ago but the run ended after the cutoff.
+        brief("run-fresh", "job-done", fresh);
+        brief("run-late", "job-done", old);
+        // A lost run with no finished_at of a cancelled job: over, so it goes.
+        brief("run-lost", "job-cancelled", old);
+        // No run and no job row at all: nothing holds it.
+        brief("run-gone", "job-gone", old);
+        tx.commit().unwrap();
+        drop(conn);
+        let total =
+            |sql: &str| -> i64 { s.conn().unwrap().query_row(sql, [], |r| r.get(0)).unwrap() };
+        let want = batch + 2;
+
+        let dry = s.prune_briefs(cutoff, false).unwrap();
+        assert_eq!(
+            (dry.briefs, dry.bytes),
+            (want, want * "ten chars!".len() as i64),
+            "dry run counts: {dry:?}"
+        );
+        assert_eq!(
+            total("SELECT COUNT(*) FROM briefs"),
+            batch + 6,
+            "dry run removed nothing"
+        );
+
+        let got = s.prune_briefs(cutoff, true).unwrap();
+        assert_eq!(got, dry);
+        let left: Vec<String> = s
+            .conn()
+            .unwrap()
+            .prepare("SELECT run_id FROM briefs ORDER BY run_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            left,
+            ["run-fresh", "run-late", "run-live", "run-requeued"]
+                .map(String::from)
+                .to_vec()
+        );
+        assert_eq!(
+            total("SELECT COUNT(*) FROM runs"),
+            batch + 5,
+            "the run rows stay"
+        );
+        assert_eq!(s.prune_briefs(cutoff, true).unwrap(), BriefPrune::default());
+        assert!(s.prune_briefs(" ", false).is_err());
     }
 
     #[test]

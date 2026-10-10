@@ -1627,7 +1627,9 @@ refs of landing steps that are over, dead folders under `~/.pulse/worktrees`,
 measurement clone roots (`~/.pulse/fleet/measure-*`) whose measuring process
 is gone once they have sat for the grace period (a measurement removes its
 own root when it ends; one left behind came from a kill),
-saved patches older than `daemon.sweep_keep_days` (default 30), run logs
+saved patches older than `daemon.sweep_keep_days` (default 30), the worker
+briefs of runs that finished more than `daemon.sweep_keep_days` ago (see
+the retention paragraph below), run logs
 older than `daemon.log_keep_days` (default 14), the step transcripts of
 harness sessions that ended more than `daemon.transcript_keep_days` ago
 (default 14; a session keeps its counts, tokens, cost and submission - see
@@ -1677,7 +1679,15 @@ and its `~/.pulse/harness/<session>.json` file (a copy of the rows the hub
 offers for download; a pruned one answers not found) - goes
 `daemon.transcript_keep_days` (default 14; 0 keeps them) after the session
 ended, deleted in batches of 5,000 rows so no writer waits; the session row
-stays for good. Run logs and `daemon-stall-*`/`daemon-signal-*` logs go after
+stays for good. A run's worker brief (its `briefs` row: the task text the run
+was given, 14 KB on average, read while the run sets up and afterwards only
+as the "setup finished" mark of the disk-room footprint of a project's last
+ten runs) goes `daemon.sweep_keep_days` (default 30) after the run finished,
+once its job is in an end state (`done`, `failed`, `cancelled`), in the same
+5,000-row batches; the run and job rows stay, a running run's brief and the
+briefs of a job still waiting for another run are never taken, and the sweep
+reports them as `swept brief 712 worker briefs (run finished more than 30d
+ago, 9.8 MB)`. Run logs and `daemon-stall-*`/`daemon-signal-*` logs go after
 `daemon.log_keep_days` (default 14); `daemon.log` and `hub.log`, which the
 launcher opens in append mode, are copied to `<name>.1` and truncated in place
 once over `daemon.log_max_mb` (default 32; 0 never). Under `~/.pulse/bin` only

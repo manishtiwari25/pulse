@@ -41,6 +41,7 @@ pub(crate) static SWEEP_KINDS: &[&str] = &[
     "log",
     "transcript",
     "trajectory",
+    "brief",
     "patch",
     "binary",
     "cache",
@@ -206,6 +207,7 @@ pub(crate) fn sweep(
     }
     w.sweep_harness_steps();
     w.sweep_trajectories();
+    w.sweep_briefs();
     w.sweep_files(
         Path::new(&w.home).join("logs").display().to_string(),
         "log".into(),
@@ -1240,6 +1242,44 @@ impl Sweeper {
                 why.clone(),
             );
         }
+    }
+
+    /// The worker briefs (`briefs` rows) of runs over for more than
+    /// `daemon.sweep_keep_days` whose job is in an end state: a brief is the
+    /// task text a run was given, read while the run sets up and by nothing
+    /// afterwards but the disk-room footprint of a project's last ten runs,
+    /// so it keeps as long as a saved patch; the run and job rows stay.
+    pub(crate) fn sweep_briefs(&mut self) {
+        if self.keep.is_zero() {
+            return;
+        }
+        let keep_days = self.keep.as_secs() / 86_400;
+        let before = crate::util::plus_minutes(&self.now, -((keep_days * 24 * 60) as f64));
+        let found = match self.s.prune_briefs(&before, !self.o.dry_run) {
+            Ok(found) => found,
+            Err(err) => {
+                self.failed(
+                    "worker briefs: {}".into(),
+                    vec![serde_json::Value::String(crate::run::err_message(&err))],
+                );
+                return;
+            }
+        };
+        if found.briefs == 0 {
+            return;
+        }
+        self.rep.removed.push(Swept {
+            kind: "brief".into(),
+            path: format!(
+                "{} {}",
+                found.briefs,
+                crate::util::plural(found.briefs as i32, "worker brief")
+            ),
+            project: String::new(),
+            why: format!("run finished more than {keep_days}d ago"),
+            bytes: found.bytes,
+            patch: String::new(),
+        });
     }
 
     /// Copies daemon.log and hub.log aside and truncates them in place once
@@ -3593,6 +3633,127 @@ mod tests {
         );
         let again = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
         assert!(swept_paths(&again.removed, "transcript").is_empty());
+    }
+
+    #[test]
+    fn sweep_worker_briefs() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        set_setting(&s, "daemon.sweep_keep_days", "30");
+        let old = crate::util::plus_minutes(TEST_NOW, -(31.0 * 24.0 * 60.0));
+        let fresh = crate::util::plus_minutes(TEST_NOW, -(29.0 * 24.0 * 60.0));
+        let done_old = sweep_job(&s, "done", "");
+        let done_fresh = sweep_job(&s, "done", "");
+        let leased = sweep_job(&s, "leased", "");
+        let requeued = sweep_job(&s, "queued", "");
+        let runs = [
+            (
+                sweep_run(&s, &done_old, "done"),
+                &done_old,
+                old.as_str(),
+                old.as_str(),
+            ),
+            (
+                sweep_run(&s, &done_fresh, "done"),
+                &done_fresh,
+                fresh.as_str(),
+                fresh.as_str(),
+            ),
+            (sweep_run(&s, &leased, "running"), &leased, "", old.as_str()),
+            (
+                sweep_run(&s, &requeued, "failed"),
+                &requeued,
+                old.as_str(),
+                old.as_str(),
+            ),
+        ];
+        {
+            let conn = s.conn().unwrap();
+            for (run, job, finished, at) in &runs {
+                conn.execute(
+                    "UPDATE runs SET finished_at = ? WHERE id = ?",
+                    params![finished, run],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO briefs (run_id, job_id, agent, text, at) VALUES (?, ?, 'w', 'ten chars!', ?)",
+                    params![run, job, at],
+                )
+                .unwrap();
+            }
+        }
+        let briefs = || {
+            let conn = s.conn().unwrap();
+            crate::util::must_rows(&conn, "SELECT run_id FROM briefs ORDER BY run_id", &[])
+                .into_iter()
+                .map(|r| r.str("run_id"))
+                .collect::<Vec<_>>()
+        };
+        let mut all: Vec<String> = runs.iter().map(|(run, ..)| run.clone()).collect();
+        all.sort();
+        let dry = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(briefs(), all, "dry run removes nothing");
+        assert_eq!(
+            swept_paths(&dry.removed, "brief"),
+            vec!["1 worker brief".to_string()]
+        );
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        let mut kept: Vec<String> = runs[1..].iter().map(|(run, ..)| run.clone()).collect();
+        kept.sort();
+        assert_eq!(
+            briefs(),
+            kept,
+            "a recent brief, a running run's and an unfinished job's stay"
+        );
+        assert_eq!(
+            count(&s, "SELECT COUNT(*) AS n FROM runs", &[]),
+            4,
+            "the run rows stay"
+        );
+        let item = rep.removed.iter().find(|x| x.kind == "brief").unwrap();
+        assert_eq!(item.why, "run finished more than 30d ago");
+        assert_eq!(item.bytes, "ten chars!".len() as i64);
+        let lines = sweep_lines(Some(rep.clone()));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "swept brief 1 worker brief (run finished more than 30d ago, 10 B)"),
+            "{lines:?}"
+        );
+        record_sweep(&s, Some(rep), TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT json_extract(value, '$.removed.brief') AS n FROM meta WHERE key = 'hygiene'",
+                &[]
+            ),
+            1,
+            "the hygiene note counts the brief"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM meta, json_each(meta.value, '$.items.removed') \
+                 WHERE meta.key = 'hygiene' AND json_extract(json_each.value, '$.kind') = 'brief' \
+                 AND json_extract(json_each.value, '$.path') = '1 worker brief'",
+                &[]
+            ),
+            1,
+            "the hygiene note lists the brief item"
+        );
+        let again = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(swept_paths(&again.removed, "brief").is_empty());
     }
 
     #[test]
