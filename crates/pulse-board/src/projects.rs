@@ -214,8 +214,11 @@ pub fn register_project(
     let now = s.now();
     let brain_int = i64::from(brain);
     let (slug, created) = if let Some(existing) = existing {
-        conn.execute("UPDATE projects SET remote = COALESCE(NULLIF(?, ''), remote), brain = CASE WHEN ? THEN 1 ELSE brain END, verify_cmd = COALESCE(NULLIF(?, ''), verify_cmd), default_branch = COALESCE(NULLIF(?, ''), default_branch), status = 'active', last_seen = ? WHERE slug = ?",
-            rusqlite::params![remote, brain_int, verify_cmd, default_branch, now, existing.slug])?;
+        // A registered checkout is refreshed, not duplicated: every flag given
+        // replaces the stored value and an omitted one keeps it, the name
+        // included (`pulse init PATH --name N` renames; the slug stays).
+        conn.execute("UPDATE projects SET name = COALESCE(NULLIF(?, ''), name), remote = COALESCE(NULLIF(?, ''), remote), brain = CASE WHEN ? THEN 1 ELSE brain END, verify_cmd = COALESCE(NULLIF(?, ''), verify_cmd), default_branch = COALESCE(NULLIF(?, ''), default_branch), status = 'active', last_seen = ? WHERE slug = ?",
+            rusqlite::params![name, remote, brain_int, verify_cmd, default_branch, now, existing.slug])?;
         (existing.slug, false)
     } else {
         let mut base_name = slug.to_string();
@@ -581,6 +584,26 @@ mod tests {
             assert!(created);
             set_on_project_created(previous);
         }
+    }
+
+    #[test]
+    fn register_project_again_with_a_name_renames_it_and_keeps_its_slug() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, _home, s) = new_home();
+        let repo = git_repo();
+        let path = repo.path().display().to_string();
+        let (p, created) = register_project(&s, &path, "demo", "", false, "", "alice", "").unwrap();
+        assert!(created);
+        assert_eq!((p.slug.as_str(), p.name.as_str()), ("demo", "demo"));
+
+        let (p, created) =
+            register_project(&s, &path, "Demo App", "", false, "", "alice", "").unwrap();
+        assert!(!created);
+        assert_eq!(p.slug, "demo", "a rename never moves the slug");
+        assert_eq!(p.name, "Demo App");
+
+        let (p, _) = register_project(&s, &path, "", "", false, "", "alice", "").unwrap();
+        assert_eq!(p.name, "Demo App", "no --name keeps the stored name");
     }
 
     #[test]

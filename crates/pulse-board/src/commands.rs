@@ -841,10 +841,11 @@ fn run_init(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         }
         path = a.clone();
     }
+    let name = fs.get_string("name");
     let r = init(
         store(c)?,
         &path,
-        &fs.get_string("name"),
+        &name,
         &fs.get_string("remote"),
         fs.get_bool("brain"),
         &fs.get_string("verify"),
@@ -854,13 +855,19 @@ fn run_init(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         write_json(&mut c.out, &r)?
     } else {
         let brain = if r.project.brain { " (brain)" } else { "" };
+        let named = if !r.created && !name.is_empty() {
+            format!(", named {}", py_repr(&r.project.name))
+        } else {
+            String::new()
+        };
         writeln!(
             c.out,
-            "{} project {} at {}{}",
+            "{} project {} at {}{}{}",
             if r.created { "registered" } else { "refreshed" },
             r.project.slug,
             r.project.path,
-            brain
+            brain,
+            named
         )?;
         let q = if r.job_queued {
             "queued".to_string()

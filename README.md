@@ -188,7 +188,10 @@ controls and raw activity fold under **Show details**.
   picker. A checkout the runner made itself - a worker clone under
   `PULSE_HOME/work`, a fleet clone or measurement root under `PULSE_HOME/fleet`,
   a landing worktree under `PULSE_HOME/worktrees` - is refused: those come and
-  go with jobs, and a project is the checkout they are cloned from. The brain is never removable from the console. Each project card
+  go with jobs, and a project is the checkout they are cloned from. Adding a
+  path that is already a project refreshes it instead of duplicating it: a
+  name given with it (`pulse init PATH --name N` from a terminal) renames the
+  project, while its slug - what posts, jobs and records point at - stays. The brain is never removable from the console. Each project card
   shows its self-improvement state - constitution revision (and whether it is
   still the seeded text), enabled fixtures, baseline (measured by the daemon,
   "measuring" while its job runs), the level the loop may reach - and the
