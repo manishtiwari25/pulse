@@ -893,7 +893,7 @@ mod tests {
         let niced = child_nice_of(nice_child(&mut nice_probe()));
         set_child_nice(0);
         assert!(
-            niced >= CHILD_NICE && niced > own || own >= 19,
+            niced >= CHILD_NICE && (niced > own || own >= CHILD_NICE),
             "child nice {niced} with the level set, parent {own}"
         );
     }
