@@ -276,12 +276,29 @@ pub(crate) fn measure(
                 return Err(err);
             }
             if let Some(score) = result.score {
+                if !crate::fixtures::score_value(result.value)
+                    || !crate::fixtures::finite(result.normalized_weight)
+                    || result.normalized_weight <= 0.0
+                {
+                    return Err(anyhow!(
+                        "fixture {} produced an invalid score {} (weight {}); a measurement never counts as a win on a NaN or out-of-range score",
+                        score.name,
+                        result.value,
+                        result.normalized_weight
+                    ));
+                }
                 total += result.value * result.normalized_weight;
                 weights += result.normalized_weight;
                 scores.fixtures.push(score);
             }
         }
         scores.total = total / weights;
+        if !crate::fixtures::score_value(scores.total) {
+            return Err(anyhow!(
+                "measurement total {} is not a finite score in [0,1]",
+                scores.total
+            ));
+        }
         Ok(())
     })();
     let cleanup = crate::clones::remove_managed(&cleanup_store, &cleanup_id);
@@ -923,11 +940,13 @@ rm -f "$running/$(basename "$PWD")"
     fn measure_failure_and_cancellation_cleanup() {
         let _serial = crate::test_helpers::serial();
         let _guard = e3_test_lock();
-        for mode in ["harness failure", "bad scorer", "cancel"] {
+        for mode in ["harness failure", "bad scorer", "nan scorer", "cancel"] {
             let s = test_store();
             let repo = test_project(&s, "demo");
             let scorer = if mode == "bad scorer" {
                 "printf 'invalid score\\n'"
+            } else if mode == "nan scorer" {
+                "printf 'score: NaN\\n'"
             } else {
                 "printf 0.5"
             };
