@@ -19,6 +19,10 @@ use std::time::Duration;
 pub(crate) const LAND_LOCK_MINUTES: i32 = 30;
 pub(crate) const LAND_REQUEUE_LIMIT: i32 = 2;
 const LAND_RETRY_META_PREFIX: &str = "landing-retry:";
+/// Meta key prefix of a branch `hold_recipe_branch` left for a human.
+const LAND_HELD_META_PREFIX: &str = "landing-held:";
+/// How long the daemon leaves a held branch alone before it looks again.
+pub(crate) const HELD_RECHECK_MINUTES: i64 = 30;
 pub(crate) const RESULT_FILE: &str = "PULSE_RESULT.md";
 pub(crate) static LANDED_BRANCH_PREFIXES: &[&str] = &["pulse/", "evolve/"];
 pub(crate) static LAND_REFUSED_PATHS: &[&str] = &[
@@ -430,6 +434,7 @@ pub(crate) fn hold_recipe_branch(
             );
         }
     }
+    set_held_branch(s, &slug, &branch, &now);
     (
         "held".to_string(),
         format!(
@@ -1626,6 +1631,9 @@ pub(crate) fn land_pending_pass(
         if limit > 0 && out.len() >= limit as usize {
             break;
         }
+        if !force && held_branch_waits(s, &project.str("slug"), &job.str("branch"), &now) {
+            continue;
+        }
         let lr = land_job_context(ctx, s, &project, &job, &actor, &now, verify);
         let held = crate::landing_hold::landing_held(lr.state.clone());
         out.push(lr);
@@ -1678,6 +1686,9 @@ pub(crate) fn land_job_context(
     };
     if state == "landed" {
         clear_landing_retry(s, &project.str("slug"));
+    }
+    if state != "held" {
+        clear_held_branch(s, &project.str("slug"), &job.str("branch"));
     }
     if state == "missing"
         && let Ok(conn) = s.conn()
@@ -1949,6 +1960,55 @@ pub(crate) fn clear_landing_retry(s: &pulse_store::Store, slug: &str) {
         let _ = conn.execute(
             "DELETE FROM meta WHERE key = ?",
             [format!("{LAND_RETRY_META_PREFIX}{slug}")],
+        );
+    }
+}
+
+fn held_branch_key(slug: &str, branch: &str) -> String {
+    format!("{LAND_HELD_META_PREFIX}{slug}:{branch}")
+}
+
+/// Whether the daemon held `branch` for a human within the last
+/// `HELD_RECHECK_MINUTES`. Its passes skip such a branch until then: each look
+/// was the same half-dozen git commands and the same log line, fifteen seconds
+/// apart, for as long as the human took. `pulse land` by hand never asks.
+pub(crate) fn held_branch_waits(
+    s: &pulse_store::Store,
+    slug: &str,
+    branch: &str,
+    now: &str,
+) -> bool {
+    let (raw, found) = s.meta(&held_branch_key(slug, branch)).unwrap_or_default();
+    if !found || raw.is_empty() {
+        return false;
+    }
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("until").and_then(Value::as_str).map(|u| u > now))
+        .unwrap_or(false)
+}
+
+pub(crate) fn set_held_branch(s: &pulse_store::Store, slug: &str, branch: &str, now: &str) {
+    if let Ok(conn) = s.conn() {
+        let _ = conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![
+                held_branch_key(slug, branch),
+                serde_json::json!({
+                    "until": crate::util::plus_minutes(now, HELD_RECHECK_MINUTES as f64),
+                    "held_at": now,
+                })
+                .to_string()
+            ],
+        );
+    }
+}
+
+pub(crate) fn clear_held_branch(s: &pulse_store::Store, slug: &str, branch: &str) {
+    if let Ok(conn) = s.conn() {
+        let _ = conn.execute(
+            "DELETE FROM meta WHERE key = ?",
+            [held_branch_key(slug, branch)],
         );
     }
 }
@@ -2281,6 +2341,101 @@ mod tests {
                 assert_eq!(job_row(&s, &job.str("id")).str("branch"), branch);
             }
         }
+    }
+
+    #[test]
+    fn held_recipe_branch_waits_quietly_until_the_recheck() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (project, root) = crate::test_helpers::new_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+        let branch = "pulse/aurora/recipe-alone";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        let recipe = std::path::Path::new(&root).join(crate::recipe::RECIPE_PATH);
+        std::fs::create_dir_all(recipe.parent().unwrap()).unwrap();
+        std::fs::write(
+            &recipe,
+            crate::test_helpers::recipe_with(Some(&["git"]), None, None, None, ""),
+        )
+        .unwrap();
+        run(&root, &["git", "add", crate::recipe::RECIPE_PATH]);
+        run(&root, &["git", "commit", "-q", "-m", "recipe alone"]);
+        run(&root, &["git", "switch", "-q", "main"]);
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "recipe".into(),
+            "b".into(),
+            1,
+            30,
+            String::new(),
+            "aurora".into(),
+            true,
+        )
+        .unwrap();
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &job.str("id")],
+        );
+        let slug = project.str("slug");
+
+        // The first pass holds the branch and says so once.
+        let first = super::land_pending(&s, project.clone(), "daemon", TEST_NOW, false, 0, false);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(first[0].state, "held", "{}", first[0].note);
+        assert!(super::held_branch_waits(&s, &slug, branch, TEST_NOW));
+        assert_eq!(
+            crate::landing_workers::ready_landings(&s, &slug, TEST_NOW),
+            0,
+            "a held branch starts no landing worker"
+        );
+        // The branch is still pending for everyone who asks, and `pulse land`
+        // by hand still looks at it.
+        assert_eq!(super::pending_landings(&s.conn().unwrap(), &slug).len(), 1);
+        let by_hand = super::land_pending(&s, project.clone(), "daemon", TEST_NOW, false, 0, true);
+        assert_eq!(by_hand.len(), 1, "{by_hand:?}");
+        assert_eq!(by_hand[0].state, "held");
+
+        // The daemon's next passes skip it until the recheck comes round.
+        let soon = crate::util::plus_minutes(TEST_NOW, 15);
+        let quiet = super::land_pending(&s, project.clone(), "daemon", &soon, false, 0, false);
+        assert!(quiet.is_empty(), "{quiet:?}");
+        let later = crate::util::plus_minutes(TEST_NOW, super::HELD_RECHECK_MINUTES as f64 + 1.0);
+        assert!(!super::held_branch_waits(&s, &slug, branch, &later));
+        assert_eq!(crate::landing_workers::ready_landings(&s, &slug, &later), 1);
+        let again = super::land_pending(&s, project.clone(), "daemon", &later, false, 0, false);
+        assert_eq!(again.len(), 1, "{again:?}");
+        assert_eq!(again[0].state, "held");
+        assert!(super::held_branch_waits(&s, &slug, branch, &later));
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question' AND area = 'runner' AND thread = 'environment'",
+                &[],
+            ),
+            1,
+            "one owner question for the branch, however often it is held"
+        );
+
+        // Once the branch is gone the pass forgets the hold with the job's branch.
+        run(&root, &["git", "branch", "-D", branch]);
+        let gone = crate::util::plus_minutes(&later, super::HELD_RECHECK_MINUTES as f64 + 1.0);
+        let missing = super::land_pending(&s, project, "daemon", &gone, false, 0, false);
+        assert_eq!(missing.len(), 1, "{missing:?}");
+        assert_eq!(missing[0].state, "missing");
+        assert!(!super::held_branch_waits(&s, &slug, branch, TEST_NOW));
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM meta WHERE key LIKE 'landing-held:%'",
+                &[]
+            ),
+            0
+        );
     }
 
     #[test]

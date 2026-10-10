@@ -1326,7 +1326,12 @@ a `land.base-red` event records the tail, and `pulse land --project X`
 retries at once after you fixed it. The hold
 shows in `pulse status` and the hub as `landing` (how many branches wait and
 why), and the daemon logs it and writes `land.held` once per change,
-`land.resumed` when the branches land again.
+`land.resumed` when the branches land again. A branch that changes
+`docs/context/environment.md` alone is yours to land (ADR-026): the daemon
+holds it, asks once on the project's `runner/environment` thread, and then
+leaves it be for thirty minutes at a time instead of re-reading it every
+tick - `pulse land --project X --branch B` lands it whenever you are ready,
+and `pulse land --project X` by hand always shows what waits.
 The same verification command runs three times per change - in the worker
 clone's pre-commit hook at every commit, once more when the run ends, and in
 the landing worktree - and on one machine those runs overlap across clones.

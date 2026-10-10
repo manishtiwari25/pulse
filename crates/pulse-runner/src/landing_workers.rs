@@ -154,6 +154,7 @@ pub(crate) fn ready_landings(s: &pulse_store::Store, slug: &str, now: &str) -> u
     crate::land::pending_landings(&conn, slug)
         .into_iter()
         .filter(|job| job.str("kind") != "experiment")
+        .filter(|job| !crate::land::held_branch_waits(s, slug, &job.str("branch"), now))
         .count()
 }
 
