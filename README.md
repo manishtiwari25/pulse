@@ -1372,7 +1372,7 @@ touch the workspace sources before building; the dependency cache stays).
 Taking turns also sets how many work jobs a project can usefully run at once:
 with `parallel_per_project` 4 and a check that takes eight minutes, a clone's
 commit may wait for three other checks before its own and the harness kills
-the command at `harness.step_timeout` (15 min by default) - the run retries,
+the command at `harness.step_timeout` (5 min by default) - the run retries,
 and the lanes burn their budget waiting on each other. So the daemon measures
 the check's own run time at every landing (`verify_seconds` on the
 `land.landed` event, the lock's wait excluded) and leases `improve` and `task`
