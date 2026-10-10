@@ -151,6 +151,89 @@ pub fn resolve_thread(s: &pulse_store::Store, input: ResolveInput) -> Result<Pos
     )
 }
 
+/// A thread whose newest post is a claim that has already expired, with no
+/// live claim, no open question or handoff and no resolution: `pulse claim
+/// sweep` closes these so reflect's STALE section stops listing them.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ExpiredClaimThread {
+    pub key: String,
+    pub agent: String,
+    pub expires: String,
+    pub summary: String,
+}
+
+/// The open threads of `project` whose last post is an expired claim.
+pub fn expired_claim_threads(
+    s: &pulse_store::Store,
+    project: &str,
+    now: &str,
+) -> Result<Vec<ExpiredClaimThread>> {
+    let now = if now.is_empty() {
+        s.now()
+    } else {
+        now.to_string()
+    };
+    let posts = thread_posts(s, project, "")?;
+    let mut last: std::collections::BTreeMap<String, Post> = std::collections::BTreeMap::new();
+    for p in &posts {
+        last.insert(format!("{}/{}", p.area, p.thread), p.clone());
+    }
+    let sums = summarize_threads(s, posts, &now)?;
+    let mut out = Vec::new();
+    for sum in sums {
+        if sum.status == "closed"
+            || sum.open_questions > 0
+            || sum.open_handoffs > 0
+            || !sum.active_claims.is_empty()
+        {
+            continue;
+        }
+        let Some(p) = last.get(&sum.key) else {
+            continue;
+        };
+        if p.kind != "claim" || p.expires.is_empty() || p.expires > now {
+            continue;
+        }
+        out.push(ExpiredClaimThread {
+            key: sum.key.clone(),
+            agent: p.agent.clone(),
+            expires: p.expires.clone(),
+            summary: p.summary.clone(),
+        });
+    }
+    Ok(out)
+}
+
+/// Close every thread `expired_claim_threads` lists with a `dropped` result
+/// posted by `agent`; returns the threads closed.
+pub fn sweep_expired_claims(
+    s: &pulse_store::Store,
+    project: &str,
+    agent: &str,
+    session: &str,
+    now: &str,
+) -> Result<Vec<ExpiredClaimThread>> {
+    let rows = expired_claim_threads(s, project, now)?;
+    for row in &rows {
+        resolve_thread(
+            s,
+            ResolveInput {
+                project: project.to_string(),
+                key: row.key.clone(),
+                resolution: "dropped".into(),
+                summary: format!(
+                    "claim sweep: {}'s claim expired {} with no further posts",
+                    row.agent, row.expires
+                ),
+                agent: agent.to_string(),
+                session: session.to_string(),
+                ..Default::default()
+            },
+        )?;
+    }
+    Ok(rows)
+}
+
 fn thread_posts(s: &pulse_store::Store, project: &str, key: &str) -> Result<Vec<Post>> {
     let conn = s.conn()?;
     let mut q = format!("SELECT {POST_COLS} FROM posts WHERE project = ?");
@@ -621,6 +704,82 @@ mod tests {
         let err = thread_detail(&s, "demo", "api/missing", TEST_NOW).unwrap_err();
         assert_eq!(code(Some(&err)), 2);
         assert!(what_any(&err).contains("pulse thread list --project demo"));
+    }
+
+    #[test]
+    fn claim_sweep_closes_only_expired_claim_threads() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let now = crate::test_helpers::TEST_NOW;
+        let post = |thread: &str, kind: &str, expires: &str, date: &str| {
+            make_thread_post(
+                &s,
+                PostInput {
+                    kind: kind.into(),
+                    project: "demo".into(),
+                    area: "a".into(),
+                    thread: thread.into(),
+                    summary: format!("{thread} {kind}"),
+                    agent: "alice".into(),
+                    expires: expires.into(),
+                    date: date.into(),
+                    ..Default::default()
+                },
+            )
+        };
+        post(
+            "expired",
+            "claim",
+            "2026-09-06T09:00:00Z",
+            "2026-09-06T08:00:00Z",
+        );
+        post(
+            "live",
+            "claim",
+            "2026-09-06T12:00:00Z",
+            "2026-09-06T08:00:00Z",
+        );
+        post(
+            "followed",
+            "claim",
+            "2026-09-06T09:00:00Z",
+            "2026-09-06T08:00:00Z",
+        );
+        post("followed", "finding", "", "2026-09-06T08:30:00Z");
+        post(
+            "asked",
+            "claim",
+            "2026-09-06T09:00:00Z",
+            "2026-09-06T08:00:00Z",
+        );
+        post("asked", "question", "", "2026-09-06T08:30:00Z");
+        post(
+            "asked",
+            "claim",
+            "2026-09-06T09:00:00Z",
+            "2026-09-06T08:40:00Z",
+        );
+
+        let dry = expired_claim_threads(&s, "demo", now).unwrap();
+        assert_eq!(
+            dry.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(),
+            vec!["a/expired"]
+        );
+        assert_eq!(dry[0].expires, "2026-09-06T09:00:00Z");
+
+        let closed = sweep_expired_claims(&s, "demo", "alice", "", now).unwrap();
+        assert_eq!(closed.len(), 1);
+        let rows = thread_summaries(&s, "demo", now).unwrap();
+        assert_eq!(by_thread(&rows, "a/expired").status, "closed");
+        assert_eq!(by_thread(&rows, "a/live").status, "open");
+        assert_eq!(by_thread(&rows, "a/followed").status, "open");
+        assert_eq!(by_thread(&rows, "a/asked").status, "open");
+        // A second sweep finds nothing left to close.
+        assert!(
+            sweep_expired_claims(&s, "demo", "alice", "", now)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

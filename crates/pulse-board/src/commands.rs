@@ -33,7 +33,7 @@ pub fn register_commands() {
     REGISTER.call_once(|| {
         cli_register(Command { name:"agent".into(), group:"agents".into(), summary:"join with a unique name, spawn a worker, list, beat, or prune".into(), usage:"pulse agent join --name NAME [--runner R] [--model M] [--session S] [--display D] [--kind session|worker]\n       pulse agent spawn [--runner R] [--model M]\n       pulse agent list [--all] [--json]\n       pulse agent beat [--name NAME] [--json]        (a sign of life; silent agents are dead after heartbeat.dead_after)\n       pulse agent prune [--days N] [--dry-run] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_agent, flags:Some(agent_flags) });
         cli_register(Command { name:"post".into(), group:"agents".into(), summary:"write one immutable post".into(), usage:format!("pulse post KIND --area A --thread T --summary S [--body TEXT | --body-file F | < stdin] [--on POST] [--vote up|down]\n       [--expires T] [--resolution R] [--links L] [--files F] [--text-hash H] [--origin-project P] [--claim-hours H] [--for-owner] [--project SLUG]\n       kinds: {}", KINDS.join(", ")), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_post, flags:Some(post_flags) });
-        cli_register(Command { name:"claim".into(), group:"agents".into(), summary:"shortcut: post a claim that expires after claim_hours".into(), usage:"pulse claim --area A --thread T --summary S [--hours H] [--project SLUG]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_claim, flags:Some(claim_flags) });
+        cli_register(Command { name:"claim".into(), group:"agents".into(), summary:"shortcut: post a claim that expires after claim_hours".into(), usage:"pulse claim --area A --thread T --summary S [--hours H] [--project SLUG] | pulse claim sweep [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_claim, flags:Some(claim_flags) });
         cli_register(Command { name:"vote".into(), group:"agents".into(), summary:"shortcut: vote up or down on a suggestion or amendment".into(), usage:"pulse vote POST_ID up|down --summary REASON [--body TEXT | --body-file F | < stdin] [--text-hash H]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_vote, flags:Some(vote_flags) });
         cli_register(Command { name:"thread".into(), group:"agents".into(), summary:"list, show, or resolve board threads".into(), usage:"pulse thread list --project SLUG [--status open|stale|closed] [--area A] [--json]\n       pulse thread show AREA/THREAD --project SLUG [--bodies]\n       pulse thread resolve AREA/THREAD --project SLUG --as RESOLUTION --summary TEXT [--body TEXT|--body-file PATH]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_thread, flags:Some(thread_flags) });
         cli_register(Command { name:"decide".into(), group:"human".into(), summary:"the human records yes or no on a proposal (a yes queues one job, WU-022)".into(), usage:"pulse decide POST_ID yes|no [--words '...']".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_decide, flags:Some(decide_flags) });
@@ -100,6 +100,11 @@ fn claim_flags(fs: &mut FlagSet) {
         "hours",
         0.0,
         "expiry in hours from now (default: setting claim_hours)",
+    );
+    fs.bool_var(
+        "dry-run",
+        false,
+        "sweep: list what would close without posting",
     );
 }
 fn vote_flags(fs: &mut FlagSet) {
@@ -545,7 +550,43 @@ fn run_post(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     )?;
     print_post(c, &row)
 }
-fn run_claim(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
+/// `pulse claim sweep [--dry-run]`: close open threads whose newest post is an
+/// expired claim, so reflect's STALE section lists only live work.
+fn run_claim_sweep(c: &mut Context, fs: &FlagSet) -> Result<()> {
+    let s = store(c)?;
+    let p = current_project(s, &c.project)?;
+    let dry = fs.get_bool("dry-run");
+    let rows = if dry {
+        expired_claim_threads(s, &p.slug, &c.now)?
+    } else {
+        sweep_expired_claims(s, &p.slug, &c.agent, &c.session, &c.now)?
+    };
+    if c.json {
+        return write_json(
+            &mut c.out,
+            &pulse_store::gomap! {"dry_run": dry, "closed": rows},
+        );
+    }
+    let verb = if dry { "would close" } else { "closed" };
+    if rows.is_empty() {
+        writeln!(c.out, "claim sweep: nothing to close")?;
+        return Ok(());
+    }
+    for r in &rows {
+        writeln!(
+            c.out,
+            "  {} {:<40} {:<16} expired {}  {}",
+            verb, r.key, r.agent, r.expires, r.summary
+        )?;
+    }
+    writeln!(c.out, "claim sweep: {} {} thread(s)", verb, rows.len())?;
+    Ok(())
+}
+
+fn run_claim(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
+    if args.first().map(String::as_str) == Some("sweep") {
+        return run_claim_sweep(c, fs);
+    }
     for need in ["area", "thread", "summary"] {
         if fs.get_string(need).is_empty() {
             return Err(usage(
