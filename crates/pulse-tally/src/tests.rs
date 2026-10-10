@@ -1805,6 +1805,32 @@ fn compute_caches_result_for_unchanged_store() {
 }
 
 #[test]
+fn compute_cache_buckets_the_clock_by_five_minutes() {
+    let _serial = crate::test_helpers::serial();
+    let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    crate::cache::clear_cache_for_test();
+    let f = test_fixture::new_fixture(true);
+    let at = |now: &str| Thresholds {
+        now: now.into(),
+        ..Default::default()
+    };
+    compute_light(&f.st, "fixture", "", at("2026-09-10T12:00:07Z")).unwrap();
+    assert_eq!(crate::cache::cache_stats().misses, 1);
+    // Four minutes later, same bucket: the same tally.
+    compute_light(&f.st, "fixture", "", at("2026-09-10T12:04:59Z")).unwrap();
+    assert_eq!(crate::cache::cache_stats().hits, 1);
+    assert_eq!(crate::cache::cache_stats().misses, 1);
+    // The next bucket is a new key.
+    compute_light(&f.st, "fixture", "", at("2026-09-10T12:05:00Z")).unwrap();
+    assert_eq!(crate::cache::cache_stats().misses, 2);
+    // A clock the key cannot read is hashed as it is, and still caches.
+    compute_light(&f.st, "fixture", "", at("odd")).unwrap();
+    compute_light(&f.st, "fixture", "", at("odd")).unwrap();
+    assert_eq!(crate::cache::cache_stats().misses, 3);
+    assert_eq!(crate::cache::cache_stats().hits, 2);
+}
+
+#[test]
 fn compute_invalidates_cache_when_post_added() {
     let _serial = crate::test_helpers::serial();
     let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -11,6 +11,11 @@ use crate::thresholds::Thresholds;
 
 const CACHE_TTL: Duration = Duration::from_secs(600);
 const CACHE_MAX_ENTRIES: usize = 32;
+/// The clock enters the key in buckets this wide: a tally depends on the time
+/// only through claim expiry and ages, and every bucket boundary used to cost
+/// a full tally per project per threshold variant (a quarter of the daemon's
+/// steady-state planner work at one-minute buckets, with nothing changed).
+const CACHE_NOW_BUCKET_MINUTES: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct CacheKey {
@@ -97,8 +102,11 @@ fn cache_key_for(
     area: &str,
     mut th: Thresholds,
 ) -> CacheKey {
-    if th.now.len() >= 16 {
-        th.now = format!("{}:00Z", &th.now[..16]);
+    if th.now.len() >= 16
+        && let Ok(minute) = th.now[14..16].parse::<u32>()
+    {
+        let bucket = minute - minute % CACHE_NOW_BUCKET_MINUTES;
+        th.now = format!("{}{bucket:02}:00Z", &th.now[..14]);
     }
     CacheKey {
         store_path: s.path.clone(),
