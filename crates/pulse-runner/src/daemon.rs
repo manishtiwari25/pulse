@@ -874,16 +874,13 @@ pub(crate) fn daemon(
     );
     // The load governor: the machine's shape is read once; the limits are
     // re-read from the settings each tick so a changed setting takes effect
-    // without a restart. Job children run at nice CHILD_NICE from here on.
+    // without a restart. Job children run at nice CHILD_NICE from here on,
+    // the daemon itself at `daemon.nice`.
     let machine = crate::daemon_load::Machine::detect();
     crate::daemon_load::set_child_nice(crate::daemon_load::CHILD_NICE);
-    say(
-        &o,
-        crate::daemon_load::describe(
-            &machine,
-            &crate::daemon_load::limits(s, &machine, o.max_jobs),
-        ),
-    );
+    let limits = crate::daemon_load::limits(s, &machine, o.max_jobs);
+    crate::daemon_load::renice_self(limits.own_nice);
+    say(&o, crate::daemon_load::describe(&machine, &limits));
     if lost > 0 {
         say(
             &o,

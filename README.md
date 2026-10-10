@@ -1280,8 +1280,8 @@ So the daemon starts no more local runs at once than `daemon.max_jobs`
 daemon --max-jobs N` overrides both for one daemon; the startup line `load
 governor: up to N local run(s) at once (auto|daemon.max_jobs|--max-jobs; C
 cores, P CPUs, M MB), nothing new over load L or under F MB of memory free;
-children run at nice 10` names what is in force. Before leasing it also reads
-the one-minute load average and the memory a new run could use (free, inactive
+children run at nice 10, the daemon itself at nice 5` names what is in force.
+Before leasing it also reads the one-minute load average and the memory a new run could use (free, inactive
 and speculative pages on macOS, `MemAvailable` on Linux) and leases nothing
 new while the load is over `daemon.max_load` (default: the number of CPUs) or
 the memory is under `daemon.min_free_mem_mb` (default 1024; 0 off), or while
@@ -1292,7 +1292,12 @@ change rather than per tick, and slots held this way are not hands wanted.
 Remote hands carry their own load and are not capped by this machine's
 governor. Every run the daemon starts here - the worker, its `npm ci`, its
 test suite, the clone's removal - runs at nice 10, so the owner's own work and
-the daemon's loop stay responsive while the fleet works. `pulse executor
+the daemon's loop stay responsive while the fleet works. The daemon itself
+lowers its own priority to `daemon.nice` (default 5) as it starts, so its
+planning, sweeps and landing passes yield to the owner's foreground work while
+the loop still comes before the fleet's builds; 0 leaves the level the service
+started it at, and a `renice` by hand does not survive the restart a
+self-update brings, which is why the daemon does it itself. `pulse executor
 probe local` probes this machine the same way (git, free space under
 `~/.pulse/work`), and a passing probe run by the owner clears the projects a
 failed setup marked unfit here, instead of waiting a day for the marks to

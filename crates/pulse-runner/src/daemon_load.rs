@@ -24,6 +24,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 /// of children inherit it, so a worker's `npm ci` and `cargo test` yield
 /// to the owner's foreground work and to the daemon's own loop.
 pub(crate) const CHILD_NICE: i32 = 10;
+/// The highest nice level `setpriority` accepts; `daemon.nice` is clamped to it.
+pub(crate) const MAX_NICE: i32 = 19;
 /// The hardware-derived default never admits more local runs than this.
 pub(crate) const DEFAULT_MAX_JOBS_CAP: i32 = 4;
 /// Megabytes of RAM one run is taken to need when the default is derived:
@@ -125,6 +127,9 @@ pub(crate) struct Limits {
     pub(crate) max_load: f64,
     /// Megabytes of usable memory under which nothing new starts; 0 off.
     pub(crate) min_free_mem_mb: i64,
+    /// Nice level the daemon's own process runs at from startup
+    /// (`daemon.nice`); 0 leaves the level the service started it at.
+    pub(crate) own_nice: i32,
     /// Where `max_jobs` came from, for the startup line.
     pub(crate) source: &'static str,
 }
@@ -150,6 +155,7 @@ pub(crate) fn limits(s: &pulse_store::Store, machine: &Machine, flag_max_jobs: i
         max_jobs: max_jobs.max(1),
         max_load,
         min_free_mem_mb: s.setting_int("daemon.min_free_mem_mb").max(0),
+        own_nice: own_nice_level(s.setting_int("daemon.nice")),
         source,
     }
 }
@@ -247,8 +253,13 @@ pub(crate) fn describe(machine: &Machine, limits: &Limits) -> String {
     } else {
         "never for memory".to_string()
     };
+    let own = if limits.own_nice > 0 {
+        format!(", the daemon itself at nice {}", limits.own_nice)
+    } else {
+        String::new()
+    };
     format!(
-        "load governor: up to {} local run(s) at once ({}; {} cores, {} CPUs, {} MB), nothing new over load {:.0} or {floor}; children run at nice {CHILD_NICE}",
+        "load governor: up to {} local run(s) at once ({}; {} cores, {} CPUs, {} MB), nothing new over load {:.0} or {floor}; children run at nice {CHILD_NICE}{own}",
         limits.max_jobs,
         limits.source,
         machine.cores,
@@ -256,6 +267,28 @@ pub(crate) fn describe(machine: &Machine, limits: &Limits) -> String {
         machine.mem_mb,
         limits.max_load
     )
+}
+
+/// Lowers the daemon's own scheduling priority to `level` once, at startup,
+/// so its planning, sweeps and landing passes yield to the owner's foreground
+/// work while the loop still comes before its children at [`CHILD_NICE`];
+/// 0 leaves the level the service started it at. A process cannot raise its
+/// priority back, so under test (where the daemon runs in the test host's
+/// process) nothing is applied.
+pub(crate) fn renice_self(level: i32) {
+    #[cfg(test)]
+    {
+        let _ = level;
+    }
+    #[cfg(not(test))]
+    {
+        renice_to(own_nice_level(i64::from(level)));
+    }
+}
+
+/// `daemon.nice` as a level `setpriority` accepts.
+pub(crate) fn own_nice_level(setting: i64) -> i32 {
+    setting.clamp(0, i64::from(MAX_NICE)) as i32
 }
 
 /// The daemon sets the nice level its job children get; [`renice_child`]
@@ -556,6 +589,7 @@ mod tests {
             max_jobs,
             max_load,
             min_free_mem_mb,
+            own_nice: 0,
             source: "test",
         }
     }
@@ -765,6 +799,24 @@ mod tests {
         );
         let off = describe(&m, &limits(2, 12.0, 0));
         assert!(off.contains("never for memory"), "{off}");
+        let own = describe(
+            &m,
+            &Limits {
+                own_nice: 5,
+                ..limits(4, 12.0, 1024)
+            },
+        );
+        assert!(
+            own.ends_with("children run at nice 10, the daemon itself at nice 5"),
+            "{own}"
+        );
+    }
+
+    #[test]
+    fn own_nice_level_is_clamped_to_what_setpriority_accepts() {
+        assert_eq!(own_nice_level(5), 5);
+        assert_eq!(own_nice_level(40), MAX_NICE);
+        assert_eq!(own_nice_level(-3), 0);
     }
 
     #[test]
@@ -779,13 +831,16 @@ mod tests {
         assert_eq!((l.max_jobs, l.source), (4, "auto"));
         assert_eq!(l.max_load, 12.0, "daemon.max_load 0 is the CPU count");
         assert_eq!(l.min_free_mem_mb, 1024, "the documented default floor");
+        assert_eq!(l.own_nice, 5, "the documented default daemon.nice");
         crate::test_helpers_f5::set_setting(&s, "daemon.max_jobs", "2");
         crate::test_helpers_f5::set_setting(&s, "daemon.max_load", "20");
         crate::test_helpers_f5::set_setting(&s, "daemon.min_free_mem_mb", "0");
+        crate::test_helpers_f5::set_setting(&s, "daemon.nice", "0");
         let l = limits_from(&s, &m, 0);
         assert_eq!((l.max_jobs, l.source), (2, "daemon.max_jobs"));
         assert_eq!(l.max_load, 20.0);
         assert_eq!(l.min_free_mem_mb, 0);
+        assert_eq!(l.own_nice, 0, "daemon.nice 0 leaves the priority alone");
         let l = limits_from(&s, &m, 3);
         assert_eq!((l.max_jobs, l.source), (3, "--max-jobs"));
     }

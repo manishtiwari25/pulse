@@ -910,6 +910,7 @@ mod tests {
             max_jobs: 1,
             max_load: f64::MAX,
             min_free_mem_mb: 0,
+            own_nice: 0,
             source: "test",
         });
         let lines = tend_binary(&s, TEST_NOW.into(), full.clone());
