@@ -108,6 +108,7 @@ const LABELS: Record<string, string> = {
   "daemon.max_jobs": "Local runs at once (0 = from the hardware)",
   "daemon.max_load": "Lease nothing over load average (0 = CPU count)",
   "daemon.min_free_mem_mb": "Minimum free memory for a new run (MB)",
+  "daemon.nice": "Daemon's own nice level (0 = leave as started)",
   "heartbeat.dead_after": "An agent is dead after (seconds)",
   "provider.openai.base_url": "OpenAI-compatible endpoint",
   "provider.retry_after_cap_s": "Longest Retry-After honoured (seconds)",
