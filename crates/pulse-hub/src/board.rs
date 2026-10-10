@@ -56,10 +56,20 @@ impl TallySource for NativeTally {
     }
 }
 
+/// The fields of a cached post row. Go's rows carried `frontmatter` and
+/// `body` too; here those two stay in the store and `Handler::post_detail`
+/// reads them for the one post a request asks for, so a snapshot holds a few
+/// kilobytes per post rather than the whole board text (see `snapshot`).
+pub(crate) const POST_ROW_FIELDS: &str = "id rel_path area thread thread_key kind agent runner model session date branch expires on_post vote text_hash has_read_line resolution summary links files provenance_ok provenance_missing in_area name project";
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BoardData {
     pub(crate) meta: JsonMap,
     pub(crate) params: JsonMap,
+    /// One row per post with the `POST_ROW_FIELDS` keys; no body, no
+    /// frontmatter. Everything the board derives from a post's body
+    /// (proposal text, read lines, owner questions) is computed while the
+    /// snapshot is built, from the store rows the tally was computed from.
     pub(crate) posts: Vec<JsonMap>,
     /// Go's ByID shares the post maps with Posts; here it indexes into them.
     pub(crate) by_id: BTreeMap<String, usize>,
@@ -177,21 +187,29 @@ impl crate::server::Handler {
                     let post = db_posts
                         .get(f[3])
                         .ok_or_else(|| anyhow!("tally references missing post {:?}", f[3]))?;
-                    let fm = post_frontmatter(post);
+                    // Go reads these from the frontmatter map, which copies
+                    // the post's own fields.
                     let mut missing = Vec::new();
-                    for key in ["agent", "runner", "model", "session", "date", "branch"] {
-                        if str_value(fm.get(key).unwrap_or(&Value::Null)).is_empty() {
+                    for (key, value) in [
+                        ("agent", &post.agent),
+                        ("runner", &post.runner),
+                        ("model", &post.model),
+                        ("session", &post.session),
+                        ("date", &post.date),
+                        ("branch", &post.branch),
+                    ] {
+                        if value.is_empty() {
                             missing.push(key.to_string());
                         }
                     }
                     let row = object(
-                        "id rel_path area thread thread_key kind agent runner model session date branch expires on_post vote text_hash has_read_line resolution summary links files frontmatter body provenance_ok provenance_missing in_area name project",
+                        POST_ROW_FIELDS,
                         vec![
                             json!(f[3]), json!(f[0]), json!(f[1]), json!(f[2]), json!(format!("{}/{}", f[1], f[2])),
                             json!(f[4]), json!(f[5]), json!(post.runner), json!(post.model), json!(f[12]),
                             json!(f[6]), json!(post.branch), json!(f[7]), json!(f[8]), json!(f[9]), json!(f[13]),
                             json!(if f[14] == "1" { 1 } else { 0 }), json!(f[10]), json!(f[11]), json!(post.links),
-                            json!(post.files), json!(fm), json!(post.body.trim_matches('\n')), json!(if missing.is_empty() { 1 } else { 0 }),
+                            json!(post.files), json!(if missing.is_empty() { 1 } else { 0 }),
                             json!(missing), json!(if area.is_empty() || area == f[1] { 1 } else { 0 }),
                             json!(truncate(&post.name, 40)), json!(truncate(&post.origin_project, 60)),
                         ],
@@ -264,14 +282,29 @@ impl crate::server::Handler {
         };
         let plan_ctx = pulse_tally::plan_context_for(store, project, &now, plan_res);
         d.enrich_threads();
-        d.collect_owner_questions(&decided_posts(store, project)?);
+        d.collect_owner_questions(&decided_posts(store, project)?, &db_posts);
+        // Go reads a post's body from its row; the rows no longer carry one,
+        // so the body of a post that has a row comes from the store post the
+        // row was built from (every row's id is a `db_posts` key).
+        let body_of = |id: &str| -> &str {
+            if d.by_id.contains_key(id) {
+                db_posts
+                    .get(id)
+                    .map(|p| p.body.trim_matches('\n'))
+                    .unwrap_or("")
+            } else {
+                ""
+            }
+        };
         for row in &mut d.proposals {
-            let post = post_at(&d.by_id, &d.posts, &str_key(row, "id")).unwrap_or(&EMPTY_ROW);
+            let id = str_key(row, "id");
+            let post = post_at(&d.by_id, &d.posts, &id).unwrap_or(&EMPTY_ROW);
             let decided =
                 post_at(&d.by_id, &d.posts, &str_key(row, "decided_id")).unwrap_or(&EMPTY_ROW);
-            for key in ["name", "session", "rel_path", "body", "kind"] {
+            for key in ["name", "session", "rel_path", "kind"] {
                 row.insert(key.to_string(), json!(str_key(post, key)));
             }
+            row.insert("body".to_string(), json!(body_of(&id)));
             for key in ["summary", "agent", "name"] {
                 row.insert(format!("decided_{key}"), json!(str_key(decided, key)));
             }
@@ -349,12 +382,12 @@ impl crate::server::Handler {
             row.insert("session".into(), json!(str_key(post, "session")));
             let mut votes = avotes.remove(&id).unwrap_or_default();
             for vote in &mut votes {
-                let post =
-                    post_at(&d.by_id, &d.posts, &str_key(vote, "post_id")).unwrap_or(&EMPTY_ROW);
+                let post_id = str_key(vote, "post_id");
+                let post = post_at(&d.by_id, &d.posts, &post_id).unwrap_or(&EMPTY_ROW);
                 vote.insert("reason".into(), json!(str_key(post, "summary")));
                 vote.insert("name".into(), json!(str_key(post, "name")));
                 let mut read_line = String::new();
-                for line in str_key(post, "body").split('\n') {
+                for line in body_of(&post_id).split('\n') {
                     if let Some(rest) = line.strip_prefix("Read:") {
                         read_line = rest.trim().to_string();
                         break;
@@ -425,6 +458,35 @@ impl crate::server::Handler {
             }
         }
         Ok(d)
+    }
+
+    /// Go: d.post(id) - the whole post row, `frontmatter` and `body`
+    /// included, with the responses on it; empty for an unknown post. The
+    /// cached rows carry neither field, so both are read from the store for
+    /// the one post asked for (a primary-key lookup) and emitted as the
+    /// snapshot would have: the frontmatter map of the store post, the body
+    /// without its surrounding newlines. A post deleted since the snapshot
+    /// was built keeps the row's shape with an empty body and frontmatter
+    /// until the watermark rebuilds the snapshot.
+    pub(crate) fn post_detail(&self, d: &BoardData, id: &str) -> Result<JsonMap> {
+        let mut row = d.post(id);
+        if row.is_empty() {
+            return Ok(row);
+        }
+        let store = self
+            .store
+            .as_deref()
+            .ok_or_else(|| anyhow!("the store is unavailable"))?;
+        let (frontmatter, body) = match load_post(store, id)? {
+            Some(post) => (
+                json!(post_frontmatter(&post)),
+                json!(post.body.trim_matches('\n')),
+            ),
+            None => (json!(JsonMap::new()), json!("")),
+        };
+        row.insert("frontmatter".into(), frontmatter);
+        row.insert("body".into(), body);
+        Ok(row)
     }
 }
 
@@ -537,7 +599,13 @@ impl BoardData {
     /// closure dated before it: decisions close the loop-gate thread, and the
     /// loop keeps posting new stops into it. Card-needed asks are the
     /// planner's own work since ADR-044 and never wait for the owner.
-    pub(crate) fn collect_owner_questions(&mut self, decided: &BTreeSet<String>) {
+    /// `db_posts` holds the store posts the rows were built from: the owner
+    /// mark and the body live there, not in the rows.
+    pub(crate) fn collect_owner_questions(
+        &mut self,
+        decided: &BTreeSet<String>,
+        db_posts: &BTreeMap<String, pulse_tally::Post>,
+    ) {
         let threads = self
             .threads
             .iter()
@@ -570,21 +638,22 @@ impl BoardData {
                     continue;
                 }
                 let stop = str_key(post, "summary") == pulse_store::EVOLUTION_STOP_SUMMARY;
-                let for_owner = post
-                    .get("frontmatter")
-                    .and_then(|fm| fm.get("for_owner"))
-                    .is_some_and(|v| str_value(v) == "true");
+                let id = str_key(post, "id");
+                let stored = db_posts.get(&id);
+                let for_owner = stored.is_some_and(|p| p.for_owner);
                 if !(stop || for_owner) {
                     continue;
                 }
-                let id = str_key(post, "id");
                 if decided.contains(&id)
                     || answered.contains(&id)
                     || later_hub_answer_date(thread_posts, i)
                 {
                     continue;
                 }
-                if stop && str_key(post, "body").contains(pulse_evolve::CARD_NEEDED) {
+                let body = stored
+                    .map(|p| p.body.trim_matches('\n'))
+                    .unwrap_or_default();
+                if stop && body.contains(pulse_evolve::CARD_NEEDED) {
                     continue;
                 }
                 let resolved = if stop {
@@ -610,7 +679,7 @@ impl BoardData {
                         json!(str_key(post, "session")),
                         json!(str_key(post, "date")),
                         json!(str_key(post, "summary")),
-                        json!(str_key(post, "body")),
+                        json!(body),
                         json!(str_key(post, "on_post")),
                         json!(stop),
                         json!(status == "stale"),
@@ -629,6 +698,9 @@ impl BoardData {
         post_at(&self.by_id, &self.posts, id)
     }
 
+    /// The cached row of `id` with the responses on it, or an empty map for
+    /// an unknown post. The row has no `body` or `frontmatter`: the read API
+    /// serves posts through `Handler::post_detail`, which adds them.
     pub(crate) fn post(&self, id: &str) -> JsonMap {
         let Some(p) = self.post_by_id(id) else {
             return JsonMap::new();
@@ -1064,6 +1136,57 @@ pub(crate) fn decided_posts(store: &pulse_store::Store, project: &str) -> Result
     Ok(rows.collect::<std::result::Result<BTreeSet<_>, _>>()?)
 }
 
+/// One store post as `pulse_tally::posts_for` would load it, or `None` when
+/// no post has that id. The read API hydrates a post's body and frontmatter
+/// from this instead of keeping them in every cached row.
+pub(crate) fn load_post(store: &pulse_store::Store, id: &str) -> Result<Option<pulse_tally::Post>> {
+    use rusqlite::OptionalExtension;
+    let conn = store.conn()?;
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {} FROM posts WHERE id = ?",
+        pulse_tally::POST_COLS
+    ))?;
+    let post = stmt
+        .query_row([id], |row| {
+            Ok(pulse_tally::Post {
+                id: row.get(0)?,
+                project: row.get(1)?,
+                area: row.get(2)?,
+                thread: row.get(3)?,
+                kind: row.get(4)?,
+                agent: row.get(5)?,
+                runner: row.get(6)?,
+                model: row.get(7)?,
+                session: row.get(8)?,
+                date: row.get(9)?,
+                branch: row.get(10)?,
+                expires: row.get(11)?,
+                on_post: row.get(12)?,
+                vote: row.get(13)?,
+                text_hash: row.get(14)?,
+                has_read_line: row.get(15)?,
+                resolution: row.get(16)?,
+                summary: row.get(17)?,
+                body: row.get(18)?,
+                links: row.get(19)?,
+                files: row.get(20)?,
+                name: row.get(21)?,
+                origin_project: row.get(22)?,
+                extra: row.get(23)?,
+                origin: row.get(24)?,
+                created_at: row.get(25)?,
+                ..Default::default()
+            })
+        })
+        .optional()?;
+    post.map(|mut p| {
+        p.for_owner =
+            pulse_store::post_for_owner(&p.extra).map_err(|e| anyhow!("post {}: {e}", p.id))?;
+        Ok(p)
+    })
+    .transpose()
+}
+
 pub(crate) fn count_status(rows: &[JsonMap], statuses: &[&str]) -> i64 {
     rows.iter()
         .filter(|row| {
@@ -1298,6 +1421,153 @@ mod tests {
         assert_eq!(votes[0]["classification"], "counted");
         assert_eq!(votes[0]["reason"], summary);
         assert_eq!(votes[0]["read_line"], restatement);
+    }
+
+    // Go's rows carried every post's body and frontmatter; the cached rows
+    // keep neither, what the board derives from a body is still derived, and
+    // the post route reads both from the store for the one post it serves.
+    #[test]
+    fn cached_rows_leave_body_and_frontmatter_to_the_post_route() {
+        let _serial = crate::test_helpers::serial();
+        let s = f2::additions_store(false);
+        let repo = repo();
+        pulse_board::add_project(
+            &s,
+            repo.path().to_str().unwrap(),
+            "One",
+            "",
+            false,
+            "",
+            "human",
+            "one",
+        )
+        .unwrap();
+        join(&s, "alpha");
+        join(&s, "bravo");
+        let post = |kind: &str,
+                    thread: &str,
+                    agent: &str,
+                    for_owner: bool,
+                    summary: &str,
+                    body: &str,
+                    on: &str,
+                    resolution: &str,
+                    date: &str| {
+            pulse_board::create_post(
+                &s,
+                pulse_board::PostInput {
+                    kind: kind.into(),
+                    project: "one".into(),
+                    area: "api".into(),
+                    thread: thread.into(),
+                    agent: agent.into(),
+                    session: format!("s-{agent}"),
+                    for_owner,
+                    summary: summary.into(),
+                    body: body.into(),
+                    on: on.into(),
+                    resolution: resolution.into(),
+                    date: date.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let ask = post(
+            "question",
+            "limits",
+            "alpha",
+            true,
+            "Which limit?",
+            "\nPick one.\n\n",
+            "",
+            "",
+            "2026-09-06T08:00:00Z",
+        );
+        let answer = post(
+            "answer",
+            "limits",
+            "bravo",
+            false,
+            "The low one",
+            "Low.",
+            &ask.id,
+            "",
+            "2026-09-06T08:01:00Z",
+        );
+        post(
+            "result",
+            "ship",
+            "alpha",
+            false,
+            "Ship it",
+            "## Proposal for the human: ship the fix\n\nIt is ready.\n",
+            "",
+            "agreed",
+            "2026-09-06T08:02:00Z",
+        );
+        let h = f2::handler(&s);
+        let data = h.snapshot("one", "").unwrap();
+        let fields = POST_ROW_FIELDS.split_whitespace().collect::<BTreeSet<_>>();
+        assert_eq!(data.posts.len(), 3);
+        for row in &data.posts {
+            assert_eq!(
+                row.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+                fields,
+                "{row:#?}"
+            );
+        }
+        assert_eq!(data.proposals.len(), 1);
+        assert_eq!(
+            data.proposals[0]["body"],
+            "## Proposal for the human: ship the fix\n\nIt is ready."
+        );
+        assert_eq!(data.proposals[0]["proposal_text"], "ship the fix");
+
+        let detail = h.post_detail(&data, &ask.id).unwrap();
+        assert_eq!(detail["body"], "Pick one.");
+        assert_eq!(detail["frontmatter"]["kind"], "question");
+        assert_eq!(detail["frontmatter"]["for_owner"], "true");
+        assert_eq!(detail["frontmatter"]["path"], format!("store:{}", ask.id));
+        let responses = detail["responses"].as_array().unwrap();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["id"], answer.id);
+        assert!(h.post_detail(&data, "missing").unwrap().is_empty());
+        let plain = h.post_detail(&data, &answer.id).unwrap();
+        assert!(plain["frontmatter"].get("for_owner").is_none());
+
+        let (status, _, raw) = crate::test_helpers_f3::request(
+            h.clone_for_test(),
+            "GET",
+            &format!("/api/v1/projects/one/posts/{}", ask.id),
+            "",
+            &[],
+        );
+        assert_eq!(status, 200, "{raw}");
+        let served: JsonMap = serde_json::from_str(&raw).unwrap();
+        let mut want = fields.clone();
+        want.extend(["body", "frontmatter", "responses"]);
+        assert_eq!(
+            served.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            want
+        );
+        assert_eq!(served["body"], "Pick one.");
+        assert_eq!(served["frontmatter"]["for_owner"], "true");
+        assert_eq!(served["in_area"], 1);
+
+        let (status, _, raw) = crate::test_helpers_f3::request(
+            h.clone_for_test(),
+            "GET",
+            "/api/v1/projects/one/threads/api/limits",
+            "",
+            &[],
+        );
+        assert_eq!(status, 200, "{raw}");
+        let thread: JsonMap = serde_json::from_str(&raw).unwrap();
+        let rows = thread["posts"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.get("body").is_none()));
+        assert!(rows.iter().all(|r| r.get("frontmatter").is_none()));
     }
 
     #[test]

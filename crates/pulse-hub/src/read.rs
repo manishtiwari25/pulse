@@ -242,7 +242,13 @@ impl Handler {
                 json!(row)
             }
             r if r.starts_with("posts/") => {
-                let row = d.post(r.trim_start_matches("posts/"));
+                let row = match self.post_detail(&d, r.trim_start_matches("posts/")) {
+                    Ok(row) => row,
+                    Err(err) => {
+                        self.respond(w, Value::Null, err.to_string());
+                        return;
+                    }
+                };
                 if row.is_empty() {
                     crate::server::write_error(
                         w,

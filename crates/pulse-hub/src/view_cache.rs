@@ -13,7 +13,9 @@
 //! Snapshots past the TTL cannot be served again and are dropped by
 //! `evict_loop` (one thread per hub, ticking every TTL), so a hub holds the
 //! boards requested in the last minute or two rather than every project and
-//! area ever opened.
+//! area ever opened. The rows a snapshot keeps per post carry no body or
+//! frontmatter (`board::POST_ROW_FIELDS`); the one route that emits them,
+//! `posts/<id>`, reads both from the store on request.
 
 use crate::board::BoardData;
 use crate::server::Handler;
@@ -121,13 +123,13 @@ impl ViewCache {
     /// Drops what no request can be served from any more. A snapshot, a
     /// gates record or cached organization bytes older than `ttl` is rebuilt
     /// on its next request whatever its watermark says, yet it stayed in
-    /// memory for the life of the hub: a snapshot is a whole board (every
-    /// post with its body and frontmatter, tens of megabytes for a busy
-    /// project) and an area view is a full copy of it with other `in_area`
-    /// flags, so a console that browsed a few areas of each project left the
-    /// hub holding gigabytes it would never read again. A slot whose build is
-    /// in progress is left alone. The boards are freed after the slot map is
-    /// unlocked. Returns the number of snapshots dropped.
+    /// memory for the life of the hub: a snapshot is a whole board (a row per
+    /// post, the threads, the ballot - megabytes for a busy project) and an
+    /// area view is a full copy of it with other `in_area` flags, so a
+    /// console that browsed a few areas of each project left the hub holding
+    /// hundreds of megabytes it would never read again. A slot whose build
+    /// is in progress is left alone. The boards are freed after the slot map
+    /// is unlocked. Returns the number of snapshots dropped.
     pub(crate) fn evict_expired(&self, ttl: Duration) -> usize {
         let mut expired = Vec::new();
         {
