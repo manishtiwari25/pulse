@@ -328,8 +328,11 @@ pub(crate) fn land_experiment_context(
     let parent_archive = experiment_parent(job.clone());
     let (area, thread, on) = experiment_thread(s, slug.clone(), suggestion.clone());
     let agent = crate::board::actor_agent(s, actor.clone());
+    // A result post that fails must not undo the landing decision, but it must not
+    // vanish either: owners read the board for "what landed", so the miss goes to
+    // stderr, which the daemon log captures (same as land.rs).
     let post = |resolution: &str, summary: String, body: String| {
-        let _ = crate::board::create_post(
+        if let Err(e) = crate::board::create_post(
             s,
             now.clone(),
             crate::board::PostOpts {
@@ -345,7 +348,12 @@ pub(crate) fn land_experiment_context(
                 date: now.clone(),
                 ..Default::default()
             },
-        );
+        ) {
+            eprintln!(
+                "{}",
+                experiment_result_post_failed_warning(&branch, resolution, &e)
+            );
+        }
     };
     if let why = crate::landing_context::landing_stop(parent, s, root.clone())
         && !why.is_empty()
@@ -756,11 +764,34 @@ pub(crate) fn land_experiment_context(
     }
 }
 
+/// The stderr line written when an experiment-landing result post could not be
+/// created: the landing outcome itself stands, so the owner needs the branch and the
+/// resolution to find it without the board entry.
+pub(crate) fn experiment_result_post_failed_warning(
+    branch: &str,
+    resolution: &str,
+    err: &anyhow::Error,
+) -> String {
+    format!(
+        "experiment landing: `{branch}` resolved as {resolution} but the result post could not be written to the board: {err:#}; the outcome is recorded in the landing evidence"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_f5::*;
+
+    #[test]
+    fn experiment_result_post_failure_warning_names_branch_and_cause() {
+        let err = anyhow::anyhow!("board unavailable").context("create_post");
+        let line = experiment_result_post_failed_warning("evolve/B-013", "landed", &err);
+        assert!(line.contains("evolve/B-013"), "{line}");
+        assert!(line.contains("landed"), "{line}");
+        assert!(line.contains("create_post: board unavailable"), "{line}");
+        assert!(line.contains("result post could not be written"), "{line}");
+    }
 
     #[test]
     fn archive_patch_path_uses_evolve_project_archive_folder() {
