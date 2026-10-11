@@ -498,8 +498,8 @@ pub(crate) fn land_experiment_context(
                 "SELECT 1 AS x FROM posts WHERE project = ? AND kind = 'result' AND area = 'jobs' AND thread = ? AND summary = ?",
                 &[&slug, &job_thread, &crate::util::trunc(&summary, 230)],
             );
-            if p.0.is_empty() {
-                let _ = crate::board::create_post(
+            if p.0.is_empty()
+                && let Err(e) = crate::board::create_post(
                     s,
                     now.clone(),
                     crate::board::PostOpts {
@@ -516,6 +516,11 @@ pub(crate) fn land_experiment_context(
                         date: now.clone(),
                         ..Default::default()
                     },
+                )
+            {
+                eprintln!(
+                    "{}",
+                    experiment_result_post_failed_warning(&branch, "unmeasured", &e)
                 );
             }
             crate::util::event_at(
