@@ -1281,6 +1281,23 @@ fn schedule_owner_controls_pause_resume_end_and_run() {
 }
 
 #[test]
+fn schedule_repeated_pause_or_resume_is_a_no_op() {
+    let s = new_store();
+    let sched = schedules::add(&s, sched_input("1d")).unwrap();
+    schedules::pause(&s, &sched.id, "first reason", "demo-lead").unwrap();
+    let again = schedules::pause(&s, &sched.id, "second reason", "demo-lead").unwrap();
+    assert_eq!(again.status, "paused");
+    assert_eq!(
+        again.note, "first reason",
+        "a repeated pause keeps the original note"
+    );
+    assert_eq!(events(&s, "schedule.paused").len(), 1);
+    schedules::resume(&s, &sched.id, "demo-lead").unwrap();
+    schedules::resume(&s, &sched.id, "demo-lead").unwrap();
+    assert_eq!(events(&s, "schedule.resumed").len(), 1);
+}
+
+#[test]
 fn schedule_commands_end_to_end() {
     let s = new_store();
     let (mut c, out) = ctx_for(&s, "demo-lead", "demo", false);
